@@ -1186,25 +1186,35 @@ posts rather than discovered one refused job at a time.
 ### 11.2 Pre-flight (T-24h, rehearsal)
 
 > **OPERATOR STEP — pre-flight (not executed).**
-> **Prerequisites:** a reachable hub with the Babel plugin installed, one enrolled machine whose
-> owner runs the inference service, and the account to drain named in advance. Each item has an
-> observable success; an item without it is a no-go.
+> **Prerequisites:** a reachable hub with the Babel plugin installed, one enrolled machine, and
+> the account to drain named in advance. Each item has an observable success; an item without
+> it is a no-go.
 >
 > 1. `atyrode context show` reports the OMP auth broker `active`. On 2026-09-13 it was `failed`
 >    from 11:07 to 11:24 and every engine launched in that window died before its ready frame.
-> 2. A **Code profile** exists for the drain's account and model. Code owns the profiles — the
->    model, the thinking level, the account — and Code's generator is where they are set
->    (atyrode/code#170); Babel neither composes a session nor prices one. The operator consents
->    `machines:run` for the operation the preset names where the hub asks. **Success:** the
->    profile the drain will name resolves in Code on that machine.
-> 3. **Code's `runSession` door is installed** on the hub and reachable from Babel's server
->    (atyrode/manifold#575). Until it is, `drain.start` answers `engine_pending` and no drain
->    can begin: that refusal names both issues, and it is the honest no-go.
-> 4. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names
+> 2. A **Code profile** exists for the drain's account and model. A profile IS a configured Code
+>    workspace: Code owns the model, the thinking level and the account, and Code's generator is
+>    where they are set. Babel neither composes a session nor prices one — it names the
+>    container and the revision it was shown. **Success:** Watch's Start section lists that
+>    workspace, and the row beside it names the model the drain expects to spend on.
+> 3. **Code and omp are installed on the hub and consented at the revisions in force.**
+>    `atyrode.babel` declares `atyrode.code` a required dependency, Code declares `atyrode.omp`,
+>    and Babel's call travels under the principal of the request it is answering: a hub missing
+>    either, or an install whose grant does not reach Code's doors, answers `engine_unavailable`
+>    or `engine_forbidden` on the `profiles` door before any button. **Success:** the Start
+>    section shows profiles rather than a refusal sentence.
+> 4. **THE MATERIAL BINDING IS PENDING, so no drain can begin.** Manifold cannot yet bind one
+>    job's sealed output into another plugin's job (atyrode/manifold#592), so `drain.start`
+>    composes the run, seals the material and then answers `material_input_pending`. That
+>    refusal names the two lines that move when Babel's `plugins/MANIFOLD_REV` reaches the
+>    primitive. Until then this whole section is a rehearsal on paper: it is the honest no-go,
+>    and it is not something a setting can be turned off.
+> 5. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names
 >    a blocker for this machine is a no-go.
-> 5. A five-minute rehearsal: `drain.start` with `concurrent: 2`, `target.costMicros` equal to
->    one review's price, `deadline` = now + 5 min. **Success:** two jobs reach the stage
->    `at the model` within 90 s of launch and settle with `usage.inference.calls > 0`.
+> 6. A five-minute rehearsal: `drain.start` with `concurrent: 2`, the Code profile from item 2,
+>    `target.costMicros` equal to one exploration's price, `deadline` = now + 5 min.
+>    **Success:** two jobs reach the stage `at the model` within 90 s of launch and settle with
+>    `usage.inference.calls > 0`.
 
 ### 11.3 Go / no-go (T-0)
 
@@ -1258,45 +1268,61 @@ Mandatory, and each one was broken on 2026-09-13.
    account are named by the operator or asked for before the drain starts. An agent running
    Babel never chooses them silently; an operator running it by hand is asked by the door.
 
-### 11.7 What shipped, what was exercised, what remains (v0.3.0, 2026-09-14; reverted 2026-09-14)
+### 11.7 What shipped, what was exercised, what remains (2026-09-14)
 
-**Shipped on `main`; the v0.3.0 tag hands it to the preview.** The drain (#285):
-`drain.start` / `drain.status` / `drain.stop`, the controller and the Watch drain section. The
-release path (#286): a `v*` tag packs, verifies, attaches the three bundles and hands them to
-the integrated preview's receiver.
+**Shipped on `main`.** The drain (#285): `drain.start` / `drain.status` / `drain.stop`, the
+controller and the Watch drain section. The release path (#286): a `v*` tag packs, verifies,
+attaches the three bundles and hands them to the integrated preview's receiver.
 
-**AND THE ENGINE #284 SHIPPED IS REVERTED (#279).** Babel does not launch omp and does not
-compose a session: `atyrode.babel` depends on `atyrode.code`, which depends on `atyrode.omp`,
-and a run is a Code session posted through Code's `runSession` door from a saved Code profile
-or Code's generator. The `omp` pin, the `explore`/`evaluate` machine operations, the
-`atyrode.babel.inference` service, the `setupInference` door and the Start picker are gone; the
-drain, Watch, the receipts fold and the release path stay, and every launch answers
-`engine_pending` naming atyrode/manifold#575 and atyrode/code#170.
+**AND THE ENGINE IS CODE (#279).** Babel does not launch omp and does not compose a session:
+`atyrode.babel` depends on `atyrode.code`, which depends on `atyrode.omp`. Watch's Start
+section lists the saved Code profiles Babel read through its own `profiles` door, links to
+Code's generator for the workspace chosen, and offers no model, thinking or account field of
+Babel's own. A press selects the sessions, posts Babel's own `prepare` job — whose second
+sealed output is the material the run reads — composes the prompt around `/inputs/material`,
+and asks `atyrode.code.runSession` to post the session. A settled session is reconciled
+through `code.readSession`, because Code's job belongs to `atyrode.omp` and its settlement
+never reaches Babel; a refused submission is still spend, and settles its claim at its cost.
+The drain's fan goes through the same launch path and names the same Code profile.
 
 **Exercised, with the evidence.** On this workstation (`workstation-linux`, 2026-09-14): the
-plugin gate (`check`, `bun test`, `pack`, `verify` against a real engine at Manifold
-`0bc76660`); the controller's self-stop, cancellation and spend accounting against a fake hub
-(`doors/drain.test.ts`); the three bundles installed on a local preview-equivalent hub and
-Home, Watch (Start, Runs, Recipes, Ceilings) rendered in Chromium. The v0.3.0 evidence for the
-engine — one whole `explore` driving the real `omp` 18.1.14 binary — is WITHDRAWN with the
-engine: that lane no longer exists here, and its test went with it.
+plugin gate (`check`, `bun test` — 513 tests — `pack`, `verify`) against a real engine at
+Manifold `559612c8` with `@atyrode/manifold-code` pinned at `977e6e6`; the Code client's
+refusal translation against the real host sentences and Code's real `{refused: "code_…"}`
+shape (`server/engine/session.test.ts`); the settle path — finished-and-valid,
+finished-and-refused, unfinished, and a read Code refuses — against a fake `readSession`
+(`server/conductor.test.ts`); the sealed material's layout and its digests against a real
+temporary lease (`machine/prepare.test.ts`); Watch's Start section rendered from a fake
+`profiles` door (`watch/test/start.test.tsx`).
 
-**Not exercised, and now blocked at the launch — every item below is an OPERATOR STEP.** No job
-has run on a real hub, and none can: the self-launch engine was reverted (#279), so every
-launch — the button's, the drain's fan and the conductor's own cycle — answers `engine_pending`
-until atyrode/manifold#575 and atyrode/code#170 land. There is no real model call, no
-`inference_call` on a real journal and no provider window moved, and there will be none from
-Babel until Code's door exists. What remains owed, in order:
+**Not exercised, and blocked at the last step — every item below is an OPERATOR STEP.** No
+Babel run has reached a model on a real hub and none can yet: Manifold cannot bind one job's
+sealed output into ANOTHER plugin's job, so every posting path — the button's, the drain's fan
+— answers `material_input_pending` after the material has been sealed. There is no real model
+call, no `inference_call` on a real journal and no provider window moved. Nothing here was run
+against a real hub, a real Code install or a real omp account. What remains owed, in order:
 
-> 1. atyrode/manifold#575 (a plugin's server calling a sibling plugin's door) and
->    atyrode/code#170 (Code's `runSession` door, composing from a Code profile and posting the
->    omp job). **Success:** Babel's `explore` reaches Code's door and gets a job back.
-> 2. A Code profile exists on `dev-01` for the account and model the drain will spend, and the
->    operator consents whatever Code's door asks at the current artifact revision.
->    **Success:** a launch answers a run id instead of `engine_pending`.
-> 3. §11.2 item 5, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`,
->    target one review's price, deadline now + 5 min. **Success:** two rows reach `at the model`
->    within 90 s and settle with calls > 0; record host, date and the drain row here.
+> 1. atyrode/manifold#592, the job-inputs primitive (`inputs: [{name, from: {jobId, output}}]`
+>    on the request, `exports` on the producing operation). **Success:** the primitive is on
+>    Manifold `main` and `plugins/MANIFOLD_REV` moves to it, with the gate green.
+> 2. The two lines that move with that pin, in one commit:
+>    `plugins/atyrode.babel/server/engine/session.ts` `materialInput()` returns the binding,
+>    and `atyrode.babel.prepare` in `plugins/atyrode.babel/manifest.json` gains
+>    `"exports": ["material"]`. **Success:** a launch answers a run id instead of
+>    `material_input_pending`.
+> 3. Code's own `runSession` gains the matching `inputs` pass-through, and its operation's
+>    `limits.inputBytes` / `outputBytes` cover the sealed material — otherwise the binding is
+>    refused `input_too_large` at preparation rather than at the button.
+> 4. A Code profile exists on `dev-01` for the account and model the drain will spend, Code and
+>    omp are installed and consented at the revisions in force. **Success:** Watch's Start
+>    section lists it, and a launch reaches Code's door.
+> 5. §11.2 item 6, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`,
+>    target one exploration's price, deadline now + 5 min. **Success:** two rows reach
+>    `at the model` within 90 s and settle with calls > 0; record host, date and the drain row
+>    here.
+> 6. The DRAWN lane (`review-backlog`, `file-and-tidy`) returns with the coordinator's dispatch
+>    and its blinded projection (#268). Until then both the door and the conductor answer
+>    `draw_pending`, and the conductor draws nothing at all.
 
 The Go product is frozen (babel#250) and its loop scripts (`~/.config/babel/review-*.sh`,
 `usage-window.py`, `evaluate-loop.sh`, `explore-fleet.sh`, `sync-loop.sh`) are retired with

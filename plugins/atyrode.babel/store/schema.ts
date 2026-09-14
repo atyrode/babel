@@ -20,7 +20,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 4 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 5 } as const;
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -506,11 +506,21 @@ export const SCHEMA_V1: readonly string[] = [
   // ---------------------------------------------------------------- runs (§7)
   // A run is a job on a machine: what it was asked, what it read, what it produced, what it
   // cost. `payload` is the receipt as the machine half wrote it.
+  //
+  // A run that reaches a model is a CODE SESSION (#279), and two columns carry what that means.
+  // `container_id` is the Code workspace whose profile answered it — the only handle
+  // `code.readSession` takes beside the job id, and therefore the whole of how the conductor
+  // reconciles a job it does not own (`job_id` on such a row is Code's, posted under
+  // `atyrode.omp`'s operation, which `ctx.jobs` refuses to read). `prepare_job_id` is the
+  // `prepare` job whose sealed `material` output that session read, which is what makes a
+  // claim's citations checkable against the selection they were served from.
   `CREATE TABLE runs(
      id TEXT PRIMARY KEY,
      kind TEXT NOT NULL,
      machine_id TEXT,
      job_id TEXT,
+     container_id TEXT,
+     prepare_job_id TEXT,
      recipe_id TEXT,
      profile TEXT,
      authority_kind TEXT,
@@ -637,6 +647,20 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   {
     table: "drains",
     sql: DRAINS_TABLE,
+  },
+  // #279: a run that reaches a model is a Code session. Two nullable columns with no default,
+  // which is additive in the strictest sense — every row an earlier shape wrote reads as NULL,
+  // and NULL is the truth about it: those runs were posted by a launcher of Babel's own and
+  // belong to no Code container.
+  {
+    table: "runs",
+    column: "container_id",
+    sql: `ALTER TABLE runs ADD COLUMN container_id TEXT`,
+  },
+  {
+    table: "runs",
+    column: "prepare_job_id",
+    sql: `ALTER TABLE runs ADD COLUMN prepare_job_id TEXT`,
   },
 ];
 

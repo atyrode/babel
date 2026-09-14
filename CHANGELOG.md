@@ -22,11 +22,29 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   never launches an engine. So the machine half's `explore` and `evaluate` operations, the `omp`
   pin, the RPC driver, the inference service, the `setupInference` and `accounts` doors and the
   Start picker are removed; `scan`, `prepare` and `archive`, the drain, the receipts fold, the
-  release path and every reading panel stay. Until atyrode/manifold#575 (a plugin's server
-  calling a sibling plugin's door) and atyrode/code#170 (that door) land, every launch — the
-  button's, the drain's fan and the conductor's own cycle — answers one refusal, `engine_pending`,
-  whose detail names both issues, and Watch's Start section shows that sentence with no button
-  that can post (#279, #268).
+  release path and every reading panel stay (#279, #268).
+
+### Added
+
+- **Babel runs are Code sessions: a Code profile, `code.runSession` through `ctx.actions.call`,
+  and the material as a job input.** The Start section is a form again — three requests, a
+  machine and a list of the CODE PROFILES Code answered, each naming the model it will run as
+  and where Code last posted for it, with a link to Code's generator for the workspace chosen
+  and no model, thinking or account field of Babel's own. Pressing it selects the sessions,
+  posts Babel's own `atyrode.babel.prepare` job — which now seals a SECOND output, the
+  material: `index.json` plus one canonical record stream per session, written in the single
+  pass the digests were already taken in — composes the prompt around `/inputs/material`, and
+  asks `atyrode.code.runSession` to post the session. A settled session is reconciled through
+  `code.readSession` rather than `ctx.jobs`, because Code's job belongs to `atyrode.omp` and a
+  settlement of it never reaches Babel: its final message is read for the answer, every
+  citation is checked against the material's index, and the receipt is written with the model
+  and what it spent — a refused submission included, at its cost, because the model answered
+  and the deployment paid for it. What is still refused is the last step alone: Manifold cannot
+  yet bind one job's sealed output into another plugin's job, so every posting path answers
+  `material_input_pending`, whose sentence names the primitive (atyrode/manifold#592) and the
+  two lines that move when Babel's pin reaches it — `materialInput()` in
+  `plugins/atyrode.babel/server/engine/session.ts` and `exports: ["material"]` on
+  `atyrode.babel.prepare` in its manifest (#279, #268, #258, #264).
 
 ## [0.3.0] - 2026-09-14
 

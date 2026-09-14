@@ -38,9 +38,16 @@
 */
 
 import { z } from "zod";
-import { RUN_STAGES, type Receipt } from "../contract.ts";
+import {
+  MATERIAL_SCHEMA,
+  RUN_STAGES,
+  materialFile,
+  type MaterialEntry,
+  type MaterialIndex,
+  type Receipt,
+} from "../contract.ts";
 import { LIVE_GRACE_MS, babelOwnLog, type SessionRef } from "./adapters/index.ts";
-import type { OutputSink } from "./output.ts";
+import type { MaterialSink, OutputSink, RecordSink } from "./output.ts";
 import { SILENT, type ProgressChannel } from "./progress.ts";
 
 export const PrepareInputSchema = z.strictObject({
@@ -71,19 +78,37 @@ export interface SessionDigests {
   readonly captureDigest: string;
   readonly sourceDigest: string;
   readonly bytes: number;
+  /**
+   * How many normalized records the source stream held. It is counted here rather than by the
+   * caller because it is the same pass: a second count would be a second read of the log, and
+   * the prompt's "N records" is what tells a model how big a session is before it opens one.
+   */
+  readonly records: number;
 }
 
 /** The machine facts this operation needs, which the adapters own (machine/adapters). */
 export interface PrepareDeps {
   /** Every session this machine can see, under the adapters' own roots. */
   discover(): Promise<readonly SessionRef[]>;
-  digests(ref: SessionRef): Promise<SessionDigests>;
+  /**
+   * Both digests of one session's log, its size and its record count, from ONE pass — and, when
+   * a sink is handed, that same pass writes the normalized stream into the material (#279). The
+   * sink is a PARAMETER rather than a second verb because reading a 240 MB log twice per
+   * preparation is the only cost this operation has ever had.
+   */
+  digests(ref: SessionRef, seal?: RecordSink | undefined): Promise<SessionDigests>;
   /**
    * When this session's primary log was last written, in epoch ms; 0 when nothing could be
    * observed. It is asked BEFORE the digests on purpose — one `stat` against a whole read —
    * because skipping a moving 240 MB log is the point.
    */
   modifiedAt(ref: SessionRef): Promise<number>;
+  /**
+   * Where the material is sealed: the second output lease (`machine/output.ts`). Null for a
+   * hand-run that bound none, which prepares a selection and seals no evidence — the receipt
+   * says which, so a run whose material nothing can read is never mistaken for one that has it.
+   */
+  material?: MaterialSink | null | undefined;
   /** Where this run says it is; a caller that hands none is not watched (`progress.ts`). */
   progress?: ProgressChannel | undefined;
 }
@@ -221,22 +246,32 @@ function writeLP(hasher: Bun.CryptoHasher, value: string): void {
 }
 
 /**
- * Both digests of one session's primary log, and the bytes they covered, from ONE pass.
+ * Both digests of one session's primary log, the bytes they covered, its record count — and,
+ * when a sink is handed, the material's own copy of the normalized stream — from ONE pass.
  *
  * One pass because the corpus is dominated by a handful of very large logs, and reading them
  * twice per preparation would double the only cost that matters. The capture digest covers
  * every byte, including whatever the record splitter did not find a record in: it identifies
  * the file, not the part of it that parsed.
+ *
+ * THE SINK IS WRITTEN THE SAME BYTES THE SOURCE DIGEST COVERS, in the same order, which is the
+ * whole reason a claim may cite a line of the material's file: the digest in the index is a
+ * digest of exactly that file's contents, so a later reader recovers the bytes the model read
+ * rather than the bytes the harness happened to hold when it was asked.
  */
-export async function digests(ref: SessionRef): Promise<SessionDigests> {
+export async function digests(ref: SessionRef, seal?: RecordSink | undefined): Promise<SessionDigests> {
   const capture = new Bun.CryptoHasher("sha256");
   const source = new Bun.CryptoHasher("sha256");
   const decoder = new TextDecoder();
   let bytes = 0;
+  let records = 0;
   let pending = "";
   const record = (line: string): void => {
     const normalized = normalize(line);
-    if (normalized !== "") source.update(normalized);
+    if (normalized === "") return;
+    source.update(normalized);
+    records += 1;
+    seal?.write(normalized);
   };
   for await (const chunk of Bun.file(ref.primaryPath).stream()) {
     capture.update(chunk);
@@ -259,6 +294,7 @@ export async function digests(ref: SessionRef): Promise<SessionDigests> {
     captureDigest: `sha256:${capture.digest("hex")}`,
     sourceDigest: `sha256:${source.digest("hex")}`,
     bytes,
+    records,
   };
 }
 
@@ -305,8 +341,10 @@ export async function prepare(
 ): Promise<Receipt> {
   const startedAt = new Date().toISOString();
   const runId = input.runId === "" ? `run_${crypto.randomUUID()}` : input.runId;
-  const counts = { discovered: 0, selected: 0, bytes: 0, live: 0, agent: 0 };
+  const counts = { discovered: 0, selected: 0, bytes: 0, records: 0, live: 0, agent: 0 };
   const rows: PreparedSessionRow[] = [];
+  /** The material's own index, built as the loop seals each session's stream. */
+  const sealed: MaterialEntry[] = [];
   let preparation: Preparation | null = null;
   let closure: Receipt["closure"] = "completed";
   let reason = "";
@@ -357,23 +395,41 @@ export async function prepare(
         else counts.agent++;
         continue;
       }
+      // THE MATERIAL IS SEALED IN THE SAME PASS THE DIGESTS ARE TAKEN IN (#279). The file is
+      // opened before the read and closed after it whatever the read did, so a scope refused
+      // half way leaves no half-written stream a later reader could mistake for a session.
+      const file = materialFile(sealed.length, session.selector);
+      const seal = (await deps.material?.session(file)) ?? null;
       let measured;
       try {
-        measured = await deps.digests(session);
+        measured = await deps.digests(session, seal ?? undefined);
       } catch (err) {
         // The scope is refused whole. A preparation missing one of the sessions it was asked
         // for would be an immutable record of a corpus nobody chose.
+        await seal?.close();
         closure = "failed";
         reason = `read ${session.selector}: ${err instanceof Error ? err.message : String(err)}`;
         break;
       }
+      await seal?.close();
       counts.bytes += measured.bytes;
+      counts.records += measured.records;
       selection.push({
         host: input.machineId,
         harness: session.harness,
         sourceId: session.sourceId,
         captureDigest: measured.captureDigest,
         sourceDigest: measured.sourceDigest,
+      });
+      sealed.push({
+        selector: session.selector,
+        harness: session.harness,
+        sourceId: session.sourceId,
+        captureDigest: measured.captureDigest,
+        sourceDigest: measured.sourceDigest,
+        file,
+        records: measured.records,
+        bytes: measured.bytes,
       });
       rows.push({
         selector: session.selector,
@@ -402,6 +458,32 @@ export async function prepare(
   // sessions the hub holds no row for would be an identity nothing could later resolve.
   progress.report({ stage: RUN_STAGES.submitting, message: `${String(counts.selected)} sessions` });
   await out.write("sessions", closure === "completed" ? rows : []);
+  /*
+    THE INDEX IS WRITTEN LAST, TWICE, AND ONLY FOR A COMPLETED PREPARATION (#279).
+
+    It is the material's own manifest: the preparation it belongs to, and the digest a citation
+    must carry per session. It goes into the LEASE, where the session's sandbox binds it and the
+    model reads it, and into the RECEIPT, where the hub ingests it and checks a submitted claim's
+    locators against the selection they were served from — one document, two readers, and the
+    alternative for the second was pulling a sealed archive of every session's records back
+    through the hub to read the twenty lines at the front of it.
+
+    A refused or skipped scope indexes NEITHER. A bound material whose index nobody chose the
+    selection of is exactly the corpus-nobody-chose failure this operation refuses whole; the
+    receipt's `reason` is where that is said, and a consumer with no index has nothing to read
+    and says so.
+  */
+  const index: MaterialIndex | null =
+    closure === "completed" && preparation !== null
+      ? {
+          schema: MATERIAL_SCHEMA,
+          preparationId: preparation.id,
+          preparedAt: preparation.preparedAt,
+          machineId: input.machineId,
+          sessions: sealed,
+        }
+      : null;
+  if (index !== null && deps.material != null) await deps.material.index(index);
   const receipt: Receipt = {
     runId,
     kind: "prepare",
@@ -411,6 +493,7 @@ export async function prepare(
     closure,
     counts: { ...counts },
     ...(preparation === null ? {} : { preparation }),
+    ...(index === null ? {} : { material: index }),
     ...(reason === "" ? {} : { reason }),
   };
   await out.receipt(receipt);

@@ -17,6 +17,8 @@ import {
 } from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
 import { launchMachinery, type LaunchDeps } from "./doors/launch.ts";
+import type { Recipe } from "./server/engine/prompts.ts";
+import { codeEngine, type ActionsSlice } from "./server/engine/session.ts";
 import { drainTick, type DrainDeps } from "./server/drain.ts";
 import {
   conductor,
@@ -76,10 +78,10 @@ import manifestJson from "./manifest.json";
 /**
  * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column and table
  * `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
- * `2026-09-13-store-v1-run-progress` — recorded under the same key by the enable before it — is
- * its predecessor.
+ * `2026-09-14-store-v1-drains` — recorded under the same key by the enable before it — is its
+ * predecessor.
  */
-const STORE_MIGRATION = "2026-09-14-store-v1-drains";
+const STORE_MIGRATION = "2026-09-14-store-v1-code-session";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -159,12 +161,21 @@ function planFor(policy: Policy, operationId: OperationName): RunPlan {
   return runPlan({ manifest, policy, operationId });
 }
 
-function loop(jobs: JobsSlice, machines: MachinesSlice, plan: RunPlan): Conductor {
+function loop(
+  jobs: JobsSlice,
+  machines: MachinesSlice,
+  actions: ActionsSlice | undefined,
+  plan: RunPlan,
+): Conductor {
   return conductor({
     store,
     coordinator: coordinated,
     jobs,
     machines,
+    // A run that reaches a model is CODE's job, and `onJobSettled` is delivered only to the
+    // plugin that started one: the loop learns what became of a session by asking Code, over
+    // the authority of whatever wake it is running on (#279).
+    engine: codeEngine(actions),
     keys,
     plan,
     now: () => store.now(),
@@ -172,27 +183,78 @@ function loop(jobs: JobsSlice, machines: MachinesSlice, plan: RunPlan): Conducto
 }
 
 /**
+ * THE COOKBOOK THIS HUB HOLDS, read off the policy in force.
+ *
+ * It is the SAME block Watch's Recipes section lists (`store.policy()` joins `payload.recipes`
+ * to what has run under each id), so the methods an explore performs and the methods the panel
+ * names are one list and never two. A recipe needs a BODY to be a method: an entry that carries
+ * only a title and a line about what it looks for is a label for a surface, and composing a
+ * prompt around it would send the model a heading and call it an instruction. A disabled entry
+ * is excluded for the same reason the panel counts it out.
+ *
+ * A hub whose policy names none leaves this empty, and `startExplore` answers "no cookbook
+ * recipe is installed on this hub" — which is what this deployment's policy says today.
+ */
+async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
+  const rows = await store.db.query<{ payload: string }>(
+    `SELECT payload FROM policies ORDER BY seq DESC LIMIT 1`,
+  );
+  const payload = rows[0]?.payload;
+  if (payload === undefined) return {};
+  let held: unknown;
+  try {
+    held = (JSON.parse(payload) as Record<string, unknown>)["recipes"];
+  } catch {
+    return {};
+  }
+  if (!Array.isArray(held)) return {};
+  const cookbook: Record<string, Recipe> = {};
+  for (const entry of held) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+    const recipe = entry as Record<string, unknown>;
+    const id = recipe["id"];
+    const body = recipe["body"];
+    const title = recipe["title"];
+    const version = recipe["version"];
+    if (typeof id !== "string" || id === "") continue;
+    if (typeof body !== "string" || body.trim() === "") continue;
+    if (recipe["enabled"] === false) continue;
+    cookbook[id] = {
+      id,
+      version: typeof version === "number" && Number.isFinite(version) ? version : 0,
+      ...(typeof title === "string" && title !== "" ? { title } : {}),
+      body,
+    };
+  }
+  return cookbook;
+}
+
+/**
  * WHAT A START AND A STOP REACH THE WORLD THROUGH, declared once. The doors and the drain's
- * controller take the SAME object: two of them would be two answers to what a run is. Today
- * both answers are one refusal — a Babel run is a Code session and Code's door does not exist
- * yet (`doors/launch.ts`) — and the object is the seam that call is wired into.
+ * controller take the SAME object: two of them would be two answers to what a run is. The
+ * engine is Code (#279), reached with `ctx.actions.call` on the declared dependency, and it is
+ * built per caller because the principal Code grades is the one whose request is in flight.
  */
 const LAUNCH_DEPS: LaunchDeps = {
   coordinator: coordinated,
   jobs: (ctx) => jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+  engine: (actions) => codeEngine(actions),
+  cookbook,
+  plan: planFor,
   now: () => store.now(),
 };
 
 /** The launch path every start goes through, doors and drain controller alike (#258). */
 const machinery = launchMachinery(store, LAUNCH_DEPS);
 
-/** The controller's dependencies over one wake's own authority (#258). */
-function draining(jobs: BabelJobs): DrainDeps {
+/** The controller's dependencies over one wake's own authority (#258, #279). */
+function draining(jobs: BabelJobs, actions: ActionsSlice | undefined): DrainDeps {
   return {
     store,
     coordinator: coordinated,
     launch: machinery,
     jobs,
+    engine: codeEngine(actions),
     plan: planFor,
     now: () => store.now(),
   };
@@ -212,12 +274,16 @@ function draining(jobs: BabelJobs): DrainDeps {
  * table first would decide whether to launch another against last cycle's numbers. A settlement
  * is also the wake that matters to a drain, because a settlement is exactly when a slot opens.
  */
-async function cycle(jobs: BabelJobs, machines: MachinesSlice): Promise<void> {
+async function cycle(
+  jobs: BabelJobs,
+  machines: MachinesSlice,
+  actions: ActionsSlice | undefined,
+): Promise<void> {
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
   // limits are read for; a run that reaches a model is Code's to post (#279).
-  await loop(jobs, machines, planFor(policy, MACHINE_OPERATIONS.scan)).tick();
-  for (const report of await drainTick(draining(jobs))) {
+  await loop(jobs, machines, actions, planFor(policy, MACHINE_OPERATIONS.scan)).tick();
+  for (const report of await drainTick(draining(jobs, actions))) {
     for (const note of report.notes) {
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
     }
@@ -276,7 +342,10 @@ const doors = babelDoors(
   {
     coordinator: coordinated,
     deps: (ctx) =>
-      draining(jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive))),
+      draining(
+        jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+        ctx.actions,
+      ),
     concurrentJobs: DRAIN_FAN,
     now: () => store.now(),
   },
@@ -309,6 +378,7 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
           await cycle(
             jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
             machinesSlice(ctx.machines),
+            ctx.actions,
           );
         } catch (error) {
           console.warn(`${BABEL_PLUGIN_ID}: the cycle after ${name} failed: ${message(error)}`);
@@ -379,6 +449,7 @@ export const plugin: ServerPluginDef = {
           await cycle(
             installer === undefined ? unauthorized(ENABLE_WITHOUT_JOBS) : jobsSlice(installer),
             unaskable(HOOK_WITHOUT_MACHINES),
+            ctx.actions,
           );
         });
       } catch (error) {
@@ -407,7 +478,7 @@ export const plugin: ServerPluginDef = {
         throw new Error(`${BABEL_PLUGIN_ID}: a settled job was served without the plugin's tables`);
       }
       await dispatched.run({ database, storage: ctx.storage }, async () => {
-        await cycle(jobsSlice(ctx.jobs), unaskable(HOOK_WITHOUT_MACHINES));
+        await cycle(jobsSlice(ctx.jobs), unaskable(HOOK_WITHOUT_MACHINES), ctx.actions);
       });
     },
   },

@@ -112,21 +112,74 @@ service, a `setupInference` door and a price table. **That is reverted** (atyrod
 
 The operator's architecture is `atyrode.babel` → `atyrode.code` → `atyrode.omp`. Code owns the
 profiles — the model, the thinking level, the account — and Code launches omp. When Babel's
-button is pressed, Babel either names a saved Code profile or opens Code's generator so the run
-is parametrized there, and then posts the run through Code's `runSession` door. Babel never
-composes a session and never launches omp, so this bundle pins no engine, binds no model
-service, declares no `explore` or `evaluate` operation and installs no price table.
+button is pressed, the operator has already picked a saved Code profile or parametrized one in
+Code's generator, and Babel posts the run through Code's `runSession` door. Babel never composes
+a session and never launches omp, so this bundle pins no engine, binds no model service,
+declares no `explore` or `evaluate` operation and installs no price table.
 
-Two pieces of that are in flight elsewhere: **atyrode/manifold#575**, the in-process door call
-a plugin's server needs to reach a sibling plugin's door, and **atyrode/code#170**, the
-`runSession` door itself. Until both land, every posting path in this plugin — the `launch`
-door, the drain's fan and the conductor's own cycle — answers one refusal, `engine_pending`,
-whose detail names both issues. Watch's Start section shows that sentence and offers no button.
+**A BABEL RUN IS A CODE SESSION, IN FIVE STEPS.** `doors/launch.ts` does them in this order and
+the order is the point:
+
+1. the **selection** — this machine's catalogued sessions, never a live log and never one of
+   Babel's own runs' transcripts (#262);
+2. the **recipes** — the methods this hub holds, read off the policy document's own `recipes`
+   block, which is the same list Watch's Recipes section shows. A hub whose policy names none
+   refuses the explore by name rather than posting one with no method to run;
+3. the **material** — one `atyrode.babel.prepare` job, posted here, whose SECOND sealed output
+   is the evidence the run reads. `prepare` was already digesting every selected session; the
+   same single pass now writes the normalized record stream into that lease, so the material
+   costs no second read of a 240 MB log;
+4. the **prompt**, composed around `/inputs/material` — no tool block at all, because Babel
+   runs no session and holds no tools in one. The answering protocol is a fenced ` ```json `
+   block in the session's final message, with the stage's JSON Schema printed above it;
+5. the **session** — `atyrode.code.runSession`, and a `runs` row that records Code's job id,
+   the container that answered and the `prepare` job whose material it read.
+
+**The material is what makes a claim checkable.** `/inputs/material` holds `index.json` — the
+selection, with a `sourceDigest` per session — and `sessions/<file>`, one canonical JSON record
+per line in the order the harness wrote them. A citation names the file the index names and
+copies that digest unchanged; anything else is a recorded refusal (`unknown-reference`). The
+index rides the `prepare` receipt as well as the lease, so the hub verifies a locator from one
+row instead of pulling a sealed archive back to read the front of it. That is the answer to the
+2026-09-13 post-mortem's F1: the breadth-of-evidence principle survives as an immutable
+selection, not as a whole-corpus digest per run.
+
+**A settled session is reconciled through Code, never through `ctx.jobs`.** `onJobSettled` is
+delivered only to the plugin that STARTED the job and `ctx.jobs` verbs are bound to the calling
+plugin's id, so Code's job — posted under `atyrode.omp`'s own operation — is never Babel's to
+poll or be woken by. `server/conductor.ts` splits every run whose `container_id` is non-null
+onto `code.readSession({containerId, jobId})`: a finished one has its final message read for the
+answer, its citations checked against the material index, its receipt written with the model and
+the usage (one call; the tokens and cost as omp counted them) and its claim settled — and a
+REFUSED submission settles too, at the cost, because the model answered and the deployment paid
+for it. A read Code refuses is recorded on the run as its note and retried once; twice in a row
+closes the run and releases its claim, on the same bound the claim reaper uses.
+
+**WHAT IS STILL REFUSED, AND THE TWO LINES THAT MOVE.** Manifold cannot yet bind one job's
+sealed output into ANOTHER plugin's job, so the fifth step above answers
+`material_input_pending` — the run is composed, the material is sealed, the profile is named,
+and the binding does not exist. The primitive is **atyrode/manifold#592**. When Babel's
+`MANIFOLD_REV` moves to it, exactly two lines change in this repository:
+
+- `atyrode.babel/server/engine/session.ts`, `materialInput()`: its body becomes
+  `return { inputs: [{ name: "material", from: { jobId: prepareJobId, output: "material" } }] }`,
+  and `runSession` already spreads it into the request;
+- `atyrode.babel/manifest.json`: `atyrode.babel.prepare` gains `"exports": ["material"]` beside
+  its existing `"outputs": ["outputs", "material"]`. A same-plugin binding needs no export;
+  Code's job is not Babel's, and hub admission refuses `input_not_exported:material` without it.
+
+Code's own `runSession` gains the matching pass-through in its own PR, and `limits.inputBytes`
+on Code's operation must cover the sealed material or the binding is `input_too_large` at
+preparation. Watch's Start section says the same sentence the door does, and the drain's fan
+answers it too — one refusal, because there is one launch path.
 
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.
 They are not in `MACHINE_OPERATIONS`, which is what the machine half implements and what
-`manifest.json` declares.
+`manifest.json` declares. A DRAWN review (`review-backlog`, `file-and-tidy`) is a third thing
+again: the coordinator picks it, claims it under a fence and dispatches it with a blinded
+projection of the record under review, and that dispatch went with Babel's own launcher in the
+revert. Both the door and the conductor answer `draw_pending` for it, and it returns with #268.
 
 **`archive` is declared, and `restic` is a closure like the others.** restic is half of why the
 operation waited: upstream's whole Linux distribution is bare bzip2 —

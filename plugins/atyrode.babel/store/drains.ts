@@ -1,5 +1,6 @@
 import type { PluginDatabase, SqlParam } from "@manifold/plugin";
 import {
+  CodeProfileSchema,
   DRAIN_ENDINGS,
   DRAIN_PRESETS,
   DRAIN_STATES,
@@ -133,6 +134,14 @@ export interface DrainKnobs {
   readonly entityId?: string | undefined;
   readonly minutes?: number | undefined;
   readonly agentSessions?: boolean | undefined;
+  /**
+   * THE CODE PROFILE EVERY JOB OF THIS DRAIN IS POSTED ON (#279). It is a knob rather than a
+   * column for the reason the others are: it is the launch input's own field, kept verbatim so
+   * the ninetieth job of a drain asks for what the first one did. A drain that names none
+   * refuses `profile_required` at the seam, which is the honest answer — a Code session needs a
+   * Code profile, and Babel has no model of its own to fall back on.
+   */
+  readonly profile?: { readonly containerId: string; readonly expectedRevision: number } | undefined;
 }
 
 /**
@@ -260,12 +269,17 @@ function knobsOf(text: string): DrainKnobs {
   const recipes = Array.isArray(row["recipes"])
     ? row["recipes"].filter((entry): entry is string => typeof entry === "string")
     : [];
+  // The profile is read back through the contract's own schema rather than field by field: a
+  // container id and a revision are what `runSession` is pinned by, and a half-read pair would
+  // post a session against a revision nobody was shown.
+  const profile = CodeProfileSchema.safeParse(row["profile"]);
   return {
     recipes,
     ...(typeof row["sinceDays"] === "number" ? { sinceDays: row["sinceDays"] } : {}),
     ...(typeof row["entityId"] === "string" ? { entityId: row["entityId"] } : {}),
     ...(typeof row["minutes"] === "number" ? { minutes: row["minutes"] } : {}),
     ...(typeof row["agentSessions"] === "boolean" ? { agentSessions: row["agentSessions"] } : {}),
+    ...(profile.success ? { profile: profile.data } : {}),
   };
 }
 

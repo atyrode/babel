@@ -1,16 +1,18 @@
 /*
-  The two doors Watch posts to, held to what they do to the world.
+  The three doors Watch posts to, held to what they do to the world.
 
   Every test dispatches the way the kit does — parse the arguments against the action's own
   input, run the handler, parse what it produced against the action's own result — and then
   asks the STORE and the FLEET what happened.
 
-  WHAT A LAUNCH DOES TO THE WORLD IS NOTHING (#279). A Babel run is a Code session: the
-  operator picks a saved Code profile or parametrizes one in Code's generator, and Code's
-  `runSession` door posts it. So the cases that pinned Babel's own posting — the preparation
-  window, the recipe selection, the machine description, the run row, the drawn cycle — are
-  deleted rather than re-pinned, and what stands in their place is the refusal, by name, with
-  both issues in it, and the proof that the fleet was never touched.
+  WHAT A LAUNCH DOES IS FIVE STEPS AND STOPS AT THE FIFTH (#279). A Babel run is a Code
+  session: the operator names a saved Code profile, Babel chooses the sessions, posts its OWN
+  `prepare` job to seal them as the material, composes the prompt around `/inputs/material` —
+  and then asks `atyrode.code.runSession` to post the session. That last call is what
+  `MATERIAL_INPUT_PENDING` still refuses, because Manifold cannot yet bind one job's sealed
+  output into another plugin's job. So the tests below pin the four steps that DO happen, the
+  refusal that ends the fifth, and the fact that the preparation is real work left behind
+  rather than a ghost.
 
   `stop` is unchanged and still fully exercised: a run this deployment already started can be
   running when the plugin is upgraded, and ending it releases what it reserved.
@@ -18,14 +20,31 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, MACHINE_OPERATIONS, OPERATIONS, PRESET_OPERATIONS } from "../contract.ts";
+import {
+  ACTIONS,
+  MACHINE_OPERATIONS,
+  MATERIAL_INPUT_PENDING_CODE,
+  MATERIAL_OUTPUT,
+  OPERATIONS,
+  OUTPUT_BINDING,
+  PRESET_OPERATIONS,
+  type ProfileRow,
+} from "../contract.ts";
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
+import {
+  materialInput,
+  type CodeEngine,
+  type CodeJob,
+  type EngineAnswer,
+  type SessionRequest,
+} from "../server/engine/session.ts";
+import type { Recipe } from "../server/engine/prompts.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
-import { launchDoors, type LaunchDeps } from "./launch.ts";
+import { DRAW_PENDING, launchDoors, type LaunchDeps } from "./launch.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -97,11 +116,81 @@ class Fleet implements BabelJobs {
   }
 }
 
+/** A Code refusal, in the shape `codeEngine` folds every refusal onto. */
+function refusedByCode<T>(code: string, detail: string): EngineAnswer<T> {
+  return { ok: false, code: code as never, refused: `${code}: ${detail}` };
+}
+
+/**
+ * CODE, as this door reaches it. `runSession` is the one verb that cannot be called yet:
+ * `codeEngine` refuses it `material_input_pending` before the call is made, so a fake that
+ * ACCEPTED it would be testing a door against a world that does not exist. This one throws if
+ * it is ever reached, which is how the refusal's position in the sequence is pinned.
+ */
+class Code implements CodeEngine {
+  saved: { containerId: string; revision: number; model: string; thinking: string; lastMachineId: string }[] =
+    [
+      {
+        containerId: "ctr_workbench",
+        revision: 7,
+        model: "anthropic/claude-opus-4-1",
+        thinking: "high",
+        lastMachineId: MACHINE,
+      },
+    ];
+  unavailable = "";
+
+  async profiles(): Promise<EngineAnswer<readonly ProfileRow[]>> {
+    if (this.unavailable !== "") {
+      return await Promise.resolve(refusedByCode("engine_unavailable", this.unavailable));
+    }
+    return await Promise.resolve({ ok: true, value: this.saved });
+  }
+
+  /*
+    THE REFUSAL IS THE REAL ONE. `materialInput` is production code and it is the single line
+    that moves when Manifold's job-inputs primitive lands, so the fake asks it rather than
+    inventing a sentence: the day that line returns a binding, this fake stops refusing and
+    the test that pins the refusal fails, which is exactly the reminder that wants leaving.
+  */
+  async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
+    const material = materialInput(request.prepareJobId);
+    if ("refused" in material) {
+      return await Promise.resolve({
+        ok: false,
+        code: MATERIAL_INPUT_PENDING_CODE,
+        refused: material.refused,
+      });
+    }
+    throw new Error("the material binds now: this fake has to post a session");
+  }
+
+  async readSession(): Promise<never> {
+    throw new Error("a launch never reads a session back");
+  }
+}
+
+/** One cookbook recipe, as the hub's policy document holds one and the prompt carries it. */
+const RECIPES: Record<string, Recipe> = {
+  "code-health": {
+    id: "code-health",
+    version: 3,
+    title: "Code health",
+    body: "Look for the thing that keeps going wrong.",
+  },
+};
+
 let harness: TestStore;
 let fleet: Fleet;
+let code: Code;
+let cookbook: Record<string, Recipe>;
 let doors: readonly Door[];
 
-const ctx = { principal: { id: "operator" } } as unknown as GuestCtx;
+let minted = 0;
+const ctx = {
+  principal: { id: "operator" },
+  newId: () => `id${String((minted += 1))}`,
+} as unknown as GuestCtx;
 
 async function dispatch(name: string, args: unknown): Promise<Record<string, unknown>> {
   const found = doors.find((entry) => entry.action.name === name);
@@ -171,9 +260,22 @@ beforeEach(async () => {
     selector: "omp/s1", host: MACHINE, harness: "omp", source_id: "s1", title: "yesterday",
     content_digest: "d1", snapshot_id: "snap-1", seen_at: stamp(NOW - 2 * HOUR),
   });
+  code = new Code();
+  cookbook = { ...RECIPES };
   const deps: LaunchDeps = {
     coordinator: coordinator(store, () => store.now(), 16),
     jobs: () => fleet,
+    engine: () => code,
+    cookbook: async () => await Promise.resolve(cookbook),
+    plan: () => ({
+      metered: {},
+      limits: {
+        timeoutMs: 3_600_000,
+        memoryBytes: 1024 * 1024 * 1024,
+        processes: 64,
+        outputBytes: 64 * 1024 * 1024,
+      },
+    }),
     now: () => store.now(),
   };
   doors = launchDoors(store, deps);
@@ -183,23 +285,28 @@ afterEach(() => {
   harness.close();
 });
 
-test("the roster is a launch and a stop, and neither is governed at a node that is gone", () => {
-  // The preview went with Babel's own inference policy: what a run costs is a fact about a
-  // composition, and a composition is Code's to make.
-  expect(doors.map((entry) => entry.action.name)).toEqual([ACTIONS.launch, ACTIONS.stop]);
-  const [launch, stop] = doors as readonly Door[];
+test("the roster is profiles, launch and stop, and none of them is governed at a node that is gone", () => {
+  expect(doors.map((entry) => entry.action.name)).toEqual([
+    ACTIONS.profiles,
+    ACTIONS.launch,
+    ACTIONS.stop,
+  ]);
+  const [profiles, launch, stop] = doors as readonly Door[];
 
-  // A launch starts nothing, so it asks what a reading door asks and names no node: the
-  // governed `machines:run` requirement comes back with Code's operation (#279). It keeps the
-  // one delegate every door a cycle follows keeps, so the cycle behind the press can still
-  // read a job back and settle it.
+  // Reading Code's saved profiles is a read of containers and nothing else.
+  expect(profiles?.action.caps).toEqual(["containers:read"]);
+  expect(profiles?.action.requirements).toBeUndefined();
+
+  // A launch posts Babel's OWN `prepare` job and asks Code to post the session, so it keeps
+  // the delegates that posting needs — reading the job back, and the locations the sealed
+  // leases are cut from — and names no governed node, because the operations a requirement
+  // would name (`explore`, `evaluate`) are declared by nobody.
   expect(launch?.action.caps).toEqual(["containers:read"]);
   expect(launch?.action.requirements).toBeUndefined();
-  expect(launch?.action.delegates).toEqual(["jobs:read"]);
+  expect(launch?.action.delegates).toEqual(["jobs:read", "locations:read", "locations:write"]);
 
   // A stop closes this plugin's own rows and reaches a job through its OWN ceiling: a delegate
-  // rather than a cap the caller must hold at a node no installation declares any more. The
-  // hub still checks consent at the effect, and a cancel it refuses is reported by name.
+  // rather than a cap the caller must hold at a node no installation declares any more.
   expect(stop?.action.caps).toEqual(["containers:write"]);
   expect(stop?.action.requirements).toBeUndefined();
   expect(stop?.action.delegates).toEqual(["jobs:cancel"]);
@@ -213,8 +320,8 @@ test("no door requires a node at an operation no installation declares", () => {
     `job-service.ts` refuses an operation the installation does not declare). `machines:run` at
     `atyrode.babel.explore` was exactly that, and this bundle stopped declaring the operation
     — so every model preset was refused "explicit version-bound consent required" at a node
-    that cannot exist, and `engine_pending` was unreachable. A refusal the caller cannot reach
-    is not a refusal, so neither door may name a node while none is declared.
+    that cannot exist, and the door's own refusal was unreachable. A refusal the caller cannot
+    reach is not a refusal, so no door may name a node while none is declared.
   */
   for (const entry of doors) {
     expect({ door: entry.action.name, requirements: entry.action.requirements }).toEqual({
@@ -228,26 +335,104 @@ test("no door requires a node at an operation no installation declares", () => {
   expect(declared).not.toContain(OPERATIONS.evaluate);
 });
 
-test("every preset answers engine_pending, naming manifold#575 and code#170, and posts nothing", async () => {
-  /*
-    THE ONE THING THIS DOOR DOES. The refusal has to carry both issues because they are what an
-    operator schedules against: manifold#575 is the missing in-process door call and code#170 is
-    the door Babel will call. A refusal that said only "not available" would send him looking.
-  */
-  for (const preset of Object.keys(PRESET_OPERATIONS) as (keyof typeof PRESET_OPERATIONS)[]) {
-    const answer = await start({ preset, sinceDays: 1, draws: 1, minutes: 5 });
-    const refused = String(answer["refused"]);
-    expect(refused).toStartWith("engine_pending:");
-    expect(refused).toContain("Babel runs are Code sessions");
-    expect(refused).toContain("Code's runSession door is not yet available");
-    expect(refused).toContain("atyrode/manifold#575");
-    expect(refused).toContain("atyrode/code#170");
-  }
-  // Nothing was posted, nothing was described, and no run row was invented for a job that does
-  // not exist: a row for a run nobody started is a row an operator waits on for ever.
+test("the profiles door answers Code's saved list, and Code's silence as the sentence it refused with", async () => {
+  const listed = await dispatch(ACTIONS.profiles, {});
+  expect(listed["unavailable"]).toBe("");
+  expect(listed["profiles"]).toEqual([
+    {
+      containerId: "ctr_workbench",
+      revision: 7,
+      model: "anthropic/claude-opus-4-1",
+      thinking: "high",
+      lastMachineId: MACHINE,
+    },
+  ]);
+
+  // BOTH HALVES ARE ANSWERS. An empty list with no word beside it reads as "you have saved
+  // none" when what happened is that Code could not be asked at all.
+  code.unavailable = "atyrode.babel -> atyrode.code";
+  const silent = await dispatch(ACTIONS.profiles, {});
+  expect(silent["profiles"]).toEqual([]);
+  expect(String(silent["unavailable"])).toStartWith("engine_unavailable:");
+});
+
+test("a model preset naming no Code profile is refused by name, and nothing is posted", async () => {
+  const answer = await start({ preset: "read-whats-new", sinceDays: 1 });
+  expect(String(answer["refused"])).toStartWith("profile_required:");
   expect(fleet.executed).toEqual([]);
-  expect(fleet.described).toBe(0);
   expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+});
+
+test("a hub holding no cookbook recipe refuses an explore rather than posting one with no method", async () => {
+  cookbook = {};
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+  expect(answer["refused"]).toBe(
+    "no cookbook recipe is installed on this hub, so an explore has no method to run",
+  );
+  expect(fleet.executed).toEqual([]);
+});
+
+test("an explore seals its material, then answers material_input_pending and leaves the preparation behind", async () => {
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  /*
+    THE REFUSAL IS THE FIFTH STEP, and it names the two lines that move when Manifold can bind
+    one job's sealed output into another plugin's job. Everything before it happened.
+  */
+  const refused = String(answer["refused"]);
+  expect(refused).toStartWith(`${MATERIAL_INPUT_PENDING_CODE}:`);
+  expect(refused).toContain('exports: ["material"]');
+  expect(refused).toContain("server/engine/session.ts");
+
+  // THE MATERIAL IS REAL WORK, POSTED: one `atyrode.babel.prepare` job with TWO sealed leases,
+  // the ordinary outputs and the material a session will read.
+  expect(fleet.executed).toHaveLength(1);
+  const sealed = fleet.executed[0]!;
+  expect(sealed.operationId).toBe(OPERATIONS.prepare);
+  expect(sealed.outputs.map((output) => output.name)).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
+  expect(JSON.parse(String(sealed.input["input"]))["selectors"]).toEqual(["omp/s1"]);
+
+  // …and its run row stands, because the catalog work happened and a later cycle ingests it.
+  // A session that was never posted leaves NO row of its own: a run an operator waits on for
+  // ever is exactly the ghost this ordering exists to avoid.
+  const runs = await harness.db.query<{ id: string; kind: string; container_id: string | null }>(
+    `SELECT id, kind, container_id FROM runs ORDER BY id`,
+  );
+  expect(runs).toHaveLength(1);
+  expect(runs[0]?.kind).toBe(OPERATIONS.prepare);
+  expect(runs[0]?.container_id).toBeNull();
+});
+
+test("a drawn preset answers draw_pending, names where the lane returns, and posts nothing", async () => {
+  for (const preset of ["review-backlog", "file-and-tidy"] as const) {
+    const answer = await start({ preset, draws: 1 });
+    expect(answer["refused"]).toBe(DRAW_PENDING);
+    expect(String(answer["refused"])).toContain("#268");
+  }
+  expect(fleet.executed).toEqual([]);
+  expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+});
+
+test("keep-going posts Babel's own beat, which reaches no model and needs no profile", async () => {
+  const answer = await start({ preset: "keep-going", minutes: 30 });
+
+  expect(answer["kind"]).toBe("conductor");
+  expect(fleet.executed).toHaveLength(1);
+  const beat = fleet.executed[0]!;
+  expect(beat.operationId).toBe(OPERATIONS.scan);
+  // The operator's own bound on the beat, under the operation's ceiling.
+  expect(beat.limits?.timeoutMs).toBe(30 * 60_000);
+  const runs = await harness.db.query<{ id: string; kind: string }>(`SELECT id, kind FROM runs`);
+  expect(runs).toHaveLength(1);
+  expect(runs[0]?.kind).toBe(OPERATIONS.scan);
 });
 
 test("a request authorized at one node and aimed at another is refused as itself", async () => {

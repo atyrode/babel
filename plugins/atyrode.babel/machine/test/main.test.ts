@@ -122,9 +122,31 @@ test("an input document that is not readable JSON fails as a run, with a receipt
 });
 
 test("argv is read the same way under bun and as a compiled binary", () => {
-  const expected: Invocation = { operation: "scan", inputPath: "/in.json", outputDir: "/out" };
+  const expected: Invocation = {
+    operation: "scan",
+    inputPath: "/in.json",
+    outputDir: "/out",
+    materialDir: "",
+  };
   expect(parseArgv(["scan", "--input", "/in.json", "--out", "/out"])).toEqual(expected);
   expect(parseArgv(["--input", "/in.json", "scan", "--out", "/out"])).toEqual(expected);
+});
+
+test("the material lease is argv's, and only prepare's manifest declares one", () => {
+  // `prepare` seals a second output the session's job binds read-only at `/inputs/material`
+  // (#279); an invocation that names no `--material` prepares a selection and seals nothing,
+  // which is what a hand-run on a machine does.
+  expect(
+    parseArgv(["prepare", "--input", "/in.json", "--out", "/out", "--material", "/mat"]),
+  ).toEqual({
+    operation: "prepare",
+    inputPath: "/in.json",
+    outputDir: "/out",
+    materialDir: "/mat",
+  });
+  expect(() => parseArgv(["prepare", "--input", "/in.json", "--out", "/o", "--material"])).toThrow(
+    "--material needs a path",
+  );
 });
 
 test("argv that names no operation is a usage failure, not a default", () => {

@@ -14,9 +14,15 @@
     "locations:read",
     "locations:write"
   ],
+  "dependencies": {
+    "atyrode.code": {
+      "type": "optional",
+      "reason": "a run that reaches a model is a Code session, posted through code.runSession; without Code the catalog and every reading panel still work and that lane refuses engine_unavailable"
+    }
+  },
   "dataVersion": {
     "major": 1,
-    "minor": 4
+    "minor": 5
   },
   "database": {
     "maxBytes": 1073741824
@@ -56,24 +62,24 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "5bcd9d0eabf2b818f781ac9b952c8445c3903fc4d80f4725a3ad1e85f79b773a",
+        "sha256": "fc0c4d8ed42a117498602731c4f94f9a2ef01ed5fd647987374430d629b7cce6",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "5bcd9d0eabf2b818f781ac9b952c8445c3903fc4d80f4725a3ad1e85f79b773a",
+        "entrySha256": "fc0c4d8ed42a117498602731c4f94f9a2ef01ed5fd647987374430d629b7cce6",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "5bcd9d0eabf2b818f781ac9b952c8445c3903fc4d80f4725a3ad1e85f79b773a",
+        "sha256": "fc0c4d8ed42a117498602731c4f94f9a2ef01ed5fd647987374430d629b7cce6",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "5bcd9d0eabf2b818f781ac9b952c8445c3903fc4d80f4725a3ad1e85f79b773a",
+        "entrySha256": "fc0c4d8ed42a117498602731c4f94f9a2ef01ed5fd647987374430d629b7cce6",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -323,6 +329,12 @@
           },
           {
             "literal": "/outputs/outputs"
+          },
+          {
+            "literal": "--material"
+          },
+          {
+            "literal": "/outputs/material"
           }
         ],
         "input": {
@@ -363,7 +375,8 @@
           }
         ],
         "outputs": [
-          "outputs"
+          "outputs",
+          "material"
         ],
         "network": "none",
         "limits": {

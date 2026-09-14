@@ -5,6 +5,7 @@ import {
   EVENTS,
   FEED_PLUGIN_ID,
   INPUT_FIELD,
+  MATERIAL_OUTPUT,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
@@ -14,6 +15,7 @@ import {
   RUNTIME_TOOLS,
   WATCH_PLUGIN_ID,
 } from "../atyrode.babel/contract.ts";
+import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { ADAPTERS } from "../atyrode.babel/machine/adapters/index.ts";
 import { STORE_DATA_VERSION } from "../atyrode.babel/store/schema.ts";
 import { plugin } from "../atyrode.babel/server.ts";
@@ -160,9 +162,15 @@ describe("the machine half is declared as the machine half is built", () => {
     // The VERB is the operation's short word, never its declared id: the hub needs a namespaced
     // id to tell two plugins' operations apart, and the binary behind the id belongs to one
     // plugin and takes `scan`.
+    //
+    // `prepare` alone takes a SECOND lease (#279). The material a Code session reads is a
+    // separate sealed output, because a session binds one named output of one job and Babel's
+    // ordinary `outputs` lease carries the receipt and the catalog rows the hub ingests — a
+    // model handed that directory would be reading Babel's bookkeeping as if it were evidence.
     for (const [word, operation] of Object.entries(OPERATIONS)) {
       if (!declared.includes(operation)) continue;
       const op = machine.operations[operation]!;
+      const material = operation === OPERATIONS.prepare;
       expect(op.argv).toEqual([
         { literal: "/job/artifact" },
         { literal: word },
@@ -170,20 +178,54 @@ describe("the machine half is declared as the machine half is built", () => {
         { literal: `/inputs/${INPUT_FIELD}` },
         { literal: "--out" },
         { literal: `/outputs/${OUTPUT_BINDING}` },
+        ...(material
+          ? [{ literal: "--material" }, { literal: `/outputs/${MATERIAL_OUTPUT}` }]
+          : []),
       ]);
-      // The document is one required string, and what is FIXED across the five operations is
-      // not its bound but the record's: the two that reach a model shrink the document to make
-      // room for the session's three fields (#279), and the hub admits the whole record.
+      // The document is one required string, and what is FIXED across the operations is not its
+      // bound but the record's: the hub admits the whole record.
       expect(op.input[INPUT_FIELD]?.type).toBe("string");
       expect(op.input[INPUT_FIELD]?.required).toBe(true);
       expect(inputBytes(op)).toBeLessThanOrEqual(MAX_INPUT_BYTES);
       expect(op.inputFiles?.[INPUT_FIELD]).toEqual({ input: INPUT_FIELD });
-      expect(op.outputs).toEqual([OUTPUT_BINDING]);
+      expect(op.outputs).toEqual(material ? [OUTPUT_BINDING, MATERIAL_OUTPUT] : [OUTPUT_BINDING]);
       expect(op.executable).toEqual({ runtimeTool: "bun" });
       expect(op.stdin).toBe(false);
       // The lease is cut from a location the operation may write, or the hub refuses the launch.
       expect(op.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
     }
+  });
+
+  /*
+    THE TWO DECLARATIONS A CODE SESSION RESTS ON (#279), and the one that is not there yet.
+
+    The dependency is OPTIONAL rather than required, and the distinction is load-bearing:
+    `required` refuses ASSEMBLY when Code is missing, and Babel's baseline — the catalog, the
+    archive, the store, every reading panel and the operator's own acts — works perfectly on a
+    hub that has no Code at all. Only the lane that reaches a model needs it, and that lane
+    refuses itself by name (`engine_unavailable`, rendered as the sentence under Watch's Start
+    section) rather than taking the whole install down with it. The edge is still DECLARED,
+    which is what `ctx.actions.call` requires: an undeclared one is refused
+    `undeclared_dependency` at the host.
+
+    `prepare` seals the material as a second output; binding that output into ANOTHER plugin's
+    job additionally needs `exports: ["material"]` beside it, and `MachineOperationSchema` has
+    no such key at this pin. That is the whole of `MATERIAL_INPUT_PENDING`, and this test pins
+    the half that exists so the day the pin moves the other half is a one-line diff here too.
+  */
+  test("the baseline declares Code, optionally, and prepare seals the material as its own output", () => {
+    expect(babel.dependencies).toEqual({
+      [CODE_PLUGIN_ID]: {
+        type: "optional",
+        reason: expect.stringContaining("runSession") as unknown as string,
+      },
+    });
+    const prepare = machine.operations[OPERATIONS.prepare]!;
+    expect(prepare.outputs).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
+    // The material's lease is cut from the same managed location the ordinary one is: a second
+    // anchor would be a second thing an operator has to arrange per machine.
+    expect(prepare.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
+    expect(Object.hasOwn(prepare, "exports")).toBe(false);
   });
 
   test("the roots the adapters read are the roots the job mounts", () => {

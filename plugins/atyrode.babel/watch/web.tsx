@@ -10,8 +10,10 @@ import {
   DrainStartResultSchema,
   DrainStatusResultSchema,
   DrainStopResultSchema,
+  LaunchResultSchema,
   PANELS,
   PolicyResultSchema,
+  ProfilesResultSchema,
   RunsQuerySchema,
   RunsResultSchema,
   TopicsResultSchema,
@@ -19,15 +21,20 @@ import {
 } from "../contract.ts";
 import {
   INITIAL_DRAIN,
+  INITIAL_LAUNCH,
   act,
+  chosenProfile,
   drainStartRequest,
   drainStopInput,
+  launchRequest,
   read,
   sessionChoice,
   stopInput,
   type DrainDraft,
   type DrainStatus,
+  type LaunchDraft,
   type PolicyResult,
+  type ProfilesResult,
   type RunRow,
   type RunsResult,
   type TopicsResult,
@@ -70,11 +77,20 @@ const RUNS_PAGE = 25;
 const DRAINS_POLL_MS = 5_000;
 /** How many drains the panel lists: the running one, and enough history to compare against. */
 const DRAINS_LISTED = 6;
+/**
+ * How often the saved Code profiles are re-read. It is the RETURN PATH of the generator link:
+ * the operator leaves for Code, changes the model or the account on a workspace and comes
+ * back, and nothing tells this panel he did — so the list is re-read on the machines' own
+ * half-minute, which is short enough that a revision he just bumped is the one the button
+ * carries and long enough that reading the page does not poll Code.
+ */
+const PROFILES_POLL_MS = 30_000;
 
 const NO_RUNS: RunsResult = { runs: [], total: 0 };
 const NO_DRAINS: readonly DrainStatus[] = [];
 const NO_TOPICS: TopicsResult = { topics: [], proposed: [], unfiled: 0 };
 const NO_MACHINES: readonly MachineSummary[] = [];
+const NO_PROFILES: ProfilesResult = { profiles: [], unavailable: "" };
 
 /** A denial's sentence, or the error's, as the note under a section. */
 function noteOf(reason: unknown): string {
@@ -82,10 +98,13 @@ function noteOf(reason: unknown): string {
 }
 
 export function Watch({ host }: PanelProps) {
+  const [draft, setDraft] = useState<LaunchDraft>(INITIAL_LAUNCH);
   const [drainDraft, setDrainDraft] = useState<DrainDraft>(INITIAL_DRAIN);
   const [limit, setLimit] = useState(RUNS_PAGE);
   const [now, setNow] = useState(() => Date.now());
   const [stopping, setStopping] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [startNote, setStartNote] = useState("");
   const [draining, setDraining] = useState(false);
   const [drainStopping, setDrainStopping] = useState("");
   const [drainNote, setDrainNote] = useState("");
@@ -99,6 +118,7 @@ export function Watch({ host }: PanelProps) {
   const [runsNote, setRunsNote] = useState("");
   const [stopNote, setStopNote] = useState("");
   const [policyNote, setPolicyNote] = useState("");
+  const [profilesNote, setProfilesNote] = useState("");
 
   const runs = usePolledResource<RunsResult>(
     () => read(host, ACTIONS.runs, RunsQuerySchema.parse({ limit }), RunsResultSchema),
@@ -133,6 +153,24 @@ export function Watch({ host }: PanelProps) {
     key: "atyrode.babel.machines",
     initial: NO_MACHINES,
   });
+
+  /*
+    THE SAVED CODE PROFILES, and the sentence saying Code could not be asked. Both halves are
+    the door's answer and both are rendered: the panel never turns "Code is not installed" into
+    an empty list, which reads as "you have saved none" and sends an operator to the wrong fix.
+    A failed READ (the door itself refusing) is the third case, and it lands the same way —
+    as the sentence under the section, through `unavailable`.
+  */
+  const profiles = usePolledResource<ProfilesResult>(
+    () => read(host, ACTIONS.profiles, {}, ProfilesResultSchema),
+    PROFILES_POLL_MS,
+    {
+      key: "atyrode.babel.profiles",
+      initial: NO_PROFILES,
+      onError: (reason) => setProfilesNote(noteOf(reason)),
+      onSuccess: () => setProfilesNote(""),
+    },
+  );
 
   const drains = usePolledResource<readonly DrainStatus[]>(
     async () =>
@@ -175,6 +213,33 @@ export function Watch({ host }: PanelProps) {
     const timer = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(timer);
   }, [inFlight]);
+
+  /*
+    THE START. The Code profile is resolved out of the list the panel is showing, so what the
+    button carries is the container AND the revision the operator was looking at: a profile
+    that moved between the read and the press is refused `code_stale_preferences` by Code
+    itself, which is what the next poll of `profiles` then explains.
+  */
+  const onStart = useCallback(async () => {
+    setStarting(true);
+    setStartNote("");
+    const outcome = await act(
+      host,
+      ACTIONS.launch,
+      launchRequest(draft, chosenProfile(draft, profiles.value.profiles)),
+      LaunchResultSchema,
+    );
+    setStarting(false);
+    setStartNote(
+      outcome.ok
+        ? `Started ${outcome.value.kind} as ${outcome.value.runId} — Code's job is ${outcome.value.jobId}.`
+        : outcome.message,
+    );
+    if (outcome.ok) {
+      setNow(Date.now());
+      runs.refresh();
+    } else profiles.refresh();
+  }, [draft, host, profiles, runs]);
 
   const onDrainStart = useCallback(async () => {
     if (!drainPick.ok) return;
@@ -253,7 +318,26 @@ export function Watch({ host }: PanelProps) {
 
   return (
     <Stack gap="var(--babel-space-6)" className="plugin-atyrode_babel_watch">
-      <Start />
+      <Start
+        draft={draft}
+        machines={machines.value}
+        topics={topics.value.topics}
+        recipes={policy.value?.recipes ?? []}
+        /*
+          A FAILED READ IS THE SAME SENTENCE AS A REFUSED ONE. `profiles` answers `unavailable`
+          when Code refused; when the DOOR refused, the read threw and the note holds it — and
+          the operator's remedy is the same kind of thing either way, so it is shown in the
+          same place rather than as a second, differently-shaped absence.
+        */
+        profiles={
+          profilesNote === "" ? profiles.value : { profiles: [], unavailable: profilesNote }
+        }
+        starting={starting}
+        note={startNote}
+        onDraft={setDraft}
+        onStart={onStart}
+        onOpen={(uri) => host.navigate(uri)}
+      />
       <Runs
         runs={runs.value.runs}
         total={runs.value.total}

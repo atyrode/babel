@@ -15,7 +15,7 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, OPERATIONS, PRESET_OPERATIONS } from "../contract.ts";
+import { ACTIONS, MATERIAL_INPUT_PENDING_CODE, OPERATIONS, PRESET_OPERATIONS } from "../contract.ts";
 import type {
   JobLaunch,
   JobRef,
@@ -33,6 +33,30 @@ import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
 import { drainDoors } from "./drain.ts";
 import { launchMachinery, type LaunchIdentity, type Started } from "./launch.ts";
+import { materialInput, type CodeEngine, type EngineAnswer } from "../server/engine/session.ts";
+
+/**
+ * CODE, as a drain reaches it. `runSession` answers the real {@link materialInput} refusal,
+ * because that is the one line that moves when Manifold's job-inputs primitive lands and a
+ * fake sentence here would keep passing the day it does.
+ */
+const CODE: CodeEngine = {
+  profiles: async () => await Promise.resolve({ ok: true, value: [] }),
+  runSession: async (request) => {
+    const material = materialInput(request.prepareJobId);
+    if ("refused" in material) {
+      return await Promise.resolve({
+        ok: false,
+        code: MATERIAL_INPUT_PENDING_CODE,
+        refused: material.refused,
+      } as EngineAnswer<never>);
+    }
+    throw new Error("the material binds now: this fake has to post a session");
+  },
+  readSession: async () => {
+    throw new Error("a drain never reads a session back");
+  },
+};
 
 const NOW = Date.UTC(2026, 8, 14, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -238,8 +262,12 @@ function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch 
   const post = async (
     identity: LaunchIdentity,
     _slice: JobsSlice,
-    input: { readonly machineId: string; readonly preset: keyof typeof PRESET_OPERATIONS },
+    ..._rest: unknown[]
   ): Promise<Started> => {
+    const input = _rest.find(
+      (entry): entry is { machineId: string; preset: keyof typeof PRESET_OPERATIONS } =>
+        typeof entry === "object" && entry !== null && "preset" in entry,
+    )!;
     const operationId = PRESET_OPERATIONS[input.preset];
     try {
       await jobs().execute({
@@ -309,6 +337,7 @@ beforeEach(async () => {
     coordinator: coordinated,
     launch: posting(store, () => fleet),
     jobs: fleet,
+    engine: CODE,
     plan: () => PLAN,
     now: () => store.now(),
   };
@@ -865,36 +894,48 @@ test("disabling the policy mid-drain ends it as an operator's act rather than as
   expect((await readDrain(harness.store, drainId))?.state).toBe("stopped");
 });
 
-test("over the real launch path a start answers engine_pending and leaves a failed drain", async () => {
+test("over the real launch path a start answers material_input_pending and leaves a failed drain", async () => {
   /*
     THE DRAIN AND THE BUTTON REFUSE THE SAME SENTENCE (#279). A drain posts through
     `launchMachinery`'s own `startExplore`, which is exactly why there is one refusal and not
     two: whatever the operator's button answers, the fan answers. The controller above is
     exercised against a path that posts, because keeping a fan filled is not a claim about who
     posts; this is the claim about who posts.
+
+    The drain names a CODE PROFILE in its knobs, so the refusal reached is the last one in the
+    sequence rather than `profile_required` — which is the point: everything up to binding the
+    material happens, and the one thing that cannot is named.
   */
   deps = {
     ...deps,
     launch: launchMachinery(harness.store, {
       coordinator: deps.coordinator,
       jobs: () => fleet,
+      engine: () => deps.engine,
+      cookbook: async () =>
+        await Promise.resolve({
+          "code-health": { id: "code-health", version: 3, body: "look for what keeps breaking" },
+        }),
+      plan: () => PLAN,
       now: () => harness.store.now(),
     }),
   };
 
-  const answer = await start({ concurrent: 3 });
+  const answer = await start({
+    concurrent: 3,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
 
   const refused = String(answer["refused"]);
   expect(refused).toMatch(/this drain launched nothing/);
-  expect(refused).toContain("engine_pending:");
-  expect(refused).toContain("atyrode/manifold#575");
-  expect(refused).toContain("atyrode/code#170");
-  expect(fleet.executed).toEqual([]);
+  expect(refused).toContain(`${MATERIAL_INPUT_PENDING_CODE}:`);
+  expect(refused).toContain('exports: ["material"]');
+  expect(refused).toContain("server/engine/session.ts");
   // The row is written before the first post and closed when none lands, so what survives says
   // why rather than sitting at `running` holding nothing.
   const rows = await harness.db.query<{ id: string; state: string; reason: string }>(
     `SELECT id, state, reason FROM drains`,
   );
   expect(rows[0]).toMatchObject({ state: "failed" });
-  expect(rows[0]?.reason).toContain("engine_pending");
+  expect(rows[0]?.reason).toContain(MATERIAL_INPUT_PENDING_CODE);
 });

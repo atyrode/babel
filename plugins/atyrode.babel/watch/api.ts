@@ -1,15 +1,22 @@
 import type { HostServices } from "@manifold/plugin";
+import { formatManifoldUri } from "@manifold/protocol";
+import { GENERATOR_PLUGIN_ID, LAUNCHER_PANEL } from "@atyrode/manifold-code";
 import { z } from "zod";
 import {
   DRAIN_CONCURRENT_MAX,
   DrainStartRequestSchema,
   DrainStatusSchema,
   DrainStopInputSchema,
+  LaunchRequestSchema,
   MODEL_REFERENCE,
   OPERATIONS,
+  PRESETS,
   PRESET_OPERATIONS,
+  PRESET_START,
   PolicyResultSchema,
   PresetSchema,
+  ProfileRowSchema,
+  ProfilesResultSchema,
   RecipeRowSchema,
   RUN_STAGES,
   RunProgressSchema,
@@ -26,6 +33,9 @@ import {
   type SessionChoice,
 } from "../contract.ts";
 
+/** One of the five requests, as the contract spells them. */
+export type Preset = z.infer<typeof PresetSchema>;
+
 /** The wire rows this panel renders; the contract spells the schemas and not the types. */
 export type RunRow = z.infer<typeof RunRowSchema>;
 export type RunsResult = z.infer<typeof RunsResultSchema>;
@@ -33,7 +43,9 @@ export type TopicRow = z.infer<typeof TopicRowSchema>;
 export type TopicsResult = z.infer<typeof TopicsResultSchema>;
 export type RecipeRow = z.infer<typeof RecipeRowSchema>;
 export type PolicyResult = z.infer<typeof PolicyResultSchema>;
-export type Preset = z.infer<typeof PresetSchema>;
+export type ProfileRow = z.infer<typeof ProfileRowSchema>;
+export type ProfilesResult = z.infer<typeof ProfilesResultSchema>;
+
 
 /*
   WHAT WATCH ASKS THE HUB, AND IN WHAT WORDS.
@@ -92,11 +104,181 @@ export async function act<T>(
 // ---------------------------------------------------------------------------- the presets
 
 /**
- * THE THREE REQUESTS A DRAIN MAY FAN OUT are {@link DRAIN_CARDS} below; there is no launch form
- * any more (#279), so there are no launch cards either. A run that reaches a model is a Code
- * session, composed in Code and posted through Code's own door, and Watch's Start section says
- * exactly that (`watch/start.tsx`).
+ * THE KNOB A PRESET OWNS. One apiece, because a form offering every dial is the CLI with
+ * labels on it — the flags-with-labels form this panel replaces, where five dials were offered
+ * to an operator who had to know which three the chosen kind would refuse.
  */
+export type Knob = "days" | "minutes" | "topic";
+
+export interface PresetCard {
+  readonly title: string;
+  /** One line: what asking for this actually does. */
+  readonly does: string;
+  readonly knob: Knob;
+  readonly knobLabel: string;
+  /** Whether the cookbook selection applies; an empty selection runs the enabled default set. */
+  readonly takesRecipes: boolean;
+}
+
+/**
+ * THE REQUESTS THE START SECTION OFFERS: the ones a press actually posts.
+ *
+ * Three, not five. `review-backlog` and `file-and-tidy` are DRAWN — the coordinator picks the
+ * record, claims it under a fence and the conductor dispatches it with a blinded projection —
+ * and that dispatch is not on this build (#268), so `launch` answers `draw_pending` for both.
+ * A card whose button always refused would be an interface asking the operator to discover the
+ * refusal by pressing it, so the section states the fact once in prose and offers no card.
+ */
+export const LAUNCH_PRESETS: readonly Preset[] = PRESETS.filter(
+  (preset) => PRESET_START[preset] !== "draw",
+);
+
+export const LAUNCH_CARDS: Record<string, PresetCard> = {
+  "read-whats-new": {
+    title: "Read what's new",
+    does: "Reads the sessions since you last looked and writes up what it found.",
+    knob: "days",
+    knobLabel: "Days back",
+    takesRecipes: true,
+  },
+  "explore-topic": {
+    title: "Explore a topic",
+    does: "Runs the cookbook over one topic's own sessions, and files what it writes under it.",
+    knob: "topic",
+    knobLabel: "Topic",
+    takesRecipes: true,
+  },
+  "keep-going": {
+    title: "Keep going",
+    does: "Lets Babel run its own loop under the ceilings until the time is up. It reaches no model.",
+    knob: "minutes",
+    knobLabel: "Minutes",
+    takesRecipes: false,
+  },
+};
+
+/** The knob's bounds, read off the contract's own schema so a spinner cannot offer a refusal. */
+export const KNOB_BOUNDS: Record<Knob, { readonly min: number; readonly max: number; readonly step: number }> = {
+  days: { min: 1, max: 365, step: 1 },
+  minutes: { min: 5, max: 24 * 60, step: 5 },
+  topic: { min: 0, max: 0, step: 0 },
+};
+
+/**
+ * WHAT THE START FORM HOLDS (#279).
+ *
+ * There is no model, no thinking level and no account among these fields, and their absence is
+ * the whole shape of the change: those three belong to a CODE PROFILE, which is a configured
+ * Code workspace. The operator picks a saved one — `containerId` — or opens Code's generator
+ * and parametrizes one there; Babel carries the container and the revision it was shown and
+ * chooses none of the three.
+ */
+export interface LaunchDraft {
+  readonly preset: Preset;
+  readonly machineId: string;
+  /** The Code workspace whose profile answers this run; empty until one is picked. */
+  readonly containerId: string;
+  /** The topic for `explore-topic`; empty until one is picked. */
+  readonly entityId: string;
+  readonly sinceDays: number;
+  readonly minutes: number;
+  readonly recipes: readonly string[];
+}
+
+export const INITIAL_LAUNCH: LaunchDraft = {
+  preset: "read-whats-new",
+  machineId: "",
+  containerId: "",
+  entityId: "",
+  sinceDays: 1,
+  minutes: 60,
+  recipes: [],
+};
+
+/**
+ * The profile the draft names, out of what the `profiles` door answered — or null, which is
+ * every state before one is chosen and the state after Code's list moved under a choice that
+ * is no longer in it. The second one matters: pressing with a stale container is what
+ * `code_stale_preferences` refuses, and the panel would rather say it before the press.
+ */
+export function chosenProfile(
+  draft: LaunchDraft,
+  profiles: readonly ProfileRow[],
+): ProfileRow | null {
+  return profiles.find((profile) => profile.containerId === draft.containerId) ?? null;
+}
+
+/**
+ * THE PANEL CODE PARAMETRIZES A RUN IN, named from Code's own published constants rather than
+ * spelled here: a string of ours would be the copy nobody checked the day Code moved it.
+ */
+export const GENERATOR_PANEL = `${GENERATOR_PLUGIN_ID}.${LAUNCHER_PANEL}`;
+
+/**
+ * WHERE THAT PANEL IS: the workspace itself, which is what a Code profile IS.
+ *
+ * The generator is seated in the container, so the address that reaches it is the container's
+ * own — a plugin may only `openPanel` its OWN panels, and arranging another plugin's presence
+ * is the principal's through the shell. The RETURN PATH is not a callback either: the operator
+ * changes the model, the thinking level or the account in Code and comes back, and this panel
+ * re-reads `profiles` — the revision it then shows is the one the launch carries.
+ */
+export function generatorUri(containerId: string): string {
+  return formatManifoldUri({ kind: "container", containerId });
+}
+
+/**
+ * The draft as the `launch` door takes it: the contract's own shape, with exactly the knobs the
+ * chosen preset owns, plus the OPERATION NODE the door's `machines:run` is discharged at.
+ *
+ * A preset carries no flag it cannot use — `LaunchInputSchema` is strict, so `minutes` on a
+ * `read-whats-new` would be refused whole — and the PROFILE travels only for a preset that
+ * reaches a model: `keep-going` is a scan of Babel's own, and a profile on it would be a field
+ * nothing reads.
+ */
+export function launchRequest(
+  draft: LaunchDraft,
+  profile: ProfileRow | null,
+): z.infer<typeof LaunchRequestSchema> {
+  const card = LAUNCH_CARDS[draft.preset];
+  const reaches = PRESET_START[draft.preset] === "explore";
+  return LaunchRequestSchema.parse({
+    machineId: draft.machineId,
+    preset: draft.preset,
+    recipes: card?.takesRecipes === true ? [...draft.recipes] : [],
+    ...(card?.knob === "topic" && draft.entityId !== "" ? { entityId: draft.entityId } : {}),
+    ...(card?.knob === "days" ? { sinceDays: draft.sinceDays } : {}),
+    ...(card?.knob === "minutes" ? { minutes: draft.minutes } : {}),
+    ...(reaches && profile !== null
+      ? { profile: { containerId: profile.containerId, expectedRevision: profile.revision } }
+      : {}),
+    operation: {
+      kind: "operation",
+      machineId: draft.machineId,
+      operationId: PRESET_OPERATIONS[draft.preset],
+    },
+  });
+}
+
+/**
+ * Why a launch cannot be started yet, in one clause and in the order an operator would fix it,
+ * or empty when it can. The profile clause is the panel's half of `startExplore`'s own
+ * `profile_required`: a launch posted without one is refused by name, and the operator would
+ * read that refusal after the press rather than before it.
+ */
+export function launchUnready(draft: LaunchDraft, profile: ProfileRow | null): string {
+  if (draft.machineId === "") return "Pick a machine to run on.";
+  if (LAUNCH_CARDS[draft.preset]?.knob === "topic" && draft.entityId === "") {
+    return "Pick a topic to explore.";
+  }
+  if (PRESET_START[draft.preset] !== "explore") return "";
+  if (profile === null) {
+    return draft.containerId === ""
+      ? "Pick the Code profile this run is posted on — the model, the thinking level and the account are its."
+      : `Code no longer lists ${draft.containerId}; pick one of the profiles above.`;
+  }
+  return "";
+}
 
 /**
  * WHO A DRAIN SPENDS, as its form holds it (#258, #267).
@@ -379,9 +561,9 @@ export type DrainStatus = z.infer<typeof DrainStatusSchema>;
  * What each drain preset is, in the operator's words, and what its one knob is: the days a
  * `read-whats-new` reads back over, the topic an `explore-topic` runs on, the minutes a
  * `keep-going` beat is given. It also says what a drain of it SPENDS, which is what the form
- * refuses a token target on.
+ * refuses a token target on. The {@link Knob} vocabulary is the launch form's own: the two
+ * forms offer the same three requests, so two words for one dial would be two answers to it.
  */
-export type Knob = "days" | "minutes" | "topic";
 
 export interface DrainCard {
   readonly title: string;

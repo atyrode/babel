@@ -251,6 +251,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         ...(input.entityId === undefined ? {} : { entityId: input.entityId }),
         ...(input.minutes === undefined ? {} : { minutes: input.minutes }),
         ...(input.agentSessions === undefined ? {} : { agentSessions: input.agentSessions }),
+        ...(input.profile === undefined ? {} : { profile: input.profile }),
       };
       const drainId = newId("drn");
       await insertDrain(store, {
@@ -285,7 +286,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       for (let slot = 0; slot < input.concurrent; slot += 1) {
         const identity = drainIdentity(row, slot);
         const started = SPENDING.includes(input.preset)
-          ? await deps.launch.startExplore(identity, deps.jobs, request, plan)
+          ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, request, plan)
           : await deps.launch.startBeat(identity, deps.jobs, request, plan);
         if ("refused" in started) {
           refused = started.refused;

@@ -6,14 +6,17 @@ import { join } from "node:path";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import {
   BABEL_PLUGIN_ID,
-  ENGINE_PENDING,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
+  MATERIAL_SCHEMA,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   RUN_STAGES,
+  type MaterialIndex,
 } from "../contract.ts";
+import { DRAW_PENDING } from "../doors/launch.ts";
+import type { CodeEngine, EngineAnswer, SessionRead } from "./engine/session.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { BabelStore } from "../store/store.ts";
 import type { Coordinator, Fence } from "../store/coordinator.ts";
@@ -47,14 +50,19 @@ import {
   failed job does not leave a claim open. The fleet is fake because the point of the JobsSlice
   is that the hub half can be driven without one.
 
-  NO CYCLE POSTS A REVIEW ANY MORE (#279), so no test here draws one. A Babel run is a Code
-  session — the operator parametrizes it from a saved Code profile or in Code's generator, and
-  Code's `runSession` door posts it — and until atyrode/manifold#575 and atyrode/code#170 land
-  every posting path answers the one constant `ENGINE_PENDING`. What the loop does with a job
-  that ALREADY EXISTS is untouched, and it is most of this file: the fold, the settlement, the
-  reaper, the beat, the folders, the park, the pulse. The two rows a dispatch used to leave
-  behind are therefore seeded by {@link inFlight} rather than drawn, which is how the ingestion
-  tests in this file have always worked.
+  NO CYCLE DRAWS A REVIEW ANY MORE (#268), so no test here draws one. The engine is Code and
+  this deployment can reach it, but a DRAWN review is picked by the coordinator, claimed under
+  a fence and dispatched with a blinded projection, and that dispatch went with Babel's own
+  launcher in the revert — so every enabled cycle answers the one constant `DRAW_PENDING`.
+  What the loop does with a job that ALREADY EXISTS is untouched, and it is most of this file:
+  the fold, the settlement, the reaper, the beat, the folders, the park, the pulse. The two
+  rows a dispatch used to leave behind are therefore seeded by {@link inFlight} rather than
+  drawn, which is how the ingestion tests in this file have always worked.
+
+  A RUN THAT REACHES A MODEL IS RECONCILED THROUGH CODE, not through `ctx.jobs`: its job is
+  `atyrode.omp`'s and neither `jobs.status` nor `onJobSettled` is Babel's for it. So the fleet
+  never sees such a job at all, and the tests for that lane drive {@link codeEngine} instead —
+  a fake whose `readSession` answers the shapes Code's own published schemas describe.
 */
 
 // ---------------------------------------------------------------------------- a real database
@@ -868,6 +876,94 @@ function outputs(runId: string): Record<string, unknown> {
   };
 }
 
+// ------------------------------------------------------------------- the engine, which is Code
+
+/** Code refused, in the shape `codeEngine` folds every refusal onto. */
+function refusedByCode<T>(code: string, detail: string): EngineAnswer<T> {
+  return { ok: false, code: code as never, refused: `${code}: ${detail}` };
+}
+
+/**
+ * A HUB WITH NO CODE. Every test that predates the Code lane drives one, because every job
+ * those tests wait on is Babel's own and none of them has a container: the engine is never
+ * asked, and a fake that threw would hide a call this loop is not supposed to make.
+ */
+const NO_CODE: CodeEngine = {
+  profiles: async () => await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
+  runSession: async () =>
+    await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
+  readSession: async () => {
+    throw new Error("a run with no container must never be read through Code");
+  },
+};
+
+/** One Code session as `readSession` answers for it: where the job is, and what it yielded. */
+function sessionRead(over: {
+  readonly state: string;
+  readonly finalMessage?: string;
+  readonly exitCode?: number;
+  readonly usage?: SessionRead["session"]["usage"];
+  readonly model?: string;
+}): SessionRead {
+  return {
+    job: {
+      jobId: "job_code_1",
+      machineId: "dev-01",
+      operationId: "atyrode.omp.session",
+      pluginId: "atyrode.omp",
+      state: over.state,
+    },
+    session: {
+      sessionId: "ses_1",
+      sessionPath: "/home/job/.omp/agent/sessions/ses_1.jsonl",
+      model: over.model ?? "anthropic/claude-opus-4-1",
+      finalMessage: over.finalMessage ?? "",
+      usage: over.usage ?? { input: 12_000, output: 900, cacheRead: 400, cacheWrite: 0, cost: 0.31 },
+      exitCode: over.exitCode ?? 0,
+    },
+  };
+}
+
+/** A Code that answers one read, then counts how many times it was asked. */
+function codeAnswering(
+  answer: () => EngineAnswer<SessionRead>,
+): CodeEngine & { readonly asked: { containerId: string; jobId: string }[] } {
+  const asked: { containerId: string; jobId: string }[] = [];
+  return {
+    asked,
+    profiles: async () =>
+      await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
+    runSession: async () =>
+      await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
+    readSession: async (args) => {
+      asked.push(args);
+      return await Promise.resolve(answer());
+    },
+  };
+}
+
+/** The `prepare` run whose sealed material a session read, as the hub ingested its receipt. */
+function materialIndex(file: string, digest: string): MaterialIndex {
+  return {
+    schema: MATERIAL_SCHEMA,
+    preparationId: "prep-1",
+    preparedAt: new Date(clock).toISOString(),
+    machineId: "dev-01",
+    sessions: [
+      {
+        selector: "omp/s1",
+        harness: "omp",
+        sourceId: "s1",
+        captureDigest: "c".repeat(64),
+        sourceDigest: digest,
+        file,
+        records: 12,
+        bytes: 4096,
+      },
+    ],
+  };
+}
+
 // ---------------------------------------------------------------------------- the tests
 
 test("a running job's stage and spend are folded out of its replay ring, and the meter settles the run", async () => {
@@ -877,15 +973,13 @@ test("a running job's stage and spend are folded out of its replay ring, and the
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   await inFlight(db, fleet);
   // The job says where it is and the owner meters two calls against it. This is served through
@@ -999,15 +1093,13 @@ test("a metered job at the model with nothing metered for ninety seconds is stal
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
   await inFlight(db, fleet);
   fleet.journals("job_asg_a1b2", [progressed(2, started, RUN_STAGES.atModel, "reception")]);
 
@@ -1042,17 +1134,15 @@ test("a job at the model that nothing meters is never called stalled", async () 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    // The deployment this repository actually is: the review lane binds no inference service,
-    // so nothing will ever meter a call of it (#256).
-    plan: UNMETERED_PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  // The deployment this repository actually is: the review lane binds no inference service,
+  // so nothing will ever meter a call of it (#256).
+  plan: UNMETERED_PLAN,
+  now: () => clock, });
   await inFlight(db, fleet);
   fleet.journals("job_asg_a1b2", [progressed(2, started, RUN_STAGES.atModel, "reception")]);
 
@@ -1081,7 +1171,7 @@ test("a cycle a settlement woke folds nothing and says nothing about a running j
     plan: PLAN,
     now: () => clock,
   };
-  const woken = conductor({ ...deps, jobs: fleet });
+  const woken = conductor({ engine: NO_CODE, ...deps, jobs: fleet });
   await inFlight(db, fleet);
   fleet.journals("job_asg_a1b2", [
     progressed(2, started, RUN_STAGES.atModel, "reception"),
@@ -1099,7 +1189,7 @@ test("a cycle a settlement woke folds nothing and says nothing about a running j
     called(7, { inputTokens: 9_000, outputTokens: 900, cachedInputTokens: 0, costMicros: 90_000 }),
   ]);
   clock = started + 60_000;
-  const settledWake = await conductor({ ...deps, jobs: hookWoken(fleet) }).tick();
+  const settledWake = await conductor({ engine: NO_CODE, ...deps, jobs: hookWoken(fleet) }).tick();
   expect(settledWake.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
   expect(settledWake.notes.filter((note) => note.includes("job_asg_a1b2"))).toEqual([]);
   const held = await db.query(`SELECT calls, input_tokens, updated_at FROM run_progress`);
@@ -1124,15 +1214,13 @@ test("a running job that has said nothing has no in-flight row to read", async (
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
   await inFlight(db, fleet);
 
   // The ring holds nothing — a job the owner has not launched yet, or one inside the five-second
@@ -1168,15 +1256,13 @@ test("a settled job's every output file lands in the store, and its run and clai
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   // A review already in flight, because no cycle posts one (#279). The machine finishes and
   // seals its files; the cycle that polls the job ingests them.
@@ -1270,15 +1356,13 @@ test("a job that died with no receipt abandons its claim at the reservation and 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   await inFlight(db, fleet);
   fleet.finish("job_asg_a1b2", 3, null);
@@ -1322,15 +1406,13 @@ test("a job the hub cancelled abandons its claim on the next tick", async () => 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   await inFlight(db, fleet);
   // The operator stops a running review — or the machine's agent dies and the hub interrupts
@@ -1369,15 +1451,13 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   const registering = await loop.tick();
   expect(registering.schedule).toBe("registered");
@@ -1519,15 +1599,13 @@ test("the beat's own job is ingested although the hub never requested it", async
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
   // A scan the schedule started: no run row, and a run id the machine minted for itself.
   fleet.beat("schedule-abc", "dev-01", {
     [JOB_OUTPUT_FILES.sessions]: [
@@ -1653,15 +1731,13 @@ test("a new policy version re-registers the beat instead of leaving two firing",
   await seed(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store: openStore(db),
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store: openStore(db),
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   await loop.tick();
   draws.version = "pol_2";
@@ -1679,15 +1755,13 @@ test("an output the hub cannot read closes its run instead of being retried for 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   await inFlight(db, fleet);
   fleet.seal("job_asg_a1b2", Buffer.alloc(1024, 0x41));
@@ -1721,15 +1795,13 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
   const fleet = new Fleet();
   const folders = new Folders();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: folders,
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: folders,
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   // A beat's catalogue of dev-01: two sessions of one checkout, one of a folder that is not a
   // repository, and one whose "workspace" is Claude's lossy project-directory name rather than
@@ -1826,15 +1898,13 @@ test("the reaper releases a grant whose job was never posted, once its lease has
   await seed(db);
   const store = openStore(db);
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: new Fleet(),
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: new Fleet(),
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   // A grant nothing will ever match `WHERE job_id = ?`: the cycle that took it died between the
   // claim and the posting. One inside its lease, one past it.
@@ -1882,15 +1952,13 @@ test("a run closed by another path leaves no claim behind: the reaper takes it o
   await seed(db);
   const store = openStore(db);
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: new Fleet(),
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: new Fleet(),
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   // The `stop` door closes the run itself and settles the claim in the same breath, and it
   // reads a refusal as nothing to do. This is the backstop for every such path: a closed run
@@ -1926,15 +1994,13 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   await inFlight(db, fleet);
   // The machine holding the review falls off the fleet: the hub cannot answer for its job at
@@ -1973,15 +2039,13 @@ test("an enabled cycle with work waiting draws nothing, and says the one reason 
   const draws = new Draws(db);
   // Work the coordinator would hand out the moment anything asked it for some.
   draws.pending = [{ ...ASSIGNMENT }];
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   const report = await loop.tick();
 
@@ -2000,13 +2064,14 @@ test("an enabled cycle with work waiting draws nothing, and says the one reason 
   expect(report.requested).toEqual([]);
   expect(report.gaps).toEqual([]);
 
-  // The one sentence every posting path answers with, and it names the two pieces in flight so
-  // that an operator reading a pulse can go and look at them.
-  expect(report.stop).toEqual({ reason: "engine-pending", detail: ENGINE_PENDING });
-  expect(report.stop?.detail).toContain("atyrode/manifold#575");
-  expect(report.stop?.detail).toContain("atyrode/code#170");
+  // The one sentence an enabled cycle answers with, and it names the LANE that is missing
+  // rather than the engine: the engine is Code and the explore lane reaches it, so an operator
+  // reading a pulse learns that a DRAWN review is what has no dispatch, and where it returns.
+  expect(report.stop).toEqual({ reason: "draw-pending", detail: DRAW_PENDING });
+  expect(report.stop?.detail).toContain("blinded projection");
+  expect(report.stop?.detail).toContain("#268");
   // Counted rather than narrated: "why did nothing happen today" is answered by the tally.
-  expect(report.pulse.tick.gaps).toEqual({ "engine-pending": 1 });
+  expect(report.pulse.tick.gaps).toEqual({ "draw-pending": 1 });
 
   // AND NOTHING WAS TAKEN FOR IT: no claim row, and no posting.
   const claims = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM claims`);
@@ -2059,15 +2124,13 @@ test("three reviews the model answered and the contract refused are spend, not a
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   const flights = await threeInFlight(db, fleet);
 
@@ -2087,7 +2150,7 @@ test("three reviews the model answered and the contract refused are spend, not a
   expect(settling.notes.some((note) => note.includes("parked"))).toBe(false);
   // …and the cycle's one reason for spending nothing is the door that is not there, not a lane
   // that is broken.
-  expect(settling.stop).toEqual({ reason: "engine-pending", detail: ENGINE_PENDING });
+  expect(settling.stop).toEqual({ reason: "draw-pending", detail: DRAW_PENDING });
   // …and the pulse says what they were, by the code `results.ts` names.
   expect(settling.pulse.tick.refusals).toEqual({ schema: 3 });
   expect(settling.pulse.today.refusals).toEqual({ schema: 3 });
@@ -2107,15 +2170,13 @@ test("three jobs that never reached the model park the loop, and an hour of quie
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  const loop = conductor({ engine: NO_CODE, store,
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
 
   const flights = await threeInFlight(db, fleet);
 
@@ -2137,7 +2198,7 @@ test("three jobs that never reached the model park the loop, and an hour of quie
   // instead of it: nothing is drawn either way today, and an operator reading "parked" is
   // reading that the lane is broken rather than that the door is missing.
   expect(parking.requested).toEqual([]);
-  expect(parking.stop).toEqual({ reason: "engine-pending", detail: ENGINE_PENDING });
+  expect(parking.stop).toEqual({ reason: "draw-pending", detail: DRAW_PENDING });
 
   // An hour of quiet lifts it without an operator: a machine that has been fixed is tried again,
   // and a machine that has not re-parks after three more.
@@ -2153,8 +2214,295 @@ test("the pulse counts why a cycle did not spend, and the day accumulates across
   const db = openDatabase();
   await seed(db);
   const draws = new Draws(db);
+  const loop = conductor({ engine: NO_CODE, store: openStore(db),
+  coordinator: draws as unknown as Coordinator,
+  jobs: new Fleet(),
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
+
+  // One reason a cycle spent nothing, counted once: the door that does not exist yet (#279). It
+  // is a word of the coordinator's own `STOP_REASONS` rather than one beside them, because the
+  // pulse tallies that one vocabulary and a reason outside it would show as nothing at all.
+  const first = await loop.tick();
+  expect(first.gaps).toEqual([]);
+  expect(first.pulse.tick.gaps).toEqual({ "draw-pending": 1 });
+  expect(first.pulse.today.gaps).toEqual({ "draw-pending": 1 });
+
+  // The day accumulates across the wakes that make the cycles, which is why it is kept in the
+  // plugin's keys rather than in the loop: every tick of a real day is a new conductor.
+  const second = await loop.tick();
+  expect(second.pulse.tick.gaps).toEqual({ "draw-pending": 1 });
+  expect(second.pulse.today.gaps).toEqual({ "draw-pending": 2 });
+
+  // …and it is a DAY: the tally starts again at the boundary the spend ledger is kept by.
+  clock += 24 * 60 * 60_000;
+  const tomorrow = await loop.tick();
+  expect(tomorrow.pulse.today.gaps).toEqual({ "draw-pending": 1 });
+
+  // A disabled policy is a reason a cycle did not spend like any other, and the loop counts it
+  // itself: the cycle never gets far enough to reach the draw-pending verdict.
+  draws.enabled = false;
+  const off = await loop.tick();
+  expect(off.enabled).toBe(false);
+  expect(off.pulse.tick.gaps).toEqual({ disabled: 1 });
+  expect(off.pulse.today.gaps).toEqual({ "draw-pending": 1, disabled: 1 });
+  clock = started;
+});
+
+// ------------------------------------------------------- a run that is a Code session (#279)
+
+/** The file the material served, and the digest it served it at. */
+const SERVED_FILE = "0001-omp-s1.jsonl";
+const SERVED_DIGEST = "a".repeat(64);
+
+/** One valid exploration answer, in the fenced block the prompt asks the model to end with. */
+function answered(path: string, digest: string): string {
+  const result = {
+    candidates: [
+      {
+        ref: "h1",
+        hypothesis: { statement: "the catalog forgets archived sessions" },
+        observations: [
+          {
+            ref: "o1",
+            recipe: { id: "catalog-integrity", version: 3 },
+            claim: {
+              claim: "the archive wrote a snapshot the rescan did not carry",
+              confidence: "high",
+              impact: "moderate",
+              evidence: [
+                { locator: { path, line: 12, byte_offset: 0, digest }, note: "the rescan's row" },
+              ],
+              counter_evidence_absent: true,
+            },
+          },
+        ],
+      },
+    ],
+    consolidations: [],
+    deferred: [],
+    rejected: [],
+    questions: [],
+  };
+  return `Here is what I found.\n\n\`\`\`json\n${JSON.stringify(result)}\n\`\`\`\n`;
+}
+
+/**
+ * A CODE SESSION ALREADY IN FLIGHT: the run row `startExplore` writes after Code accepts the
+ * job, plus the settled `prepare` run whose receipt carries the material this session read.
+ *
+ * The fleet is NOT told about the job, and that is the property under test: Code's job belongs
+ * to `atyrode.omp` and `ctx.jobs` has no business with it, so a loop that polled it would fail
+ * here rather than pass against a friendly fake.
+ */
+async function sessionInFlight(
+  db: PluginDatabase,
+  material: MaterialIndex | null = materialIndex(SERVED_FILE, SERVED_DIGEST),
+): Promise<{ runId: string; jobId: string; claimId: string }> {
+  const runId = "run_session_1";
+  const jobId = "job_code_1";
+  const claimId = "clm_session_1";
+  const statements: SqlStatement[] = [
+    {
+      sql: `INSERT INTO runs(id, kind, machine_id, job_id, container_id, prepare_job_id, profile,
+                             preparation, started_at, records, payload)
+            VALUES (?, ?, 'dev-01', ?, 'ctr_workbench', 'job_prep_1', ?, ?, ?, 0, '{}')`,
+      params: [
+        runId,
+        OPERATIONS.explore,
+        jobId,
+        JSON.stringify({
+          containerId: "ctr_workbench",
+          expectedRevision: 7,
+          account: { provider: "anthropic", identityKey: "victorballu@gmail.com" },
+        }),
+        JSON.stringify({ preset: "read-whats-new", selected: 1 }),
+        new Date(clock).toISOString(),
+      ],
+    },
+    {
+      sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                               reserved_cost, granted_at, expires_at)
+            VALUES (?, ?, 'reception', 'coverage', ?, ?, ?, 1, ?, ?, ?)`,
+      params: [
+        claimId,
+        ASSIGNMENT.recordId,
+        POLICY.version,
+        jobId,
+        SEEDED_CYCLE,
+        ASSIGNMENT.reservedCost,
+        new Date(clock).toISOString(),
+        new Date(clock + POLICY.leaseSeconds * 1000).toISOString(),
+      ],
+    },
+  ];
+  if (material !== null) {
+    statements.push({
+      sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, finished_at, closure,
+                             records, payload)
+            VALUES ('run_prep_1', ?, 'dev-01', 'job_prep_1', ?, ?, 'completed', 0, ?)`,
+      params: [
+        OPERATIONS.prepare,
+        new Date(clock).toISOString(),
+        new Date(clock).toISOString(),
+        JSON.stringify({ runId: "run_prep_1", kind: "prepare", closure: "completed", material }),
+      ],
+    });
+  }
+  await db.batch(statements);
+  return { runId, jobId, claimId };
+}
+
+test("a finished Code session whose citations the material served writes its receipt and settles the claim", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST),
+    }),
+  }));
+  const { runId, jobId, claimId } = await sessionInFlight(db);
+
+  const report = await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  // Code was asked with the pair `readSession` takes, and nothing else was: the job is not
+  // Babel's, so its container is the whole of how the loop addresses it.
+  expect(code.asked).toEqual([{ containerId: "ctr_workbench", jobId }]);
+
+  const run = (
+    await db.query(`SELECT closure, cost_usd, tokens, payload FROM runs WHERE id = ?`, [runId])
+  )[0]!;
+  expect(run["closure"]).toBe("completed");
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(receipt["model"]).toBe("anthropic/claude-opus-4-1");
+  expect(receipt["models"]).toEqual(["anthropic/claude-opus-4-1"]);
+  expect(receipt["reason"]).toBeUndefined();
+  // The account is the one the LAUNCH named: Code chooses it and its session receipt reports
+  // none, so the run row is where "which window did this spend" is answered (#267).
+  expect(receipt["account"]).toEqual({
+    provider: "anthropic",
+    identityKey: "victorballu@gmail.com",
+  });
+  // ONE CALL, because a posted session is omp's one-shot; the tokens and the cost are the
+  // meter's, in the same columns a metered Babel job writes.
+  expect(receipt["inference"]).toEqual({
+    calls: 1,
+    inputTokens: 12_000,
+    outputTokens: 900,
+    cachedInputTokens: 400,
+    costMicros: 310_000,
+  });
+  expect(run["cost_usd"]).toBeCloseTo(0.31, 6);
+  expect(Number(run["tokens"])).toBe(12_900);
+
+  expect(report.settled).toEqual([
+    { claimId, outcome: "completed", cost: 0.31, overrun: false, refused: null, reason: null },
+  ]);
+  expect(report.pulse.tick.refusals).toEqual({});
+});
+
+test("a citation the material never served is refused, and the refusal is spend with its claim settled", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    // The path is one the index names; the digest is not the one it was served at, which is a
+    // retyped digest and exactly what `unservedLocator` exists to catch.
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(`sessions/${SERVED_FILE}`, "b".repeat(64)),
+    }),
+  }));
+  const { runId, claimId } = await sessionInFlight(db);
+
+  const report = await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  const run = (
+    await db.query(`SELECT closure, cost_usd, payload FROM runs WHERE id = ?`, [runId])
+  )[0]!;
+  expect(run["closure"]).toBe("failed");
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(String(receipt["reason"])).toStartWith("unknown-reference:");
+  // THE MONEY IS STILL SPENT. The model answered and the deployment paid for it; a refusal
+  // recorded at zero is how a fan reads a refused lane as free and relaunches into it.
+  expect(run["cost_usd"]).toBeCloseTo(0.31, 6);
+  expect(report.settled).toEqual([
+    { claimId, outcome: "failed", cost: 0.31, overrun: false, refused: null, reason: null },
+  ]);
+  // …and it is counted by the code the contract refused with, not as a failure of the loop.
+  expect(report.pulse.tick.refusals).toEqual({ "unknown-reference": 1 });
+});
+
+test("a Code session still running leaves its run open and settles nothing", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({ ok: true, value: sessionRead({ state: "running" }) }));
+  const { runId, claimId } = await sessionInFlight(db);
+
+  const report = await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  expect(report.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
+  expect(report.settled).toEqual([]);
+  const run = (await db.query(`SELECT closure FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBeNull();
+  const claim = (
+    await db.query(`SELECT finished_at FROM claims WHERE id = ?`, [claimId])
+  )[0]!;
+  expect(claim["finished_at"]).toBeNull();
+});
+
+test("a read Code refuses is recorded on the run, retried once, and then closed rather than asked for ever", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() =>
+    refusedByCode<SessionRead>(
+      "engine_stale_profile",
+      "atyrode.code.readSession (code_stale_preferences)",
+    ),
+  );
+  const { runId, claimId } = await sessionInFlight(db);
   const loop = conductor({
-    store: openStore(db),
+    engine: code,
+    store,
     coordinator: draws as unknown as Coordinator,
     jobs: new Fleet(),
     machines: new Folders(),
@@ -2163,31 +2511,28 @@ test("the pulse counts why a cycle did not spend, and the day accumulates across
     now: () => clock,
   });
 
-  // One reason a cycle spent nothing, counted once: the door that does not exist yet (#279). It
-  // is a word of the coordinator's own `STOP_REASONS` rather than one beside them, because the
-  // pulse tallies that one vocabulary and a reason outside it would show as nothing at all.
+  // ONE REFUSAL IS A HICCUP. The sentence is on the row so a reader sees it without the
+  // journal, and the run stays open for the next wake to ask again.
   const first = await loop.tick();
-  expect(first.gaps).toEqual([]);
-  expect(first.pulse.tick.gaps).toEqual({ "engine-pending": 1 });
-  expect(first.pulse.today.gaps).toEqual({ "engine-pending": 1 });
+  expect(first.runs.running).toBe(1);
+  const held = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(held["closure"]).toBeNull();
+  expect(String(held["payload"])).toContain("code_stale_preferences");
 
-  // The day accumulates across the wakes that make the cycles, which is why it is kept in the
-  // plugin's keys rather than in the loop: every tick of a real day is a new conductor.
+  // TWO IN A ROW IS A RUN NOBODY WILL EVER READ. It is closed with that sentence and its claim
+  // released, rather than retried on every wake for the life of the deployment.
   const second = await loop.tick();
-  expect(second.pulse.tick.gaps).toEqual({ "engine-pending": 1 });
-  expect(second.pulse.today.gaps).toEqual({ "engine-pending": 2 });
+  expect(second.runs.running).toBe(0);
+  const closed = (
+    await db.query(`SELECT closure, finished_at, payload FROM runs WHERE id = ?`, [runId])
+  )[0]!;
+  expect(closed["closure"]).toBe("failed");
+  expect(String(closed["payload"])).toContain("engine_stale_profile");
+  expect(second.settled.map((entry) => [entry.claimId, entry.outcome])).toEqual([
+    [claimId, "abandoned"],
+  ]);
 
-  // …and it is a DAY: the tally starts again at the boundary the spend ledger is kept by.
-  clock += 24 * 60 * 60_000;
-  const tomorrow = await loop.tick();
-  expect(tomorrow.pulse.today.gaps).toEqual({ "engine-pending": 1 });
-
-  // A disabled policy is a reason a cycle did not spend like any other, and the loop counts it
-  // itself: the cycle never gets far enough to reach the engine-pending verdict.
-  draws.enabled = false;
-  const off = await loop.tick();
-  expect(off.enabled).toBe(false);
-  expect(off.pulse.tick.gaps).toEqual({ disabled: 1 });
-  expect(off.pulse.today.gaps).toEqual({ "engine-pending": 1, disabled: 1 });
-  clock = started;
+  // …and a third wake asks Code nothing more about it: two reads, and no run left to poll.
+  await loop.tick();
+  expect(code.asked).toHaveLength(2);
 });

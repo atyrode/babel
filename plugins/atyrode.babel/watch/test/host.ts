@@ -7,6 +7,7 @@ import type {
   RunProgress,
   RunRow,
   RunsResult,
+  ProfileRow,
   TopicsResult,
 } from "../api.ts";
 
@@ -178,6 +179,22 @@ export const TOPICS: TopicsResult = {
   unfiled: 12,
 };
 
+/**
+ * The saved Code profiles, as Babel's `profiles` door answers them. Two, because the choice
+ * the panel makes is between them, and the second carries no selection Code can review — the
+ * state a profile is in when it must be opened in the generator rather than pressed.
+ */
+export const PROFILES: readonly ProfileRow[] = [
+  {
+    containerId: "ctr_workbench",
+    revision: 7,
+    model: "anthropic/claude-opus-4-1",
+    thinking: "high",
+    lastMachineId: "m-dev-01",
+  },
+  { containerId: "ctr_spare", revision: 2, model: "", thinking: "", lastMachineId: "" },
+];
+
 
 /**
  * One drain as the status door answers for it (#258). The defaults are a drain that has just
@@ -220,6 +237,11 @@ export function watchDoors(answers: {
   readonly topics?: () => TopicsResult;
   readonly launch?: (args: unknown) => unknown;
   readonly stop?: (args: unknown) => unknown;
+  /** Code's saved profiles as Babel's own door answers them; both halves are answers. */
+  readonly profiles?: (args: unknown) => {
+    readonly profiles: readonly ProfileRow[];
+    readonly unavailable: string;
+  };
   /** What is draining; the panel polls this one every five seconds like the runs feed. */
   readonly drainStatus?: (args: unknown) => { readonly drains: readonly DrainStatus[] };
   readonly drainStart?: (args: unknown) => unknown;
@@ -233,6 +255,8 @@ export function watchDoors(answers: {
     [door(ACTIONS.stop)]: (args) => (answers.stop ?? (() => ({ asked: true })))(args),
     [door(ACTIONS.drainStatus)]: (args) =>
       (answers.drainStatus ?? (() => ({ drains: [] })))(args),
+    [door(ACTIONS.profiles)]: (args) =>
+      (answers.profiles ?? (() => ({ profiles: PROFILES, unavailable: "" })))(args),
     [door(ACTIONS.drainStart)]: (args) =>
       (
         answers.drainStart ??

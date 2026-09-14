@@ -36,6 +36,6 @@ permissions:
 
 jobs:
   bundles:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@0bc76660cbc215124738fa82c6d3041656c9c7f6
+    uses: atyrode/manifold/.github/workflows/plugins.yml@559612c8fd461920d4e6bc7e3ac0a4532b258171
     with:
       plugins-dir: plugins

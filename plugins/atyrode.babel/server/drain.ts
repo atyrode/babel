@@ -28,6 +28,7 @@ import {
 import type { BabelStore } from "../store/store.ts";
 import type { LaunchIdentity, Started } from "../doors/launch.ts";
 import type { JobsSlice, RunPlan } from "./conductor.ts";
+import type { CodeEngine } from "./engine/session.ts";
 import type { BabelJobs } from "./plan.ts";
 
 /*
@@ -99,6 +100,7 @@ export interface DrainLaunch {
   startExplore(
     identity: LaunchIdentity,
     jobs: JobsSlice,
+    engine: CodeEngine,
     input: LaunchInput,
     plan: RunPlan,
   ): Promise<Started>;
@@ -117,6 +119,13 @@ export interface DrainDeps {
   /** This wake's own job authority: what posts a job, and what may be asked to cancel one. */
   readonly jobs: BabelJobs;
   /**
+   * Babel's side of Code's doors, over this wake's own authority (#279). A drain posts a Code
+   * session exactly as the button does, so the engine travels with the launch path rather than
+   * being rebuilt here: two objects reaching Code under two authorities is how one of them ends
+   * up spending a principal nobody graded.
+   */
+  readonly engine: CodeEngine;
+  /**
    * What a run of this operation runs under. The third parameter is the session the run is
    * launched with (#279): a plan carries the model and the account rather than a profile
    * reference, so the drain hands its own stored session to every job it launches.
@@ -128,19 +137,27 @@ export interface DrainDeps {
 const SPENDING: readonly string[] = DRAIN_SPENDING_PRESETS;
 
 /**
- * The launch input one of this drain's jobs is posted with: the preset, the machine, the account
- * and the knobs the operator named, every time, unchanged. A controller that rebuilt the request
- * from defaults would widen or narrow the scope between the first job and the ninetieth.
+ * The launch input one of this drain's jobs is posted with: the preset, the machine, the Code
+ * profile and the knobs the operator named, every time, unchanged. A controller that rebuilt the
+ * request from defaults would widen or narrow the scope between the first job and the ninetieth
+ * — and, since #279, would post the ninetieth against a different profile than the first.
+ *
+ * THE SESSION TRAVELS TOO, and it is never posted to Code: it is the NAME of the account this
+ * drain exists to spend, recorded on every run row the fan writes, so "which window did that
+ * fan burn" is answered by summing the runs that named it (#267) rather than by trusting that
+ * the profile still points where it did at the start.
  */
 export function drainInput(row: DrainRow): LaunchInput {
   return {
     machineId: row.machineId,
     preset: row.preset,
     recipes: [...row.knobs.recipes],
+    session: row.session,
     ...(row.knobs.sinceDays === undefined ? {} : { sinceDays: row.knobs.sinceDays }),
     ...(row.knobs.entityId === undefined ? {} : { entityId: row.knobs.entityId }),
     ...(row.knobs.minutes === undefined ? {} : { minutes: row.knobs.minutes }),
     ...(row.knobs.agentSessions === undefined ? {} : { agentSessions: row.knobs.agentSessions }),
+    ...(row.knobs.profile === undefined ? {} : { profile: row.knobs.profile }),
   };
 }
 
@@ -378,7 +395,7 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   for (let slot = holding.length; slot < row.concurrent; slot += 1) {
     const identity = drainIdentity(row, row.jobsLaunched + launched);
     const started = SPENDING.includes(row.preset)
-      ? await deps.launch.startExplore(identity, deps.jobs, input, plan)
+      ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, input, plan)
       : await deps.launch.startBeat(identity, deps.jobs, input, plan);
     const job: LiveJob = { runId: identity.runId, jobId: identity.jobId, launchedAt: at };
     if ("refused" in started) {
