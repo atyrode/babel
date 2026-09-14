@@ -9,6 +9,25 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Removed
+
+- **Babel launches nothing: the self-launch engine, the Start picker and Babel's own inference
+  service are gone.** v0.3.0 had `explore` and `evaluate` launch `omp --mode rpc` from a pinned
+  runtime tool and meter it through an `atyrode.babel.inference` policy a `setupInference` door
+  installed, with a Start form that chose the account, the model and how hard it thinks. That
+  was the wrong architecture: `atyrode.babel` depends on `atyrode.code`, which depends on
+  `atyrode.omp`, and Code owns the profiles and launches omp. When Babel's button is pressed,
+  Babel either names a saved Code profile or opens Code's generator so the run is parametrized
+  there, then posts the run through Code's `runSession` door — it never composes a session and
+  never launches an engine. So the machine half's `explore` and `evaluate` operations, the `omp`
+  pin, the RPC driver, the inference service, the `setupInference` and `accounts` doors and the
+  Start picker are removed; `scan`, `prepare` and `archive`, the drain, the receipts fold, the
+  release path and every reading panel stay. Until atyrode/manifold#575 (a plugin's server
+  calling a sibling plugin's door) and atyrode/code#170 (that door) land, every launch — the
+  button's, the drain's fan and the conductor's own cycle — answers one refusal, `engine_pending`,
+  whose detail names both issues, and Watch's Start section shows that sentence with no button
+  that can post (#279, #268).
+
 ## [0.3.0] - 2026-09-14
 
 ### Added

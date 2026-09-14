@@ -6,8 +6,7 @@
 */
 
 import { expect, test } from "bun:test";
-import { ROLES } from "../../contract.ts";
-import { roleInstructions } from "./prompts.ts";
+import { ROLES } from "../contract.ts";
 import {
   exploreJsonSchema,
   parseExploreResult,
@@ -368,11 +367,7 @@ test("an environment with neither an outcome nor a criterion result scopes nothi
   expect(alone.message).toContain("neither an outcome nor a criterion result");
 });
 
-test("the scope rule has one wording: the prompt states it and the refusal reads it back", () => {
-  // The model is told the rule by the roles that can break it, and by no other.
-  expect(roleInstructions("evidence")).toContain(REVIEW_SCOPE_RULE);
-  expect(roleInstructions("outcome")).toContain(REVIEW_SCOPE_RULE);
-  expect(roleInstructions("reception")).not.toContain(REVIEW_SCOPE_RULE);
+test("the scope rule is the refusal's own wording", () => {
   const unscoped = refusal(() =>
     parseReviewResult("evidence", { results: [{ criterion_id: "crit_1", satisfied: false }] }),
   );

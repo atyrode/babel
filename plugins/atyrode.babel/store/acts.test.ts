@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { PluginDatabase, SqlRow } from "@manifold/plugin";
 import { openPluginDatabase } from "@manifold/server/plugin-database";
 import { BABEL_PLUGIN_ID } from "../contract.ts";
-import { parseReviewResult, ResultRefusal, type RefusalCode, type Role } from "../machine/engine/results.ts";
+import { parseReviewResult, ResultRefusal, type RefusalCode, type Role } from "../machine/results.ts";
 import {
   ActRefused,
   DEFAULT_POLICY,
@@ -1098,10 +1098,11 @@ test("an overlay the standing lease cannot cover is refused, and so is one that 
 test("the importable tables are derived from the migration itself", () => {
   const tables = importableTables();
   // Twenty-three from the crossing, plus `budgets` (the overlay table #260 added),
-  // `run_progress` (#261), `service_setup` (#284) and `drains` (#258): the list is DERIVED, so a
-  // table added to the migration appears here whether or not the one-off import will ever name
-  // it.
-  expect(Object.keys(tables)).toHaveLength(27);
+  // `run_progress` (#261) and `drains` (#258): the list is DERIVED, so a table added to the
+  // migration appears here whether or not the one-off import will ever name it — and one
+  // removed disappears, which is what `service_setup` did with Babel's own inference policy
+  // (#279).
+  expect(Object.keys(tables)).toHaveLength(26);
   expect(tables["dispositions"]).toEqual([
     "id",
     "record_id",

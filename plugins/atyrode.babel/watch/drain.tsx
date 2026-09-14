@@ -5,6 +5,7 @@ import {
   DRAIN_BOUNDS,
   DRAIN_CARDS,
   DRAIN_STATE_NOTE,
+  THINKING_CHOICES,
   drainUnready,
   etaClause,
   figure,
@@ -12,13 +13,12 @@ import {
   perMinute,
   since,
   usd,
-  type AccountsResult,
   type DrainDraft,
   type DrainStatus,
+  type SessionDraft,
   type SessionPick,
   type TopicRow,
 } from "./api.ts";
-import { SessionPicker } from "./start.tsx";
 
 /*
   DRAINING A WINDOW — the panel that makes a drain something an operator watches rather than
@@ -35,9 +35,9 @@ import { SessionPicker } from "./start.tsx";
 
   THE ACCOUNT IS NAMED BEFORE THE BUTTON (#267). It is not a detail of the form: a drain exists
   to spend one account's window, and on the day nothing on the machine could say which account a
-  running fan was burning. So the account is chosen through the SAME picker the Start form uses
-  — the machine's own broker rows, the model, the thinking level — and one line the row shows
-  back afterwards, and a drain cannot be started without it.
+  running fan was burning. It is TYPED here, not offered: what a run is composed from is a Code
+  profile and account choice is Code's (#279), so Babel reads no broker of its own. The row
+  shows it back afterwards, and a drain cannot be started without it.
 
   IT IS A READING AND TWO ACTS. Starting and stopping are `drain.start` and `drain.stop`, each
   governed at the operation node; everything else on the screen is either something a job said or
@@ -49,9 +49,7 @@ export interface DrainProps {
   readonly drains: readonly DrainStatus[];
   readonly machines: readonly MachineSummary[];
   readonly topics: readonly TopicRow[];
-  /** What this machine's broker has observed, or the reason nobody could be asked (#279). */
-  readonly accounts: AccountsResult;
-  /** The session the picker has made, or why it is not one yet: the drain always needs one. */
+  /** The session the form has made, or why it is not one yet: the drain always needs one. */
   readonly session: SessionPick;
   /** The panel's clock, ticked once a second while a drain is running. */
   readonly now: number;
@@ -63,6 +61,86 @@ export interface DrainProps {
   readonly onDraft: (draft: DrainDraft) => void;
   readonly onStart: () => void;
   readonly onStop: (drain: DrainStatus) => void;
+}
+
+/**
+ * WHO THE DRAIN SPENDS, in four typed fields.
+ *
+ * They are typed and not offered because Babel reads no broker: the accounts a machine holds
+ * are omp's, and what a run is composed from is a Code profile (#279). An operator who is
+ * draining knows the account he is draining — that is the whole premise of the operation — so
+ * the drain records what he names and its panel says it back, and `drainUnready` refuses the
+ * button until all of it is there.
+ *
+ * The model is a text field for the same reason: nothing on this side knows what a machine's
+ * Code profile prices, and a closed list here would be a guess at another plugin's
+ * configuration.
+ */
+function SessionFields({
+  session,
+  onSession,
+}: {
+  readonly session: SessionDraft;
+  readonly onSession: (session: SessionDraft) => void;
+}) {
+  return (
+    <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__session">
+      <label className="plugin-atyrode_babel_watch__knob">
+        <span className="plugin-atyrode_babel_watch__knob-label">Provider</span>
+        <input
+          type="text"
+          className="plugin-atyrode_babel_watch__session-input"
+          placeholder="anthropic"
+          value={session.provider}
+          onInput={(event) => onSession({ ...session, provider: event.currentTarget.value })}
+        />
+      </label>
+      <label className="plugin-atyrode_babel_watch__knob">
+        <span className="plugin-atyrode_babel_watch__knob-label">Credential</span>
+        <input
+          type="text"
+          className="plugin-atyrode_babel_watch__session-input"
+          placeholder="7"
+          value={session.credentialId}
+          onInput={(event) => onSession({ ...session, credentialId: event.currentTarget.value })}
+        />
+      </label>
+      <label className="plugin-atyrode_babel_watch__knob">
+        <span className="plugin-atyrode_babel_watch__knob-label">Identity key</span>
+        <input
+          type="text"
+          className="plugin-atyrode_babel_watch__session-input"
+          placeholder="empty for an api key"
+          value={session.identityKey}
+          onInput={(event) => onSession({ ...session, identityKey: event.currentTarget.value })}
+        />
+      </label>
+      <label className="plugin-atyrode_babel_watch__knob">
+        <span className="plugin-atyrode_babel_watch__knob-label">Model</span>
+        <input
+          type="text"
+          className="plugin-atyrode_babel_watch__session-input"
+          placeholder="provider/model"
+          value={session.model}
+          onInput={(event) => onSession({ ...session, model: event.currentTarget.value })}
+        />
+      </label>
+      <label className="plugin-atyrode_babel_watch__knob">
+        <span className="plugin-atyrode_babel_watch__knob-label">Thinking</span>
+        <select
+          className="plugin-atyrode_babel_watch__picker"
+          value={session.thinking}
+          onChange={(event) => onSession({ ...session, thinking: event.target.value })}
+        >
+          {THINKING_CHOICES.map((choice) => (
+            <option key={choice.value} value={choice.value}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    </Cluster>
+  );
 }
 
 function Figure({
@@ -297,7 +375,6 @@ export function Drain({
   drains,
   machines,
   topics,
-  accounts,
   session,
   now,
   starting,
@@ -437,20 +514,19 @@ export function Drain({
           />
         </Cluster>
         {/*
-          THE ACCOUNT THIS DRAIN SPENDS, through the Start form's own picker (#279, #267): the
-          machine's broker rows where they can be read, the three fields typed where they cannot,
-          and the model beside them. The picker waits for the machine because the rows are that
-          machine's own, and a drain of `keep-going` waits for it too — that preset reaches no
-          model, but a drain of it is the rehearsal of one that does, so the account it would
-          spend is named before the fan rather than discovered when the real drain is started.
+          THE ACCOUNT THIS DRAIN SPENDS (#267), named before the fan rather than discovered
+          when it is running. It is TYPED and not offered: Babel no longer reads a machine's
+          broker, because account choice belongs to the Code profile a run is composed from
+          (#279), and a picker of Babel's own beside Code's would be two answers to "spend this
+          account". When Code's `runSession` door lands these three fields become a reference to
+          a Code profile; until then they are what the drain's row records and its panel says
+          back. A drain of `keep-going` names one too — that preset reaches no model, but a
+          drain of it is the rehearsal of one that does.
         */}
-        {draft.machineId === "" ? null : (
-          <SessionPicker
-            session={draft.session}
-            accounts={accounts}
-            onSession={(session) => onDraft({ ...draft, session })}
-          />
-        )}
+        <SessionFields
+          session={draft.session}
+          onSession={(session) => onDraft({ ...draft, session })}
+        />
         <Cluster gap="var(--babel-space-4)" className="plugin-atyrode_babel_watch__knobs">
           <Field
             label="Why"

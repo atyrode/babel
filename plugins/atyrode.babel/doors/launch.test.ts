@@ -1,39 +1,26 @@
 /*
-  The two doors that spend money, held to what they do to the world.
+  The two doors Watch posts to, held to what they do to the world.
 
   Every test dispatches the way the kit does — parse the arguments against the action's own
   input, run the handler, parse what it produced against the action's own result — and then
-  asks the STORE and the FLEET what happened, because that is what a launch is: one job posted
-  to one machine and one row written about it. The fleet is fake and the store is real, which
-  is the right way round: the job request is a shape this file can pin exactly, and the run row
-  is SQL under every CHECK and trigger the schema declares.
+  asks the STORE and the FLEET what happened.
 
-  The coordinator is the real one over the same store, so the policy in force is a row an
-  operator could have written and the claim a stop releases is a claim the ledger holds.
+  WHAT A LAUNCH DOES TO THE WORLD IS NOTHING (#279). A Babel run is a Code session: the
+  operator picks a saved Code profile or parametrizes one in Code's generator, and Code's
+  `runSession` door posts it. So the cases that pinned Babel's own posting — the preparation
+  window, the recipe selection, the machine description, the run row, the drawn cycle — are
+  deleted rather than re-pinned, and what stands in their place is the refusal, by name, with
+  both issues in it, and the proof that the fleet was never touched.
+
+  `stop` is unchanged and still fully exercised: a run this deployment already started can be
+  running when the plugin is upgraded, and ending it releases what it reserved.
 */
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import {
-  ACTIONS,
-  INPUT_FIELD,
-  OPERATIONS,
-  OUTPUT_BINDING,
-  OUTPUT_LOCATION,
-  PRESET_OPERATIONS,
-} from "../contract.ts";
-import { ExploreInputSchema } from "../machine/explore.ts";
-import type {
-  Conductor,
-  JobLaunch,
-  JobRef,
-  JobRunState,
-  MachineReadiness,
-  Recipe,
-  RunPlan,
-  TickReport,
-} from "../server/conductor.ts";
-import type { BabelJobs, ServicePolicyOutcome } from "../server/plan.ts";
+import { ACTIONS, OPERATIONS, PRESET_OPERATIONS } from "../contract.ts";
+import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
+import type { BabelJobs } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
@@ -43,48 +30,12 @@ import { launchDoors, type LaunchDeps } from "./launch.ts";
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
 const MACHINE = "m-dev-01";
-const TOPIC = "ent_00000001";
 const RECORD = "fnd_00000001";
-
-const RECIPE: Recipe = {
-  id: "code-health-comprehensibility",
-  version: 3,
-  title: "Code health",
-  body: "What in this code is harder to understand than it needs to be?",
-};
-
-const LIMITS = { timeoutMs: 600_000, memoryBytes: 1_073_741_824, processes: 32, outputBytes: 1_048_576 };
-
-/** The session the operator's own launch names: a model, a level, and the account to spend. */
-const SESSION = {
-  model: "anthropic/claude-sonnet-5",
-  thinking: "high" as const,
-  account: {
-    provider: "anthropic",
-    scope: "atyrode.omp.accounts.broker@7/m-dev-01",
-    credentialId: "3",
-    identityKey: "victorballu@gmail.com",
-  },
-};
-
-const PLAN: RunPlan = {
-  engine: { binary: "/runtime/bin/omp", args: [] },
-  session: SESSION,
-  caps: { perRunUsd: 0.0625, toolCalls: 40, idleMs: 120_000, handshakeMs: 30_000 },
-  recipes: {},
-  metered: {},
-  requireContainment: true,
-  limits: LIMITS,
-};
 
 /** The machine, as the engine describes one that can run Babel. */
 const READY: MachineReadiness = {
   connected: true,
-  operations: {
-    [OPERATIONS.scan]: { ready: true, reason: null },
-    [OPERATIONS.explore]: { ready: true, reason: null },
-    [OPERATIONS.evaluate]: { ready: true, reason: null },
-  },
+  operations: { [OPERATIONS.scan]: { ready: true, reason: null } },
   installation: { revision: "rev-7", artifactSha256: "a".repeat(64), enabled: true, ready: true },
 };
 
@@ -146,57 +97,11 @@ class Fleet implements BabelJobs {
   }
 }
 
-/** One cycle of the loop, as the drawn presets see it. */
-class Cycle implements Conductor {
-  ticks = 0;
-  reports: TickReport[] = [];
-
-  async tick(): Promise<TickReport> {
-    const report = this.reports[Math.min(this.ticks, this.reports.length - 1)];
-    this.ticks += 1;
-    if (report === undefined) throw new Error("the cycle was asked for a report it has none of");
-    return await Promise.resolve(report);
-  }
-}
-
-function report(over: Partial<TickReport> = {}): TickReport {
-  return {
-    at: NOW,
-    cycleRunId: "cyc_1",
-    policyVersion: "p1",
-    enabled: true,
-    schedule: "absent",
-    requested: [],
-    ingested: [],
-    settled: [],
-    refused: [],
-    stop: null,
-    gaps: [],
-    parked: null,
-    pulse: { tick: { gaps: {}, refusals: {} }, today: { gaps: {}, refusals: {} } },
-    runs: { running: 0, atModel: 0, stalled: 0 },
-    pending: 0,
-    notes: [],
-    ...over,
-  };
-}
-
 let harness: TestStore;
 let fleet: Fleet;
-let cycle: Cycle;
-let cookbook: Record<string, Recipe>;
 let doors: readonly Door[];
-/** What `services.policy` answers; a test overrides it to reach the other three states. */
-let servicePolicy: ServicePolicyOutcome;
-let minted = 0;
 
-const ctx = {
-  principal: { id: "operator" },
-  newId: async () => {
-    minted += 1;
-    return await Promise.resolve(`00000${String(minted)}`);
-  },
-} as unknown as GuestCtx;
+const ctx = { principal: { id: "operator" } } as unknown as GuestCtx;
 
 async function dispatch(name: string, args: unknown): Promise<Record<string, unknown>> {
   const found = doors.find((entry) => entry.action.name === name);
@@ -215,10 +120,10 @@ async function dispatch(name: string, args: unknown): Promise<Record<string, unk
 }
 
 /**
- * A launch as the panel posts one: the request, plus the OPERATION NODE the door is authorized
- * at. Every test goes through this rather than hand-writing the node, because a launch without
- * one is not a request the hub would ever deliver — the host refuses `invalid authority target`
- * before the handler is entered.
+ * A launch as the panel would post one: the request, plus the OPERATION NODE the door is
+ * authorized at. Every test goes through this rather than hand-writing the node, because a
+ * launch without one is not a request the hub would ever deliver — the host refuses `invalid
+ * authority target` before the handler is entered.
  */
 async function start(
   args: { readonly preset: keyof typeof PRESET_OPERATIONS } & Record<string, unknown>,
@@ -227,11 +132,7 @@ async function start(
   return await dispatch(ACTIONS.launch, {
     ...args,
     machineId,
-    operation: {
-      kind: "operation",
-      machineId,
-      operationId: PRESET_OPERATIONS[args.preset],
-    },
+    operation: { kind: "operation", machineId, operationId: PRESET_OPERATIONS[args.preset] },
   });
 }
 
@@ -253,35 +154,9 @@ async function halt(
   });
 }
 
-/** The document one job carries, read back out of the request the fleet was handed. */
-function documentOf(launch: JobLaunch): Record<string, unknown> {
-  const text = launch.input[INPUT_FIELD];
-  if (typeof text !== "string") throw new Error("the job carries no input document");
-  return JSON.parse(text) as Record<string, unknown>;
-}
-
-/** What the run row records about the scope it was launched over. */
-async function preparationOf(db: TestStore["db"], runId: string): Promise<Record<string, unknown>> {
-  const rows = await db.query<{ preparation: string }>(`SELECT preparation FROM runs WHERE id = ?`, [runId]);
-  const text = rows[0]?.preparation;
-  if (typeof text !== "string") throw new Error(`no run row ${runId}`);
-  return JSON.parse(text) as Record<string, unknown>;
-}
-
 beforeEach(async () => {
-  servicePolicy = {
-    ok: true,
-    policy: {
-      prices: {
-        models: { [SESSION.model]: { inputPerMillion: 2_000_000, outputPerMillion: 10_000_000 } },
-      },
-    },
-  };
   harness = await openTestStore(NOW);
   fleet = new Fleet();
-  cycle = new Cycle();
-  cookbook = {};
-  minted = 0;
   const { db, store } = harness;
   // An enabled policy, as `setPolicy` writes one: the document is the coordinator's own shape.
   await insert(db, "policies", {
@@ -296,30 +171,9 @@ beforeEach(async () => {
     selector: "omp/s1", host: MACHINE, harness: "omp", source_id: "s1", title: "yesterday",
     content_digest: "d1", snapshot_id: "snap-1", seen_at: stamp(NOW - 2 * HOUR),
   });
-  await insert(db, "sessions", {
-    selector: "omp/s2", host: MACHINE, harness: "omp", source_id: "s2", title: "last month",
-    content_digest: "d2", seen_at: stamp(NOW - 40 * 24 * HOUR),
-  });
   const deps: LaunchDeps = {
     coordinator: coordinator(store, () => store.now(), 16),
-    get cookbook() {
-      return cookbook;
-    },
     jobs: () => fleet,
-    // The drawn presets run cycles of the loop, and a cycle asks what the folders a scan
-    // catalogued are. These sessions record no workspace, so it is never asked.
-    services: () => ({ policy: () => servicePolicy }),
-    machines: () => ({
-      repository: () => ({ ok: false, reason: "this test enrolls no machine" }),
-    }),
-    // The ceiling is the plan's, and only the two model-driving operations carry one: a beat
-    // reaches no model, so a request for one asks for no inference allowance at all (#279).
-    plan: (_policy, operationId, session) => ({
-      ...PLAN,
-      session: session ?? PLAN.session,
-      limits: operationId === OPERATIONS.scan ? LIMITS : { ...LIMITS, inference: { costMicros: 62_500 } },
-    }),
-    cycle: () => cycle,
     now: () => store.now(),
   };
   doors = launchDoors(store, deps);
@@ -329,27 +183,16 @@ afterEach(() => {
   harness.close();
 });
 
-test("the roster declares a dry read, a governed launch and a governed stop", () => {
-  expect(doors.map((entry) => entry.action.name)).toEqual([
-    ACTIONS.launchPreview,
-    ACTIONS.launch,
-    ACTIONS.stop,
-  ]);
-  const [preview, launch, stop] = doors as readonly Door[];
-
-  // The dry read asks no machine anything, so it carries no governed capability and no target.
-  expect(preview?.action.caps).toEqual(["containers:read"]);
-  expect(preview?.action.requirements).toBeUndefined();
-  expect(preview?.action.delegates).toBeUndefined();
+test("the roster declares a governed launch and a governed stop, and no dry read", () => {
+  // The preview went with Babel's own inference policy: what a run costs is a fact about a
+  // composition, and a composition is Code's to make.
+  expect(doors.map((entry) => entry.action.name)).toEqual([ACTIONS.launch, ACTIONS.stop]);
+  const [launch, stop] = doors as readonly Door[];
 
   // A governed cap without a requirement is refused outright by the dispatcher, and a
   // requirement whose cap is not declared is refused at assembly: the two lists pair exactly.
   expect(launch?.action.caps).toEqual(["machines:run"]);
   expect(launch?.action.requirements).toEqual([{ cap: "machines:run", target: ["operation"] }]);
-  // The native ceiling the launched job inherits — `onJobSettled` reads its outputs back with
-  // this credential, and `execute` discharges the operation's own locations against it.
-  expect(launch?.action.delegates).toEqual(["jobs:read", "locations:read", "locations:write"]);
-
   expect(stop?.action.caps).toEqual(["jobs:cancel"]);
   expect(stop?.action.requirements).toEqual([{ cap: "jobs:cancel", target: ["job"] }]);
 });
@@ -384,381 +227,40 @@ test("every declared requirement resolves to a node in the arguments the panel p
   }
 });
 
-test("a preview states what will run, and runs nothing", async () => {
-  await insert(harness.db, "runs", {
-    id: "run-old", kind: "explore", machine_id: MACHINE, job_id: "job-old",
-    started_at: stamp(NOW - 3 * HOUR), finished_at: stamp(NOW - 2 * HOUR), closure: "completed",
-    records: 2,
-    payload: JSON.stringify({
-      runId: "run-old",
-      closure: "completed",
-      // Babel's own launch report, as the machine half writes it into the receipt (#279).
-      profile: {
-        schema: "babel.launch/1",
-        model: "anthropic/claude-opus-5",
-        thinking: "xhigh",
-        account: "victorballu@gmail.com",
-      },
-    }),
-  });
-
-  const answer = await dispatch(ACTIONS.launchPreview, {
-    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1,
-  });
-
-  expect(answer).toEqual({
-    runId: "",
-    jobId: "",
-    machineId: MACHINE,
-    kind: "explore",
-    // What actually ran last, from the receipt that recorded it — never the reference asked for.
-    profile: { model: "anthropic/claude-opus-5", thinking: "xhigh", account: "victorballu@gmail.com" },
-    // One claim's reservation is the per-cycle allowance over the batch; the day's is the day's.
-    ceiling: { perRunUsd: 0.0625, perDayUsd: 2 },
-    // AND WHAT THE OWNER WOULD METER IT AT (ADR 0038). This preview names no session, so the
-    // policy is installed and the price is unknowable: the ceiling the request would carry is
-    // still stated, because it is the plan's and not the model's.
-    session: {
-      serviceId: "atyrode.babel.inference",
-      account: "",
-      model: "",
-      priced: false,
-      ceilingMicros: 62_500,
-      policy: "unpriced",
-      unreadable: "",
-      note: "atyrode.babel.inference is installed; choose a model to see what it is priced at",
-    },
-  });
+test("every preset answers engine_pending, naming manifold#575 and code#170, and posts nothing", async () => {
+  /*
+    THE ONE THING THIS DOOR DOES. The refusal has to carry both issues because they are what an
+    operator schedules against: manifold#575 is the missing in-process door call and code#170 is
+    the door Babel will call. A refusal that said only "not available" would send him looking.
+  */
+  for (const preset of Object.keys(PRESET_OPERATIONS) as (keyof typeof PRESET_OPERATIONS)[]) {
+    const answer = await start({ preset, sinceDays: 1, draws: 1, minutes: 5 });
+    const refused = String(answer["refused"]);
+    expect(refused).toStartWith("engine_pending:");
+    expect(refused).toContain("Babel runs are Code sessions");
+    expect(refused).toContain("Code's runSession door is not yet available");
+    expect(refused).toContain("atyrode/manifold#575");
+    expect(refused).toContain("atyrode/code#170");
+  }
+  // Nothing was posted, nothing was described, and no run row was invented for a job that does
+  // not exist: a row for a run nobody started is a row an operator waits on for ever.
   expect(fleet.executed).toEqual([]);
   expect(fleet.described).toBe(0);
-  expect((await harness.store.runs({ limit: 25, offset: 0 })).total).toBe(1);
+  expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
 });
 
-test("a preview of the session the operator chose carries its price and its ceiling", async () => {
-  // The sentence above the button and the number the owner enforces come from one place: the
-  // installed policy's price for that exact model, and the ceiling the job request will carry.
-  const answer = await dispatch(ACTIONS.launchPreview, {
-    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
-  });
-
-  expect(answer["session"]).toEqual({
-    serviceId: "atyrode.babel.inference",
-    account: SESSION.account.identityKey,
-    model: SESSION.model,
-    priced: true,
-    price: { inputPerMillion: 2_000_000, outputPerMillion: 10_000_000 },
-    ceilingMicros: 62_500,
-    policy: "priced",
-    unreadable: "",
-    note:
-      `${SESSION.model} is metered at $2.0000 per million input tokens and $10.0000 per million ` +
-      `output, on ${SESSION.account.identityKey}, under a ceiling of $0.0625 for this run`,
-  });
-});
-
-test("a hub that refused Babel's meter kind is reported as unsupported, not as unconfigured", async () => {
-  // #284: on a hub predating manifold#572 `ServicePolicySchema` admits `openai-usage` alone, so
-  // `setupInference` cannot write the policy omp's wire needs and the configuration read shows
-  // the same absence as a machine nobody set up. Telling the operator to run `setupInference`
-  // would be telling him to repeat what the hub just refused — and on that hub the deployment
-  // review refuses Babel's whole machine half over the same missing policy, so the sentence he
-  // needs names the hub, not the machine.
-  servicePolicy = {
-    ok: true,
-    policy: null,
-    setup: {
-      state: "refused",
-      detail:
-        'invalid_value at policies.0.operations.stream.meter.kind: expected "openai-usage"',
-    },
-  };
-
-  const answer = await dispatch(ACTIONS.launchPreview, {
-    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
-  });
-
-  expect(answer["session"]).toMatchObject({
-    policy: "unsupported",
-    priced: false,
-    setupRefusal:
-      'invalid_value at policies.0.operations.stream.meter.kind: expected "openai-usage"',
-  });
-  expect(String((answer["session"] as Record<string, unknown>)["note"])).toContain(
-    "does not know the pi-native-usage meter kind",
-  );
-});
-
-test("an absent policy refused for any other reason reports the hub's own sentence", async () => {
-  servicePolicy = {
-    ok: true,
-    policy: null,
-    setup: { state: "refused", detail: "service_configuration_conflict" },
-  };
-
-  const answer = await dispatch(ACTIONS.launchPreview, {
-    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
-  });
-
-  // Still `missing` — the owner CAN act on it — but never silently: the refusal is the evidence.
-  expect(answer["session"]).toMatchObject({
-    policy: "missing",
-    setupRefusal: "service_configuration_conflict",
-  });
-});
-
-test("an absent policy nobody has tried to install still says setupInference installs one", async () => {
-  servicePolicy = { ok: true, policy: null };
-
-  const answer = await dispatch(ACTIONS.launchPreview, {
-    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
-  });
-
-  expect(answer["session"]).toMatchObject({ policy: "missing" });
-  expect((answer["session"] as Record<string, unknown>)["setupRefusal"]).toBeUndefined();
-});
-
-test("a preview of a deployment that has run nothing states no profile", async () => {
-  const answer = await dispatch(ACTIONS.launchPreview, {
-    machineId: MACHINE, preset: "keep-going", minutes: 30,
-  });
-  expect(answer["profile"]).toBeNull();
-  expect(answer["kind"]).toBe("conductor");
-});
-
-test("keep going starts the beat, under the operator's own minutes, and records the run", async () => {
-  const answer = await start({ preset: "keep-going", minutes: 5 });
-
-  expect(fleet.executed).toHaveLength(1);
-  const launch = fleet.executed[0]!;
-  expect(launch).toMatchObject({
-    jobId: "job_000001",
+test("a request authorized at one node and aimed at another is refused as itself", async () => {
+  // The host discharged the caller's authority at the node in the ARGUMENTS, and a request whose
+  // two halves disagree is a mistake the operator fixes — so it is answered as itself rather
+  // than folded into the engine's absence, which he can do nothing about.
+  const crossed = await dispatch(ACTIONS.launch, {
     machineId: MACHINE,
-    operationId: OPERATIONS.scan,
-    outputs: [{ name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: ["job_000001"] }],
-    installationRevision: "rev-7",
-    artifactSha256: "a".repeat(64),
+    preset: "keep-going",
+    operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.explore },
   });
-  // Five minutes is what he asked for; the operation's own ceiling is what it cannot pass.
-  expect(launch.limits).toEqual({ ...LIMITS, timeoutMs: 300_000 });
-  expect(documentOf(launch)).toEqual({
-    runId: "run_000001", machineId: MACHINE, roots: [], harnesses: [],
-  });
-  expect(answer).toMatchObject({ runId: "run_000001", jobId: "job_000001", kind: "conductor" });
-
-  const runs = await harness.store.runs({ limit: 25, offset: 0 });
-  expect(runs.runs).toHaveLength(1);
-  expect(runs.runs[0]).toMatchObject({
-    id: "run_000001", kind: OPERATIONS.scan, machineId: MACHINE, jobId: "job_000001",
-    state: "running", finishedAt: "",
-  });
-});
-
-test("reading what is new carries the window's sessions and the recipe it was told to run", async () => {
-  cookbook[RECIPE.id] = RECIPE;
-
-  const answer = await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id] });
-
-  expect(answer).toMatchObject({ runId: "run_000001", jobId: "job_000001", kind: "explore" });
-  const launch = fleet.executed[0]!;
-  expect(launch.operationId).toBe(OPERATIONS.explore);
-  const document = documentOf(launch);
-  expect(document).toMatchObject({
-    runId: "run_000001",
-    machineId: MACHINE,
-    engine: { binary: "/runtime/bin/omp", args: [], cwd: "" },
-    // The session travels IN THE DOCUMENT, and the credential does not: the three job inputs
-    // beside it carry the pool and the two home files (#279).
-    session: SESSION,
-    recipes: [RECIPE],
-    stages: ["explore"],
-    caps: { toolCalls: 40, minutes: 0, perRunUsd: 0.0625, idleMs: 120_000, handshakeMs: 30_000 },
-    requireContainment: true,
-  });
-  // The window is the window: the session last seen forty days ago is not in it.
-  expect(document["preparation"]).toEqual({
-    id: "",
-    selection: [
-      { harness: "omp", sourceId: "s1", selector: "omp/s1", digest: "d1", snapshot: "snap-1" },
-    ],
-  });
-  // One job's whole input record is bounded at 64 KiB, and this one is inside it.
-  expect(new TextEncoder().encode(JSON.stringify(launch.input)).byteLength).toBeLessThan(65_536);
-
-  // AND THE MACHINE HALF ACCEPTS THE DOCUMENT THIS DOOR WROTE, parsed by its own schema rather
-  // than compared to a fixture (#284). The blocker this holds: `session` is the operator's
-  // whole `SessionChoice` — provider, scope, credentialId, identityKey — and
-  // `machine/engine/launch.ts` `SessionRefSchema` is strict, so a narrower shape refused every
-  // explore `unrecognized_keys` in `machine/main.ts` before omp was ever launched. The
-  // hand-written session in the machine's own fixtures could not see it; this can only be
-  // wrong if the two halves genuinely disagree.
-  const received = ExploreInputSchema.parse(document);
-  expect(received.session).toEqual(SESSION);
-
-  const run = await harness.store.run("run_000001");
-  expect(run.run).toMatchObject({ recipe: RECIPE.id, kind: OPERATIONS.explore });
-});
-
-test("exploring a topic reads the sessions its own records cite", async () => {
-  cookbook[RECIPE.id] = RECIPE;
-  const { db } = harness;
-  await insert(db, "entities", {
-    id: TOPIC, kind: "repository", name: "tyrode-infra", canonical_id: TOPIC,
-    created_by: "operator", created_at: stamp(NOW - HOUR),
-  });
-  await insert(db, "records", {
-    id: RECORD, kind: "finding", root_id: RECORD, seq: 1, actor_kind: "run", actor_id: "run-old",
-    title: "a finding", created_at: stamp(NOW - HOUR),
-    payload: JSON.stringify({ schema: 1 }),
-  });
-  await insert(db, "filings", {
-    id: "fil_0001", record_id: RECORD, entity_id: TOPIC, rationale: "about this",
-    author_kind: "operator", author_id: "operator", created_at: stamp(NOW - HOUR),
-  });
-  // The cited session is the one last seen forty days ago: a topic's evidence is not a window.
-  await insert(db, "edges", {
-    id: "edg_0001", kind: "cites", from_kind: "finding", from_id: RECORD, to_kind: "session",
-    to_id: "omp/s2", position: 0, actor_kind: "run", actor_id: "run-old",
-    created_at: stamp(NOW - HOUR),
-  });
-
-  await start({ preset: "explore-topic", entityId: TOPIC });
-
-  expect(documentOf(fleet.executed[0]!)["preparation"]).toEqual({
-    id: "",
-    selection: [
-      { harness: "omp", sourceId: "s2", selector: "omp/s2", digest: "d2", snapshot: "" },
-    ],
-  });
-});
-
-test("an explore with no method to run is refused by name, and starts nothing", async () => {
-  const empty = await start({ preset: "read-whats-new", sinceDays: 1 });
-  expect(empty["refused"]).toContain("no cookbook recipe is installed");
-
-  cookbook[RECIPE.id] = RECIPE;
-  const missing = await start({ preset: "read-whats-new", sinceDays: 1, recipes: ["time-and-spend"] });
-  expect(missing["refused"]).toContain("time-and-spend");
+  expect(crossed["refused"]).toContain(OPERATIONS.explore);
+  expect(crossed["refused"]).not.toContain("engine_pending");
   expect(fleet.executed).toEqual([]);
-});
-
-test("an explore over a window holding nothing says so rather than starting an empty run", async () => {
-  cookbook[RECIPE.id] = RECIPE;
-  const answer = await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id] });
-  expect(answer["runId"]).toBe("run_000001");
-
-  const none = await start({
-    machineId: "m-other", preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id],
-  });
-  expect(none["refused"]).toContain("catalogued no session");
-});
-
-test("a preset reads the operator's work: a live session and Babel's own are not in the scope", async () => {
-  cookbook[RECIPE.id] = RECIPE;
-  const { db } = harness;
-  // Both catalogued inside the window, beside `omp/s1`: one still being appended when the scan
-  // saw it, one the transcript of a Babel run (#262).
-  await insert(db, "sessions", {
-    selector: "omp/moving", host: MACHINE, harness: "omp", source_id: "moving", title: "open now",
-    content_digest: "d3", live: 1, seen_at: stamp(NOW - HOUR),
-  });
-  await insert(db, "sessions", {
-    selector: "omp/run-7/explore", host: MACHINE, harness: "omp", source_id: "run-7/explore",
-    title: "babel explore pass", content_digest: "d4", kind: "agent", seen_at: stamp(NOW - HOUR),
-  });
-
-  await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id] });
-  expect(documentOf(fleet.executed[0]!)["preparation"]).toEqual({
-    id: "",
-    selection: [
-      { harness: "omp", sourceId: "s1", selector: "omp/s1", digest: "d1", snapshot: "snap-1" },
-    ],
-  });
-  // What the window HELD is still reported: three catalogued, two of them unreadable by a run.
-  expect(await preparationOf(db, "run_000001")).toMatchObject({ selected: 1, available: 3, excluded: 2 });
-
-  // Asked for on purpose (#270), Babel's own transcript is in the scope — and the live session
-  // is not, because a file whose bytes are still moving is not a scope at any preset's request.
-  await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id], agentSessions: true });
-  // Newest first, which is what puts the run's own transcript ahead of yesterday's session.
-  expect(documentOf(fleet.executed[1]!)["preparation"]).toEqual({
-    id: "",
-    selection: [
-      { harness: "omp", sourceId: "run-7/explore", selector: "omp/run-7/explore", digest: "d4", snapshot: "" },
-      { harness: "omp", sourceId: "s1", selector: "omp/s1", digest: "d1", snapshot: "snap-1" },
-    ],
-  });
-  expect(await preparationOf(db, "run_000002")).toMatchObject({ selected: 2, available: 3, excluded: 1 });
-});
-
-test("a window holding only sessions no run may read says that, not that it is empty", async () => {
-  cookbook[RECIPE.id] = RECIPE;
-  const { db } = harness;
-  await db.run(`UPDATE sessions SET live = 1 WHERE selector = 'omp/s1'`);
-
-  const refused = await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id] });
-  expect(refused["refused"]).toContain("catalogued no session in the last 1 days");
-  expect(refused["refused"]).toContain("1 of 1 catalogued there are still being written");
-  expect(fleet.executed).toEqual([]);
-});
-
-test("a machine that cannot run it refuses the launch and posts nothing", async () => {
-  fleet.readiness = { ...READY, connected: false };
-  expect((await start({ preset: "keep-going" }))["refused"]).toContain("offline");
-
-  fleet.readiness = {
-    ...READY,
-    operations: { [OPERATIONS.scan]: { ready: false, reason: "artifact_missing" } },
-  };
-  const notReady = await start({ preset: "keep-going" });
-  expect(notReady["refused"]).toContain("artifact_missing");
-  expect(fleet.executed).toEqual([]);
-  expect((await harness.store.runs({ limit: 25, offset: 0 })).total).toBe(0);
-});
-
-test("a job the machine refuses leaves no run row behind", async () => {
-  fleet.refusal = "machine_offline";
-  const answer = await start({ preset: "keep-going" });
-  expect(answer["refused"]).toContain("machine_offline");
-  expect((await harness.store.runs({ limit: 25, offset: 0 })).total).toBe(0);
-});
-
-test("a disabled policy starts nothing, and says which policy", async () => {
-  await insert(harness.db, "policies", {
-    version: "p2", seq: 2, actor_id: "operator", reason: "pausing",
-    payload: JSON.stringify({ enabled: false }), recorded_at: stamp(NOW),
-  });
-  const answer = await start({ preset: "keep-going" });
-  expect(answer["refused"]).toContain("p2");
-  expect(fleet.executed).toEqual([]);
-});
-
-test("a drawn preset runs cycles of the loop and answers with the first job drawn", async () => {
-  cycle.reports = [
-    report({
-      requested: [
-        {
-          runId: "run_asg1", jobId: "job_asg1", machineId: MACHINE, claimId: "asg1",
-          recordId: RECORD, role: "reception", lane: "coverage",
-        },
-      ],
-    }),
-    report({ stop: { reason: "per-cycle", detail: "one cycle's allowance is spent" } }),
-  ];
-
-  const answer = await start({ preset: "review-backlog", draws: 3 });
-
-  expect(answer).toMatchObject({ runId: "run_asg1", jobId: "job_asg1", kind: "evaluate" });
-  // The door posts nothing itself: the conductor claims and dispatches, so the ceiling and the
-  // fence are the coordinator's in both paths.
-  expect(fleet.executed).toEqual([]);
-  expect(cycle.ticks).toBe(2);
-});
-
-test("a cycle that draws nothing answers with the reason nothing was drawn", async () => {
-  cycle.reports = [report({ stop: { reason: "no-candidates", detail: "every candidate is resting" } })];
-  const answer = await start({ preset: "file-and-tidy", draws: 2 });
-  expect(answer["refused"]).toContain("every candidate is resting");
-  expect(cycle.ticks).toBe(1);
 });
 
 test("stop cancels the job, closes the run and releases what it reserved", async () => {
@@ -825,18 +327,7 @@ test("a machine that refuses to stop leaves the run open rather than lying about
   expect((await harness.store.run("run_live")).run).toMatchObject({ state: "running" });
 });
 
-test("a request authorized at one node and aimed at another is refused, and reaches nothing", async () => {
-  // The host discharged the caller's authority at the node in the ARGUMENTS. Running the job the
-  // rest of the request describes would be starting something nobody was admitted for, so the
-  // two halves are required to agree.
-  const crossed = await dispatch(ACTIONS.launch, {
-    machineId: MACHINE,
-    preset: "keep-going",
-    operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.explore },
-  });
-  expect(crossed["refused"]).toContain(OPERATIONS.explore);
-  expect(fleet.executed).toEqual([]);
-
+test("a stop authorized at one job and aimed at another reaches nothing", async () => {
   await insert(harness.db, "runs", {
     id: "run_live", kind: OPERATIONS.scan, machine_id: MACHINE, job_id: "job_live",
     started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),

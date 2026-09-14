@@ -3,7 +3,7 @@ import { resetPolledResources } from "@manifold/plugin/hooks";
 import { afterEach, expect, test } from "bun:test";
 import { ACTIONS, DrainStartRequestSchema, OPERATIONS } from "../../contract.ts";
 import { Watch } from "../web.tsx";
-import { BROKER_SCOPE, MACHINES, drainStatus, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
+import { MACHINES, drainStatus, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
 import { choose, click, mount, settle, type, unmountAll } from "./render.tsx";
 
 /*
@@ -68,12 +68,19 @@ async function open(
   await settle();
   return { root, fake };
 }
-
-/** Fills in a startable drain: the machine, the account the broker offers, the model, and why. */
+/**
+ * Fills in a startable drain: the machine, the account the operator names, the model, and why.
+ *
+ * The account is TYPED and not chosen from a list, because Babel reads no broker (#279): the
+ * accounts a machine holds are omp's, reached through Code, and an operator who is draining
+ * one knows which one he is draining.
+ */
 async function compose(root: HTMLElement): Promise<void> {
   await choose(field(root, "Machine"), "m-dev-01");
   await settle();
-  await choose(field(root, "Account"), "7");
+  await type(field(root, "Provider"), "anthropic");
+  await type(field(root, "Credential"), "7");
+  await type(field(root, "Identity key"), "victorballu");
   await type(field(root, "Model"), "anthropic/claude-sonnet-4-5");
   await type(field(root, "Why"), "the 7-day window resets at 13:00Z");
 }
@@ -104,21 +111,17 @@ test("nothing can be started until the account is named: the button says what is
 
   await type(field(root, "Model"), "claude-sonnet-4-5");
   await settle();
-  // A bare model id is the one omp's gateway misses, so it is refused beside the button rather
-  // than at a launch that answers `gateway_unavailable` and says no more.
+  // A bare model id misses the route and the price at once, so it is refused beside the button
+  // rather than at a run that fails on the machine for a reason nobody can read back.
   expect(section(root).textContent).toContain("is not a model reference");
 
   await type(field(root, "Model"), "anthropic/claude-sonnet-4-5");
   await settle();
-  expect(section(root).textContent).toContain("choose the account this run spends");
+  expect(section(root).textContent).toContain("name the account this drain spends");
 
-  // The broker says this one is blocked, and a drain of it would be refused on the machine
-  // after the fan was posted and the overlay set — so it is refused here instead.
-  await choose(field(root, "Account"), "9");
-  await settle();
-  expect(section(root).textContent).toContain("account_blocked");
-
-  await choose(field(root, "Account"), "7");
+  await type(field(root, "Provider"), "anthropic");
+  await type(field(root, "Credential"), "7");
+  await type(field(root, "Identity key"), "victorballu");
   await settle();
   expect(section(root).textContent).toContain("Say why: the reason is recorded on the overlay.");
   expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
@@ -146,9 +149,11 @@ test("the button posts the account, the fan, the deadline and the operation node
     model: "anthropic/claude-sonnet-4-5",
     account: {
       provider: "anthropic",
-      // The scope is the broker's own statement about the observation the row was seen in, so
-      // it is read off the offered account rather than typed by the operator.
-      scope: BROKER_SCOPE,
+      // NO BROKER OBSERVATION TO NAME (#279). Babel reads no accounts: they are omp's, reached
+      // through Code, and what a run is composed from is a Code profile. So the scope is the
+      // one honest tag available — this panel, on this machine — rather than an observation
+      // that never happened.
+      scope: "atyrode.babel.watch/typed/m-dev-01",
       credentialId: "7",
       identityKey: "victorballu",
     },

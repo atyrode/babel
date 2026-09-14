@@ -326,6 +326,6 @@ test("a door that refuses a read leaves the section standing with the hub's sent
   await settle();
 
   expect(root.textContent).toContain("the store is not open yet");
-  expect(root.textContent).toContain("Start something");
+  expect(root.textContent).toContain("Babel runs are Code sessions");
   expect(root.textContent).toContain("Ceilings");
 });

@@ -445,6 +445,13 @@ export const STOP_REASONS = [
   "daily",
   "no-candidates",
   "no-lane",
+  /**
+   * Nothing was drawn because there is nowhere to post it (#279): a Babel run is a Code
+   * session, and Code's `runSession` door does not exist yet. It is the CYCLE's reason and
+   * never a draw's — the coordinator is not asked at all — and it is in this list because the
+   * pulse tallies one vocabulary of reasons and a word outside it would show as nothing.
+   */
+  "engine-pending",
 ] as const;
 export type StopReason = (typeof STOP_REASONS)[number];
 

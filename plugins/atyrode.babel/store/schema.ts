@@ -561,24 +561,6 @@ export const SCHEMA_V1: readonly string[] = [
      updated_at TEXT NOT NULL
    ) STRICT`,
 
-  // ---------------------------------------------------------------- the owner's own acts
-  // WHAT THE HUB ANSWERED THE LAST TIME AN OWNER INSTALLED A SERVICE POLICY HERE (#284).
-  //
-  // One row per machine and service, rewritten by `setupInference`. It exists because an absent
-  // policy has two meanings an operator acts on differently: nobody installed one, or THIS HUB
-  // REFUSED the one Babel offers — which is what a hub predating manifold#572 does with the
-  // `pi-native-usage` meter kind. The configuration read cannot tell them apart (a refused
-  // write leaves nothing behind), so the refusal is recorded where the launch preview can say
-  // it: `detail` is the hub's own sentence, verbatim and bounded by what it sent.
-  `CREATE TABLE service_setup(
-     machine_id TEXT NOT NULL,
-     service_id TEXT NOT NULL,
-     state TEXT NOT NULL CHECK (state IN ('installed', 'refused')),
-     detail TEXT NOT NULL DEFAULT '',
-     observed_at TEXT NOT NULL,
-     PRIMARY KEY (machine_id, service_id)
-   ) STRICT`,
-
   // ---------------------------------------------------------------- a drain (#258)
   // No index: a deployment accumulates drains at the rate an operator decides to spend a
   // window, the running ones are read by `state` over tens of rows, and an index here would be
@@ -648,20 +630,6 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
      seq INTEGER NOT NULL DEFAULT 0,
      stalled INTEGER NOT NULL DEFAULT 0 CHECK (stalled IN (0, 1)),
      updated_at TEXT NOT NULL
-   ) STRICT`,
-  },
-  // #284: what the hub answered the last time an owner installed a service policy here. Same
-  // additive sense again — a build that does not know this table never reads it, and a build
-  // that does reads an empty one as "no owner has tried yet", which is the truth.
-  {
-    table: "service_setup",
-    sql: `CREATE TABLE service_setup(
-     machine_id TEXT NOT NULL,
-     service_id TEXT NOT NULL,
-     state TEXT NOT NULL CHECK (state IN ('installed', 'refused')),
-     detail TEXT NOT NULL DEFAULT '',
-     observed_at TEXT NOT NULL,
-     PRIMARY KEY (machine_id, service_id)
    ) STRICT`,
   },
   // #258: a drain. A whole table again, and the same additive sense: a build that does not know

@@ -9,9 +9,7 @@ import {
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   PANELS,
-  INFERENCE_SERVICE,
-  OMP_INPUT_FILES,
-  OMP_TOOL,
+  MACHINE_OPERATIONS,
   RESTIC_SERVICE,
   RUNTIME_TOOLS,
   WATCH_PLUGIN_ID,
@@ -145,13 +143,12 @@ describe("the machine half is declared as the machine half is built", () => {
   }
 
   test("it declares every operation the machine half implements, in the contract's order", () => {
-    expect(declared).toEqual([
-      OPERATIONS.scan,
-      OPERATIONS.archive,
-      OPERATIONS.prepare,
-      OPERATIONS.explore,
-      OPERATIONS.evaluate,
-    ]);
+    // Three, not five: `explore` and `evaluate` are NAMED by this plugin and DECLARED by
+    // nobody (#279). A Babel run is a Code session — the operator picks a Code profile or
+    // parametrizes one in Code's generator, and Code's `runSession` door posts the omp job —
+    // so neither is an operation of this bundle's machine half any more.
+    expect(declared).toEqual(Object.values(MACHINE_OPERATIONS));
+    expect(declared).toEqual([OPERATIONS.scan, OPERATIONS.archive, OPERATIONS.prepare]);
   });
 
   test("each operation runs the machine half with its own name and one input document", () => {
@@ -214,8 +211,6 @@ describe("the machine half is declared as the machine half is built", () => {
   test("only the operations that reach off the machine are given the network", () => {
     expect(machine.operations[OPERATIONS.scan]?.network).toBe("none");
     expect(machine.operations[OPERATIONS.prepare]?.network).toBe("none");
-    expect(machine.operations[OPERATIONS.explore]?.network).toBe("host");
-    expect(machine.operations[OPERATIONS.evaluate]?.network).toBe("host");
     // archive reaches the repository, and its storage service proxy is loopback HTTP the
     // engine refuses to open without it (`service_proxy_requires_host_network`).
     expect(machine.operations[OPERATIONS.archive]?.network).toBe("host");
@@ -251,91 +246,42 @@ describe("the machine half is declared as the machine half is built", () => {
       .filter((location) => location.access === "write")
       .map((location) => machine.locations[location.locationId]?.guestPath ?? "\0");
     expect(writable.some((guestPath) => cache.startsWith(`${guestPath}/`))).toBe(true);
-    // Archive is no longer the only operation with either: `explore` and `evaluate` bind the
-    // inference service and fix the CA bundle `SSL_CERT_FILE` names (#279). The three that
-    // reach no model and no repository still reach nothing and fix nothing.
-    for (const other of declared.filter(
-      (operation) =>
-        operation !== OPERATIONS.archive &&
-        operation !== OPERATIONS.explore &&
-        operation !== OPERATIONS.evaluate,
-    )) {
+    // Archive is the only operation with either, again (#279): the two that bound the
+    // inference service and fixed the CA bundle `SSL_CERT_FILE` names went with the launcher,
+    // because a run that reaches a model is a job Code posts under Code's own policy.
+    for (const other of declared.filter((operation) => operation !== OPERATIONS.archive)) {
       expect(machine.operations[other]!.services).toBeUndefined();
       expect(machine.operations[other]!.environment).toBeUndefined();
-    }
-    for (const metered of [OPERATIONS.explore, OPERATIONS.evaluate]) {
-      const drives = machine.operations[metered]!;
-      expect(drives.services).toEqual([
-        {
-          serviceId: INFERENCE_SERVICE.serviceId,
-          revision: INFERENCE_SERVICE.revision,
-          operationIds: [...INFERENCE_SERVICE.operationIds],
-        },
-      ]);
-      // The session crosses as two files in the job's PRIVATE HOME, and the binding's bearer is
-      // spliced into one of them by the OWNER — never by Babel, and never into argv.
-      const models = drives.inputFiles?.[OMP_INPUT_FILES.models.name];
-      expect(models?.homePath).toEqual([".omp", "agent", "models.yml"]);
-      expect(models?.jsonValues).toEqual([
-        { path: ["providers", "*", "baseUrl"], serviceId: INFERENCE_SERVICE.serviceId, value: "url" },
-        { path: ["providers", "*", "apiKey"], serviceId: INFERENCE_SERVICE.serviceId, value: "bearer" },
-      ]);
-      expect(drives.inputFiles?.[OMP_INPUT_FILES.config.name]?.homePath).toEqual([
-        ".omp",
-        "agent",
-        "config.yml",
-      ]);
-      expect(Object.keys(drives.environment ?? {})).toEqual(["SSL_CERT_FILE"]);
-      // The whole input record is bounded at 65,536 bytes and so is the owner's
-      // materialization of the home files, so the four fields have to fit inside it together.
-      expect(inputBytes(drives)).toBeLessThanOrEqual(MAX_INPUT_BYTES);
     }
   });
 
   test("the ceiling on a run is the ceiling the operator was promised", () => {
-    // The conductor launches with the operation's own limits; the hub refuses anything above
-    // them. These four numbers are therefore the whole answer to "how long can this run".
+    // The loop launches with the operation's own limits; the hub refuses anything above them.
+    // These three numbers are therefore the whole answer to "how long can this run".
     const minutes = (operation: string): number =>
       machine.operations[operation]!.limits.timeoutMs / 60_000;
     expect(minutes(OPERATIONS.scan)).toBe(10);
     expect(minutes(OPERATIONS.prepare)).toBe(5);
     expect(minutes(OPERATIONS.archive)).toBe(10);
-    expect(minutes(OPERATIONS.explore)).toBe(60);
-    expect(minutes(OPERATIONS.evaluate)).toBe(60);
   });
 
-  test("one tool is pinned — the engine — and every other is the owner's to provide", () => {
+  test("this bundle pins no tool at all: every one is the owner's to provide", () => {
     // A Manifold job sandbox has no libc (docs/SELF-HOST.md: "a dynamically linked executable
     // without its loader cannot run in the empty sandbox"), so `bun`, `git`, `ca-certificates`
     // and the reviewed `system` closure are the owner's, bound WITH their closures; restic
     // cannot be pinned for a second reason — upstream's whole Linux distribution is bare bzip2
     // and the artifact vocabulary takes `raw`, `zip` or `tar.gz` only.
     //
-    // `omp` IS pinned, and it is the one that must be: it is the engine being driven, so a
-    // run's answers come from that exact build (#279). It is url-and-digest, one declaration
-    // per platform, and the digest is the one manifold-omp reviewed at SDK 18.1.14.
-    expect(Object.keys(machine.tools ?? {})).toEqual([OMP_TOOL]);
-    for (const platform of ["linux-x64", "linux-arm64"] as const) {
-      const pinned = machine.tools?.[OMP_TOOL]?.[platform];
-      expect(pinned?.url).toContain("oh-my-pi/releases/download/v18.1.14/");
-      expect(pinned?.sha256).toMatch(/^[0-9a-f]{64}$/);
-      // A `raw` artifact IS its entry, so the two digests are one digest.
-      expect(pinned?.entrySha256).toBe(pinned?.sha256 ?? "");
-    }
+    // `omp` WAS pinned, by url and digest, because #284 had Babel driving that exact build.
+    // Babel drives no engine now (#279): a run that reaches a model is a Code session, and the
+    // build that answers it is pinned by whoever posts it. A pin here would be a second one.
+    expect(machine.tools).toBeUndefined();
     for (const operation of declared) {
       for (const alias of machine.operations[operation]!.runtimeTools) {
         expect(RUNTIME_TOOLS as readonly string[]).toContain(alias);
       }
     }
     expect(machine.operations[OPERATIONS.archive]!.runtimeTools).toEqual(["bun", "restic"]);
-    // The engine is bound where `server/plan.ts` says it is, and only where a model is reached.
-    for (const metered of [OPERATIONS.explore, OPERATIONS.evaluate]) {
-      expect(machine.operations[metered]!.runtimeTools).toContain(OMP_TOOL);
-      expect(machine.operations[metered]!.executable?.runtimeTool).toBe("bun");
-    }
-    for (const other of [OPERATIONS.scan, OPERATIONS.prepare, OPERATIONS.archive]) {
-      expect(machine.operations[other]!.runtimeTools).not.toContain(OMP_TOOL);
-    }
   });
 
   test("the machine half is carried in the bundle, one raw artifact per platform", () => {

@@ -1,5 +1,5 @@
 import {
-  OPERATIONS,
+  MACHINE_OPERATIONS,
   RESTIC_CREDENTIAL_FILE,
   type OperationWord,
   type Receipt,
@@ -11,12 +11,19 @@ import { claim, discover, existingRoots } from "./adapters/index.ts";
 /*
   THE MACHINE HALF'S ENTRY POINT (plan §2, §4).
 
-  One binary, five operations, one shape each: read a JSON input document, write the
+  One binary, three operations, one shape each: read a JSON input document, write the
   JOB_OUTPUT_FILES of what you produced into an output directory, hand the receipt to the sink
   last and return it. This file is the dispatcher and nothing else — it holds no knowledge of
   what an operation does, only where its input and its outputs are and which module owns it.
 
     babel-machine <operation> --input <file> --out <directory>
+
+  WHAT IS NOT HERE: `explore` and `evaluate` (#279). A run that reaches a model is a Code
+  session — the operator picks a saved Code profile or parametrizes one in Code's generator,
+  and Code's `runSession` door posts the omp job (atyrode/code#170, through
+  atyrode/manifold#575). Babel neither composes a session nor launches omp, so the two lanes
+  that did are not operations of this binary. What remains is the catalog: what is on the
+  machine, what a run may read, and what is kept.
 
   A job supplies both paths through its bindings; the environment variables are the same two
   values for a hand-run on a machine, as `BABEL_RESTIC_BINDING` is for the one operation that
@@ -24,9 +31,9 @@ import { claim, discover, existingRoots } from "./adapters/index.ts";
   which is what makes the file work identically under `bun machine/main.ts scan …` (where
   argv[1] is this script) and as a compiled binary (where argv[1] is already the operation).
 
-  Every operation module is imported on demand. That is not laziness: five operations mean five
-  dependency trees — restic, the engine client, the store's shapes — and a scan that ran on a
-  schedule should not pay for the four it is not.
+  Every operation module is imported on demand. That is not laziness: three operations mean
+  three dependency trees — restic, the digesters, the store's shapes — and a scan that ran on a
+  schedule should not pay for the two it is not.
 
   A crash still leaves a receipt. An operation that throws has its failure written as
   closure:"failed" with the reason, because the hub learns what a run did from the receipt and
@@ -39,15 +46,14 @@ export interface Invocation {
   outputDir: string;
 }
 
-const USAGE = `babel-machine <${Object.keys(OPERATIONS).join("|")}> --input <file> --out <directory>`;
+const USAGE = `babel-machine <${Object.keys(MACHINE_OPERATIONS).join("|")}> --input <file> --out <directory>`;
 
 /**
  * Each operation parses its own input with its own schema; only the module knows the shape.
  *
  * The modules are loaded dynamically because the operation is selected from argv at runtime
- * and each one pulls in a dependency tree of its own — restic for `archive`, the engine's RPC
- * client for `explore` and `evaluate`. A static import graph would make every scheduled scan
- * load all five.
+ * and each one pulls in a dependency tree of its own — restic for `archive`, the digesters for
+ * `prepare`. A static import graph would make every scheduled scan load all three.
  */
 const DISPATCH: Record<
   OperationWord,
@@ -70,14 +76,6 @@ const DISPATCH: Record<
   prepare: async (raw, out, progress) => {
     const { PrepareInputSchema, prepare, digests, modifiedAt } = await import("./prepare.ts");
     return prepare(PrepareInputSchema.parse(raw), out, { discover, digests, modifiedAt, progress });
-  },
-  explore: async (raw, out, progress) => {
-    const { ExploreInputSchema, explore } = await import("./explore.ts");
-    return explore(ExploreInputSchema.parse(raw), out, { progress });
-  },
-  evaluate: async (raw, out, progress) => {
-    const { EvaluateInputSchema, evaluate } = await import("./evaluate.ts");
-    return evaluate(EvaluateInputSchema.parse(raw), out, { progress });
   },
 };
 
@@ -102,7 +100,7 @@ export function parseArgv(argv: readonly string[]): Invocation {
     }
     if (argument.startsWith("-")) throw new Error(`unknown flag ${argument}\n${USAGE}`);
     if (operation !== null) throw new Error(`unexpected argument ${argument}\n${USAGE}`);
-    if (!(argument in OPERATIONS)) throw new Error(`unknown operation ${argument}\n${USAGE}`);
+    if (!(argument in MACHINE_OPERATIONS)) throw new Error(`unknown operation ${argument}\n${USAGE}`);
     operation = argument as OperationWord;
   }
   if (operation === null) throw new Error(`no operation named\n${USAGE}`);

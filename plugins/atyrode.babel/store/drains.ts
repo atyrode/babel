@@ -14,7 +14,7 @@ import {
   type DrainTarget,
   type SessionChoice,
 } from "../contract.ts";
-import { refusalCode } from "../machine/engine/results.ts";
+import { refusalCode } from "../machine/results.ts";
 
 /*
   THE DRAIN'S OWN ROWS (#258): one table, read and written here and nowhere else.
