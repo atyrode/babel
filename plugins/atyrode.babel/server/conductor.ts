@@ -3,6 +3,7 @@ import type { SqlParam, SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
 import {
   BABEL_PLUGIN_ID,
+  ENGINE_PENDING,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
   OPERATIONS,
@@ -11,13 +12,10 @@ import {
   RUN_STAGES,
   ReceiptSchema,
   type Receipt,
-  type SessionChoice,
 } from "../contract.ts";
-import { perMachineBound } from "../store/coordinator.ts";
-import type { Assignment, Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
+import type { Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
 import { refuseRow, type RowRefusal } from "../store/acts.ts";
-import { launchProfile, sessionInputs } from "./plan.ts";
-import { refusalCode, type RefusalCode } from "../machine/engine/results.ts";
+import { refusalCode, type RefusalCode } from "../machine/results.ts";
 import type { BabelStore } from "../store/store.ts";
 
 /*
@@ -318,41 +316,14 @@ export interface KeysSlice {
 
 // ---------------------------------------------------------------------------- what a run needs
 
-export interface Recipe {
-  readonly id: string;
-  readonly version: number;
-  readonly title: string;
-  readonly body: string;
-}
-
 /**
- * What a drawn review needs that is neither store state nor a coordinator decision: the engine
- * to drive, the profile it runs under, the caps it runs inside, and the cookbook recipe each
- * role performs. It is configuration the plugin's wiring holds, passed in rather than read
- * here, for the reason the Go loop never configured a profile either — a loop that could mint
- * its own profile or its own recipe would be choosing its own spending limit and its own
- * question.
+ * What the loop needs that is neither store state nor a coordinator decision. It is two facts
+ * now, and the shrinkage is the point (#279): a run that reaches a model is a CODE session, so
+ * the engine to drive, the model, the account, the caps and the containment demand are Code's
+ * and this loop states none of them. What is left is what the loop still posts itself — the
+ * beat — and what it still has to judge about a settled run.
  */
 export interface RunPlan {
-  readonly engine: { readonly binary: string; readonly args?: readonly string[] | undefined };
-  /**
-   * WHO ANSWERS AND ON WHOSE ACCOUNT, or null when this deployment has named nobody (#279).
-   *
-   * It replaces the Code profile reference: there is no engine to resolve one, so a run states
-   * its model, its thinking level and the account it spends, and `plan.ts` explains why the
-   * standing value is null. A drawn review dispatched with no session is REFUSED BY NAME
-   * (`no-session`) rather than launched: a run with no account to spend cannot reach a model,
-   * and a claim taken for it would be a batch slot held by nothing.
-   */
-  readonly session: SessionChoice | null;
-  readonly caps: {
-    readonly perRunUsd: number;
-    readonly toolCalls: number;
-    readonly idleMs: number;
-    readonly handshakeMs: number;
-  };
-  /** The recipe a role performs. A role with none is never dispatched, and says so. */
-  readonly recipes: Readonly<Record<string, Recipe>>;
   /**
    * WHETHER A RUN OF THIS OPERATION IS ONE THE OWNER METERS, by operation id.
    *
@@ -362,12 +333,11 @@ export interface RunPlan {
    * (`agent/src/job-owner.ts` `prepareServiceProxies`). The second half of that is the
    * OPERATOR's, in a policy no server half can read, so `true` here is "the hub may meter this"
    * and never "the hub is metering this" — which is why the fold also accepts a call it has
-   * already counted as proof. An operation that binds nothing can never be metered, and that is
-   * the half worth knowing: until #256 binds the inference service, every review and every
-   * exploration reaches the model through the engine's own credential and is never judged.
+   * already counted as proof. An operation that binds nothing can never be metered, and no
+   * operation this bundle declares binds one: a receipt from a run Code posted is metered by
+   * the policy CODE's job carries, and the fold reads that off the job it settles.
    */
   readonly metered: Readonly<Record<string, boolean>>;
-  readonly requireContainment: boolean;
   readonly limits: JobLimits;
 }
 
@@ -384,16 +354,6 @@ export interface ConductorDeps {
 
 // ---------------------------------------------------------------------------- the report
 
-/**
- * WHERE A CYCLE MAY PUT A JOB: the machines it found online with the operation ready, and how
- * many assignments each of them may hold at once (#260). The coordinator is told the list so a
- * fleet's cap is the sum over it; the dispatcher is told the bound so no one host takes the
- * fleet's whole allowance.
- */
-interface Admission {
-  readonly machines: readonly string[];
-  readonly bound: number;
-}
 
 export type ScheduleState = "registered" | "kept" | "unregistered" | "absent";
 
@@ -462,7 +422,7 @@ export interface Park {
  * report itself.
  *
  * `refusals` counts the submissions the review contract refused, by the code
- * `machine/engine/results.ts` names — the receipt's own `reason` for a run that was paid for and
+ * `machine/results.ts` names — the receipt's own `reason` for a run that was paid for and
  * refused at submit, and the store's verdict on a row it would not write. Those are not
  * failures of the loop: they are money spent on an answer that did not stand, which is what the
  * 2026-09-13 drain could not see (F8, F16).
@@ -1201,23 +1161,6 @@ type MachineRow = { machineId: string };
 type Existing = { id: string };
 /** One folder of one machine that no hub-side answer has been written for yet. */
 type UnidentifiedFolder = { machineId: string; workspace: string };
-type RecordRow = {
-  id: string;
-  kind: string;
-  root_id: string;
-  parent_id: string | null;
-  title: string;
-  created_at: string;
-  payload: string;
-};
-type SourceRow = {
-  selector: string;
-  /** `edges.position`, an INTEGER column: a bigint here, and a job input has to be JSON. */
-  position: number | bigint | null;
-  note: string | null;
-  digest: string | null;
-  snapshot: string | null;
-};
 /**
  * One settled claim and what the job behind it is known to have done, for the park heuristic.
  * The claim says how it closed; the run row says whether a model ever answered — its cost, its
@@ -1316,24 +1259,6 @@ export function conductor(deps: ConductorDeps): Conductor {
   }
 
   /**
-   * Every machine this cycle could dispatch to, which is what makes the batch a PER-MACHINE
-   * bound rather than a deployment-wide one (#260): the coordinator multiplies its bound by
-   * this list's length, and refuses naming the machines that are full. The readiness cache is
-   * the tick's own, so asking for the list costs the describes `machineFor` would have made
-   * anyway.
-   */
-  async function onlineMachines(
-    seen: Map<string, MachineReadiness | null>,
-    operationId: string,
-  ): Promise<string[]> {
-    const online: string[] = [];
-    for (const machineId of await knownMachines()) {
-      if (usable(await readiness(seen, machineId), operationId)) online.push(machineId);
-    }
-    return online;
-  }
-
-  /**
    * Where the work belongs: the machine holding the sessions the record cites, because that is
    * where the evidence can be read, and the one that holds most of them first. Failing that, any
    * enrolled machine that is online with the operation ready — a review of a record whose
@@ -1373,56 +1298,6 @@ export function conductor(deps: ConductorDeps): Conductor {
       return { machineId, readiness: described };
     }
     return null;
-  }
-
-  /**
-   * The blinded target (§E3): what the record says, and nothing about how it has been received.
-   * The projection reads the record and the sessions it cites; it never reads a tally, a
-   * ranking, a disposition or another assessment, so a blinded role cannot be shown one.
-   */
-  async function project(recordId: string): Promise<{
-    target: Record<string, unknown>;
-    sources: Record<string, unknown>[];
-  } | null> {
-    const found = await store.db.query<RecordRow>(
-      `SELECT id, kind, root_id, parent_id, title, created_at, payload FROM records WHERE id = ?`,
-      [recordId],
-    );
-    const record = found[0];
-    if (record === undefined) return null;
-    let payload: unknown = {};
-    try {
-      payload = JSON.parse(record.payload);
-    } catch {
-      payload = {};
-    }
-    const cited = await store.db.query<SourceRow>(
-      `SELECT e.to_id AS selector, e.position AS position, e.note AS note,
-              s.content_digest AS digest, s.snapshot_id AS snapshot
-         FROM edges e LEFT JOIN sessions s ON s.selector = e.to_id
-        WHERE e.from_id = ? AND e.kind = 'cites' AND e.to_kind = 'session'
-        ORDER BY e.position, e.to_id`,
-      [recordId],
-    );
-    return {
-      target: {
-        id: record.id,
-        kind: record.kind,
-        rootId: record.root_id,
-        parentId: record.parent_id ?? "",
-        title: record.title,
-        createdAt: record.created_at,
-        payload,
-      },
-      sources: cited.map((row) => ({
-        kind: "session",
-        selector: row.selector,
-        digest: row.digest ?? "",
-        snapshot: row.snapshot ?? "",
-        note: row.note ?? "",
-        position: Number(row.position ?? 0),
-      })),
-    };
   }
 
   /**
@@ -2102,206 +1977,6 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (identified > 0) store.touch();
   }
 
-  /** One drawn review, turned into a claimed job on a machine — or a refusal that says why. */
-  async function dispatch(
-    assignment: Assignment,
-    cycleRunId: string,
-    at: number,
-    seen: Map<string, MachineReadiness | null>,
-    admission: Admission,
-    requested: RequestedJob[],
-    refused: RefusedDraw[],
-  ): Promise<void> {
-    const recipe = plan.recipes[assignment.role];
-    if (recipe === undefined) {
-      refused.push({
-        assignmentId: assignment.id,
-        recordId: assignment.recordId,
-        reason: "no-recipe",
-        detail: `no cookbook recipe runs the ${assignment.role} role`,
-      });
-      return;
-    }
-    // A DRAW WITH NO SESSION IS REFUSED BEFORE A CLAIM IS TAKEN (#279). There is no engine to
-    // resolve a profile into a model and an account any more, so a run that cannot name either
-    // has no route to a model at all — and a claim held for it would be a batch slot spent on
-    // nothing, which is exactly the shape of the ghosts of 2026-09-13.
-    const session = plan.session;
-    if (session === null) {
-      refused.push({
-        assignmentId: assignment.id,
-        recordId: assignment.recordId,
-        reason: "no-session",
-        detail:
-          "this deployment names no model and no account for an autonomous draw, so nothing " +
-          "was launched; an operator's own launch carries its own session",
-      });
-      return;
-    }
-    const projection = await project(assignment.recordId);
-    if (projection === null) {
-      refused.push({
-        assignmentId: assignment.id,
-        recordId: assignment.recordId,
-        reason: "no-record",
-        detail: "the drawn record is not in the store",
-      });
-      return;
-    }
-    const operationId = OPERATIONS.evaluate;
-    // The open slots are re-read per dispatch, because the claims this cycle has already taken
-    // fill them: a cycle that read them once would put its whole batch on one machine.
-    const open = await coordinator.open(at);
-    const host = await machineFor(
-      seen,
-      operationId,
-      assignment.recordId,
-      (machineId) => (open.byMachine[machineId] ?? 0) < admission.bound,
-    );
-    if (host === null) {
-      const full = admission.machines.filter(
-        (machineId) => (open.byMachine[machineId] ?? 0) >= admission.bound,
-      );
-      refused.push({
-        assignmentId: assignment.id,
-        recordId: assignment.recordId,
-        reason: "no-machine",
-        detail:
-          full.length > 0 && full.length === admission.machines.length
-            ? `no online machine has a free slot under the bound of ${String(admission.bound)}: ${full.join(", ")}`
-            : `no online machine has ${operationId} ready`,
-      });
-      return;
-    }
-    // Both ids are derived from the assignment, which is itself deterministic: a cycle that is
-    // retried claims the same claim and asks for the same job rather than running it twice.
-    const jobId = `job_${assignment.id}`;
-    const runId = `run_${assignment.id}`;
-    const claimed = await coordinator.claim({ assignment, runId: cycleRunId, jobId, now: at });
-    if (claimed.outcome === "refused") {
-      refused.push({
-        assignmentId: assignment.id,
-        recordId: assignment.recordId,
-        reason: claimed.refusal.reason,
-        detail: claimed.refusal.detail,
-      });
-      return;
-    }
-    const claim = claimed.claim;
-    const document = {
-      runId,
-      machineId: host.machineId,
-      engine: { binary: plan.engine.binary, args: plan.engine.args ?? [] },
-      session,
-      assignment: {
-        id: claim.id,
-        recordId: assignment.recordId,
-        revisionId: assignment.recordId,
-        rootId: assignment.rootId,
-        kind: assignment.kind,
-        role: assignment.role,
-        lane: assignment.lane,
-        policyVersion: assignment.policyVersion,
-        fence: claim.fence,
-        ordinal: assignment.ordinal,
-        seed: assignment.seed,
-        inputDigest: assignment.inputDigest,
-        blinded: true,
-        expiresAt: new Date(claim.expiresAt).toISOString(),
-      },
-      target: projection.target,
-      sources: projection.sources,
-      recipe,
-      caps: {
-        ...plan.caps,
-        perRunUsd: claim.reservedCost > 0 ? claim.reservedCost : plan.caps.perRunUsd,
-      },
-      requireContainment: plan.requireContainment,
-    };
-    const installation = host.readiness.installation;
-    // THE CLAIM IS TAKEN BEFORE THE JOB EXISTS, so a posting that does not land leaves a grant
-    // with no worker behind it. It is abandoned here, in the same breath: the reaper would get
-    // it eventually, but "eventually" is one whole lease — an hour on 2026-09-13 — during which
-    // a quarter of the cycle's batch belongs to a job that was never started. A refusal is
-    // final in both shapes the slice has: a throw, and a state the machine already closed.
-    let posted: JobRunState | null = null;
-    let refusal: string | null = null;
-    try {
-      posted = await jobs.execute({
-        jobId,
-        machineId: host.machineId,
-        operationId,
-        input: { [INPUT_FIELD]: JSON.stringify(document), ...sessionInputs(session) },
-        outputs: [{ name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [jobId] }],
-        limits: plan.limits,
-        ...(installation === null
-          ? {}
-          : {
-              installationRevision: installation.revision,
-              artifactSha256: installation.artifactSha256,
-            }),
-      });
-    } catch (error) {
-      refusal = message(error);
-    }
-    if (refusal === null && posted !== null && posted.state === "refused") {
-      // A refusal the hub NAMES is the one worth reporting: `concurrency_limit` says the fleet
-      // is at the ceiling this plugin's manifest declared, which is a bound to raise or a
-      // drain to slow, while "dev-01 refused job_…" is a sentence nobody can act on.
-      const named = posted.authority?.decision?.refusal ?? null;
-      refusal =
-        posted.result?.reason ??
-        (named === null ? `${host.machineId} refused ${jobId}` : `${host.machineId} refused ${jobId}: ${named}`);
-    }
-    if (refusal !== null) {
-      const abandoned = await release(claim, `the job was never posted: ${refusal}`);
-      refused.push({
-        assignmentId: assignment.id,
-        recordId: assignment.recordId,
-        reason: "refused-job",
-        detail:
-          abandoned.refused === null
-            ? refusal
-            : `${refusal}; the claim also refused ${abandoned.refused}`,
-      });
-      return;
-    }
-    await store.db.run(
-      `INSERT INTO runs(id, kind, machine_id, job_id, recipe_id, profile, authority_kind,
-                        authority_id, preparation, started_at, records, payload)
-       VALUES (?, ?, ?, ?, ?, ?, 'policy', ?, ?, ?, 0, ?)
-       ON CONFLICT(id) DO NOTHING`,
-      [
-        runId,
-        operationId,
-        host.machineId,
-        jobId,
-        recipe.id,
-        JSON.stringify(launchProfile(session)),
-        assignment.policyVersion,
-        JSON.stringify({
-          claimId: claim.id,
-          cycleRunId,
-          lane: assignment.lane,
-          role: assignment.role,
-          recordId: assignment.recordId,
-        }),
-        new Date(at).toISOString(),
-        JSON.stringify({ closure: null, requestedAt: at }),
-      ],
-    );
-    store.touch();
-    requested.push({
-      runId,
-      jobId,
-      machineId: host.machineId,
-      claimId: claim.id,
-      recordId: assignment.recordId,
-      role: assignment.role,
-      lane: assignment.lane,
-    });
-  }
-
   /**
    * WHETHER THE LOOP IS PARKED, read off the spend ledger rather than counted in a process.
    *
@@ -2460,57 +2135,30 @@ export function conductor(deps: ConductorDeps): Conductor {
       // asked here, after the rows exist and before this cycle spends anything.
       await identifyFolders(notes);
 
-      // WHETHER TO DRAW AT ALL is the loop's own question, asked after the settlements of this
-      // cycle are in the ledger — a review that was paid for and refused is in it too, and it is
-      // what keeps a refused recipe from reading as a broken lane.
+      // WHETHER THE LOOP IS PARKED is still asked, and still recorded, because it is read off
+      // the spend ledger of the runs that did happen — a review that was paid for and refused
+      // is in it too, and the park heuristic is what keeps that from reading as a broken lane.
       const parked = await parkState(policy, at);
       if (parked !== null) notes.push(`the loop is parked: ${parked.reason}`);
 
-      // Draw until the coordinator says stop — and not at all while the loop is parked, which
-      // asks it nothing rather than asking and declining, because the refusal would be the
-      // loop's own and would read in the pulse as a coordinator's. It owns the batch, the
-      // per-cycle and the daily bound; the loop's own bound is that a cycle never draws the
-      // same assignment twice, so a draw the hub cannot dispatch ends the cycle rather than
-      // spinning on it.
-      const seen = new Map<string, MachineReadiness | null>();
-      // The machines this cycle could dispatch to, read once: the coordinator's batch is a
-      // per-machine bound and the deployment's cap is that bound over this list (#260), so a
-      // draw that did not know the fleet would admit one machine's worth for the whole of it.
-      const admission: Admission = {
-        machines: parked === null ? await onlineMachines(seen, OPERATIONS.evaluate) : [],
-        bound: perMachineBound(policy),
-      };
-      const drawn = new Set<string>();
-      let stop: Stop | null = null;
-      let gaps: readonly Gap[] = [];
-      while (parked === null) {
-        const draw = await coordinator.draw({
-          runId: cycleRunId,
-          now: at,
-          machines: admission.machines,
-        });
-        gaps = draw.gaps;
-        if (draw.outcome === "gap") {
-          stop = draw.gap;
-          break;
-        }
-        const assignment = draw.assignment;
-        if (drawn.has(assignment.id)) {
-          stop = {
-            reason: "no-candidates",
-            detail: `the cycle redrew ${assignment.id}, which it could not dispatch`,
-          };
-          break;
-        }
-        drawn.add(assignment.id);
-        await dispatch(assignment, cycleRunId, at, seen, admission, requested, refused);
-      }
-      // The reasons this cycle did not spend, counted once: the stop that ended the drawing and
-      // the candidates the last draw declined. Only the LAST draw's gaps are counted, because
-      // the coordinator re-declines the same candidate on every draw of a cycle and a tally
-      // that added them up would report one held record as five.
-      if (stop !== null) count(gapsByReason, stop.reason);
-      for (const gap of gaps) count(gapsByReason, gap.reason);
+      /*
+        AND THEN NOTHING IS DRAWN, because there is nowhere to post it (#279).
+
+        A drawn review used to become an `atyrode.babel.evaluate` job this loop launched. Babel
+        launches nothing now: a run that reaches a model is a Code session, composed from a Code
+        profile or in Code's generator and posted through Code's own `runSession` door. Drawing
+        anyway would claim a record under a fence, hold a batch slot for a lease, and then
+        abandon it once the posting refused — which is the ghost-claim shape of 2026-09-13, for
+        work nobody could have done. So the cycle states the one true reason it spent nothing
+        and asks the coordinator for no candidate at all.
+
+        Everything above this line still runs: the settlements, the reaper, the beat, the
+        folders, the pulse. The loop is intact and idle, not dismantled.
+      */
+      const stop: Stop = { reason: "engine-pending", detail: ENGINE_PENDING };
+      const gaps: readonly Gap[] = [];
+      // The reason this cycle did not spend, counted once.
+      count(gapsByReason, stop.reason);
       const tick = { gaps: tallied(gapsByReason), refusals: tallied(refusals) };
 
       return {

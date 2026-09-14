@@ -11,9 +11,9 @@ import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/p
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
-  OPERATIONS,
+  DRAIN_CONCURRENT_MAX,
+  MACHINE_OPERATIONS,
   type OperationName,
-  type SessionChoice,
 } from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
 import { launchMachinery, type LaunchDeps } from "./doors/launch.ts";
@@ -24,10 +24,8 @@ import {
   type JobsSlice,
   type KeysSlice,
   type MachinesSlice,
-  type Recipe,
   type RunPlan,
 } from "./server/conductor.ts";
-import { lastServiceSetup } from "./server/inference.ts";
 import {
   ENABLE_WITHOUT_JOBS,
   HOOK_WITHOUT_MACHINES,
@@ -35,8 +33,6 @@ import {
   jobsSlice,
   machinesSlice,
   runPlan,
-  servicesSlice,
-  STANDING_SESSION,
   unaskable,
   unauthorized,
   type BabelJobs,
@@ -137,47 +133,30 @@ const keys: KeysSlice = {
 const store = openStore(database);
 const manifest = PluginManifestSchema.parse(manifestJson);
 /**
- * THE CEILING, READ ONCE, FROM THE MANIFEST THIS BUNDLE SHIPS. `limits.concurrentJobs` on
- * explore and evaluate is what a machine will actually run at once, and the hub refuses the
- * rest at `execute`; the coordinator governs inside it and the acts that write a bound refuse
- * above it, so the hub-side governor and the machine-side ceiling are one number rather than
- * two that drift (#281).
+ * THE CEILING, READ ONCE, FROM THE MANIFEST THIS BUNDLE SHIPS: `limits.concurrentJobs` on the
+ * operations it declares, or `null` when none of them declares one, which is the state today
+ * (#279) — the two that did were the two a launcher posted. The coordinator governs inside it
+ * and the acts that write a bound refuse above it, so the hub-side governor and the
+ * machine-side ceiling are one number rather than two that drift (#281); where there is no
+ * number, there is no bound, and no policy is refused against one nobody wrote.
  */
 const CONCURRENT_JOBS = jobCeiling(manifest);
+/**
+ * WHAT BOUNDS A DRAIN'S FAN while no operation declares a ceiling: the contract's own
+ * `DRAIN_CONCURRENT_MAX`, which is what `DrainStartRequestSchema` already admits. A door that
+ * took `null` as "unbounded" would let one machine be asked for any number of jobs at once.
+ */
+const DRAIN_FAN = CONCURRENT_JOBS ?? DRAIN_CONCURRENT_MAX;
 const coordinated = coordinator(store, () => store.now(), CONCURRENT_JOBS);
 
 /**
- * THE COOKBOOK THIS HUB HOLDS, and the recipe each review role performs.
- *
- * Both are empty, and that is a statement rather than a stub: a recipe's BODY is the method a
- * run performs, `cookbook/recipes` in this repository is 273 KB of markdown against the
- * 65,536-byte ceiling on one job's whole input record, and neither the store (there is no
- * table) nor the policy (`PolicySchema` is strict) carries one. So nothing here can name a
- * method, and the two places that would use one refuse BY NAME instead of inventing it: the
- * launch door tells the operator no cookbook is installed, and a drawn review is reported as
- * `no-recipe` in the cycle's own report. Installing a cookbook is one wiring change here.
+ * WHAT A RUN OF AN OPERATION RUNS UNDER: its declared limits, and whether the owner may meter
+ * it. Neither a cookbook nor a session is here any more (#279) — the method a run performs and
+ * the model it performs it with belong to the Code profile the operator picks, and Code's own
+ * `runSession` door is what posts the job.
  */
-const COOKBOOK: Readonly<Record<string, Recipe>> = {};
-const ROLE_RECIPES: Readonly<Record<string, string>> = {};
-
-/**
- * THE SESSION AN AUTONOMOUS DRAW RUNS UNDER. `STANDING_SESSION` is null and `server/plan.ts`
- * says why: an account is a row in one machine's broker and cannot be a constant in a
- * repository. Naming one here is the same one-line wiring change as installing a cookbook.
- */
-function planFor(
-  policy: Policy,
-  operationId: OperationName,
-  session?: SessionChoice | undefined,
-): RunPlan {
-  return runPlan({
-    manifest,
-    policy,
-    cookbook: COOKBOOK,
-    roles: ROLE_RECIPES,
-    operationId,
-    session: session ?? STANDING_SESSION,
-  });
+function planFor(policy: Policy, operationId: OperationName): RunPlan {
+  return runPlan({ manifest, policy, operationId });
 }
 
 function loop(jobs: JobsSlice, machines: MachinesSlice, plan: RunPlan): Conductor {
@@ -193,24 +172,14 @@ function loop(jobs: JobsSlice, machines: MachinesSlice, plan: RunPlan): Conducto
 }
 
 /**
- * WHAT EVERY START REACHES THE WORLD THROUGH, declared once. The doors and the drain's
- * controller take the SAME object: two of them would be two answers to what a run is — which
- * document it carries, which ceiling it inherits, which row it leaves behind (`doors/launch.ts`).
+ * WHAT A START AND A STOP REACH THE WORLD THROUGH, declared once. The doors and the drain's
+ * controller take the SAME object: two of them would be two answers to what a run is. Today
+ * both answers are one refusal — a Babel run is a Code session and Code's door does not exist
+ * yet (`doors/launch.ts`) — and the object is the seam that call is wired into.
  */
 const LAUNCH_DEPS: LaunchDeps = {
   coordinator: coordinated,
-  cookbook: COOKBOOK,
   jobs: (ctx) => jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
-  machines: (ctx) => machinesSlice(ctx.machines),
-  // The preview's second reader (#284): when the machine holds no inference policy, what the
-  // hub answered the last time an owner tried to install one is what decides whether the
-  // sentence is "install one" or "this hub does not know the meter kind".
-  services: (ctx) =>
-    servicesSlice(ctx.services, (machineId, serviceId) =>
-      lastServiceSetup(store, machineId, serviceId),
-    ),
-  plan: planFor,
-  cycle: loop,
   now: () => store.now(),
 };
 
@@ -245,7 +214,9 @@ function draining(jobs: BabelJobs): DrainDeps {
  */
 async function cycle(jobs: BabelJobs, machines: MachinesSlice): Promise<void> {
   const policy = (await coordinated.policy()).policy;
-  await loop(jobs, machines, planFor(policy, OPERATIONS.evaluate)).tick();
+  // The beat is the only job this loop still posts itself, so its operation is what the plan's
+  // limits are read for; a run that reaches a model is Code's to post (#279).
+  await loop(jobs, machines, planFor(policy, MACHINE_OPERATIONS.scan)).tick();
   for (const report of await drainTick(draining(jobs))) {
     for (const note of report.notes) {
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
@@ -306,7 +277,7 @@ const doors = babelDoors(
     coordinator: coordinated,
     deps: (ctx) =>
       draining(jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive))),
-    concurrentJobs: CONCURRENT_JOBS,
+    concurrentJobs: DRAIN_FAN,
     now: () => store.now(),
   },
   CONCURRENT_JOBS,

@@ -206,7 +206,7 @@ export const DEFAULT_POLICY: Policy = PolicySchema.parse({});
  * reservation and produces no review. The coordinator is the governor; it may not govern above
  * the number the machine half will actually run.
  */
-export function validatePolicy(policy: Policy, concurrentJobs: number): string | null {
+export function validatePolicy(policy: Policy, concurrentJobs: number | null): string | null {
   if (policy.version.trim() === "") return "a policy has no version";
   if (policy.cadenceSeconds <= 0) return `cadence ${String(policy.cadenceSeconds)}s must be positive`;
   if (policy.overdueSeconds <= 0) {
@@ -251,7 +251,12 @@ export function validatePolicy(policy: Policy, concurrentJobs: number): string |
   if (bound < 1) {
     return `${String(bound)} concurrent assignments per machine is below one`;
   }
-  if (bound > concurrentJobs) {
+  // NULL IS "NO DECLARED CEILING", AND THERE IS NOTHING TO JUDGE AGAINST (#279). The bound
+  // exists because the hub refuses postings past an operation's `limits.concurrentJobs`; no
+  // operation this bundle declares states one any more, so there is no such refusal to
+  // protect an operator from. Standing a number in here would refuse his policy citing a
+  // manifest that says nothing.
+  if (concurrentJobs !== null && bound > concurrentJobs) {
     return (
       `${String(bound)} concurrent assignments per machine is above the ` +
       `${String(concurrentJobs)} jobs a machine runs at once under this plugin's manifest: ` +
@@ -270,7 +275,7 @@ export function validatePolicy(policy: Policy, concurrentJobs: number): string |
  * have worked at all. Refusing the stored one at draw time would stop every review here until
  * the operator noticed, which is the outage the floor exists to prevent.
  */
-export function validateNewPolicy(policy: Policy, concurrentJobs: number): string | null {
+export function validateNewPolicy(policy: Policy, concurrentJobs: number | null): string | null {
   const refusal = validatePolicy(policy, concurrentJobs);
   if (refusal !== null) return refusal;
   // Whichever of the two bounds admits more assignments at once is the one the lease has to
@@ -382,7 +387,7 @@ export function budgetChanges(standing: Policy, overlay: Budget): readonly Budge
 export function validateBudget(
   standing: Policy,
   overlay: Budget,
-  concurrentJobs: number,
+  concurrentJobs: number | null,
 ): string | null {
   if (overlay.expiresAt <= overlay.createdAt) {
     return "an overlay whose expiry is not ahead of its creation is in force for no time at all";
@@ -445,6 +450,13 @@ export const STOP_REASONS = [
   "daily",
   "no-candidates",
   "no-lane",
+  /**
+   * Nothing was drawn because there is nowhere to post it (#279): a Babel run is a Code
+   * session, and Code's `runSession` door does not exist yet. It is the CYCLE's reason and
+   * never a draw's — the coordinator is not asked at all — and it is in this list because the
+   * pulse tallies one vocabulary of reasons and a word outside it would show as nothing.
+   */
+  "engine-pending",
 ] as const;
 export type StopReason = (typeof STOP_REASONS)[number];
 
@@ -859,7 +871,7 @@ class Stream {
 export function coordinator(
   store: CoordinatorStore,
   now: () => number,
-  concurrentJobs: number,
+  concurrentJobs: number | null,
 ): Coordinator {
   const db = store.db;
 

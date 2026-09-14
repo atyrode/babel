@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import {
   BABEL_PLUGIN_ID,
+  ENGINE_PENDING,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
   OPERATIONS,
@@ -13,18 +14,9 @@ import {
   OUTPUT_LOCATION,
   RUN_STAGES,
 } from "../contract.ts";
-import { EvaluateInputSchema } from "../machine/evaluate.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { BabelStore } from "../store/store.ts";
-import type {
-  Assignment,
-  Coordinator,
-  Fence,
-  Gap,
-  OpenClaims,
-  Policy,
-  Stop,
-} from "../store/coordinator.ts";
+import type { Coordinator, Fence } from "../store/coordinator.ts";
 import {
   BEAT_OPERATION,
   CONDUCTOR_SCHEDULE_ID,
@@ -54,6 +46,15 @@ import {
   idempotent, that a scan's partial session row does not clobber an archive's snapshot, that a
   failed job does not leave a claim open. The fleet is fake because the point of the JobsSlice
   is that the hub half can be driven without one.
+
+  NO CYCLE POSTS A REVIEW ANY MORE (#279), so no test here draws one. A Babel run is a Code
+  session — the operator parametrizes it from a saved Code profile or in Code's generator, and
+  Code's `runSession` door posts it — and until atyrode/manifold#575 and atyrode/code#170 land
+  every posting path answers the one constant `ENGINE_PENDING`. What the loop does with a job
+  that ALREADY EXISTS is untouched, and it is most of this file: the fold, the settlement, the
+  reaper, the beat, the folders, the park, the pulse. The two rows a dispatch used to leave
+  behind are therefore seeded by {@link inFlight} rather than drawn, which is how the ingestion
+  tests in this file have always worked.
 */
 
 // ---------------------------------------------------------------------------- a real database
@@ -228,14 +229,7 @@ class Fleet implements JobsSlice {
   registered: ScheduleRow[] = [];
   readonly jobs = new Map<string, FakeJob>();
   readonly beats = new Set<string>();
-  ready = true;
   connected = true;
-  /** What `execute` refuses every posting with, as the hub does when a machine will not take it. */
-  refusal: string | null = null;
-  /** What the HUB refuses an ADMITTED posting with: a job that never ran, whose reason is on the
-   *  authority decision rather than in a result it never got — `concurrency_limit` when the
-   *  operation's declared `limits.concurrentJobs` is full (atyrode/manifold#551). */
-  decision: string | null = null;
   /** Jobs the hub can no longer report at all: a machine that vanished mid-review. */
   readonly silent = new Set<string>();
   /** Every job this fake was asked to follow, and every subscription it was asked to close. */
@@ -247,8 +241,8 @@ class Fleet implements JobsSlice {
     return {
       connected: this.connected,
       operations: {
-        [OPERATIONS.evaluate]: { ready: this.ready, reason: null },
-        [OPERATIONS.scan]: { ready: this.ready, reason: null },
+        [OPERATIONS.evaluate]: { ready: true, reason: null },
+        [OPERATIONS.scan]: { ready: true, reason: null },
       },
       installation: {
         revision: "rev-7",
@@ -259,29 +253,30 @@ class Fleet implements JobsSlice {
     };
   }
 
+  /**
+   * A POSTING NO CYCLE MAKES ANY MORE (#279). It is still here because {@link JobsSlice}
+   * declares it and because `launched` staying empty is what pins the absence: a loop that
+   * posted a review would be posting it nowhere. The ingestion tests that need a finished job
+   * of their own call it directly, which is a fixture writing a job rather than a loop
+   * launching one.
+   */
   execute(args: JobLaunch): JobRunState {
-    if (this.refusal !== null) throw new Error(this.refusal);
-    if (this.decision !== null) {
-      return {
-        jobId: args.jobId,
-        machineId: args.machineId,
-        operationId: args.operationId,
-        state: "refused",
-        result: null,
-        authority: { decision: { refusal: this.decision } },
-      };
-    }
     this.launched.push(args);
-    this.jobs.set(args.jobId, {
+    this.running(args.jobId, args.machineId, args.operationId);
+    return this.status({ jobId: args.jobId });
+  }
+
+  /** A job the hub is already reporting as started: what a posting used to leave behind. */
+  running(jobId: string, machineId: string, operationId: string): void {
+    this.jobs.set(jobId, {
       state: "started",
       exitCode: null,
-      machineId: args.machineId,
-      operationId: args.operationId,
+      machineId,
+      operationId,
       archive: null,
       journal: [],
       inference: null,
     });
-    return this.status({ jobId: args.jobId });
   }
 
   status(node: { jobId: string }): JobRunState {
@@ -569,30 +564,25 @@ const ASSIGNMENT = {
 } satisfies Record<string, unknown>;
 
 class Draws {
+  /**
+   * How many times a cycle asked this coordinator for work. IT IS NEVER MORE THAN ZERO (#279),
+   * and the counter exists to say so: a loop that went back to drawing would move it.
+   */
   draws = 0;
-  readonly claimed: { assignmentId: string; runId: string; jobId: string | undefined }[] = [];
   readonly finished: { id: string; runId: string; fence: Fence; cost: number; outcome: string }[] =
     [];
   readonly abandoned: { id: string; fence: Fence; reason: string }[] = [];
   enabled = true;
   version = POLICY.version;
-  /** Assignments this coordinator still has to give; it answers its {@link stop} when they run out. */
+  /** Work this coordinator would hand out the moment anything asked it for some. */
   pending: Record<string, unknown>[] = [];
-  /** Why it stops handing work out, in the coordinator's own closed vocabulary. */
-  stop: Stop = { reason: "no-candidates", detail: "nothing due" };
-  /** The candidates it declined on the way, which every draw carries whatever it answers. */
-  declined: Gap[] = [];
-  /** What a budget overlay moves on top of the standing policy, or null: nothing is overlaid. */
-  overlay: Partial<Policy> | null = null;
-  /** The machines each draw was told this cycle could dispatch to (#260). */
-  readonly offered: (readonly string[])[] = [];
 
   constructor(private readonly db: PluginDatabase) {}
 
   async policy(): Promise<Record<string, unknown>> {
     const standing = { ...POLICY, enabled: this.enabled, version: this.version };
     return {
-      policy: this.overlay === null ? standing : { ...standing, ...this.overlay },
+      policy: standing,
       standing,
       overlay: null,
       source: "stored",
@@ -602,84 +592,19 @@ class Draws {
   }
 
   /**
-   * `coordinator.open`: the batch slots held, per machine. The real one counts claims whose job
-   * has a run row naming a machine, which is what the loop writes for every job it posts — so
-   * counting the unfinished run rows reads the same evidence, and the slots a cycle takes are
-   * visible to its own later dispatches.
+   * `coordinator.draw`, which no cycle calls: a claim taken for work nobody can post holds a
+   * record under a fence and a batch slot for a whole lease, and is then abandoned once the
+   * posting is refused — the ghost-claim shape of 2026-09-13, for work nobody could have done.
+   *
+   * It still answers what it holds, because the day Code's door exists this is the fake that
+   * hands work out, and every call is counted into {@link draws}.
    */
-  async open(): Promise<OpenClaims> {
-    const rows = await this.db.query<{ machine: string; open: bigint }>(
-      `SELECT machine_id AS machine, COUNT(*) AS open FROM runs
-        WHERE finished_at IS NULL AND machine_id IS NOT NULL GROUP BY machine_id`,
-    );
-    const byMachine: Record<string, number> = {};
-    let total = 0;
-    for (const row of rows) {
-      byMachine[row.machine] = Number(row.open);
-      total += Number(row.open);
-    }
-    return { total, byMachine };
-  }
-
-  async draw(request: {
-    runId: string;
-    machines?: readonly string[] | undefined;
-  }): Promise<Record<string, unknown>> {
+  async draw(): Promise<Record<string, unknown>> {
     this.draws += 1;
-    expect(request.runId.startsWith("cyc_")).toBe(true);
-    this.offered.push([...(request.machines ?? [])]);
     const next = this.pending.shift();
-    if (next === undefined) {
-      return { outcome: "gap", gap: this.stop, gaps: this.declined };
-    }
-    return { outcome: "assignment", assignment: next, gaps: this.declined };
-  }
-
-  async claim(request: {
-    assignment: Assignment;
-    runId: string;
-    jobId?: string | undefined;
-  }): Promise<Record<string, unknown>> {
-    this.claimed.push({
-      assignmentId: request.assignment.id,
-      runId: request.runId,
-      jobId: request.jobId,
-    });
-    const claim = {
-      id: `clm_${request.assignment.id}`,
-      recordId: request.assignment.recordId,
-      role: request.assignment.role,
-      lane: request.assignment.lane,
-      policyVersion: request.assignment.policyVersion,
-      jobId: request.jobId ?? null,
-      runId: request.runId,
-      fence: 1,
-      reservedCost: request.assignment.reservedCost,
-      actualCost: null,
-      grantedAt: clock,
-      expiresAt: clock + POLICY.leaseSeconds * 1000,
-      finishedAt: null,
-      outcome: null,
-    };
-    await this.db.run(
-      `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
-                          reserved_cost, granted_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        claim.id,
-        claim.recordId,
-        claim.role,
-        claim.lane,
-        claim.policyVersion,
-        claim.jobId,
-        claim.runId,
-        claim.fence,
-        claim.reservedCost,
-        new Date(claim.grantedAt).toISOString(),
-        new Date(claim.expiresAt).toISOString(),
-      ],
-    );
-    return { outcome: "granted", claim };
+    return next === undefined
+      ? { outcome: "gap", gap: { reason: "no-candidates", detail: "nothing due" }, gaps: [] }
+      : { outcome: "assignment", assignment: next, gaps: [] };
   }
 
   async finish(request: {
@@ -716,40 +641,16 @@ class Draws {
     );
     return { outcome: "abandoned", cost: reserved, reason: request.reason };
   }
-
-  async renew(): Promise<Record<string, unknown>> {
-    return { outcome: "renewed", expiresAt: clock };
-  }
-
-  async spend(): Promise<Record<string, unknown>> {
-    return { day: "2026-09-12", total: 0, byRun: {} };
-  }
 }
 
 /**
- * The plan a cycle runs under here, with evaluate METERED: the review lane binds a service the
- * owner meters, which is what makes its silence at the model a judgeable thing. {@link
- * UNMETERED_PLAN} is the same plan for a deployment that binds none, which is this repository
- * today (#256).
+ * The plan a cycle runs under here, with evaluate METERED: a stall is only judgeable of a run
+ * whose job carries a metered binding, and a review Code posts is one. {@link UNMETERED_PLAN}
+ * is the same plan for a deployment whose jobs bind no inference service at all, which is every
+ * operation THIS bundle declares (#256, #279).
  */
 const PLAN: RunPlan = {
-  engine: { binary: "/runtime/bin/omp", args: [] },
-  session: {
-    model: "anthropic/claude-sonnet-5",
-    thinking: "high",
-    account: {
-      provider: "anthropic",
-      scope: "atyrode.omp.accounts.broker@7/m-dev-01",
-      credentialId: "3",
-      identityKey: "victorballu@gmail.com",
-    },
-  },
-  caps: { perRunUsd: 0.25, toolCalls: 40, idleMs: 120000, handshakeMs: 30000 },
-  recipes: {
-    reception: { id: "reception-vote", version: 1, title: "Reception", body: "Does it hold?" },
-  },
   metered: { [OPERATIONS.evaluate]: true },
-  requireContainment: true,
   limits: { timeoutMs: 900000, memoryBytes: 2147483648, processes: 64, outputBytes: 67108864 },
 };
 
@@ -782,6 +683,52 @@ async function seed(db: PluginDatabase): Promise<void> {
       params: ["edg_1", "hyp_00000001", "omp/s1", "the third turn", "2026-09-01T00:00:00Z"],
     },
   ]);
+}
+
+/** The run id a seeded claim is accounted to, standing in for the cycle that took it. */
+const SEEDED_CYCLE = "cyc_seeded";
+
+/**
+ * A REVIEW ALREADY IN FLIGHT, written into the store rather than drawn.
+ *
+ * The loop posts nothing (#279), so the two rows a dispatch used to leave behind are seeded
+ * here: the open `runs` row `reconcileRuns` polls every cycle, and the claim a settlement
+ * closes. Neither is what the tests below are about — the fold, the receipt, the reaper and the
+ * park all begin at a job that EXISTS — and the job is put on the fleet in the state the hub
+ * would report it in, because `execute` is a verb no cycle calls.
+ */
+async function inFlight(
+  db: PluginDatabase,
+  fleet: Fleet,
+  assignmentId: string = ASSIGNMENT.id,
+): Promise<{ runId: string; jobId: string; claimId: string }> {
+  const runId = `run_${assignmentId}`;
+  const jobId = `job_${assignmentId}`;
+  const claimId = `clm_${assignmentId}`;
+  fleet.running(jobId, "dev-01", OPERATIONS.evaluate);
+  await db.batch([
+    {
+      sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, records, payload)
+            VALUES (?, ?, 'dev-01', ?, ?, 0, '{}')`,
+      params: [runId, OPERATIONS.evaluate, jobId, new Date(clock).toISOString()],
+    },
+    {
+      sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                               reserved_cost, granted_at, expires_at)
+            VALUES (?, ?, 'reception', 'coverage', ?, ?, ?, 1, ?, ?, ?)`,
+      params: [
+        claimId,
+        ASSIGNMENT.recordId,
+        POLICY.version,
+        jobId,
+        SEEDED_CYCLE,
+        ASSIGNMENT.reservedCost,
+        new Date(clock).toISOString(),
+        new Date(clock + POLICY.leaseSeconds * 1000).toISOString(),
+      ],
+    },
+  ]);
+  return { runId, jobId, claimId };
 }
 
 /** Everything a finished review writes: one of each file the contract names. */
@@ -930,7 +877,6 @@ test("a running job's stage and spend are folded out of its replay ring, and the
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -941,7 +887,7 @@ test("a running job's stage and spend are folded out of its replay ring, and the
     now: () => clock,
   });
 
-  await loop.tick();
+  await inFlight(db, fleet);
   // The job says where it is and the owner meters two calls against it. This is served through
   // `follow` and nothing else: the fake refuses `journal` for a running job the way the hub
   // does, so a fold that read one would fail here rather than pass against a friendly fake.
@@ -1053,7 +999,6 @@ test("a metered job at the model with nothing metered for ninety seconds is stal
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -1063,7 +1008,7 @@ test("a metered job at the model with nothing metered for ninety seconds is stal
     plan: PLAN,
     now: () => clock,
   });
-  await loop.tick();
+  await inFlight(db, fleet);
   fleet.journals("job_asg_a1b2", [progressed(2, started, RUN_STAGES.atModel, "reception")]);
 
   // Eighty-nine seconds is a slow turn, not a stall.
@@ -1097,7 +1042,6 @@ test("a job at the model that nothing meters is never called stalled", async () 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -1109,7 +1053,7 @@ test("a job at the model that nothing meters is never called stalled", async () 
     plan: UNMETERED_PLAN,
     now: () => clock,
   });
-  await loop.tick();
+  await inFlight(db, fleet);
   fleet.journals("job_asg_a1b2", [progressed(2, started, RUN_STAGES.atModel, "reception")]);
 
   // Ten minutes at the model with nothing counted is what an unmetered review looks like from
@@ -1129,7 +1073,6 @@ test("a cycle a settlement woke folds nothing and says nothing about a running j
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const deps = {
     store,
     coordinator: draws as unknown as Coordinator,
@@ -1139,7 +1082,7 @@ test("a cycle a settlement woke folds nothing and says nothing about a running j
     now: () => clock,
   };
   const woken = conductor({ ...deps, jobs: fleet });
-  await woken.tick();
+  await inFlight(db, fleet);
   fleet.journals("job_asg_a1b2", [
     progressed(2, started, RUN_STAGES.atModel, "reception"),
     called(5, { inputTokens: 1_000, outputTokens: 200, cachedInputTokens: 50, costMicros: 30_000 }),
@@ -1148,8 +1091,8 @@ test("a cycle a settlement woke folds nothing and says nothing about a running j
   await woken.tick();
 
   // The hook's slice has no `follow`, so this cycle cannot read a running job at all. Another
-  // call arrives in the ring and nothing folds it: the row stands as the dispatch left it, the
-  // report repeats that row, and no note claims a thing about the job either way.
+  // call arrives in the ring and nothing folds it: the row stands as the last cycle that could
+  // read one left it, the report repeats that row, and no note claims a thing about the job.
   fleet.journals("job_asg_a1b2", [
     progressed(2, started, RUN_STAGES.atModel, "reception"),
     called(5, { inputTokens: 1_000, outputTokens: 200, cachedInputTokens: 50, costMicros: 30_000 }),
@@ -1167,7 +1110,7 @@ test("a cycle a settlement woke folds nothing and says nothing about a running j
     updated_at: new Date(started + 30_000).toISOString(),
   });
 
-  // And the next dispatch-woken cycle folds what the hook could not see.
+  // And the next cycle that is served a `follow` folds what the hook could not see.
   clock = started + 90_000;
   await woken.tick();
   expect((await db.query(`SELECT calls FROM run_progress`))[0]?.["calls"]).toBe(2n);
@@ -1181,7 +1124,6 @@ test("a running job that has said nothing has no in-flight row to read", async (
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -1191,7 +1133,7 @@ test("a running job that has said nothing has no in-flight row to read", async (
     plan: PLAN,
     now: () => clock,
   });
-  await loop.tick();
+  await inFlight(db, fleet);
 
   // The ring holds nothing — a job the owner has not launched yet, or one inside the five-second
   // window its first frame is coalesced in. A row of empty strings would read in the panel as a
@@ -1220,13 +1162,12 @@ test("a running job that has said nothing has no in-flight row to read", async (
   clock = started;
 });
 
-test("a cycle draws, claims, requests the job, then ingests every output file it wrote", async () => {
+test("a settled job's every output file lands in the store, and its run and claim close on the receipt", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -1237,73 +1178,9 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
     now: () => clock,
   });
 
-  const requesting = await loop.tick();
-  expect(requesting.enabled).toBe(true);
-  expect(requesting.requested).toEqual([
-    {
-      runId: "run_asg_a1b2",
-      jobId: "job_asg_a1b2",
-      machineId: "dev-01",
-      claimId: "clm_asg_a1b2",
-      recordId: "hyp_00000001",
-      role: "reception",
-      lane: "coverage",
-    },
-  ]);
-  expect(requesting.stop?.reason).toBe("no-candidates");
-  expect(requesting.pending).toBe(1);
-
-  // The claim is taken before the job is executed and carries the job it authorized.
-  expect(draws.claimed).toEqual([
-    { assignmentId: "asg_a1b2", runId: requesting.cycleRunId, jobId: "job_asg_a1b2" },
-  ]);
-
-  const launch = fleet.launched[0];
-  expect(launch?.operationId).toBe(OPERATIONS.evaluate);
-  expect(launch?.machineId).toBe("dev-01");
-  expect(launch?.installationRevision).toBe("rev-7");
-  expect(launch?.outputs).toEqual([
-    { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: ["job_asg_a1b2"] },
-  ]);
-  const document = JSON.parse(String(launch?.input[INPUT_FIELD])) as Record<string, unknown>;
-  expect(document["runId"]).toBe("run_asg_a1b2");
-  expect(document["assignment"]).toMatchObject({
-    id: "clm_asg_a1b2",
-    recordId: "hyp_00000001",
-    role: "reception",
-    lane: "coverage",
-    fence: 1,
-    blinded: true,
-  });
-  expect(document["recipe"]).toEqual(PLAN.recipes["reception"]);
-  // The blinded projection carries the record and its cited sessions, and nothing about how
-  // the record has been received.
-  expect(document["target"]).toMatchObject({ id: "hyp_00000001", kind: "hypothesis" });
-  expect(JSON.stringify(document["target"])).not.toContain("vote");
-  expect(document["sources"]).toMatchObject([{ selector: "omp/s1", snapshot: "snap-1" }]);
-
-  // AND THE MACHINE HALF ACCEPTS IT, which is the only thing that makes the two halves one
-  // program (#284). The blocker this holds: `session` carries the operator's whole
-  // `SessionChoice` — provider, scope, credentialId, identityKey — and the machine's
-  // `SessionRefSchema` is strict, so a narrower shape there refused every draw
-  // `unrecognized_keys` before omp was launched. Parsed here from the document the CONDUCTOR
-  // actually wrote, never from a fixture beside it.
-  const received = EvaluateInputSchema.parse(document);
-  expect(received.session).toEqual({
-    model: "anthropic/claude-sonnet-5",
-    thinking: "high",
-    account: {
-      provider: "anthropic",
-      scope: "atyrode.omp.accounts.broker@7/m-dev-01",
-      credentialId: "3",
-      identityKey: "victorballu@gmail.com",
-    },
-  });
-
-  const queued = await db.query(`SELECT closure, records FROM runs WHERE id = 'run_asg_a1b2'`);
-  expect(queued[0]).toEqual({ closure: null, records: 0n });
-
-  // The machine finishes and seals its files; the next cycle ingests them.
+  // A review already in flight, because no cycle posts one (#279). The machine finishes and
+  // seals its files; the cycle that polls the job ingests them.
+  await inFlight(db, fleet);
   fleet.finish("job_asg_a1b2", 0, outputs("run_asg_a1b2"));
   const ingesting = await loop.tick();
   expect(ingesting.ingested).toEqual([
@@ -1375,7 +1252,7 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
   expect(draws.finished).toEqual([
     {
       id: "clm_asg_a1b2",
-      runId: requesting.cycleRunId,
+      runId: SEEDED_CYCLE,
       fence: 1n,
       cost: 0.42,
       outcome: "completed",
@@ -1387,61 +1264,12 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
   expect(claim[0]).toEqual({ actual_cost: 0.42, outcome: "completed" });
 });
 
-test("a cycle names its online machines to the coordinator, and no machine takes more than its bound", async () => {
-  const db = openDatabase();
-  await seed(db);
-  // A second enrolled machine, known because it holds a session of its own.
-  await db.run(
-    `INSERT INTO sessions(selector, host, harness, source_id, title, snapshot_id, seen_at)
-     VALUES ('omp/s2', 'dev-02', 'omp', 's2', 'a second host', 'snap-2', '2026-09-01T00:00:00Z')`,
-  );
-  const store = openStore(db);
-  const fleet = new Fleet();
-  const draws = new Draws(db);
-  // A drain's overlay, at its narrowest: one assignment per machine.
-  draws.overlay = { concurrentPerMachine: 1 };
-  draws.pending = [
-    { ...ASSIGNMENT },
-    { ...ASSIGNMENT, id: "asg_c3d4" },
-    { ...ASSIGNMENT, id: "asg_e5f6" },
-  ];
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
-
-  const cycle = await loop.tick();
-  // The coordinator is told the fleet, because its batch is a bound PER MACHINE and the
-  // deployment's cap is that bound over these machines (#260).
-  expect(draws.offered[0]).toEqual(["dev-01", "dev-02"]);
-
-  // dev-01 cites the record's session and takes the first job; the second goes to dev-02 rather
-  // than to the machine that is already at its bound — which is what makes the bound real, and
-  // is the 2026-09-13 failure inverted: thirty-six draws on one host.
-  expect(cycle.requested.map((job) => job.machineId)).toEqual(["dev-01", "dev-02"]);
-  // The third has nowhere to go, and the refusal says so by name rather than as "no machine".
-  expect(cycle.refused).toEqual([
-    {
-      assignmentId: "asg_e5f6",
-      recordId: "hyp_00000001",
-      reason: "no-machine",
-      detail: "no online machine has a free slot under the bound of 1: dev-01, dev-02",
-    },
-  ]);
-});
-
 test("a job that died with no receipt abandons its claim at the reservation and closes its run", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -1452,7 +1280,7 @@ test("a job that died with no receipt abandons its claim at the reservation and 
     now: () => clock,
   });
 
-  await loop.tick();
+  await inFlight(db, fleet);
   fleet.finish("job_asg_a1b2", 3, null);
   const report = await loop.tick();
 
@@ -1494,7 +1322,6 @@ test("a job the hub cancelled abandons its claim on the next tick", async () => 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -1505,7 +1332,7 @@ test("a job the hub cancelled abandons its claim on the next tick", async () => 
     now: () => clock,
   });
 
-  await loop.tick();
+  await inFlight(db, fleet);
   // The operator stops a running review — or the machine's agent dies and the hub interrupts
   // it. Either way nothing was sealed and nobody will report what it cost.
   fleet.kill("job_asg_a1b2", "cancelled");
@@ -1542,7 +1369,6 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -1573,6 +1399,12 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
     roots: [],
     harnesses: [],
   });
+  // THE ONE POSTING BABEL STILL MAKES binds its own output location, so what a scan seals lands
+  // where this hub ingests it from. The review job that used to carry the same binding is
+  // Code's now (#279); the beat's is the loop's own.
+  expect(registered?.outputs).toEqual([
+    { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [BEAT_OPERATION] },
+  ]);
 
   // A second cycle keeps the schedule it already has rather than churning it.
   const keeping = await loop.tick();
@@ -1581,8 +1413,6 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
 
   // The operator turns evaluation off: the schedule goes, and the cycle does nothing at all.
   draws.enabled = false;
-  const drewBefore = draws.draws;
-  const launchedBefore = fleet.launched.length;
   const idle = await loop.tick();
   expect(idle.enabled).toBe(false);
   expect(idle.schedule).toBe("unregistered");
@@ -1590,14 +1420,24 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
   expect(idle.requested).toEqual([]);
   expect(idle.ingested).toEqual([]);
   expect(idle.settled).toEqual([]);
+  // A disabled policy is the one cycle that reports no stop at all: it never gets as far as the
+  // engine-pending verdict an enabled one answers with.
   expect(idle.stop).toBeNull();
-  expect(draws.draws).toBe(drewBefore);
-  expect(fleet.launched).toHaveLength(launchedBefore);
 
   // And a tick under a disabled policy leaves the schedule absent rather than re-disabling it.
   const again = await loop.tick();
   expect(again.schedule).toBe("absent");
   expect(fleet.disabled).toHaveLength(1);
+
+  // AND A FLEET NOBODY IS HOME ON REGISTERS NOTHING rather than failing the cycle: the beat is
+  // one wake, and a policy turned back on with no machine to run it on leaves the schedule
+  // absent until there is one.
+  draws.enabled = true;
+  fleet.connected = false;
+  const offline = await loop.tick();
+  expect(offline.schedule).toBe("absent");
+  expect(offline.notes).toEqual([]);
+  expect(fleet.scheduled).toHaveLength(1);
 });
 
 test("ingesting the same outputs twice changes nothing", async () => {
@@ -1735,43 +1575,6 @@ test("the beat's own job is ingested although the hub never requested it", async
   expect(repeat.ingested).toEqual([]);
 });
 
-test("a draw the hub cannot place is refused rather than claimed", async () => {
-  const db = openDatabase();
-  await seed(db);
-  const store = openStore(db);
-  const fleet = new Fleet();
-  fleet.connected = false;
-  const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }, { ...ASSIGNMENT }];
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
-
-  const report = await loop.tick();
-  expect(report.refused).toEqual([
-    {
-      assignmentId: "asg_a1b2",
-      recordId: "hyp_00000001",
-      reason: "no-machine",
-      detail: `no online machine has ${OPERATIONS.evaluate} ready`,
-    },
-  ]);
-  expect(draws.claimed).toEqual([]);
-  expect(fleet.launched).toEqual([]);
-  // The cycle stops rather than spinning on an assignment it has already failed to place.
-  expect(report.stop).toEqual({
-    reason: "no-candidates",
-    detail: "the cycle redrew asg_a1b2, which it could not dispatch",
-  });
-  expect(report.schedule).toBe("absent");
-});
-
 test("an output larger than one served chunk is read whole, and a row the table cannot hold is left out", async () => {
   const db = openDatabase();
   await seed(db);
@@ -1876,7 +1679,6 @@ test("an output the hub cannot read closes its run instead of being retried for 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -1887,7 +1689,7 @@ test("an output the hub cannot read closes its run instead of being retried for 
     now: () => clock,
   });
 
-  await loop.tick();
+  await inFlight(db, fleet);
   fleet.seal("job_asg_a1b2", Buffer.alloc(1024, 0x41));
   const report = await loop.tick();
 
@@ -2019,94 +1821,6 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
   expect(folders.asked).toEqual([]);
 });
 
-test("a posting the machine refuses abandons its claim in the same breath", async () => {
-  const db = openDatabase();
-  await seed(db);
-  const store = openStore(db);
-  const fleet = new Fleet();
-  fleet.refusal = "dev-01 has no room for another job";
-  const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
-
-  const report = await loop.tick();
-
-  // The claim was taken before the job existed, so the refusal has to give it back here: the
-  // reaper would, but a whole lease later, with the slot held by a job that never ran.
-  expect(report.refused).toEqual([
-    {
-      assignmentId: "asg_a1b2",
-      recordId: "hyp_00000001",
-      reason: "refused-job",
-      detail: "dev-01 has no room for another job",
-    },
-  ]);
-  expect(draws.abandoned).toEqual([
-    {
-      id: "clm_asg_a1b2",
-      fence: 1,
-      reason: "the job was never posted: dev-01 has no room for another job",
-    },
-  ]);
-  expect(draws.finished).toEqual([]);
-  const claim = await db.query(
-    `SELECT outcome, actual_cost, finished_at IS NOT NULL AS closed FROM claims WHERE id = 'clm_asg_a1b2'`,
-  );
-  expect(claim[0]).toEqual({ outcome: "abandoned", actual_cost: 0.1, closed: 1n });
-  // No job was posted, so no run row was written for one.
-  const runs = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM runs`);
-  expect(runs[0]?.n).toBe(0n);
-});
-
-test("a posting the hub refuses at admission is reported with the reason the hub named", async () => {
-  const db = openDatabase();
-  await seed(db);
-  const store = openStore(db);
-  const fleet = new Fleet();
-  // The hub admitted nothing: the operation's `limits.concurrentJobs` is full on that machine,
-  // so the job is `refused` with no result at all and its reason is on the authority decision.
-  fleet.decision = "concurrency_limit";
-  const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
-  const loop = conductor({
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
-
-  const report = await loop.tick();
-
-  // "dev-01 refused job_…" is a sentence nobody can act on; the fleet being at the ceiling this
-  // plugin's manifest declares is a bound to raise or a drain to slow (#281).
-  expect(report.refused).toEqual([
-    {
-      assignmentId: "asg_a1b2",
-      recordId: "hyp_00000001",
-      reason: "refused-job",
-      detail: "dev-01 refused job_asg_a1b2: concurrency_limit",
-    },
-  ]);
-  expect(draws.abandoned).toEqual([
-    {
-      id: "clm_asg_a1b2",
-      fence: 1,
-      reason: "the job was never posted: dev-01 refused job_asg_a1b2: concurrency_limit",
-    },
-  ]);
-});
-
 test("the reaper releases a grant whose job was never posted, once its lease has run out", async () => {
   const db = openDatabase();
   await seed(db);
@@ -2212,7 +1926,6 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = [{ ...ASSIGNMENT }];
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -2223,7 +1936,7 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
     now: () => clock,
   });
 
-  await loop.tick();
+  await inFlight(db, fleet);
   // The machine holding the review falls off the fleet: the hub cannot answer for its job at
   // all, so no settlement will ever reach the claim.
   fleet.silent.add("job_asg_a1b2");
@@ -2250,11 +1963,67 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
   expect(draws.abandoned).toHaveLength(1);
 });
 
+// ------------------------------------------------------------------ the door that is not there
+
+test("an enabled cycle with work waiting draws nothing, and says the one reason it spent nothing", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  // Work the coordinator would hand out the moment anything asked it for some.
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const report = await loop.tick();
+
+  /*
+    NOTHING IS DRAWN, and it is not because there was nothing to draw.
+
+    A drawn review used to become a job this loop posted. A Babel run is a Code session now, and
+    drawing anyway would claim the record under a fence, hold a batch slot for a whole lease and
+    then abandon it the moment the posting was refused — which is the ghost-claim shape of
+    2026-09-13, for work nobody could have done. So the coordinator is not asked at all, and the
+    assignment it was holding is still there afterwards.
+  */
+  expect(report.enabled).toBe(true);
+  expect(draws.draws).toBe(0);
+  expect(draws.pending).toHaveLength(1);
+  expect(report.requested).toEqual([]);
+  expect(report.gaps).toEqual([]);
+
+  // The one sentence every posting path answers with, and it names the two pieces in flight so
+  // that an operator reading a pulse can go and look at them.
+  expect(report.stop).toEqual({ reason: "engine-pending", detail: ENGINE_PENDING });
+  expect(report.stop?.detail).toContain("atyrode/manifold#575");
+  expect(report.stop?.detail).toContain("atyrode/code#170");
+  // Counted rather than narrated: "why did nothing happen today" is answered by the tally.
+  expect(report.pulse.tick.gaps).toEqual({ "engine-pending": 1 });
+
+  // AND NOTHING WAS TAKEN FOR IT: no claim row, and no posting.
+  const claims = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM claims`);
+  expect(claims[0]?.n).toBe(0n);
+  expect(fleet.launched).toEqual([]);
+});
+
 // ---------------------------------------------------------------------- the park and the pulse
 
-/** Three assignments of one record, so a cycle dispatches three jobs and takes three claims. */
-function three(): Record<string, unknown>[] {
-  return ["asg_p1", "asg_p2", "asg_p3"].map((id) => ({ ...ASSIGNMENT, id }));
+/** Three reviews of one record in flight, which is what the park's window is three of. */
+async function threeInFlight(
+  db: PluginDatabase,
+  fleet: Fleet,
+): Promise<{ runId: string; jobId: string; claimId: string }[]> {
+  const flights: { runId: string; jobId: string; claimId: string }[] = [];
+  for (const id of ["asg_p1", "asg_p2", "asg_p3"]) flights.push(await inFlight(db, fleet, id));
+  return flights;
 }
 
 /**
@@ -2290,7 +2059,6 @@ test("three reviews the model answered and the contract refused are spend, not a
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = three();
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -2301,13 +2069,12 @@ test("three reviews the model answered and the contract refused are spend, not a
     now: () => clock,
   });
 
-  const dispatching = await loop.tick();
-  expect(dispatching.requested).toHaveLength(3);
+  const flights = await threeInFlight(db, fleet);
 
   // Each one reached the model and had its submission refused. The machine exits cleanly: a
   // refused submission is a recipe to review, not a boundary that broke.
   clock += 60_000;
-  for (const job of dispatching.requested) fleet.finish(job.jobId, 0, refusedReview(job.runId));
+  for (const flight of flights) fleet.finish(flight.jobId, 0, refusedReview(flight.runId));
 
   const settling = await loop.tick();
   expect(settling.settled.map((row) => [row.outcome, row.cost])).toEqual([
@@ -2318,7 +2085,9 @@ test("three reviews the model answered and the contract refused are spend, not a
   // The loop is not parked and drew again: three refusals are three answers Babel paid for.
   expect(settling.parked).toBe(null);
   expect(settling.notes.some((note) => note.includes("parked"))).toBe(false);
-  expect(settling.stop?.reason).toBe("no-candidates");
+  // …and the cycle's one reason for spending nothing is the door that is not there, not a lane
+  // that is broken.
+  expect(settling.stop).toEqual({ reason: "engine-pending", detail: ENGINE_PENDING });
   // …and the pulse says what they were, by the code `results.ts` names.
   expect(settling.pulse.tick.refusals).toEqual({ schema: 3 });
   expect(settling.pulse.today.refusals).toEqual({ schema: 3 });
@@ -2338,7 +2107,6 @@ test("three jobs that never reached the model park the loop, and an hour of quie
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  draws.pending = three();
   const loop = conductor({
     store,
     coordinator: draws as unknown as Coordinator,
@@ -2349,15 +2117,12 @@ test("three jobs that never reached the model park the loop, and an hour of quie
     now: () => clock,
   });
 
-  const dispatching = await loop.tick();
-  expect(dispatching.requested).toHaveLength(3);
+  const flights = await threeInFlight(db, fleet);
 
   // The three die where a broken machine kills them: mid-review, with no receipt, so nobody can
   // say a model was ever asked anything. Each claim is abandoned at its reservation (#271).
   clock += 60_000;
-  for (const job of dispatching.requested) fleet.kill(job.jobId, "interrupted");
-  draws.pending = [{ ...ASSIGNMENT, id: "asg_p4" }];
-  const asked = draws.draws;
+  for (const flight of flights) fleet.kill(flight.jobId, "interrupted");
 
   const parking = await loop.tick();
   expect(parking.settled.map((row) => [row.outcome, row.cost])).toEqual([
@@ -2368,35 +2133,26 @@ test("three jobs that never reached the model park the loop, and an hour of quie
   expect(parking.parked?.barren).toBe(3);
   expect(parking.parked?.reason).toContain("reached no model and produced nothing");
   expect(parking.notes.some((note) => note.startsWith("the loop is parked:"))).toBe(true);
-  // A parked cycle asks the coordinator for nothing at all, so the fourth assignment is still
-  // waiting and no reservation was spent to learn the same thing a fourth time.
-  expect(draws.draws).toBe(asked);
+  // The park is the loop's own verdict and is reported BESIDE the cycle's stop rather than
+  // instead of it: nothing is drawn either way today, and an operator reading "parked" is
+  // reading that the lane is broken rather than that the door is missing.
   expect(parking.requested).toEqual([]);
-  expect(parking.stop).toBe(null);
+  expect(parking.stop).toEqual({ reason: "engine-pending", detail: ENGINE_PENDING });
 
   // An hour of quiet lifts it without an operator: a machine that has been fixed is tried again,
   // and a machine that has not re-parks after three more.
   clock += 61 * 60_000;
   const resumed = await loop.tick();
   expect(resumed.parked).toBe(null);
-  expect(resumed.requested.map((job) => job.jobId)).toEqual(["job_asg_p4"]);
+  expect(resumed.notes.some((note) => note.startsWith("the loop is parked:"))).toBe(false);
   clock = started;
 });
 
-test("the pulse counts why a draw returned nothing, by the coordinator's own reason", async () => {
+test("the pulse counts why a cycle did not spend, and the day accumulates across the wakes", async () => {
   const started = clock;
   const db = openDatabase();
   await seed(db);
   const draws = new Draws(db);
-  draws.stop = { reason: "batch", detail: "the cycle batch of 4 assignments is already claimed" };
-  draws.declined = [
-    {
-      recordId: "hyp_00000001",
-      role: "reception",
-      reason: "claimed",
-      detail: "held by another worker until 14:08",
-    },
-  ];
   const loop = conductor({
     store: openStore(db),
     coordinator: draws as unknown as Coordinator,
@@ -2407,32 +2163,31 @@ test("the pulse counts why a draw returned nothing, by the coordinator's own rea
     now: () => clock,
   });
 
+  // One reason a cycle spent nothing, counted once: the door that does not exist yet (#279). It
+  // is a word of the coordinator's own `STOP_REASONS` rather than one beside them, because the
+  // pulse tallies that one vocabulary and a reason outside it would show as nothing at all.
   const first = await loop.tick();
-  expect(first.stop).toEqual({
-    reason: "batch",
-    detail: "the cycle batch of 4 assignments is already claimed",
-  });
-  expect(first.gaps).toEqual(draws.declined);
-  expect(first.pulse.tick.gaps).toEqual({ batch: 1, claimed: 1 });
-  expect(first.pulse.today.gaps).toEqual({ batch: 1, claimed: 1 });
+  expect(first.gaps).toEqual([]);
+  expect(first.pulse.tick.gaps).toEqual({ "engine-pending": 1 });
+  expect(first.pulse.today.gaps).toEqual({ "engine-pending": 1 });
 
   // The day accumulates across the wakes that make the cycles, which is why it is kept in the
   // plugin's keys rather than in the loop: every tick of a real day is a new conductor.
   const second = await loop.tick();
-  expect(second.pulse.tick.gaps).toEqual({ batch: 1, claimed: 1 });
-  expect(second.pulse.today.gaps).toEqual({ batch: 2, claimed: 2 });
+  expect(second.pulse.tick.gaps).toEqual({ "engine-pending": 1 });
+  expect(second.pulse.today.gaps).toEqual({ "engine-pending": 2 });
 
   // …and it is a DAY: the tally starts again at the boundary the spend ledger is kept by.
   clock += 24 * 60 * 60_000;
   const tomorrow = await loop.tick();
-  expect(tomorrow.pulse.today.gaps).toEqual({ batch: 1, claimed: 1 });
+  expect(tomorrow.pulse.today.gaps).toEqual({ "engine-pending": 1 });
 
   // A disabled policy is a reason a cycle did not spend like any other, and the loop counts it
-  // itself: the cycle never gets far enough to be told so by the coordinator.
+  // itself: the cycle never gets far enough to reach the engine-pending verdict.
   draws.enabled = false;
   const off = await loop.tick();
   expect(off.enabled).toBe(false);
   expect(off.pulse.tick.gaps).toEqual({ disabled: 1 });
-  expect(off.pulse.today.gaps).toEqual({ batch: 1, claimed: 1, disabled: 1 });
+  expect(off.pulse.today.gaps).toEqual({ "engine-pending": 1, disabled: 1 });
   clock = started;
 });

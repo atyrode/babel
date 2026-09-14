@@ -189,9 +189,11 @@ const importLedgerAction = defineServerAction({
  * `concurrentJobs` is the manifest's ceiling, handed down from the wiring: the two acts that
  * write a bound — installing a policy and overlaying one — refuse a per-machine bound above
  * what the machine half will run, so the operator learns it at the door instead of paying for
- * postings the hub refuses (#281).
+ * postings the hub refuses (#281). It is `null` when no operation this bundle declares states
+ * one (#279), and then there is no bound to refuse against: the hub refuses nothing at
+ * `execute` for a ceiling nobody declared.
  */
-export function actDoors(store: ActsStore, concurrentJobs: number): readonly Door[] {
+export function actDoors(store: ActsStore, concurrentJobs: number | null): readonly Door[] {
   return [
     defineDoor(ruleAction, async (ctx, args) =>
       await acted(async () => {

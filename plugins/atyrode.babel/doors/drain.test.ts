@@ -20,11 +20,11 @@ import type {
   JobLaunch,
   JobRef,
   JobRunState,
+  JobsSlice,
   MachineReadiness,
-  Recipe,
   RunPlan,
 } from "../server/conductor.ts";
-import { drainTick, type DrainDeps } from "../server/drain.ts";
+import { drainTick, type DrainDeps, type DrainLaunch } from "../server/drain.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { readDrain } from "../store/drains.ts";
@@ -32,18 +32,13 @@ import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
 import { drainDoors } from "./drain.ts";
-import { launchMachinery } from "./launch.ts";
+import { launchMachinery, type LaunchIdentity, type Started } from "./launch.ts";
 
 const NOW = Date.UTC(2026, 8, 14, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
 const MACHINE = "m-dev-01";
 
-const RECIPE: Recipe = {
-  id: "code-health-comprehensibility",
-  version: 3,
-  title: "Code health",
-  body: "What in this code is harder to understand than it needs to be?",
-};
+
 
 const LIMITS = {
   timeoutMs: 3_600_000,
@@ -63,15 +58,7 @@ const SESSION = {
   },
 };
 
-const PLAN: RunPlan = {
-  engine: { binary: "/runtime/bin/omp", args: [] },
-  session: SESSION,
-  caps: { perRunUsd: 0.0625, toolCalls: 40, idleMs: 120_000, handshakeMs: 30_000 },
-  recipes: {},
-  metered: { [OPERATIONS.explore]: true },
-  requireContainment: true,
-  limits: LIMITS,
-};
+const PLAN: RunPlan = { metered: { [OPERATIONS.explore]: true }, limits: LIMITS };
 
 const READY: MachineReadiness = {
   connected: true,
@@ -235,6 +222,57 @@ async function settleJob(
   );
 }
 
+/**
+ * A LAUNCH PATH THAT POSTS, which the real one no longer is (#279).
+ *
+ * `launchMachinery` answers `engine_pending` for everything now: a Babel run is a Code session
+ * and Code's `runSession` door does not exist yet. The CONTROLLER's contract is with the
+ * `DrainLaunch` interface — keep a fan of N filled, fold what settles, stop at the target —
+ * and none of that is about who posts, so the controller is exercised against a path that
+ * does. What the real one answers is its own test below, and `drain.start` inherits it.
+ *
+ * It posts and records exactly what `startExplore` did: one job of the preset's operation
+ * under the identity the controller derived, and the run row that makes it foldable.
+ */
+function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch {
+  const post = async (
+    identity: LaunchIdentity,
+    _slice: JobsSlice,
+    input: { readonly machineId: string; readonly preset: keyof typeof PRESET_OPERATIONS },
+  ): Promise<Started> => {
+    const operationId = PRESET_OPERATIONS[input.preset];
+    try {
+      await jobs().execute({
+        jobId: identity.jobId,
+        machineId: input.machineId,
+        operationId,
+        input: { input: JSON.stringify({ runId: identity.runId }) },
+        outputs: [],
+      });
+    } catch (error) {
+      return { refused: error instanceof Error ? error.message : String(error) };
+    }
+    await store.db.run(
+      `INSERT INTO runs(id, kind, machine_id, job_id, recipe_id, profile, authority_kind,
+                        authority_id, preparation, started_at, records, payload)
+       VALUES (?, ?, ?, ?, '', '{}', 'operator', ?, '{}', ?, 0, ?)
+       ON CONFLICT(id) DO NOTHING`,
+      [
+        identity.runId,
+        operationId,
+        input.machineId,
+        identity.jobId,
+        identity.authorityId,
+        new Date(store.now()).toISOString(),
+        JSON.stringify({ closure: null, requestedAt: store.now() }),
+      ],
+    );
+    store.touch();
+    return { runId: identity.runId, jobId: identity.jobId };
+  };
+  return { startExplore: post, startBeat: post };
+}
+
 beforeEach(async () => {
   harness = await openTestStore(NOW);
   fleet = new Fleet();
@@ -266,24 +304,10 @@ beforeEach(async () => {
     });
   }
   const coordinated = coordinator(store, () => store.now(), 16);
-  const machinery = launchMachinery(store, {
-    coordinator: coordinated,
-    cookbook: { [RECIPE.id]: RECIPE },
-    jobs: () => fleet,
-    machines: () => ({ repository: () => ({ ok: false, reason: "this test enrolls no machine" }) }),
-    // Only the preview reads a machine's service policy, and a drain previews nothing: a slice
-    // that says so is more honest than a priced fake nothing in this file ever consults.
-    services: () => ({
-      policy: () => ({ ok: false as const, reason: "a drain reads no service configuration" }),
-    }),
-    plan: () => PLAN,
-    cycle: () => ({ tick: () => Promise.reject(new Error("a drain never draws")) }),
-    now: () => store.now(),
-  });
   deps = {
     store,
     coordinator: coordinated,
-    launch: machinery,
+    launch: posting(store, () => fleet),
     jobs: fleet,
     plan: () => PLAN,
     now: () => store.now(),
@@ -300,7 +324,7 @@ afterEach(() => {
   harness.close();
 });
 
-test("the roster is a governed start, a dry read and a governed stop, each at a node", () => {
+test("the roster is a start, a dry read and a stop, and none of them names a node", () => {
   expect(doors.map((entry) => entry.action.name)).toEqual([
     ACTIONS.drainStart,
     ACTIONS.drainStatus,
@@ -308,11 +332,14 @@ test("the roster is a governed start, a dry read and a governed stop, each at a 
   ]);
   const [begin, read, stop] = doors as readonly Door[];
 
-  // Posting jobs is `machines:run` at the operation node, paired with its requirement: a
-  // governed cap with no requirement is refused outright by the dispatcher.
-  expect(begin?.action.caps).toEqual(["machines:run"]);
-  expect(begin?.action.requirements).toEqual([{ cap: "machines:run", target: ["operation"] }]);
-  expect(begin?.action.delegates).toEqual(["jobs:read", "locations:read", "locations:write"]);
+  // A start posts nothing today (#279), so it asks what a reading door asks and names no
+  // node. It CANNOT keep `machines:run` at the explore operation: the host discharges that
+  // before the handler runs and no installation declares the operation, so the dispatch was
+  // refused "explicit version-bound consent required" and the operator never heard
+  // `engine_pending`. The governed requirement returns with Code's node.
+  expect(begin?.action.caps).toEqual(["containers:read"]);
+  expect(begin?.action.requirements).toBeUndefined();
+  expect(begin?.action.delegates).toBeUndefined();
 
   // The dry read asks no machine anything, so it carries no governed capability and no target —
   // the panel polls it every five seconds while the operator watches. It DOES delegate
@@ -323,10 +350,15 @@ test("the roster is a governed start, a dry read and a governed stop, each at a 
   expect(read?.action.requirements).toBeUndefined();
   expect(read?.action.delegates).toEqual(["jobs:read"]);
 
-  // A drain holds several jobs and a requirement resolves to exactly one node, so the stop asks
-  // for `jobs:cancel` at the OPERATION they share rather than at one of them.
-  expect(stop?.action.caps).toEqual(["jobs:cancel"]);
-  expect(stop?.action.requirements).toEqual([{ cap: "jobs:cancel", target: ["operation"] }]);
+  // A stop closes this plugin's own row and reaches its jobs through its OWN ceiling. It
+  // asked `jobs:cancel` at the operation they share, and that operation is one no
+  // installation declares any more (#279) — so the host refused the dispatch before the
+  // handler ran and a drain v0.3.0 left running could not be stopped at all. The cancel is a
+  // DELEGATE now; the hub still checks consent at the effect and a refused cancel is
+  // reported by name rather than assumed.
+  expect(stop?.action.caps).toEqual(["containers:write"]);
+  expect(stop?.action.requirements).toBeUndefined();
+  expect(stop?.action.delegates).toEqual(["jobs:cancel"]);
 });
 
 test("a start posts the whole fan, moves no policy number, and names the account it spends", async () => {
@@ -355,9 +387,6 @@ test("a start posts the whole fan, moves no policy number, and names the account
   expect(await harness.db.query(`SELECT id FROM budgets`)).toEqual([]);
   expect(await harness.db.query(`SELECT version FROM policies`)).toHaveLength(1);
 
-  // What one run may spend is still the standing policy's: 0.25 a cycle over a batch of one.
-  expect(fleet.executed).toHaveLength(3);
-  expect(PLAN.caps.perRunUsd).toBeCloseTo(0.0625, 6);
 
   // The row remembers what it must relaunch with: the account, the fan, and the preset's knobs.
   const row = await readDrain(harness.store, drainId);
@@ -834,4 +863,38 @@ test("disabling the policy mid-drain ends it as an operator's act rather than as
   const [after] = await drainTick(deps);
   expect(after?.state).toBe("stopped");
   expect((await readDrain(harness.store, drainId))?.state).toBe("stopped");
+});
+
+test("over the real launch path a start answers engine_pending and leaves a failed drain", async () => {
+  /*
+    THE DRAIN AND THE BUTTON REFUSE THE SAME SENTENCE (#279). A drain posts through
+    `launchMachinery`'s own `startExplore`, which is exactly why there is one refusal and not
+    two: whatever the operator's button answers, the fan answers. The controller above is
+    exercised against a path that posts, because keeping a fan filled is not a claim about who
+    posts; this is the claim about who posts.
+  */
+  deps = {
+    ...deps,
+    launch: launchMachinery(harness.store, {
+      coordinator: deps.coordinator,
+      jobs: () => fleet,
+      now: () => harness.store.now(),
+    }),
+  };
+
+  const answer = await start({ concurrent: 3 });
+
+  const refused = String(answer["refused"]);
+  expect(refused).toMatch(/this drain launched nothing/);
+  expect(refused).toContain("engine_pending:");
+  expect(refused).toContain("atyrode/manifold#575");
+  expect(refused).toContain("atyrode/code#170");
+  expect(fleet.executed).toEqual([]);
+  // The row is written before the first post and closed when none lands, so what survives says
+  // why rather than sitting at `running` holding nothing.
+  const rows = await harness.db.query<{ id: string; state: string; reason: string }>(
+    `SELECT id, state, reason FROM drains`,
+  );
+  expect(rows[0]).toMatchObject({ state: "failed" });
+  expect(rows[0]?.reason).toContain("engine_pending");
 });

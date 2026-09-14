@@ -1192,20 +1192,14 @@ posts rather than discovered one refused job at a time.
 >
 > 1. `atyrode context show` reports the OMP auth broker `active`. On 2026-09-13 it was `failed`
 >    from 11:07 to 11:24 and every engine launched in that window died before its ready frame.
-> 2. The drain machine's owner has Babel's inference service installed: Watch's **Start** shows
->    the session line with the policy state `priced` for the chosen model — not `no policy`,
->    `unpriced`, `policy unread` or `hub too old`. `no policy` is fixed from the plugin itself:
->    the `setupInference` door (`services:configure`) installs the `atyrode.babel.inference`
->    policy on the machine — omp's gateway as its runtime, the `stream` operation metered
->    `pi-native-usage`, the default price table — and a refresh carries an edited price table
->    through. The operator then consents `machines:run` for the `explore` operation and
->    `services:invoke` at the current artifact revision where the hub asks. **Success:** the
->    launch preview shows the price and the ceiling, not a policy state.
-> 3. The account to drain is the one the session names: Watch's account picker lists the
->    machine's broker-observed accounts (blocked ones disabled) and the launch carries exactly
->    that one as the job's account pool, so a different account is a different choice in the
->    picker, never a policy edit. The drain panel names it before the button and for as long as
->    the drain runs.
+> 2. A **Code profile** exists for the drain's account and model. Code owns the profiles — the
+>    model, the thinking level, the account — and Code's generator is where they are set
+>    (atyrode/code#170); Babel neither composes a session nor prices one. The operator consents
+>    `machines:run` for the operation the preset names where the hub asks. **Success:** the
+>    profile the drain will name resolves in Code on that machine.
+> 3. **Code's `runSession` door is installed** on the hub and reachable from Babel's server
+>    (atyrode/manifold#575). Until it is, `drain.start` answers `engine_pending` and no drain
+>    can begin: that refusal names both issues, and it is the honest no-go.
 > 4. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names
 >    a blocker for this machine is a no-go.
 > 5. A five-minute rehearsal: `drain.start` with `concurrent: 2`, `target.costMicros` equal to
@@ -1264,41 +1258,42 @@ Mandatory, and each one was broken on 2026-09-13.
    account are named by the operator or asked for before the drain starts. An agent running
    Babel never chooses them silently; an operator running it by hand is asked by the door.
 
-### 11.7 What shipped, what was exercised, what remains (v0.3.0, 2026-09-14)
+### 11.7 What shipped, what was exercised, what remains (v0.3.0, 2026-09-14; reverted 2026-09-14)
 
-**Shipped on `main`; the v0.3.0 tag hands it to the preview.** The engine (#284): Babel's own
-`explore`/`evaluate` job launches `omp --mode rpc` and reaches the model only through the
-`atyrode.babel.inference` service binding — omp's gateway as runtime, `stream` metered
-`pi-native-usage` (atyrode/manifold#572) — so the job never holds a credential and every call
-is journaled with tokens and cost. The drain (#285): `drain.start` / `drain.status` /
-`drain.stop`, the controller, the Watch drain section and the session picker (account, model,
-thinking) both forms share. The release path (#286): a `v*` tag packs, verifies, attaches the
-three bundles and hands them to the integrated preview's receiver.
+**Shipped on `main`; the v0.3.0 tag hands it to the preview.** The drain (#285):
+`drain.start` / `drain.status` / `drain.stop`, the controller and the Watch drain section. The
+release path (#286): a `v*` tag packs, verifies, attaches the three bundles and hands them to
+the integrated preview's receiver.
+
+**AND THE ENGINE #284 SHIPPED IS REVERTED (#279).** Babel does not launch omp and does not
+compose a session: `atyrode.babel` depends on `atyrode.code`, which depends on `atyrode.omp`,
+and a run is a Code session posted through Code's `runSession` door from a saved Code profile
+or Code's generator. The `omp` pin, the `explore`/`evaluate` machine operations, the
+`atyrode.babel.inference` service, the `setupInference` door and the Start picker are gone; the
+drain, Watch, the receipts fold and the release path stay, and every launch answers
+`engine_pending` naming atyrode/manifold#575 and atyrode/code#170.
 
 **Exercised, with the evidence.** On this workstation (`workstation-linux`, 2026-09-14): the
-plugin gate (`check`, 582 tests, `pack`, `verify` against a real engine at Manifold
-`0bc76660`); one whole `explore` operation driving the **real** `omp` 18.1.14 binary in rpc mode
-against a loopback stand-in for the metered proxy — stage `at the model` reported, the corpus
-and submit host tools served, the submission validated, the receipt carrying account, model,
-tokens and cost (`plugins/atyrode.babel/machine/omp.test.ts`); the controller's self-stop,
-cancellation and spend accounting against a fake hub (`doors/drain.test.ts`, 20 cases); the
-three bundles installed on a local preview-equivalent hub and Home, Watch (Start, Runs,
-Recipes, Ceilings) rendered in Chromium. Independent review verdicts: #284 pass, #285 fail then
-pass, manifold#572 pass.
+plugin gate (`check`, `bun test`, `pack`, `verify` against a real engine at Manifold
+`0bc76660`); the controller's self-stop, cancellation and spend accounting against a fake hub
+(`doors/drain.test.ts`); the three bundles installed on a local preview-equivalent hub and
+Home, Watch (Start, Runs, Recipes, Ceilings) rendered in Chromium. The v0.3.0 evidence for the
+engine — one whole `explore` driving the real `omp` 18.1.14 binary — is WITHDRAWN with the
+engine: that lane no longer exists here, and its test went with it.
 
-**Not exercised — every item below is an OPERATOR STEP.** No job has run on a real hub: the
-preview's machine (`dev-01`) has no `atyrode.babel.inference` policy until `setupInference` is
-run there, and no consent for `machines:run` / `services:invoke` at the installed revision; so
-no real model call, no `inference_call` on a real journal, no provider window moved. The
-pre-flight (§11.2) is therefore the next thing to do, in this order, on the preview:
+**Not exercised, and now blocked at the launch — every item below is an OPERATOR STEP.** No job
+has run on a real hub, and none can: the self-launch engine was reverted (#279), so every
+launch — the button's, the drain's fan and the conductor's own cycle — answers `engine_pending`
+until atyrode/manifold#575 and atyrode/code#170 land. There is no real model call, no
+`inference_call` on a real journal and no provider window moved, and there will be none from
+Babel until Code's door exists. What remains owed, in order:
 
-> 1. Open Watch → Start, pick `dev-01`; the session line reads `no policy`. Run
->    `atyrode.babel.setupInference { machineId, apply: true }` (the plugin manager's action
->    console, or the door from a panel once one carries it); the line reads `priced` for
->    `anthropic/…` models in the default table. **Success:** `state: installed` and the price
->    beside the ceiling.
-> 2. Consent `machines:run` on `atyrode.babel.explore` and `services:invoke` on the inference
->    binding where the hub asks on the first press. **Success:** the launch answers a run id.
+> 1. atyrode/manifold#575 (a plugin's server calling a sibling plugin's door) and
+>    atyrode/code#170 (Code's `runSession` door, composing from a Code profile and posting the
+>    omp job). **Success:** Babel's `explore` reaches Code's door and gets a job back.
+> 2. A Code profile exists on `dev-01` for the account and model the drain will spend, and the
+>    operator consents whatever Code's door asks at the current artifact revision.
+>    **Success:** a launch answers a run id instead of `engine_pending`.
 > 3. §11.2 item 5, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`,
 >    target one review's price, deadline now + 5 min. **Success:** two rows reach `at the model`
 >    within 90 s and settle with calls > 0; record host, date and the drain row here.

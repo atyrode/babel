@@ -9,7 +9,6 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { insert, openTestStore, type TestStore } from "./testdb.ts";
-import { lastServiceSetup, recordServiceSetup } from "../server/inference.ts";
 import { stamp } from "./feedindex.ts";
 
 const HOUR = 60 * 60 * 1000;
@@ -846,33 +845,5 @@ describe("runs and the policy", () => {
       "the window reset early",
     ]);
     expect((await harness.store.policy()).overlay).toBeNull();
-  });
-});
-
-describe("what the hub answered an owner", () => {
-  test("the last answer per machine and service is kept, and a later one replaces it", async () => {
-    // #284: the launch preview tells "this hub refused Babel's meter kind" from "nobody set this
-    // machine up" by reading this row, and nothing else can tell them apart — a refused
-    // `configureConfiguration` leaves the configuration exactly as it was.
-    const service = "atyrode.babel.inference";
-    expect(await lastServiceSetup(harness.store, "dev-01", service)).toBeNull();
-
-    await recordServiceSetup(harness.store, "dev-01", service, {
-      state: "refused",
-      detail: 'invalid_value at policies.0.operations.stream.meter.kind: expected "openai-usage"',
-    });
-    expect(await lastServiceSetup(harness.store, "dev-01", service)).toEqual({
-      state: "refused",
-      detail: 'invalid_value at policies.0.operations.stream.meter.kind: expected "openai-usage"',
-    });
-    // One row per machine and service: another machine's answer is its own.
-    expect(await lastServiceSetup(harness.store, "dev-02", service)).toBeNull();
-
-    // And the hub that has moved answers differently, over the same row.
-    await recordServiceSetup(harness.store, "dev-01", service, { state: "installed", detail: "" });
-    expect(await lastServiceSetup(harness.store, "dev-01", service)).toEqual({
-      state: "installed",
-      detail: "",
-    });
   });
 });

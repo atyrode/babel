@@ -6,7 +6,7 @@ import {
   REFUSALS,
   ResultRefusal,
   type RefusalCode,
-} from "../machine/engine/results.ts";
+} from "../machine/results.ts";
 import { SCHEMA_V1 } from "./schema.ts";
 import {
   budgetChanges,
@@ -97,7 +97,7 @@ export interface RowRefusal {
  * The store's acceptance of one row a finished job wrote, or null when it accepts it.
  *
  * An `assessments` row carries a review submission, and the store validates it with THE SAME
- * validator the engine's per-role JSON Schema is generated from (`machine/engine/results.ts`).
+ * validator the engine's per-role JSON Schema is generated from (`machine/results.ts`).
  * That identity is the point: the Go tree stated the environment/outcome/criterion-results rule
  * three times — in the review contract, in the store's acceptance and in what it counted as
  * empty — and on 2026-09-13 an evidence review was paid for and then refused at submit because
@@ -1474,7 +1474,7 @@ export async function setPolicy(
   policy: Policy,
   reason: string,
   operator: string,
-  concurrentJobs: number,
+  concurrentJobs: number | null,
 ): Promise<PolicySet> {
   if (operator === "") throw new ActRefused("a policy has no operator");
   const refusal = validateNewPolicy(policy, concurrentJobs);
@@ -1517,7 +1517,7 @@ export async function setBudget(
   store: ActsStore,
   args: z.infer<typeof SetBudgetInputSchema>,
   operator: string,
-  concurrentJobs: number,
+  concurrentJobs: number | null,
 ): Promise<BudgetSet> {
   if (operator === "") throw new ActRefused("an overlay has no operator");
   const expires = Date.parse(args.expiresAt);

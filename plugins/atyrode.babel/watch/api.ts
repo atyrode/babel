@@ -1,20 +1,13 @@
 import type { HostServices } from "@manifold/plugin";
 import { z } from "zod";
 import {
-  AccountRowSchema,
-  AccountsResultSchema,
   DRAIN_CONCURRENT_MAX,
   DrainStartRequestSchema,
   DrainStatusSchema,
   DrainStopInputSchema,
-  LaunchInputSchema,
-  LaunchRequestSchema,
-  LaunchResultSchema,
   MODEL_REFERENCE,
   OPERATIONS,
-  PRESETS,
   PRESET_OPERATIONS,
-  PRESET_REACHES_MODEL,
   PolicyResultSchema,
   PresetSchema,
   RecipeRowSchema,
@@ -30,7 +23,6 @@ import {
   door,
   type ActionName,
   type DrainPreset,
-  type LaunchInput,
   type SessionChoice,
 } from "../contract.ts";
 
@@ -42,8 +34,6 @@ export type TopicsResult = z.infer<typeof TopicsResultSchema>;
 export type RecipeRow = z.infer<typeof RecipeRowSchema>;
 export type PolicyResult = z.infer<typeof PolicyResultSchema>;
 export type Preset = z.infer<typeof PresetSchema>;
-/** What the `launch` door answers, dry or wet: the profile, the model, the cost, the ceiling. */
-export type LaunchAnswer = z.infer<typeof LaunchResultSchema>;
 
 /*
   WHAT WATCH ASKS THE HUB, AND IN WHAT WORDS.
@@ -102,96 +92,26 @@ export async function act<T>(
 // ---------------------------------------------------------------------------- the presets
 
 /**
- * One knob, named in the operator's words rather than the flag's.
- *
- * A preset takes exactly one number or one topic — that is what makes it a preset instead of
- * the flags-with-labels form this panel replaces, where five dials of the CLI were offered to
- * an operator who had to know which three of them the chosen kind would refuse.
+ * THE THREE REQUESTS A DRAIN MAY FAN OUT are {@link DRAIN_CARDS} below; there is no launch form
+ * any more (#279), so there are no launch cards either. A run that reaches a model is a Code
+ * session, composed in Code and posted through Code's own door, and Watch's Start section says
+ * exactly that (`watch/start.tsx`).
  */
-export type Knob = "days" | "draws" | "minutes" | "topic";
-
-export interface PresetCard {
-  /** What the card is called. */
-  readonly title: string;
-  /** One line: what asking for this actually does. */
-  readonly does: string;
-  readonly knob: Knob;
-  readonly knobLabel: string;
-  /** Whether the cookbook selection applies; an empty selection runs the enabled default set. */
-  readonly takesRecipes: boolean;
-}
 
 /**
- * THE FIVE REQUESTS, in the order an operator reaches for them: the daily read, one topic on
- * purpose, the backlog, Babel's own housekeeping, and letting it run.
+ * WHO A DRAIN SPENDS, as its form holds it (#258, #267).
  *
- * The wording is the whole point of this panel. "explore --preparation p_3f2a --recipe
- * code-health-comprehensibility --develop 3" is a sentence about Babel's internals; "read
- * what's new · the last 1 day of sessions" is a sentence about the operator's intent, and the
- * receipt records the same run either way.
- */
-export const PRESET_CARDS: Record<Preset, PresetCard> = {
-  "read-whats-new": {
-    title: "Read what's new",
-    does: "Reads the sessions since you last looked and writes up what it found.",
-    knob: "days",
-    knobLabel: "Days back",
-    takesRecipes: true,
-  },
-  "explore-topic": {
-    title: "Explore a topic",
-    does: "Runs the cookbook over one topic's own sessions, and files what it writes under it.",
-    knob: "topic",
-    knobLabel: "Topic",
-    takesRecipes: true,
-  },
-  "review-backlog": {
-    title: "Review the backlog",
-    does: "Draws candidates nobody came back to and has Babel's reviewers vote on them.",
-    knob: "draws",
-    knobLabel: "Draws",
-    takesRecipes: false,
-  },
-  "file-and-tidy": {
-    title: "File and tidy",
-    does: "Files what is unfiled and proposes the consolidations the backlog has earned.",
-    knob: "draws",
-    knobLabel: "Draws",
-    takesRecipes: false,
-  },
-  "keep-going": {
-    title: "Keep going",
-    does: "Lets Babel run its own loop under the ceilings until the time is up.",
-    knob: "minutes",
-    knobLabel: "Minutes",
-    takesRecipes: false,
-  },
-};
-
-/** The knob's bounds, read off the contract's own schema so a spinner cannot offer a refusal. */
-export const KNOB_BOUNDS: Record<Knob, { readonly min: number; readonly max: number; readonly step: number }> = {
-  days: { min: 1, max: 365, step: 1 },
-  draws: { min: 1, max: 50, step: 1 },
-  minutes: { min: 5, max: 24 * 60, step: 5 },
-  topic: { min: 0, max: 0, step: 0 },
-};
-
-/**
- * WHO ANSWERS THE RUN, as the picker holds it (#279).
+ * Five strings rather than the contract's `SessionChoice`, because a form is a half-made choice
+ * for as long as the operator is making it: a model typed but no account yet is a state
+ * `SessionChoiceSchema` has no shape for. {@link sessionChoice} is the one place the two meet.
  *
- * Five strings rather than the contract's `SessionChoice`, because a picker is a half-made
- * choice for as long as the operator is making it: a model typed but no account yet is a state
- * `SessionChoiceSchema` has no shape for, and a draft that could only hold valid sessions could
- * not hold what the operator is looking at. {@link sessionChoice} is the one place the two meet.
- *
- * `provider`, `credentialId` and `identityKey` are copied off the chosen {@link AccountRow}
- * rather than looked up on the way out: the same three fields are what the operator TYPES when
- * the broker cannot be read, so the draft holds the choice itself and not a key into a list that
- * may not exist. The scope is not among them — it names the observation a pool was frozen from
- * and is the broker's to state, so {@link sessionChoice} takes it off the row.
+ * It is NOT a picker over anything Babel read. The model, the thinking level and the account
+ * belong to the Code profile a run is composed from (#279); these fields are what the drain
+ * RECORDS about the window it is spending, so the panel can say afterwards which account a fan
+ * burned — the one question nothing could answer on 2026-09-13.
  */
 export interface SessionDraft {
-  /** `provider/model`, the reference omp routes by; prefilled from the machine's last run. */
+  /** `provider/model`, the reference a composition routes by. */
   readonly model: string;
   /** One of `THINKING_LEVELS`, or "" for whatever the model does by default. */
   readonly thinking: string;
@@ -201,13 +121,7 @@ export interface SessionDraft {
   readonly identityKey: string;
 }
 
-/**
- * WHAT THE PICKER NEEDS OF A DRAFT: the half-made session, and the machine whose broker offered
- * the rows. Both the launch draft and the drain draft hold exactly this, and they hold it the
- * same way on purpose — the two forms name an account through one picker and resolve it through
- * one {@link sessionChoice}, because two ways to say "spend this account" is how a fan ended up
- * spending one nobody could name (post-mortem #267).
- */
+/** What {@link sessionChoice} needs of a form: the half-made session, and the machine. */
 export interface SessionHolder {
   readonly session: SessionDraft;
   readonly machineId: string;
@@ -220,79 +134,6 @@ export const INITIAL_SESSION: SessionDraft = {
   credentialId: "",
   identityKey: "",
 };
-
-export interface LaunchDraft extends SessionHolder {
-  readonly preset: Preset;
-  /** The topic for `explore-topic`; empty until one is picked. */
-  readonly entityId: string;
-  readonly sinceDays: number;
-  readonly draws: number;
-  readonly minutes: number;
-  readonly recipes: readonly string[];
-}
-
-export const INITIAL_DRAFT: LaunchDraft = {
-  preset: PRESETS[0],
-  machineId: "",
-  entityId: "",
-  sinceDays: 1,
-  draws: 5,
-  minutes: 60,
-  recipes: [],
-  session: INITIAL_SESSION,
-};
-
-/**
- * The draft as the `launch` door takes it — the contract's own shape, parsed by the contract's
- * own schema, with exactly the knobs the chosen preset owns.
- *
- * A preset carries no flag it cannot use: sending `minutes` with `read-whats-new` would be an
- * argument the door has no business for, and `LaunchInputSchema` being strict means the hub
- * would refuse the whole launch for it. So the knobs are filtered here, once, by the same table
- * the card renders from.
- *
- * The SESSION is the same rule applied to the choice the picker makes (#279): it travels only
- * for a preset that reaches a model — `PRESET_REACHES_MODEL`, the table `launch` refuses by —
- * and it is absent rather than half-made while the operator is still choosing, because
- * `launchPreview` is polled throughout that and must answer without one.
- */
-export function launchInput(draft: LaunchDraft, session: SessionChoice | null = null): LaunchInput {
-  const card = PRESET_CARDS[draft.preset];
-  return LaunchInputSchema.parse({
-    machineId: draft.machineId,
-    preset: draft.preset,
-    recipes: card.takesRecipes ? [...draft.recipes] : [],
-    ...(card.knob === "topic" && draft.entityId !== "" ? { entityId: draft.entityId } : {}),
-    ...(card.knob === "days" ? { sinceDays: draft.sinceDays } : {}),
-    ...(card.knob === "draws" ? { draws: draft.draws } : {}),
-    ...(card.knob === "minutes" ? { minutes: draft.minutes } : {}),
-    ...(session !== null && PRESET_REACHES_MODEL[draft.preset] ? { session } : {}),
-  });
-}
-
-/**
- * The same draft as the `launch` door takes it: the request above plus the OPERATION NODE.
- *
- * `launch` holds `machines:run` at a node rather than over the workspace, and the host reads
- * that node out of the arguments this function builds — so a panel that posted only a machine id
- * would be refused `invalid authority target` before the door ran. The node is the machine the
- * operator picked and the operation his preset becomes, which is `PRESET_OPERATIONS`, the same
- * table the door plans from.
- */
-export function launchRequest(
-  draft: LaunchDraft,
-  session: SessionChoice | null = null,
-): z.infer<typeof LaunchRequestSchema> {
-  const input = launchInput(draft, session);
-  return LaunchRequestSchema.parse({
-    ...input,
-    operation: {
-      kind: "operation",
-      machineId: draft.machineId,
-      operationId: PRESET_OPERATIONS[draft.preset],
-    },
-  });
-}
 
 /**
  * What `stop` takes for one row: the run, and the JOB NODE the engine holds `jobs:cancel` at.
@@ -308,66 +149,24 @@ export function stopInput(run: RunRow, reason = ""): z.infer<typeof StopInputSch
   });
 }
 
-/** Why a draft cannot be started yet, in one clause, or empty when it can. */
-export function unready(draft: LaunchDraft): string {
-  if (draft.machineId === "") return "Pick a machine to run on.";
-  if (PRESET_CARDS[draft.preset].knob === "topic" && draft.entityId === "") return "Pick a topic to explore.";
-  return "";
-}
-
-// ------------------------------------------------------------------ who answers the run (#279)
+// ------------------------------------------------------ who a drain spends (#258, #267, #279)
 
 /*
-  THE PICKER'S HALF OF THE SESSION.
+  THE FORM'S HALF OF THE SESSION.
 
-  Until #279 the model, the thinking level and the account were behind a Code profile reference
-  the machine resolved, so the panel had nothing to choose and nothing to show: the operator
-  read a model off the LAST run and hoped the next one would agree. Code's engine is gone, the
-  choice travels with the request, and `launch` refuses a preset that reaches a model and names
-  no session — which is exactly why the button must be able to say what is missing, in the
-  operator's own words, before he presses it.
-
-  Three things are chosen: an account out of what the machine's broker has observed (the
-  `accounts` door), the model reference omp routes by, and how hard it thinks. The FIRST is the
-  one that can be unavailable: the broker is another plugin's Instance Service, and a hub where
-  it is not installed — or a caller not admitted to read it — answers a reason rather than a
-  list. A picker that showed an empty select there would be a dead end; this one takes the three
-  fields typed, because an operator who knows his credential's row number must still be able to
-  spend it.
+  Babel does not choose a model, a thinking level or an account: a run is composed from a Code
+  profile and posted through Code's own door (#279). What is left on this side is the DRAIN's
+  record of which account's window it exists to spend, which the operator names when he starts
+  it and the panel says back while it runs. There is no `accounts` door and no broker read any
+  more — the accounts a machine holds are omp's, reached through Code — so the fields are typed
+  and the scope is the one honest tag available: this panel, on this machine.
 */
-
-export type AccountRow = z.infer<typeof AccountRowSchema>;
-export type AccountsResult = z.infer<typeof AccountsResultSchema>;
-
-/** No machine picked yet: no accounts, and no reason either — nobody has been asked. */
-export const NO_ACCOUNTS: AccountsResult = { accounts: [], unavailable: "" };
 
 /** What the thinking picker offers; the empty one is the level nobody chose (`THINKING_LEVELS`). */
 export const THINKING_CHOICES: readonly { readonly value: string; readonly label: string }[] = [
   { value: "", label: "none — the model's own default" },
   ...THINKING_LEVELS.map((level) => ({ value: level, label: level })),
 ];
-
-/**
- * The policy state as the one word beside the price, per `SESSION_POLICY_STATES`. A state this
- * build does not know is shown as the word the door sent rather than translated into a guess,
- * which is why the map is keyed loosely.
- */
-export const SESSION_POLICY_LABEL: Record<string, string> = {
-  missing: "no policy",
-  unpriced: "unpriced",
-  priced: "priced",
-  unreadable: "policy unread",
-  /** The hub refused the owner's policy for a meter kind it does not know (manifold#570). */
-  unsupported: "hub too old",
-};
-
-/** One account as the picker offers it: who it is, whose provider, and whether it is spendable. */
-export function accountLabel(row: AccountRow): string {
-  const name =
-    row.identityKey !== "" ? row.identityKey : row.label !== "" ? row.label : `credential ${row.credentialId}`;
-  return `${name} · ${row.provider}${row.disabled ? " · blocked" : ""}`;
-}
 
 /** A session the door would take, or the named reason it is not one yet. */
 export type SessionPick =
@@ -379,48 +178,35 @@ function incomplete(clause: string): SessionPick {
 }
 
 /**
- * THE PICKER'S STATE AS THE CONTRACT'S SESSION, or why it is not one.
+ * THE FORM'S STATE AS THE CONTRACT'S SESSION, or why it is not one.
  *
  * The reason is what disables the button, so it is a clause an operator can act on and it is
- * NAMED — `session_incomplete` is the panel's half of the door's `session_required`, and
- * `account_blocked` is the one refusal the broker can hand us about a choice already made: an
- * account marked blocked between the poll that offered it and the press would fail on the
- * machine with `account_unavailable`, after the job was posted and a claim taken.
+ * NAMED: `session_incomplete` is a half-made choice, and the drain's own refusal for anything
+ * the contract will not parse.
  *
- * The SCOPE is read off the offered row rather than held in the draft, because it names the
- * broker observation the account was seen in and is the broker's statement, not the operator's
- * choice. A TYPED account was seen in none, and carries a tag naming where it did come from:
- * the gateway worker checks only that every slot of one pool agrees on its scope and compares
- * it against no canonical value (`doors/inference.ts`), a pool Babel builds holds exactly one
- * slot, so the tag is both admissible and honest — this panel, on this machine, rather than an
- * observation that never happened.
+ * The SCOPE is a tag naming where the account came from rather than a broker observation,
+ * because no observation happened: an account named here was named by the operator. A pool
+ * Babel records holds exactly one slot, so the tag is both admissible and honest.
  */
-export function sessionChoice(draft: SessionHolder, accounts: AccountsResult): SessionPick {
+export function sessionChoice(draft: SessionHolder): SessionPick {
   const session = draft.session;
   const model = session.model.trim();
   if (model === "") return incomplete("name the model this run asks for, as provider/model");
   if (!MODEL_REFERENCE.test(model)) {
     return incomplete(
-      `${model} is not a model reference — omp routes by provider/model, and a bare model id ` +
-        `misses the route and the price at once`,
+      `${model} is not a model reference — a run is routed by provider/model, and a bare model ` +
+        `id misses the route and the price at once`,
     );
   }
   if (session.provider === "" || session.credentialId === "") {
-    return incomplete("choose the account this run spends");
-  }
-  const row = accounts.accounts.find((entry) => entry.credentialId === session.credentialId);
-  if (row?.disabled === true) {
-    return {
-      ok: false,
-      reason: `account_blocked: the broker reports ${accountLabel(row)}, so this run would be refused on the machine`,
-    };
+    return incomplete("name the account this drain spends");
   }
   const parsed = SessionChoiceSchema.safeParse({
     model,
     ...(session.thinking === "" ? {} : { thinking: session.thinking }),
     account: {
       provider: session.provider,
-      scope: row?.scope ?? `atyrode.babel.watch/typed/${draft.machineId}`,
+      scope: `atyrode.babel.watch/typed/${draft.machineId}`,
       credentialId: session.credentialId,
       identityKey: session.identityKey,
     },
@@ -590,10 +376,13 @@ export function tokenClause(progress: RunProgress): string {
 export type DrainStatus = z.infer<typeof DrainStatusSchema>;
 
 /**
- * What each drain preset is, in the operator's words, and what its one knob is. It is a table of
- * its own rather than a reuse of `PRESET_CARDS` because a drain offers three of the five and
- * says something different about each: what a drain of it SPENDS.
+ * What each drain preset is, in the operator's words, and what its one knob is: the days a
+ * `read-whats-new` reads back over, the topic an `explore-topic` runs on, the minutes a
+ * `keep-going` beat is given. It also says what a drain of it SPENDS, which is what the form
+ * refuses a token target on.
  */
+export type Knob = "days" | "minutes" | "topic";
+
 export interface DrainCard {
   readonly title: string;
   readonly does: string;
