@@ -68,7 +68,7 @@ export const INTEREST_STATES = ["working", "watching", "not-now", "excluded"] as
 export const InterestStateSchema = z.enum(INTEREST_STATES);
 
 /** A record identifier as the frontier mints them: a three-letter family and a hex tail. */
-export const RecordIdSchema = z.string().regex(/^(hyp|obs|fnd|pro|que)_[0-9a-f]{8,64}$/);
+export const RecordIdSchema = z.string().regex(/^(hyp|obs|fnd|pro|qst)_[0-9a-f]{8,64}$/);
 export const EntityIdSchema = z.string().regex(/^ent_[0-9a-f]{8,64}$/);
 
 const bounded = (max: number) => z.string().trim().min(1).max(max);

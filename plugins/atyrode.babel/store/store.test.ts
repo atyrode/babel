@@ -28,8 +28,8 @@ const ARGUED = "pro_00000003";
 const AGREED = "pro_00000004";
 const OBSERVATION = "obs_00000005";
 const UNDER_REVIEW = "hyp_00000006";
-const BLOCKING = "que_00000001";
-const ANSWERED = "que_00000002";
+const BLOCKING = "qst_00000001";
+const ANSWERED = "qst_00000002";
 
 const SESSION = "dev-01/omp/2026-09-01T10-00-00Z_abc";
 const SOURCE = "-code/2026-09-01T10-00-00Z_abc";
@@ -557,7 +557,7 @@ describe("the peel", () => {
         excerpt: row.excerpt, speaker: row.speaker, note: row.note, line: row.line,
       })),
     });
-    for (const identifier of [/hyp_/, /obs_/, /fnd_/, /pro_/, /que_/, /ent_/, /asm_/, /run-[abc]/]) {
+    for (const identifier of [/hyp_/, /obs_/, /fnd_/, /pro_/, /qst_/, /ent_/, /asm_/, /run-[abc]/]) {
       expect(shallow).not.toMatch(identifier);
     }
   });

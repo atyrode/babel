@@ -172,7 +172,7 @@ describe("every sort", () => {
 // keeps the same list and adds to it.
 describe("next", () => {
   test("orders by urgency, then kind, then the longest wait", () => {
-    const blocked = entry("que_block", NOW - 60_000, 0, {
+    const blocked = entry("qst_block", NOW - 60_000, 0, {
       kind: "question", awaiting: true, urgency: URGENCY.blocked,
     });
     const reopened = entry("fnd_reopened", NOW - HOUR, 0, {
@@ -187,7 +187,7 @@ describe("next", () => {
     const candidate = entry("hyp_new", NOW - 4 * HOUR, 0, {
       kind: "hypothesis", awaiting: true, urgency: URGENCY.unruled,
     });
-    const asked = entry("que_idle", NOW - 5 * HOUR, 0, {
+    const asked = entry("qst_idle", NOW - 5 * HOUR, 0, {
       kind: "question", awaiting: true, urgency: URGENCY.asked,
     });
     const settled = entry("pro_done", NOW - 10 * HOUR, 4);
@@ -195,7 +195,7 @@ describe("next", () => {
     const posts = [settled, asked, candidate, finding, proposal, reopened, blocked];
     sortFeed(posts, "next", NOW);
     expect(ids(posts)).toEqual([
-      "que_block", "fnd_reopened", "pro_new", "fnd_new", "hyp_new", "que_idle", "pro_done",
+      "qst_block", "fnd_reopened", "pro_new", "fnd_new", "hyp_new", "qst_idle", "pro_done",
     ]);
   });
 
