@@ -8,8 +8,8 @@ name: manifold-plugins
 # plugins/package.json and uploads dist/ as the `manifold-plugins` artifact.
 #
 # The `uses:` ref below and plugins/MANIFOLD_REV are the same revision and are bumped together:
-# a ref ahead of the file would run a newer workflow against an older kit. b95857c9 is Manifold
-# v0.16.1; its kit stamps hardenedContract: 2 so the hub can admit repacked bundles after #606.
+# a ref ahead of the file would run a newer workflow against an older kit. This post-v0.16.2
+# revision includes the native descriptor-handoff repair verified in manifold#654.
 #
 # Delivery is not here. Every change is proved on preview.manifold.tyrode.dev or a local
 # preview-equivalent hub: between releases through `bun run dev -- --deliver` from dev-01, and
@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   bundles:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@b95857c9f5793831327d49c604b570e1cf4ce677
+    uses: atyrode/manifold/.github/workflows/plugins.yml@615f03548d12838b1a6cff0f9114101bb658e4a3
     with:
       plugins-dir: plugins
       # `atyrode.babel` declares `atyrode.code` a REQUIRED dependency, so `verify` cannot

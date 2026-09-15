@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, door } from "../contract.ts";
+import { ACTIONS, FeedResultSchema, door } from "../contract.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import { readDoors } from "./read.ts";
@@ -133,6 +133,24 @@ describe("the answers", () => {
   test("the peel answers inside its own schema", async () => {
     const answer = await dispatch(ACTIONS.record, { id: RECORD });
     expect(answer).toMatchObject({ claim: { statement: "o", standing: "new", act: "Rule on this" } });
+  });
+
+  test("a stored question returned by Feed can be opened through the record door", async () => {
+    const id = "qst_0123456789abcdef";
+    const text = "Which repository owns this configuration?";
+    await insert(harness.db, "questions", {
+      id, kind: "clarify", class: "curiosity", text, why: "two repositories share the name",
+      dedupe_key: null, raised_by_kind: "run", raised_by_id: "run-a", payload: "{}",
+      created_at: stamp(NOW - HOUR),
+    });
+    const feed = FeedResultSchema.parse(await dispatch(ACTIONS.feed, {
+      kinds: ["question"], needs: "all", window: "all",
+    }));
+    expect(feed.posts).toMatchObject([{ id, kind: "question" }]);
+    const selected = feed.posts[0]!;
+    expect(await dispatch(ACTIONS.record, { id: selected.id })).toMatchObject({
+      claim: { statement: text },
+    });
   });
 
   test("a record this deployment does not hold is refused, and the refusal names it", async () => {

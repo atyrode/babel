@@ -256,7 +256,7 @@ export function feed(overrides: Partial<FeedResult> = {}): FeedResult {
         topics: [],
       }),
       post({
-        id: "que_0000000c",
+        id: "qst_0000000c",
         kind: "question",
         title: "Which repository is the shared catalog's source of truth?",
         score: 0,

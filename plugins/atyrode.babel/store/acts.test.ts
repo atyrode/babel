@@ -842,33 +842,33 @@ test("an answer records the words and moves the question's state", async () => {
   await migrate(store);
   await store.db.run(
     `INSERT INTO questions(id, kind, class, text, why, dedupe_key, raised_by_kind, raised_by_id, payload, created_at)
-     VALUES('que_000000e0', 'resolve-entity', 'blocking', 'which repository is this?', 'two remotes match',
+     VALUES('qst_000000e0', 'resolve-entity', 'blocking', 'which repository is this?', 'two remotes match',
             NULL, 'run', 'run_1', '{}', ?)`,
     [stamp(store.now())],
   );
 
-  const answered = await answer(store, { id: "que_000000e0", outcome: "answered", text: "the babel one" }, OPERATOR);
+  const answered = await answer(store, { id: "qst_000000e0", outcome: "answered", text: "the babel one" }, OPERATOR);
   expect(answered.state).toBe("answered-uninterpreted");
   expect(
     await rows<{ outcome: string; text: string; actor_id: string }>(
       store,
       `SELECT outcome, text, actor_id FROM answers WHERE question_id = ?`,
-      ["que_000000e0"],
+      ["qst_000000e0"],
     ),
   ).toEqual([{ outcome: "answered", text: "the babel one", actor_id: OPERATOR }]);
   expect(
     await rows<{ seq: bigint; state: string }>(
       store,
       `SELECT seq, state FROM question_events WHERE question_id = ? ORDER BY seq`,
-      ["que_000000e0"],
+      ["qst_000000e0"],
     ),
   ).toEqual([{ seq: 1n, state: "answered-uninterpreted" }]);
 
   // `answered-uninterpreted` has no edge to `declined`: the state machine refuses it.
-  expect(answer(store, { id: "que_000000e0", outcome: "declined", text: "" }, OPERATOR)).rejects.toThrow(
+  expect(answer(store, { id: "qst_000000e0", outcome: "declined", text: "" }, OPERATOR)).rejects.toThrow(
     /cannot become declined/,
   );
-  expect(answer(store, { id: "que_ffffffff", outcome: "unknown", text: "" }, OPERATOR)).rejects.toThrow(
+  expect(answer(store, { id: "qst_ffffffff", outcome: "unknown", text: "" }, OPERATOR)).rejects.toThrow(
     /no question/,
   );
 });
@@ -878,13 +878,13 @@ test("a substantive answer with no words is refused", async () => {
   await migrate(store);
   await store.db.run(
     `INSERT INTO questions(id, kind, class, text, why, dedupe_key, raised_by_kind, raised_by_id, payload, created_at)
-     VALUES('que_000000e1', 'set-focus', 'curiosity', 'what next?', 'nothing queued', NULL, 'run', 'run_1', '{}', ?)`,
+     VALUES('qst_000000e1', 'set-focus', 'curiosity', 'what next?', 'nothing queued', NULL, 'run', 'run_1', '{}', ?)`,
     [stamp(store.now())],
   );
-  expect(answer(store, { id: "que_000000e1", outcome: "answered", text: " " }, OPERATOR)).rejects.toThrow(
+  expect(answer(store, { id: "qst_000000e1", outcome: "answered", text: " " }, OPERATOR)).rejects.toThrow(
     /substantive answer has no text/,
   );
-  const declined = await answer(store, { id: "que_000000e1", outcome: "declined", text: "" }, OPERATOR);
+  const declined = await answer(store, { id: "qst_000000e1", outcome: "declined", text: "" }, OPERATOR);
   expect(declined.state).toBe("declined");
 });
 

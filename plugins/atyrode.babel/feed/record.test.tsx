@@ -58,7 +58,7 @@ describe("what it is looking at", () => {
     look({ recordId: "pro_0000000a" });
     const view = await mount(<RecordPanel host={fake.host} arg={{ recordId: "fnd_0000000b" }} />);
     expect(fake.last("record")).toEqual({ id: "fnd_0000000b" });
-    await pointAt({ recordId: "que_0000000c" });
+    await pointAt({ recordId: "qst_0000000c" });
     // The store moved and this seat did not read again: two records are two tiles, each
     // reading its own argument.
     expect(fake.to("record")).toHaveLength(1);

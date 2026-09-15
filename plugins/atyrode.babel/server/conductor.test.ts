@@ -833,7 +833,7 @@ function outputs(runId: string): Record<string, unknown> {
     ],
     [JOB_OUTPUT_FILES.questions]: [
       {
-        id: "que_1",
+        id: "qst_1",
         kind: "clarify",
         class: "entity",
         text: "Is dev-01 the same machine as dev?",

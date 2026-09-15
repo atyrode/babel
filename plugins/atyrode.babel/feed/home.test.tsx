@@ -50,7 +50,7 @@ describe("the list", () => {
     expect(rows.map((row) => row.getAttribute("data-post"))).toEqual([
       "pro_0000000a",
       "fnd_0000000b",
-      "que_0000000c",
+      "qst_0000000c",
     ]);
     expect(view.one('[data-post="pro_0000000a"] .babel-claim').textContent).toBe(
       "Pin the engine profile before a run starts",
@@ -91,12 +91,12 @@ describe("the list", () => {
   test("a question row offers the three answers and no rulings", async () => {
     const fake = hub();
     const view = await mount(<HomePanel host={fake.host} />);
-    expect(view.all('[data-post="que_0000000c"] [data-answer]').map((button) => button.textContent)).toEqual([
+    expect(view.all('[data-post="qst_0000000c"] [data-answer]').map((button) => button.textContent)).toEqual([
       "Answer",
       "I don't know",
       "Stop asking",
     ]);
-    expect(view.all('[data-post="que_0000000c"] [data-ruling]')).toHaveLength(0);
+    expect(view.all('[data-post="qst_0000000c"] [data-ruling]')).toHaveLength(0);
     await view.unmount();
   });
 
@@ -271,7 +271,7 @@ describe("asking and answering", () => {
   test("a question row answers inline, through the answer door", async () => {
     const fake = hub();
     const view = await mount(<HomePanel host={fake.host} />);
-    await view.press('[data-post="que_0000000c"] [data-answer="answered"]');
+    await view.press('[data-post="qst_0000000c"] [data-answer="answered"]');
     expect(view.one(".babel-confirm").textContent).toContain("read by the answer interpreter");
     // An empty answer records nothing: the outcome that carries words requires them.
     await view.press(".babel-confirm .babel-primary");
@@ -280,11 +280,11 @@ describe("asking and answering", () => {
     await view.press(".babel-confirm .babel-primary");
     await view.settle();
     expect(fake.last("answer")).toEqual({
-      id: "que_0000000c",
+      id: "qst_0000000c",
       outcome: "answered",
       text: "the shared catalog is retired",
     });
-    expect(view.one('[data-post="que_0000000c"] .babel-acted').textContent).toBe("answered");
+    expect(view.one('[data-post="qst_0000000c"] .babel-acted').textContent).toBe("answered");
     await view.unmount();
   });
 
@@ -297,7 +297,7 @@ describe("asking and answering", () => {
     await view.key("j");
     await view.key("j");
     await view.key("a");
-    expect(view.one('[data-post="que_0000000c"] .babel-confirm').textContent).toContain(
+    expect(view.one('[data-post="qst_0000000c"] .babel-confirm').textContent).toContain(
       "read by the answer interpreter",
     );
     await view.unmount();
