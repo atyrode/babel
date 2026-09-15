@@ -8,12 +8,8 @@ name: manifold-plugins
 # plugins/package.json and uploads dist/ as the `manifold-plugins` artifact.
 #
 # The `uses:` ref below and plugins/MANIFOLD_REV are the same revision and are bumped together:
-# a ref ahead of the file would run a newer workflow against an older kit. 0bc76660 is Manifold
-# `main`, and it carries the five primitives the plugin is built on: the plugin database (ADR
-# 0034) with a failure-atomic lifecycle (atyrode/manifold#536), which the store cannot start
-# without; per-operation `concurrentJobs` admission (#551); the `job_progress` event (#552); and
-# metered brokered inference (ADR 0038, #554) with the `pi-native-usage` meter kind (#572) that
-# omp's own gateway wire needs.
+# a ref ahead of the file would run a newer workflow against an older kit. b95857c9 is Manifold
+# v0.16.1; its kit stamps hardenedContract: 2 so the hub can admit repacked bundles after #606.
 #
 # Delivery is not here. Every change is proved on preview.manifold.tyrode.dev or a local
 # preview-equivalent hub: between releases through `bun run dev -- --deliver` from dev-01, and
@@ -36,7 +32,7 @@ permissions:
 
 jobs:
   bundles:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@476a586ce6cce520bdaf8f8a346ee0eb84b0bb6e
+    uses: atyrode/manifold/.github/workflows/plugins.yml@b95857c9f5793831327d49c604b570e1cf4ce677
     with:
       plugins-dir: plugins
       # `atyrode.babel` declares `atyrode.code` a REQUIRED dependency, so `verify` cannot

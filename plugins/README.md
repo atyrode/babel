@@ -381,7 +381,9 @@ git -C ../../manifold checkout "$(cat MANIFOLD_REV)"
 bun install --cwd ../../manifold --frozen-lockfile   # the kit resolves zod and the protocol from its workspace
 ```
 
-`MANIFOLD_REV` follows Manifold `main` and currently names `0bc76660`, which carries the plugin
+`MANIFOLD_REV` follows Manifold `main` and currently names `b95857c9` (v0.16.1), whose kit
+stamps `hardenedContract: 2` into repacked bundles (`packages/plugin-kit/src/pack.ts:298-303`
+at that revision; atyrode/manifold#606). It also carries the plugin
 database (ADR 0034) with its failure-atomic lifecycle (atyrode/manifold#536) — the primitive
 Babel cannot start without — per-operation `concurrentJobs` admission (#551), the `job_progress`
 event (#552), metered brokered inference (ADR 0038, #554) and the `pi-native-usage` meter kind
