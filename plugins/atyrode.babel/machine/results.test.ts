@@ -334,6 +334,34 @@ test("a skip is a recorded gap and cannot also state an assessment", () => {
   );
 });
 
+test("a refinement names the exact record part and the replacement it proposes", () => {
+  expect(
+    refusal(() =>
+      parseReviewResult("challenge", {
+        contributions: [{ kind: "refinement", text: "the scope is ambiguous", would_change: "name the host" }],
+      }),
+    ).message,
+  ).toContain("names no part");
+  expect(
+    refusal(() =>
+      parseReviewResult("challenge", {
+        contributions: [{ kind: "refinement", text: "the scope is ambiguous", target: { path: "/problem" } }],
+      }),
+    ).message,
+  ).toContain("both a reason and the change");
+  const result = parseReviewResult("challenge", {
+    contributions: [
+      {
+        kind: "refinement",
+        text: "the scope is ambiguous",
+        target: { path: "/payload/problem" },
+        would_change: "name the affected host",
+      },
+    ],
+  });
+  expect(result.contributions[0]?.target?.path).toBe("/payload/problem");
+});
+
 /*
   F8, the drain of 2026-09-13's most expensive bug: the Go review contract required an environment
   on criterion results, the Go store refused any environment without an OUTCOME, and a

@@ -66,18 +66,16 @@ import { defineDoor, type Door } from "./door.ts";
 
     read-whats-new   explore   one Code session over the sessions this machine saw in the window
     explore-topic    explore   one Code session over the sessions the topic's own records cite
-    review-backlog   evaluate  a DRAWN review: refused by name — see below
+    review-backlog   evaluate  a policy-managed draw; this door does not select its own work
     file-and-tidy    evaluate  the same draw
     keep-going       conductor the beat: one `atyrode.babel.scan`, Babel's own job, posted here
 
-  THE DRAWN PRESETS ARE REFUSED BY NAME, and the refusal is honest rather than provisional. A
-  review is drawn by the coordinator — the lane, the fence, the reservation, the day's allowance
-  — and dispatched with a BLINDED projection of the record under review. The revert that made a
-  run a Code session (#290) took the conductor's dispatch and that projection with it, and a door
-  that drew and posted on its own would be a second implementation of the one thing the
-  coordinator exists to arbitrate. So `review-backlog` and `file-and-tidy` answer
-  {@link DRAW_PENDING}, which names the lane rather than pretending the engine is missing.
-
+  THE DRAWN PRESETS ARE POLICY-MANAGED. A review is drawn by the coordinator — the lane, the
+  fence, the reservation, the day's allowance — and dispatched with a blinded projection of
+  the record under review. A door that selected one on demand would be a second implementation
+  of the one thing the coordinator exists to arbitrate. So `review-backlog` and `file-and-tidy`
+  answer {@link DRAW_MANAGED}: the conductor now dispatches them automatically under the
+  installed review route, on its cadence or the next wake.
   A RUN IS STARTED IN TWO WAKES, and Manifold's own rule is why. A job input binds a SETTLED
   job's sealed output (ADR 0044): a binding whose source is still active is refused, and
   `prepare` is running the instant it is posted. So the press seals the material and records
@@ -134,16 +132,14 @@ const PRESET_PLANS: Record<LaunchInput["preset"], PresetPlan> = {
 };
 
 /**
- * WHY A DRAWN REVIEW IS NOT STARTED HERE. It is not the engine that is missing — the engine is
- * Code and this file calls it — it is the coordinator's dispatch and the blinded projection the
- * revert removed with Babel's own launcher. Naming the lane is what lets an operator schedule
- * against it instead of pressing again.
+ * A drawn review is scheduled by the conductor rather than selected by this operator door.
+ * `keep-going` supplies an immediate wake; the durable schedule supplies every later one.
  */
-export const DRAW_PENDING =
-  "draw_pending: a review is drawn by the coordinator and dispatched with a blinded projection " +
-  "of the record under review, and that dispatch is not on this build: the revert that made a " +
-  "Babel run a Code session (#290) removed it with Babel's own launcher. The explore lane runs " +
-  "through Code; the evaluate lane returns with the coordinator's dispatch (#268).";
+export const DRAW_MANAGED =
+  "draw_managed: drawn reviews are dispatched automatically by the conductor under the " +
+  "installed evaluation policy, Code profile and blinded projection. This launch door does " +
+  "not bypass that shared claim and budget; use keep-going for an immediate wake or wait for " +
+  "the policy cadence.";
 
 /**
  * How many catalogued sessions one run is prepared over. The `prepare` job's whole input record
@@ -991,7 +987,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
             `nothing; enable it and the launch runs under its ceilings`,
         };
       }
-      if (preset.start === "draw") return { refused: DRAW_PENDING };
+      if (preset.start === "draw") return { refused: DRAW_MANAGED };
 
       const minted = await ctx.newId();
       const identity: LaunchIdentity = {

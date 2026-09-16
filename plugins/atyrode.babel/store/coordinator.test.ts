@@ -19,6 +19,7 @@ import {
   budgetChanges,
   coordinator,
   DEFAULT_POLICY,
+  PolicySchema,
   leaseFloor,
   validateBudget,
   validateNewPolicy,
@@ -360,6 +361,15 @@ test("the lease floor refuses a new policy that would need renewal to work at al
   expect(validateNewPolicy(DEFAULT_POLICY, CONCURRENT_JOBS)).toBeNull();
 });
 
+test("legacy cookbooks remain readable but cannot install a second policy shape", () => {
+  const parsed = PolicySchema.parse({
+    ...DEFAULT_POLICY,
+    recipes: [{ id: "outcome-integrity", title: "Outcome integrity" }],
+  });
+  expect(validatePolicy(parsed, CONCURRENT_JOBS)).toBeNull();
+  expect(validateNewPolicy(parsed, CONCURRENT_JOBS)).toContain("legacy read format");
+});
+
 // ---------------------------------------------------------------------------- the order of refusals
 
 test("a disabled policy refuses before any budget is consulted", async () => {
@@ -625,6 +635,47 @@ test("a claim is granted once, re-delivered to its own holder, and refused to an
   expect(other.outcome).toBe("refused");
   if (other.outcome !== "refused") throw new Error("unreachable");
   expect(other.refusal.reason).toBe("conflict");
+});
+
+test("a posted Code job binds only to the live fenced claim", async () => {
+  const { coord, assignment } = await oneAssignment();
+  const granted = await coord.claim({ assignment, runId: "run_a", now: NOW });
+  if (granted.outcome !== "granted") throw new Error(granted.refusal.detail);
+  expect(granted.claim.jobId).toBeNull();
+
+  const bound = await coord.bind({
+    id: assignment.id,
+    runId: "run_a",
+    fence: granted.claim.fence,
+    jobId: "job_review",
+  });
+  if (bound.outcome !== "bound") throw new Error(bound.refusal.detail);
+  expect(bound.claim.jobId).toBe("job_review");
+
+  const repeated = await coord.bind({
+    id: assignment.id,
+    runId: "run_a",
+    fence: granted.claim.fence,
+    jobId: "job_review",
+  });
+  expect(repeated.outcome).toBe("bound");
+
+  const replaced = await coord.bind({
+    id: assignment.id,
+    runId: "run_a",
+    fence: granted.claim.fence,
+    jobId: "job_other",
+  });
+  if (replaced.outcome !== "refused") throw new Error("a bound claim changed jobs");
+  expect(replaced.refusal.reason).toBe("conflict");
+  const stale = await coord.bind({
+    id: assignment.id,
+    runId: "run_b",
+    fence: granted.claim.fence + 1,
+    jobId: "job_stale",
+  });
+  if (stale.outcome !== "refused") throw new Error("a stale holder bound the claim");
+  expect(stale.refusal.reason).toBe("taken-over");
 });
 
 test("renewal moves the lease forward only, and is refused after expiry or under another fence", async () => {

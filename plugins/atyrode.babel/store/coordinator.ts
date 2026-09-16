@@ -41,7 +41,7 @@
 
 import { z } from "zod";
 import type { GuestDatabase, GuestSqlParam, GuestSqlRow } from "@manifold/plugin-kit";
-import { INTEREST_STATES, ROLES } from "../contract.ts";
+import { CodeProfileSchema, INTEREST_STATES, ROLES } from "../contract.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
 export interface CoordinatorStore {
@@ -154,6 +154,31 @@ export function leaseFloor(batchSize: number): number {
  * `batchSize`. A policy that predates the split therefore means "this many at once, wherever
  * they run", which on a one-machine deployment is exactly what it has always meant.
  */
+const PolicyRecipeSchema = z.strictObject({
+  id: z.string().trim().min(1).max(200),
+  version: z.number().int().min(0),
+  title: z.string().max(400).optional(),
+  looksFor: z.string().max(2_000).optional(),
+  enabled: z.boolean().optional(),
+  body: z.string().trim().min(1).max(64 * 1024),
+});
+
+/**
+ * Where an autonomous draw goes and which reviewed method each role uses. The route belongs to
+ * the policy because enabling evaluation without naming the Code profile that will spend it is
+ * not a complete authorization. Recipe bodies are carried with the versioned policy so a later
+ * cookbook edit cannot change the method of an in-flight assignment.
+ */
+export const ReviewDispatchSchema = z.strictObject({
+  machineId: z.string().trim().min(1).max(128),
+  profile: CodeProfileSchema,
+  roleRecipes: z.record(z.enum(ROLES), z.string().trim().min(1).max(200)),
+  recipes: z.array(PolicyRecipeSchema).min(1).max(32),
+  /** How many generations of first-class refinement proposals may recursively be proposed. */
+  maxRefinementDepth: z.number().int().min(0).max(8).optional(),
+});
+export type ReviewDispatch = z.infer<typeof ReviewDispatchSchema>;
+
 export const PolicySchema = z.strictObject({
   version: z.string().trim().min(1).default(DEFAULT_POLICY_VERSION),
   enabled: z.boolean().default(false),
@@ -172,6 +197,13 @@ export const PolicySchema = z.strictObject({
   leaseSeconds: z.number().int().default(MEASURED.leaseSeconds),
   batchSize: z.number().int().default(MEASURED.batchSize),
   concurrentPerMachine: z.number().int().optional(),
+  review: ReviewDispatchSchema.optional(),
+  /**
+   * Legacy read support for policies written before review dispatch owned the cookbook. New
+   * policies are refused below: their versioned recipes belong inside `review`, beside the
+   * route whose work they govern.
+   */
+  recipes: z.array(z.record(z.string(), z.unknown())).max(32).optional(),
 });
 export type Policy = z.infer<typeof PolicySchema>;
 
@@ -264,6 +296,22 @@ export function validatePolicy(policy: Policy, concurrentJobs: number | null): s
       `produces no review`
     );
   }
+  if (policy.review !== undefined) {
+    const ids = new Set<string>();
+    for (const recipe of policy.review.recipes) {
+      if (ids.has(recipe.id)) return `review recipe ${JSON.stringify(recipe.id)} appears more than once`;
+      if (recipe.enabled === false) {
+        return `review recipe ${JSON.stringify(recipe.id)} is disabled but remains in the dispatch route`;
+      }
+      ids.add(recipe.id);
+    }
+    for (const role of ROLES) {
+      const recipeId = policy.review.roleRecipes[role];
+      if (!ids.has(recipeId)) {
+        return `review role ${role} names missing recipe ${JSON.stringify(recipeId)}`;
+      }
+    }
+  }
   return null;
 }
 
@@ -278,6 +326,9 @@ export function validatePolicy(policy: Policy, concurrentJobs: number | null): s
 export function validateNewPolicy(policy: Policy, concurrentJobs: number | null): string | null {
   const refusal = validatePolicy(policy, concurrentJobs);
   if (refusal !== null) return refusal;
+  if (policy.recipes !== undefined) {
+    return "top-level recipes are a legacy read format; a new policy must place them in review.recipes";
+  }
   // Whichever of the two bounds admits more assignments at once is the one the lease has to
   // cover: a machine holding `concurrentPerMachine` of them prepares them behind one lease
   // exactly as a deployment holding a batch of them does.
@@ -441,7 +492,6 @@ export interface Gap {
   readonly reason: GapReason;
   readonly detail: string;
 }
-
 export const STOP_REASONS = [
   "invalid-policy",
   "disabled",
@@ -451,13 +501,13 @@ export const STOP_REASONS = [
   "no-candidates",
   "no-lane",
   /**
-   * Nothing was drawn because a DRAWN review has nowhere to go (#279, #290): the engine is Code
-   * and the `launch` door reaches it, but the coordinator's dispatch and the blinded projection
-   * a review is handed went with Babel's own launcher and have not come back. It is the CYCLE's
-   * reason and never a draw's — the coordinator is not asked at all — and it is in this list
-   * because the pulse tallies one vocabulary of reasons and a word outside it shows as nothing.
+   * Evaluation is enabled but the installed policy names no Code profile and destination. It
+   * is the cycle's reason and never a draw's — an unrouted loop must not reserve a claim it
+   * cannot dispatch.
    */
-  "draw-pending",
+  "unrouted",
+  /** A route existed, but its projection, prompt, engine post or claim binding was refused. */
+  "dispatch-refused",
 ] as const;
 export type StopReason = (typeof STOP_REASONS)[number];
 
@@ -559,6 +609,17 @@ export interface ClaimRequest {
 export type ClaimResult =
   | { readonly outcome: "granted"; readonly claim: Claim }
   | { readonly outcome: "refused"; readonly refusal: Refusal };
+export interface BindRequest {
+  readonly id: string;
+  readonly runId: string;
+  readonly fence: Fence;
+  readonly jobId: string;
+}
+
+export type BindResult =
+  | { readonly outcome: "bound"; readonly claim: Claim }
+  | { readonly outcome: "refused"; readonly refusal: Refusal };
+
 
 /**
  * A fence as its holder has it. Every caller of the three verbs below reads the fence out of a
@@ -651,6 +712,8 @@ export interface Coordinator {
   policy(now?: number): Promise<PolicyInForce>;
   draw(request: DrawRequest): Promise<DrawResult>;
   claim(request: ClaimRequest): Promise<ClaimResult>;
+  /** Attaches the owner-minted job id after a fenced claim has been granted. */
+  bind(request: BindRequest): Promise<BindResult>;
   renew(request: RenewRequest): Promise<RenewResult>;
   finish(request: FinishRequest): Promise<FinishResult>;
   abandon(request: AbandonRequest): Promise<AbandonResult>;
@@ -2081,6 +2144,65 @@ export function coordinator(
   }
 
   /**
+   * Attaches the job Code minted to the fenced claim that authorized its posting. Code, rather
+   * than Babel, owns the job namespace, so the id cannot be known at claim time. The fence makes
+   * this update the same authority check as renew and finish; a late answer from a superseded
+   * posting can never take over the new holder's claim.
+   */
+  async function bind(request: BindRequest): Promise<BindResult> {
+    if (request.jobId === "") {
+      return {
+        outcome: "refused",
+        refusal: { reason: "invalid", detail: "a claim cannot bind an empty job id" },
+      };
+    }
+    const fence = count(request.fence);
+    const rows = await db.batch([
+      {
+        sql: `UPDATE claims SET job_id = ?
+               WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL
+                 AND (job_id IS NULL OR job_id = ?)
+               RETURNING ${CLAIM_COLUMNS}`,
+        params: [request.jobId, request.id, request.runId, fence, request.jobId],
+      },
+    ]);
+    const bound = rows[0]?.[0];
+    if (bound !== undefined) return { outcome: "bound", claim: toClaim(bound) };
+    const held = await readClaim(request.id);
+    if (held === null) {
+      return {
+        outcome: "refused",
+        refusal: { reason: "not-found", detail: `no assignment ${request.id}` },
+      };
+    }
+    if (held.finishedAt !== null) {
+      return {
+        outcome: "refused",
+        refusal: {
+          reason: "finished",
+          detail: `assignment ${request.id} was already finished at fence ${String(held.fence)}`,
+        },
+      };
+    }
+    if (held.runId === request.runId && held.fence === fence && held.jobId !== null) {
+      return {
+        outcome: "refused",
+        refusal: {
+          reason: "conflict",
+          detail: `assignment ${request.id} is already bound to job ${held.jobId}`,
+        },
+      };
+    }
+    return {
+      outcome: "refused",
+      refusal: {
+        reason: "taken-over",
+        detail: `assignment ${request.id} is held by run ${held.runId} at fence ${String(held.fence)}`,
+      },
+    };
+  }
+
+  /**
    * Extends a live claim's lease to one full policy lease from now.
    *
    * The refusals are the ones an authority check makes and deliberately not a finish's: an
@@ -2318,6 +2440,7 @@ export function coordinator(
     policy: policyInForce,
     draw,
     claim,
+    bind,
     renew,
     finish,
     abandon,
