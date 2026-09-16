@@ -41,7 +41,7 @@ import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
-import { DRAW_PENDING, MAX_MATERIAL_BYTES, launchDoors, type LaunchDeps } from "./launch.ts";
+import { DRAW_MANAGED, MAX_MATERIAL_BYTES, launchDoors, type LaunchDeps } from "./launch.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -492,11 +492,11 @@ test("a window offering nothing the lease can hold is refused by name, not as an
   expect(fleet.executed).toEqual([]);
 });
 
-test("a drawn preset answers draw_pending, names where the lane returns, and posts nothing", async () => {
+test("a drawn preset names the policy-managed lane and posts nothing itself", async () => {
   for (const preset of ["review-backlog", "file-and-tidy"] as const) {
     const answer = await start({ preset, draws: 1 });
-    expect(answer["refused"]).toBe(DRAW_PENDING);
-    expect(String(answer["refused"])).toContain("#268");
+    expect(answer["refused"]).toBe(DRAW_MANAGED);
+    expect(String(answer["refused"])).toContain("conductor");
   }
   expect(fleet.executed).toEqual([]);
   expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);

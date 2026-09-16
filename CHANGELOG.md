@@ -9,6 +9,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Added
+
+- **The conductor now dispatches governed review draws through a pinned Code profile.** An
+  enabled policy carries its machine, Code profile and versioned role recipes, so Babel claims
+  each draw before posting a blinded session and settles the fenced claim from Code's receipt
+  instead of stopping at `draw_pending`. Review comments and refinements can address an exact
+  JSON Pointer in the immutable record; a refinement becomes a separately reviewable proposal
+  with its own votes and challenges, while a policy depth bound prevents recursive refinement
+  from becoming an unbounded obligation. The routed conductor lifecycle, claim binding,
+  granular validation and bounded refinement persistence are covered by the plugin tests.
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed

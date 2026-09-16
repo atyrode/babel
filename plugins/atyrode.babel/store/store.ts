@@ -1386,11 +1386,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
 
   /**
    * The evaluation policy in force: the newest row, with the ceilings and lanes read out of its
-   * own document and the recipes joined to what has actually run under them.
-   *
-   * A recipe's title and what it looks for are the cookbook's, which is not in this store; when
-   * the policy document does not carry them they are empty and the id is what a reader sees,
-   * which is the honest answer rather than a label invented here.
+   * own document and the review route's recipes joined to what has actually run under them.
    */
   const policy = async (): Promise<PolicyResult> => {
     const row = await one(
@@ -1414,7 +1410,14 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       [],
     );
     const described: Record<string, Record<string, unknown>> = {};
-    for (const entry of objectsField(payload, "recipes")) {
+    const heldReview = payload["review"];
+    const review =
+      typeof heldReview === "object" && heldReview !== null && !Array.isArray(heldReview)
+        ? (heldReview as Record<string, unknown>)
+        : {};
+    const routedRecipes = objectsField(review, "recipes");
+    const recipeDocuments = routedRecipes.length > 0 ? routedRecipes : objectsField(payload, "recipes");
+    for (const entry of recipeDocuments) {
       described[stringField(entry, "id")] = entry;
     }
     const recipes: RecipeRow[] = ran.map((entry) => {

@@ -97,7 +97,7 @@ const code: CodeEngine & {
       machineId: request.machineId,
       expectedRevision: request.profile.expectedRevision,
       prompt: request.prompt,
-      ...materialInput(request.prepareJobId),
+      ...(request.prepareJobId === undefined ? {} : materialInput(request.prepareJobId)),
     });
     if (!parsed.success) {
       throw new Error(`Babel built a request Code refuses: ${parsed.error.message}`);

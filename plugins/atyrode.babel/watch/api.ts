@@ -118,13 +118,9 @@ export interface PresetCard {
 }
 
 /**
- * THE REQUESTS THE START SECTION OFFERS: the ones a press actually posts.
- *
- * Three, not five. `review-backlog` and `file-and-tidy` are DRAWN — the coordinator picks the
- * record, claims it under a fence and the conductor dispatches it with a blinded projection —
- * and that dispatch is not on this build (#268), so `launch` answers `draw_pending` for both.
- * A card whose button always refused would be an interface asking the operator to discover the
- * refusal by pressing it, so the section states the fact once in prose and offers no card.
+ * The three direct requests this panel posts. `review-backlog` and `file-and-tidy` remain
+ * policy-managed draws: the conductor selects them under one shared budget and dispatches them
+ * with a blinded projection, so this form does not offer an on-demand bypass around that lane.
  */
 export const LAUNCH_PRESETS: readonly Preset[] = PRESETS.filter(
   (preset) => PRESET_START[preset] !== "draw",

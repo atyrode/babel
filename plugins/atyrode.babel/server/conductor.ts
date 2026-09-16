@@ -15,13 +15,27 @@ import {
   type MaterialIndex,
   type Receipt,
 } from "../contract.ts";
-import type { Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
+import type { Assignment, Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
 import { refuseRow, type RowRefusal } from "../store/acts.ts";
 import { REFUSALS, refusalCode, refusalReason, type RefusalCode } from "../machine/results.ts";
 import type { BabelStore } from "../store/store.ts";
-import { DRAW_PENDING } from "../doors/launch.ts";
-import { readExploreAnswer, unservedLocator } from "./engine/prompts.ts";
-import type { CodeEngine, SessionRead } from "./engine/session.ts";
+import { PROMPT_LIMIT, promptBytes, type CodeEngine, type SessionRead } from "./engine/session.ts";
+import { readExploreAnswer, unservedLocator, type Recipe } from "./engine/prompts.ts";
+import {
+  blindedLeak,
+  composeReviewPrompt,
+  readReviewAnswer,
+  refinementPastDepth,
+  reviewPreparation,
+  reviewRows,
+  unresolvedContributionTarget,
+  unservedReviewLocator,
+  REVIEW_BLINDING_POLICY_VERSION,
+  REVIEW_JOB_VERSION,
+  REVIEW_PROMPT_VERSION,
+  type ReviewPreparation,
+  type ReviewProjection,
+} from "./engine/review.ts";
 
 /*
   THE CONDUCTOR — Babel's loop, on the hub (plan §4: `babel conductor run` becomes a server-half
@@ -895,7 +909,16 @@ async function readOutput(jobs: JobsSlice, node: OutputRef, bytes: number): Prom
  * have, or a value SQLite cannot hold, is not written at all: a machine half that changed shape
  * is a fault to see in the report, not a half-written row.
  */
-function rowStatement(ingest: TableIngest, row: Record<string, unknown>): SqlStatement | null {
+interface SqlCondition {
+  readonly sql: string;
+  readonly params: readonly SqlParam[];
+}
+
+function rowStatement(
+  ingest: TableIngest,
+  row: Record<string, unknown>,
+  condition?: SqlCondition,
+): SqlStatement | null {
   const columns: string[] = [];
   const params: SqlParam[] = [];
   for (const column of ingest.columns) {
@@ -914,8 +937,11 @@ function rowStatement(ingest: TableIngest, row: Record<string, unknown>): SqlSta
   for (const key of Object.keys(row)) if (!ingest.columns.includes(key)) return null;
   const names = columns.join(", ");
   const holes = columns.map(() => "?").join(", ");
+  const values =
+    condition === undefined ? `VALUES (${holes})` : `SELECT ${holes} WHERE ${condition.sql}`;
+  const bound = condition === undefined ? params : [...params, ...condition.params];
   if (ingest.conflict === "ignore") {
-    return { sql: `INSERT OR IGNORE INTO ${ingest.table}(${names}) VALUES (${holes})`, params };
+    return { sql: `INSERT OR IGNORE INTO ${ingest.table}(${names}) ${values}`, params: bound };
   }
   const key = ingest.key ?? "id";
   const updates = columns
@@ -924,9 +950,9 @@ function rowStatement(ingest: TableIngest, row: Record<string, unknown>): SqlSta
     .join(", ");
   return {
     sql:
-      `INSERT INTO ${ingest.table}(${names}) VALUES (${holes}) ON CONFLICT(${key}) ` +
+      `INSERT INTO ${ingest.table}(${names}) ${values} ON CONFLICT(${key}) ` +
       (updates === "" ? "DO NOTHING" : `DO UPDATE SET ${updates}`),
-    params,
+    params: bound,
   };
 }
 
@@ -936,6 +962,7 @@ function runStatement(
   target: IngestTarget,
   receipt: Receipt | null,
   rows: Readonly<Record<string, number>>,
+  condition?: SqlCondition,
 ): SqlStatement {
   const closure = receipt?.closure ?? target.closure;
   const produced = receipt?.counts["records"] ?? rows[JOB_OUTPUT_FILES.records] ?? 0;
@@ -1000,11 +1027,18 @@ function runStatement(
   };
   const columns = RUN_COLUMNS.filter((column) => values[column] !== undefined);
   const updates = columns.filter((column) => column !== "id").map((c) => `${c} = excluded.${c}`);
+  const holes = columns.map(() => "?").join(", ");
+  const valuesSql =
+    condition === undefined ? `VALUES (${holes})` : `SELECT ${holes} WHERE ${condition.sql}`;
   return {
     sql:
-      `INSERT INTO runs(${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ` +
-      `ON CONFLICT(id) DO UPDATE SET ${updates.join(", ")}`,
-    params: columns.map((column) => values[column] ?? null),
+      `INSERT INTO runs(${columns.join(", ")}) ${valuesSql} ` +
+      `ON CONFLICT(id) DO UPDATE SET ${updates.join(", ")}` +
+      (condition === undefined ? "" : " RETURNING id"),
+    params: [
+      ...columns.map((column) => values[column] ?? null),
+      ...(condition === undefined ? [] : condition.params),
+    ],
   };
 }
 
@@ -1639,6 +1673,278 @@ export function conductor(deps: ConductorDeps): Conductor {
     return { provider, identityKey };
   }
 
+
+  function jsonRecord(value: string | null): Record<string, unknown> | undefined {
+    if (value === null || value === "") return undefined;
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The immutable, blinded record revision a review session is shown. */
+  async function project(recordId: string): Promise<ReviewProjection | null> {
+    const records = await store.db.query<{
+      id: string;
+      kind: string;
+      root_id: string;
+      parent_id: string | null;
+      title: string;
+      created_at: string;
+      payload: string;
+    }>(
+      `SELECT id, kind, root_id, parent_id, title, created_at, payload
+         FROM records WHERE id = ? LIMIT 1`,
+      [recordId],
+    );
+    const record = records[0];
+    if (record === undefined) return null;
+    let payload: unknown = {};
+    try {
+      payload = JSON.parse(record.payload);
+    } catch {
+      payload = {};
+    }
+    const sources = await store.db.query<{
+      selector: string;
+      harness: string;
+      title: string;
+      workspace: string;
+      repository_remote: string | null;
+      content_digest: string;
+    }>(
+      `SELECT s.selector, s.harness, s.title, s.workspace, s.repository_remote,
+              s.content_digest
+         FROM edges e JOIN sessions s ON s.selector = e.to_id
+        WHERE e.from_id = ? AND e.kind = 'cites' AND e.to_kind = 'session'
+        ORDER BY e.position, s.selector`,
+      [recordId],
+    );
+    return {
+      target: {
+        id: record.id,
+        kind: record.kind,
+        root_id: record.root_id,
+        parent_id: record.parent_id,
+        title: record.title,
+        created_at: record.created_at,
+        payload,
+      },
+      sources,
+    };
+  }
+
+  async function settleReviewSession(
+    at: number,
+    run: PendingRun,
+    read: SessionRead,
+    reportedClosure: Receipt["closure"],
+    preparation: ReviewPreparation,
+    ingested: IngestedRun[],
+    settled: SettledClaim[],
+    notes: string[],
+    refusals: Counter,
+  ): Promise<void> {
+    const session = read.session;
+    const usage = session?.usage ?? null;
+    const inference: InferenceUsage | null =
+      usage === null
+        ? null
+        : {
+            calls: 1,
+            inputTokens: usage.input,
+            outputTokens: usage.output,
+            cachedInputTokens: usage.cacheRead,
+            costMicros: Math.round((usage.cost ?? 0) * 1_000_000),
+          };
+    const costUsd = usage?.cost ?? 0;
+    let reason = "";
+    let skippedResult = false;
+    let acceptedRows: Readonly<Record<string, readonly Record<string, string | number | null>[]>> = {};
+    const projection = await project(preparation.recordId);
+    if (session === null) {
+      reason =
+        `${REFUSALS.empty}: the review session closed as ${read.job.state} and sealed no transcript, ` +
+        "so it submitted no result";
+    } else if (session.exitCode !== 0) {
+      reason = `${REFUSALS.schema}: the review session exited ${String(session.exitCode)} and submitted no result`;
+    } else if (projection === null) {
+      reason = `${REFUSALS.unknownReference}: record ${preparation.recordId} is no longer readable`;
+    } else {
+      const answer = readReviewAnswer(preparation.role, session.finalMessage);
+      if ("refusal" in answer) {
+        reason = refusalReason(answer.refusal);
+      } else {
+        const depth = refinementPastDepth(answer.result, preparation);
+        const unserved = unservedReviewLocator(answer.result, projection.target);
+        const unresolved = unresolvedContributionTarget(answer.result, projection.target);
+        if (depth !== "") reason = `${REFUSALS.authority}: ${depth}`;
+        else if (unserved !== "") reason = `${REFUSALS.unknownReference}: ${unserved}`;
+        else if (unresolved !== "") reason = `${REFUSALS.unknownReference}: ${unresolved}`;
+        else {
+          skippedResult = answer.result.skip !== "";
+          acceptedRows = reviewRows(
+            preparation,
+            answer.result,
+            run.id,
+            new Date(at).toISOString(),
+          );
+        }
+      }
+    }
+
+    const authorityParams: readonly SqlParam[] = [
+      preparation.assignmentId,
+      preparation.fence,
+      run.job_id,
+    ];
+    const liveAuthority: SqlCondition = {
+      sql:
+        `EXISTS (SELECT 1 FROM claims WHERE id = ? AND fence = ? AND job_id = ? ` +
+        `AND finished_at IS NULL)`,
+      params: authorityParams,
+    };
+    const staleAuthority: SqlCondition = {
+      sql:
+        `NOT EXISTS (SELECT 1 FROM claims WHERE id = ? AND fence = ? AND job_id = ? ` +
+        `AND finished_at IS NULL)`,
+      params: authorityParams,
+    };
+    const counts: Record<string, number> = {};
+    const statements: SqlStatement[] = [
+      {
+        // A no-op write makes the authority check and every guarded output below one SQLite
+        // write transaction. A takeover before this statement wins and suppresses the review;
+        // one after it waits until the accepted rows and terminal receipt are durable.
+        sql:
+          `UPDATE claims SET job_id = job_id ` +
+          `WHERE id = ? AND fence = ? AND job_id = ? AND finished_at IS NULL ` +
+          `RETURNING run_id`,
+        params: authorityParams,
+      },
+    ];
+    if (reason === "") {
+      for (const file of INGEST_ORDER) {
+        const ingest = INGEST[file];
+        const rows = acceptedRows[file] ?? [];
+        if (ingest === undefined || rows.length === 0) continue;
+        for (const row of rows) {
+          const refused = refuseRow(ingest.table, row);
+          const statement = refused === null ? rowStatement(ingest, row, liveAuthority) : null;
+          if (refused !== null || statement === null) {
+            reason =
+              `${refused?.code ?? REFUSALS.schema}: ${refused?.message ?? `${file} contains a row outside the store schema`}`;
+            break;
+          }
+          statements.push(statement);
+          counts[file] = (counts[file] ?? 0) + 1;
+        }
+        if (reason !== "") break;
+      }
+    }
+    if (reason !== "") {
+      statements.splice(1);
+      for (const key of Object.keys(counts)) delete counts[key];
+    }
+    const receiptClosure: Receipt["closure"] =
+      reason === "" ? (skippedResult ? "skipped" : "completed") : session === null ? reportedClosure : "failed";
+    const receipt: Receipt = {
+      runId: run.id,
+      kind: "evaluate",
+      machineId: run.machine_id,
+      recipeId: preparation.recipe.id,
+      role: preparation.role,
+      ...(jsonRecord(run.profile) === undefined ? {} : { profile: jsonRecord(run.profile) }),
+      ...(session === null ? {} : { model: session.model, models: [session.model] }),
+      preparation: {
+        review: preparation,
+        jobVersion: REVIEW_JOB_VERSION,
+        promptVersion: REVIEW_PROMPT_VERSION,
+        blindingPolicyVersion: REVIEW_BLINDING_POLICY_VERSION,
+      },
+      startedAt: run.started_at,
+      finishedAt: new Date(at).toISOString(),
+      closure: receiptClosure,
+      ...(reason === "" ? {} : { reason }),
+      costUsd,
+      tokens: usage === null ? 0 : usage.input + usage.output,
+      counts,
+    };
+    const target: IngestTarget = {
+      runId: run.id,
+      jobId: run.job_id,
+      machineId: run.machine_id,
+      operationId: run.kind,
+      outputs: [],
+      closure: receipt.closure,
+      inference,
+    };
+    const staleReason =
+      `${REFUSALS.authority}: assignment ${preparation.assignmentId} fence ` +
+      `${String(preparation.fence)} is no longer held by job ${run.job_id}`;
+    const staleReceipt: Receipt = {
+      ...receipt,
+      closure: "failed",
+      reason: staleReason,
+      counts: {},
+    };
+    statements.push(
+      runStatement(run.id, target, receipt, counts, liveAuthority),
+      runStatement(run.id, { ...target, closure: "failed" }, staleReceipt, {}, staleAuthority),
+    );
+    const results = await store.db.batch(statements);
+    const claimRunId = results[0]?.[0]?.["run_id"];
+    const authorized = typeof claimRunId === "string";
+    const finalReason = authorized ? reason : staleReason;
+    const finalReceipt = authorized ? receipt : staleReceipt;
+    const finalCounts = authorized ? counts : {};
+    const refusedCode = finalReason === "" ? null : refusalCode(finalReason);
+    if (refusedCode !== null) count(refusals, refusedCode);
+    await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+    store.touch();
+    if (finalReason !== "") notes.push(`run ${run.id}: ${finalReason}`);
+    ingested.push({
+      runId: run.id,
+      jobId: run.job_id,
+      closure: finalReceipt.closure,
+      costUsd,
+      rows: finalCounts,
+      skipped: 0,
+    });
+    if (!authorized) return;
+    const outcome =
+      reason === "" ? (skippedResult ? "skipped" : "completed") : session === null ? "skipped" : "failed";
+    const finished = await coordinator.finish({
+      id: preparation.assignmentId,
+      runId: claimRunId,
+      fence: preparation.fence,
+      cost: costUsd,
+      outcome,
+    });
+    settled.push(
+      finished.outcome === "finished"
+        ? {
+            claimId: preparation.assignmentId,
+            outcome,
+            cost: finished.cost,
+            overrun: finished.overrun,
+            refused: null,
+            reason: null,
+          }
+        : {
+            claimId: preparation.assignmentId,
+            outcome,
+            cost: costUsd,
+            overrun: false,
+            refused: finished.refusal.reason,
+            reason: null,
+          },
+    );
+  }
   /** The run row's own preparation blob, as the receipt carries it back unchanged. */
   function preparationOf(preparation: string | null): Receipt["preparation"] {
     if (preparation === null || preparation === "") return undefined;
@@ -1678,6 +1984,21 @@ export function conductor(deps: ConductorDeps): Conductor {
     notes: string[],
     refusals: Counter,
   ): Promise<void> {
+    const preparedReview = reviewPreparation(preparationOf(run.preparation));
+    if (preparedReview !== null) {
+      await settleReviewSession(
+        at,
+        run,
+        read,
+        closure,
+        preparedReview,
+        ingested,
+        settled,
+        notes,
+        refusals,
+      );
+      return;
+    }
     /*
       A RECEIPT ONLY EXISTS FOR A JOB THAT EXITED 0 AND SEALED ITS TRANSCRIPT. Code answers
       `session: null` for a job it cancelled, interrupted or that exited non-zero, and that is
@@ -2384,6 +2705,218 @@ export function conductor(deps: ConductorDeps): Conductor {
     };
   }
 
+  async function dispatchReviews(
+    policy: Policy,
+    at: number,
+    cycleRunId: string,
+    requested: RequestedJob[],
+    settled: SettledClaim[],
+    refused: RefusedDraw[],
+  ): Promise<{ readonly stop: Stop | null; readonly gaps: readonly Gap[] }> {
+    const route = policy.review;
+    if (route === undefined) {
+      return {
+        stop: {
+          reason: "unrouted",
+          detail:
+            `policy ${policy.version} enables evaluation but names no Code profile and machine; ` +
+            "install a new policy version with a review route",
+        },
+        gaps: [],
+      };
+    }
+    const gaps: Gap[] = [];
+    const machineId = route.machineId;
+    const bound = policy.concurrentPerMachine ?? policy.batchSize;
+    while (requested.length < policy.batchSize) {
+      const open = await coordinator.open(at);
+      if ((open.byMachine[machineId] ?? 0) >= bound) {
+        return {
+          stop: {
+            reason: "batch",
+            detail: `${machineId} already holds ${String(open.byMachine[machineId] ?? 0)} of ${String(bound)} review slots`,
+          },
+          gaps,
+        };
+      }
+      const drawn = await coordinator.draw({ runId: cycleRunId, machines: [machineId], now: at });
+      gaps.push(...drawn.gaps);
+      if (drawn.outcome === "gap") return { stop: drawn.gap, gaps };
+      const assignment: Assignment = drawn.assignment;
+      const recipeId = route.roleRecipes[assignment.role];
+      const recipe = route.recipes.find((candidate) => candidate.id === recipeId) as Recipe | undefined;
+      if (recipe === undefined) {
+        const detail = `the ${assignment.role} role names recipe ${JSON.stringify(recipeId)}, which policy ${policy.version} does not carry`;
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: "recipe",
+          detail,
+        });
+        return { stop: { reason: "dispatch-refused", detail }, gaps };
+      }
+      const projection = await project(assignment.recordId);
+      const leak = projection === null ? "" : blindedLeak(projection.target);
+      if (projection === null || leak !== "") {
+        const detail =
+          projection === null
+            ? `record ${assignment.recordId} is not readable`
+            : `the blinded projection leaks withheld review state at ${leak}`;
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: "projection",
+          detail,
+        });
+        return { stop: { reason: "dispatch-refused", detail }, gaps };
+      }
+      const payload = projection.target["payload"];
+      const refinement =
+        typeof payload === "object" && payload !== null
+          ? (payload as Record<string, unknown>)["refinement"]
+          : undefined;
+      const heldDepth =
+        typeof refinement === "object" && refinement !== null
+          ? (refinement as Record<string, unknown>)["depth"]
+          : undefined;
+      const refinementDepth =
+        typeof heldDepth === "number" && Number.isInteger(heldDepth) && heldDepth >= 0
+          ? heldDepth
+          : 0;
+      const claimed = await coordinator.claim({ assignment, runId: cycleRunId, now: at });
+      if (claimed.outcome === "refused") {
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: claimed.refusal.reason,
+          detail: claimed.refusal.detail,
+        });
+        return { stop: { reason: "dispatch-refused", detail: claimed.refusal.detail }, gaps };
+      }
+      const runId = `run_${assignment.id}_${String(claimed.claim.fence)}`;
+      const preparation: ReviewPreparation = {
+        assignmentId: assignment.id,
+        recordId: assignment.recordId,
+        revisionId: assignment.recordId,
+        rootId: assignment.rootId,
+        kind: assignment.kind,
+        role: assignment.role,
+        lane: assignment.lane,
+        policyVersion: assignment.policyVersion,
+        fence: claimed.claim.fence,
+        ordinal: assignment.ordinal,
+        seed: assignment.seed,
+        inputDigest: assignment.inputDigest,
+        refinementDepth,
+        maxRefinementDepth: route.maxRefinementDepth ?? 2,
+        blinded: true,
+        recipe: { id: recipe.id, version: recipe.version },
+      };
+      const prompt = composeReviewPrompt({ assignment, preparation, recipe, projection });
+      const bytes = promptBytes(prompt);
+      if (bytes > PROMPT_LIMIT) {
+        const detail =
+          `the ${assignment.role} review prompt is ${String(bytes)} bytes and Code accepts ` +
+          `${String(PROMPT_LIMIT)}; shorten recipe ${recipe.id} rather than dropping the record contract`;
+        settled.push(await release(claimed.claim, detail));
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: "prompt-too-large",
+          detail,
+        });
+        return { stop: { reason: "dispatch-refused", detail }, gaps };
+      }
+      const answered = await engine.runSession({
+        profile: route.profile,
+        machineId,
+        prompt,
+      });
+      if (!answered.ok) {
+        settled.push(await release(claimed.claim, answered.refused));
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: answered.code,
+          detail: answered.refused,
+        });
+        return { stop: { reason: "dispatch-refused", detail: answered.refused }, gaps };
+      }
+      const boundClaim = await coordinator.bind({
+        id: claimed.claim.id,
+        runId: cycleRunId,
+        fence: claimed.claim.fence,
+        jobId: answered.value.jobId,
+      });
+      if (boundClaim.outcome === "refused") {
+        await engine.cancelSession({
+          containerId: route.profile.containerId,
+          jobId: answered.value.jobId,
+        });
+        const detail = `Code posted ${answered.value.jobId}, but its claim could not be bound: ${boundClaim.refusal.detail}`;
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: boundClaim.refusal.reason,
+          detail,
+        });
+        return { stop: { reason: "dispatch-refused", detail }, gaps };
+      }
+      try {
+        await store.db.run(
+          `INSERT INTO runs(id, kind, machine_id, job_id, container_id, prepare_job_id,
+                            recipe_id, profile, authority_kind, authority_id, preparation,
+                            started_at, records, payload)
+           VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 'conductor', ?, ?, ?, 0, ?)`,
+          [
+            runId,
+            OPERATIONS.evaluate,
+            machineId,
+            answered.value.jobId,
+            route.profile.containerId,
+            recipe.id,
+            JSON.stringify(route.profile),
+            cycleRunId,
+            JSON.stringify({ review: preparation }),
+            new Date(at).toISOString(),
+            JSON.stringify({ closure: null, requestedAt: at }),
+          ],
+        );
+      } catch (error) {
+        await engine.cancelSession({
+          containerId: route.profile.containerId,
+          jobId: answered.value.jobId,
+        });
+        const detail = `Code posted ${answered.value.jobId}, but Babel could not retain its run: ${message(error)}`;
+        settled.push(await release(boundClaim.claim, detail));
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: "retention",
+          detail,
+        });
+        return { stop: { reason: "dispatch-refused", detail }, gaps };
+      }
+      store.touch();
+      requested.push({
+        runId,
+        jobId: answered.value.jobId,
+        machineId,
+        claimId: assignment.id,
+        recordId: assignment.recordId,
+        role: assignment.role,
+        lane: assignment.lane,
+      });
+    }
+    return {
+      stop: {
+        reason: "batch",
+        detail: `cycle ${cycleRunId} dispatched its ${String(policy.batchSize)} reviews`,
+      },
+      gaps,
+    };
+  }
+
   /**
    * The day's tally: this tick's counts added to the ones the day already had.
    *
@@ -2497,28 +3030,21 @@ export function conductor(deps: ConductorDeps): Conductor {
       const parked = await parkState(policy, at);
       if (parked !== null) notes.push(`the loop is parked: ${parked.reason}`);
 
-      /*
-        AND THEN NOTHING IS DRAWN, and the reason is no longer the engine's (#279).
-
-        A drawn review used to become an `atyrode.babel.evaluate` job this loop launched. The
-        engine is Code now and this deployment can reach it — the `launch` door posts an explore
-        through `atyrode.code.runSession` — but a DRAWN review is a different thing: the
-        coordinator picks it, claims it under a fence, and the dispatch hands the model a BLINDED
-        projection of the record under review. That dispatch and that projection went with
-        Babel's own launcher in the revert (#290) and have not come back, so the cycle states the
-        one true reason it spent nothing and asks the coordinator for no candidate at all.
-
-        Drawing anyway would claim a record under a fence, hold a batch slot for a lease and then
-        abandon it once the posting refused — the ghost-claim shape of 2026-09-13, for work
-        nobody could have done.
-
-        Everything above this line still runs: the settlements, the reaper, the beat, the
-        folders, the pulse. The loop is intact and idle, not dismantled.
-      */
-      const stop: Stop = { reason: "draw-pending", detail: DRAW_PENDING };
-      const gaps: readonly Gap[] = [];
-      // The reason this cycle did not spend, counted once.
-      count(gapsByReason, stop.reason);
+      const dispatched =
+        parked === null
+          ? await dispatchReviews(
+              policy,
+              at,
+              cycleRunId,
+              requested,
+              settled,
+              refused,
+            )
+          : { stop: null, gaps: [] as readonly Gap[] };
+      const stop = dispatched.stop;
+      const gaps = dispatched.gaps;
+      for (const gap of gaps) count(gapsByReason, gap.reason);
+      if (stop !== null) count(gapsByReason, stop.reason);
       const tick = { gaps: tallied(gapsByReason), refusals: tallied(refusals) };
 
       return {

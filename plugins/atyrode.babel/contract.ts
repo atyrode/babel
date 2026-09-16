@@ -794,11 +794,10 @@ export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> 
  *               generator, and the launch carries its container and the revision he was shown.
  *   `beat`    — one `atyrode.babel.scan`, Babel's own job. It reaches no model and takes no
  *               profile; a form that demanded one would be asking for a field nothing reads.
- *   `draw`    — a review the COORDINATOR picks, claims under a fence and dispatches with a
- *               blinded projection of the record. That dispatch is not on this build (#268),
- *               so `launch` answers `draw_pending` and the panel offers no button for it:
- *               a card whose press is always refused is an interface asking to be discovered
- *               by pressing, which is the shape the drain post-mortem is about.
+ *   `draw`    — a review the COORDINATOR picks, claims under a fence and dispatches through
+ *               Code with a blinded projection of the record. The conductor owns that shared
+ *               policy lane, so `launch` answers `draw_managed` rather than selecting work
+ *               outside its cadence, reservations and budget.
  *
  * `doors/launch.ts` plans from this table and Watch's Start section renders from it, so the
  * two cannot disagree about which press posts what.

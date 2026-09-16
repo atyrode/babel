@@ -42,10 +42,9 @@ import {
   carries, and a profile that moved in between is what `code_stale_preferences` refuses by name
   rather than silently accommodating.
 
-  TWO OF THE FIVE PRESETS HAVE NO CARD. `review-backlog` and `file-and-tidy` are DRAWN: the
-  coordinator picks the record, claims it under a fence, and the conductor dispatches it with a
-  blinded projection. That dispatch is not on this build (#268), `launch` answers `draw_pending`
-  for both, and the section says so once in prose instead of offering two buttons that refuse.
+  TWO OF THE FIVE PRESETS HAVE NO CARD. `review-backlog` and `file-and-tidy` are policy-managed
+  draws: the conductor selects and dispatches them under the installed route and shared budget,
+  rather than letting this form bypass the lane with an on-demand pick.
 */
 
 export interface StartProps {
@@ -383,11 +382,11 @@ export function Start({
           {note === "" ? null : <span className="plugin-atyrode_babel_watch__note">{note}</span>}
         </Cluster>
       </Stack>
-      <p className="plugin-atyrode_babel_watch__muted" data-field="drawn-pending">
-        Reviewing the backlog and filing are <em>drawn</em>: the coordinator picks the record,
-        claims it under a fence and dispatches it with a blinded projection of what is under
-        review. That dispatch is not on this build, so neither is offered here — it returns with{" "}
-        <a href="https://github.com/atyrode/babel/issues/268">babel#268</a>.
+      <p className="plugin-atyrode_babel_watch__muted" data-field="drawn-managed">
+        Backlog review and filing are <em>drawn</em>: the conductor picks the record, claims it
+        under a fence and dispatches the blinded review through the Code profile recorded in the
+        evaluation policy. They run automatically on that policy&rsquo;s cadence; Keep going
+        supplies an immediate wake without bypassing its shared budget.
       </p>
     </Stack>
   );

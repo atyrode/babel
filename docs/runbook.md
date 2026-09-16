@@ -1323,9 +1323,19 @@ world. What remains owed, in order:
 >    target one exploration's price, deadline now + 5 min. **Success:** two rows reach
 >    `at the model` within 90 s and settle with calls > 0; record host, date and the drain row
 >    here.
-> 4. The DRAWN lane (`review-backlog`, `file-and-tidy`) returns with the coordinator's dispatch
->    and its blinded projection (#268). Until then both the door and the conductor answer
->    `draw_pending`, and the conductor draws nothing at all.
+> 4. **OPERATOR STEP — drawn review acceptance.** Install the review-enabled bundle, then use
+>    `setPolicy` to record `review.machineId`, the saved Code profile and expected revision,
+>    versioned `review.recipes`, and `review.roleRecipes` for every role. Start with batch size
+>    and per-machine concurrency one; retain the shared budget and lease bounds. The conductor
+>    draws and dispatches on its cadence; `review-backlog` and `file-and-tidy` remain unavailable
+>    as direct launches because an operator-selected record must not bypass the draw. **Success:**
+>    one Code receipt names the selected model and measured usage, the claim settles, and the
+>    record's reception shows the assessment. Only then enable continuing maintenance work.
+>
+>    Local synthetic evidence (2026-09-16): the conductor regression uses the real SQLite store
+>    and reception read model with a simulated Code receipt. It covers a reclaimed claim's new
+>    run, rejects the superseded job's assessment while retaining its usage, and preserves the
+>    newer claim. This does not establish live inference, broker metering or Preview admission.
 
 The Go product is frozen (babel#250) and its loop scripts (`~/.config/babel/review-*.sh`,
 `usage-window.py`, `evaluate-loop.sh`, `explore-fleet.sh`, `sync-loop.sh`) are retired with

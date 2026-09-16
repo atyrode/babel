@@ -15,16 +15,19 @@ import {
   RUN_STAGES,
   type MaterialIndex,
 } from "../contract.ts";
-import { DRAW_PENDING } from "../doors/launch.ts";
 import type {
   CodeEngine,
+  CodeJob,
   EngineAnswer,
   SessionRead,
+  SessionRequest,
   SessionUsage,
 } from "./engine/session.ts";
+import { parseReviewResult } from "../machine/results.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
-import type { BabelStore } from "../store/store.ts";
-import type { Coordinator, Fence } from "../store/coordinator.ts";
+import { openStore as openReadStore, type BabelStore } from "../store/store.ts";
+import type { Assignment, Coordinator, Fence, Policy } from "../store/coordinator.ts";
+import { unresolvedContributionTarget } from "./engine/review.ts";
 import {
   BEAT_OPERATION,
   CONDUCTOR_SCHEDULE_ID,
@@ -57,19 +60,16 @@ import {
   failed job does not leave a claim open. The fleet is fake because the point of the JobsSlice
   is that the hub half can be driven without one.
 
-  NO CYCLE DRAWS A REVIEW ANY MORE (#268), so no test here draws one. The engine is Code and
-  this deployment can reach it, but a DRAWN review is picked by the coordinator, claimed under
-  a fence and dispatched with a blinded projection, and that dispatch went with Babel's own
-  launcher in the revert — so every enabled cycle answers the one constant `DRAW_PENDING`.
-  What the loop does with a job that ALREADY EXISTS is untouched, and it is most of this file:
-  the fold, the settlement, the reaper, the beat, the folders, the park, the pulse. The two
-  rows a dispatch used to leave behind are therefore seeded by {@link inFlight} rather than
-  drawn, which is how the ingestion tests in this file have always worked.
+  A ROUTED CYCLE DRAWS REVIEWS THROUGH CODE. The coordinator selects the immutable record and
+  role, grants one fenced claim, and the loop posts a blinded prompt through the profile the
+  policy records. The acceptance below proves that dispatch and its settlement end to end;
+  older ingestion and reaper scenarios seed in-flight rows directly because their subject is
+  what happens after a job already exists.
 
   A RUN THAT REACHES A MODEL IS RECONCILED THROUGH CODE, not through `ctx.jobs`: its job is
   `atyrode.omp`'s and neither `jobs.status` nor `onJobSettled` is Babel's for it. So the fleet
-  never sees such a job at all, and the tests for that lane drive {@link codeEngine} instead —
-  a fake whose `readSession` answers the shapes Code's own published schemas describe.
+  never sees such a job at all, and the tests for that lane drive CodeEngine instead — a fake
+  whose `readSession` answers the shapes Code's own published schemas describe.
 */
 
 // ---------------------------------------------------------------------------- a real database
@@ -576,7 +576,7 @@ const ASSIGNMENT = {
   reservedCost: 0.1,
   drawnAt: clock,
   topics: [],
-} satisfies Record<string, unknown>;
+} satisfies Assignment;
 
 class Draws {
   /**
@@ -591,11 +591,18 @@ class Draws {
   version = POLICY.version;
   /** Work this coordinator would hand out the moment anything asked it for some. */
   pending: Record<string, unknown>[] = [];
+  review: Policy["review"] = undefined;
+  claimFence = 1;
 
   constructor(private readonly db: PluginDatabase) {}
 
   async policy(): Promise<Record<string, unknown>> {
-    const standing = { ...POLICY, enabled: this.enabled, version: this.version };
+    const standing = {
+      ...POLICY,
+      enabled: this.enabled,
+      version: this.version,
+      ...(this.review === undefined ? {} : { review: this.review }),
+    };
     return {
       policy: standing,
       standing,
@@ -620,6 +627,114 @@ class Draws {
     return next === undefined
       ? { outcome: "gap", gap: { reason: "no-candidates", detail: "nothing due" }, gaps: [] }
       : { outcome: "assignment", assignment: next, gaps: [] };
+  }
+
+  async open(): Promise<{ total: number; byMachine: Record<string, number> }> {
+    const rows = await this.db.query<{ machine_id: string | null; n: bigint }>(
+      `SELECT r.machine_id AS machine_id, COUNT(*) AS n
+         FROM claims c LEFT JOIN runs r ON r.job_id = c.job_id
+        WHERE c.finished_at IS NULL GROUP BY r.machine_id`,
+    );
+    const byMachine: Record<string, number> = {};
+    let total = 0;
+    for (const row of rows) {
+      const count = Number(row.n);
+      total += count;
+      if (row.machine_id !== null) byMachine[row.machine_id] = count;
+    }
+    return { total, byMachine };
+  }
+
+  async claim(request: {
+    assignment: Assignment;
+    runId: string;
+  }): Promise<Record<string, unknown>> {
+    const at = new Date(clock).toISOString();
+    const expires = new Date(clock + POLICY.leaseSeconds * 1000).toISOString();
+    await this.db.run(
+      `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                          reserved_cost, actual_cost, granted_at, expires_at, finished_at, outcome)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, NULL, NULL)`,
+      [
+        request.assignment.id,
+        request.assignment.recordId,
+        request.assignment.role,
+        request.assignment.lane,
+        request.assignment.policyVersion,
+        request.runId,
+        this.claimFence,
+        request.assignment.reservedCost,
+        at,
+        expires,
+      ],
+    );
+    return {
+      outcome: "granted",
+      claim: {
+        id: request.assignment.id,
+        recordId: request.assignment.recordId,
+        role: request.assignment.role,
+        lane: request.assignment.lane,
+        policyVersion: request.assignment.policyVersion,
+        jobId: null,
+        runId: request.runId,
+        fence: this.claimFence,
+        reservedCost: request.assignment.reservedCost,
+        actualCost: null,
+        grantedAt: clock,
+        expiresAt: clock + POLICY.leaseSeconds * 1000,
+        finishedAt: null,
+        outcome: null,
+      },
+    };
+  }
+
+  async bind(request: {
+    id: string;
+    runId: string;
+    fence: Fence;
+    jobId: string;
+  }): Promise<Record<string, unknown>> {
+    await this.db.run(
+      `UPDATE claims SET job_id = ? WHERE id = ? AND run_id = ? AND fence = ?`,
+      [request.jobId, request.id, request.runId, request.fence],
+    );
+    const rows = await this.db.query<{
+      record_id: string;
+      role: string;
+      lane: string;
+      policy_version: string;
+      reserved_cost: number;
+      granted_at: string;
+      expires_at: string;
+    }>(
+      `SELECT record_id, role, lane, policy_version, reserved_cost, granted_at, expires_at
+         FROM claims WHERE id = ?`,
+      [request.id],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      return { outcome: "refused", refusal: { reason: "not-found", detail: "missing claim" } };
+    }
+    return {
+      outcome: "bound",
+      claim: {
+        id: request.id,
+        recordId: row.record_id,
+        role: row.role,
+        lane: row.lane,
+        policyVersion: row.policy_version,
+        jobId: request.jobId,
+        runId: request.runId,
+        fence: Number(request.fence),
+        reservedCost: row.reserved_cost,
+        actualCost: null,
+        grantedAt: Date.parse(row.granted_at),
+        expiresAt: Date.parse(row.expires_at),
+        finishedAt: null,
+        outcome: null,
+      },
+    };
   }
 
   async finish(request: {
@@ -917,6 +1032,7 @@ const NO_CODE: CodeEngine = {
 function sessionRead(over: {
   /** The hub's own states, so a fake cannot answer a word `JobStateSchema` does not have. */
   readonly state: SessionRead["job"]["state"];
+  readonly jobId?: string;
   readonly sealed?: boolean;
   readonly finalMessage?: string;
   readonly exitCode?: number;
@@ -925,7 +1041,7 @@ function sessionRead(over: {
 }): SessionRead {
   return {
     job: {
-      jobId: "job_code_1",
+      jobId: over.jobId ?? "job_code_1",
       machineId: "dev-01",
       operationId: "atyrode.omp.session",
       pluginId: "atyrode.omp",
@@ -946,6 +1062,37 @@ function sessionRead(over: {
             exitCode: over.exitCode ?? 0,
           },
   };
+}
+
+class ReviewCode implements CodeEngine {
+  readonly posted: SessionRequest[] = [];
+  read: SessionRead = sessionRead({ state: "started", sealed: false });
+
+  async profiles(): Promise<EngineAnswer<readonly never[]>> {
+    return await Promise.resolve({ ok: true, value: [] });
+  }
+
+  async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
+    this.posted.push(request);
+    return await Promise.resolve({
+      ok: true,
+      value: {
+        jobId: "job_code_review",
+        machineId: request.machineId,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "started",
+      },
+    });
+  }
+
+  async readSession(): Promise<EngineAnswer<SessionRead>> {
+    return await Promise.resolve({ ok: true, value: this.read });
+  }
+
+  async cancelSession(): Promise<EngineAnswer<CodeJob>> {
+    return await Promise.resolve({ ok: true, value: this.read.job });
+  }
 }
 
 /** A Code that answers one read, then counts how many times it was asked. */
@@ -2055,9 +2202,9 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
   expect(draws.abandoned).toHaveLength(1);
 });
 
-// ------------------------------------------------------------------ the door that is not there
+// ----------------------------------------------------------------------- drawn Code reviews
 
-test("an enabled cycle with work waiting draws nothing, and says the one reason it spent nothing", async () => {
+test("an enabled policy without a review route reserves nothing", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
@@ -2075,34 +2222,316 @@ test("an enabled cycle with work waiting draws nothing, and says the one reason 
 
   const report = await loop.tick();
 
-  /*
-    NOTHING IS DRAWN, and it is not because there was nothing to draw.
-
-    A drawn review used to become a job this loop posted. A Babel run is a Code session now, and
-    drawing anyway would claim the record under a fence, hold a batch slot for a whole lease and
-    then abandon it the moment the posting was refused — which is the ghost-claim shape of
-    2026-09-13, for work nobody could have done. So the coordinator is not asked at all, and the
-    assignment it was holding is still there afterwards.
-  */
+  // An unrouted policy is refused before the coordinator is asked. It leaves neither a ghost
+  // claim nor a Code session that nobody can reconcile.
   expect(report.enabled).toBe(true);
   expect(draws.draws).toBe(0);
   expect(draws.pending).toHaveLength(1);
   expect(report.requested).toEqual([]);
   expect(report.gaps).toEqual([]);
 
-  // The one sentence an enabled cycle answers with, and it names the LANE that is missing
-  // rather than the engine: the engine is Code and the explore lane reaches it, so an operator
-  // reading a pulse learns that a DRAWN review is what has no dispatch, and where it returns.
-  expect(report.stop).toEqual({ reason: "draw-pending", detail: DRAW_PENDING });
-  expect(report.stop?.detail).toContain("blinded projection");
-  expect(report.stop?.detail).toContain("#268");
+  // The stop names the missing policy route rather than claiming that Code itself is absent.
+  expect(report.stop?.reason).toBe("unrouted");
+  expect(report.stop?.detail).toContain("names no Code profile and machine");
   // Counted rather than narrated: "why did nothing happen today" is answered by the tally.
-  expect(report.pulse.tick.gaps).toEqual({ "draw-pending": 1 });
+  expect(report.pulse.tick.gaps).toEqual({ unrouted: 1 });
 
   // AND NOTHING WAS TAKEN FOR IT: no claim row, and no posting.
   const claims = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM claims`);
   expect(claims[0]?.n).toBe(0n);
   expect(fleet.launched).toEqual([]);
+});
+
+test("review contribution targets must be own JSON fields", () => {
+  const result = parseReviewResult("reception", {
+    vote: "support",
+    contributions: [
+      {
+        kind: "refinement",
+        text: "replace an exact field",
+        target: { path: "/payload/toString" },
+        would_change: "replacement",
+      },
+    ],
+  });
+  expect(unresolvedContributionTarget(result, JSON.parse(`{"payload":{}}`))).not.toBe("");
+  expect(
+    unresolvedContributionTarget(result, JSON.parse(`{"payload":{"toString":"stored"}}`)),
+  ).toBe("");
+});
+
+test("a drawn review is blinded, fenced, settled, and promotes granular refinements", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openReadStore(db, () => clock);
+  const draws = new Draws(db);
+  draws.claimFence = 2;
+  await db.batch([
+    {
+      sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, finished_at, closure,
+                             records, payload)
+            VALUES (?, ?, 'dev-01', 'job_code_review_old', ?, ?, 'failed', 0, ?)`,
+      params: [
+        `run_${ASSIGNMENT.id}_1`,
+        OPERATIONS.evaluate,
+        new Date(clock - 1_000).toISOString(),
+        new Date(clock).toISOString(),
+        JSON.stringify({ epoch: 1 }),
+      ],
+    },
+    {
+      sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                               reserved_cost, actual_cost, granted_at, expires_at, finished_at, outcome)
+            VALUES (?, ?, 'reception', 'coverage', ?, 'job_code_review_old', 'cyc_old', 1,
+                    ?, ?, ?, ?, ?, 'abandoned')`,
+      params: [
+        `${ASSIGNMENT.id}~1`,
+        ASSIGNMENT.recordId,
+        POLICY.version,
+        ASSIGNMENT.reservedCost,
+        ASSIGNMENT.reservedCost,
+        new Date(clock - 2_000).toISOString(),
+        new Date(clock - 1_000).toISOString(),
+        new Date(clock).toISOString(),
+      ],
+    },
+  ]);
+  const recipeId = "babel-triages-the-queue";
+  draws.review = {
+    machineId: "dev-01",
+    profile: { containerId: "ctr_union", expectedRevision: 1 },
+    roleRecipes: {
+      reception: recipeId,
+      evidence: recipeId,
+      challenge: recipeId,
+      comparison: recipeId,
+      outcome: recipeId,
+      relevance: recipeId,
+      filing: recipeId,
+      backlog: recipeId,
+    },
+    recipes: [
+      {
+        id: recipeId,
+        version: 2,
+        title: "Triage the queue",
+        body: "Assess the assigned record under the role contract. Prefer a precise refinement over vague criticism.",
+      },
+    ],
+  };
+  draws.pending = [{ ...ASSIGNMENT }];
+  const code = new ReviewCode();
+  const loop = conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const posted = await loop.tick();
+  expect(posted.requested).toEqual([
+    {
+      runId: `run_${ASSIGNMENT.id}_2`,
+      jobId: "job_code_review",
+      machineId: "dev-01",
+      claimId: ASSIGNMENT.id,
+      recordId: ASSIGNMENT.recordId,
+      role: "reception",
+      lane: "coverage",
+    },
+  ]);
+  expect(code.posted).toHaveLength(1);
+  expect(code.posted[0]?.prepareJobId).toBeUndefined();
+  expect(code.posted[0]?.prompt).toContain("This initial assessment is blind");
+  expect(code.posted[0]?.prompt).toContain('"statement": "…"');
+  expect(code.posted[0]?.prompt).not.toContain("assessments");
+  const held = await db.query<{ job_id: string; fence: bigint }>(
+    `SELECT job_id, fence FROM claims WHERE id = ?`,
+    [ASSIGNMENT.id],
+  );
+  expect(held).toEqual([{ job_id: "job_code_review", fence: 2n }]);
+
+  code.read = sessionRead({
+    jobId: "job_code_review",
+    state: "exited",
+    model: "openrouter/stealth/union-alpha",
+    usage: { input: 4200, output: 300, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    finalMessage:
+      "```json\n" +
+      JSON.stringify({
+        vote: "support",
+        contributions: [
+          {
+            kind: "refinement",
+            text: "The scope does not say whether archived sessions from every host are affected.",
+            target: { path: "/payload/statement" },
+            would_change: "The fleet catalog forgets archived sessions fetched from another host.",
+          },
+        ],
+      }) +
+      "\n```",
+  });
+  const settled = await loop.tick();
+  expect(settled.notes).toEqual([]);
+  expect(settled.settled.map((row) => [row.outcome, row.cost])).toEqual([["completed", 0]]);
+  const reviewed = await store.record(ASSIGNMENT.recordId);
+  expect(reviewed?.reception.byRole).toEqual([
+    { role: "reception", support: 1, oppose: 0, unsure: 0, opposingRationales: [] },
+  ]);
+  const proposals = await db.query<{ id: string; payload: string }>(
+    `SELECT id, payload FROM records WHERE kind = 'proposal'`,
+  );
+  expect(proposals).toHaveLength(1);
+  expect(JSON.parse(proposals[0]?.payload ?? "{}")["refinement"]).toEqual({
+    targetRecordId: ASSIGNMENT.recordId,
+    targetRevisionId: ASSIGNMENT.recordId,
+    targetPath: "/payload/statement",
+    depth: 1,
+    reason: "The scope does not say whether archived sessions from every host are affected.",
+    replacement: "The fleet catalog forgets archived sessions fetched from another host.",
+    sourceRole: "reception",
+  });
+  expect(
+    await db.query<{ kind: string; to_id: string }>(
+      `SELECT kind, to_id FROM edges WHERE from_id = ?`,
+      [proposals[0]?.id ?? ""],
+    ),
+  ).toEqual([{ kind: "refines", to_id: ASSIGNMENT.recordId }]);
+  expect(
+    await db.query<{ id: string; payload: string }>(
+      `SELECT id, payload FROM runs WHERE id LIKE ? ORDER BY id`,
+      [`run_${ASSIGNMENT.id}_%`],
+    ),
+  ).toEqual([
+    { id: `run_${ASSIGNMENT.id}_1`, payload: JSON.stringify({ epoch: 1 }) },
+    {
+      id: `run_${ASSIGNMENT.id}_2`,
+      payload: expect.stringContaining(`"closure":"completed"`),
+    },
+  ]);
+});
+
+test("a stale review completion retains usage without writing or settling the newer epoch", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openReadStore(db, () => clock);
+  const draws = new Draws(db);
+  const recipeId = "babel-triages-the-queue";
+  draws.review = {
+    machineId: "dev-01",
+    profile: { containerId: "ctr_union", expectedRevision: 1 },
+    roleRecipes: {
+      reception: recipeId,
+      evidence: recipeId,
+      challenge: recipeId,
+      comparison: recipeId,
+      outcome: recipeId,
+      relevance: recipeId,
+      filing: recipeId,
+      backlog: recipeId,
+    },
+    recipes: [
+      {
+        id: recipeId,
+        version: 2,
+        body: "Assess the assigned record under the role contract.",
+      },
+    ],
+  };
+  draws.pending = [{ ...ASSIGNMENT }];
+  const code = new ReviewCode();
+  const loop = conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  await loop.tick();
+
+  const takenAt = new Date(clock).toISOString();
+  await db.batch([
+    {
+      sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                               reserved_cost, actual_cost, granted_at, expires_at, finished_at, outcome)
+            SELECT id || '~' || CAST(fence AS TEXT), record_id, role, lane, policy_version,
+                   job_id, run_id, fence, reserved_cost, reserved_cost, granted_at, expires_at,
+                   ?, 'abandoned'
+              FROM claims WHERE id = ? AND fence = 1 AND finished_at IS NULL`,
+      params: [takenAt, ASSIGNMENT.id],
+    },
+    {
+      sql: `UPDATE claims
+               SET job_id = 'job_code_review_new', run_id = 'cyc_new', fence = 2,
+                   actual_cost = NULL, granted_at = ?, expires_at = ?,
+                   finished_at = NULL, outcome = NULL
+             WHERE id = ? AND fence = 1 AND finished_at IS NULL`,
+      params: [
+        takenAt,
+        new Date(clock + POLICY.leaseSeconds * 1_000).toISOString(),
+        ASSIGNMENT.id,
+      ],
+    },
+  ]);
+  code.read = sessionRead({
+    jobId: "job_code_review",
+    state: "exited",
+    finalMessage:
+      "```json\n" +
+      JSON.stringify({
+        vote: "support",
+        contributions: [
+          {
+            kind: "refinement",
+            text: "tighten the claim",
+            target: { path: "/payload/statement" },
+            would_change: "A stale epoch must not publish this replacement.",
+          },
+        ],
+      }) +
+      "\n```",
+  });
+
+  const report = await loop.tick();
+  expect(report.settled).toEqual([]);
+  expect(draws.finished).toEqual([]);
+  expect(await db.query(`SELECT id FROM assessments`)).toEqual([]);
+  expect(await db.query(`SELECT id FROM records WHERE kind = 'proposal'`)).toEqual([]);
+  const run = (
+    await db.query<{ closure: string; cost_usd: number; tokens: bigint; payload: string }>(
+      `SELECT closure, cost_usd, tokens, payload FROM runs WHERE id = ?`,
+      [`run_${ASSIGNMENT.id}_1`],
+    )
+  )[0]!;
+  expect(run.closure).toBe("failed");
+  expect(run.cost_usd).toBeCloseTo(0.31, 6);
+  expect(run.tokens).toBe(12_900n);
+  expect(JSON.parse(run.payload)).toMatchObject({
+    closure: "failed",
+    counts: {},
+    inference: {
+      calls: 1,
+      inputTokens: 12_000,
+      outputTokens: 900,
+      cachedInputTokens: 400,
+      costMicros: 310_000,
+    },
+  });
+  expect(
+    await db.query<{ id: string; fence: bigint; job_id: string; finished_at: string | null }>(
+      `SELECT id, fence, job_id, finished_at FROM claims WHERE id = ?`,
+      [ASSIGNMENT.id],
+    ),
+  ).toEqual([
+    { id: ASSIGNMENT.id, fence: 2n, job_id: "job_code_review_new", finished_at: null },
+  ]);
 });
 
 // ---------------------------------------------------------------------- the park and the pulse
@@ -2176,7 +2605,7 @@ test("three reviews the model answered and the contract refused are spend, not a
   expect(settling.notes.some((note) => note.includes("parked"))).toBe(false);
   // …and the cycle's one reason for spending nothing is the door that is not there, not a lane
   // that is broken.
-  expect(settling.stop).toEqual({ reason: "draw-pending", detail: DRAW_PENDING });
+  expect(settling.stop?.reason).toBe("unrouted");
   // …and the pulse says what they were, by the code `results.ts` names.
   expect(settling.pulse.tick.refusals).toEqual({ schema: 3 });
   expect(settling.pulse.today.refusals).toEqual({ schema: 3 });
@@ -2224,7 +2653,7 @@ test("three jobs that never reached the model park the loop, and an hour of quie
   // instead of it: nothing is drawn either way today, and an operator reading "parked" is
   // reading that the lane is broken rather than that the door is missing.
   expect(parking.requested).toEqual([]);
-  expect(parking.stop).toEqual({ reason: "draw-pending", detail: DRAW_PENDING });
+  expect(parking.stop).toBe(null);
 
   // An hour of quiet lifts it without an operator: a machine that has been fixed is tried again,
   // and a machine that has not re-parks after three more.
@@ -2248,32 +2677,31 @@ test("the pulse counts why a cycle did not spend, and the day accumulates across
   plan: PLAN,
   now: () => clock, });
 
-  // One reason a cycle spent nothing, counted once: the door that does not exist yet (#279). It
-  // is a word of the coordinator's own `STOP_REASONS` rather than one beside them, because the
-  // pulse tallies that one vocabulary and a reason outside it would show as nothing at all.
+  // One reason a cycle spent nothing, counted once: the enabled policy names no route. It is a
+  // word of the coordinator's own `STOP_REASONS`, so the pulse can tally it.
   const first = await loop.tick();
   expect(first.gaps).toEqual([]);
-  expect(first.pulse.tick.gaps).toEqual({ "draw-pending": 1 });
-  expect(first.pulse.today.gaps).toEqual({ "draw-pending": 1 });
+  expect(first.pulse.tick.gaps).toEqual({ unrouted: 1 });
+  expect(first.pulse.today.gaps).toEqual({ unrouted: 1 });
 
   // The day accumulates across the wakes that make the cycles, which is why it is kept in the
   // plugin's keys rather than in the loop: every tick of a real day is a new conductor.
   const second = await loop.tick();
-  expect(second.pulse.tick.gaps).toEqual({ "draw-pending": 1 });
-  expect(second.pulse.today.gaps).toEqual({ "draw-pending": 2 });
+  expect(second.pulse.tick.gaps).toEqual({ unrouted: 1 });
+  expect(second.pulse.today.gaps).toEqual({ unrouted: 2 });
 
   // …and it is a DAY: the tally starts again at the boundary the spend ledger is kept by.
   clock += 24 * 60 * 60_000;
   const tomorrow = await loop.tick();
-  expect(tomorrow.pulse.today.gaps).toEqual({ "draw-pending": 1 });
+  expect(tomorrow.pulse.today.gaps).toEqual({ unrouted: 1 });
 
   // A disabled policy is a reason a cycle did not spend like any other, and the loop counts it
-  // itself: the cycle never gets far enough to reach the draw-pending verdict.
+  // itself: the cycle never gets far enough to reach the routing verdict.
   draws.enabled = false;
   const off = await loop.tick();
   expect(off.enabled).toBe(false);
   expect(off.pulse.tick.gaps).toEqual({ disabled: 1 });
-  expect(off.pulse.today.gaps).toEqual({ "draw-pending": 1, disabled: 1 });
+  expect(off.pulse.today.gaps).toEqual({ unrouted: 1, disabled: 1 });
   clock = started;
 });
 

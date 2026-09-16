@@ -161,13 +161,14 @@ export function promptBytes(prompt: string): number {
   return new TextEncoder().encode(prompt).byteLength;
 }
 
-/** What a session is posted with: the profile, the destination, the prompt, and the material. */
+/** What a session is posted with. Explorations bind prepared material; reviews need only the
+ * immutable record already carried in their prompt and therefore omit the binding entirely. */
 export interface SessionRequest {
   readonly profile: CodeProfile;
   readonly machineId: string;
   readonly prompt: string;
-  /** The `prepare` job whose sealed `material` output this run reads. */
-  readonly prepareJobId: string;
+  /** The `prepare` job whose sealed `material` output this run reads, when one is needed. */
+  readonly prepareJobId?: string | undefined;
 }
 
 export interface CodeEngine {
@@ -350,8 +351,7 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
         machineId: request.machineId,
         expectedRevision: request.profile.expectedRevision,
         prompt: request.prompt,
-        // The material, bound from `prepare`'s own sealed output; see {@link materialInput}.
-        ...materialInput(request.prepareJobId),
+        ...(request.prepareJobId === undefined ? {} : materialInput(request.prepareJobId)),
       }),
 
     readSession: async (args: {

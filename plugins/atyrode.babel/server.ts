@@ -183,17 +183,13 @@ function loop(
 }
 
 /**
- * THE COOKBOOK THIS HUB HOLDS, read off the policy in force.
+ * THE COOKBOOK THIS HUB HOLDS, read off the policy's review route.
  *
- * It is the SAME block Watch's Recipes section lists (`store.policy()` joins `payload.recipes`
- * to what has run under each id), so the methods an explore performs and the methods the panel
- * names are one list and never two. A recipe needs a BODY to be a method: an entry that carries
- * only a title and a line about what it looks for is a label for a surface, and composing a
- * prompt around it would send the model a heading and call it an instruction. A disabled entry
- * is excluded for the same reason the panel counts it out.
- *
- * A hub whose policy names none leaves this empty, and `startExplore` answers "no cookbook
- * recipe is installed on this hub" — which is what this deployment's policy says today.
+ * It is the SAME block Watch's Recipes section lists, so the methods an explore performs and
+ * the methods the panel names are one list and never two. A recipe needs a BODY to be a method:
+ * an entry carrying only a label is not an instruction. Policies written before routed review
+ * keep their former top-level cookbook as read-only compatibility; every newly installed policy
+ * has to carry the recipes in its review route.
  */
 async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
   const rows = await store.db.query<{ payload: string }>(
@@ -203,7 +199,13 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
   if (payload === undefined) return {};
   let held: unknown;
   try {
-    held = (JSON.parse(payload) as Record<string, unknown>)["recipes"];
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    const review = parsed["review"];
+    const routed =
+      typeof review === "object" && review !== null && !Array.isArray(review)
+        ? (review as Record<string, unknown>)["recipes"]
+        : undefined;
+    held = Array.isArray(routed) ? routed : parsed["recipes"];
   } catch {
     return {};
   }

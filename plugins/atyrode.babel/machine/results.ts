@@ -482,9 +482,25 @@ const CONTRIBUTION_KINDS = [
 
 const SubjectSchema = z.strictObject({ kind: z.string().min(1), id: z.string().min(1) });
 
+/**
+ * The part of the immutable record a contribution addresses. An empty JSON Pointer addresses
+ * the record as a whole; `/payload/problem` and `/payload/questions/0` address exact portions.
+ * The record identity is implicit in the assessment, so a model cannot redirect a contribution
+ * to material it was not asked to review.
+ */
+const ContributionTargetSchema = z.strictObject({
+  path: z
+    .string()
+    .refine(
+      (value) => value === "" || (value.startsWith("/") && !value.endsWith("/")),
+      "a contribution target is an empty or absolute JSON Pointer",
+    ),
+});
+
 const ContributionSchema = z.strictObject({
   kind: z.enum(CONTRIBUTION_KINDS),
   text: z.string().default(""),
+  target: ContributionTargetSchema.optional(),
   evidence: z.array(EvidenceSchema).default([]),
   alternatives: z.array(SubjectSchema).default([]),
   preferred: SubjectSchema.optional(),
@@ -841,6 +857,17 @@ export function acceptReviewResult(role: Role, payload: unknown, self?: ReviewSe
     }
     if (!compares && contribution.text === "" && contribution.evidence.length === 0) {
       throw new ResultRefusal(REFUSALS.empty, `contribution ${index + 1} carries neither text nor evidence`);
+    }
+    if (contribution.kind === "refinement") {
+      if (contribution.target === undefined) {
+        throw new ResultRefusal(REFUSALS.schema, `refinement ${index + 1} names no part of the record`);
+      }
+      if (contribution.text.trim() === "" || contribution.would_change.trim() === "") {
+        throw new ResultRefusal(
+          REFUSALS.empty,
+          `refinement ${index + 1} needs both a reason and the change it proposes`,
+        );
+      }
     }
     if (preferred !== undefined && self?.subjects[preferred.id] === true) {
       throw new ResultRefusal(
