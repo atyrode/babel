@@ -33,6 +33,7 @@ import {
   REVIEW_BLINDING_POLICY_VERSION,
   REVIEW_JOB_VERSION,
   REVIEW_PROMPT_VERSION,
+  blinded,
   type ReviewPreparation,
   type ReviewProjection,
 } from "./engine/review.ts";
@@ -1705,7 +1706,9 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (record === undefined) return null;
     let payload: unknown = {};
     try {
-      payload = JSON.parse(record.payload);
+      // Withheld review state is removed here, not merely detected downstream: an imported
+      // record's own payload carries the keys the reviewer must not see.
+      payload = blinded(JSON.parse(record.payload));
     } catch {
       payload = {};
     }

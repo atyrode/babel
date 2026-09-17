@@ -102,6 +102,26 @@ const BLINDED_KEYS: Readonly<Record<string, true>> = {
   unsure_count: true,
 };
 
+/**
+ * The same contract as {@link blindedLeak}, applied rather than asserted.
+ *
+ * A projection is built from a record's own payload, and a record Babel wrote in an earlier
+ * era carries the very keys §4.12 withholds from a reviewer — `novelty` on every imported
+ * hypothesis. Leaving them in and refusing the dispatch made the leak check the FILTER: the
+ * conductor drew, refused itself, and no review of an imported record could ever be
+ * dispatched. Stripping here keeps `blindedLeak` as what it should be, the post-condition.
+ */
+export function blinded(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(blinded);
+  if (typeof value !== "object" || value === null) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (BLINDED_KEYS[key] === true) continue;
+    out[key] = blinded(item);
+  }
+  return out;
+}
+
 export function blindedLeak(value: unknown, path = ""): string {
   if (Array.isArray(value)) {
     for (const [index, item] of value.entries()) {
