@@ -22,6 +22,25 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The conductor's cadence is registered on a machine ID, and a host it cannot use says so.**
+  The loop picked the machine for its beat out of `SELECT DISTINCT host FROM sessions` unioned
+  with `runs.machine_id`, and handed those strings to `jobs.describe`. Both columns are written
+  from `tools/import.ts --host`, which an imported corpus gives the operator's own host name —
+  588 rows of `dev-01` — while the hub keys `describe` on the machine id and resolves no names.
+  It answered `connected: false` for the name, nothing was ever usable, and the schedule was
+  reported `absent` with no note at all: a healthy-looking cycle beside an empty
+  `job_schedules`, which is why a whole feature was missing for a day without anything saying
+  so. The beat now registers on the machine the POLICY names (`review.machineId`) — the one
+  machine id an operator recorded, and already the machine the same cycle dispatches every
+  review to — plus, for folding beats it did not launch, the machines the hub's own
+  `jobs.schedules()` rows carry. Every refusal names the machine and the cause, in the shape
+  the hub's own `job_owner_mismatch` and `installation_absent` arrive in, and the door's
+  private copy of those sentences is now one `describeHost`. Folder identification asks only
+  about ids too, and names the hosts it left alone instead of buying a refusal per folder per
+  cycle about a machine that does not exist. There is no migration, because Babel's store holds
+  nothing to backfill an id from: `--host` is documented as the HUB machine id instead, which
+  is where the name should have become one (#309).
+
 - **A contribution the review contract refuses no longer discards the review around it.** Seven
   conductor-drawn reviews on a free non-reasoning model spent 202k tokens and recorded two: five
   were refused whole because one contribution broke a rule about itself — an objection that named
