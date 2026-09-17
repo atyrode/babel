@@ -59,9 +59,10 @@ bun /job/artifact <operation> --input /inputs/input --out /outputs/outputs
 ```
 
 — which is literally the `argv` every operation declares. `pack.sh` builds that half with
-`bun build --target bun` into `atyrode.babel/machine.js`, stamps its sha256 into **both**
-platform artifacts of the manifest (a `raw` artifact is its own entry, so `sha256` and
-`entrySha256` are one digest), and packs
+`bun build --target bun` into `atyrode.babel/machine.js`, and `scripts/stamp-machine.ts` stamps
+its sha256 into **both** platform artifacts of the manifest (a `raw` artifact is its own entry,
+so `sha256` and `entrySha256` are one digest) along with the `machine.tools` pins below, then
+packs
 it as a `bundleFile` member of the baseline's bundle. The file itself is never committed —
 `.gitignore` has it, a pack deletes it afterwards, `bun run dev` keeps it (`./pack.sh --machine`)
 because the inner loop re-packs on every save. The committed manifest carries the **last stamp**,
@@ -78,31 +79,58 @@ anchor, must already exist on the machine for `write` and refuses a second job f
 `scan` and `prepare` run with `network: "none"`; `archive` reaches the host because it reaches
 the repository and its storage service.
 
-**Three tools are runtime tools the machine's owner provides, not artifacts this manifest
-pins**: `bun`, the executable every operation runs; `git`, which reads repository identity for
-`scan` and `prepare`; and `restic`, which owns the archive's repository format.
-A Manifold job sandbox is built from `/proc`,
-`/dev`, the job's own tmpfs home and the artifacts it declares, and it carries no libc at all, so
-a bare binary cannot `execvp` in one — which is exactly what happened on the first real job. The
-owner's `execution.runtimeToolClosures` binds a tool WITH its exact closure at Nix build time,
-per machine, under the alias the operation names. Each tool is resolved at `/runtime/bin/<alias>`
-first and on PATH second, so the same code runs in a job and in a test. For the operator's fleet
-that is one dotfiles module:
+**A MACHINE ANSWERS FOR TOOLS BY NAME, AND THE FLEET ADVERTISES TWO** (`development` and
+`system`, plus anchors). Until #303 this half asked for `bun`, `git` and `restic` by name, so
+`engine.jobs.reviewDeployment` answered `resource_evidence_unknown` and Babel had **no native
+installation at all** — the conductor still drew and dispatched reviews through Code, but no
+beat, no `prepare` and no catalogue ever ran on a machine. A Manifold job sandbox is built from
+`/proc`, `/dev`, the job's own tmpfs home and the artifacts it declares, and it carries no libc
+at all, so a bare binary cannot `execvp` in one — which is exactly what happened on the first
+real job. That is the constraint; asking for aliases nobody binds is not the way to meet it.
+There is one decision per tool, and the four answers are different:
+
+- **`bun` is pinned by this bundle**, the one tool it pins: it is the interpreter the machine
+  half is written for — Babel's choice, moved by Babel — so it ships as an artifact-managed
+  `machine.tools` entry, url and digests, exactly the way `atyrode.omp` ships its own runtime.
+  `jobResourceRequirements` drops an alias the installation's own immutable declaration pins, so
+  the owner is never asked for it. Those figures are MEASURED:
+  `bun scripts/measure-runtime-tools.ts` downloads each release asset, hashes the bytes it
+  received, inflates the named entry and hashes that, reads the member count and expanded bytes
+  out of the archive's own central directory, and writes `runtime-tools.json`. A pack reads that
+  file and downloads nothing, so packing stays offline and deterministic — and a packer whose
+  own Bun is not the pinned one is refused, because `bun test` proves the half by running it
+  under the LOCAL bun while the manifest declares the machine runs the pinned one.
+- **`development` is the owner's toolset**, advertised by the fleet, and `git` lives inside its
+  closure. `scan` and `prepare` name the toolset instead of the binary; `machine/repository.ts`
+  still resolves git at `/runtime/bin/git` first and on PATH second, and a machine whose
+  `development` alias binds git somewhere else degrades to `git-unavailable` on a scanned
+  workspace rather than failing the job.
+- **`system` is the owner's reviewed, digest-promoted native closure.** A pinned bun is
+  dynamically linked — `runtime-tools.json` records the measured interpreter
+  (`/lib64/ld-linux-x86-64.so.2`, `/lib/ld-linux-aarch64.so.1`) and DT_NEEDED list
+  (`libc.so.6`, `libdl.so.2`, `libm.so.6`, `libpthread.so.0`) — so every operation that runs it
+  names this closure too. Those are direct requirements, not a transitive closure: the owner
+  supplies and reviews that.
+- **`restic` stays the owner's, by name, and only `archive` asks for it.** See below: there is
+  nothing honest to pin. Requirements are per-operation, so a machine that binds no restic
+  disables `archive` alone — `jobResourceRefusal` admits `scan` and `prepare` unchanged.
+
+For the operator's fleet the remaining bindings are one dotfiles module — no `bun` entry any
+more, and `git` inside the `development` alias rather than beside it:
 
 ```nix
 services.manifold.execution = {
-  runtimeTools.bun = [{ source = "${pkgs.bun}/bin/bun"; target = "/runtime/bin/bun"; kind = "file"; }];
-  runtimeToolClosures.bun = [ pkgs.bun ];
-  runtimeTools.git = [{ source = "${pkgs.git}/bin/git"; target = "/runtime/bin/git"; kind = "file"; }];
-  runtimeToolClosures.git = [ pkgs.git ];
+  runtimeTools.development = [{ source = "${pkgs.git}/bin/git"; target = "/runtime/bin/git"; kind = "file"; }];
+  runtimeToolClosures.development = [ pkgs.git ];
   runtimeTools.restic = [{ source = "${pkgs.restic}/bin/restic"; target = "/runtime/bin/restic"; kind = "file"; }];
   runtimeToolClosures.restic = [ pkgs.restic ];
 };
 ```
 
-**This manifest pins NO tool.** #284 pinned `omp` here, by url and digest, because Babel drove
-that exact build; the revert (atyrode/babel#279) took the engine with it, and a run that
-reaches a model is now a Code session whose engine is pinned by whoever posts it.
+#284 pinned `omp` here too, by url and digest, because Babel drove that exact build; the revert
+(atyrode/babel#279) took the engine with it, and a run that reaches a model is now a Code session
+whose engine is pinned by whoever posts it. `bun` is a different kind of pin: nothing else in the
+architecture can own the interpreter of Babel's own machine half.
 
 ### What runs a model, and why it is not this bundle
 
@@ -212,7 +240,10 @@ operation waited: upstream's whole Linux distribution is bare bzip2 —
 (9,044,264 bytes), with no tar or zip of either — while `MachineArtifactSchema` takes `raw`,
 `zip` or `tar.gz` and nothing else. A tool the owner binds needs no artifact format at all,
 which is the whole point of the mechanism above: the manifest names the alias `restic` and pins
-nothing, and a machine whose module does not bind it simply cannot run the operation.
+nothing, and a machine whose module does not bind it simply cannot run the operation. That is
+`archive` alone: `jobResourceRequirements` filters each operation's own `runtimeTools`, so
+`tools/restic` and `services/atyrode.babel.restic` are the two resources an operator still
+provisions for the archive, and `scan` and `prepare` are admitted on a machine that has neither.
 
 The other half was the repository and the secrets that open it, and neither belongs in the
 manifest: `environment` is fixed reviewed values in committed code, which is not where a

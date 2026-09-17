@@ -68,8 +68,9 @@ export function repositoryObserver(): RepositoryObserver {
   const observed = new Map<string, Promise<Repository>>();
   // Resolved once: a machine without git answers every workspace with the same reason instead
   // of paying a PATH walk per workspace. Inside a job the sandbox has no PATH at all, and git
-  // is where the operation's runtime tool bound it (`RUNTIME_TOOL_BIN`); outside one - the
-  // tests, a developer's shell - it is wherever the PATH says.
+  // is where the owner's `development` toolset bound it (`RUNTIME_TOOL_BIN` — the operation
+  // names the toolset, not the binary, because that is what a machine advertises: #303);
+  // outside one - the tests, a developer's shell - it is wherever the PATH says.
   let git: string | null | undefined;
 
   const probe = async (workspace: string): Promise<Repository> => {
