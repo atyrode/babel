@@ -8,13 +8,16 @@
 #
 #   1. `bun build atyrode.babel/machine/main.ts` → atyrode.babel/machine.js, one bundled file
 #      (git ignores it; `--machine` leaves it in place for `dev`, a pack deletes it after).
-#   2. Its sha256 is written into BOTH platform artifacts of manifest.json — a `raw` artifact is
-#      its own entry, so `sha256` and `entrySha256` are the same digest (manifold
-#      packages/plugin-kit/src/artifacts.ts, the `format === "raw"` branch). The manifest that
-#      ships is therefore always over the bytes just built, and the committed one carries the
-#      last stamp: whoever changes the machine half sees the pin move in the diff, which is the
-#      point. No tool is pinned here: `bun` and `code` are runtime tools the machine's owner
-#      provides with their closures (README.md), because the job sandbox has no libc.
+#   2. `bun scripts/stamp-machine.ts` writes its sha256 into BOTH platform artifacts of
+#      manifest.json — a `raw` artifact is its own entry, so `sha256` and `entrySha256` are the
+#      same digest (manifold packages/plugin-kit/src/artifacts.ts, the `format === "raw"`
+#      branch) — and writes `machine.tools` from runtime-tools.json, the pins that script
+#      measured from the bytes it downloaded. The manifest that ships is therefore always over
+#      the bytes just built, and the committed one carries the last stamp: whoever changes the
+#      machine half or the pinned bun sees the digest move in the diff, which is the point.
+#      ONE tool is pinned, `bun` (#303): the fleet advertises the `development` and `system`
+#      closures, not Babel's own interpreter. Nothing here downloads anything — packing stays
+#      offline, and moving a pin is `bun scripts/measure-runtime-tools.ts`.
 #
 # The SDK is the checkout manifold-dir.sh resolves (MANIFOLD_DIR, ../../manifold-db, ../../manifold).
 set -euo pipefail
@@ -24,23 +27,9 @@ MANIFOLD="$(./manifold-dir.sh)"
 PACK="$MANIFOLD/packages/plugin-kit/src/pack.ts"
 BASELINE=atyrode.babel
 
-STAMP='
-const dir = process.argv[1];
-const file = `${dir}/manifest.json`;
-const manifest = await Bun.file(file).json();
-const machine = await Bun.file(`${dir}/machine.js`).arrayBuffer();
-const sha256 = new Bun.CryptoHasher("sha256").update(machine).digest("hex");
-for (const artifact of Object.values(manifest.machine.artifacts)) {
-  artifact.sha256 = sha256;
-  artifact.entrySha256 = sha256;
-}
-await Bun.write(file, JSON.stringify(manifest, null, 2) + "\n");
-console.log(`machine.js ${String(machine.byteLength)} bytes sha256=${sha256}`);
-'
-
 build_machine() {
   bun build "$BASELINE/machine/main.ts" --target bun --outfile "$BASELINE/machine.js" >/dev/null
-  bun -e "$STAMP" "$BASELINE"
+  bun scripts/stamp-machine.ts "$BASELINE"
 }
 
 # The inner loop (`bun run dev`) packs the tree itself on every save, so it needs the built half

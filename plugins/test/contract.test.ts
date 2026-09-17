@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { CEILING_DATABASE_MAX_BYTES, PluginManifestSchema } from "@manifold/protocol";
+import {
+  CEILING_DATABASE_MAX_BYTES,
+  jobResourceRequirements,
+  PluginManifestSchema,
+} from "@manifold/protocol";
 import {
   BABEL_PLUGIN_ID,
   EVENTS,
@@ -356,23 +360,58 @@ describe("the machine half is declared as the machine half is built", () => {
     expect(machine.operations[OPERATIONS.prepare]!.limits.outputBytes).toBe(512 * 1024 * 1024);
   });
 
-  test("this bundle pins no tool at all: every one is the owner's to provide", () => {
-    // A Manifold job sandbox has no libc (docs/SELF-HOST.md: "a dynamically linked executable
-    // without its loader cannot run in the empty sandbox"), so `bun`, `git`, `ca-certificates`
-    // and the reviewed `system` closure are the owner's, bound WITH their closures; restic
-    // cannot be pinned for a second reason — upstream's whole Linux distribution is bare bzip2
-    // and the artifact vocabulary takes `raw`, `zip` or `tar.gz` only.
+  test("every operation asks the machine only for resources the fleet advertises", () => {
+    // WHAT #303 WAS: a machine answers for tool resources BY NAME, dev-01 advertises two
+    // (`development` and `system`), and this half asked for `bun`, `git` and `restic` — so
+    // `engine.jobs.reviewDeployment` answered `resource_evidence_unknown` and Babel had no
+    // native installation at all. `jobResourceRequirements` is the engine's own answer to what
+    // an operation needs from the host, and it drops every alias the installation's immutable
+    // declaration pins itself, which is why pinning bun is what makes these satisfiable.
     //
-    // `omp` WAS pinned, by url and digest, because #284 had Babel driving that exact build.
-    // Babel drives no engine now (#279): a run that reaches a model is a Code session, and the
-    // build that answers it is pinned by whoever posts it. A pin here would be a second one.
-    expect(machine.tools).toBeUndefined();
+    // `git` is not gone: it is inside the `development` closure the owner already binds, and
+    // machine/repository.ts resolves it at RUNTIME_TOOL_BIN first and on PATH second.
+    for (const platform of Object.keys(machine.artifacts) as (keyof typeof machine.artifacts)[]) {
+      for (const operation of [OPERATIONS.scan, OPERATIONS.prepare]) {
+        const required = jobResourceRequirements(machine, operation, platform);
+        expect(required.tools).toEqual(["development", "system"]);
+        expect(required.services).toEqual([]);
+      }
+      // restic is the one alias still asked for by name, and only `archive` asks: upstream's
+      // whole Linux distribution is bare bzip2 while `MachineArtifactSchema` takes `raw`, `zip`
+      // or `tar.gz`, so there is nothing honest to pin. Per-operation is the point — a machine
+      // that binds no restic disables this one and leaves scan and prepare installable.
+      expect(jobResourceRequirements(machine, OPERATIONS.archive, platform).tools).toEqual([
+        "restic",
+        "system",
+      ]);
+    }
     for (const operation of declared) {
       for (const alias of machine.operations[operation]!.runtimeTools) {
         expect(RUNTIME_TOOLS as readonly string[]).toContain(alias);
       }
     }
-    expect(machine.operations[OPERATIONS.archive]!.runtimeTools).toEqual(["bun", "restic"]);
+  });
+
+  test("the interpreter every operation runs is pinned by this bundle, on both platforms", () => {
+    // `jobResourceRequirements` decides "managed" from the tool map's KEYS alone, so a pin that
+    // covered one platform would make the other ask the host for nothing and then find no bun
+    // to exec: a tool named by an operation has to be declared for every platform the artifacts
+    // declare. `omp` was pinned here once, for #284's launcher; the revert (#279) took it, and
+    // Babel drives no engine now — bun is the interpreter of its OWN half, which is why it is
+    // the one pin left.
+    expect(Object.keys(machine.tools ?? {})).toEqual(["bun"]);
+    expect(Object.keys(machine.tools?.bun ?? {})).toEqual(Object.keys(machine.artifacts));
+    for (const pinned of Object.values(machine.tools?.bun ?? {})) {
+      expect(pinned.url?.startsWith("https://github.com/oven-sh/bun/releases/download/")).toBe(
+        true,
+      );
+      expect(pinned.bundleFile).toBeUndefined();
+      expect(pinned.format).toBe("zip");
+      // The archive's digest and the extracted binary's are two different measurements; one
+      // value in both fields is a pin somebody wrote by hand rather than measured.
+      expect(pinned.entrySha256).not.toBe(pinned.sha256);
+      expect(pinned.entry.at(-1)).toBe("bun");
+    }
   });
 
   test("the machine half is carried in the bundle, one raw artifact per platform", () => {

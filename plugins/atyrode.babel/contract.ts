@@ -1154,17 +1154,29 @@ export type Receipt = z.infer<typeof ReceiptSchema>;
 // ---------------------------------------------------------------------------- job bindings
 
 /**
- * The runtime tools an operation may name, every one of them the machine OWNER's, bound WITH
- * its closure (`execution.runtimeToolClosures`, manifold docs/SELF-HOST.md) because a Manifold
- * job sandbox carries no libc and a bare binary cannot exec in one. `bun` runs machine.js;
- * `git` reads repository identity for scan and prepare; `restic` owns the archive's repository
- * format.
+ * THE RESOURCE NAMES AN OPERATION MAY ASK A MACHINE FOR, and a machine answers by NAME: dev-01
+ * advertises the `development` and `system` tool resources and nothing else, so a half that
+ * asked for `git` by name was a half no machine in the fleet could satisfy — and
+ * `engine.jobs.reviewDeployment` refused the whole native installation for it (#303). One
+ * decision per tool, and each is a different answer:
  *
- * This bundle PINS none. #284 pinned `omp` here by url and digest because Babel drove that
- * exact build; the revert (#279) took the engine with it, and the build that answers a run is
- * pinned by whoever posts it — Code, through its own `runSession` door.
+ * - `bun` is THIS BUNDLE'S, and the only tool it pins: it is the interpreter the machine half
+ *   is written for, chosen here and moved here, so it ships as an artifact-managed
+ *   `machine.tools` entry (url, digest and extracted-entry digest measured by
+ *   `scripts/measure-runtime-tools.ts`). `jobResourceRequirements` drops a tool the
+ *   installation's own declaration pins, which is what makes the operations satisfiable.
+ * - `development` is the OWNER'S toolset, advertised by the fleet, and `git` lives inside its
+ *   closure. So scan and prepare name the toolset rather than the binary; `machine/repository.ts`
+ *   still resolves git at `RUNTIME_TOOL_BIN` first and on PATH second.
+ * - `system` is the owner's reviewed, digest-promoted native closure. A pinned bun is
+ *   dynamically linked (runtime-tools.json records the measured interpreter and DT_NEEDED list)
+ *   and a job sandbox carries no libc, so every operation that runs it names this too.
+ * - `restic` stays the owner's, by name, and only `archive` asks for it: upstream's whole Linux
+ *   distribution is bare bzip2 and `MachineArtifactSchema` takes `raw`, `zip` or `tar.gz`, so
+ *   there is nothing honest to pin. A machine that binds no restic disables that ONE operation
+ *   (`jobResourceRequirements` is per-operation) and scan and prepare still reach `ready`.
  */
-export const RUNTIME_TOOLS = ["bun", "git", "restic"] as const;
+export const RUNTIME_TOOLS = ["bun", "development", "restic", "system"] as const;
 /** Where a runtime tool is bound inside the sandbox: `<RUNTIME_TOOL_BIN>/<alias>`. */
 export const RUNTIME_TOOL_BIN = "/runtime/bin";
 
