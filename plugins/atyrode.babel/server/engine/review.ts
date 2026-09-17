@@ -2,10 +2,14 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { JOB_OUTPUT_FILES, ROLES } from "../../contract.ts";
 import {
-  parseReviewResult,
+  acceptReviewResult,
+  contributionRefusal,
   REFUSALS,
   ResultRefusal,
+  refusalReason,
   reviewJsonSchema,
+  shapeReviewResult,
+  type Contribution,
   type ReviewResult,
 } from "../../machine/results.ts";
 import type { Assignment } from "../../store/coordinator.ts";
@@ -224,12 +228,21 @@ export function composeReviewPrompt(input: {
   ].join("");
 }
 
-export function readReviewAnswer(
-  role: Role,
-  finalMessage: string,
-): { result: ReviewResult } | { refusal: ResultRefusal } {
+/**
+ * What the sealed answer was: the accepted result, or the refusal AND the shape it was refused
+ * in. The shape is there so a caller can ask which contribution the rules refuse — it is null
+ * when the refusal is the fence, the JSON or the shape itself, because a submission nobody
+ * could parse has no contributions to salvage.
+ */
+type ReviewAnswer =
+  | { readonly result: ReviewResult }
+  | { readonly refusal: ResultRefusal; readonly shaped: ReviewResult | null };
+
+function readReviewAnswer(role: Role, finalMessage: string): ReviewAnswer {
   const answer = answerOf(finalMessage);
-  if ("refused" in answer) return { refusal: new ResultRefusal(REFUSALS.schema, answer.refused) };
+  if ("refused" in answer) {
+    return { refusal: new ResultRefusal(REFUSALS.schema, answer.refused), shaped: null };
+  }
   let payload: unknown;
   try {
     payload = JSON.parse(answer.json);
@@ -239,27 +252,177 @@ export function readReviewAnswer(
         REFUSALS.schema,
         `the ${ANSWER_FENCE} block is not JSON: ${error instanceof Error ? error.message : String(error)}`,
       ),
+      shaped: null,
     };
   }
+  let shaped: ReviewResult;
   try {
-    return { result: parseReviewResult(role, payload) };
+    shaped = shapeReviewResult(role, payload);
   } catch (error) {
-    if (error instanceof ResultRefusal) return { refusal: error };
+    if (error instanceof ResultRefusal) return { refusal: error, shaped: null };
+    throw error;
+  }
+  try {
+    return { result: acceptReviewResult(role, shaped) };
+  } catch (error) {
+    if (error instanceof ResultRefusal) return { refusal: error, shaped };
     throw error;
   }
 }
 
-export function refinementPastDepth(result: ReviewResult, preparation: ReviewPreparation): string {
+/** One contribution the contract refused, as the receipt records it. */
+export interface RefusedContribution {
+  /** 1-based, which is how the validator's own sentences number contributions. */
+  readonly contribution: number;
+  /** `<code>: <sentence>` — the validator's own words, in the shape a `reason` already has. */
+  readonly reason: string;
+}
+
+/** What a sealed review amounts to: what is recorded, what was refused, and why nothing was. */
+export interface ReviewVerdict {
+  /** The result to record, or null when the review is refused whole. */
+  readonly result: ReviewResult | null;
+  /** The contributions dropped so the rest could stand, whether or not the rest did. */
+  readonly refused: readonly RefusedContribution[];
+  /** `<code>: <sentence>` when nothing is recorded, and "" when something is. */
+  readonly reason: string;
+}
+
+/**
+ * THE WHOLE VERDICT ON ONE SEALED REVIEW (#305).
+ *
+ * Seven conductor-drawn reviews on `openrouter/stealth/union-alpha` spent 202k tokens and
+ * recorded two: five were discarded whole for one refused contribution apiece, having already
+ * paid for the good ones beside it. The preferred remedy — hand the validator's sentence back to
+ * the same session and let it correct itself — is not available to this plugin: Code publishes
+ * `runSession`, `readSession` and `cancelSession`, whose input is a prompt and whose answer is a
+ * sealed transcript, and omp's `resumeSession` prepares an INTERACTIVE TERMINAL rather than a
+ * governed one-shot (and belongs to a plugin Babel's manifest does not declare an edge to). A
+ * session that has sealed cannot be spoken to again, so there is no turn to spend.
+ *
+ * What is available is to stop charging the good contributions for the bad one. A rule whose
+ * whole subject is ONE contribution refuses that contribution by name; the rest of the review
+ * then goes through the SAME acceptance it always did, as a whole, and is recorded only if it
+ * stands on its own.
+ *
+ * NOTHING IS LAUNDERED THROUGH THIS PATH, and that is the property to keep when reading it:
+ *
+ * - A refused contribution is DROPPED, never edited. There is no branch that strips the
+ *   `alternatives` off an objection that may not name them, or supplies the text an empty
+ *   contribution lacks; a judgement the contract refused is not recorded in an altered form
+ *   that would pass.
+ * - Only contributions are droppable. The vote, the outcome, the skip, the filing and backlog
+ *   answers, the refinement-depth bound and the scope rule are statements about the review as a
+ *   whole, and a review that gets one of those wrong still fails whole — there is no subset of a
+ *   vote to keep.
+ * - The survivors are re-accepted TOGETHER by {@link acceptReviewResult}, so a claim that leaned
+ *   on what was dropped falls with it: an observed outcome whose only evidence was in the
+ *   refused contribution is refused for want of support, and a review with nothing left is
+ *   refused as empty. Losing a contribution can never make a review easier to record.
+ * - Every row still passes the store's own acceptance at ingest (`store/acts.ts`), which is this
+ *   same function over the payload that was written.
+ */
+export function reviewVerdict(
+  preparation: ReviewPreparation,
+  finalMessage: string,
+  target: unknown,
+): ReviewVerdict {
+  const role = preparation.role;
+  const answer = readReviewAnswer(role, finalMessage);
+  let submitted: ResultRefusal | null = null;
+  let shaped: ReviewResult;
+  if ("refusal" in answer) {
+    if (answer.shaped === null) {
+      return { result: null, refused: [], reason: refusalReason(answer.refusal) };
+    }
+    submitted = answer.refusal;
+    shaped = answer.shaped;
+  } else {
+    shaped = answer.result;
+  }
+
+  const served: Locator[] = [];
+  locators(target, served);
+  const kept: Contribution[] = [];
+  const refused: RefusedContribution[] = [];
+  for (const [index, contribution] of shaped.contributions.entries()) {
+    const reason = contributionReason(role, contribution, index, target, served);
+    if (reason === "") kept.push(contribution);
+    else refused.push({ contribution: index + 1, reason });
+  }
+
+  if (refused.length === 0) {
+    // Nothing here is one contribution's fault. A refusal the acceptance raised stands exactly
+    // as it did before this path existed, which is what keeps the receipts comparable.
+    if (submitted !== null) return { result: null, refused, reason: refusalReason(submitted) };
+    const whole = wholeReviewReason(shaped, preparation, served);
+    return whole === "" ? { result: shaped, refused, reason: "" } : { result: null, refused, reason: whole };
+  }
+
+  let stands: ReviewResult;
+  try {
+    stands = acceptReviewResult(role, { ...shaped, contributions: kept });
+  } catch (error) {
+    if (!(error instanceof ResultRefusal)) throw error;
+    // The reason describes the review as a whole: the refusal the SUBMISSION earned if it earned
+    // one — the same sentence today's receipt carries, so a failed review still reports the
+    // defect rather than its consequence — and otherwise what the survivors failed on. Which
+    // contributions were refused is `refused`, and that is reported either way.
+    return { result: null, refused, reason: refusalReason(submitted ?? error) };
+  }
+  const whole = wholeReviewReason(stands, preparation, served);
+  if (whole === "") return { result: stands, refused, reason: "" };
+  return {
+    result: null,
+    refused,
+    reason: submitted === null ? whole : refusalReason(submitted),
+  };
+}
+
+/** A refusal of one contribution, in the validator's own sentence and nothing besides it. */
+function contributionReason(
+  role: Role,
+  contribution: Contribution,
+  index: number,
+  target: unknown,
+  served: readonly Locator[],
+): string {
+  const refused = contributionRefusal(role, contribution, index);
+  if (refused !== null) return refusalReason(refused);
+  const unserved = unservedReviewLocator(contribution, served);
+  if (unserved !== "") return `${REFUSALS.unknownReference}: ${unserved}`;
+  const path = contribution.target?.path;
+  if (path !== undefined && !pointerExists(target, path)) {
+    return (
+      `${REFUSALS.unknownReference}: contribution ${String(index + 1)} targets ` +
+      `${JSON.stringify(path)}, which is not part of the record under review`
+    );
+  }
+  return "";
+}
+
+/**
+ * What refuses the review as a whole once its contributions are settled: the depth bound this
+ * assignment carries, and a citation nowhere in the contributions — a criterion result's own
+ * evidence — that the record never served.
+ */
+function wholeReviewReason(
+  result: ReviewResult,
+  preparation: ReviewPreparation,
+  served: readonly Locator[],
+): string {
   if (
     preparation.refinementDepth >= preparation.maxRefinementDepth &&
     result.contributions.some((contribution) => contribution.kind === "refinement")
   ) {
     return (
-      `this record is refinement generation ${String(preparation.refinementDepth)} of ` +
-      `${String(preparation.maxRefinementDepth)}; another refinement would create an unbounded review obligation`
+      `${REFUSALS.authority}: this record is refinement generation ` +
+      `${String(preparation.refinementDepth)} of ${String(preparation.maxRefinementDepth)}; ` +
+      "another refinement would create an unbounded review obligation"
     );
   }
-  return "";
+  const unserved = unservedReviewLocator(result, served);
+  return unserved === "" ? "" : `${REFUSALS.unknownReference}: ${unserved}`;
 }
 
 interface Locator {
@@ -280,12 +443,10 @@ function locators(value: unknown, out: Locator[]): void {
   for (const item of Object.values(row)) locators(item, out);
 }
 
-/** A citation in an accepted review that was not already present in its blinded target. */
-export function unservedReviewLocator(result: ReviewResult, target: unknown): string {
-  const served: Locator[] = [];
+/** A citation in what a review submitted that was not already present in its blinded target. */
+function unservedReviewLocator(submitted: unknown, served: readonly Locator[]): string {
   const cited: Locator[] = [];
-  locators(target, served);
-  locators(result, cited);
+  locators(submitted, cited);
   for (const locator of cited) {
     if (!served.some((entry) => entry.path === locator.path && entry.digest === locator.digest)) {
       return `${locator.path} at ${locator.digest} was not present in the record under review`;
@@ -310,17 +471,6 @@ function pointerExists(value: unknown, pointer: string): boolean {
     current = (current as Record<string, unknown>)[key];
   }
   return true;
-}
-
-/** A granular comment/refinement target that is not part of the immutable record shown. */
-export function unresolvedContributionTarget(result: ReviewResult, target: unknown): string {
-  for (const [index, contribution] of result.contributions.entries()) {
-    const path = contribution.target?.path;
-    if (path !== undefined && !pointerExists(target, path)) {
-      return `contribution ${String(index + 1)} targets ${JSON.stringify(path)}, which is not part of the record under review`;
-    }
-  }
-  return "";
 }
 
 export type Cell = string | number | null;

@@ -24,16 +24,14 @@ import { readExploreAnswer, unservedLocator, type Recipe } from "./engine/prompt
 import {
   blindedLeak,
   composeReviewPrompt,
-  readReviewAnswer,
-  refinementPastDepth,
   reviewPreparation,
   reviewRows,
-  unresolvedContributionTarget,
-  unservedReviewLocator,
+  reviewVerdict,
   REVIEW_BLINDING_POLICY_VERSION,
   REVIEW_JOB_VERSION,
   REVIEW_PROMPT_VERSION,
   blinded,
+  type RefusedContribution,
   type ReviewPreparation,
   type ReviewProjection,
 } from "./engine/review.ts";
@@ -1767,6 +1765,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     const costUsd = usage?.cost ?? 0;
     let reason = "";
     let skippedResult = false;
+    let refusedContributions: RefusedContribution[] = [];
     let acceptedRows: Readonly<Record<string, readonly Record<string, string | number | null>[]>> = {};
     const projection = await project(preparation.recordId);
     if (session === null) {
@@ -1778,25 +1777,12 @@ export function conductor(deps: ConductorDeps): Conductor {
     } else if (projection === null) {
       reason = `${REFUSALS.unknownReference}: record ${preparation.recordId} is no longer readable`;
     } else {
-      const answer = readReviewAnswer(preparation.role, session.finalMessage);
-      if ("refusal" in answer) {
-        reason = refusalReason(answer.refusal);
-      } else {
-        const depth = refinementPastDepth(answer.result, preparation);
-        const unserved = unservedReviewLocator(answer.result, projection.target);
-        const unresolved = unresolvedContributionTarget(answer.result, projection.target);
-        if (depth !== "") reason = `${REFUSALS.authority}: ${depth}`;
-        else if (unserved !== "") reason = `${REFUSALS.unknownReference}: ${unserved}`;
-        else if (unresolved !== "") reason = `${REFUSALS.unknownReference}: ${unresolved}`;
-        else {
-          skippedResult = answer.result.skip !== "";
-          acceptedRows = reviewRows(
-            preparation,
-            answer.result,
-            run.id,
-            new Date(at).toISOString(),
-          );
-        }
+      const verdict = reviewVerdict(preparation, session.finalMessage, projection.target);
+      reason = verdict.reason;
+      refusedContributions = [...verdict.refused];
+      if (verdict.result !== null) {
+        skippedResult = verdict.result.skip !== "";
+        acceptedRows = reviewRows(preparation, verdict.result, run.id, new Date(at).toISOString());
       }
     }
 
@@ -1855,7 +1841,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
     const receiptClosure: Receipt["closure"] =
       reason === "" ? (skippedResult ? "skipped" : "completed") : session === null ? reportedClosure : "failed";
-    const receipt: Receipt = {
+    const base: Receipt = {
       runId: run.id,
       kind: "evaluate",
       machineId: run.machine_id,
@@ -1877,6 +1863,16 @@ export function conductor(deps: ConductorDeps): Conductor {
       tokens: usage === null ? 0 : usage.input + usage.output,
       counts,
     };
+    // `counts` itself stays the per-file row count the ingest reports; the refused contributions
+    // are counted onto the RECEIPT's copy of it, where "how did this review's spend land" is read.
+    const receipt: Receipt =
+      refusedContributions.length === 0
+        ? base
+        : {
+            ...base,
+            refusedContributions,
+            counts: { ...counts, contributionsRefused: refusedContributions.length },
+          };
     const target: IngestTarget = {
       runId: run.id,
       jobId: run.job_id,
@@ -1890,7 +1886,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       `${REFUSALS.authority}: assignment ${preparation.assignmentId} fence ` +
       `${String(preparation.fence)} is no longer held by job ${run.job_id}`;
     const staleReceipt: Receipt = {
-      ...receipt,
+      // FROM `base`, NOT FROM `receipt`: a takeover suppressed this submission entirely, so the
+      // refused contributions are not this epoch's account of anything either.
+      ...base,
       closure: "failed",
       reason: staleReason,
       counts: {},
@@ -1910,6 +1908,22 @@ export function conductor(deps: ConductorDeps): Conductor {
     await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
     store.touch();
     if (finalReason !== "") notes.push(`run ${run.id}: ${finalReason}`);
+    else if (authorized && refusedContributions.length > 0) {
+      // A REVIEW THAT STOOD STILL SAYS WHAT THE CONTRACT REFUSED. The tally is where "how much
+      // did the contract refuse today, and under which code" is answered, and a contribution
+      // dropped out of a recorded review would otherwise be invisible — which is the half of
+      // #305 that strictness alone was never going to answer. A review refused WHOLE is counted
+      // once, above, by the sentence it failed on: the two are never counted for the same defect.
+      for (const dropped of refusedContributions) {
+        const code = refusalCode(dropped.reason);
+        if (code !== null) count(refusals, code);
+      }
+      notes.push(
+        `run ${run.id}: recorded the review and refused ` +
+          `${String(refusedContributions.length)} of its contributions: ` +
+          refusedContributions.map((dropped) => dropped.reason).join("; "),
+      );
+    }
     ingested.push({
       runId: run.id,
       jobId: run.job_id,

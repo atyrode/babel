@@ -1136,6 +1136,22 @@ export const ReceiptSchema = z.strictObject({
   finishedAt: z.string(),
   closure: z.enum(["completed", "failed", "stopped", "skipped"]),
   reason: z.string().optional(),
+  /**
+   * WHAT THE CONTRACT REFUSED WHILE THE REST OF THE REVIEW STOOD (#305).
+   *
+   * `reason` above says why NOTHING was recorded; this says what was dropped from something that
+   * was. A rule whose whole subject is one contribution refuses that contribution and the review
+   * goes on without it, so a review with one bad contribution out of four stops discarding the
+   * three good ones it had already paid for — and the model's compliance stops being invisible,
+   * which is the half of #305 the strictness itself was never the answer to.
+   *
+   * `reason` is `<code>: <sentence>` here too, so the same `refusalCode` reads it back and a
+   * refusal is countable whether it cost the review or only a contribution. It is absent, never
+   * empty, on a review that had nothing refused; `counts.contributionsRefused` is how many.
+   */
+  refusedContributions: z
+    .array(z.strictObject({ contribution: z.number().int().positive(), reason: z.string().min(1) }))
+    .optional(),
   costUsd: z.number().optional(),
   tokens: z.number().int().optional(),
   /**

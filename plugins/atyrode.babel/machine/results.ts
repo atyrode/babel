@@ -21,8 +21,11 @@
   Go tree's worst evaluation bug was three copies of one rule: the review contract required an
   environment on criterion results, the store refused any environment without an outcome, and a
   results-only assessment counted as empty — so an evidence review was paid for and then refused
-  at submit (docs/postmortem-2026-09-13-drain.md, F8). Nothing here touches a process, a file or
-  a database, which is what lets the hub's half import it.
+  at submit (docs/postmortem-2026-09-13-drain.md, F8). The hub's review settlement asks the same
+  table a third way — `contributionRefusal`, one contribution at a time, so a refused one can be
+  dropped by name instead of taking the review with it (#305) — and it is the same rules, asked
+  differently, for the same reason. Nothing here touches a process, a file or a database, which
+  is what lets the hub's half import it.
 */
 
 import { z } from "zod";
@@ -773,6 +776,18 @@ export interface ReviewSelf {
  * acceptance the store runs.
  */
 export function parseReviewResult(role: Role, payload: unknown, self?: ReviewSelf): ReviewResult {
+  return acceptReviewResult(role, shapeReviewResult(role, payload), self);
+}
+
+/**
+ * THE SAME SUBMISSION WITH ITS SHAPE CHECKED AND NO RULE APPLIED YET (#305).
+ *
+ * `parseReviewResult` is this step and then the acceptance, which is how it always read; the
+ * step is named because a caller that wants to know WHICH contribution the rules refuse has to
+ * be able to see the contributions, and the acceptance throws on the first offence. Everything
+ * recorded still goes through {@link acceptReviewResult}: this returns a shape, never a verdict.
+ */
+export function shapeReviewResult(role: Role, payload: unknown): ReviewResult {
   const parsed = reviewSchemas[role].safeParse(payload);
   if (!parsed.success) {
     throw new ResultRefusal(
@@ -780,7 +795,14 @@ export function parseReviewResult(role: Role, payload: unknown, self?: ReviewSel
       `the ${role} result does not match its schema: ${issues(parsed.error)}`,
     );
   }
-  return acceptReviewResult(role, normalize(parsed.data), self);
+  const shaped = ReviewResultSchema.safeParse(normalize(parsed.data));
+  if (!shaped.success) {
+    throw new ResultRefusal(
+      REFUSALS.schema,
+      `the ${role} result does not match its schema: ${issues(shaped.error)}`,
+    );
+  }
+  return shaped.data;
 }
 
 /**
@@ -832,49 +854,8 @@ export function acceptReviewResult(role: Role, payload: unknown, self?: ReviewSe
   }
 
   for (const [index, contribution] of result.contributions.entries()) {
-    const compares = contribution.kind === "comparison";
-    if (compares && !authority.alternatives) {
-      throw new ResultRefusal(REFUSALS.authority, `the ${role} role may not compare alternatives`);
-    }
-    if (!compares && (contribution.alternatives.length > 0 || contribution.preferred !== undefined)) {
-      throw new ResultRefusal(
-        REFUSALS.schema,
-        `contribution ${index + 1} is a ${contribution.kind} and may not name alternatives`,
-      );
-    }
-    if (contribution.kind === "evidence" && contribution.evidence.length === 0) {
-      throw new ResultRefusal(REFUSALS.support, `contribution ${index + 1} offers evidence and cites none`);
-    }
-    if (compares && contribution.alternatives.length < 2) {
-      throw new ResultRefusal(
-        REFUSALS.schema,
-        `contribution ${index + 1} compares ${contribution.alternatives.length} alternatives; a comparison needs at least two`,
-      );
-    }
-    const preferred = contribution.preferred;
-    if (compares && preferred !== undefined && !contribution.alternatives.some((alt) => alt.id === preferred.id)) {
-      throw new ResultRefusal(REFUSALS.schema, `contribution ${index + 1} prefers an alternative it did not compare`);
-    }
-    if (!compares && contribution.text === "" && contribution.evidence.length === 0) {
-      throw new ResultRefusal(REFUSALS.empty, `contribution ${index + 1} carries neither text nor evidence`);
-    }
-    if (contribution.kind === "refinement") {
-      if (contribution.target === undefined) {
-        throw new ResultRefusal(REFUSALS.schema, `refinement ${index + 1} names no part of the record`);
-      }
-      if (contribution.text.trim() === "" || contribution.would_change.trim() === "") {
-        throw new ResultRefusal(
-          REFUSALS.empty,
-          `refinement ${index + 1} needs both a reason and the change it proposes`,
-        );
-      }
-    }
-    if (preferred !== undefined && self?.subjects[preferred.id] === true) {
-      throw new ResultRefusal(
-        REFUSALS.selfBoost,
-        `this run authored ${preferred.id}; a review may not prefer its own alternative`,
-      );
-    }
+    const refused = contributionRefusal(role, contribution, index, self);
+    if (refused !== null) throw refused;
   }
 
   // A run arguing against what it produced is the honest direction, so only endorsement is
@@ -926,6 +907,76 @@ export function acceptReviewResult(role: Role, payload: unknown, self?: ReviewSe
     );
   }
   return result;
+}
+
+/**
+ * WHAT THE CONTRACT REFUSES ABOUT ONE CONTRIBUTION, or null when it admits it.
+ *
+ * These are the rules whose whole subject is a single contribution — the kind that may not name
+ * alternatives, the evidence that cites none, the contribution carrying nothing. The acceptance
+ * above throws the first of them and refuses the submission, which is the right answer for a
+ * producer writing an `assessments` row: a row is one judgement and a defective one is not
+ * written. It is the wrong answer for a REVIEW SESSION, which submits several contributions at
+ * once and lost every good one to the first bad one — seven conductor-drawn reviews on
+ * `openrouter/stealth/union-alpha` spent 202k tokens and recorded two (#305). So the rules are
+ * stated here once and asked two ways: thrown as a submission's refusal, and asked per
+ * contribution by `server/engine/review.ts` so the refused one can be dropped by name while the
+ * rest of the review goes through the SAME acceptance it always did.
+ *
+ * A refusal here names no remedy and repairs nothing: the caller's only choices are to record
+ * the contribution as it stands or to record it not at all.
+ */
+export function contributionRefusal(
+  role: Role,
+  contribution: Contribution,
+  index: number,
+  self?: ReviewSelf,
+): ResultRefusal | null {
+  const authority = ROLE_AUTHORITY[role];
+  const compares = contribution.kind === "comparison";
+  if (compares && !authority.alternatives) {
+    return new ResultRefusal(REFUSALS.authority, `the ${role} role may not compare alternatives`);
+  }
+  if (!compares && (contribution.alternatives.length > 0 || contribution.preferred !== undefined)) {
+    return new ResultRefusal(
+      REFUSALS.schema,
+      `contribution ${index + 1} is a ${contribution.kind} and may not name alternatives`,
+    );
+  }
+  if (contribution.kind === "evidence" && contribution.evidence.length === 0) {
+    return new ResultRefusal(REFUSALS.support, `contribution ${index + 1} offers evidence and cites none`);
+  }
+  if (compares && contribution.alternatives.length < 2) {
+    return new ResultRefusal(
+      REFUSALS.schema,
+      `contribution ${index + 1} compares ${contribution.alternatives.length} alternatives; a comparison needs at least two`,
+    );
+  }
+  const preferred = contribution.preferred;
+  if (compares && preferred !== undefined && !contribution.alternatives.some((alt) => alt.id === preferred.id)) {
+    return new ResultRefusal(REFUSALS.schema, `contribution ${index + 1} prefers an alternative it did not compare`);
+  }
+  if (!compares && contribution.text === "" && contribution.evidence.length === 0) {
+    return new ResultRefusal(REFUSALS.empty, `contribution ${index + 1} carries neither text nor evidence`);
+  }
+  if (contribution.kind === "refinement") {
+    if (contribution.target === undefined) {
+      return new ResultRefusal(REFUSALS.schema, `refinement ${index + 1} names no part of the record`);
+    }
+    if (contribution.text.trim() === "" || contribution.would_change.trim() === "") {
+      return new ResultRefusal(
+        REFUSALS.empty,
+        `refinement ${index + 1} needs both a reason and the change it proposes`,
+      );
+    }
+  }
+  if (preferred !== undefined && self?.subjects[preferred.id] === true) {
+    return new ResultRefusal(
+      REFUSALS.selfBoost,
+      `this run authored ${preferred.id}; a review may not prefer its own alternative`,
+    );
+  }
+  return null;
 }
 
 /**

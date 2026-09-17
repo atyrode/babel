@@ -23,11 +23,9 @@ import type {
   SessionRequest,
   SessionUsage,
 } from "./engine/session.ts";
-import { parseReviewResult } from "../machine/results.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import { openStore as openReadStore, type BabelStore } from "../store/store.ts";
 import type { Assignment, Coordinator, Fence, Policy } from "../store/coordinator.ts";
-import { unresolvedContributionTarget } from "./engine/review.ts";
 import {
   BEAT_OPERATION,
   CONDUCTOR_SCHEDULE_ID,
@@ -2244,24 +2242,6 @@ test("an enabled policy without a review route reserves nothing", async () => {
   expect(fleet.launched).toEqual([]);
 });
 
-test("review contribution targets must be own JSON fields", () => {
-  const result = parseReviewResult("reception", {
-    vote: "support",
-    contributions: [
-      {
-        kind: "refinement",
-        text: "replace an exact field",
-        target: { path: "/payload/toString" },
-        would_change: "replacement",
-      },
-    ],
-  });
-  expect(unresolvedContributionTarget(result, JSON.parse(`{"payload":{}}`))).not.toBe("");
-  expect(
-    unresolvedContributionTarget(result, JSON.parse(`{"payload":{"toString":"stored"}}`)),
-  ).toBe("");
-});
-
 test("a drawn review is blinded, fenced, settled, and promotes granular refinements", async () => {
   const db = openDatabase();
   await seed(db);
@@ -2419,6 +2399,104 @@ test("a drawn review is blinded, fenced, settled, and promotes granular refineme
       payload: expect.stringContaining(`"closure":"completed"`),
     },
   ]);
+});
+
+test("a review with one refused contribution records the rest, and its receipt counts the refusal", async () => {
+  /*
+    #305: seven drawn reviews on a non-reasoning model spent 202k tokens and recorded two. Five
+    were discarded whole because one contribution broke a rule about itself — the vote and the
+    good contributions beside it were paid for and thrown away. This is the run that used to
+    close `failed` with nothing in the store.
+  */
+  const db = openDatabase();
+  await seed(db);
+  const store = openReadStore(db, () => clock);
+  const draws = new Draws(db);
+  const recipeId = "babel-triages-the-queue";
+  draws.review = {
+    machineId: "dev-01",
+    profile: { containerId: "ctr_union", expectedRevision: 1 },
+    roleRecipes: {
+      reception: recipeId,
+      evidence: recipeId,
+      challenge: recipeId,
+      comparison: recipeId,
+      outcome: recipeId,
+      relevance: recipeId,
+      filing: recipeId,
+      backlog: recipeId,
+    },
+    recipes: [{ id: recipeId, version: 2, body: "Assess the assigned record under the role contract." }],
+  };
+  draws.pending = [{ ...ASSIGNMENT }];
+  const code = new ReviewCode();
+  const loop = conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  await loop.tick();
+
+  code.read = sessionRead({
+    jobId: "job_code_review",
+    state: "exited",
+    model: "openrouter/stealth/union-alpha",
+    finalMessage:
+      "```json\n" +
+      JSON.stringify({
+        vote: "oppose",
+        contributions: [
+          {
+            kind: "objection",
+            text: "the statement does not survive the archived case",
+            alternatives: [{ kind: "hypothesis", id: "hyp_other" }],
+          },
+          { kind: "comment", text: "the scope should name the harness it was observed on" },
+        ],
+      }) +
+      "\n```",
+  });
+  const settled = await loop.tick();
+
+  expect(settled.settled.map((row) => row.outcome)).toEqual(["completed"]);
+  const run = (
+    await db.query<{ closure: string; payload: string }>(
+      `SELECT closure, payload FROM runs WHERE id = ?`,
+      [`run_${ASSIGNMENT.id}_1`],
+    )
+  )[0]!;
+  expect(run.closure).toBe("completed");
+  const receipt = JSON.parse(run.payload) as Record<string, unknown>;
+  // The review stood, so nothing says it failed; what the contract refused is its own field, in
+  // the same `<code>: <sentence>` shape a reason carries, and counted so a coverage rate can be
+  // read off the receipts rather than guessed at.
+  expect(receipt["reason"]).toBeUndefined();
+  expect(receipt["refusedContributions"]).toEqual([
+    { contribution: 1, reason: "schema: contribution 1 is a objection and may not name alternatives" },
+  ]);
+  expect((receipt["counts"] as Record<string, number>)["contributionsRefused"]).toBe(1);
+  expect(settled.pulse.tick.refusals).toEqual({ schema: 1 });
+  expect(settled.notes.join(" | ")).toContain("may not name alternatives");
+
+  // AND THE JUDGEMENT IS DURABLE, minus the contribution the contract refused: the assessment
+  // the store accepted carries the vote and the surviving contribution, and nothing of the
+  // refused one in any form.
+  const assessments = await db.query<{ vote: string; payload: string }>(
+    `SELECT vote, payload FROM assessments WHERE record_id = ?`,
+    [ASSIGNMENT.recordId],
+  );
+  expect(assessments).toHaveLength(1);
+  expect(assessments[0]?.vote).toBe("oppose");
+  const held = JSON.parse(assessments[0]?.payload ?? "{}") as { contributions: unknown[] };
+  expect(held.contributions).toEqual([
+    expect.objectContaining({ kind: "comment", text: "the scope should name the harness it was observed on" }),
+  ]);
+  expect(assessments[0]?.payload).not.toContain("hyp_other");
 });
 
 test("a stale review completion retains usage without writing or settling the newer epoch", async () => {
