@@ -20,6 +20,30 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   from becoming an unbounded obligation. The routed conductor lifecycle, claim binding,
   granular validation and bounded refinement persistence are covered by the plugin tests.
 
+### Fixed
+
+- **A contribution the review contract refuses no longer discards the review around it.** Seven
+  conductor-drawn reviews on a free non-reasoning model spent 202k tokens and recorded two: five
+  were refused whole because one contribution broke a rule about itself — an objection that named
+  an alternative, a contribution carrying neither text nor evidence, a citation the record never
+  served — and the vote and the good contributions beside it were paid for and thrown away
+  (#305). Handing the validator's sentence back to the same session is not available to this
+  plugin: Code publishes `runSession`, `readSession` and `cancelSession`, whose input is a prompt
+  and whose answer is a sealed transcript, and omp's `resumeSession` prepares an interactive
+  terminal rather than a governed one-shot, so a session that has sealed cannot be spoken to
+  again. So the rules whose whole subject is ONE contribution — stated once, in
+  `contributionRefusal` — now refuse that contribution by name, and the rest of the review goes
+  through the same `acceptReviewResult` it always did, as a whole, and is recorded only if it
+  stands without what was dropped. No rule is relaxed and nothing is repaired: a refused
+  contribution is dropped, never edited into one that would pass; the vote, the outcome, the
+  skip, the filing and backlog answers, the refinement-depth bound and the scope rule are
+  statements about the review as a whole and still fail it whole; and a claim whose only support
+  was refused falls with it, so an observed outcome cannot survive losing the evidence for it.
+  The receipt now carries `refusedContributions` — `<code>: <sentence>` apiece, the shape a
+  `reason` already has — with `counts.contributionsRefused` beside it, and the conductor counts
+  each refusal into the cycle's tally, so "the model would not follow the contract" is countable
+  instead of being invisible behind a discarded run.
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed
