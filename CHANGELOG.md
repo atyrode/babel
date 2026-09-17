@@ -63,6 +63,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   each refusal into the cycle's tally, so "the model would not follow the contract" is countable
   instead of being invisible behind a discarded run.
 
+- **The doors that ask a machine what it can run are lent that read, so the loop keeps its own
+  cadence.** `engine.jobs.describe` moved onto `machines:read` (atyrode/manifold#736) and the
+  bridge a dispatch is served is the door's own caps plus its delegates — so every describe
+  behind a Babel door was refused `job_capability_absent:machines:read` however privileged the
+  operator's key was: a press was refused before the machine was asked, and the conductor could
+  not find a host to register the beat on, which left Babel beating only while somebody kept
+  pressing something. The read could not be delegated at all until atyrode/manifold#740 added it
+  to the closed delegable set; `pulse`, `runs`, `launch`, `drain.start` and `drain.status` — the
+  five that describe, directly or through the cycle behind them — now name it, and nothing else
+  does. The caller is unchanged and still needs only `containers:read`; a delegate is the door's
+  ceiling, intersected with the caller's own capabilities and the plugin's install grant, and the
+  engine still requires version-bound consent at each operation node. The plugin tests drive a
+  `pulse` through a bridge attenuated exactly as the host attenuates one and assert the cadence is
+  registered from it.
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed

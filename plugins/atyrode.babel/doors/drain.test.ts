@@ -477,23 +477,28 @@ test("the roster is a start, a dry read and a stop, and none of them names a nod
   ]);
   const [begin, read, stop] = doors as readonly Door[];
 
-  // A start posts nothing today (#279), so it asks what a reading door asks and names no
-  // node. It CANNOT keep `machines:run` at the explore operation: the host discharges that
-  // before the handler runs and no installation declares the operation, so the dispatch was
-  // refused "explicit version-bound consent required" and the operator never heard
-  // `engine_pending`. The governed requirement returns with Code's node.
+  // A start names no node (#279), so it asks what a reading door asks. It CANNOT keep
+  // `machines:run` at the explore operation: the host discharges that before the handler runs
+  // and no installation declares the operation, so the dispatch was refused "explicit
+  // version-bound consent required" and the operator never heard `engine_pending`. The governed
+  // requirement returns with Code's node. What it does carry is the machine read its own first
+  // fan makes: `startExplore`/`startBeat` describe the machine through `ready` before posting,
+  // and a describe outside the door's ceiling is refused `job_capability_absent:machines:read`
+  // before any slot is filled.
   expect(begin?.action.caps).toEqual(["containers:read"]);
   expect(begin?.action.requirements).toBeUndefined();
-  expect(begin?.action.delegates).toBeUndefined();
+  expect(begin?.action.delegates).toEqual(["machines:read"]);
 
-  // The dry read asks no machine anything, so it carries no governed capability and no target —
-  // the panel polls it every five seconds while the operator watches. It DOES delegate
-  // `jobs:read`, because a cycle follows it (`server.ts`'s `WAKES`) and the dispatcher attenuates
-  // `ctx.jobs` to what the door declared: without it that cycle can read back no job, nothing
-  // settles, and the `run_progress` fold this wake exists for never happens.
+  // The dry read asks no machine anything ITSELF, so it carries no governed capability and no
+  // target — the panel polls it every five seconds while the operator watches. It DOES delegate
+  // `jobs:read` and `machines:read`, because a cycle follows it (`server.ts`'s `WAKES`) and the
+  // dispatcher attenuates `ctx.jobs` to what the door declared: without the first that cycle can
+  // read back no job, nothing settles and the `run_progress` fold this wake exists for never
+  // happens; without the second it can describe no machine and the loop's beat is never
+  // registered on one.
   expect(read?.action.caps).toEqual(["containers:read"]);
   expect(read?.action.requirements).toBeUndefined();
-  expect(read?.action.delegates).toEqual(["jobs:read"]);
+  expect(read?.action.delegates).toEqual(["jobs:read", "machines:read"]);
 
   // A stop closes this plugin's own row and reaches its jobs through its OWN ceiling. It
   // asked `jobs:cancel` at the operation they share, and that operation is one no

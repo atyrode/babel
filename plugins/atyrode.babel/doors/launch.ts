@@ -105,13 +105,30 @@ import { defineDoor, type Door } from "./door.ts";
 /** A dry act on this plugin's own rows plus one call onto Code, which reads containers. */
 const LAUNCH_CAPS = ["containers:read"] as const;
 /**
- * The native ceiling the jobs this door posts inherit: reading them back, and the locations the
- * `prepare` it posts declares. `jobs:read` is also the one DELEGATE every door a cycle follows
- * carries — `launch` is in `server.ts`'s `WAKES`, and the dispatcher attenuates `ctx.jobs` to
- * what the door declared, so without it the cycle behind the press could read back no job,
- * nothing would settle and the fold that wake exists for would never happen.
+ * The native ceiling the jobs this door posts inherit: reading them back, the locations the
+ * `prepare` it posts declares, and the read that says whether the machine can run any of it.
+ *
+ * `jobs:read` is also the one DELEGATE every door a cycle follows carries — `launch` is in
+ * `server.ts`'s `WAKES`, and the dispatcher attenuates `ctx.jobs` to what the door declared, so
+ * without it the cycle behind the press could read back no job, nothing would settle and the
+ * fold that wake exists for would never happen.
+ *
+ * `machines:read` IS WHAT A PRESS ASKS BEFORE IT POSTS ANYTHING. `ready` describes the machine
+ * the request names — connected, this plugin installed and ready, the operation not reported
+ * unready — and pins the installation revision and artifact digest the posting carries, and all
+ * of that is one `engine.jobs.describe`, a read that moved onto this narrower word
+ * (atyrode/manifold#736) and became delegable with atyrode/manifold#740. Without it the bridge
+ * refuses the describe, `describeHost` answers `cannot be described:
+ * job_capability_absent:machines:read`, and the operator's press is refused before the machine
+ * is ever asked — whatever authority his own key holds, because a delegate is the door's
+ * ceiling and not the caller's grant. `doors/read.ts` carries the whole reasoning.
  */
-const LAUNCH_DELEGATES = ["jobs:read", "locations:read", "locations:write"] as const;
+const LAUNCH_DELEGATES = [
+  "jobs:read",
+  "locations:read",
+  "locations:write",
+  "machines:read",
+] as const;
 
 /** Reading Code's saved profiles is a read of containers and nothing else. */
 const PROFILES_CAPS = ["containers:read"] as const;
