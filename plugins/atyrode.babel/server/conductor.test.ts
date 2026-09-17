@@ -248,9 +248,26 @@ class Fleet implements JobsSlice {
   /** Every job this fake was asked to follow, and every subscription it was asked to close. */
   readonly followed: string[] = [];
   readonly closed: string[] = [];
+  /**
+   * EVERY IDENTIFIER THIS FAKE WAS HANDED, in order. It is what a test asserts to prove which
+   * string the loop actually gave the hub: an id, or a name that could only ever be refused.
+   */
+  readonly identifiers: string[] = [];
+  /**
+   * THE MACHINES THE HUB HAS A ROW FOR, or null for a fake that answers about anything.
+   *
+   * `describe` is keyed on the machine id, and an identifier with no machine behind it is
+   * REFUSED rather than reported as offline (atyrode/manifold#725) — which is what a host name
+   * is. A test that sets this is a test against the hub that tells the truth.
+   */
+  enrolled: readonly string[] | null = null;
 
   describe(args: { machineId: string; pluginId: string }): MachineReadiness {
     expect(args.pluginId).toBe(BABEL_PLUGIN_ID);
+    this.identifiers.push(args.machineId);
+    if (this.enrolled !== null && !this.enrolled.includes(args.machineId)) {
+      throw new Error(`machine_unknown: ${args.machineId}`);
+    }
     return {
       connected: this.connected,
       operations: {
@@ -328,6 +345,7 @@ class Fleet implements JobsSlice {
   listRuns(args: { machineId: string; operationId?: string | undefined }): {
     runs: { job: JobRunState | null }[];
   } {
+    this.identifiers.push(args.machineId);
     const runs: { job: JobRunState | null }[] = [];
     for (const jobId of this.beats) {
       const job = this.jobs.get(jobId);
@@ -576,6 +594,52 @@ const ASSIGNMENT = {
   topics: [],
 } satisfies Assignment;
 
+/**
+ * THE HUB MACHINE ID, and it is deliberately not {@link HOST_NAME}.
+ *
+ * The hub keys `describe`, `listRuns` and `machines.repository` on the machine id and resolves
+ * no names, so the two being different strings is what these tests are for: a loop that picked
+ * its machine out of `sessions.host` picked a NAME, was answered `connected: false`, and
+ * registered no cadence at all — silently, for a whole day (atyrode/manifold#725).
+ */
+const MACHINE = "05df7eaa-efd8-4d9c-bb0c-334706555c77";
+
+/**
+ * What the importer wrote into `sessions.host` for every row of the operator's corpus: the Go
+ * deployment's own host name (`storage.json` `host_id`). It names a box; it identifies nothing
+ * the hub can be asked about.
+ */
+const HOST_NAME = "dev-01";
+
+/**
+ * A POLICY'S REVIEW DISPATCH ROUTE, which is where the machine id comes from.
+ *
+ * Naming the machine is part of authorizing the spend, so the route is where a deployment
+ * records which box its autonomous work runs on — and it is therefore also where the beat's
+ * cadence is registered. Tests that want an UNROUTED policy leave `draws.review` alone.
+ */
+const ROUTE: NonNullable<Policy["review"]> = {
+  machineId: MACHINE,
+  profile: { containerId: "ctr_union", expectedRevision: 1 },
+  roleRecipes: {
+    reception: "babel-triages-the-queue",
+    evidence: "babel-triages-the-queue",
+    challenge: "babel-triages-the-queue",
+    comparison: "babel-triages-the-queue",
+    outcome: "babel-triages-the-queue",
+    relevance: "babel-triages-the-queue",
+    filing: "babel-triages-the-queue",
+    backlog: "babel-triages-the-queue",
+  },
+  recipes: [
+    {
+      id: "babel-triages-the-queue",
+      version: 2,
+      body: "Assess the assigned record under the role contract.",
+    },
+  ],
+};
+
 class Draws {
   /**
    * How many times a cycle asked this coordinator for work. IT IS NEVER MORE THAN ZERO (#279),
@@ -791,7 +855,7 @@ async function seed(db: PluginDatabase): Promise<void> {
     {
       sql: `INSERT INTO sessions(selector, host, harness, source_id, title, snapshot_id, seen_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      params: ["omp/s1", "dev-01", "omp", "s1", "first title", "snap-1", "2026-09-01T00:00:00Z"],
+      params: ["omp/s1", HOST_NAME, "omp", "s1", "first title", "snap-1", "2026-09-01T00:00:00Z"],
     },
     {
       sql: `INSERT INTO records(id, kind, root_id, seq, actor_kind, actor_id, title, created_at, payload)
@@ -1429,6 +1493,7 @@ test("a settled job's every output file lands in the store, and its run and clai
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
+  draws.review = ROUTE;
   const loop = conductor({ engine: NO_CODE, store,
   coordinator: draws as unknown as Coordinator,
   jobs: fleet,
@@ -1624,6 +1689,7 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
+  draws.review = ROUTE;
   const loop = conductor({ engine: NO_CODE, store,
   coordinator: draws as unknown as Coordinator,
   jobs: fleet,
@@ -1639,7 +1705,7 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
     scheduleId: CONDUCTOR_SCHEDULE_ID,
     revision: "pol_1",
     operationId: BEAT_OPERATION,
-    machineId: "dev-01",
+    machineId: MACHINE,
     intervalMs: 900_000,
     deadlineMs: 900_000,
     offlinePolicy: "coalesce-one",
@@ -1648,7 +1714,7 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
   // The beat's input is fixed at registration, so it carries no run id to collide on.
   expect(JSON.parse(String(registered?.input[INPUT_FIELD]))).toEqual({
     runId: "",
-    machineId: "dev-01",
+    machineId: MACHINE,
     roots: [],
     harnesses: [],
   });
@@ -1689,8 +1755,144 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
   fleet.connected = false;
   const offline = await loop.tick();
   expect(offline.schedule).toBe("absent");
-  expect(offline.notes).toEqual([]);
+  // AND IT NAMES THE MACHINE IT TRIED AND WHY. `absent` with nothing in `notes` is the shape
+  // that hid this for a day: a cycle with no complaint in it, beside an empty `job_schedules`.
+  expect(offline.notes).toEqual([`the beat cannot be registered: ${MACHINE} is offline`]);
   expect(fleet.scheduled).toHaveLength(1);
+});
+
+test("the beat is registered by machine id, and the name a session row holds is never asked about", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  // The hub as it answers once it refuses an unknown identifier instead of calling it offline:
+  // one enrolled machine, reachable only by its id.
+  fleet.enrolled = [MACHINE];
+  const draws = new Draws(db);
+  draws.review = ROUTE;
+  const loop = conductor({ engine: NO_CODE, store: openStore(db),
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
+
+  // AN IMPORTED CORPUS holds the host NAME on both columns the loop used to read for machines:
+  // `sessions.host` from the seed, and `runs.machine_id`, which the same importer writes from
+  // the same `--host`. Neither is an identifier the hub has a machine for.
+  await db.run(
+    `INSERT INTO runs(id, kind, machine_id, job_id, started_at, finished_at, closure, records, payload)
+     VALUES ('run_imported', ?, ?, 'job_imported', ?, ?, 'completed', 0, '{}')`,
+    [
+      OPERATIONS.explore,
+      HOST_NAME,
+      new Date(clock - 600_000).toISOString(),
+      new Date(clock).toISOString(),
+    ],
+  );
+  expect(await db.query(`SELECT DISTINCT host FROM sessions`)).toEqual([{ host: HOST_NAME }]);
+
+  const report = await loop.tick();
+
+  expect(report.schedule).toBe("registered");
+  expect(fleet.scheduled[0]?.machineId).toBe(MACHINE);
+  // THE WHOLE POINT. Every identifier this cycle handed the hub is the id the policy recorded;
+  // the name is not among them. A cycle that asked about `dev-01` was answered
+  // `connected: false`, found no usable host, and registered no cadence at all.
+  expect([...new Set(fleet.identifiers)]).toEqual([MACHINE]);
+  expect(report.notes).toEqual([]);
+});
+
+test("a cycle with no usable host for the beat says which machine it tried and why", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  fleet.enrolled = [MACHINE];
+  const draws = new Draws(db);
+  const loop = conductor({ engine: NO_CODE, store: openStore(db),
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: new Folders(),
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
+
+  // AN ENABLED POLICY THAT NAMES NO MACHINE has no id to register a cadence on, and says so.
+  // Reporting `absent` in silence here is what let a whole feature disappear: the cycle looked
+  // healthy and `job_schedules` stayed empty.
+  const unrouted = await loop.tick();
+  expect(unrouted.schedule).toBe("absent");
+  expect(unrouted.notes).toEqual([
+    "the beat cannot be registered: policy pol_1 names no machine for its work, so there is no " +
+      "machine id to register the cadence on",
+  ]);
+  expect(fleet.scheduled).toEqual([]);
+
+  // A ROUTE THAT NAMES A HOST NAME reaches the hub as an identifier it has no machine for, and
+  // the note carries the hub's own sentence beside the string that was sent.
+  draws.review = { ...ROUTE, machineId: HOST_NAME };
+  const unknown = await loop.tick();
+  expect(unknown.schedule).toBe("absent");
+  expect(unknown.notes).toEqual([
+    `the beat cannot be registered: ${HOST_NAME} cannot be described: ` +
+      `machine_unknown: ${HOST_NAME}`,
+  ]);
+  expect(fleet.scheduled).toEqual([]);
+
+  // AND AN ENROLLED ONE WHOSE OPERATION IS NOT READY names the operation and the machine, which
+  // is a different refusal from an offline host and has to read as one.
+  draws.review = ROUTE;
+  fleet.connected = false;
+  const offline = await loop.tick();
+  expect(offline.schedule).toBe("absent");
+  expect(offline.notes).toEqual([`the beat cannot be registered: ${MACHINE} is offline`]);
+
+  // …and the moment the machine the policy names can run it, the cadence is registered and the
+  // cycle has nothing to complain about.
+  fleet.connected = true;
+  const registered = await loop.tick();
+  expect(registered.schedule).toBe("registered");
+  expect(registered.notes).toEqual([]);
+  expect(fleet.scheduled[0]?.machineId).toBe(MACHINE);
+});
+
+test("folders catalogued under a host name are named in a note, not silently never identified", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  fleet.enrolled = [MACHINE];
+  const folders = new Folders();
+  const draws = new Draws(db);
+  draws.review = ROUTE;
+  const loop = conductor({ engine: NO_CODE, store: openStore(db),
+  coordinator: draws as unknown as Coordinator,
+  jobs: fleet,
+  machines: folders,
+  keys: new Keys(),
+  plan: PLAN,
+  now: () => clock, });
+
+  // An imported row: a real absolute workspace, recorded against the operator's host NAME.
+  // `engine.machines.repository` is keyed on the machine id, so there is nobody to ask about it.
+  await db.run(
+    `INSERT INTO sessions(selector, host, harness, source_id, workspace, seen_at)
+     VALUES ('omp/imported', ?, 'omp', 'imported', '/home/alex/babel', '2026-09-01T00:00:00Z')`,
+    [HOST_NAME],
+  );
+
+  const report = await loop.tick();
+
+  expect(folders.asked).toEqual([]);
+  expect(report.notes).toEqual([
+    `the folders catalogued under ${HOST_NAME} are not asked about: sessions.host holds a host ` +
+      "name there rather than a machine id, and the hub resolves no names",
+  ]);
+  // The row is left exactly as the import wrote it: nothing invents an identity for a folder on
+  // a machine nobody could be asked about.
+  expect(
+    await db.query(`SELECT repository_reason FROM sessions WHERE selector = 'omp/imported'`),
+  ).toEqual([{ repository_reason: null }]);
 });
 
 test("ingesting the same outputs twice changes nothing", async () => {
@@ -1772,6 +1974,7 @@ test("the beat's own job is ingested although the hub never requested it", async
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
+  draws.review = ROUTE;
   const loop = conductor({ engine: NO_CODE, store,
   coordinator: draws as unknown as Coordinator,
   jobs: fleet,
@@ -1780,11 +1983,11 @@ test("the beat's own job is ingested although the hub never requested it", async
   plan: PLAN,
   now: () => clock, });
   // A scan the schedule started: no run row, and a run id the machine minted for itself.
-  fleet.beat("schedule-abc", "dev-01", {
+  fleet.beat("schedule-abc", MACHINE, {
     [JOB_OUTPUT_FILES.sessions]: [
       {
         selector: "omp/s2",
-        host: "dev-01",
+        host: MACHINE,
         harness: "omp",
         source_id: "s2",
         seen_at: "2026-09-12T09:00:00Z",
@@ -1793,7 +1996,7 @@ test("the beat's own job is ingested although the hub never requested it", async
     [JOB_OUTPUT_FILES.receipt]: {
       runId: "run_minted_by_the_machine",
       kind: "scan",
-      machineId: "dev-01",
+      machineId: MACHINE,
       startedAt: "2026-09-12T08:59:00Z",
       finishedAt: "2026-09-12T09:00:00Z",
       closure: "completed",
@@ -1904,6 +2107,7 @@ test("a new policy version re-registers the beat instead of leaving two firing",
   await seed(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
+  draws.review = ROUTE;
   const loop = conductor({ engine: NO_CODE, store: openStore(db),
   coordinator: draws as unknown as Coordinator,
   jobs: fleet,
@@ -1928,6 +2132,7 @@ test("an output the hub cannot read closes its run instead of being retried for 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
+  draws.review = ROUTE;
   const loop = conductor({ engine: NO_CODE, store,
   coordinator: draws as unknown as Coordinator,
   jobs: fleet,
@@ -1968,6 +2173,7 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
   const fleet = new Fleet();
   const folders = new Folders();
   const draws = new Draws(db);
+  draws.review = ROUTE;
   const loop = conductor({ engine: NO_CODE, store,
   coordinator: draws as unknown as Coordinator,
   jobs: fleet,
@@ -1976,13 +2182,15 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
   plan: PLAN,
   now: () => clock, });
 
-  // A beat's catalogue of dev-01: two sessions of one checkout, one of a folder that is not a
-  // repository, and one whose "workspace" is Claude's lossy project-directory name rather than
-  // a path. The scan ran inside a job where none of the three were mounted, so every row it
-  // shipped carries the sandbox's own prose instead of an identity.
+  // A beat's catalogue of the machine the policy routes to: two sessions of one checkout, one
+  // of a folder that is not a repository, and one whose "workspace" is Claude's lossy
+  // project-directory name rather than a path. The scan ran inside a job where none of the
+  // three were mounted, so every row it shipped carries the sandbox's own prose instead of an
+  // identity. The rows are keyed by the machine's ID, which is what `scan` records and what
+  // makes the folder question askable at all.
   const catalogued = (selector: string, workspace: string): Record<string, unknown> => ({
     selector,
-    host: "dev-01",
+    host: MACHINE,
     harness: "omp",
     source_id: selector,
     workspace,
@@ -1991,7 +2199,7 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
     repository_reason: "workspace absent on this host",
     seen_at: "2026-09-12T09:00:00Z",
   });
-  fleet.beat("scan-1", "dev-01", {
+  fleet.beat("scan-1", MACHINE, {
     [JOB_OUTPUT_FILES.sessions]: [
       catalogued("omp/a", "/home/alex/babel"),
       catalogued("omp/b", "/home/alex/babel"),
@@ -2023,12 +2231,12 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
   // A HOST THAT CANNOT BE ASKED is asked ONCE, not once per folder — offline is a fact about
   // the machine — and the rows it would have answered for are left exactly as the scan wrote
   // them rather than stamped with a refusal.
-  folders.refusal = "dev-01 is not connected";
+  folders.refusal = "machine is not connected";
   const refused = await loop.tick();
   expect(refused.ingested).toMatchObject([{ jobId: "scan-1" }]);
-  expect(folders.asked).toEqual(["dev-01:/home/alex/babel"]);
+  expect(folders.asked).toEqual([`${MACHINE}:/home/alex/babel`]);
   expect(refused.notes).toEqual([
-    "dev-01 could not say what /home/alex/babel is: dev-01 is not connected",
+    `${MACHINE} could not say what /home/alex/babel is: machine is not connected`,
   ]);
   expect(await catalogue()).toEqual(asWritten);
 
@@ -2041,7 +2249,10 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
 
   expect(identified.ingested).toEqual([]);
   expect(identified.notes).toEqual([]);
-  expect(folders.asked).toEqual(["dev-01:/home/alex/babel", "dev-01:/home/alex/notes"]);
+  expect(folders.asked).toEqual([
+    `${MACHINE}:/home/alex/babel`,
+    `${MACHINE}:/home/alex/notes`,
+  ]);
   expect(await catalogue()).toEqual([
     { selector: "claude/d", identity: null, remote: null, reason: "workspace absent on this host" },
     {
@@ -2280,7 +2491,7 @@ test("a drawn review is blinded, fenced, settled, and promotes granular refineme
   ]);
   const recipeId = "babel-triages-the-queue";
   draws.review = {
-    machineId: "dev-01",
+    machineId: MACHINE,
     profile: { containerId: "ctr_union", expectedRevision: 1 },
     roleRecipes: {
       reception: recipeId,
@@ -2319,7 +2530,7 @@ test("a drawn review is blinded, fenced, settled, and promotes granular refineme
     {
       runId: `run_${ASSIGNMENT.id}_2`,
       jobId: "job_code_review",
-      machineId: "dev-01",
+      machineId: MACHINE,
       claimId: ASSIGNMENT.id,
       recordId: ASSIGNMENT.recordId,
       role: "reception",
@@ -2414,7 +2625,7 @@ test("a review with one refused contribution records the rest, and its receipt c
   const draws = new Draws(db);
   const recipeId = "babel-triages-the-queue";
   draws.review = {
-    machineId: "dev-01",
+    machineId: MACHINE,
     profile: { containerId: "ctr_union", expectedRevision: 1 },
     roleRecipes: {
       reception: recipeId,
@@ -2506,7 +2717,7 @@ test("a stale review completion retains usage without writing or settling the ne
   const draws = new Draws(db);
   const recipeId = "babel-triages-the-queue";
   draws.review = {
-    machineId: "dev-01",
+    machineId: MACHINE,
     profile: { containerId: "ctr_union", expectedRevision: 1 },
     roleRecipes: {
       reception: recipeId,

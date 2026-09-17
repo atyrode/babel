@@ -148,7 +148,15 @@ export interface ImportOptions {
   readonly from: string;
   /** The Go local session catalog; without it the plan carries no `sessions` rows. */
   readonly catalog?: string | undefined;
-  /** The operator-assigned host id the catalog's rows belong to; required with `catalog`. */
+  /**
+   * THE HUB MACHINE ID the catalog's rows belong to; required with `catalog`.
+   *
+   * It is the id `core.machines.list` publishes, not the Go deployment's `storage.json`
+   * `host_id`. `sessions.host` and `runs.machine_id` are both written from it, and both are
+   * handed to the hub — `describe`, `listRuns` and `machines.repository` are all keyed on the
+   * machine id and the hub resolves no names, so a corpus imported under `dev-01` is a corpus
+   * every readiness check answers about a machine that does not exist.
+   */
   readonly host?: string | undefined;
   /** The deployment id, which with `host` resolves a cited session's digest back to its selector. */
   readonly deployment?: string | undefined;
@@ -212,8 +220,10 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
   if (catalog !== null) {
     if (host === "") {
       throw new Error(
-        "--catalog needs --host <id>: the local catalog records no machine, and sessions.host is the " +
-          "operator-assigned identity the shared catalog keyed on (storage.json's host_id, e.g. dev-01)",
+        "--catalog needs --host <id>: the local catalog records no machine, and sessions.host is " +
+          "the HUB MACHINE ID the rows belong to — the id core.machines.list publishes, not the " +
+          "Go deployment's storage.json host_id. The hub resolves no names, so a corpus imported " +
+          "under a host name is one no readiness check, run listing or folder question can reach.",
       );
     }
     const columns = [
@@ -962,7 +972,10 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
   });
   notes.push(
     "runs.machine_id is --host (or NULL without it): a Go receipt records the worker and the profile " +
-      "but never the machine; the shared catalog carried that. runs.kind is `evaluate` when the " +
+      "but never the machine; the shared catalog carried that. It is therefore only a machine id if " +
+      "--host was given one — pass the id core.machines.list publishes, because this column and " +
+      "sessions.host are both read as machine ids by everything that asks the hub about a machine. " +
+      "runs.kind is `evaluate` when the " +
       "receipt's stage is `review`, the run id starts with `eval-`, or the authority is `policy`, and " +
       "`explore` otherwise — the Go receipt has no operation field, so P4's scan/archive/prepare runs " +
       "cannot appear. A run's superseded receipt revisions are dropped; only the newest survives, with " +
@@ -1095,7 +1108,7 @@ const USAGE = `bun tools/import.ts --from <durable.db> [--catalog <catalog.db>] 
   --from <path>        the Go per-machine store (read-only)
   --catalog <path>     the Go local session catalog (read-only); needs --host
   --into <path>        the hub data directory, or <dataDir>/plugins/${BABEL_PLUGIN_ID}/data.db
-  --host <id>          the operator-assigned machine id the catalog's sessions belong to
+  --host <id>          the HUB machine id the catalog's sessions belong to (core.machines.list)
   --deployment <id>    with --host, resolves a cited session's catalog digest back to its selector
   --dry-run            map everything and print the counts; write nothing
   --max-bytes <n>      the target's page cap; defaults to the manifest's 1 GiB request

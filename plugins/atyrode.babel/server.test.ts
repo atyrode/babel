@@ -261,9 +261,24 @@ async function closure(): Promise<string | null> {
 beforeEach(async () => {
   harness = await openTestStore(NOW);
   jobs = new Jobs();
+  // THE ROUTE IS PART OF THE POLICY, and the cadence is registered on the machine it names:
+  // naming the box that will spend is what makes an enabled policy a complete authorization,
+  // and `sessions.host` — a host NAME on an imported corpus — is not an identifier the hub can
+  // be asked about.
   await insert(harness.db, "policies", {
     version: "p1", seq: 1, actor_id: "operator", reason: "on",
-    payload: JSON.stringify({ enabled: true, perCycleCost: 0.25, batchSize: 4, dailyCost: 2 }),
+    payload: JSON.stringify({
+      enabled: true, perCycleCost: 0.25, batchSize: 4, dailyCost: 2,
+      review: {
+        machineId: MACHINE,
+        profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+        roleRecipes: {
+          reception: "triage", evidence: "triage", challenge: "triage", comparison: "triage",
+          outcome: "triage", relevance: "triage", filing: "triage", backlog: "triage",
+        },
+        recipes: [{ id: "triage", version: 1, body: "Assess the assigned record." }],
+      },
+    }),
     recorded_at: stamp(NOW - HOUR),
   });
 });
