@@ -412,9 +412,10 @@ git -C ../../manifold checkout "$(cat MANIFOLD_REV)"
 bun install --cwd ../../manifold --frozen-lockfile   # the kit resolves zod and the protocol from its workspace
 ```
 
-`MANIFOLD_REV` follows Manifold `main` and currently names `b95857c9` (v0.16.1), whose kit
-stamps `hardenedContract: 2` into repacked bundles (`packages/plugin-kit/src/pack.ts:298-303`
-at that revision; atyrode/manifold#606). It also carries the plugin
+`MANIFOLD_REV` follows Manifold `main` and currently names `518ebf6d` (`0.17.0+5.g518ebf6`),
+the revision the integrated preview's own hub runs, whose kit stamps `hardenedContract: 2` into
+repacked bundles (`packages/plugin-kit/src/pack.ts:300`, `HARDENED_CONTRACT_VERSION` at that
+revision; atyrode/manifold#606). It also carries the plugin
 database (ADR 0034) with its failure-atomic lifecycle (atyrode/manifold#536) — the primitive
 Babel cannot start without — per-operation `concurrentJobs` admission (#551), the `job_progress`
 event (#552), metered brokered inference (ADR 0038, #554) and the `pi-native-usage` meter kind
@@ -425,9 +426,11 @@ branch it once carried, is merged into `main` and superseded by it. Nothing here
 `tsconfig.json` still lists **two candidates** for every `@manifold/*` alias, `../../manifold-db`
 before `../../manifold`, and tsc and Bun take the first that exists; `pack.sh` resolves
 `../../manifold` and honours `MANIFOLD_DIR` for a tree that keeps the checkout elsewhere (an
-isolated worktree, a second branch). The pin and the workflow's `uses:` ref are one revision and
-are bumped together; moving both to a newer `main` revision, with this checkout moved with them
-and the gate green against it, is ordinary work in its own PR (`AGENTS.md`).
+isolated worktree, a second branch). The pin and BOTH workflow `uses:` refs — the gate's in
+`manifold-plugins.yml` and the release gate's in `release.yml` — are one revision and are bumped
+together; a release that ran the gate at another kit than the pin would verify bundles nobody
+builds. Moving all three to a newer `main` revision, with this checkout moved with them and the
+gate green against it, is ordinary work in its own PR (`AGENTS.md`).
 
 `bun install` here fetches only what typechecking and tests need: `zod` (pinned to the kit's own
 version, and the one thing inlined into every bundle), `typescript`, React with its types, and
@@ -463,6 +466,26 @@ would be a second answer to what a Code bundle is, and the day Code changed its 
 be the copy nobody updated. The script refuses a Code whose `plugins/MANIFOLD_REV` is not this
 tree's: three families verified against two different kits would prove nothing about the hub
 they install on.
+
+**That refusal is equality, so the Manifold pin moves in dependency order across three
+repositories.** It is a string comparison of Code's `plugins/MANIFOLD_REV` against this one, not
+an ancestry test, and Code's own `prepare:integration` compares omp's to Code's the same way; a
+`--depth=1` fetch has no history to reason over anyway. So a newer Manifold reaches this tree
+last, one reviewable PR per repository, each proved by its own gate:
+
+1. **atyrode/manifold-omp** moves its `plugins/MANIFOLD_REV` and workflow ref; its gate packs
+   omp's bundles against the new kit.
+2. **atyrode/code** moves its `plugins/MANIFOLD_REV`, its workflow ref and the
+   `@atyrode/manifold-omp` pin to a commit of step 1, in both `plugins/package.json` and the
+   publishable root `package.json` — a consumer compiles its omp types against the latter.
+   Code's `scripts/gate.sh` is the proof.
+3. **This repository** moves `MANIFOLD_REV`, both workflow refs, and `CODE_REV` with its
+   matching `@atyrode/manifold-code` dependency to a commit of step 2. `deps:code` then agrees
+   and the gate composes ten bundles.
+
+A pin naming an unmerged branch commit of the step above is fetchable but temporary: advance it
+to that repository's merge commit before this repository's PR leaves draft, because a deleted
+branch takes its commits out of reach and `prepare-code.ts` fetches `CODE_REV` by SHA.
 
 `.integration/` is gitignored — it is another repository's source and another family's
 bundles — and `pack.sh` prunes it, so this family's `dist/` holds this family's bundles only.
