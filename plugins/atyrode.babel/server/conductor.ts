@@ -1223,9 +1223,9 @@ type OrphanClaim = {
   /** The run row's own consecutive-silence count; NULL when no run row stands behind it. */
   silent: number | bigint | null;
 };
-type MachineCount = { machineId: string; cited: number };
-type MachineRow = { machineId: string };
 type Existing = { id: string };
+/** One distinct `sessions.host` value; a machine id only when an id is what was catalogued. */
+type HostRow = { host: string };
 /** One folder of one machine that no hub-side answer has been written for yet. */
 type UnidentifiedFolder = { machineId: string; workspace: string };
 /**
@@ -1274,6 +1274,92 @@ function receiptRefusal(payload: string | null): RefusalCode | null {
   return typeof reason === "string" ? refusalCode(reason) : null;
 }
 
+/**
+ * THE MACHINE AS THE HUB DESCRIBES IT, or the sentence saying why it cannot run this operation.
+ *
+ * `machineId` IS AN ID. `describe` is keyed on the machine id and a host NAME is not one, so a
+ * caller holding a name has nothing to ask with: the hub refuses the identifier rather than
+ * reporting a machine as offline (atyrode/manifold#725), and the first sentence below is what
+ * comes back. Nothing here turns a name into an id, because nothing a plugin is served could —
+ * `ctx.machines` is `isOnline`, `getTerminalExecution` and `repository`, and all three are
+ * keyed on the id as well.
+ *
+ * EVERY REFUSAL NAMES ITS CAUSE, in the shape the hub's own `job_owner_mismatch` and
+ * `installation_absent` arrive in. A caller told only "no" has to guess, and a loop told only
+ * "no" left the cadence unregistered for a day without saying so.
+ */
+export async function describeHost(
+  jobs: JobsSlice,
+  machineId: string,
+  operationId: string,
+): Promise<{ readiness: MachineReadiness } | { refused: string }> {
+  let described: MachineReadiness;
+  try {
+    described = await jobs.describe({ machineId, pluginId: BABEL_PLUGIN_ID });
+  } catch (error) {
+    return { refused: `${machineId} cannot be described: ${message(error)}` };
+  }
+  if (!described.connected) return { refused: `${machineId} is offline` };
+  const installed = described.installation;
+  if (installed === null) return { refused: `${machineId} has no Babel installed` };
+  if (!installed.enabled || !installed.ready) {
+    return { refused: `Babel on ${machineId} is installed but not ready to run` };
+  }
+  const operation = described.operations?.[operationId];
+  if (operation?.ready === false) {
+    return {
+      refused: `${operationId} is not ready on ${machineId}${
+        operation.reason === null ? "" : `: ${operation.reason}`
+      }`,
+    };
+  }
+  return { readiness: described };
+}
+
+/**
+ * THE MACHINES A CYCLE MAY NAME TO THE HUB, and every one of them is an ID.
+ *
+ * `SELECT DISTINCT host FROM sessions` used to be this list, and it is the whole of why the
+ * cadence never registered. `sessions.host` is written by `scan` as the machine it ran on, but
+ * an IMPORTED corpus carries the operator's own host name there instead (`tools/import.ts
+ * --host`, the Go deployment's `storage.json` `host_id`), so all 588 rows of that store read
+ * `dev-01`. A name is not an id: `describe` answered `connected: false` for it, nothing was
+ * ever usable, and the schedule was reported `absent` without a note. `runs.machine_id` is no
+ * better a source, because the same import writes the same `--host` into it.
+ *
+ * What is left is the two places an id can only have come from the operator or from the hub:
+ *
+ *   - THE MACHINE THE POLICY ROUTES ITS WORK TO (`review.machineId`). It is the one machine id
+ *     an operator RECORDED rather than one a column implied, and `dispatchReviews` already
+ *     posts every review of this cycle to it — so a beat registered anywhere else would wake a
+ *     machine the policy never authorised to spend.
+ *   - THE MACHINES BABEL'S OWN SCHEDULES NAME, which the hub itself answered `jobs.schedules()`
+ *     with. A beat still arriving under a policy version that routed elsewhere is therefore
+ *     folded by `reconcileRuns` rather than left orphaned on a machine nothing asks about.
+ *
+ * The policy's machine comes first, because it is the one this cycle would post to.
+ */
+function beatMachines(policy: Policy, registered: readonly ScheduleRow[]): readonly string[] {
+  const ids: string[] = [];
+  const routed = policy.review?.machineId ?? "";
+  if (routed !== "") ids.push(routed);
+  for (const row of registered) {
+    if (row.machineId !== "" && !ids.includes(row.machineId)) ids.push(row.machineId);
+  }
+  return ids;
+}
+
+/**
+ * What reconciling the cadence settled: the state the report carries, and the machine ids this
+ * cycle may name to the hub. They are one answer because they come from one look at
+ * `jobs.schedules()` beside one policy, and a second look would be a second answer to "which
+ * machines is this loop entitled to ask about".
+ */
+interface ScheduleReconciliation {
+  readonly state: ScheduleState;
+  readonly machines: readonly string[];
+}
+
 export function conductor(deps: ConductorDeps): Conductor {
   const { store, coordinator, jobs, machines, keys, plan, engine } = deps;
   let cycle = 0;
@@ -1292,91 +1378,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     return next;
   }
 
-  /** Machines are described once per tick: the answer is the same for every draw in it. */
-  async function readiness(
-    seen: Map<string, MachineReadiness | null>,
-    machineId: string,
-  ): Promise<MachineReadiness | null> {
-    const known = seen.get(machineId);
-    if (known !== undefined) return known;
-    let described: MachineReadiness | null = null;
-    try {
-      described = await jobs.describe({ machineId, pluginId: BABEL_PLUGIN_ID });
-    } catch {
-      described = null;
-    }
-    seen.set(machineId, described);
-    return described;
-  }
-
-  /** Every machine Babel has evidence of: one that holds sessions, or one that has run for it. */
-  async function knownMachines(): Promise<string[]> {
-    const rows = await store.db.query<MachineRow>(
-      `SELECT DISTINCT host AS machineId FROM sessions WHERE host <> ''
-       UNION
-       SELECT DISTINCT machine_id AS machineId FROM runs
-        WHERE machine_id IS NOT NULL AND machine_id <> ''
-       ORDER BY machineId`,
-    );
-    return rows.map((row) => row.machineId);
-  }
-
-  /** Whether a described machine can run one operation right now: connected, this plugin
-   *  installed, enabled and ready, and the operation itself not reported unready. */
-  function usable(
-    described: MachineReadiness | null,
-    operationId: string,
-  ): described is MachineReadiness {
-    if (described === null || !described.connected) return false;
-    const installed = described.installation;
-    if (installed === null || !installed.enabled || !installed.ready) return false;
-    return described.operations?.[operationId]?.ready !== false;
-  }
-
   /**
-   * Where the work belongs: the machine holding the sessions the record cites, because that is
-   * where the evidence can be read, and the one that holds most of them first. Failing that, any
-   * enrolled machine that is online with the operation ready — a review of a record whose
-   * sessions sit on an offline machine is still a review Babel can perform, it just reads what
-   * the hub already holds.
-   *
-   * `free` is the per-machine bound (#260), and it is applied HERE as well as at admission: a
-   * coordinator that admits a draw because the fleet has a slot, dispatched by a loop that
-   * always prefers the machine citing the evidence, would put every job of a two-machine
-   * deployment on one host. The beat asks nothing of it and passes nothing.
-   */
-  async function machineFor(
-    seen: Map<string, MachineReadiness | null>,
-    operationId: string,
-    recordId: string,
-    free?: (machineId: string) => boolean,
-  ): Promise<{ machineId: string; readiness: MachineReadiness } | null> {
-    const order: string[] = [];
-    if (recordId !== "") {
-      const preferred = await store.db.query<MachineCount>(
-        `SELECT s.host AS machineId, COUNT(*) AS cited
-           FROM edges e JOIN sessions s ON s.selector = e.to_id
-          WHERE e.from_id = ? AND e.kind = 'cites' AND e.to_kind = 'session'
-          GROUP BY s.host
-          ORDER BY cited DESC, s.host`,
-        [recordId],
-      );
-      for (const row of preferred) order.push(row.machineId);
-    }
-    for (const machineId of await knownMachines()) {
-      if (!order.includes(machineId)) order.push(machineId);
-    }
-    for (const machineId of order) {
-      if (free !== undefined && !free(machineId)) continue;
-      const described = await readiness(seen, machineId);
-      if (!usable(described, operationId)) continue;
-      return { machineId, readiness: described };
-    }
-    return null;
-  }
-
-  /**
-   * The one schedule the loop keeps: the policy's cadence, on a machine that can run the beat.
+   * The one schedule the loop keeps: the policy's cadence, on the machine the policy names.
    *
    * A HOST THAT WILL NOT REGISTER IT IS NOT A REASON TO STOP. The three schedule verbs are the
    * only ones a cycle can be refused for structurally rather than for this policy's sake — a
@@ -1384,20 +1387,27 @@ export function conductor(deps: ConductorDeps): Conductor {
    * and an authority that has lapsed refuses the other two — so the refusal is recorded as a
    * note and the cycle carries on. The beat is one WAKE; ingesting what has already finished
    * and drawing what the policy allows are the work, and they do not need it.
+   *
+   * IT IS NOT A REASON TO SAY NOTHING EITHER, and that half is why the bug survived a day.
+   * `absent` returned in silence is a cycle with nothing wrong with it beside an empty
+   * `job_schedules`: no note named the machine that was tried, so no report could show that the
+   * loop had been asking the hub about a host NAME. A refusal names its cause here exactly as
+   * it does at a door ({@link describeHost}), and the machine it names is an id.
    */
   async function reconcileSchedule(
     policy: Policy,
     at: number,
     notes: string[],
-  ): Promise<ScheduleState> {
+  ): Promise<ScheduleReconciliation> {
     let listed: readonly ScheduleRow[];
     try {
       listed = await jobs.schedules();
     } catch (error) {
       notes.push(`the beat's schedule cannot be read: ${message(error)}`);
-      return "absent";
+      return { state: "absent", machines: beatMachines(policy, []) };
     }
     const registered = listed.filter((row) => row.scheduleId === CONDUCTOR_SCHEDULE_ID);
+    const machines = beatMachines(policy, registered);
     if (!policy.enabled) {
       try {
         for (const row of registered) {
@@ -1405,9 +1415,9 @@ export function conductor(deps: ConductorDeps): Conductor {
         }
       } catch (error) {
         notes.push(`the beat cannot be unregistered: ${message(error)}`);
-        return "kept";
+        return { state: "kept", machines };
       }
-      return registered.length === 0 ? "absent" : "unregistered";
+      return { state: registered.length === 0 ? "absent" : "unregistered", machines };
     }
     const intervalMs = Math.max(1, policy.cadenceSeconds) * 1000;
     const current = registered.find(
@@ -1416,29 +1426,46 @@ export function conductor(deps: ConductorDeps): Conductor {
         row.intervalMs === intervalMs &&
         row.expiresAt - at > intervalMs,
     );
-    if (current !== undefined) return "kept";
-    const host = await machineFor(new Map(), BEAT_OPERATION, "");
-    if (host === null) return registered.length === 0 ? "absent" : "kept";
+    if (current !== undefined) return { state: "kept", machines };
+    // What a cycle that could not register reports: the rows it already holds still stand, so a
+    // live cadence is never reported away because this one tick could not renew it.
+    const unregistered: ScheduleReconciliation = {
+      state: registered.length === 0 ? "absent" : "kept",
+      machines,
+    };
+    const routed = policy.review?.machineId ?? "";
+    if (routed === "") {
+      notes.push(
+        `the beat cannot be registered: policy ${policy.version} names no machine for its work, ` +
+          `so there is no machine id to register the cadence on`,
+      );
+      return unregistered;
+    }
+    const described = await describeHost(jobs, routed, BEAT_OPERATION);
+    if ("refused" in described) {
+      notes.push(`the beat cannot be registered: ${described.refused}`);
+      return unregistered;
+    }
     try {
       for (const row of registered) {
         await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
       }
     } catch (error) {
       notes.push(`the beat cannot be re-registered: ${message(error)}`);
-      return "kept";
+      return { state: "kept", machines };
     }
-    const installation = host.readiness.installation;
+    const installation = described.readiness.installation;
     try {
       await jobs.schedule({
         jobId: `${CONDUCTOR_SCHEDULE_ID}.${policy.version}`,
-        machineId: host.machineId,
+        machineId: routed,
         operationId: BEAT_OPERATION,
         // The beat's input is fixed at registration, so it carries no run id: the machine half
         // mints one per occurrence and the receipt is what names it.
         input: {
           [INPUT_FIELD]: JSON.stringify({
             runId: "",
-            machineId: host.machineId,
+            machineId: routed,
             roots: [],
             harnesses: [],
           }),
@@ -1463,9 +1490,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       });
     } catch (error) {
       notes.push(`the beat cannot be registered: ${message(error)}`);
-      return "absent";
+      return { state: "absent", machines };
     }
-    return "registered";
+    return { state: "registered", machines };
   }
 
   /**
@@ -2411,6 +2438,7 @@ export function conductor(deps: ConductorDeps): Conductor {
    */
   async function reconcileRuns(
     at: number,
+    machineIds: readonly string[],
     ingested: IngestedRun[],
     settled: SettledClaim[],
     notes: string[],
@@ -2491,10 +2519,11 @@ export function conductor(deps: ConductorDeps): Conductor {
       // a second, staler answer to the same question.
       await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
     }
-
-
-
-    for (const machineId of await knownMachines()) {
+    // THE BEAT'S OWN RUNS, asked of the machines this cycle is entitled to ask about — ids, as
+    // {@link beatMachines} explains. It used to be every distinct `sessions.host`, which on an
+    // imported corpus is a host name the hub cannot resolve: one note per cycle per name, about
+    // a machine that was never the one being described.
+    for (const machineId of machineIds) {
       let listed: readonly { job: JobRunState | null }[];
       try {
         listed = (
@@ -2626,15 +2655,40 @@ export function conductor(deps: ConductorDeps): Conductor {
    * folder. `ok: false` is offline, too old a transport, or silence — facts about the MACHINE,
    * not about the path — so the second question would buy the same refusal and another note.
    * Its rows are left exactly as they were, which is what makes the next tick ask again.
+   *
+   * AND ONLY A MACHINE ID IS EVER ASKED. `sessions.host` is the machine a `scan` ran on, but an
+   * imported corpus holds the operator's host NAME there ({@link beatMachines}), and the hub
+   * resolves no names: asking about one buys a refusal about a machine that does not exist,
+   * every cycle, for every folder of every row the importer wrote. Those rows are left alone
+   * and NAMED IN A NOTE instead — silence here would be the same silence that hid an
+   * unregistered cadence for a day, and the cure is to re-catalogue the corpus under the
+   * machine's id rather than to guess which id a name meant.
    */
-  async function identifyFolders(notes: string[]): Promise<void> {
+  async function identifyFolders(machineIds: readonly string[], notes: string[]): Promise<void> {
+    const asked = machineIds.map(() => "?").join(", ");
+    const unasked = await store.db.query<HostRow>(
+      `SELECT DISTINCT host FROM sessions
+        WHERE host <> '' AND workspace LIKE '/%'
+          AND (repository_reason IS NULL OR repository_reason NOT IN (${HUB_REASON_HOLES}))
+          ${machineIds.length === 0 ? "" : `AND host NOT IN (${asked})`}
+        ORDER BY host`,
+      [...MACHINE_REPOSITORY_REASONS, ...machineIds],
+    );
+    if (unasked.length > 0) {
+      notes.push(
+        `the folders catalogued under ${unasked.map((row) => row.host).join(", ")} are not asked ` +
+          `about: sessions.host holds a host name there rather than a machine id, and the hub ` +
+          `resolves no names`,
+      );
+    }
+    if (machineIds.length === 0) return;
     const unidentified = await store.db.query<UnidentifiedFolder>(
       `SELECT DISTINCT host AS machineId, workspace FROM sessions
-        WHERE host <> '' AND workspace LIKE '/%'
+        WHERE host IN (${asked}) AND workspace LIKE '/%'
           AND (repository_reason IS NULL OR repository_reason NOT IN (${HUB_REASON_HOLES}))
         ORDER BY host, workspace
         LIMIT ?`,
-      [...MACHINE_REPOSITORY_REASONS, WORKSPACES_PER_TICK],
+      [...machineIds, ...MACHINE_REPOSITORY_REASONS, WORKSPACES_PER_TICK],
     );
     const silent = new Set<string>();
     let identified = 0;
@@ -3017,7 +3071,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           cycleRunId,
           policyVersion: policy.version,
           enabled: false,
-          schedule,
+          schedule: schedule.state,
           requested,
           ingested,
           settled,
@@ -3032,14 +3086,21 @@ export function conductor(deps: ConductorDeps): Conductor {
         };
       }
 
-      const reconciled = await reconcileRuns(at, ingested, settled, notes, refusals);
+      const reconciled = await reconcileRuns(
+        at,
+        schedule.machines,
+        ingested,
+        settled,
+        notes,
+        refusals,
+      );
       // …and the claims no settlement can reach are released before this cycle asks the
       // coordinator what may be drawn, so a batch held by dead workers is a batch of free slots
       // by the time it answers rather than one cycle later.
       await reapClaims(at, policy.leaseSeconds, settled, notes);
       // What a scan just catalogued is folders; what they ARE is the host's to say, and it is
       // asked here, after the rows exist and before this cycle spends anything.
-      await identifyFolders(notes);
+      await identifyFolders(schedule.machines, notes);
 
       // WHETHER THE LOOP IS PARKED is still asked, and still recorded, because it is read off
       // the spend ledger of the runs that did happen — a review that was paid for and refused
@@ -3069,7 +3130,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         cycleRunId,
         policyVersion: policy.version,
         enabled: true,
-        schedule,
+        schedule: schedule.state,
         requested,
         ingested,
         settled,

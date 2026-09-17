@@ -1,7 +1,6 @@
 import { defineServerAction, type GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
-  BABEL_PLUGIN_ID,
   INPUT_FIELD,
   LaunchRequestSchema,
   LaunchResultSchema,
@@ -36,7 +35,12 @@ import {
   type ActionsSlice,
   type CodeEngine,
 } from "../server/engine/session.ts";
-import type { JobLaunch, JobsSlice, MachineReadiness, RunPlan } from "../server/conductor.ts";
+import {
+  describeHost,
+  type JobLaunch,
+  type JobsSlice,
+  type RunPlan,
+} from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
@@ -311,35 +315,6 @@ interface Selected {
   readonly overBound: number;
 }
 
-/** The machine, as the engine describes it, or the sentence saying why it cannot run this. */
-async function host(
-  jobs: JobsSlice,
-  machineId: string,
-  operationId: string,
-): Promise<{ readiness: MachineReadiness } | { refused: string }> {
-  let described: MachineReadiness;
-  try {
-    described = await jobs.describe({ machineId, pluginId: BABEL_PLUGIN_ID });
-  } catch (error) {
-    return { refused: `${machineId} cannot be described: ${message(error)}` };
-  }
-  if (!described.connected) return { refused: `${machineId} is offline` };
-  const installed = described.installation;
-  if (installed === null) return { refused: `${machineId} has no Babel installed` };
-  if (!installed.enabled || !installed.ready) {
-    return { refused: `Babel on ${machineId} is installed but not ready to run` };
-  }
-  const operation = described.operations?.[operationId];
-  if (operation?.ready === false) {
-    return {
-      refused: `${operationId} is not ready on ${machineId}${
-        operation.reason === null ? "" : `: ${operation.reason}`
-      }`,
-    };
-  }
-  return { readiness: described };
-}
-
 export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMachinery {
   /**
    * The sessions one run is prepared over, newest first, how many the window held, and how many
@@ -489,7 +464,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
   ): Promise<
     { pinned: { installationRevision?: string; artifactSha256?: string } } | { refused: string }
   > {
-    const described = await host(jobs, machineId, operationId);
+    const described = await describeHost(jobs, machineId, operationId);
     if ("refused" in described) return described;
     const installation = described.readiness.installation;
     return {
