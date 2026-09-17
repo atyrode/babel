@@ -803,7 +803,9 @@ async function seed(db: PluginDatabase): Promise<void> {
         "hyp_00000001",
         "The catalog forgets archived sessions",
         "2026-09-01T00:00:00Z",
-        JSON.stringify({ statement: "…" }),
+        // An imported record carries the review state §4.12 withholds from a reviewer, so the
+        // projection must strip it rather than the leak check refusing the dispatch (#301).
+        JSON.stringify({ statement: "…", novelty: { rank: 3 }, reception: { support: 2 } }),
       ],
     },
     {
@@ -2349,6 +2351,10 @@ test("a drawn review is blinded, fenced, settled, and promotes granular refineme
   expect(code.posted[0]?.prompt).toContain("This initial assessment is blind");
   expect(code.posted[0]?.prompt).toContain('"statement": "…"');
   expect(code.posted[0]?.prompt).not.toContain("assessments");
+  // The withheld keys the record itself carries never reach the reviewer, and their presence
+  // does not stop the dispatch. ("reception" is the role's own name, so the prompt says it.)
+  expect(code.posted[0]?.prompt).not.toContain("novelty");
+  expect(code.posted[0]?.prompt).not.toContain('"support": 2');
   const held = await db.query<{ job_id: string; fence: bigint }>(
     `SELECT job_id, fence FROM claims WHERE id = ?`,
     [ASSIGNMENT.id],

@@ -285,7 +285,23 @@ async function cycle(
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
   // limits are read for; a run that reaches a model is Code's to post (#279).
   const plan = planFor(policy, MACHINE_OPERATIONS.scan);
-  await loop(jobs, machines, actions, plan).tick();
+  const report = await loop(jobs, machines, actions, plan).tick();
+  /*
+    WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
+    drew nothing, or stopped on a gap, or refused a dispatch, left no trace outside the tick
+    report it returned to this caller, and no door reports it. An operator watching a preview
+    where nothing happens could not tell "no candidate is eligible" from "the route names no
+    profile" from "the batch is full" without reading the store.
+  */
+  if (report.stop !== null)
+    console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} stopped: ${report.stop.reason}: ${report.stop.detail}`);
+  if (report.parked !== null)
+    console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} parked after ${String(report.parked.barren)} barren: ${report.parked.reason}`);
+  for (const gap of report.gaps.slice(0, 8))
+    console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} gap ${gap.recordId}/${gap.role || "-"}: ${gap.reason}: ${gap.detail}`);
+  for (const refusal of report.refused)
+    console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} refused ${refusal.recordId}: ${refusal.reason}: ${refusal.detail}`);
+  for (const note of report.notes) console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId}: ${note}`);
   /*
     …AND THEN THE SESSIONS WHOSE MATERIAL IS NOW SEALED (#592). A job-inputs binding names a
     SETTLED job's output, so a session cannot be posted while its own `prepare` is still
