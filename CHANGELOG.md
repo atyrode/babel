@@ -11,6 +11,36 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **`atyrode.babel.jev` exists as a part, empty and wired.** Seventeen issues assumed the
+  directory was there and nothing created it, so the whole judgement tree was blocked on a
+  prerequisite nobody had filed — and every one of them read ready at a glance, because each
+  carried a well-formed fallback paragraph. The part now packs, composes and installs: a manifest
+  declaring `atyrode.babel` as a required dependency, a server half with no actions, **no
+  capabilities, no store, no panel, no tool grant and no credential.** Those are the children, and
+  a scaffold that quietly acquires a capability because it will need one is how an optional part
+  stops being optional.
+
+  **The fallback is tested rather than asserted.** `test/optional-part.test.ts` seeds one real
+  store and dispatches **every** reading door twice — once against a hub where the part answers,
+  once against a hub that refuses any call to a plugin the baseline does not declare, which is the
+  host's own rule — and requires the two answers to be equal. A second test pins the door roster
+  to the table, so a door added later cannot opt out of the fallback. It was proved to fail:
+  making one door call into the part turns the suite red with the host's `undeclared_dependency`
+  refusal. A fallback nobody has run is not a fallback.
+
+  **"A part is not a library" is now a lint rule instead of a sentence in a document.** It applies
+  to all three parts, not only the new one — `feed` and `watch` were checked and comply, their
+  only baseline import being `contract.ts`, which is where every id, door name and result schema
+  is spelled once. A name shared is not a dependency; a reached-into `store/` or `server/` module
+  is, and it is the kind that survives the part being disabled.
+
+  Two things found while wiring it. `tsconfig.json`'s `include` is explicit, so a new top-level
+  directory is invisible to `tsc`: a part whose server half is never typechecked is present rather
+  than wired. And `release.yml` hands the preview receiver a **hand-maintained list of plugin
+  ids** while everything around it globs, so a tag would have attached four bundles and delivered
+  three, with the guard structurally unable to notice a bundle nobody asked for. The id is added
+  and the list now says out loud that it is hand-maintained and why the order cannot simply be
+  globbed.
 - **Nothing scanned a preparation for secrets before a model read it. Something does now.** A
   credential pasted into a transcript years ago was sealed into a material lease and sent to the
   provider along with everything else; the disclosure boundary was the operator's choice of Code

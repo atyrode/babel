@@ -6,6 +6,7 @@ import { PluginBundleSchema, type PluginBundle } from "@manifold/protocol";
 import {
   BABEL_PLUGIN_ID,
   FEED_PLUGIN_ID,
+  JEV_PLUGIN_ID,
   JOB_OUTPUT_FILES,
   OPERATIONS,
   WATCH_PLUGIN_ID,
@@ -28,7 +29,12 @@ import {
 /** The repository root: `test/` sits at it, and `dist/` is written there. */
 const repo = dirname(import.meta.dir);
 const dist = join(repo, "dist");
-const expected: readonly string[] = [BABEL_PLUGIN_ID, FEED_PLUGIN_ID, WATCH_PLUGIN_ID];
+const expected: readonly string[] = [
+  BABEL_PLUGIN_ID,
+  FEED_PLUGIN_ID,
+  WATCH_PLUGIN_ID,
+  JEV_PLUGIN_ID,
+];
 
 const bundles: Record<string, PluginBundle> = {};
 let sums: readonly string[] = [];
@@ -55,6 +61,9 @@ test("each bundle carries exactly the members its manifest names", () => {
     [BABEL_PLUGIN_ID]: ["machine.js", "server.js", "web.js"],
     [FEED_PLUGIN_ID]: ["styles.css", "web.js"],
     [WATCH_PLUGIN_ID]: ["styles.css", "web.js"],
+    // The judgement part is a server half and nothing else: no panel, so no `web.js`, and no
+    // sheet — `pack` refuses a `styles.css` beside a manifest that does not declare one.
+    [JEV_PLUGIN_ID]: ["server.js"],
   };
   for (const id of expected) {
     expect(Object.keys(bundles[id]?.files ?? {}).sort()).toEqual(members[id] ?? []);
@@ -120,8 +129,13 @@ test("the packed machine half runs the argv its manifest declares", async () => 
 });
 
 test("a web half is built against the shell's own floor, not its own copy", () => {
+  // Only a bundle that HAS a browser half records what it was built against: `pack` rewrites
+  // React and `@manifold/ui` into reads from the shell's registry, and a server-only part asks
+  // for neither, so its `builtAgainst` is empty rather than missing something.
   for (const id of expected) {
-    const builtAgainst = bundles[id]?.builtAgainst ?? {};
+    const bundle = bundles[id];
+    if (bundle?.manifest.entry?.web === undefined) continue;
+    const builtAgainst = bundle.builtAgainst ?? {};
     expect(builtAgainst["react"]).toBeDefined();
     expect(builtAgainst["@manifold/ui"]).toBeDefined();
   }

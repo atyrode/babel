@@ -4,10 +4,11 @@
   // debt behind by the thousand, and the only way it does not come back is a gate.
   //
   // THE ENTRY POINTS ARE WHAT THE MANIFESTS DECLARE, and the manifests are authoritative over
-  // this list. `atyrode.babel/manifest.json` declares `entry.server` and `entry.web`; each part
-  // declares its own `entry.web`; the baseline's `machine.artifacts` names the machine half's
-  // bundle, which `pack.sh` builds from `machine/main.ts`. Anything else a bundle contains is
-  // reached from one of those four, and if it is not, that is the finding.
+  // this list. `atyrode.babel/manifest.json` declares `entry.server` and `entry.web`; the
+  // reading parts declare their own `entry.web` and `atyrode.babel.jev` its own `entry.server`;
+  // the baseline's `machine.artifacts` names the machine half's bundle, which `pack.sh` builds
+  // from `machine/main.ts`. Anything else a bundle contains is reached from one of those, and if
+  // it is not, that is the finding.
   //
   // `tools/` and `scripts/` are entry points too, and deliberately: they are dev-time CLIs that
   // never enter a packed artifact, so nothing imports them and a reachability check that did not
@@ -29,6 +30,7 @@
     "atyrode.babel/web.ts",
     "atyrode.babel/feed/web.tsx",
     "atyrode.babel/watch/web.tsx",
+    "atyrode.babel.jev/server.ts",
     "atyrode.babel/machine/main.ts",
     "atyrode.babel/tools/import.ts",
     "atyrode.babel/tools/seed-recipes.ts",

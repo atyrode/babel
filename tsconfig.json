@@ -65,6 +65,8 @@
     "atyrode.babel/**/*.ts",
     "atyrode.babel/**/*.tsx",
     "atyrode.babel/**/*.json",
+    "atyrode.babel.jev/**/*.ts",
+    "atyrode.babel.jev/**/*.json",
     "scripts/**/*.ts",
     "runtime-tools.json",
     "test/**/*.ts",

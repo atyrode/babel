@@ -142,10 +142,18 @@ jobs:
           key=$(mktemp); printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"; chmod 600 "$key"
           trap 'rm -f "$key"' EXIT
           cat dist/SHA256SUMS deps/SHA256SUMS > sums
+          # THIS LIST IS HAND-MAINTAINED, AND IT IS THE ONE THING HERE THAT IS. Everything above
+          # globs — `dist/*.manifold-plugin.json` is attached whole, and `sums` is both families'
+          # checksums — but the receiver takes one bundle per call, and a hub refuses a part
+          # whose baseline is not installed yet, so the ORDER is the reason this is written out
+          # rather than derived: dependencies first, then each baseline before its own parts.
+          # A new plugin therefore has to be added here by hand. The `no sum for` guard below
+          # catches a bundle that was asked for and not built; nothing catches a bundle that was
+          # built and never asked for, which is how a part reaches a release and never a preview.
           for id in \
             atyrode.omp atyrode.omp.accounts atyrode.omp.gateway \
             atyrode.code atyrode.code.accounts atyrode.code.generator atyrode.code.usage \
-            atyrode.babel atyrode.babel.feed atyrode.babel.watch; do
+            atyrode.babel atyrode.babel.feed atyrode.babel.watch atyrode.babel.jev; do
             file="$id.manifold-plugin.json"
             sha=$(awk -v f="$file" '$2 == f { print $1 }' sums)
             [ -n "$sha" ] || { echo "no sum for $file"; exit 1; }
