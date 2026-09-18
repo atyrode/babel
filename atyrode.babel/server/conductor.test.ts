@@ -680,6 +680,8 @@ class Draws {
   declined: Record<string, unknown>[] = [];
   review: Policy["review"] = undefined;
   claimFence = 1;
+  /** How many reviews one cycle may dispatch, so a test can let a cycle FILL its batch. */
+  batchSize = POLICY.batchSize;
 
   constructor(private readonly db: PluginDatabase) {}
 
@@ -688,6 +690,7 @@ class Draws {
       ...POLICY,
       enabled: this.enabled,
       version: this.version,
+      batchSize: this.batchSize,
       ...(this.review === undefined ? {} : { review: this.review }),
     };
     return {
@@ -2627,6 +2630,8 @@ test("a drawn review is blinded, fenced, settled, and promotes granular refineme
     ],
   };
   draws.pending = [{ ...ASSIGNMENT }];
+  // One review is this cycle's whole batch, so the cycle FILLS it and stops on its own success.
+  draws.batchSize = 1;
   const code = new ReviewCode();
   const loop = conductor({
     engine: code,
@@ -2651,6 +2656,11 @@ test("a drawn review is blinded, fenced, settled, and promotes granular refineme
       lane: "coverage",
     },
   ]);
+  // THE STOP THAT MEANS THE LOOP WORKED, and it is its own word: a cycle that filled the batch
+  // itself says `batch-filled`, where a cycle that found every slot held by somebody else says
+  // `batch` (#382). Watch is silent for this one and speaks for that one.
+  expect(posted.stop?.reason).toBe("batch-filled");
+  expect(posted.stop?.detail).toContain("dispatched");
   expect(code.posted).toHaveLength(1);
   expect(code.posted[0]?.prepareJobId).toBeUndefined();
   expect(code.posted[0]?.prompt).toContain("This initial assessment is blind");
@@ -3079,6 +3089,68 @@ test("three jobs that never reached the model park the loop, and an hour of quie
   expect(resumed.parked).toBe(null);
   expect(resumed.notes.some((note) => note.startsWith("the loop is parked:"))).toBe(false);
   clock = started;
+});
+
+test("a batch every slot of which is already claimed stops on `batch` and draws nothing", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.review = ROUTE;
+  draws.pending = [{ ...ASSIGNMENT }];
+  // Four reviews on the route's machine, all of them still open: the batch is full of work
+  // somebody else holds. THE WORD FOR THAT IS NOT THE WORD FOR A BATCH THIS CYCLE FILLED
+  // ITSELF (#382) — one is the loop working and the other is the loop wedged, and a panel given
+  // one word for both stays silent for the wedge.
+  for (const slot of [1, 2, 3, 4]) {
+    const jobId = `job_held_${String(slot)}`;
+    fleet.running(jobId, MACHINE, OPERATIONS.evaluate);
+    await db.batch([
+      {
+        sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, records, payload)
+              VALUES (?, ?, ?, ?, ?, 0, '{}')`,
+        params: [
+          `run_held_${String(slot)}`,
+          OPERATIONS.evaluate,
+          MACHINE,
+          jobId,
+          new Date(clock).toISOString(),
+        ],
+      },
+      {
+        sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                                 reserved_cost, granted_at, expires_at)
+              VALUES (?, ?, 'reception', 'coverage', ?, ?, 'cyc_held', 1, ?, ?, ?)`,
+        params: [
+          `clm_held_${String(slot)}`,
+          ASSIGNMENT.recordId,
+          POLICY.version,
+          jobId,
+          ASSIGNMENT.reservedCost,
+          new Date(clock).toISOString(),
+          new Date(clock + POLICY.leaseSeconds * 1000).toISOString(),
+        ],
+      },
+    ]);
+  }
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const wedged = await loop.tick();
+  expect(wedged.stop?.reason).toBe("batch");
+  expect(wedged.stop?.detail).toContain("already holds 4 of 4 review slots");
+  // …and it never asked for work it had nowhere to put, so nothing was claimed for it.
+  expect(draws.draws).toBe(0);
+  expect(wedged.requested).toEqual([]);
+  expect(wedged.pulse.tick.gaps).toEqual({ batch: 1 });
 });
 
 test("the pulse counts why a cycle did not spend, and the day accumulates across the wakes", async () => {

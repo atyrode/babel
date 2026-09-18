@@ -735,10 +735,13 @@ const STANCE_WEIGHT: Record<Stance, number> = {
 };
 
 /** The stances that withhold work, and the gap each is reported as. §4.8 and §5.2 both refuse to
- *  delete a restricted subject, so this withholds expenditure and never existence. */
+ *  delete a restricted subject, so this withholds expenditure and never existence. The retired
+ *  stance reports `topic-retired` because the word travels to a counted list where a bare
+ *  `retired` beside `record-replaced` reads as one fact twice over (#382): this one is about the
+ *  topic and never about the record. */
 const WITHHOLDING: Record<string, GapReason | undefined> = {
   excluded: "excluded",
-  retired: "retired",
+  retired: "topic-retired",
 };
 
 /** How many times one record and role may be skipped or fail before it stops being drawn. Three:
@@ -1558,7 +1561,7 @@ export function coordinator(
         gaps.push({
           recordId: head.id,
           role: "",
-          reason: "replaced",
+          reason: "record-replaced",
           detail: `${lifecycle.status}, so no review of it is outstanding`,
         });
         continue;
@@ -1935,6 +1938,13 @@ export function coordinator(
     if (refusal !== null) {
       return { outcome: "gap", gap: { reason: "invalid-policy", detail: refusal }, gaps: [] };
     }
+    // THIS GATE DEFENDS AGAINST A POLICY LANDING MID-TICK, and is not the ordinary path any
+    // more (#382). The conductor reads the policy in force at the top of its tick and returns
+    // before it ever calls `draw` when evaluation is off, so it says the disabled stop itself.
+    // What reaches here is the narrow window the two reads leave open: a `setPolicy` — or an
+    // overlay expiring — between the loop's read and this one. Keeping it costs a boolean and
+    // preserves §14's order of gates, that a disabled deployment reserves no claim; dropping it
+    // would let exactly that window hand out an assignment nothing is authorized to run.
     if (!policy.enabled) {
       return {
         outcome: "gap",

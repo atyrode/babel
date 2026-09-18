@@ -444,11 +444,11 @@ export interface Park {
  * WHY A CYCLE DID NOT SPEND, counted rather than narrated (F11, G9).
  *
  * `gaps` counts the coordinator's own reason word for every draw that yielded no assignment:
- * the {@link Stop} that ended the cycle (`disabled`, `batch`, `per-cycle`, `daily`,
- * `no-candidates`, …) and every candidate {@link Gap} it declined on the way (`claimed`,
- * `cooling`, `capped`, …). The two vocabularies are disjoint word sets, so one map by reason is
- * unambiguous, and a surface that wants the records rather than the counts reads `gaps` on the
- * report itself.
+ * the {@link Stop} that ended the cycle (`disabled`, `batch`, `batch-filled`, `per-cycle`,
+ * `daily`, `no-candidates`, …) and every candidate {@link Gap} it declined on the way
+ * (`claimed`, `cooling`, `capped`, …). The two vocabularies are disjoint word sets, so one map
+ * by reason is unambiguous, and a surface that wants the records rather than the counts reads
+ * `gaps` on the report itself.
  *
  * `refusals` counts the submissions the review contract refused, by the code
  * `machine/results.ts` names — the receipt's own `reason` for a run that was paid for and
@@ -3118,9 +3118,13 @@ export function conductor(deps: ConductorDeps): Conductor {
         lane: assignment.lane,
       });
     }
+    // THE CYCLE FILLED THE BATCH ITSELF, which is the one stop that means the loop worked. It
+    // is a different word from the `batch` above, where every slot is held by somebody else and
+    // nothing is finishing: a panel given one word for both cannot tell a wedged deployment
+    // from a busy one, and stays silent for the wedge (#382).
     return {
       stop: {
-        reason: "batch",
+        reason: "batch-filled",
         detail: `cycle ${cycleRunId} dispatched its ${String(policy.batchSize)} reviews`,
       },
       gaps,

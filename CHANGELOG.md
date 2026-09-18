@@ -377,6 +377,31 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **One stop reason named both a blocked loop and a healthy one.** Reading all nineteen reason
+  words as a set for the first time — which moving them into the contract forced — turned up that
+  `batch` meant two opposite states of health: three sites where every review slot was held by
+  somebody else, and one where the loop filled the batch itself. Watch treated it as the healthy
+  stop and stayed silent for all four, so **a batch wedged by stale claims read exactly like a
+  loop working at capacity**, which is the failure the cycle panel exists to end. The success
+  case is `batch-filled` now and stays silent; `batch` says "every review slot is already claimed
+  and none of those reviews has finished."
+
+  Two gap reasons named different subjects under words that read like synonyms: `retired` is about
+  the topic's lifecycle and never refers to a record, and `replaced` is about the record's own and
+  silently contained the retired ones. They are `topic-retired` and `record-replaced`, renamed at
+  the source rather than annotated in the panel, because the words travel further than the panel
+  does — a door's enum, a tally key, a log line, whatever filters on them next. `record-replaced`'s
+  label was wrong as well as ambiguous: it said "superseded by a newer revision", which is false
+  for the retired half.
+
+  The coordinator's own `disabled` stop stays, with a comment saying what it defends: `draw()`
+  re-reads the policy at its own moment while the conductor read it at the top of the tick, so a
+  policy change landing in that window would otherwise hand out an assignment and reserve a claim
+  on a deployment nothing authorises. Dead-code removal is right when a branch cannot change
+  behaviour; this one can, and it costs a boolean.
+
+  Exhaustiveness was proven rather than asserted: adding a twentieth reason makes `tsc` fail on
+  the label table.
 - **The run log can cross at all.** `importLedger` refused every `runs` chunk with
   `runs has no column "payload"` — the column every receipt carries. The crossing derives each
   table's columns by reading its `CREATE TABLE` body, and the derivation treated the apostrophe in

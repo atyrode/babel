@@ -669,8 +669,14 @@ export const TellInputSchema = z.strictObject({
 
 export const GAP_REASONS = [
   "excluded",
-  "retired",
-  "replaced",
+  /**
+   * The TOPIC the record is filed under is retired, so work filed under it is withheld. The
+   * subject is in the word because {@link GAP_REASONS} is read as a counted list of bare words,
+   * where an unqualified `retired` beside `record-replaced` reads as the same fact twice (#382).
+   */
+  "topic-retired",
+  /** The RECORD's own lifecycle is superseded or retired, so no review of it is outstanding. */
+  "record-replaced",
   "capped",
   "claimed",
   "exhausted",
@@ -685,7 +691,15 @@ export const GapReasonSchema = z.enum(GAP_REASONS);
 export const STOP_REASONS = [
   "invalid-policy",
   "disabled",
+  /**
+   * The batch is full of work somebody else holds: every slot this deployment allows is claimed
+   * and none of those claims finished, so the cycle dispatched nothing. It is a wedged loop —
+   * stale claims read exactly like a busy one until they expire — and is why the filled batch
+   * below carries its own word (#382).
+   */
   "batch",
+  /** The cycle filled the batch itself: it dispatched everything one cycle is allowed. */
+  "batch-filled",
   "per-cycle",
   "daily",
   "no-candidates",

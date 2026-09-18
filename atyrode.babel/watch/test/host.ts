@@ -210,7 +210,7 @@ export const TOPICS: TopicsResult = {
 /** A cycle that dispatched everything one batch allows and declined nothing. */
 export const HEALTHY_CYCLE: CycleReport = {
   at: "2026-09-12T08:59:30.000Z",
-  stop: { reason: "batch", detail: "dev-01 already holds 4 of 4 review slots" },
+  stop: { reason: "batch-filled", detail: "cycle cyc_1757667570000_4 dispatched its 4 reviews" },
   gaps: [],
 };
 

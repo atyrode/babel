@@ -90,15 +90,33 @@ test("the candidates a cycle declined are one row per reason, counted, with one 
 });
 
 test("a cycle that spent normally renders nothing at all", async () => {
-  // `batch` is the loop saying it dispatched everything one cycle allows. It is the commonest
-  // stop on a working deployment, and a section that appeared for it would be on the screen
-  // every thirty seconds saying that nothing is wrong.
+  // `batch-filled` is the loop saying it dispatched everything one cycle allows. It is the
+  // commonest stop on a working deployment, and a section that appeared for it would be on the
+  // screen every thirty seconds saying that nothing is wrong.
+  const root = await open({
+    at: "2026-09-12T08:59:30.000Z",
+    stop: { reason: "batch-filled", detail: "cycle cyc_1757667570000_4 dispatched its 4 reviews" },
+    gaps: [],
+  });
+  expect(root.querySelector(SECTION)).toBeNull();
+});
+
+test("a batch held by claims that are not finishing is said, not passed over as healthy", async () => {
+  // THE WEDGE AND THE FULL BATCH ARE OPPOSITE STATES OF HEALTH (#382). One word for both is
+  // what let a deployment whose every slot was held by stale claims look, from here, exactly
+  // like one working at capacity: silence, on the panel built to end that silence.
   const root = await open({
     at: "2026-09-12T08:59:30.000Z",
     stop: { reason: "batch", detail: "dev-01 already holds 4 of 4 review slots" },
     gaps: [],
   });
-  expect(root.querySelector(SECTION)).toBeNull();
+
+  const section = root.querySelector(SECTION);
+  if (section === null) throw new Error("a wedged batch is not on the screen");
+  expect(section.querySelector(".plugin-atyrode_babel_watch__lede")?.textContent).toBe(
+    "Every review slot is already claimed and none of those reviews has finished.",
+  );
+  expect(section.textContent).toContain("dev-01 already holds 4 of 4 review slots");
 });
 
 test("a deployment whose loop has never run renders nothing rather than an empty heading", async () => {

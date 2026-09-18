@@ -722,8 +722,13 @@ export type CycleReport = z.infer<typeof CycleReportSchema>;
  * stopped for the best possible reason, and a panel that announced it would be a notice on
  * every healthy cycle — which is how a section meant to explain silence becomes the noise it
  * was built to replace. It is the one word this panel says nothing about.
+ *
+ * It is `batch-filled` and not `batch`, because those are opposite states of health: the
+ * filled batch is this loop's own dispatches, and a bare `batch` is every slot held by claims
+ * that are not finishing. Staying silent for both is how a wedged deployment looked like a busy
+ * one (#382).
  */
-export const HEALTHY_STOP: StopReason = "batch";
+export const HEALTHY_STOP: StopReason = "batch-filled";
 
 /*
   WHY DRAWING STOPPED, AND WHY A CANDIDATE WAS DECLINED, in the operator's words.
@@ -743,7 +748,8 @@ export const HEALTHY_STOP: StopReason = "batch";
 export const STOP_NOTE: Record<StopReason, string> = {
   "invalid-policy": "The policy in force is not usable, so nothing may be drawn against it.",
   disabled: "Babel is switched off: the policy in force does not authorize evaluation.",
-  batch: "It dispatched everything one cycle is allowed.",
+  batch: "Every review slot is already claimed and none of those reviews has finished.",
+  "batch-filled": "It dispatched everything one cycle is allowed.",
   "per-cycle": "The cycle's own spend ceiling is reached.",
   daily: "The day's spend ceiling is reached.",
   "no-candidates": "Nothing is eligible for review.",
@@ -754,8 +760,8 @@ export const STOP_NOTE: Record<StopReason, string> = {
 
 export const GAP_NOTE: Record<GapReason, string> = {
   excluded: "filed under a topic you excluded",
-  retired: "filed under a topic that is retired",
-  replaced: "superseded by a newer revision",
+  "topic-retired": "filed under a topic that is retired",
+  "record-replaced": "the record itself is superseded or retired",
   capped: "already reviewed as many times as the policy allows",
   claimed: "another worker holds the claim",
   exhausted: "skipped or failed too often to keep drawing",
