@@ -1,106 +1,67 @@
 ---
 name: babel-cli
-description: Archive, browse, verify, and restore OMP/Codex/Claude Code sessions with the babel CLI. Use when asked to back up agent sessions, list or inspect archived conversations, restore a session from a snapshot, or check archive integrity.
+description: Back up, browse, verify and restore OMP/Codex/Claude Code sessions from Babel's restic archive. Use when asked to archive agent sessions, list or inspect archived conversations, restore a session from a snapshot, or check archive integrity.
 ---
 
-# Using the babel CLI
+# Babel's session archive
 
-Babel archives this machine's agent sessions (OMP, Codex, Claude Code) into a
-restic repository and restores any historical capture byte-exactly. It is
-headless: every command works over stdin/stdout, and `--json` emits exactly one
-machine-readable JSON document on stdout (diagnostics go to stderr).
+Babel archives a machine's agent sessions (OMP, Codex, Claude Code) into a restic repository,
+tagged `babel`, one snapshot per adapter root, attributed to the machine's own identity. Any
+historical capture restores byte-exactly.
 
-## Build and prerequisites
+**There is no `babel` binary.** Babel is a Manifold plugin family; the standalone Go command was
+retired with the rest of the product. What replaced each half:
+
+| was | is |
+|---|---|
+| `babel archive push` | the `atyrode.babel.archive` machine operation, run as a Manifold job |
+| `babel archive status` | the same operation's receipt, and `runs`/`sessions` in the store |
+| `babel sessions list` | the `atyrode.babel.scan` machine operation, and Babel's own surfaces |
+| `babel web` | the Feed and Watch panels in Manifold |
+| `babel archive verify` | `restic check` — see below |
+| `babel sessions fetch` | `restic restore` — see below |
+| `babel archive fleet` | nothing; a deployment is one hub |
+| `babel storage configure` | the deployment's storage document, owned by dotfiles/clan |
+
+## Backing up
+
+The `archive` operation reads the repository and its secrets from the job's own service binding
+(`atyrode.babel.restic`) and from nowhere else. It never creates a repository: a repository is
+created once, by hand, per deployment, because silent creation turns a mistyped locator into a
+second empty archive that grows while the real one appears to stop.
+
+Run it as a job from Manifold, or scheduled — `docs/runbook.md` owns both. Nothing here installs,
+deletes or prunes: there is no `forget`, no `prune`, no `repair` code path anywhere in the
+plugin, and snapshots are append-only.
+
+## Verifying and restoring
+
+The plugin writes the archive and does not read it back: it runs `init`, `backup` and
+`snapshots`, and no `check`, `ls`, `dump` or `restore`. Use `restic` directly, with the
+repository and password from the deployment's storage document (`docs/runbook.md` §§3–4 and §8
+own where those live and how to read one without putting a secret in argv or shell history).
 
 ```sh
-go build -o babel ./cmd/babel   # from the repo root
+export RESTIC_REPOSITORY=…                 # from the storage document
+export RESTIC_PASSWORD_FILE=…              # mode 0600, never the value in argv
+
+restic snapshots --tag babel               # what this deployment has archived, by host
+restic check                               # structural integrity
+restic check --read-data                   # re-reads every pack; slow, and the real check
+restic ls <snapshot-id>                    # what one snapshot holds
+restic restore <snapshot-id> --target DIR --include PATH   # byte-exact restore
 ```
 
-The `restic` binary must be on `$PATH` (or pass `--restic-binary PATH`).
-Babel never installs, deletes, or prunes anything: there is no `forget`/`prune`
-code path, snapshots are append-only, and local prune never touches the
-repository.
-
-## Repository selection (required for archive/fetch commands)
-
-There is no persistent configuration yet. Name the repository per invocation:
-
-- `--repo REPOSITORY --password-file FILE`, or
-- `$BABEL_RESTIC_REPO` and `$BABEL_RESTIC_PASSWORD_FILE`.
-
-A local path works as a repository (e.g. `/tmp/babel-repo`) — ideal for
-experiments; S3/Cellar locators work the same way. Create it once with
-`babel archive init`: `babel archive push` deliberately refuses to create a
-repository, so a mistyped locator fails instead of silently becoming a second
-empty archive.
-
-Host identity for snapshots: `--host ID`, else `$BABEL_HOST_ID`, else the
-sanitized system hostname. Host ids are `[a-z0-9._-]`, 1-64 chars.
-
-## Commands
-```sh
-babel version [--json]                     # build identity
-babel web [--port N] [--open]              # loopback web GUI (primary surface); prints a token URL
-babel storage configure --from-json FILE|- # persist repository selection in storage.json (0600)
-babel storage status [--json]              # report persistent configuration
-babel archive init [--json]                # create the repository, once per deployment
-babel archive push [--json]                # snapshot every adapter root on this host
-babel archive status [--json]              # snapshots grouped by host (read-only)
-babel archive fleet [--expect HOST,...] [--every DURATION] [--json]
-                                           # is every machine still publishing? (read-only)
-babel archive verify [--deep] [--json]     # structural check; --deep re-reads all pack data
-babel sessions list [--harness omp|codex|claude] [--json]   # discover local sessions in place
-babel sessions list --host HOST [--snapshot ID] [--json]     # list another host's archived sessions
-babel sessions inspect SELECTOR [--json]   # one session: metadata, artifacts, blob closure
-babel sessions fetch SELECTOR [--snapshot ID] [--json]      # restore a session's file closure
-babel sessions prune --local --yes (--all | SELECTOR...)    # delete locally fetched copies only
-```
-
-- `sessions list`/`inspect` are read-only and never open the repository.
-- `archive fleet` answers "did every machine back up", which `archive status`
-  only supplies timestamps for. Each host is judged against a cadence derived
-  from its own recent snapshot gaps (or the fleet's, when it has too little
-  history), and the `EXPECTED EVERY` column always names that source, so an
-  inferred cadence is never mistaken for a configured one. A host with no
-  derivable cadence reports `unknown`, never `current`.
-- A machine that has never published is invisible to the archive by
-  construction, so name the ones you expect: `--expect ws-linux,wsl-nixos`
-  reports an absent one as `MISSING`. Babel stores no roster - a stored fleet
-  list goes stale silently and then answers confidently.
-- `archive fleet` always exits `0`, including for a late or missing host: it
-  reports a judgement, and is deliberately not an alerting hook. Script off
-  the `state` field of `--json`.
-- Selectors come from `sessions list` output (`harness/source_id`); a unique
-  suffix (e.g. the session stem) is accepted, and ambiguity is reported with
-  candidates rather than guessed.
-- `fetch` defaults to the latest snapshot; `--snapshot ID` restores the exact
-  bytes of an older capture. Restores land in a private directory under the
-  XDG data dir and are idempotent (`already_present` in the JSON result).
-- `storage configure` makes flags/env unnecessary: precedence is flag >
-  env > storage.json. `babel web` works unconfigured for read-only browsing;
-  archive actions then report "not configured".
-
-## Exit codes and JSON contract
-
-- `0` success, `1` operation failed, `2` bad invocation (usage on stderr).
-- With `--json`, stdout is exactly one JSON document; parse with unknown
-  fields tolerated. Without `--json`, output is human-oriented and terminal-safe.
+Read a session's selector off Babel's own surfaces or the `sessions` table; `sessions.snapshot_id`
+is the snapshot that holds it, which is the one fact the archive writes back into the store.
 
 ## Safety rules
 
-- Never run `restic forget`, `restic prune`, or delete repository files;
-  Babel's contract is append-only retention.
-- Never point `--repo` at the operator's production repository during tests —
-  use a throwaway local path repository and delete it afterwards.
-- Session content is sensitive: do not paste transcript bodies into logs,
-  commits, or chat; the test suites use synthetic fixtures only.
-- Create password files with owner-only permissions — `(umask 077 && echo
-  PASSWORD > FILE)` or `chmod 600 FILE` immediately after writing — and
-  remove them together with throwaway repositories when finished.
-
-## Testing
-
-```sh
-go test ./...                 # unit + integration (needs restic on PATH)
-go test ./test/e2e/...        # full Phase A loop against a real local repo
-```
+- Never run `restic forget`, `restic prune`, `restic repair` or `restic unlock`, and never delete
+  repository files. Each destroys history nothing else holds and needs the operator's
+  case-by-case authorization for that occasion.
+- Never point a command at the operator's production repository during a test. Use a throwaway
+  local path repository and delete it afterwards.
+- Session content is sensitive: never paste transcript bodies into logs, commits, issues or chat.
+- Create a password file owner-only — `(umask 077 && printf '%s\n' "$PASSWORD" > FILE)` — and
+  remove it with any throwaway repository when finished.

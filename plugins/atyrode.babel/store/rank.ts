@@ -1,6 +1,6 @@
 /*
   THE ORDER OF THE FEED, as pure functions over a score, an age and a handful of votes
-  (SPEC §8.7, ported from `internal/web/feed.go`).
+  (SPEC §8.7, ported from `v0.4.0:internal/web/feed.go`).
 
   They are here rather than in the door because what "hot" means is a claim the deployment
   makes about its own corpus, and a client holding a second copy of it would drift the first

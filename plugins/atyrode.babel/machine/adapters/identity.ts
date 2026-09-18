@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /*
-  THE HARNESS SOURCE-ADAPTER PORT, ported from internal/adapter (SPEC.md §3).
+  THE HARNESS SOURCE-ADAPTER PORT, ported from v0.4.0:internal/adapter (SPEC.md §3).
 
   An adapter answers three questions about one harness's files and refuses the others':
   which sessions are here (discover), which session is this file the log of (claim), and what

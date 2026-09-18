@@ -1,7 +1,7 @@
 /*
   THE EVALUATION COORDINATOR (§4.12, docs/evaluation-lifecycle.md §E4): which review of which
   record in which role is worth spending authorized attention on next, who is entitled to do
-  it, and what it cost. It is the port of internal/evaluation's `policy.go`, `selection.go` and
+  it, and what it cost. It is the port of v0.4.0:internal/evaluation's `policy.go`, `selection.go` and
   `coordination.go` onto the plugin's own tables, and it is one file because those three
   answered one question in three places: a draw that could not see the claims would hand the
   same work to two workers, and a claim that could not see the policy would spend against a

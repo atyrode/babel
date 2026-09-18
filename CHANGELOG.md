@@ -38,8 +38,29 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   from becoming an unbounded obligation. The routed conductor lifecycle, claim binding,
   granular validation and bounded refinement persistence are covered by the plugin tests.
 
+### Removed
+
+- **The standalone Go product is gone.** `cmd/`, `internal/`, `web/`, `test/`, `cookbook/`,
+  `go.mod`, `go.sum`, `flake.nix` and `flake.lock` are deleted: about 296,000 lines of a
+  product Babel stopped being, against 61,000 lines of the plugin family it is. Nothing under
+  `plugins/` ever imported any of it — every `internal/` mention there was a provenance
+  comment, and each now names the tag `v0.4.0`, where the whole tree stays readable.
+  `docs/parity.md` is the record of what the removal cost, row by row. One loss is worth
+  naming here: the plugin fills the restic archive and cannot read it back, so verifying and
+  restoring are `restic check` and `restic restore` directly, which
+  `.omp/skills/babel-cli/SKILL.md` now states.
+- **A `v*` tag no longer publishes a Go binary.** The release job's four-platform
+  cross-compile is gone; a tag publishes the verified plugin bundles and their dependency
+  closure, which is what the preview's receiver takes. Module versions already published stay
+  resolvable through the proxy.
+
 ### Changed
 
+- **The plugin gate now runs on every pull request and every push to `main`.** `ci.yml` built
+  the Go binary and the React bundle and was the only check an ordinary PR had; with those
+  trees gone it had nothing left to run. `manifold-plugins.yml` drops its `plugins/**` path
+  filter instead, so a PR touching only a workflow, a document or the changelog is gated too,
+  and the repository is never without a check.
 - **The pinned Manifold and Code now carry the delegable machine read Babel's doors declare.**
   `plugins/MANIFOLD_REV` and both workflow `uses:` refs — the gate's and the release gate's, the
   second of which a previous move had left behind (#306) — name Manifold `743ee75a`

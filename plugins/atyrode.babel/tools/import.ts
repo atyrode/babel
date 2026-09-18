@@ -97,7 +97,7 @@ function nested(from: Record<string, unknown>, name: string): Record<string, unk
 }
 
 /**
- * `internal/frontier`'s own one-line summary, restated: whitespace collapsed, cut at 240 BYTES on a
+ * `v0.4.0:internal/frontier`'s own one-line summary, restated: whitespace collapsed, cut at 240 BYTES on a
  * rune boundary, an ellipsis appended. It is a byte bound rather than a character bound because the
  * Go original is, and a title that disagreed with the Go tree's would make the same record read as
  * two different rows in a listing during the crossing.
@@ -121,7 +121,7 @@ function minted(prefix: string, ...parts: readonly string[]): string {
 }
 
 /**
- * The shared catalog's durable session key, as `internal/sharedcatalog.SessionUID` derives it. It is
+ * The shared catalog's durable session key, as `v0.4.0:internal/sharedcatalog.SessionUID` derives it. It is
  * what a `cites` edge addresses, and resolving it back to a selector is the only way the peel can
  * name the session a record read.
  */
@@ -252,7 +252,7 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
         blank(row["title"]), blank(row["title_provenance"]), blank(row["workspace"]),
         null, null, null,
         blank(row["modified_at"]), real(row["primary_size"]),
-        // The Go catalog's fourth harness IS Babel's own analysis sessions (internal/adapter/
+        // The Go catalog's fourth harness IS Babel's own analysis sessions (v0.4.0:internal/adapter/
         // babelself): a row it wrote is an agent<->agent conversation, and the plugin's own
         // adapters never produce that harness. `live` is not named at all — the import observed
         // no file, and the column's default says exactly that.
@@ -264,7 +264,7 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     plans.push({ table: "sessions", source: "catalog.db:sessions", columns, rows });
     notes.push(
       "sessions.repository_identity/remote/reason are NULL: the local catalog (schema_version 4) has " +
-        "no repository columns — internal/adapter observes repository identity at scan time and only " +
+        "no repository columns — v0.4.0:internal/adapter observes repository identity at scan time and only " +
         "the retired PostgreSQL catalog stored it. A `scan` job (P4) fills them.",
     );
     notes.push(
@@ -1013,7 +1013,7 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     .get();
   if (orphaned !== null && orphaned.c > 0) {
     notes.push(
-      `disposition_proposal holds ${String(orphaned.c)} rows with no home: internal/disposition's ` +
+      `disposition_proposal holds ${String(orphaned.c)} rows with no home: v0.4.0:internal/disposition's ` +
         "proposed next actions (draft-issue, propose-fact, store-memory, ask-operator, " +
         "develop-further, keep-going) — Babel's actionable output, which the operator accepts or " +
         "declines. `plans` is the right shape (subject, operation, payload, state, ruled_by/at/reason, " +

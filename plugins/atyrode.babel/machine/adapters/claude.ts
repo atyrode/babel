@@ -12,7 +12,7 @@ import {
 import { readRecords } from "./records.ts";
 
 /*
-  THE CLAUDE CODE ADAPTER, ported from internal/adapter/claude.
+  THE CLAUDE CODE ADAPTER, ported from v0.4.0:internal/adapter/claude.
 
   Claude Code keeps one JSONL transcript per session at
   "<root>/projects/<project-dir>/<session-uuid>.jsonl". The project directory name is a lossy

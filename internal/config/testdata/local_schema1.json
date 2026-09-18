@@ -1,5 +1,0 @@
-{
-  "config_schema": 1,
-  "repository": "/var/lib/babel/repository",
-  "password_file": "/etc/babel/repository-password"
-}

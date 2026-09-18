@@ -1,11 +1,16 @@
 name: manifold-plugins
 
-# Babel IS a manifold plugin family (decision 91, docs/manifold-plan.md): plugins/ is the
-# product, and this gate is the one that says the artifact composes. The whole job lives in
-# manifold's reusable workflow, which checks this repository out beside atyrode/manifold at the
-# revision in plugins/MANIFOLD_REV — the sibling layout plugins/tsconfig.json and plugins/pack.sh
-# resolve on a developer's machine — then runs `check`, `test`, `pack` and `verify` from
-# plugins/package.json and uploads dist/ as the `manifold-plugins` artifact.
+# Babel IS a manifold plugin family: plugins/ is the product, and this gate is the one that says
+# the artifact composes. The whole job lives in manifold's reusable workflow, which checks this
+# repository out beside atyrode/manifold at the revision in plugins/MANIFOLD_REV — the sibling
+# layout plugins/tsconfig.json and plugins/pack.sh resolve on a developer's machine — then runs
+# `check`, `test`, `pack` and `verify` from plugins/package.json and uploads dist/ as the
+# `manifold-plugins` artifact.
+#
+# IT RUNS ON EVERY PULL REQUEST, not only on one touching plugins/. This is the repository's only
+# gate: the Go binary and its React surface are gone, and so is the ci.yml that built them. A
+# path filter here would mean a PR editing a workflow, a document or the changelog merged with
+# nothing having run at all.
 #
 # The `uses:` ref below and plugins/MANIFOLD_REV are the same revision and are bumped together:
 # a ref ahead of the file would run a newer workflow against an older kit. This post-v0.16.2
@@ -21,11 +26,8 @@ name: manifold-plugins
 on:
   push:
     branches:
-      - "plugin/**"
+      - main
   pull_request:
-    paths:
-      - "plugins/**"
-      - ".github/workflows/manifold-plugins.yml"
 
 permissions:
   contents: read

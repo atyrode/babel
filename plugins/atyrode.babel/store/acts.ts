@@ -39,7 +39,7 @@ export {
   plan creates an entity, binds it with facts and files records; accepting one that carries a
   backlog plan settles candidates. The Go tree had to split that across two transactions because
   the frontier and the Reality Ledger were two handles on one SQLite file and its write lock is
-  per file (internal/reality/store_topic.go's ApplyTopicPlan says so at length). Here the plugin
+  per file (v0.4.0:internal/reality/store_topic.go's ApplyTopicPlan says so at length). Here the plugin
   database is one handle and `batch` is one immediate transaction, so the ruling and what it
   applies commit together or not at all. What survives from the Go is the *refusal* order: a plan
   the ledger has moved past, or a rejection with no reason, is refused before anything is
@@ -208,7 +208,7 @@ function rulingRefusal(standing: Standing, ruling: Ruling): string | null {
 // ---------------------------------------------------------------------------- interest
 
 /**
- * A stance as the ledger records it (§4.13, ported from internal/reality/interest.go): not a
+ * A stance as the ledger records it (§4.13, ported from v0.4.0:internal/reality/interest.go): not a
  * preference column but §4.8's lifecycle and analysis-policy facts, so a paused project is
  * paused everywhere Babel looks. An empty lifecycle means "leave it alone", which is what
  * `excluded` does — a repository can be withheld from analysis and still be actively worked on,

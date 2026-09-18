@@ -9,7 +9,7 @@
   two runs over one scope look like two runs over one scope; one session's bytes changing is a
   different id, because it is a different corpus.
 
-  DELIBERATE DIFFERENCE FROM THE GO PRODUCT (internal/run/preparation.go): `preparedAt` is
+  DELIBERATE DIFFERENCE FROM THE GO PRODUCT (v0.4.0:internal/run/preparation.go): `preparedAt` is
   recorded but NOT hashed. Go's derivation included the instant, so re-preparing an unchanged
   corpus minted a second identity for the same scope — which contradicts the idempotence that
   same-scope-same-id is for. Here the id is a function of the selection alone.
@@ -32,7 +32,7 @@
 
   What the normalization IS, in this wave: one canonical JSON record per line — object keys
   ordered, insignificant whitespace gone — and an explicit opaque marker for a line that is not
-  a record, so nothing is ever dropped. What it is NOT, yet: internal/event's classification of
+  a record, so nothing is ever dropped. What it is NOT, yet: v0.4.0:internal/event's classification of
   each record into §6.3's five evidence kinds, which belongs with the retrieval index that is
   its only consumer. When that lands it owns the source digest and bumps PREPARATION_SCHEMA.
 */

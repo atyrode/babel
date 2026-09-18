@@ -24,7 +24,7 @@ import { mintId, titleCell, type Row } from "./rows.ts";
   it: `settleSession` read the answer, checked every citation against the material and wrote a
   receipt, and the hypotheses, observations, findings and proposals the model had actually
   produced went nowhere. Every record this plugin held was imported Go-era history; nothing it
-  ran ever added one. Ported from `internal/explore/{records.go,stages.go,questions.go}`, whose
+  ran ever added one. Ported from `v0.4.0:internal/explore/{records.go,stages.go,questions.go}`, whose
   `putHypothesis`/`putObservation`/`putFinding`/`putProposal`/`schedule`/`ask` are the reference
   for what one answer becomes.
 

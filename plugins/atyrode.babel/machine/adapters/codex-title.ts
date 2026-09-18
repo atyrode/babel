@@ -1,5 +1,5 @@
 /*
-  DERIVING A TITLE FOR A CODEX SESSION, ported from internal/adapter/codex/title.go.
+  DERIVING A TITLE FOR A CODEX SESSION, ported from v0.4.0:internal/adapter/codex/title.go.
 
   Codex records no title. `session_meta` carries an id, a parent thread id, a timestamp and a
   cwd, and nothing that names what the session was for — and untitled sessions were most of

@@ -458,7 +458,7 @@ function runState(closure: string, startedAt: string, finishedAt: string): RunRo
 }
 
 /**
- * How old the last word from a run is, in `internal/presence`'s own words with the contract's
+ * How old the last word from a run is, in `v0.4.0:internal/presence`'s own words with the contract's
  * spelling of the middle one.
  *
  * Two minutes is four missed heartbeats — a run this quiet may still be fine, which is why the

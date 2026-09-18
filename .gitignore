@@ -1,6 +1,4 @@
-/babel
 /dist/
-*.test
 
 # scratch research briefs recovered from subagents; the curated record is docs/
 .omp/research/

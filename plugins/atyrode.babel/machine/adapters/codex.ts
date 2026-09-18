@@ -24,7 +24,7 @@ import {
 } from "./codex-title.ts";
 
 /*
-  THE CODEX ADAPTER, ported from internal/adapter/codex.
+  THE CODEX ADAPTER, ported from v0.4.0:internal/adapter/codex.
 
   Codex keeps one JSONL rollout log per session under "<root>/sessions/<yyyy>/<mm>/<dd>/",
   plus two host-level state files — "history.jsonl" and "session_index.jsonl" — and an
