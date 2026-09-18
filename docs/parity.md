@@ -56,18 +56,25 @@ provenance comment on a port, which is why the deletion broke no build.
 | `web/` | Server-side feed ranking, paging and reception projection. | present | `store/feedindex.ts`, `store/rank.ts`; the `feed`/`record`/`thread`/`topics`/`topic` doors; `feed/` and `watch/` render them. |
 | `worker/` | Spawn and supervise a sandboxed analysis subprocess over RPC. | absent by decision | A run is a Code session posted through `atyrode.code.runSession` (`contract.ts`). Babel composes the prompt and holds nothing: no model, no thinking level, no account, no process. |
 
-## Two capabilities the table's rows do not name
+## Two things the table's rows do not name
 
-Both are inside `explore/`'s row and would be invisible as part of it.
+One is absent, one is present and unproven; both sit inside `explore/`'s row and would be
+invisible as part of it.
 
 - **The challenge and synthesize stages are absent.** `machine/results.ts` declares all three
   stages with their separate authorities, and `server/engine/prompts.ts` writes each one's
   instructions, but every launch posts `stage: "explore"` (`doors/launch.ts`) and the settlement
   reads the answer as that stage. So nothing criticizes a claim and nothing consolidates across
   runs. Issue: **"plugin: only the explore stage ever runs"**.
-- **A drawn review of a record cannot be dispatched.** The drawn-review lane answers
-  `draw_pending`, so Babel's own reviewers cast no votes. Issue: **"plugin: a drawn review of a
-  record cannot be dispatched (draw_pending)"**.
+- **A drawn review dispatches, and no live one has ever run.** `dispatchReviews`
+  (`server/conductor.ts`) draws an assignment from the coordinator, claims it under a fence,
+  refuses a projection that leaks withheld review state, composes the review prompt around the
+  blinded projection, posts it as a Code session and binds the claim to Code's job id — every
+  cycle the policy enables and the loop is not parked. The `launch` door refuses a draw with
+  `draw_managed`, which is correct: an operator-picked record must not bypass the shared claim
+  and budget. What is owed is operational rather than structural: every rehearsal of this lane so
+  far has been synthetic, so "Babel's reviewers vote" is proven against fixtures and not against
+  a hub. That is an evidence boundary, not a defect, and `docs/runbook.md` states it.
 
 ## What this document is for
 

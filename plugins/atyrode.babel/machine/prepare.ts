@@ -127,7 +127,7 @@ const PREPARATION_DOMAIN = "babel/preparation/v2";
  *  rather than as a missing row. */
 const PREPARATION_PREFIX = "prep-";
 
-/** One session inside a preparation, identified as decision 9 identifies sessions: the machine
+/** One session inside a preparation, identified the way every session is: the machine
  *  that holds it, the harness, and the adapter-defined source identity. */
 export type PreparationEntry = {
   readonly host: string;

@@ -1,297 +1,177 @@
-# Full-lifecycle evaluation: implementation plan
+# Evaluation: how a record is reviewed
 
-**Status: delivered.** The runtime described below is implemented and covered by
-the Go, browser and shared-catalog suites; [#219](https://github.com/atyrode/babel/issues/219)
-tracks the work. Activation remains the operator's: an authorized toggle, a
-configured evaluation share, and an enabled policy saved in the browser. The
-policy's numbers ship as conservative defaults rather than measured settings,
-and no acceptance scenario below has been exercised against the real shared
-archive — the evidence is synthetic fixtures and disposable clusters.
+[`SPEC.md` §4.12](../SPEC.md#412-evaluation-reception-and-observed-outcomes) states what
+evaluation is for, [§5.8](../SPEC.md#58-backlog-first-evaluation-within-a-budget) states that it
+is backlog-first within a budget, and
+[§8.5](../SPEC.md#85-reading-order-and-lifecycle-views) states how the results are read. This
+document owns the mechanism: the tables, the policy, the cycle, and what a reviewer is and is not
+shown.
 
-The authoritative contracts are SPEC
-[§4.12](../SPEC.md#412-evaluation-reception-and-observed-outcomes),
-[§5.8](../SPEC.md#58-backlog-first-evaluation-within-a-budget),
-[§8.5](../SPEC.md#85-evaluation-inbox-and-lifecycle-views), decision 89, and the
-[activation gate](../SPEC.md#before-full-lifecycle-evaluation-is-activated).
-This document owns implementation order and evidence tracking, not a second
-product specification. Baseline references below describe
-`578df6653907dc8dce49b8901de1cec9303a7c91` (`578df66`, v0.2.5).
+The rule the whole design rests on: **Babel votes and the operator rules.** A review is an
+attributed judgement about a record, recorded append-only. It changes no record, settles no
+question, and authorizes nothing. Only the operator's disposition does that.
 
-## 1. Decisions to preserve
+## 1. The tables
 
-- A bare support, opposition, or uncertainty vote is a valid reception review.
-  Comments, new evidence, and refinement are optional. Skips and failures are not
-  votes. Reception is not evidence strength, independent corroboration, or a
-  probability that the idea is correct.
-- Coverage includes hypotheses, proposals, and other reviewable Babel output,
-  including observations and findings. Review roles distinguish reception from
-  evidence checking and outcome verification. Missing evaluators are gaps, not
-  a reason to call something reviewed or automatically not applicable.
-- The **operator queue** recommends useful next decisions based on recorded
-  current work, pain, Reality context, actionability, and reception. The **worker
-  queue** spends attention where review is still useful. Neither accepts,
-  rejects, defers, merges, or shelves an item on the operator's behalf.
-- Authorized evaluation work is backlog-first, with protected discovery and
-  random exploration. Periodic coverage reserves attention for oldest-due
-  initial reviews; weighted randomness allocates further review. No budget is
-  increased or compute launched merely because a backlog exists.
-- Full lifecycle is in scope. Babel may record evidence-backed implementation
-  and outcome assessments; changed evidence on decided work creates Reconsider
-  items without reversing the decision. Hypotheses retain their own lifecycle.
-- Alternatives can be compared together without merging their records. Explain
-  why now, remaining objections, and what could change the recommendation where
-  known. Preserve explicit feedback reasons; clicks and silence are not intent.
+Every table is in `plugins/atyrode.babel/store/schema.ts` and every name below is that file's.
 
-## 2. Existing seams and gaps
-
-| Area | Baseline seam | What the new work must add |
-| --- | --- | --- |
-| Immutable analysis records and revisions | `internal/frontier/model.go`, `store.go`, `revision.go` | Revision-bound evaluation subjects without changing existing evidence minima |
-| Operator decisions | `internal/review/service.go:34-88,155-208,395-470` | Keep disposition authority separate; coverage must not depend only on review-queue enrollment |
-| Proposal triage | `internal/frontier/triage.go:45-80,147-188,277-330,418-481` | Existing advice requires a counterargument, ranks within a cohort, targets unruled proposals, and exposes a presence marker; it is not the new reception system |
-| Durable publication and remote decoding | `internal/frontier/publish.go:59-94,131-273`, `remote.go:98-197,345-443` | Stage and publish every new record family and reconstruct it on a non-producing instance |
-| Catalog kinds and confidentiality | `internal/sharedcatalog/sync.go:52-73`, `migrations/0003_phase_b_records.sql:80-100`, `allowlist.go:315-346` | Add compatible kind/schema support without widening plaintext eligibility for content-derived judgments |
-| Worker results and replay | `internal/explore/tools.go:21-72`, `schema.go:30-107`, `records.go`, `ledger.go:31-55,197-218` | Review assignments, blinded read context, validated evaluation results, and idempotent persistence |
-| Conductor allocation | `internal/conductor/ladder.go`, `duty.go`, `budget.go:19-96`, `conductor.go:91-136` | Coverage, weighted review selection, recorded random inputs, and a hard budget across participating workers; existing receipt-derived local accounting alone is insufficient for a fleet-wide allowance |
-| Relevant Reality context | `internal/reality/attention.go:22-70,107-175` | Reuse recorded work allowances and provenance; do not replace them with an inferred-interest policy |
-| Rebuildable reads | `internal/index/frontier.go:36-46,104-152`, `internal/web/fleet.go:335-470` | Bounded ranking/coverage projections over deployment-wide input, not whole-corpus payload opens per page |
-| Browser | `internal/web/analysis.go:809-844,960-1024`, `review.go:32-59`, `web/src/pages/ReviewPage.tsx`, `web/src/triage.tsx` | Coverage, sorts, lifecycle assessments, comparisons, and decision controls through the same Go services |
-
-The active `cookbook/recipes/babel-triages-the-queue.md` is now **version 2**:
-the role-bounded evaluation contract of SPEC §4.12, shipped together with the
-services that can accept what it produces. Version 1's mandatory-counterargument,
-proposal-only contract stays readable as the historical contract its advice was
-formed under; no rank in it is a vote, an exposure or a prediction. Existing
-proposal/detail navigation is not proof of complete evaluation coverage, and
-un-enrolled records do not disappear from the coverage inventory.
-
-## 3. Integration sequence
-
-All stages below are **delivered**. They describe dependency boundaries rather
-than separate reduced-scope products, and each names where its behaviour now
-lives. Observed acceptance from a real deployment is recorded per stage as it
-is obtained; none has been yet, because activation is the operator's.
-
-### E1 — Records, revision binding, and review applicability
-
-Extend the existing durable-record patterns with assignments and attributed
-append-only evaluations, optional contributions, corrections, and applicable
-review roles. Use existing identity, revision, validation, and transactional
-patterns rather than a parallel entity model. Exact storage/API shapes are
-settled with their callers during implementation.
-
-An assignment, exposure to content, completed assessment, skip, and failure must
-remain distinguishable. They need not each introduce a separate table. One
-logical assignment can have retries but at most one active reception vote;
-a linked correction preserves the earlier statement. Independently assigned
-later assessments are legitimate, even from the same model, without claiming
-independence. Votes bind to the exact wording read, not the mutable chain head.
-
-Define coverage applicability by artifact kind and review role. A missing
-adapter/evaluator is an explicit unsupported or blocked gap. `Not applicable`
-requires an intentional named policy and reason. A reception vote does not meet
-an evidence-check obligation. Cover model-produced claims beyond hypotheses and
-proposals; bound targeted meta-review without recursively requiring review of
-every review. Coverage keeps history when revisions or context make review due.
-
-### E2 — Shared publication and compatibility
-
-Wire staging, encrypted payloads, journal recovery, catalog kinds, readers and
-remote decoding together. Staging belongs in the writer's transaction;
-automatic publication follows SPEC §9.1. Preserve pending/failure visibility
-and idempotence through restart. A second instance must read, assess, and
-contribute to a first instance's artifact through the authorized services,
-without rewriting the producer's immutable records.
-
-Use additive migrations; never edit applied migration bytes. Keep votes,
-arguments, tallies, ranks, and content-derived assessments out of plaintext
-catalog columns. Version the record envelopes and compatibility checks. Retain
-historical triage advice as advice: no conversion of cohort rank into reception,
-exposure, or an outcome prediction. Legacy advice can be identified separately
-in history but must not falsely satisfy a new role's coverage requirement.
-
-A rollback must retain new records and every required key, and either read them
-correctly or explicitly refuse unsupported capabilities. Restoring a v1 recipe
-alone is not a complete storage/binary rollback plan.
-
-### E3 — Worker evaluation and bounded assignments
-
-Add evaluation work through the existing worker result/validation/persistence
-path, reusing its replay ledger. Expose role-specific read contexts: reception
-voting initially withholds existing tallies, ranks, and earlier evaluations;
-comparison/refinement can reveal them after the initial assessment. Audit the
-actual brokered reads as well as the initial prompt for score leakage, and record
-what was shown. This is procedural blinding, not erased model memory.
-
-Accept a bare vote without synthesizing prose; accept a contribution without a
-vote. Reject same-run self-boosting of newly authored alternatives. Preserve
-model/profile/run/recipe/context provenance. A comparison may prefer B over A
-in a named context but must not silently mint global votes for either.
-Cancellation/resume leaves durable completed work and no duplicate votes.
-
-### E4 — Coverage and budgeted selection
-
-Build a shared coverage inventory independent of popularity and of the operator
-opening a page. Periodic checks discover new artifacts, unfinished assignments,
-material changes, and overdue initial reviews. The check can finish while review
-work remains overdue: **coverage inspection completed** and **all eligible output
-reviewed** are separate facts.
-
-Reserve authorized attention for oldest-due eligible initial reviews, across
-covered kinds. Allocate remaining review attention through a versioned weighted
-policy: favor lightly reviewed revisions, reduce repetitive voting at both
-stable reception extremes, preserve a positive exploration share, and restore
-attention on material changes. Persistent disagreement gets a bounded diagnostic
-challenge/comparison rather than an obligation to vote until consensus.
-
-Keep the existing invitation/focus/disclosure boundaries and protected discovery
-share. Account for each lane in one authorized allowance; concurrent workers
-must not each treat the entire allowance as theirs. Claims, reservations,
-completion, lease expiry, cancellation and failed delivery require explicit
-recovery semantics. Unsupported sources and repeated skips consume bounded
-attention and stay visible as gaps rather than receiving negative votes.
-
-Choose documented settings for cadence, overdue thresholds, review targets,
-weights, cooldowns, reserved shares, and spend ceilings during implementation.
-This document does not invent universal numeric defaults. Persist the policy
-version, random seed, captured input identities/freshness, assignment/role,
-spend and stopping reason. Define what a policy change invalidates and what
-historical inputs are retained for replay. A seed alone is not sufficient.
-
-### E5 — Reading projections and decision support
-
-Build the operator's ordering separately from E4's selection. Reuse the
-rebuildable local-index pattern where it fits. Published immutable records remain
-the durable source; projections carry policy/input identity, coverage and
-freshness, and can be rebuilt without the producer's local database.
-
-Apply recorded priorities, current work and pain, dependencies, Reality facts,
-and permitted work before treating reception as a recommendation. Explicit
-restrictions win over popularity, with each allowance's actual semantics
-preserved: learn-only is not the same as excluding a subject from all learning.
-Missing and conflicting context stays explicit. The same votes may yield a
-changed recommendation when recorded work or reality changes.
-
-Order the represented eligible set before pagination. Page reads have bounded
-payload work; they do not scan/decrypt every evaluation. Show stale or incomplete
-coverage and a usable ordinary browse order when ranking is unavailable. Do not
-label producer-local tallies as deployment totals. Choose a snapshot/cursor or
-otherwise explicit pagination consistency contract for concurrent changes.
-
-Compare alternative remedies for one problem while retaining individual votes,
-records, and decisions. Explain why-now, the unresolved objection, and what
-might change the recommendation where known. Unknown explanations are allowed;
-do not require a model to fabricate a rationale for a bare vote. Prevent repeated
-near-identical proposals from occupying the entire recommended view by volume.
-
-Keep feedback attributed and scoped. Reasons such as not-now, wrong-problem, and
-wrong-remedy may accompany an existing explicit disposition; collecting the
-reason alone must not silently create one. Reuse operator context where possible
-rather than introducing a second decision vocabulary. A descendant addressing
-an old refusal is evaluated on its new merits. No preference is inferred from
-clicks, dwell time, or ignored cards; no global focus rule is silently installed.
-
-### E6 — Outcomes, criteria, and reconsideration
-
-Add implementation and outcome assessments linked to the accepted revision,
-criterion version, sources, environment, time, and uncertainty. Babel may record
-these assessments without second human confirmation, but cannot execute the
-proposal or ungranted checks. Missing/partial/conflicting evidence is not success;
-a merge is not deployment and deployment is not proof of the promised outcome.
-
-Criteria resolved after acceptance remain identifiable as later decisions.
-Babel can suggest them but cannot rewrite its target and verify itself against
-the replacement. Keep operator acceptance, observation and inference distinct.
-Display contrary evidence beside earlier verification, with scope and date,
-rather than choosing a last-writer-wins success badge.
-
-Material changes on rejected/deferred/verified work create grouped Reconsider
-items explaining what changed. Preserve the prior decision; only an explicit
-operator action reopens it. Hypotheses receive claim/evidence/relevance review
-without being forced into implementation lanes.
-
-### E7 — Browser integration and active-policy cutover
-
-Deliver the full SPEC §8.5 navigation: Recommended and alternative sorts,
-Unreviewed/coverage, proposal lifecycle lanes, Reconsider, hypotheses and other
-covered output, revision/evaluation histories, sources, grouped alternatives,
-criterion resolution and operator decisions. Coverage is role-specific, including
-blocked/unsupported/overdue work and when its last check finished. Policy/budget
-configuration and current work status are visible; saving settings does not
-start compute by itself. Remote run launch remains a separate capability.
-
-Use the same application services for browser and headless callers. Keep TypeScript
-DTOs, mocks and rebuilt embedded `web/dist` consistent when implementation lands.
-Exercise real navigation, interactions and history on the standalone browser;
-this reading/configuration surface does not wait for paused Manifold work.
-
-Cut active recipe and duty callers over with the compatible services. Bump the
-recipe version and semantic digest together; retain historical recipe/advice
-readability, but no obsolete active writer path maintained as a parallel policy.
-Activation requires all stages and SPEC §14 acceptance, not merely packing or
-publishing a new binary. Live deployment remains operator-owned.
-
-## 4. Consumer acceptance matrix
-
-These are future executable scenarios, not tests claimed to have passed.
-Use isolated synthetic HOME/XDG/storage and disposable catalog/object stores,
-never the live deployment. Keep tests for plausible authority, integrity,
-idempotence, budget and lifecycle failures; do not pin incidental wording.
-
-| Scenario | Required observation |
+| Table | What it holds |
 | --- | --- |
-| Bare support, opposition and uncertainty on A; read on B | Attribution and exact revision survive automatic publication; no prose invented; a contribution may exist without a vote |
-| Retry one assignment; separately skip another; cancel before assessing a third | One active assessment for the first; no vote/completion from the latter two; exposure and attempt history remain distinguishable |
-| Review revision n, then revise during an assignment | Votes stay on the revision read; no endorsement silently moves to n+1; a stale result never represents current-context coverage |
-| Two workers claim one assignment; a stale worker returns after takeover | Only the valid claim commits; no duplicate active vote or overspent shared allowance; completed work survives resume |
-| Blind initial review, then reveal for comparison | Actual served content/read tools withhold prior evaluations initially; reveal is attributed; same-run self-boost is refused |
-| Fixed policy and captured inputs; reserved coverage plus random selection | Replayable draws, valid weight/exploration behavior, stable-reception cooldowns, material-change attention and bounded disagreement work; random selection does not promise every individual draw prefers the highest weight |
-| Old, never-reviewed observation or finding on a non-producing instance | Found regardless of score or review-queue enrollment; due initial review progresses in its reserved allocation |
-| Coverage check finishes with insufficient review budget or a missing evaluator | Check completion is visible alongside overdue/unsupported work; nothing falsely becomes reviewed or not applicable |
-| Same votes; changed recorded current work or pain | Recommendation changes where relevant, with provenance and freshness; inferred interest cannot override explicit policy |
-| Projection unavailable, then rebuilt; concurrent publication while paging | Honest fallback/coverage, globally ordered pages under the declared consistency contract, and bounded page-read work as corpus grows |
-| Compare two remedies; operator gives a scoped wrong-remedy reason | Individual records and decisions remain; no automatic vote/merge/ruling; a revision addressing the reason can regain relevance |
-| Open or ignore cards without giving feedback | No preference, endorsement or refusal is inferred; decision-changing unknowns remain visible rather than invented |
-| Accepted without settled criteria; partial implementation; later contrary evidence | No unqualified verified state; later criteria are attributed; evidence scopes, disputes and prior decisions remain readable |
-| Material change on rejected/deferred/verified work | Reconsider appears once per material change, with linked reports; prior decision remains; reopening is explicitly operator-driven |
-| Browser-only navigation through full lifecycle on two independent instances | All covered artifacts, sorts, histories, decisions and coverage are reachable without guessed URLs; same inputs/policy yield consistent views |
-| Historical v1 advice and new records across upgrade/rollback | Advice stays advice; no synthetic votes/exposures; newer records are retained and unsupported readers fail explicitly rather than discard them |
+| `records` | the claims themselves — hypothesis, observation, finding, proposal — immutable by trigger, so a correction is a supersession and never an update |
+| `status_events` | a record's lifecycle, append-only; the newest row is its status |
+| `assessments` | what a reviewer judged: the record, **the exact revision read**, the role, the vote, the reasoning or the filing/backlog result, as JSON. A correction supersedes the earlier statement rather than replacing it |
+| `claims` | who is entitled to review what, under a fence and a lease renewed by the job that holds it; finished rows are the spend ledger |
+| `policies` | the evaluation policy, versioned; the newest row is in force, and only the operator writes one |
+| `feedback` | the operator's scoped reason on a record — and `question = 1` marks what the next review must answer |
+| `dispositions` | the operator's rulings, append-only, the newest per record its standing |
+| `budgets` | a bounded overlay on the policy's spending, with its own TTL |
 
-Measure coverage by kind/role and overdue age, review exposure and skips, spend by
-allocation, unresolved disagreement, projection rebuild/page cost, and explicitly
-reported usefulness. Report outcome verification and disputes separately from
-operator acceptance. Contribution count and acceptance rate are not success
-objectives: bare votes are valid and a useful pre-review may lead to refusal.
-Do not introduce interaction tracking just to measure operator attention.
+Three properties follow from the shapes rather than from discipline:
 
-## 5. Implementation decisions to close before activation
+- **A vote binds to the wording it was formed against.** `assessments.revision_id` is recorded
+  with the vote, so revising a record after a review never moves that reviewer's endorsement onto
+  text they did not read.
+- **Nothing is retracted, only superseded.** Every one of these tables is append-only, several by
+  `RAISE(ABORT)` trigger, so a reviewer's earlier statement remains readable beside the correction.
+- **A reception vote is not an evidence check.** Votes carry their role, and a role's obligation
+  is not met by another role's answer.
 
-These are engineering choices within the approved scope, not renewed questions
-about whether to deliver the full lifecycle:
+## 2. Roles
 
-1. Record-family schemas, catalog kinds, subject validation across hosts, and
-   additive migration/rollback compatibility. Prefer existing patterns; settle
-   typed decoder ownership rather than overloading an unrelated kind casually.
-2. Cross-worker assignment fencing and budget reservations, including interrupted
-   claims, expiry, spend reconciliation and admission of new policy versions.
-3. Coverage applicability/cadence and bounded meta-review, placement of periodic
-   checks within existing accounted orchestration, and measurable policy settings.
-4. Projection layout, rebuild/invalidation costs, encrypted-data handling, freshness
-   bounds and pagination consistency under publication and changed Reality context.
-5. Criterion resolution and scoped feedback storage, reusing operator context and
-   dispositions without conflating observed outcomes with operator authority.
+The roles a review may take are spelled once, in `plugins/atyrode.babel/contract.ts`:
+`reception`, `evidence`, `challenge`, `comparison`, `outcome`, `relevance`, and the two lanes of
+topic maintenance, `filing` and `backlog`. A vote is `support`, `oppose` or `unsure`.
 
-Recipe subject applicability and replay of unrelated existing discovery draws
-may expose adjacent implementation gaps. They do not authorize silently expanding
-this work into all cookbook focus handling or every conductor random path.
-Record a dependency if evaluation actually needs one; keep unrelated work separate.
+**A bare vote is a complete review.** After reading an exact revision, a reviewer may record
+support, opposition or uncertainty with no comment, no new evidence and no original argument.
+Support means *this deserves the operator's consideration*; opposition means *put it lower in the
+reading order*. Neither means the claim is proven or that anything is authorized. A skip is not a
+vote, and a failure is not a vote: an assignment that produced neither stays visible as a gap.
 
-## 6. Product lesson, not an imported algorithm
+## 3. The policy, and the gate
 
-[YouTube's public recommendation-system account (2021-09-15)](https://blog.youtube/inside-youtube/on-youtubes-recommendation-system/)
-distinguishes clicks/watchtime from user-reported satisfaction, and satisfaction
-from information quality. The useful lesson for Babel is objective separation:
-reception, evidence, personal relevance, and observed outcomes answer different
-questions. This is not a performance claim for Babel or a proposal to adopt
-YouTube's behavioral tracking. Babel learns from explicitly attributed context
-and feedback, not an engagement-maximizing feed.
+`PolicySchema` in `plugins/atyrode.babel/store/coordinator.ts` is the whole of what evaluation is
+authorized to do. `enabled` defaults to **false**: turning evaluation on is one recorded operator
+decision written through the `setPolicy` door, never a migration and never a config file.
+
+The policy carries, in one document: the cadence; `batchSize`, `concurrentPerMachine` and
+`leaseSeconds`, which bound how many assignments may be held at once, per machine, and for how
+long; `perCycleCost` and `dailyCost`, the spending ceilings; the five reserved shares —
+`coverageShare`, `explorationShare`, `discoveryShare`, `filingShare`, `backlogShare` — which are
+the protected allocations across lanes; and the review route, `review.machineId`,
+`review.profile`, `review.roleRecipes` and `review.recipes`.
+
+A policy that cannot be honoured is refused with the sentence saying why, because each such
+setting would make some other part of the system lie: an unversioned policy could never be
+replayed against; a zero exploration or discovery share removes a protected allocation; shares
+totalling over one over-commit a cycle, so one lane's reservation would silently come out of
+another's; a cap below the initial reviews leaves a role permanently under-reviewed while the
+record reads finished; a daily ceiling below one cycle's makes the per-cycle bound decorative.
+
+**The recipe bodies travel with the policy version.** `review.recipes` carries each method's text,
+not just its name, so a later edit to the cookbook cannot change the method an in-flight
+assignment is being carried out under. The bodies are seeded from
+`plugins/atyrode.babel/store/recipes.seed.json`.
+
+**A drain is not a policy edit.** `setBudget` records a bounded overlay with a TTL and a required
+reason; the standing policy is untouched. That separation is load-bearing: an assignment id is
+derived from the policy version, so editing the standing policy mid-flight mints new ids for
+subjects already claimed and leaves the old claims holding their slots.
+
+## 4. One cycle
+
+`tick()` in `plugins/atyrode.babel/server/conductor.ts` is one cycle, and it is four things in a
+fixed order: the policy decides whether the loop exists at all; the beat's schedule is reconciled;
+finished jobs are ingested; and each receipt settles its claim. Review dispatch happens inside it,
+in `dispatchReviews`:
+
+1. **Draw.** The coordinator picks a candidate for a role under the reserved lanes, the cooldowns
+   and the per-machine bound. A draw that picks nothing returns a `Stop` with its reason, and every
+   candidate declined on the way is a `Gap` carrying the record, the role and why — `claimed`,
+   `cooling`, `capped`. "Nothing to review" and "starved by siblings" and "the coordinator refused"
+   are therefore three different answers rather than one exit code.
+2. **Claim.** The assignment is claimed under a fence, so two workers cannot both hold it and a
+   stale worker returning after a takeover cannot commit.
+3. **Project, blinded.** §5.
+4. **Dispatch.** The review prompt is composed from the recipe the role names and the blinded
+   projection, measured against the byte bound Code accepts, and posted as a **Code session**
+   through `atyrode.code.runSession`. The claim is then bound to Code's job id and a `runs` row
+   records it.
+5. **Settle.** A later cycle reads the session back through `code.readSession`, writes the
+   assessment, and settles the claim **at what it actually cost**. A refused submission still
+   settles and still counts as spend: the model answered and the deployment paid for it. A job
+   that reached no model and produced nothing settles too, so no allowance is held by a dead
+   worker.
+
+The loop has no clock. A plugin may not poll as an alternate scheduler, so a tick runs when the
+plugin's own dispatch wakes it or when one of its jobs settles. Every step is idempotent: two
+ticks in the same second do the work of one, and a retried cycle re-derives the same assignment
+ids, the same job ids and the same claim.
+
+**A paid-but-refused review is not a free failure.** The park heuristic reads the spend ledger: a
+streak of reviews that reached no model and produced nothing parks the loop with a stated reason
+until one is answered, an hour passes or a new policy is installed. A streak that cost money is
+not that, and does not park it.
+
+## 5. Blinding, and what it is not
+
+An initial review reads the record and not its reception. `blinded()` in
+`plugins/atyrode.babel/server/engine/review.ts` strips the withheld keys — score, priority,
+existing assessments, the per-role tallies — from the projection before it is composed into the
+prompt, and `blindedLeak()` asserts afterwards that none survived. The stripping is deliberate
+rather than a check that refuses: an imported record carries the very keys a reviewer is not shown,
+and a leak check used as the filter meant no imported record could ever be reviewed at all.
+
+This is **procedural blinding, not erased memory**. It withholds what the served projection
+carries; it cannot unsee what a model already knows. The honest claim is that Babel did not show
+the reviewer the tally, and that claim is checkable against the dispatch.
+
+## 6. What the operator does
+
+Four doors, and none of them is a vote (`plugins/atyrode.babel/contract.ts`):
+
+- `rule` — accept, reject, defer, duplicate, reopen or refine. Append-only; the newest ruling is
+  the standing one; nothing else in the system writes a disposition.
+- `comment` — attributed prose on a record, in its thread.
+- `answer` — the operator's answer to a Reality question a run raised.
+- `tell` — free-text steering, kept as its own record.
+
+A ruling is the boundary. Babel's reviewers rank, argue and record outcomes; only the operator's
+acceptance creates an entity, asserts a fact or applies a plan. Feedback the operator gives —
+not-now, wrong-problem, wrong-remedy — is recorded as a reason beside an explicit ruling and never
+silently becomes one, and nothing is inferred from what he opened, ignored or scrolled past.
+
+## 7. Where the mechanism is short of the specification
+
+Named here because a reader deciding whether to enable evaluation needs both halves.
+`docs/parity.md` is the full list.
+
+- **No live review has ever run.** The lane is whole in code and unproven in the world: the
+  evidence is a conductor regression over the real SQLite store with a simulated Code receipt
+  (2026-09-16), plus the gate. No model has answered a drawn review, no assessment on a real hub
+  carries a metered cost. `docs/runbook.md` §11.7 lists what is owed, in order.
+- **A drawn review cannot be launched directly, by design.** The `launch` door answers
+  `draw_managed` for `review-backlog` and `file-and-tidy`: an operator-picked record would bypass
+  the shared claim, the reserved lanes and the budget that the coordinator exists to arbitrate.
+  The way to hurry a draw is a wake, not a bypass.
+- **Only the `explore` stage ever runs.** `challenge` and `synthesize` exist as schemas in
+  `plugins/atyrode.babel/machine/results.ts` and as prompts in
+  `plugins/atyrode.babel/server/engine/prompts.ts`, and nothing dispatches them, so nothing
+  criticizes a claim across runs.
+- **A cycle's stop is not readable by the operator.** The cycle computes its `Stop` and its `Gap`s
+  with their reasons, and no door exposes them, so "why did nothing happen this hour" is a
+  question only the code can answer today.
+- **Corroboration is displayed, not enforced.** Whether a finding's supports come from more than
+  one run is a property of the rows; nothing refuses a record for resting on one.
+
+## 8. The lesson this design is built on, and the one it refuses
+
+[YouTube's public account of its recommendation system](https://blog.youtube/inside-youtube/on-youtubes-recommendation-system/)
+separates clicks and watch time from user-reported satisfaction, and satisfaction from information
+quality. The transferable part is objective separation: reception, evidence, personal relevance and
+observed outcomes answer four different questions, and collapsing them into one score is what makes
+a ranking unaccountable. That separation is why the roles in §2 exist.
+
+What is refused is the rest of it. Babel learns from explicitly attributed context and feedback,
+never from engagement: no click, no dwell time and no ignored card is evidence of anything, and
+nothing here is a performance claim.

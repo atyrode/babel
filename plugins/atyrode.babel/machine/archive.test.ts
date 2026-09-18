@@ -335,7 +335,7 @@ test("an answer that is not a storage document names the field, never a value", 
 });
 
 test("an s3: repository without its object-store credential is refused before restic runs", async () => {
-  // SPEC decision 50: the credential is required for an `s3:` locator and refused in halves.
+  // The object-store credential is required for an `s3:` locator and refused in halves.
   // A policy installed half-way must fail on its own terms, not as an unexplained restic exit.
   const s3 = "s3:https://object.invalid/bucket/babel";
   document = storage({ repository: s3 });

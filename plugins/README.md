@@ -1,11 +1,13 @@
 # Babel's manifold plugins
 
-Babel **is** this directory. Decision 91 (2026-09-12, SPEC.md §2.8, `docs/manifold-plan.md`)
-retired the standalone product: the hub owns Babel's state, its pages are panels in the shell,
-its runs are jobs on enrolled machines, and the Go tree under `internal/` is the reference for
-behaviour until P7 retires it. One **baseline** plus independently enable-able **parts**, each a
-directory, each packed as one `<id>.manifold-plugin.json` and installed at
-`engine.plugins.install` by hash (manifold `docs/PLUGINS.md` §10).
+Babel **is** this directory. The standalone product — a Go binary, its embedded React surface
+and the multi-machine backend behind them — is retired: the hub owns Babel's state, its pages
+are panels in the shell, and its runs are jobs on enrolled machines. One **baseline** plus
+independently enable-able **parts**, each a directory, each packed as one
+`<id>.manifold-plugin.json` and installed at `engine.plugins.install` by hash (manifold
+`docs/PLUGINS.md` §10). Where a port's provenance matters the reference implementation is
+readable at the tag `v0.4.0` — `git show v0.4.0:internal/<pkg>` — and `docs/parity.md` records,
+per capability, what it did and whether this family does it.
 
 | Plugin                | Directory                | Halves       | What it is                                                                                                                                                                   |
 | --------------------- | ------------------------ | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -20,12 +22,15 @@ and every id, door name, event kind, panel id, preset, job output file and recei
 spelled once, in `atyrode.babel/contract.ts`, with the tables in
 `atyrode.babel/store/schema.ts`. `test/contract.test.ts` pins every manifest to those two.
 
-The web halves are **in-realm React** (`docs/PLUGINS.md` §10): `web.tsx` default-exports
-`{ id, panels }` of ordinary components on `@manifold/ui`'s layout primitives, with the skin in
-a `styles.css` whose every selector is rooted at the plugin's own class. The server half is
-authored against the kit (`@manifold/plugin-kit/server`: `defineServerAction`, `GuestCtx`), which
-the in-realm loader takes as it stands — one authoring shape for a row that may later be
-hardened.
+The web halves are **in-realm React** (`docs/PLUGINS.md` §10): a part's `web.tsx` —
+`atyrode.babel/feed/web.tsx` and `atyrode.babel/watch/web.tsx` — default-exports `{ id, panels }`
+of ordinary components on `@manifold/ui`'s layout primitives, with the skin in a `styles.css`
+whose every selector is rooted at the plugin's own class. The baseline's own
+`atyrode.babel/web.ts` registers an id and no panel: it paints nothing, and the entry exists so
+that a baseline surface, if one is ever wanted, belongs there rather than in a part. The server
+half is authored against the kit (`@manifold/plugin-kit/server`: `defineServerAction`,
+`GuestCtx`), which the in-realm loader takes as it stands — one authoring shape for a row that
+may later be hardened.
 
 ## The store is rows, not keys
 
@@ -230,9 +235,13 @@ full read, which is the failure the pre-post check exists to move.
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.
 They are not in `MACHINE_OPERATIONS`, which is what the machine half implements and what
 `manifest.json` declares. A DRAWN review (`review-backlog`, `file-and-tidy`) is a third thing
-again: the coordinator picks it, claims it under a fence and dispatches it with a blinded
-projection of the record under review, and that dispatch went with Babel's own launcher in the
-revert. Both the door and the conductor answer `draw_pending` for it, and it returns with #268.
+again, and the conductor owns it: `dispatchReviews` (`server/conductor.ts`) draws an assignment
+from the coordinator, claims it under a fence, refuses a projection that leaks withheld review
+state, composes the review prompt around that blinded projection and posts it as a Code session,
+then binds the claim to Code's job id and writes the `runs` row — every cycle the policy enables
+and the loop is not parked. The `launch` door is the one place a draw is refused, with
+`draw_managed` (`doors/launch.ts`): an operator-picked record must not bypass the shared claim,
+cadence and budget the policy governs that lane by.
 
 **`archive` is declared, and `restic` is a closure like the others.** restic is half of why the
 operation waited: upstream's whole Linux distribution is bare bzip2 —
@@ -258,9 +267,10 @@ ONE service the operator installs, `atyrode.babel.restic`:
   `network: "host"` (`service_proxy_requires_host_network`);
 - `machine/restic.ts` reads that file, asks `GET /storage` once with the capability, and takes
   the storage document — `{repository, password, accessKeyId?, secretAccessKey?}` — from the
-  answer. The object-store pair is required for an `s3:` locator and refused in halves
-  (`SPEC.md` decision 50), so a half-installed policy fails as itself rather than as an
-  unexplained restic exit. The password then reaches restic as `RESTIC_PASSWORD` in the CHILD's
+  answer. The object-store pair is required for an `s3:` locator and refused in halves — half a
+  credential is a misconfiguration and never a default (`SPEC.md`) — so a half-installed policy
+  fails as itself rather than as an unexplained restic exit. The password then reaches restic as
+  `RESTIC_PASSWORD` in the CHILD's
   environment and nowhere else: never argv, never this process's environment, never a receipt.
 
 The one value the manifest does fix is `BABEL_RESTIC_CACHE_DIR=/home/job/.cache/restic`, inside
@@ -273,8 +283,8 @@ and the bearer is 32 random bytes the owner mints per job for its own proxy
 credential"); the protocol can materialize a capability into a job's file and has no way to
 materialize an owner-held secret *value* into one. So the capability is what the job is given
 and the document behind it is what carries the secret — which is also why the policy's upstream
-is the operator's own store rather than anything Babel ships or generates (decision 51: Babel
-never creates or emits a credential, and stays vault-agnostic).
+is the operator's own store rather than anything Babel ships or generates: Babel never creates
+or emits a credential, and stays vault-agnostic (`SPEC.md`).
 
 Installing it is one owner call per machine, `engine.services.configureConfiguration`
 (`expectedRevision` is what `readConfiguration` last reported, `null` for a machine with no
@@ -372,7 +382,7 @@ Four things are worth knowing before reading `server/drain.ts`:
   and fanning it out would be a second implementation of the thing the coordinator arbitrates.
 - **It is not a governor at all, and it sets no overlay.** The standing `policies` row and the
   `budgets` table are both untouched. A drain's jobs are launched directly and take no claim, so
-  no admission bound in `coordinator.ts` ever counts one: an overlay raising
+  no admission bound in `store/coordinator.ts` ever counts one: an overlay raising
   `concurrentPerMachine` bounded nothing of the drain's and raised the CONDUCTOR's review bound
   on every online machine for the drain's TTL. The fan is bounded where it is real — against the
   manifest's `limits.concurrentJobs` at the door, and by the drain's own live jobs in the
@@ -546,14 +556,16 @@ hand, from the plugin manager — nothing here automates it, and nothing should.
 `plugins.yml@<MANIFOLD_REV>` checks this repository out beside `atyrode/manifold` at the pinned
 revision — the layout above, so `tsconfig.json` and `pack.sh` resolve exactly as they do on a
 developer's machine — then runs `check`, `test`, `pack` and `verify` and uploads `dist/` as the
-`manifold-plugins` artifact. It runs on every push to a `plugin/**` branch and on every pull
-request touching `plugins/`.
+`manifold-plugins` artifact. It runs on **every** pull request and on every push to `main`, with
+no path filter: this is the repository's only gate, and a filter would let a PR editing a
+workflow, a document or the changelog merge with nothing having run at all.
 
 Release delivery is `release.yml`: a `v*` tag runs the same reusable gate against the tagged
-revision, attaches `dist/*.manifold-plugin.json` and `manifold-plugins.SHA256SUMS` to the GitHub
-Release beside Babel's binary, and hands each asset URL and sha to the integrated preview's
-receiver (`plugin <url> <sha256>` over the forced-command key, the same verb a developer runs
-from dev-01), baseline before its parts, so the preview installs the release by itself. Between
+revision, builds the dependency closure beside it, attaches `dist/*.manifold-plugin.json` and
+its checksums to the GitHub Release — a tag publishes plugin bundles and nothing else — and
+hands each asset URL and sha to the integrated preview's receiver (`plugin <url> <sha256>` over
+the forced-command key, the same verb a developer runs from dev-01), dependencies first and a
+baseline before its parts, so the preview installs the release by itself. Between
 releases a preview gets a build through `bun run dev --deliver`, and the sha256 that counts is
 the one CI prints. A tag is permanent: a bad one stays and the next patch follows it.
 
