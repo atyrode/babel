@@ -1,6 +1,6 @@
 {
   "id": "atyrode.babel.feed",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "title": "Feed",
   "description": "What the operator reads: Home, the one list of every record Babel produced, ranked by what needs him, hot, new, top, controversial or rising; a record peeled through five depths; a topic with its filings, its interest and Babel's proposals about it. Every act on the page is one of the baseline's doors.",
   "capabilities": [],
@@ -12,7 +12,7 @@
   },
   "contributes": {
     "panels": [
-      { "id": "home", "title": "Babel" },
+      { "id": "home", "title": "Home" },
       { "id": "record", "title": "Record" },
       { "id": "topic", "title": "Topic" }
     ],
