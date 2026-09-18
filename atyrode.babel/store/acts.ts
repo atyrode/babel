@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
-import { INTEREST_STATES, RoleSchema, type Ruling } from "../contract.ts";
+import type { INTEREST_STATES} from "../contract.ts";
+import { RoleSchema, type Ruling } from "../contract.ts";
 import {
   acceptReviewResult,
   REFUSALS,

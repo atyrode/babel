@@ -29,7 +29,8 @@
 */
 
 import { z } from "zod";
-import { ROLES, VOTES } from "../contract.ts";
+import type { ROLES} from "../contract.ts";
+import { VOTES } from "../contract.ts";
 
 // ---------------------------------------------------------------------------- versions
 

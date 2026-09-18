@@ -41,7 +41,8 @@
 
 import { z } from "zod";
 import type { GuestDatabase, GuestSqlParam, GuestSqlRow } from "@manifold/plugin-kit";
-import { CodeProfileSchema, INTEREST_STATES, ROLES } from "../contract.ts";
+import type { INTEREST_STATES} from "../contract.ts";
+import { CodeProfileSchema, ROLES } from "../contract.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
 export interface CoordinatorStore {

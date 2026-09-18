@@ -4,7 +4,8 @@ import { afterEach, expect, test } from "bun:test";
 import { GENERATOR_PLUGIN_ID, LAUNCHER_PANEL } from "@atyrode/manifold-code";
 import { ACTIONS, door } from "../../contract.ts";
 import { Watch } from "../web.tsx";
-import { MACHINES, PROFILES, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
+import type { PROFILES} from "./host.ts";
+import { MACHINES, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
 import { mount, settle, unmountAll } from "./render.tsx";
 
 /*

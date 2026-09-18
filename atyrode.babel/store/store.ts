@@ -23,10 +23,11 @@
 */
 
 import type { PluginDatabase, SqlParam, SqlRow } from "@manifold/plugin";
+import type {
+  PulseResultSchema} from "../contract.ts";
 import {
   FEED_SORTS,
   POST_KINDS,
-  PulseResultSchema,
   ROLES,
   RULINGS,
   type BudgetOverlay,

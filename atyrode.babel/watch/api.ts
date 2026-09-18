@@ -1,29 +1,30 @@
 import type { HostServices } from "@manifold/plugin";
 import { formatManifoldUri } from "@manifold/protocol";
 import { GENERATOR_PLUGIN_ID, LAUNCHER_PANEL } from "@atyrode/manifold-code";
-import { z } from "zod";
+import type { z } from "zod";
+import type {
+  DrainStatusSchema,
+  PolicyResultSchema,
+  PresetSchema,
+  ProfileRowSchema,
+  ProfilesResultSchema,
+  RecipeRowSchema,
+  RunProgressSchema,
+  RunRowSchema,
+  RunsResultSchema,
+  TopicRowSchema,
+  TopicsResultSchema} from "../contract.ts";
 import {
   DRAIN_CONCURRENT_MAX,
   DrainStartRequestSchema,
-  DrainStatusSchema,
   DrainStopInputSchema,
   LaunchRequestSchema,
   OPERATIONS,
   PRESETS,
   PRESET_OPERATIONS,
   PRESET_START,
-  PolicyResultSchema,
-  PresetSchema,
-  ProfileRowSchema,
-  ProfilesResultSchema,
-  RecipeRowSchema,
   RUN_STAGES,
-  RunProgressSchema,
-  RunRowSchema,
-  RunsResultSchema,
   StopInputSchema,
-  TopicRowSchema,
-  TopicsResultSchema,
   door,
   type ActionName,
   type DrainPreset,
