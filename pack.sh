@@ -19,7 +19,7 @@
 #      closures, not Babel's own interpreter. Nothing here downloads anything — packing stays
 #      offline, and moving a pin is `bun scripts/measure-runtime-tools.ts`.
 #
-# The SDK is the checkout manifold-dir.sh resolves (MANIFOLD_DIR, ../../manifold-db, ../../manifold).
+# The SDK is the checkout manifold-dir.sh resolves (MANIFOLD_DIR, ../manifold-db, ../manifold).
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -45,19 +45,24 @@ build_machine
 rm -rf dist
 mkdir -p dist
 
-# Every manifest.json below a plugin directory is one plugin, and a child is a directory inside
-# its parent's, so the walk is recursive and the artifact is named by the manifest's own id.
-# Shallowest first: the family reads parents before parts, in dist/SHA256SUMS as everywhere else.
+# Every manifest.json in this repository is one plugin, and a child is a directory inside its
+# parent's, so the walk is recursive and the artifact is named by the manifest's own id — not by
+# the directory, which is why `atyrode.babel/` being id-named is a convenience rather than a
+# mechanism. Shallowest first: the family reads parents before parts, in dist/SHA256SUMS as
+# everywhere else.
 #
-# `.integration` is pruned with node_modules and dist: it holds the CODE and OMP checkouts
-# `deps:code` prepares so a required dependency can be composed at verification, and their
-# manifests are theirs. A walk that packed them would put another family's bundles in this
-# family's dist, and `verify` would be handed each of them twice.
+# THE WALK STARTS AT THE REPOSITORY ROOT, because the repository IS the plugin family: there is
+# no `plugins/` wrapper to descend into, so the prune list has to name everything at the root
+# that is not source. `.integration` holds the CODE and OMP checkouts `deps:code` prepares so a
+# required dependency can be composed at verification, and their manifests are theirs: a walk
+# that packed them would put another family's bundles in this family's dist, and `verify` would
+# be handed each of them twice.
 while IFS= read -r manifest; do
   dir="$(dirname "$manifest")"
   id="$(bun -e 'console.log(JSON.parse(await Bun.file(process.argv[1]).text()).id)' "$manifest")"
   bun "$PACK" "$dir" --out "dist/$id.manifold-plugin.json"
 done < <(find . -path ./node_modules -prune -o -path ./dist -prune -o -path ./.integration -prune \
+  -o -path ./.git -prune \
   -o -name manifest.json -print |
   awk -F/ '{ print NF, $0 }' | sort -k1,1n -k2 | cut -d" " -f2-)
 

@@ -534,8 +534,8 @@ increment, because a claim cites the method it used as `id@version`.
 **Where a recipe lives.** A hub reads its recipes from the policy document the operator installed,
 in its `review.recipes` block: each entry is an id, a version, a title, the one line its question
 asks, whether it runs by default, and its whole body, which the prompt writes verbatim. The
-repository's copy is [`plugins/atyrode.babel/store/recipes.seed.json`](plugins/atyrode.babel/store/recipes.seed.json),
-produced by [`plugins/atyrode.babel/tools/seed-recipes.ts`](plugins/atyrode.babel/tools/seed-recipes.ts)
+repository's copy is [`atyrode.babel/store/recipes.seed.json`](atyrode.babel/store/recipes.seed.json),
+produced by [`atyrode.babel/tools/seed-recipes.ts`](atyrode.babel/tools/seed-recipes.ts)
 from a cookbook-shaped directory. A hub whose policy names no recipe with a body can start no
 exploration, and says so.
 

@@ -21,7 +21,7 @@ import { STAGE_MESSAGE_MAX, STAGE_PATTERN, type RunStage } from "../contract.ts"
   but adopting the channel means adopting the whole of it: a duplex socket, a reply queue, the
   service-call protocol and the strict initial context frame, none of which the machine half
   speaks (it reaches its one service through a materialized binding file, `machine/restic.ts`).
-  `plugins/tsconfig.json` has no `@manifold/sdk` alias either, and `pack.sh` builds this half
+  `tsconfig.json` has no `@manifold/sdk` alias either, and `pack.sh` builds this half
   with a plain `bun build` that inlines everything it imports, so importing the SDK would put
   the protocol package inside `machine.js` for one line of JSON. The line is written here, and
   `machine/progress.test.ts` proves each frame against the pinned `WorkerProgressSchema`.

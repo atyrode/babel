@@ -25,15 +25,16 @@ import {
   the thing worth proving anyway.
 */
 
-const plugins = dirname(import.meta.dir);
-const dist = join(plugins, "dist");
+/** The repository root: `test/` sits at it, and `dist/` is written there. */
+const repo = dirname(import.meta.dir);
+const dist = join(repo, "dist");
 const expected: readonly string[] = [BABEL_PLUGIN_ID, FEED_PLUGIN_ID, WATCH_PLUGIN_ID];
 
 const bundles: Record<string, PluginBundle> = {};
 let sums: readonly string[] = [];
 
 beforeAll(async () => {
-  const packed = Bun.spawn(["./pack.sh"], { cwd: plugins, stdout: "pipe", stderr: "pipe" });
+  const packed = Bun.spawn(["./pack.sh"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
   const [code, stderr] = await Promise.all([packed.exited, new Response(packed.stderr).text()]);
   expect(`${String(code)} ${stderr}`).toBe("0 ");
   for (const id of expected) {

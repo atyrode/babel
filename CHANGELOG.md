@@ -56,6 +56,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The repository is the plugin family, and its layout now says so.** `plugins/atyrode.babel/`
+  was two levels deep for a reason that stopped being true: the wrapper separated the plugin
+  family from the Go product beside it, and that product is gone, so it separated the plugins
+  from nothing and — because parts nest inside their parent — would have held exactly one child
+  for ever. `plugins/` is removed: the workspace, the two revision pins, `pack.sh`, `scripts/`
+  and `test/` sit at the repository root beside `atyrode.babel/`, which is what `pack` takes as
+  a directory and must not contain the changelog or the workflows. The SDK sibling resolves one
+  level shallower — `../manifold` in a developer checkout and in CI alike — and both workflows
+  pass `plugins-dir: "."`. `plugins/README.md` becomes `docs/building.md`, which is what it was
+  always about. The same wrapper is still correct in atyrode/code, where a Go product does sit
+  beside it; atyrode/code#204 records that a sweep of that tree inherits this smell.
+
 - **Every document describes only what Babel is, in the present tense.** `SPEC.md` keeps its name
   and its section numbers — so the `SPEC.md §N` citations in code and issues still resolve — and
   loses the standalone product, the phase plan, and §13's log of ninety numbered decisions: each

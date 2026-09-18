@@ -1,8 +1,10 @@
-# Babel's manifold plugins
+# Building, packing, verifying and delivering the family
 
-Babel **is** this directory. The standalone product — a Go binary, its embedded React surface
-and the multi-machine backend behind them — is retired: the hub owns Babel's state, its pages
-are panels in the shell, and its runs are jobs on enrolled machines. One **baseline** plus
+Babel **is** this repository, and the repository is nothing else. The standalone product — a Go
+binary, its embedded React surface and the multi-machine backend behind them — is retired: the
+hub owns Babel's state, its pages are panels in the shell, and its runs are jobs on enrolled
+machines. There is no `plugins/` wrapper, because there is nothing left for it to separate the
+plugins from. One **baseline** plus
 independently enable-able **parts**, each a directory, each packed as one
 `<id>.manifold-plugin.json` and installed at `engine.plugins.install` by hash (manifold
 `docs/PLUGINS.md` §10). Where a port's provenance matters the reference implementation is
@@ -37,7 +39,7 @@ may later be hardened.
 The baseline's data is a graph — 65,818 records, 60,793 links, filings, per-role tallies, a
 ledger of entities and facts — read by filter, sort, join and aggregate on every page, so it
 lives in the plugin database (manifold ADR 0034, `docs/PLUGINS.md` §4 "Your tables"): one SQLite
-file at `<data>/plugins/atyrode.babel/data.db`, asked for by `database: { maxBytes }` in the
+file at `<data>/atyrode.babel/data.db`, asked for by `database: { maxBytes }` in the
 manifest and served as `ctx.database`. Three consequences worth knowing before reading
 `server.ts`:
 
@@ -412,14 +414,14 @@ revision in `MANIFOLD_REV` is the SDK:
 
 ```
 <parent>/
-  babel/plugins/      this directory
-  manifold/           atyrode/manifold @ $(cat MANIFOLD_REV), with `bun install` run
+  babel/               this repository
+  manifold/            atyrode/manifold @ $(cat MANIFOLD_REV), with `bun install` run
 ```
 
 ```sh
-git clone https://github.com/atyrode/manifold ../../manifold
-git -C ../../manifold checkout "$(cat MANIFOLD_REV)"
-bun install --cwd ../../manifold --frozen-lockfile   # the kit resolves zod and the protocol from its workspace
+git clone https://github.com/atyrode/manifold ../manifold
+git -C ../manifold checkout "$(cat MANIFOLD_REV)"
+bun install --cwd ../manifold --frozen-lockfile   # the kit resolves zod and the protocol from its workspace
 ```
 
 `MANIFOLD_REV` follows Manifold `main` and currently names `743ee75a` (`0.17.0+22.g743ee75a`),
@@ -439,9 +441,9 @@ event (#552), metered brokered inference (ADR 0038, #554) and the `pi-native-usa
 `manifold-db` because the plugin database was a branch before it was `main`; it is now simply
 that clone of atyrode/manifold, detached at the pin, and `feat/brokered-inference`, the other
 branch it once carried, is merged into `main` and superseded by it. Nothing here pins a branch.
-`tsconfig.json` still lists **two candidates** for every `@manifold/*` alias, `../../manifold-db`
-before `../../manifold`, and tsc and Bun take the first that exists; `pack.sh` resolves
-`../../manifold` and honours `MANIFOLD_DIR` for a tree that keeps the checkout elsewhere (an
+`tsconfig.json` still lists **two candidates** for every `@manifold/*` alias, `../manifold-db`
+before `../manifold`, and tsc and Bun take the first that exists; `pack.sh` resolves
+`../manifold` and honours `MANIFOLD_DIR` for a tree that keeps the checkout elsewhere (an
 isolated worktree, a second branch). The pin and BOTH workflow `uses:` refs — the gate's in
 `manifold-plugins.yml` and the release gate's in `release.yml` — are one revision and are bumped
 together; a release that ran the gate at another kit than the pin would verify bundles nobody
@@ -491,12 +493,12 @@ bun run verify      # installs atyrode.omp*, then atyrode.code*, then atyrode.ba
 `.integration/<rev>/manifold` — the sibling layout Code's own scripts resolve — and then runs
 CODE's `prepare:integration` (which does the same for omp) and CODE's `pack`. A packer here
 would be a second answer to what a Code bundle is, and the day Code changed its own it would
-be the copy nobody updated. The script refuses a Code whose `plugins/MANIFOLD_REV` is not this
+be the copy nobody updated. The script refuses a Code whose `MANIFOLD_REV` is not this
 tree's: three families verified against two different kits would prove nothing about the hub
 they install on.
 
 **That refusal is equality, so the Manifold pin moves in dependency order across three
-repositories.** It is a string comparison of Code's `plugins/MANIFOLD_REV` against this one, not
+repositories.** It is a string comparison of Code's `MANIFOLD_REV` against this one, not
 an ancestry test, and Code's own `prepare:integration` compares omp's to Code's the same way; a
 `--depth=1` fetch has no history to reason over anyway. So a newer Manifold reaches this tree
 last, one reviewable PR per repository, each proved by its own gate:

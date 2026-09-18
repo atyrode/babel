@@ -1,9 +1,10 @@
 # Repository instructions
 
-Babel **is** a Manifold plugin family under `plugins/`: the baseline `atyrode.babel`, which owns
+Babel **is** a Manifold plugin family, and this repository is that family: the baseline
+`atyrode.babel`, which owns
 the store, the doors, the machine half and the conductor, plus the two panel plugins
 `atyrode.babel.feed` and `atyrode.babel.watch`. There is no binary, no separate web application
-and no standalone cookbook directory. `SPEC.md` owns product behaviour, `plugins/README.md` owns
+and no standalone cookbook directory. `SPEC.md` owns product behaviour, `docs/building.md` owns
 how the family is built, packed, verified and delivered, and `docs/parity.md` records what the
 retired product did and whether the plugin does it.
 
@@ -102,14 +103,14 @@ maintenance PRs with required CI and maintainer holds. Details are in dotfiles'
 ## Commands
 
 Run the rows applicable to the changed surface, not every row for every task. Bun is the whole
-toolchain; commands run from `plugins/` unless a working directory is shown.
+toolchain; commands run from the repository root unless a working directory is shown.
 
 | Surface | Commands | Prerequisites and meaning |
 | --- | --- | --- |
-| The gate | `cd plugins && bun install --frozen-lockfile && bun run deps:code && bun run check && bun test && bun run pack && bun run verify` | The whole of it, and what CI runs on every pull request. Read `plugins/README.md` first. |
+| The gate | `cd plugins && bun install --frozen-lockfile && bun run deps:code && bun run check && bun test && bun run pack && bun run verify` | The whole of it, and what CI runs on every pull request. Read `docs/building.md` first. |
 | Dependency closure | `bun run deps:code` | Fetches atyrode/code at `plugins/CODE_REV`, arranges the sibling layout Code's own `prepare:integration` expects and runs Code's packers, which build omp's bundles beneath it. `verify` composes Babel on top of them. |
 | Typecheck | `bun run check` | `tsc --noEmit` over both halves, the store, the panels and the tests. |
-| Suites | `bun test` | The manifests against `plugins/atyrode.babel/contract.ts` and `plugins/atyrode.babel/store/schema.ts`, the doors against a real temporary database, the panels in a document, and `pack` itself. |
+| Suites | `bun test` | The manifests against `atyrode.babel/contract.ts` and `atyrode.babel/store/schema.ts`, the doors against a real temporary database, the panels in a document, and `pack` itself. |
 | Pack | `bun run pack` | Builds the machine half into one bundled file, stamps its digest into both platform artifacts of the manifest and writes one `dist/<id>.manifold-plugin.json` per manifest, parents first, plus `dist/SHA256SUMS`. A machine-half change shows up as a moved digest in the manifest diff. |
 | Verify | `bun run verify` | Installs every bundle on a disposable engine spawned from the `../manifold` sibling, dispatches every door it publishes, asserts the plugin's database file exists and then that a purge removed it. Needs `deps:code` and `pack` first. |
 | Reachability | `bun run lint:reachability` | knip over the entry points the manifests declare plus the dev-time tools: unused files, unused exports, unused dependencies, unlisted and unresolved imports. |
@@ -118,16 +119,16 @@ toolchain; commands run from `plugins/` unless a working directory is shown.
 | Test rules | `bun run check-test-rules` | A test may not read a `.md` file — prose wording is not a contract — and may not skip itself on an environment variable: a lane that cannot run is zero tests, never silently-skipped ones. |
 | Inner loop | `bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifold-1` | Packs every manifest, installs the baseline before its parts on the named hub and reinstalls the bundles whose digest moved on every save. A preview hub only. |
 
-**The last four rows land with the gates PR** and are not in `plugins/package.json` yet; the
+**The last four rows land with the gates PR** and are not in `package.json` yet; the
 script names above are the contract that PR implements.
 
 Every row needs the SDK: a checkout of atyrode/manifold **beside this repository**, at the
-revision in `plugins/MANIFOLD_REV`, with its own `bun install` run. `deps:code` and `verify`
+revision in `MANIFOLD_REV`, with its own `bun install` run. `deps:code` and `verify`
 additionally require that checkout to sit exactly at the pin, and Code's own
 `prepare:integration` refuses a mismatch by name. Install and run under the same `MANIFOLD_DIR`:
 `bun install` writes React as a symlink into whichever checkout was resolved at install time, so
 pointing it elsewhere afterwards fails every web test with "Invalid hook call" for a reason that
-is not the component under test (`plugins/README.md`, "The SDK is a sibling checkout").
+is not the component under test (`docs/building.md`, "The SDK is a sibling checkout").
 
 The `archive` machine operation is the one part no local command proves: it needs an enrolled
 machine binding a `restic` runtime tool and the `atyrode.babel.restic` service the operator
@@ -151,7 +152,7 @@ a local skip is not a pass.
   downstream writes is the failure mode this bullet exists to stop.
 - **There is no publication step, because there is nowhere to publish to.** The standalone
   product's `babel sync` retired with the product. The hub's own SQLite file is where a record
-  lives, and `plugins/atyrode.babel/store/schema.ts` says so — "nothing is sealed and nothing is
+  lives, and `atyrode.babel/store/schema.ts` says so — "nothing is sealed and nothing is
   synced. The hub is the one place" — while `docs/parity.md` records the retired `sync/` package
   as absent by decision. A settled run's records are durable the instant the settlement writes
   them, so nothing is ever owed downstream and no publication has to be asked about. The restic
@@ -174,20 +175,20 @@ a local skip is not a pass.
 ## Task-specific guidance
 
 - **Any plugin change:** every id, door name, event kind, panel id, preset, job output file and
-  receipt field is spelled once in `plugins/atyrode.babel/contract.ts`, with the tables in
-  `plugins/atyrode.babel/store/schema.ts`, and `plugins/test/contract.test.ts` pins every
+  receipt field is spelled once in `atyrode.babel/contract.ts`, with the tables in
+  `atyrode.babel/store/schema.ts`, and `test/contract.test.ts` pins every
   manifest to both. A field that is not spelled there is refused by the door it was added for.
   A part reaches the baseline only through its doors, never as a library.
 - **Recipes:** the recipe bodies are plugin data. They live in
-  `plugins/atyrode.babel/store/recipes.seed.json`, are generated from a cookbook-shaped directory
-  by `plugins/atyrode.babel/tools/seed-recipes.ts`, and a hub reads them from its policy's
+  `atyrode.babel/store/recipes.seed.json`, are generated from a cookbook-shaped directory
+  by `atyrode.babel/tools/seed-recipes.ts`, and a hub reads them from its policy's
   `review.recipes` block, which is what a prompt writes verbatim. A claim cites a recipe as
   `id@version`, so a changed body and its version move together and the seed is regenerated
   rather than hand-edited. The tool prints a policy block and installs nothing.
 - **Drains and harvests:** read the drain procedure in `docs/runbook.md` and the open
   atyrode/babel issues labelled `drain` before starting one; the pre-flight, the 90-second
   go/no-go and the reporting rules there are mandatory, for an agent as for a person.
-- **Panels:** a change under `plugins/atyrode.babel/feed/` or `plugins/atyrode.babel/watch/` is
+- **Panels:** a change under `atyrode.babel/feed/` or `atyrode.babel/watch/` is
   proved by actual rendered interaction on a preview hub through `bun run dev`, not by the panel
   tests alone. Every CSS selector a part ships stays rooted at that plugin's own class, and
   React, `@manifold/plugin` and `@manifold/ui` are shared externals: a bundle may never carry a
@@ -198,12 +199,12 @@ a local skip is not a pass.
   Record a procedure as exercised only after execution, with host, date and observed output;
   otherwise mark it **OPERATOR STEP** with prerequisites and observable success. Historical
   output or pinned source is not current activation proof.
-- **The Manifold pin:** `plugins/MANIFOLD_REV` follows Manifold `main`, and moving it to a newer
+- **The Manifold pin:** `MANIFOLD_REV` follows Manifold `main`, and moving it to a newer
   `main` revision is ordinary work in its own PR, with both workflow `uses:` refs — the gate's in
   `.github/workflows/manifold-plugins.yml` and the release gate's in
   `.github/workflows/release.yml` — moved to the same revision, the sibling checkout moved with
   it and the gate green against it. The pin moves in dependency order across three repositories,
-  omp then Code then here, which `plugins/README.md` ("Code is a second pin") spells out.
+  omp then Code then here, which `docs/building.md` ("Code is a second pin") spells out.
   Pinning a branch and installing on production remain the operator's calls.
 - **What the retired product did:** `docs/parity.md` is the per-capability record of the
   standalone product's packages and whether the plugin has each one. Read it before claiming a
@@ -229,4 +230,4 @@ a local skip is not a pass.
 - Add one `## [Unreleased]` bullet in `CHANGELOG.md` per user-visible change, in the existing
   voice: what changed, why and what proves it.
 - Cite cross-repository facts with source `path:line` at a named revision, not from memory; for
-  Manifold pinning, read `plugins/README.md`, "The SDK is a sibling checkout".
+  Manifold pinning, read `docs/building.md`, "The SDK is a sibling checkout".

@@ -17,7 +17,7 @@ Babel executes in three places and holds a process in none of them.
   is its transaction and a service binding is its secret.
 - **The machine half** is a Bun bundle the hub installs and runs as a **job** on an enrolled
   machine: `scan`, `archive`, `prepare`, and nothing else
-  (`plugins/atyrode.babel/manifest.json`; `plugins/atyrode.babel/machine/main.ts`). It reads
+  (`atyrode.babel/manifest.json`; `atyrode.babel/machine/main.ts`). It reads
   session logs, runs restic, and writes sealed outputs. It never reaches a model.
 - **A run that reaches a model is a Code session.** Babel composes a prompt and posts it through
   `atyrode.code.runSession`. It chooses no model, no thinking level and no account, holds no
@@ -64,7 +64,7 @@ Four properties of that table carry the weight:
   per job, not the operator's upstream credential. The repository password reaches restic as
   `RESTIC_PASSWORD` in the **child's** environment only — never argv, never the parent's
   environment, never a receipt — and each child gets a minimal environment, so no ambient
-  `RESTIC_*` variable can redirect an archive (`plugins/atyrode.babel/machine/restic.ts`).
+  `RESTIC_*` variable can redirect an archive (`atyrode.babel/machine/restic.ts`).
 - **Nothing deletes.** There is no `forget`, no `prune` and no `repair` code path. A compromised
   `archive` could write a snapshot; it has no verb that removes one.
 
@@ -83,7 +83,7 @@ and a reviewer who needs to know how that session was confined reads Code's decl
 document. Claiming otherwise would be Babel describing a boundary it neither builds nor observes.
 
 What Babel does own about that session is the **material**, and it is the one real control on this
-side of the line (`SPEC.md` §2.6; `plugins/atyrode.babel/machine/prepare.ts`):
+side of the line (`SPEC.md` §2.6; `atyrode.babel/machine/prepare.ts`):
 
 - A run reads `/inputs/material`, an immutable sealed selection bound read-only. It is not a live
   view of the corpus: the bytes were fixed when the preparation was sealed, and a session still
