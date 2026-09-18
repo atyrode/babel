@@ -555,9 +555,59 @@ export const TellInputSchema = z.strictObject({
   replyTo: z.string().optional(),
 });
 
+// ------------------------------------------------------------------- what a draw answers
+
+/*
+  THE COORDINATOR'S TWO REASON VOCABULARIES, spelled here rather than beside the draw that
+  produces them, because a door now answers with them (#328). A reason that crossed the wire as
+  a free string would be matched as prose by every consumer — the panel's label table, a future
+  filter, whatever reads the pulse next — and the first misspelling would read as "no such
+  reason" rather than fail. `store/coordinator.ts` builds the words; this is where they are
+  named, and `z.enum` over them is what makes the door refuse a word nobody has spelled.
+
+  The two sets are DISJOINT, which is what lets one map keyed by reason hold both without
+  ambiguity (`CycleTally` in `server/conductor.ts` relies on it).
+*/
+
+export const GAP_REASONS = [
+  "excluded",
+  "retired",
+  "replaced",
+  "capped",
+  "claimed",
+  "exhausted",
+  "cooling",
+  "settled",
+  "unsupported",
+  "empty",
+] as const;
+export type GapReason = (typeof GAP_REASONS)[number];
+export const GapReasonSchema = z.enum(GAP_REASONS);
+
+export const STOP_REASONS = [
+  "invalid-policy",
+  "disabled",
+  "batch",
+  "per-cycle",
+  "daily",
+  "no-candidates",
+  "no-lane",
+  /**
+   * Evaluation is enabled but the installed policy names no Code profile and destination. It
+   * is the cycle's reason and never a draw's — an unrouted loop must not reserve a claim it
+   * cannot dispatch.
+   */
+  "unrouted",
+  /** A route existed, but its projection, prompt, engine post or claim binding was refused. */
+  "dispatch-refused",
+] as const;
+export type StopReason = (typeof STOP_REASONS)[number];
+export const StopReasonSchema = z.enum(STOP_REASONS);
+
 // ---------------------------------------------------------------------------- the pulse
 
-export const PulseResultSchema = z.strictObject({
+/** What the STORE can answer about the pulse: today's counts, off its own tables. */
+export const PulseTodaySchema = z.strictObject({
   since: z.string(),
   today: z.strictObject({
     sessionsRead: z.number().int(),
@@ -571,6 +621,57 @@ export const PulseResultSchema = z.strictObject({
     z.strictObject({ id: z.string(), kind: z.string(), title: z.string(), since: z.string() }),
   ),
 });
+
+/**
+ * WHY THE LAST CYCLE DID WHAT IT DID (#328).
+ *
+ * The loop's own verdict was readable in the hub's log and nowhere else: a cycle that drew
+ * nothing left a `console.warn` and no door reported it, so an operator watching a deployment
+ * where nothing happens could not tell "no candidate is eligible" from "the policy names no
+ * route" from "the day's ceiling is spent" — and a cycle that produced nothing and said nothing
+ * is indistinguishable from a broken one.
+ *
+ * THE GAPS ARE COUNTED, NOT LISTED. One busy cycle declines hundreds of candidates for the same
+ * two or three reasons; shipping every one of them to a panel that can only render "many"
+ * is a second defect wearing the first one's clothes. So it is one row per reason — at most
+ * {@link GAP_REASONS}`.length` of them — carrying how many, and the first instance's record and
+ * sentence, because "forty of kind `claimed`" says how much and "…starting with hyp_7f3a" says
+ * where to look.
+ */
+export const CycleReportSchema = z.strictObject({
+  /** When the cycle ran, as an instant a panel can age against its own clock. */
+  at: z.string(),
+  /** Why drawing stopped, and the sentence it stopped with; null when the cycle never drew. */
+  stop: z.strictObject({ reason: StopReasonSchema, detail: z.string().max(400) }).nullable(),
+  gaps: z
+    .array(
+      z.strictObject({
+        reason: GapReasonSchema,
+        count: z.number().int().min(1),
+        /** The first candidate declined for this reason; empty for a gap about a whole lane. */
+        recordId: z.string(),
+        detail: z.string().max(400),
+      }),
+    )
+    .max(GAP_REASONS.length),
+});
+
+/**
+ * The pulse as a reader asks for it: what Babel did today, and what its last cycle did. The
+ * cycle is null until one has run — a store enabled a minute ago has a pulse and no verdict.
+ */
+export const PulseResultSchema = PulseTodaySchema.extend({
+  cycle: CycleReportSchema.nullable(),
+});
+
+/**
+ * Where the conductor leaves {@link CycleReportSchema} for the `pulse` door to find it.
+ *
+ * It is a key rather than a return value because the cycle runs AFTER the door has answered
+ * (`server.ts`): the door reports the cycle BEFORE it, which is the one every operator is
+ * asking about — the cycle that has already failed to do anything.
+ */
+export const CONDUCTOR_CYCLE_KEY = "conductor:cycle";
 
 // ---------------------------------------------------------------------------- machine operations
 

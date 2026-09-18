@@ -17,6 +17,8 @@ const PULSE = {
   since: "2026-09-12T00:00:00Z",
   today: { sessionsRead: 4, records: 9, votes: 21, proposals: 3, topicProposals: 1, ruled: 2 },
   reviewing: [],
+  // The loop's last verdict rides on the pulse (#328) and Home renders none of it; Watch does.
+  cycle: null,
 };
 
 function hub(

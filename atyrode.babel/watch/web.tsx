@@ -14,6 +14,7 @@ import {
   PANELS,
   PolicyResultSchema,
   ProfilesResultSchema,
+  PulseResultSchema,
   RunsQuerySchema,
   RunsResultSchema,
   TopicsResultSchema,
@@ -29,6 +30,7 @@ import {
   launchRequest,
   read,
   stopInput,
+  type CycleReport,
   type DrainDraft,
   type DrainStatus,
   type LaunchDraft,
@@ -39,6 +41,7 @@ import {
   type TopicsResult,
 } from "./api.ts";
 import { Ceilings } from "./ceilings.tsx";
+import { Cycle } from "./cycle.tsx";
 import { Drain } from "./drain.tsx";
 import { Recipes } from "./recipes.tsx";
 import { Runs } from "./runs.tsx";
@@ -84,6 +87,14 @@ const DRAINS_LISTED = 6;
  * carries and long enough that reading the page does not poll Code.
  */
 const PROFILES_POLL_MS = 30_000;
+/**
+ * How often the last cycle's verdict is re-read (#328). Thirty seconds, because reading the
+ * pulse is one of the four dispatches that WAKE the loop (`server.ts`'s `WAKES`) and the wake
+ * is floored at thirty seconds anyway: a faster poll would cost a round trip to learn nothing
+ * new, and a slower one would leave "why did nothing run" stale while an operator waited for
+ * the answer to change.
+ */
+const CYCLE_POLL_MS = 30_000;
 
 const NO_RUNS: RunsResult = { runs: [], total: 0 };
 const NO_DRAINS: readonly DrainStatus[] = [];
@@ -118,6 +129,7 @@ export function Watch({ host }: PanelProps) {
   const [stopNote, setStopNote] = useState("");
   const [policyNote, setPolicyNote] = useState("");
   const [profilesNote, setProfilesNote] = useState("");
+  const [cycleNote, setCycleNote] = useState("");
 
   const runs = usePolledResource<RunsResult>(
     () => read(host, ACTIONS.runs, RunsQuerySchema.parse({ limit }), RunsResultSchema),
@@ -128,6 +140,22 @@ export function Watch({ host }: PanelProps) {
       restartKey: limit,
       onError: (reason) => setRunsNote(noteOf(reason)),
       onSuccess: () => setRunsNote(""),
+    },
+  );
+
+  /*
+    THE LAST CYCLE'S OWN VERDICT (#328). The pulse door carries it beside today's counts, and
+    only the verdict is kept here: Home renders the counts, and a control room asking the same
+    door twice for two halves of one answer would be two wakes of the loop for one question.
+  */
+  const cycle = usePolledResource<CycleReport | null>(
+    async () => (await read(host, ACTIONS.pulse, {}, PulseResultSchema)).cycle,
+    CYCLE_POLL_MS,
+    {
+      key: "atyrode.babel.cycle",
+      initial: null,
+      onError: (reason) => setCycleNote(noteOf(reason)),
+      onSuccess: () => setCycleNote(""),
     },
   );
 
@@ -353,6 +381,12 @@ export function Watch({ host }: PanelProps) {
         onStop={onStop}
         onMore={() => setLimit((current) => current + RUNS_PAGE)}
       />
+      {/*
+        UNDER THE RUNS, because it explains their absence: an operator reads an empty table and
+        the next thing on the page is why it is empty. It renders nothing at all when the last
+        cycle spent normally.
+      */}
+      <Cycle cycle={cycle.value} now={now} note={cycleNote} />
       <Drain
         draft={drainDraft}
         drains={drains.value}

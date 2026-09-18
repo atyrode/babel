@@ -1,8 +1,10 @@
 import { MACHINE_REPOSITORY_REASONS } from "@manifold/protocol";
 import type { SqlParam, SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
+import type { CycleReportSchema } from "../contract.ts";
 import {
   BABEL_PLUGIN_ID,
+  CONDUCTOR_CYCLE_KEY,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
   MaterialIndexSchema,
@@ -11,6 +13,7 @@ import {
   OUTPUT_LOCATION,
   RUN_STAGES,
   ReceiptSchema,
+  type GapReason,
   type MaterialEntry,
   type MaterialIndex,
   type Receipt,
@@ -598,6 +601,23 @@ const PARK_WINDOW_MS = 60 * 60 * 1000;
 
 /** Where the day's {@link CycleTally} is kept between wakes ({@link KeysSlice}). */
 const TALLY_KEY = "conductor:tally";
+
+/**
+ * How much of a stop's or a gap's sentence the door is given. A dispatch refusal carries
+ * whatever the engine said, and an operator reading a panel needs the first clause of it far
+ * more than he needs the stack that followed; the whole sentence is in the hub's log.
+ */
+const DETAIL_KEPT = 400;
+
+/**
+ * The stop the loop makes on its own behalf. A disabled policy is the coordinator's own first
+ * stop reason and the cycle never gets far enough to be told it — so the loop says it, in the
+ * coordinator's word, rather than leaving the commonest "why is nothing running" as a silence.
+ */
+const DISABLED_STOP: Stop = {
+  reason: "disabled",
+  detail: "the policy in force is not enabled, so the loop draws nothing",
+};
 
 /**
  * How many folders one tick asks the fleet about; the rest wait for the next tick. A machine
@@ -3158,6 +3178,58 @@ export function conductor(deps: ConductorDeps): Conductor {
     return today;
   }
 
+  /**
+   * THE CYCLE'S OWN VERDICT, left where the `pulse` door can find it (#328).
+   *
+   * Only the newest one is kept: "why did nothing run" is a question about the cycle that just
+   * ended, and a history of them is the hub's log, which already has every gap in full. The
+   * day's counts are {@link rollUp}'s and are a different reading — this one is a single cycle,
+   * and the two would answer the operator's question differently on the first tick after
+   * midnight if they were one key.
+   *
+   * THE GAPS ARE FOLDED BY REASON HERE, at the only place that holds all of them: a cycle
+   * contending with a second conductor declines every candidate it looks at, and a door that
+   * shipped four hundred rows to a panel would have replaced an invisible loop with an
+   * unreadable one. The first instance of each reason survives the fold, because a count says
+   * how much and a record id says where to look.
+   *
+   * A key the host refuses is a note and never a raised cycle: the loop's work is done by the
+   * time this runs, and losing the explanation must not lose the tick.
+   */
+  async function keepCycle(
+    at: number,
+    stop: Stop | null,
+    gaps: readonly Gap[],
+    notes: string[],
+  ): Promise<void> {
+    const counted = new Map<GapReason, { count: number; recordId: string; detail: string }>();
+    for (const gap of gaps) {
+      const held = counted.get(gap.reason);
+      if (held === undefined) {
+        counted.set(gap.reason, {
+          count: 1,
+          recordId: gap.recordId,
+          detail: gap.detail.slice(0, DETAIL_KEPT),
+        });
+      } else held.count += 1;
+    }
+    const report: z.infer<typeof CycleReportSchema> = {
+      at: new Date(at).toISOString(),
+      stop:
+        stop === null ? null : { reason: stop.reason, detail: stop.detail.slice(0, DETAIL_KEPT) },
+      // Most declined first, and ties by the reason's own word, so two cycles of the same shape
+      // read the same way down the page.
+      gaps: [...counted]
+        .sort(([left, a], [right, b]) => b.count - a.count || left.localeCompare(right))
+        .map(([reason, seen]) => ({ reason, ...seen })),
+    };
+    try {
+      await keys.set(CONDUCTOR_CYCLE_KEY, JSON.stringify(report));
+    } catch (error) {
+      notes.push(`the cycle's own verdict cannot be kept: ${message(error)}`);
+    }
+  }
+
   return {
     async tick(): Promise<TickReport> {
       const at = deps.now();
@@ -3185,6 +3257,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         // answered by the tally rather than by the absence of one.
         count(gapsByReason, "disabled");
         const tick = { gaps: tallied(gapsByReason), refusals: tallied(refusals) };
+        await keepCycle(at, DISABLED_STOP, [], notes);
         return {
           at,
           cycleRunId,
@@ -3236,6 +3309,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       for (const gap of gaps) count(gapsByReason, gap.reason);
       if (stop !== null) count(gapsByReason, stop.reason);
       const tick = { gaps: tallied(gapsByReason), refusals: tallied(refusals) };
+      await keepCycle(at, stop, gaps, notes);
 
       return {
         at,

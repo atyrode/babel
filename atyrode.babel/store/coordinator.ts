@@ -41,7 +41,7 @@
 
 import { z } from "zod";
 import type { GuestDatabase, GuestSqlParam, GuestSqlRow } from "@manifold/plugin-kit";
-import type { INTEREST_STATES } from "../contract.ts";
+import type { GapReason, INTEREST_STATES, StopReason } from "../contract.ts";
 import { CodeProfileSchema, ROLES } from "../contract.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
@@ -472,20 +472,6 @@ export interface PolicyInForce {
 
 // ---------------------------------------------------------------------------- what a draw answers
 
-export const GAP_REASONS = [
-  "excluded",
-  "retired",
-  "replaced",
-  "capped",
-  "claimed",
-  "exhausted",
-  "cooling",
-  "settled",
-  "unsupported",
-  "empty",
-] as const;
-export type GapReason = (typeof GAP_REASONS)[number];
-
 /**
  * One candidate this draw declined and why — data rather than a sentence, so a surface can count
  * the reasons a cycle did not spend. §E4 requires unsupported sources and repeatedly skipped
@@ -499,24 +485,6 @@ export interface Gap {
   readonly reason: GapReason;
   readonly detail: string;
 }
-export const STOP_REASONS = [
-  "invalid-policy",
-  "disabled",
-  "batch",
-  "per-cycle",
-  "daily",
-  "no-candidates",
-  "no-lane",
-  /**
-   * Evaluation is enabled but the installed policy names no Code profile and destination. It
-   * is the cycle's reason and never a draw's — an unrouted loop must not reserve a claim it
-   * cannot dispatch.
-   */
-  "unrouted",
-  /** A route existed, but its projection, prompt, engine post or claim binding was refused. */
-  "dispatch-refused",
-] as const;
-export type StopReason = (typeof STOP_REASONS)[number];
 
 /** Why a draw produced no assignment. It is recorded either way: "why is nothing being reviewed"
  *  is the question an operator asks when the answer is not visible. */

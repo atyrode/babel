@@ -3,11 +3,13 @@ import { formatManifoldUri } from "@manifold/protocol";
 import { GENERATOR_PLUGIN_ID, LAUNCHER_PANEL } from "@atyrode/manifold-code";
 import type { z } from "zod";
 import type {
+  CycleReportSchema,
   DrainStatusSchema,
   PolicyResultSchema,
   PresetSchema,
   ProfileRowSchema,
   ProfilesResultSchema,
+  PulseResultSchema,
   RecipeRowSchema,
   RunProgressSchema,
   RunRowSchema,
@@ -29,7 +31,9 @@ import {
   door,
   type ActionName,
   type DrainPreset,
+  type GapReason,
   type ProfileAccount,
+  type StopReason,
 } from "../contract.ts";
 
 /** One of the five requests, as the contract spells them. */
@@ -703,4 +707,60 @@ export const DRAIN_STATE_NOTE: Record<string, string> = {
   deadline: "It stopped itself: the deadline passed.",
   stopped: "An operator stopped it.",
   failed: "It could not launch anything and stopped rather than pretending to run.",
+};
+
+// ------------------------------------------------------ why a cycle did nothing (#328)
+
+/** The pulse door's whole answer; this panel reads the last cycle out of it. */
+export type PulseResult = z.infer<typeof PulseResultSchema>;
+
+/** The last cycle's own verdict, as the pulse door answers it. */
+export type CycleReport = z.infer<typeof CycleReportSchema>;
+
+/**
+ * THE STOP THAT IS THE LOOP WORKING. A cycle that dispatched everything one batch allows has
+ * stopped for the best possible reason, and a panel that announced it would be a notice on
+ * every healthy cycle — which is how a section meant to explain silence becomes the noise it
+ * was built to replace. It is the one word this panel says nothing about.
+ */
+export const HEALTHY_STOP: StopReason = "batch";
+
+/*
+  WHY DRAWING STOPPED, AND WHY A CANDIDATE WAS DECLINED, in the operator's words.
+
+  Both tables are keyed by the contract's own vocabularies rather than by `string`, so a word
+  added to `STOP_REASONS` or `GAP_REASONS` and not spelled here is a type error at the build
+  rather than a blank line on the panel. That is the whole reason the two lists moved into
+  `contract.ts`: the loop's reasons are a vocabulary two halves share, not prose a panel
+  matches on.
+
+  A STOP IS A SENTENCE AND A GAP IS A CLAUSE, because of where each is read: the stop is the
+  answer to "why did nothing run" and stands alone; a gap is one row of a counted list and is
+  read after its own figure. The coordinator's own detail is shown beside each, with the
+  numbers and the names these cannot carry.
+*/
+
+export const STOP_NOTE: Record<StopReason, string> = {
+  "invalid-policy": "The policy in force is not usable, so nothing may be drawn against it.",
+  disabled: "Babel is switched off: the policy in force does not authorize evaluation.",
+  batch: "It dispatched everything one cycle is allowed.",
+  "per-cycle": "The cycle's own spend ceiling is reached.",
+  daily: "The day's spend ceiling is reached.",
+  "no-candidates": "Nothing is eligible for review.",
+  "no-lane": "No lane could be satisfied from what is eligible.",
+  unrouted: "The policy names no Code profile to run a review on.",
+  "dispatch-refused": "A review was drawn and the dispatch was refused.",
+};
+
+export const GAP_NOTE: Record<GapReason, string> = {
+  excluded: "filed under a topic you excluded",
+  retired: "filed under a topic that is retired",
+  replaced: "superseded by a newer revision",
+  capped: "already reviewed as many times as the policy allows",
+  claimed: "another worker holds the claim",
+  exhausted: "skipped or failed too often to keep drawing",
+  cooling: "reviewed too recently to review again",
+  settled: "a pass already ran and its proposal is waiting on a ruling",
+  empty: "the lane had nothing to draw",
+  unsupported: "not the kind of record that lane works",
 };

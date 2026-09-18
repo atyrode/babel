@@ -19,6 +19,8 @@
 import { z } from "zod";
 import {
   ACTIONS,
+  CONDUCTOR_CYCLE_KEY,
+  CycleReportSchema,
   EntityIdSchema,
   FeedQuerySchema,
   FeedResultSchema,
@@ -38,7 +40,7 @@ import {
 } from "../contract.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
-import { defineServerAction } from "@manifold/plugin-kit/server";
+import { defineServerAction, type GuestStorage } from "@manifold/plugin-kit/server";
 
 /** Reading is a read of the plugin's own rows; the caller needs the workspace it asked about. */
 const READ_CAPS = ["containers:read"] as const;
@@ -91,6 +93,30 @@ const WAKING_DELEGATES = ["jobs:read", "machines:read"] as const;
 
 /** `pulse` and `topics` are asked without arguments; a strict empty object says so on the wire. */
 const NoQuerySchema = z.strictObject({});
+
+/**
+ * THE LAST CYCLE'S OWN VERDICT, read from where the conductor left it (#328).
+ *
+ * It is a key rather than a table because the loop is not the store: a cycle is a fresh
+ * conductor over whatever wake caused it, and its verdict is one small document that the next
+ * cycle replaces. The pulse is the door that already answers "what has Babel been doing", so
+ * this is the least invented home for "and why did the last cycle do nothing".
+ *
+ * A KEY THAT CANNOT BE READ, OR HOLDS A SHAPE THIS BUILD DOES NOT KNOW, IS NO CYCLE. The
+ * alternative is a door that refuses the whole pulse because a value written by an older
+ * conductor no longer parses — today's counts would disappear from Home to report that an
+ * explanation could not be read, which is the wrong half to lose.
+ */
+async function lastCycle(storage: GuestStorage): Promise<z.infer<typeof CycleReportSchema> | null> {
+  try {
+    const held = await storage.get(CONDUCTOR_CYCLE_KEY);
+    if (held === null) return null;
+    const parsed = CycleReportSchema.safeParse(JSON.parse(held) as unknown);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------- the doors
 
@@ -174,7 +200,9 @@ export function readDoors(store: BabelStore): readonly Door[] {
         input: NoQuerySchema,
         result: PulseResultSchema,
       }),
-      async () => await store.pulse(),
+      // Two halves of one answer, from the two places a plugin keeps state: the store measures
+      // the day, the keys hold what the loop last decided.
+      async (ctx) => ({ ...(await store.pulse()), cycle: await lastCycle(ctx.storage) }),
     ),
 
     defineDoor(

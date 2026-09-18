@@ -11,6 +11,28 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A cycle that did nothing says why.** The conductor's `TickReport` has carried a stop reason and
+  a list of gaps since it shipped and no door exposed either, so a cycle that produced nothing and
+  said nothing was indistinguishable, from every surface, from a cycle that was broken. The
+  `pulse` door now answers the last cycle's stop with its detail and its gaps **counted by
+  reason**, and Watch renders them under Runs, where they explain the absence. Counted, not
+  listed: a loop contending with a second conductor declines every candidate it looks at, and
+  shipping four hundred rows to a panel replaces an invisible loop with an unreadable one. Each
+  counted row keeps the first instance's record and the coordinator's own sentence, so the panel
+  reads `412 × claimed / another worker holds the claim / hyp_00000009 — …`: how much, what it
+  means, and where to look.
+
+  **A cycle that spent normally renders nothing** — no heading, no empty section, no "no problems"
+  line — and so does a deployment whose loop has never run. The commonest silence is now named:
+  a policy that is not enabled returns before the coordinator is ever reached, so the loop states
+  that stop itself rather than leaving "why is nothing running" unanswered.
+
+  `GAP_REASONS` and `STOP_REASONS` moved from the coordinator into the contract, word for word, so
+  a door can spell a reason as an enum and refuse a word nobody declared. Watch's label tables are
+  `Record<StopReason, string>` and `Record<GapReason, string>`: a nineteenth reason with no label
+  is a compile error rather than a blank cell on a panel. A stored verdict from a build that
+  spelled its reasons differently answers `null` rather than refusing the whole pulse — losing the
+  explanation is the right loss; losing today's counts off Home is not.
 - **What the operator told Babel reaches the run.** `tell` has written `steering` rows since it
   shipped and the `policy` door reads them back, which fixed the worse half — a box that accepts a
   sentence and shows it nowhere. The remaining half is what makes it a memory rather than a log:

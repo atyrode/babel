@@ -21,6 +21,7 @@ function hub(overrides: Record<string, (args: unknown) => unknown> = {}): Fake {
       since: "2026-09-12T00:00:00Z",
       today: { sessionsRead: 0, records: 0, votes: 0, proposals: 0, topicProposals: 0, ruled: 0 },
       reviewing: [],
+      cycle: null,
     }),
     interest: () => ({}),
     tell: () => ({}),

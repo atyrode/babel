@@ -2,8 +2,10 @@ import type { HostServices } from "@manifold/plugin";
 import type { ActionOutcome, MachineSummary } from "@manifold/protocol";
 import { ACTIONS, OPERATIONS, door, type ActionName } from "../../contract.ts";
 import type {
+  CycleReport,
   DrainStatus,
   PolicyResult,
+  PulseResult,
   RunProgress,
   RunRow,
   RunsResult,
@@ -205,6 +207,27 @@ export const TOPICS: TopicsResult = {
   unfiled: 12,
 };
 
+/** A cycle that dispatched everything one batch allows and declined nothing. */
+export const HEALTHY_CYCLE: CycleReport = {
+  at: "2026-09-12T08:59:30.000Z",
+  stop: { reason: "batch", detail: "dev-01 already holds 4 of 4 review slots" },
+  gaps: [],
+};
+
+/**
+ * THE PULSE THIS PANEL READS: a deployment whose last cycle spent normally. The panel takes
+ * only the cycle out of it, and the healthy shape is the default because "nothing to report"
+ * is what a working loop reports on nearly every tick.
+ */
+export function pulseResult(cycle: CycleReport | null = HEALTHY_CYCLE): PulseResult {
+  return {
+    since: "2026-09-12T00:00:00.000Z",
+    today: { sessionsRead: 4, records: 3, votes: 2, proposals: 1, topicProposals: 0, ruled: 1 },
+    reviewing: [],
+    cycle,
+  };
+}
+
 /**
  * The saved Code profiles, as Babel's `profiles` door answers them. Two, because the choice
  * the panel makes is between them, and the second carries no selection Code can review — the
@@ -272,6 +295,8 @@ export function watchDoors(answers: {
   readonly runs: () => RunsResult;
   readonly policy?: () => PolicyResult;
   readonly topics?: () => TopicsResult;
+  /** What Babel did today, and why its last cycle did what it did (#328). */
+  readonly pulse?: () => PulseResult;
   readonly launch?: (args: unknown) => unknown;
   readonly stop?: (args: unknown) => unknown;
   /** Code's saved profiles as Babel's own door answers them; both halves are answers. */
@@ -288,6 +313,7 @@ export function watchDoors(answers: {
     [door(ACTIONS.runs)]: () => answers.runs(),
     [door(ACTIONS.policy)]: () => (answers.policy ?? (() => POLICY))(),
     [door(ACTIONS.topics)]: () => (answers.topics ?? (() => TOPICS))(),
+    [door(ACTIONS.pulse)]: () => (answers.pulse ?? (() => pulseResult()))(),
     [door(ACTIONS.launch)]: (args) => (answers.launch ?? (() => ({ asked: true })))(args),
     [door(ACTIONS.stop)]: (args) => (answers.stop ?? (() => ({ asked: true })))(args),
     [door(ACTIONS.drainStatus)]: (args) => (answers.drainStatus ?? (() => ({ drains: [] })))(args),

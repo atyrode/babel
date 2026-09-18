@@ -450,6 +450,31 @@
   color: var(--babel-warn);
 }
 
+/* --------------------------------------------------------- why a cycle did nothing (#328) */
+
+/* Set apart by a rule the way the overlay strip is, because it is the same kind of thing: a
+   statement about this one cycle rather than about what the deployment does every day. It is
+   on the page only when the loop had something to say, so it may afford the emphasis. */
+.plugin-atyrode_babel_watch__cycle {
+  border-left: 2px solid var(--babel-warn);
+  padding-left: var(--babel-space-3);
+}
+
+.plugin-atyrode_babel_watch__gaps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-atyrode_babel_watch__gap {
+  padding: var(--babel-space-2) 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--babel-rule) 62%, var(--babel-bg));
+}
+
+.plugin-atyrode_babel_watch__gap > p {
+  margin: 0;
+}
+
 /* ------------------------------------------------------------------ recipes */
 
 .plugin-atyrode_babel_watch__recipes {
