@@ -11,6 +11,42 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Nothing scanned a preparation for secrets before a model read it. Something does now.** A
+  credential pasted into a transcript years ago was sealed into a material lease and sent to the
+  provider along with everything else; the disclosure boundary was the operator's choice of Code
+  profile and nothing else. A deterministic scan — fourteen named classes, thirteen structural
+  formats and one bounded entropy heuristic, no model call, no network — runs **inside** the pass
+  that digests and seals, so what the source digest covers is what a model reads.
+
+  **A marker, never a digest of the value.** A redacted span becomes
+  `[[babel-redacted:<class>@<line>:<offset>+<length>]]`. The retired product wrote a truncated
+  digest of the secret, which is a commitment to it, and it travelled to the provider with
+  everything else. The locator resolves only on the machine that prepared the selection, through
+  the same splitter and normalizer that numbered the records, so the marker and the file a reader
+  opens cannot drift apart. The locator travels; the bytes do not.
+
+  **The false-positive bound is the design, not a detail.** A scanner that redacts every digest,
+  identifier and path makes the corpus useless and gets switched off, which is worse than not
+  having one — so the heuristic is bounded before it is allowed to judge: labelled digests are
+  rejected (Babel's own `prep-`, `run_` and `hyp_` ids were a real false positive the tests
+  caught), so are paths, placeholders, template and environment references; three of four
+  character classes are required; the guess is suppressed inside self-declared data so a
+  credential cannot hide beside an embedded image; and a structural match always beats a guess.
+  Each of the fourteen classes has a positive **and** a near-miss that must produce zero findings
+  from any rule, and one test runs a realistic Babel-shaped record — uuid, digest, prep id,
+  timestamps, inline image, absolute path — asserting byte-identical output.
+
+  A refusal names classes and counts and never a value, and a test asserts the message and the
+  whole serialized receipt are free of the secret. The report is on **every** prepare receipt
+  including `off`, because an absent field must not read as clean: absent means no scan ran, and
+  `mode: "off"` is how an unscanned corpus is told apart from a scanned clean one. The prompt
+  tells the model what a marker is and that nothing may be inferred about what it hid — a
+  redaction is evidence that something was there, not evidence of what.
+
+  A clean corpus's source digest is byte-identical scanned or unscanned, so no preparation
+  identity moves unless its bytes actually held a credential. `docs/sandbox-threat-model.md`'s
+  residual 5 is gone and the residual that actually remains is written in its place: a credential
+  in a format no rule names still travels, and the rule table is the claim.
 - **A record says which codebase it concerns.** In the interface it was often unclear which project
   a hypothesis was about, and the join was available all along: record → its family → the cited
   session → the repository the catalog probed. The peel now carries it, and distinguishes **how it

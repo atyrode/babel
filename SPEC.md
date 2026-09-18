@@ -160,9 +160,16 @@ The archive can contain secrets, private source code, personal data and attachme
 The public repository and CI contain only generated synthetic fixtures. Real operator
 transcripts, titles, paths, catalogs, credentials and analysis outputs are never committed.
 
-**A deterministic secret preflight over material is specified and not built** — see
-`docs/parity.md`, the `preflight/` row. Until it exists, the disclosure boundary is the operator's
-choice of Code profile and nothing else.
+**A deterministic secret preflight scans every preparation before its material is sealed.** It
+runs inside the pass that digests and seals, so what the source digest covers is what a model
+reads. A likely-secret span is replaced by a marker naming its class and its position, never a
+digest of the value — a commitment to a secret is a thing about the secret, and it would travel to
+the provider along with everything else. The bytes stay on the machine that prepared them, and the
+marker's locator resolves there and nowhere else. A refusal names what was found by class and
+never by value, and the receipt carries the report on every preparation including an unscanned
+one, because an absent field must not read as clean. What the rule table does not recognize still
+travels: the boundary is a named list of formats, and `docs/sandbox-threat-model.md` §5 states the
+residual that remains.
 
 ### 3.1 Repository subjects
 
@@ -748,8 +755,16 @@ Claude structures degrade explicitly rather than being discarded.
 
 Before material reaches a model, likely secrets and high-risk data, malformed or truncated
 sessions, transcript size, and duplicate or changed inputs are checked, and the result uses the
-same evidence model as an observation. **Not built** (§3, `docs/parity.md`). Nothing scans a
-preparation today, so the disclosure boundary is the operator's choice of Code profile.
+same evidence model as an observation.
+
+**The secret scan is built** (§3): a rule table of named classes, structural formats and one
+bounded entropy heuristic, deterministic for the same bytes, with no model call and no network.
+It redacts by default, may be asked to refuse, and records which on the receipt. The scan is
+bounded before it is allowed to judge, because a scanner that redacts every digest, identifier
+and path makes the corpus useless and gets switched off, which is worse than not having one.
+
+The rest of this section is not built: nothing checks a session for truncation, nothing bounds a
+transcript by size, and nothing recognizes an input it has already prepared.
 
 ### 6.5 Explore through Code
 

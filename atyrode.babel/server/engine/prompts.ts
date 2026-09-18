@@ -476,6 +476,19 @@ function materialSection(input: ExplorePromptInput): string {
     `\`${input.preparationId}\` and it is immutable — these are the exact bytes every later reader `,
     "of your claims will recover.\n\n",
   );
+  // THE MARKER IS A PROPERTY OF THE MATERIAL, so it is described where a reader learns what they
+  // are looking at (#339). The shape is `machine/preflight.ts`'s `redactionMarker`; it is prose
+  // here because nothing on this side parses it, and the last sentence is the load-bearing one —
+  // an unexplained marker is an invitation to reconstruct what it hid from the context around it,
+  // which is the opposite of what the scan is for.
+  parts.push(
+    "A record may carry `[[babel-redacted:<class>@<line>:<offset>+<length>]]` where a likely ",
+    "credential was. The scan that sealed this material replaced the value, so those bytes are ",
+    "not available to this run at any path, and the locator resolves only on the machine that ",
+    "prepared the selection. Infer nothing about what a marker contained: it is evidence that ",
+    "something was there, not evidence of what it was. A claim that needs the redacted value ",
+    "cannot be made, and saying so is the honest answer.\n\n",
+  );
   for (const entry of input.sessions) {
     parts.push(`- ${entry.selector} — \`${MATERIAL_SESSIONS}/${entry.file}\`\n`);
   }

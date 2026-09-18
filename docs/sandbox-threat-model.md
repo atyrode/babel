@@ -108,6 +108,12 @@ side of the line (`SPEC.md` §2.6; `atyrode.babel/machine/prepare.ts`):
   being written is excluded outright, because a scope whose bytes move has no stable identity.
 - Babel's own run transcripts are excluded unless a preset asks for them, so Babel does not read
   itself by accident.
+- The selection is scanned for likely credentials before it is sealed, and a matched span is
+  replaced by a marker naming its class and the locator of the original
+  (`atyrode.babel/machine/preflight.ts`). The scan is deterministic — patterns and an entropy
+  heuristic, no model and no network — so the same bytes redact the same way on any machine, and
+  the locator resolves only against the log this machine holds. A preparation may refuse the
+  scope instead, and either way the receipt carries what was found by class and never by value.
 - The index records, per session, the selector, the file and the digest it was served at. Every
   citation is checked against it, and a path the material does not name or a digest that does not
   match refuses the whole answer as `unknown-reference`.
@@ -123,7 +129,10 @@ Most reachable first. A residual discovered in the system belongs in this list i
 1. **Exfiltration through the model is possible and accepted.** The material is sent to a provider
    as prompt content; that is what analysis is. Anything in the selected corpus reaches the
    provider by design, and nothing distinguishes an analysis prompt from a payload. The levers are
-   what goes into the selection and who the provider is — not a filter, and both are the operator's.
+   what goes into the selection and who the provider is, and both are the operator's. The secret
+   preflight narrows this for one class of content — a likely credential does not travel — but it
+   is a credential scanner rather than a filter on meaning: private source, personal data and
+   anything else in the selection still reaches the provider by design.
 2. **Prompt injection from the corpus is the live attack.** Archive content is attacker-influenced
    by contract, and it is read by a session with whatever tools Code gives it. Babel's mitigations
    are narrow and worth naming precisely: the answer must be one fenced block matching a strict
@@ -141,9 +150,12 @@ Most reachable first. A residual discovered in the system belongs in this list i
    an operation killed in between leaves them until the job's state is reclaimed. A restore that
    named a target meant to be kept is a copy the operator now owns, in the open, with none of the
    repository's encryption around it.
-5. **Nothing scans a preparation before a model reads it.** The retired product had a deterministic
-   secret preflight; the plugin has none, which `docs/parity.md` records. A credential pasted into
-   a transcript years ago is sent to the provider along with everything else.
+5. **A credential the scan does not recognize still travels.** The preflight is deterministic, so
+   it catches what its rules describe and nothing else: a credential in a format no rule names, or
+   one the entropy heuristic reads as prose, reaches the provider like any other bytes. The rule
+   table is the claim, class by class (`atyrode.babel/machine/preflight.ts`), and the receipt
+   names the rule set that ran so a corpus scanned by an older one is identifiable rather than
+   assumed clean.
 6. **The trust base is the hub, the machine and Code.** The hub constructs the job sandbox, holds
    the store and mints the service capability; the machine's owner binds `restic` and the native
    closure; Code confines the session. Babel audits none of the three and depends on all of them.
@@ -158,7 +170,8 @@ Most reachable first. A residual discovered in the system belongs in this list i
 - Running `verify` means a job on that machine can read the whole repository, and can write a
   session restored out of it back onto that machine.
 - Enabling a machine for `prepare` means that machine can read every session the selection names.
-- Nothing Babel runs scans that material for secrets first.
+- Running an analysis means accepting that a credential in a format the preflight's rules do not
+  name travels with the material.
 
 ## 7. What would invalidate this document
 
@@ -174,7 +187,8 @@ Most reachable first. A residual discovered in the system belongs in this list i
   on every write going to a location the operation declares; a restore that escaped that — an
   absolute target the hub does not check, a write outside the job's own filesystem — is a
   different document.
-- **A secret preflight landing.** Residual 5 disappears and the accepted-risk list in §6 shrinks by
-  one line.
+- **A detector class leaving the preflight's rule table, or the scan ceasing to run before the
+  material is sealed.** §4's third property and residual 5 are written against that table and
+  that ordering; a rule removed or a scan moved after the seal is a different disclosure boundary.
 - **Citations ceasing to be checked against the material index**, which is the only mechanism that
   makes a model's claim about the corpus verifiable.

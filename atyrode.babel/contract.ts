@@ -1573,6 +1573,69 @@ export const PolicyResultSchema = z.strictObject({
   payload: z.record(z.string(), z.unknown()),
 });
 
+// ---------------------------------------------------------------- the secret preflight (#339)
+
+/*
+  WHAT A PREPARATION'S SECRET SCAN PUT ON ITS RECEIPT (SPEC §3 step 4, §6.4).
+
+  `machine/preflight.ts` holds the rules and `machine/prepare.ts` runs them inside the pass that
+  seals the material. This is the part a reviewer reads afterwards, and it exists because the
+  alternative — a preparation whose receipt says nothing about secrets — is indistinguishable from
+  one nobody scanned.
+
+  THE REPORT NAMES CLASSES AND POSITIONS AND NEVER A VALUE. `sites` carries the locator of each
+  redaction: the session, the record, and the range inside it. Resolving that locator back into
+  bytes needs the machine that holds the session (`resolveRedaction`), so the receipt travels to
+  the hub carrying no credential and no commitment to one.
+*/
+
+/** The shape of a preflight report, recorded in it so a reader never guesses which layout it has. */
+export const PREFLIGHT_SCHEMA = "babel.preflight/1";
+
+/**
+ * WHAT A PREPARATION DOES ABOUT A LIKELY SECRET, chosen per preparation.
+ *
+ * `redact` is the default and the answer for a corpus of years of transcripts: the span is
+ * replaced, the rest of the record is still evidence, and the run proceeds. `refuse` is for a
+ * scope that must not risk a disclosure at all — the whole preparation fails and seals no index,
+ * so no material is ever bound. `off` prepares the raw stream and is recorded as such: it is the
+ * operator's to choose and a reviewer's to see, which is the only reason it is nameable.
+ */
+export const PreflightModeSchema = z.enum(["redact", "refuse", "off"]);
+export type PreflightMode = z.infer<typeof PreflightModeSchema>;
+
+/**
+ * WHERE ONE REDACTED VALUE WAS. The class, the session, the record's 1-based ordinal in that
+ * session's normalized stream — the same line number the material's own file has — and the range
+ * inside that record before it was redacted. The length is evidence; the bytes are not here.
+ */
+export const PreflightSiteSchema = z.strictObject({
+  class: z.string().min(1),
+  selector: z.string().min(1),
+  line: z.number().int().positive(),
+  offset: z.number().int().nonnegative(),
+  length: z.number().int().positive(),
+});
+
+export const PreflightReportSchema = z.strictObject({
+  schema: z.literal(PREFLIGHT_SCHEMA),
+  /** Which rule set ran (`PREFLIGHT_DETECTORS`), so "scanned" stays a claim about something. */
+  detectors: z.string().min(1),
+  mode: PreflightModeSchema,
+  /** Records read by the scan; 0 under `off`, which is how a reader tells the two apart. */
+  records: z.number().int().nonnegative(),
+  redactions: z.number().int().nonnegative(),
+  /** Complete, one row per class that fired, sorted by class. */
+  classes: z.array(
+    z.strictObject({ class: z.string().min(1), redactions: z.number().int().positive() }),
+  ),
+  /** A bounded sample of the sites, so a receipt cannot grow with the corpus; the counts above
+   *  are complete, and the material's own markers hold every locator. */
+  sites: z.array(PreflightSiteSchema),
+  sitesOmitted: z.number().int().nonnegative(),
+});
+export type PreflightReport = z.infer<typeof PreflightReportSchema>;
+
 // ---------------------------------------------------------------------------- job outputs
 
 /**
@@ -1661,6 +1724,16 @@ export const ReceiptSchema = z.strictObject({
    * hub to read the twenty lines at the front of it.
    */
   material: MaterialIndexSchema.optional(),
+  /**
+   * WHETHER THIS PREPARATION WAS SCANNED FOR SECRETS, AND WHAT THE SCAN FOUND (#339).
+   *
+   * Present on every `prepare` receipt this machine half writes, including one whose mode was
+   * `off` and one the scan refused — because ABSENT MUST NOT READ AS CLEAN. An absent field says
+   * one thing only: no scan ran, either because the operation reaches no material at all or
+   * because the machine half that wrote it predates the preflight. A reviewer deciding whether a
+   * corpus was checked before a provider read it needs those two states not to look alike.
+   */
+  preflight: PreflightReportSchema.optional(),
   startedAt: z.string(),
   finishedAt: z.string(),
   closure: z.enum(["completed", "failed", "stopped", "skipped"]),
