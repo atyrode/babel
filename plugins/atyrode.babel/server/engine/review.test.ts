@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { ANSWER_FENCE } from "./prompts.ts";
-import { reviewVerdict, type ReviewPreparation } from "./review.ts";
+import {
+  MAX_REJECTED_SUBMISSION_BYTES,
+  rejectedSubmission,
+  reviewVerdict,
+  type ReviewPreparation,
+} from "./review.ts";
 
 /*
   THE VERDICT ON ONE SEALED REVIEW (#305).
@@ -236,6 +241,35 @@ describe("what is left has to stand on its own", () => {
     expect(verdict.result).toBeNull();
     expect(verdict.reason).toBe("schema: a skip cannot also state an assessment");
     expect(verdict.refused).toEqual([]);
+  });
+
+  test("a refused review keeps what it submitted, and says how big one too large to keep was", () => {
+    // THE MEASUREMENT #311 NEEDS. A reason string alone cannot answer "did that class of refusal
+    // fall after the contract changed?" or "did the judgement change under refusal?", so the
+    // answer the model actually sent travels with the verdict and lands on the receipt.
+    const submission = {
+      skip: "the evidence is unreachable from here",
+      vote: "oppose",
+      contributions: [{ kind: "comment", text: "and it is weak anyway" }],
+    };
+    const verdict = reviewVerdict(preparation(), sealed(submission), TARGET);
+    expect(verdict.result).toBeNull();
+    expect(verdict.submitted).toEqual(submission);
+    expect(rejectedSubmission(verdict.submitted)).toEqual({
+      bytes: JSON.stringify(submission).length,
+      payload: submission,
+    });
+
+    // A session that answered nothing has no payload to keep, and no size to report either.
+    expect(reviewVerdict(preparation(), "   ", TARGET).submitted).toBeNull();
+
+    // Kept whole up to the bound, and reported as its size beyond it: a truncated answer is not
+    // the answer anybody submitted.
+    const oversized = { skip: "x".repeat(MAX_REJECTED_SUBMISSION_BYTES) };
+    expect(rejectedSubmission(oversized)).toEqual({
+      bytes: JSON.stringify(oversized).length,
+      withheld: "too-large",
+    });
   });
 
   test("a review with no answer at all is refused whole, with nothing to salvage", () => {
