@@ -30,7 +30,7 @@
 
 import { z } from "zod";
 import type { ROLES } from "../contract.ts";
-import { VOTES } from "../contract.ts";
+import { VOTES, normalizeRemote } from "../contract.ts";
 
 // ---------------------------------------------------------------------------- versions
 
@@ -126,6 +126,78 @@ export const EvidenceSchema = z.strictObject({
 });
 export type Evidence = z.infer<typeof EvidenceSchema>;
 
+/**
+ * THE REPOSITORY ONE CLAIM IS ABOUT, as the evidence recorded it (#183).
+ *
+ * 42.7% of this deployment's records cannot say which codebase they concern. Half of that is a
+ * join nobody walked — Babel's own catalog knows the repository a cited session worked in — and
+ * the other half is this: a conversation about a project the operator was not standing in
+ * leaves no workspace to probe, and only the transcript says which project it was. A run is the
+ * one reader of those bytes, so it is the one thing that can state them.
+ *
+ * NOTHING HERE IS A PROBE. The commit is what the evidence recorded — a `session_meta` git
+ * block, a `git rev-parse` the conversation ran, a sha the operator pasted — and never what the
+ * checkout happens to be at now: a run reads a repository as it was, and the current HEAD is
+ * not evidence about the past. A field the transcript does not support is left empty; a guess
+ * about a codebase is worse than a record that admits it does not know which one.
+ *
+ * It sits on the OBSERVATION and on no other kind, because §4.3 makes an observation the
+ * locator-backed claim: a hypothesis is a guess, a finding consolidates observations and a
+ * proposal addresses one of those, so all three inherit the repository through what they rest
+ * on rather than restating it — and a restatement is a second place for it to be wrong.
+ */
+export const RepositoryClaimSchema = z.strictObject({
+  /**
+   * The repository as `host/owner/repo`. Any spelling git accepts is taken and canonicalized,
+   * because the same repository is written four ways and four strings would read as four
+   * projects; a remote naming a local path normalizes to nothing and reads as absent.
+   */
+  remote: z
+    .string()
+    .max(400)
+    .default("")
+    .transform((url) => normalizeRemote(url))
+    .describe(
+      "The repository this claim is about, as the cited evidence gives it — a remote URL or " +
+        "host/owner/repo. Leave it out unless the transcript itself names the repository.",
+    ),
+  /** The commit the evidence recorded this repository at: 7 to 40 hex, or nothing. */
+  commit: z
+    .string()
+    .trim()
+    .max(40)
+    .toLowerCase()
+    .regex(/^(?:[0-9a-f]{7,40})?$/u, "a commit is 7 to 40 hexadecimal characters, or is omitted")
+    .default("")
+    .describe(
+      "The commit the cited evidence records the repository at, 7 to 40 hexadecimal " +
+        "characters. Only a sha the transcript itself states; never one inferred, and never " +
+        "a checkout's present HEAD.",
+    ),
+  /**
+   * The issue or pull request the cited evidence names, as a whole URL.
+   *
+   * A whole URL is required because it carries its own owner and repository: `#312` and
+   * `Closes #4` name a number in whatever project the reader assumes, and a reference resolved
+   * against the wrong repository is a worse answer than none. The reader shows it only where the
+   * host, owner and repository match the record's own, so a link never travels to another
+   * project on a model's word.
+   */
+  reference: z
+    .string()
+    .trim()
+    .max(300)
+    .regex(
+      /^(?:https:\/\/[a-z0-9.-]+\/[^\s/]+\/[^\s/]+\/(?:issues|pull)\/[0-9]{1,9})?$/u,
+      "an issue or pull request reference is its whole https URL, or is omitted",
+    )
+    .default("")
+    .describe(
+      "The issue or pull request the cited evidence names, as its whole https URL. A bare " +
+        "number names nothing, so omit it unless the evidence gives the URL.",
+    ),
+});
+
 const GRADINGS = ["low", "moderate", "high"] as const;
 const TEMPORAL_STATUSES = ["current", "past", "unknown"] as const;
 const CLASSIFICATIONS = ["private", "redaction-required", "public-safe"] as const;
@@ -157,6 +229,12 @@ export const ObservationPayloadSchema = z
     counter_evidence: z.array(EvidenceSchema).default([]),
     counter_evidence_absent: z.boolean().default(false),
     temporal_status: z.enum(TEMPORAL_STATUSES).optional(),
+    /**
+     * Which codebase this claim is about, when the cited evidence says
+     * ({@link RepositoryClaimSchema}). Optional because a great deal of the corpus is about
+     * work that names no repository, and a required field would be answered by invention.
+     */
+    repository: RepositoryClaimSchema.optional(),
   })
   .refine((p) => p.counter_evidence.length > 0 !== p.counter_evidence_absent, {
     message:

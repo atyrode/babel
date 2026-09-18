@@ -1423,6 +1423,171 @@ describe("corroboration", () => {
   });
 });
 
+describe("the repository a record concerns", () => {
+  /*
+    42.7% OF THE CORPUS CANNOT NAME ITS CODEBASE, which is the largest measured defect in it and
+    the one no sorter touches. The join was there the whole time: the candidate's observation
+    cites a session, and the catalog holds the repository the machine half probed in that
+    session's own workspace. What has to be true is that a repository Babel saw and a repository
+    a transcript merely mentioned never read as the same claim.
+  */
+
+  /** The catalog learning what the cited session's workspace was, as the conductor writes it. */
+  const probed = async (remote: string) =>
+    harness.db.run(`UPDATE sessions SET repository_remote = ? WHERE selector = ?`, [
+      remote,
+      SESSION,
+    ]);
+
+  /** A candidate and the observation under it, which is where a repository claim is stated. */
+  const claiming = async (repository: unknown) => {
+    await insert(harness.db, "records", {
+      id: "hyp_00000201",
+      kind: "hypothesis",
+      root_id: "hyp_00000201",
+      seq: 0,
+      run_id: "run-d",
+      actor_kind: "run",
+      actor_id: "run-d",
+      title: "a candidate about a project nobody stood in",
+      created_at: stamp(NOW - HOUR),
+      payload: JSON.stringify({ schema: 1, statement: "the publisher drops on the second retry" }),
+    });
+    await insert(harness.db, "records", {
+      id: "obs_00000202",
+      kind: "observation",
+      root_id: "obs_00000202",
+      seq: 0,
+      parent_id: "hyp_00000201",
+      run_id: "run-d",
+      recipe_id: "outcome-integrity",
+      recipe_version: 3,
+      actor_kind: "run",
+      actor_id: "run-d",
+      title: "what the conversation said about it",
+      created_at: stamp(NOW - HOUR),
+      payload: JSON.stringify({
+        schema: 1,
+        claim: "the operator says the publisher drops",
+        evidence: [{ locator: { path: CITED_PATH, line: 9, digest: "aa" }, note: "he says so" }],
+        repository,
+      }),
+    });
+    // The edge a settlement writes beside the payload: `cites` carries the session an
+    // observation reached for, and it is what the catalog is joined through.
+    await insert(harness.db, "edges", {
+      id: "edg_0201",
+      kind: "cites",
+      from_kind: "observation",
+      from_id: "obs_00000202",
+      to_kind: "session",
+      to_id: SESSION,
+      position: 0,
+      note: "he says so",
+      actor_kind: "run",
+      actor_id: "run-d",
+      created_at: stamp(NOW - HOUR),
+    });
+  };
+
+  test("a record whose cited session was probed carries what git answered there", async () => {
+    await probed("github.com/atyrode/babel");
+    // The candidate's own payload cites nothing: its observation holds the citation, which is
+    // why the walk has to descend before it can answer at all.
+    expect((await harness.store.record(CANDIDATE))?.repository).toEqual([
+      { remote: "github.com/atyrode/babel", commit: "", reference: "", provenance: "observed" },
+    ]);
+    // And the finding reaches the same session through the observation it consolidates.
+    expect((await harness.store.record(FINDING))?.repository).toEqual([
+      { remote: "github.com/atyrode/babel", commit: "", reference: "", provenance: "observed" },
+    ]);
+    // And a proposal two hops out: it addresses the finding, which consolidates the
+    // observation, which cites the session. A proposal never cites anything itself, so if the
+    // walk stopped at one step every proposal in the corpus would read as being about nothing.
+    await insert(harness.db, "edges", {
+      id: "edg_0203",
+      kind: "addresses",
+      from_kind: "proposal",
+      from_id: ARGUED,
+      to_kind: "finding",
+      to_id: FINDING,
+      position: 0,
+      note: null,
+      actor_kind: "run",
+      actor_id: "run-b",
+      created_at: stamp(NOW - DAY),
+    });
+    expect((await harness.store.record(ARGUED))?.repository).toEqual([
+      { remote: "github.com/atyrode/babel", commit: "", reference: "", provenance: "observed" },
+    ]);
+  });
+
+  test("a repository only the transcript named is marked as named, not as observed", async () => {
+    await claiming({
+      remote: "github.com/tyrode/tyrode-infra",
+      commit: "1a8ff65ab",
+      reference: "https://github.com/tyrode/tyrode-infra/issues/41",
+    });
+    // Nothing of Babel's ever stood in that checkout — the cited session has no repository at
+    // all — so the only authority for it is a conversation, and the peel says so.
+    expect((await harness.store.record("hyp_00000201"))?.repository).toEqual([
+      {
+        remote: "github.com/tyrode/tyrode-infra",
+        commit: "1a8ff65ab",
+        reference: "https://github.com/tyrode/tyrode-infra/issues/41",
+        provenance: "named",
+      },
+    ]);
+  });
+
+  test("the same repository named and probed is one entry, observed, at the commit named", async () => {
+    await probed("github.com/atyrode/babel");
+    // Stated in the spelling git prints rather than the one the catalog holds: two strings for
+    // one repository, and comparing them raw would file a repository Babel saw as hearsay.
+    await claiming({ remote: "git@github.com:atyrode/babel.git", commit: "9c44aaf" });
+    expect((await harness.store.record("hyp_00000201"))?.repository).toEqual([
+      {
+        remote: "github.com/atyrode/babel",
+        commit: "9c44aaf",
+        reference: "",
+        provenance: "observed",
+      },
+    ]);
+  });
+
+  test("a reference naming another project is dropped rather than linked", async () => {
+    // The one part of the claim nothing can check against the catalog, so the check that remains
+    // is that the link goes where the record says it is about. A reader who followed this one
+    // would be reading some other repository's issue 41.
+    await claiming({
+      remote: "github.com/atyrode/babel",
+      reference: "https://github.com/someone/else/issues/41",
+    });
+    expect((await harness.store.record("hyp_00000201"))?.repository[0]?.reference).toBe("");
+  });
+
+  test("a record with no repository at all carries none, rather than an empty one", async () => {
+    // The cited session was never probed and no payload names a project: the honest answer is
+    // that this record cannot say which codebase it is about, which is 42.7% of the corpus.
+    expect((await harness.store.record(CANDIDATE))?.repository).toEqual([]);
+    expect((await harness.store.record(FINDING))?.repository).toEqual([]);
+  });
+
+  test("the commit and the link live at depth five, where the identifiers are", async () => {
+    await probed("github.com/atyrode/babel");
+    await claiming({
+      remote: "github.com/atyrode/babel",
+      commit: "9c44aaf1ab3c",
+      reference: "https://github.com/atyrode/babel/pull/377",
+    });
+    const peel = await harness.store.record("hyp_00000201");
+    expect(peel?.machinery["repositoryCommit"]).toBe("github.com/atyrode/babel@9c44aaf1ab3c");
+    expect(peel?.machinery["repositoryReference"]).toBe(
+      "https://github.com/atyrode/babel/pull/377",
+    );
+  });
+});
+
 describe("lens coverage", () => {
   /*
     THE ZEROS ARE THE FEATURE. Nothing could say "this method has produced nothing about this

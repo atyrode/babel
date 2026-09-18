@@ -11,6 +11,30 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A record says which codebase it concerns.** In the interface it was often unclear which project
+  a hypothesis was about, and the join was available all along: record → its family → the cited
+  session → the repository the catalog probed. The peel now carries it, and distinguishes **how it
+  is known**. A repository is `observed` when git answered in that directory and Babel wrote down
+  what it said; `named` when only a run's answer carries it, read out of a transcript, with
+  nothing of Babel's ever standing in that checkout. Those are different epistemic claims and
+  conflating them is the quiet error this whole thing is about.
+
+  The descent is required rather than convenient: a hypothesis cites nothing, so its repository
+  lives on the observations hanging off it, a finding's on what it consolidates, and a proposal's
+  two hops out. Remotes are canonicalised on both sides before they are compared, because
+  `git@github.com:atyrode/babel.git` measured raw against `github.com/atyrode/babel` would file a
+  repository Babel probed as hearsay. A checkout that declares no origin names nothing a reader on
+  another machine can act on, so the entry is absent rather than guessed.
+
+  **The commit comes from the evidence, never from a probe.** Nothing in the plugin records one
+  and nothing in the retired product did either — its `RepoFingerprint` declared `commit` and only
+  ever wrote `branch`, from one adapter. The run is the one reader of the transcript bytes, so the
+  commit arrives through the answer contract, shape-checked and never re-derived.
+
+  Issue and PR references ship in one form only: a whole URL the run declares, shown only where
+  its own host, owner and repository equal the remote the record names. No `#N`, no `Closes #N`,
+  no `gh pr create` — a bare number names a number in whatever project the reader assumes, and a
+  link that looks precise and points at another repository's issue is worse than no link.
 - **A cycle that did nothing says why.** The conductor's `TickReport` has carried a stop reason and
   a list of gaps since it shipped and no door exposed either, so a cycle that produced nothing and
   said nothing was indistinguishable, from every surface, from a cycle that was broken. The
