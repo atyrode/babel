@@ -1188,3 +1188,47 @@ func TestComparisonAlternativesAreResolvedAndDistinct(t *testing.T) {
 		}
 	})
 }
+
+// An evidence check answers criteria without claiming an outcome, and the
+// review contract requires it to say where those answers were observed. That
+// scope is lawful on its own; refusing it threw away every paid evidence
+// review (2026-09-13). A scope with neither a claim nor a result is still a
+// claim wearing a check's clothes.
+func TestEvidenceCheckMayScopeItsCriterionResults(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	criteria, err := h.store.Operator(ctx, OperatorInput{
+		Kind: KindCriteria, Operator: "alex", Subject: proposalSubject(),
+		Criteria: []Criterion{{ID: "crit_1", Description: "p99 drops below 100ms"}},
+	})
+	if err != nil {
+		t.Fatalf("record criteria: %v", err)
+	}
+	granted := h.claim(t, "asg_evidence_scope", RoleEvidence, testRun)
+	record, err := h.store.Submit(ctx, Submission{
+		AssignmentID: granted.ID, RunID: testRun, Fence: granted.Fence,
+		Assessment: &Assessment{
+			CriteriaID:  criteria.ID,
+			Results:     []CriterionResult{{CriterionID: "crit_1", Satisfied: true, Evidence: []frontier.Evidence{testEvidence(t)}}},
+			Environment: "the archived sessions of this deployment",
+			AsOf:        h.clock.at,
+		},
+	})
+	if err != nil {
+		t.Fatalf("an evidence check with a scoped criterion result was refused: %v", err)
+	}
+	if record.Assessment.Environment == "" {
+		t.Fatal("the recorded evidence check lost its environment")
+	}
+
+	bare := h.claim(t, "asg_evidence_bare_scope", RoleEvidence, testRun)
+	if _, err := h.store.Submit(ctx, Submission{
+		AssignmentID: bare.ID, RunID: testRun, Fence: bare.Fence,
+		Assessment: &Assessment{
+			Contributions: []Contribution{{Kind: ContributionEvidence, Text: "noted", Evidence: []frontier.Evidence{testEvidence(t)}}},
+			Environment:   "staging",
+		},
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an environment with neither an outcome nor a result: error = %v, want ErrInvalid", err)
+	}
+}

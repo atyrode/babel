@@ -915,10 +915,14 @@ func (a Assessment) validateShape() error {
 			return err
 		}
 	}
-	if a.Vote == "" && len(a.Contributions) == 0 && a.Outcome == "" && a.Filing == nil &&
-		a.Backlog == nil {
-		return fmt.Errorf("%w: an assessment states no vote, no contribution, no outcome, no filing "+
-			"and no backlog act; record a skip instead", ErrInvalid)
+	if a.Vote == "" && len(a.Contributions) == 0 && a.Outcome == "" && len(a.Results) == 0 &&
+		a.Filing == nil && a.Backlog == nil {
+		// A criterion result is a statement too: an evidence check that
+		// answers a condition and claims nothing else has said something,
+		// which is exactly what the review contract (explore/review.go)
+		// counts it as.
+		return fmt.Errorf("%w: an assessment states no vote, no contribution, no outcome, no criterion "+
+			"result, no filing and no backlog act; record a skip instead", ErrInvalid)
 	}
 	for i, contribution := range a.Contributions {
 		if err := contribution.validate(); err != nil {
@@ -946,11 +950,14 @@ func (a Assessment) validateShape() error {
 	}
 	if a.Outcome == "" {
 		// An evidence check answers criteria without declaring an outcome, so
-		// results and the criteria version they answer are lawful here. An
-		// observed environment is not: it is the scope of an outcome claim,
-		// and a scope with no claim is a claim wearing a check's clothes.
-		if strings.TrimSpace(a.Environment) != "" {
-			return fmt.Errorf("%w: an observed environment belongs to an outcome claim", ErrInvalid)
+		// results and the criteria version they answer are lawful here, and so
+		// is the environment they were observed in: a criterion result is an
+		// observation with a scope, and the review contract requires that
+		// scope (explore/review.go) because evidence whose scope is unknown
+		// cannot be weighed against contrary evidence later. A scope with
+		// neither a claim nor a result is a claim wearing a check's clothes.
+		if len(a.Results) == 0 && strings.TrimSpace(a.Environment) != "" {
+			return fmt.Errorf("%w: an observed environment belongs to an outcome claim or a criterion result", ErrInvalid)
 		}
 		if a.CriteriaID != "" && len(a.Results) == 0 {
 			return fmt.Errorf("%w: a criteria version with no criterion result answers nothing", ErrInvalid)
