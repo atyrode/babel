@@ -1479,11 +1479,12 @@ test("an overlay the standing lease cannot cover is refused, and so is one that 
 test("the importable tables are derived from the migration itself", () => {
   const tables = importableTables();
   // Twenty-three from the crossing, plus `budgets` (the overlay table #260 added),
-  // `run_progress` (#261), `drains` (#258) and #340's `next_actions` with its
-  // `next_action_rulings` ledger: the list is DERIVED, so a table added to the migration appears
-  // here whether or not the one-off import will ever name it — and one removed disappears, which
-  // is what `service_setup` did with Babel's own inference policy (#279).
-  expect(Object.keys(tables)).toHaveLength(28);
+  // `run_progress` (#261), `drains` (#258), #340's `next_actions` with its
+  // `next_action_rulings` ledger, and #349's `run_calls`: the list is DERIVED, so a table added
+  // to the migration appears here whether or not the one-off import will ever name it — and one
+  // removed disappears, which is what `service_setup` did with Babel's own inference policy
+  // (#279).
+  expect(Object.keys(tables)).toHaveLength(29);
   expect(tables["dispositions"]).toEqual([
     "id",
     "record_id",

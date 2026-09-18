@@ -11,6 +11,27 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A run's calls are recoverable, by locator and never by copy.** Babel kept receipts — cost,
+  tokens, model, closure — which is spend accounting, not traffic. So a claim about how Babel
+  judged something could not be rechecked, only re-run, and a re-run is not the same event: the
+  study that asked for this measured repeated identical requests returning byte-identical values
+  **1 time in 16**. `run_calls` holds one row per call with what it cost and where its bytes are,
+  and two runs can be diffed on what actually differed between them.
+
+  **The finding that shaped it: the hub hands a plugin no per-call traffic at all, and for a run
+  that reaches a model it hands Babel no per-call metering either.** The protocol's own inference
+  event says so in its doc comment — the model, the tokens, the price, never a prompt or a byte of
+  the answer — and Babel does not receive even that, because a Babel run is a Code session whose
+  job belongs to another plugin. What a settlement is handed is a receipt: model, usage, exit
+  code, and a final message bounded at sixteen thousand characters. The per-turn detail exists and
+  is summed away before Babel sees it.
+
+  So the row is one call as this deployment can name one, and the traffic is addressed rather than
+  held: a digest of the answer, a byte count, and a locator to the sealed transcript. Two runs that
+  answered byte-identically share one digest, which makes the 1-in-16 observable without keeping
+  either copy. Cost is integer micro-dollars, the unit the hub meters in, so two runs subtract
+  exactly rather than by float. An empty digest means no transcript was sealed, which is a
+  different fact from an empty answer.
 - **A lens that never looked at a topic can be pointed at it.** The `topic` door has answered
   `coverage` since it shipped — one row per recipe the policy declares, with the records filed
   under that topic reached through each, and the rows at zero were the point. A topic page read

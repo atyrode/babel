@@ -1994,6 +1994,259 @@ export const ReceiptSchema = z.strictObject({
 });
 export type Receipt = z.infer<typeof ReceiptSchema>;
 
+// ------------------------------------------------------------- a run's replayable trace (#349)
+
+/*
+  WHAT A RUN'S CALLS WERE, AS SOMETHING A CLAIM CAN BE RECHECKED AGAINST.
+
+  The receipt above is SPEND ACCOUNTING: one total per run. It cannot answer "how did Babel
+  judge this", only "what did judging it cost", and the difference matters because the remedy
+  for a doubted conclusion is otherwise to run it again — which is a different event. The Jev
+  bench could be audited precisely because it kept the traffic beside the totals.
+
+  THE HUB EXPOSES NO PER-CALL TRAFFIC TO A PLUGIN, and these shapes are honest about it rather
+  than shaped around a source that does not exist. The hub's `inference_call` frame is metering
+  by its own protocol — the model, the tokens, the price, never a prompt or a byte of the answer
+  — and Babel is served none of them anyway: no operation this bundle declares binds a model
+  service (`server/plan.ts`), and a run that reaches a model is a Code session whose job belongs
+  to `atyrode.omp`, which `ctx.jobs` may neither follow nor journal. What a settlement holds is
+  omp's receipt through `atyrode.code.readSession` — a session id, the transcript's path, the
+  model, the agent's last message, ONE usage total summed over every turn, and an exit code.
+
+  SO A CALL'S BODY LIVES IN THE SESSION'S OWN TRANSCRIPT and the trace holds its LOCATOR, on the
+  discipline `PreflightSiteSchema` above already states: the class and the position travel, the
+  bytes stay on the machine that holds the log. `response.digest` is what lets two answers be
+  compared without either being copied.
+*/
+
+/** One call of a run: what it cost, how it ended, and where the bytes of it are. */
+export const RunCallSchema = z.strictObject({
+  runId: z.string(),
+  /** 1-based ordinal within the run. A posted session is omp's one-shot, so it is 1 today. */
+  seq: z.number().int().positive(),
+  /** When this deployment recorded the call; a call carries no instant of its own. */
+  recordedAt: z.string(),
+  /** The model that answered, as the receipt named it; empty when no transcript was sealed. */
+  model: z.string(),
+  /** The engine's own counts, summed over the turns inside the call, as omp reports them. */
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  /** Integer micro-dollars: the unit the hub meters in, so two runs subtract exactly. */
+  costMicros: z.number().int().nonnegative(),
+  /** The session's exit code, or null where Code sealed no transcript to read one from. */
+  exitCode: z.number().int().nullable(),
+  closure: z.enum(["completed", "failed", "stopped", "skipped"]),
+  /** The contract's refusal code for what came back, empty when the answer stood. */
+  refusal: z.string(),
+  /**
+   * SHA-256 OF THE FINAL MESSAGE, AND ITS SIZE — never the message. Two runs that answered
+   * byte-identically share a digest, which is the only way to observe that repeating a request
+   * repeated its answer without keeping either copy. Empty digest means no transcript was
+   * sealed, which is a different fact from an answer that was empty.
+   */
+  response: z.strictObject({
+    digest: z.string(),
+    bytes: z.number().int().nonnegative(),
+  }),
+  /**
+   * WHERE THE BYTES ARE. The machine that ran the session, the engine's session id, and the
+   * log's path ON THAT MACHINE — one JSONL record per message, the request among them.
+   * Resolving it needs that machine, which is the whole point: `machine/adapters/omp.ts` is
+   * what names the log and `machine/prepare.ts` what numbers its records, and neither runs here.
+   */
+  transcript: z.strictObject({
+    host: z.string(),
+    sessionId: z.string(),
+    path: z.string(),
+  }),
+});
+export type RunCall = z.infer<typeof RunCallSchema>;
+
+/**
+ * ONE RUN AS TWO HALVES: what it was asked, and the calls it made answering.
+ *
+ * The request half is read off the run row and its receipt rather than copied into a second
+ * place, for the reason the trace keeps no bodies: a duplicate is a thing that can disagree.
+ */
+export const RunTraceSchema = z.strictObject({
+  runId: z.string(),
+  /** The operation, as the run row spells it. */
+  kind: z.string(),
+  machineId: z.string(),
+  recipeId: z.string(),
+  /** The `prepare` job whose sealed material this run read; empty for a run that read none. */
+  material: z.string(),
+  /** `<provider>/<identityKey>`, empty where the receipt named no account. */
+  account: z.string(),
+  /** The model the receipt named, which is what was ASKED for; a call says what answered. */
+  model: z.string(),
+  /** The operator's remarks the prompt quoted, by id, in the order it quoted them (#331). */
+  steering: z.array(z.string()),
+  calls: z.array(RunCallSchema),
+});
+export type RunTrace = z.infer<typeof RunTraceSchema>;
+
+/**
+ * EVERYTHING TWO RUNS CAN BE SAID TO DIFFER IN, and nothing else — a closed vocabulary because
+ * "what changed" is only an answer if the reader knows what was looked at.
+ *
+ * THE TRANSCRIPT LOCATOR IS DELIBERATELY NOT IN IT. Two runs never share a log, so reporting
+ * that their transcripts differ is noise that would appear in every comparison ever made; both
+ * locators are on the traces for a reader who wants to go and read them.
+ */
+export const RUN_DIFF_FIELDS = [
+  "kind",
+  "machineId",
+  "recipe",
+  "material",
+  "account",
+  "model",
+  "steering",
+  "calls",
+  "closure",
+  "refusal",
+  "response",
+  "responseBytes",
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "costMicros",
+] as const;
+export type RunDiffField = (typeof RUN_DIFF_FIELDS)[number];
+
+/**
+ * WHICH HALF EACH FIELD BELONGS TO, spelled once, because the verdict below is exactly the
+ * question "did the same request answer the same way" and that needs the halves named.
+ */
+export const RUN_DIFF_SIDES: Readonly<Record<RunDiffField, "request" | "answer">> = {
+  kind: "request",
+  machineId: "request",
+  recipe: "request",
+  material: "request",
+  account: "request",
+  model: "request",
+  steering: "request",
+  calls: "answer",
+  closure: "answer",
+  refusal: "answer",
+  response: "answer",
+  responseBytes: "answer",
+  inputTokens: "answer",
+  outputTokens: "answer",
+  cacheReadTokens: "answer",
+  cacheWriteTokens: "answer",
+  costMicros: "answer",
+};
+
+export const RunFieldDiffSchema = z.strictObject({
+  field: z.enum(RUN_DIFF_FIELDS),
+  side: z.enum(["request", "answer"]),
+  a: z.string(),
+  b: z.string(),
+});
+export type RunFieldDiff = z.infer<typeof RunFieldDiffSchema>;
+
+/**
+ * THE FOUR THINGS A COMPARISON OF TWO RUNS CAN CONCLUDE.
+ *
+ * `different-request` comes first because it disqualifies the others: two runs asked different
+ * things and the answers were never comparable. `unanswered` is both runs sealing no transcript
+ * — nothing answered, so nothing agreed. The remaining pair is the measurement the Jev bench
+ * made, which is why this vocabulary exists: the same request, put twice, answering with the
+ * same bytes or with different ones.
+ */
+export const RUN_DIFF_VERDICTS = [
+  "different-request",
+  "unanswered",
+  "same-answer",
+  "different-answer",
+] as const;
+export type RunDiffVerdict = (typeof RUN_DIFF_VERDICTS)[number];
+
+export const RunDiffSchema = z.strictObject({
+  a: z.string(),
+  b: z.string(),
+  verdict: z.enum(RUN_DIFF_VERDICTS),
+  /** Every field that differed, with both values; ordered as {@link RUN_DIFF_FIELDS} is. */
+  differed: z.array(RunFieldDiffSchema),
+  /** Every field that matched. A diff that named only differences could not be read as
+   *  "these two runs agreed about everything except the model" without a second lookup. */
+  same: z.array(z.enum(RUN_DIFF_FIELDS)),
+});
+export type RunDiff = z.infer<typeof RunDiffSchema>;
+
+/**
+ * A RUN'S TRACE FLATTENED TO ONE STRING PER FIELD, which is what makes a diff one shape rather
+ * than a union of seventeen.
+ *
+ * A run's calls are folded rather than compared pairwise: counts and money sum, and the words
+ * join in call order. An absent refusal and an absent digest are written `-` so that two runs
+ * with different numbers of calls cannot collide on a run of empty strings.
+ */
+function foldTrace(trace: RunTrace): Readonly<Record<RunDiffField, string>> {
+  const sum = (pick: (call: RunCall) => number): string =>
+    String(trace.calls.reduce((total, call) => total + pick(call), 0));
+  const join = (pick: (call: RunCall) => string): string =>
+    trace.calls.map((call) => pick(call) || "-").join(" ");
+  return {
+    kind: trace.kind,
+    machineId: trace.machineId,
+    recipe: trace.recipeId,
+    material: trace.material,
+    account: trace.account,
+    model: trace.model,
+    steering: trace.steering.join(" "),
+    calls: String(trace.calls.length),
+    closure: join((call) => call.closure),
+    refusal: join((call) => call.refusal),
+    response: join((call) => call.response.digest),
+    responseBytes: sum((call) => call.response.bytes),
+    inputTokens: sum((call) => call.inputTokens),
+    outputTokens: sum((call) => call.outputTokens),
+    cacheReadTokens: sum((call) => call.cacheReadTokens),
+    cacheWriteTokens: sum((call) => call.cacheWriteTokens),
+    costMicros: sum((call) => call.costMicros),
+  };
+}
+
+/** A run answered when every call it made left a digest to compare. */
+function answered(trace: RunTrace): boolean {
+  return trace.calls.length > 0 && trace.calls.every((call) => call.response.digest !== "");
+}
+
+/**
+ * WHAT ACTUALLY DIFFERED BETWEEN TWO RUNS.
+ *
+ * It is a pure function of two traces and reaches no store, so the same comparison serves a
+ * door, a test and an operator holding two run ids, and none of them can be shown a different
+ * answer than the others.
+ */
+export function diffRunTraces(a: RunTrace, b: RunTrace): RunDiff {
+  const left = foldTrace(a);
+  const right = foldTrace(b);
+  const differed: RunFieldDiff[] = [];
+  const same: RunDiffField[] = [];
+  for (const field of RUN_DIFF_FIELDS) {
+    if (left[field] === right[field]) {
+      same.push(field);
+      continue;
+    }
+    differed.push({ field, side: RUN_DIFF_SIDES[field], a: left[field], b: right[field] });
+  }
+  const askedDifferently = differed.some((entry) => entry.side === "request");
+  const verdict: RunDiffVerdict = askedDifferently
+    ? "different-request"
+    : !answered(a) && !answered(b)
+      ? "unanswered"
+      : answered(a) && left.response === right.response
+        ? "same-answer"
+        : "different-answer";
+  return { a: a.runId, b: b.runId, verdict, differed, same };
+}
+
 // ---------------------------------------------------------------------------- job bindings
 
 /**

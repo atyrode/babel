@@ -78,10 +78,10 @@ import manifestJson from "./manifest.json";
 /**
  * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column, table, index and
  * trigger `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
- * `2026-09-14-store-v1-code-session-silence` — recorded under the same key by the enable before
+ * `2026-09-14-store-v1-next-actions` — recorded under the same key by the enable before
  * it — is its predecessor.
  */
-const STORE_MIGRATION = "2026-09-14-store-v1-next-actions";
+const STORE_MIGRATION = "2026-09-14-store-v1-run-calls";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
