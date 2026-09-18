@@ -11,6 +11,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **An exploration now produces records, which Babel-as-a-plugin had never done.** A settled Code
+  session used to be read, checked against the material it cited and turned into a receipt, and
+  the hypotheses, observations, findings and proposals inside the answer went nowhere: every
+  record the plugin held was imported Go-era history. The settlement now writes them —
+  `records`, the `cites`/`consolidates`/`addresses` edges between them, a candidate's first
+  status event, and the questions a run raised — through the same ingest a sealed machine output
+  goes through, with the development path enforced and nothing at all written when the answer is
+  refused. Every identifier is a digest of the run and the model's own handle, so a settlement
+  replayed after a crash writes the rows once. A run still cannot write a ruling.
+- **The cookbook's seventeen recipes live in the repository as plugin data.** `bun
+  tools/seed-recipes.ts import <dir>` reads a cookbook-shaped directory into
+  `plugins/atyrode.babel/store/recipes.seed.json` — each recipe's id, version, title, the line
+  its question asks and its whole body — and `policy` prints that as the `review.recipes` block
+  `setPolicy` takes. A body seeded under a version the manifest does not record is refused,
+  because a claim cites `id@version`. The tool installs nothing.
+- **`docs/parity.md` records what the standalone product could do and what the plugin can.** One
+  row per retired subpackage, each present, absent by decision with the reason quoted, or absent
+  with the issue that names it.
 - **The conductor now dispatches governed review draws through a pinned Code profile.** An
   enabled policy carries its machine, Code profile and versioned role recipes, so Babel claims
   each draw before posting a blinded session and settles the fenced claim from Code's receipt

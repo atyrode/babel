@@ -1,0 +1,75 @@
+# Parity: the standalone product against the plugin
+
+Babel is a Manifold plugin family under `plugins/atyrode.babel/`. The standalone Go binary, its
+React surface and the multi-machine infrastructure behind them are gone. This document is the
+record of what that removal cost: one row per subpackage of the retired `internal/` tree, what
+capability it represented, and whether the plugin has it.
+
+Three states, and each means something different:
+
+- **present** — the plugin does this. The counterpart is named with a path.
+- **absent by decision** — the plugin deliberately does not do this, and the sentence saying why
+  is quoted rather than cited by number.
+- **absent** — nothing does this. Every absent row has an open issue; the row names it.
+
+The reference implementation is readable at the tag `v0.4.0`: `git show v0.4.0:internal/<pkg>`.
+Nothing under `plugins/` ever imported it — every `internal/` mention in the plugin tree is a
+provenance comment on a port, which is why the deletion broke no build.
+
+## The table
+
+| subpackage | capability | state | counterpart or reason |
+|---|---|---|---|
+| `adapter/` | Read OMP, Codex, Claude Code and Babel's own session logs through one port. | present | `machine/adapters/{omp,codex,claude}.ts`, `machine/adapters/identity.ts`; `sessions.harness` (`store/schema.ts`). |
+| `catalog/` | A rebuildable local cache of every session the machine can see. | present | `sessions` (`store/schema.ts`); the `scan` machine operation (`contract.ts`). |
+| `cli/` | The `babel` command: subcommands, terminal rendering, JSON output. | absent by decision | Babel is reached through its doors and its panels. A hub serves actions, not a terminal; the machine half's only CLI is the one a job's argv invokes. |
+| `complaint/` | The operator's free-text steering, kept as its own record. | present | `steering` (`store/schema.ts`); the `tell` door. |
+| `conductor/` | Decide what deserves a run, under ceilings, and journal the decision. | present | `server/conductor.ts`; `store/coordinator.ts`; `drains` and `budgets` (`store/schema.ts`); the `drainStart`/`drainStatus`/`drainStop` doors. |
+| `config/` | Persistent storage configuration: local or shared mode, credential documents, migration. | absent by decision | There is one store, on the hub, and no mode to choose between. External credentials arrive as a Manifold service binding (`plugins/README.md`, the `atyrode.babel.restic` service) rather than as a document Babel keeps. |
+| `cookbook/` | Load and validate the versioned analysis cookbook. | present | `tools/seed-recipes.ts` reads a cookbook-shaped directory into `store/recipes.seed.json`, whose bodies are what a policy's `review.recipes` carries and what a prompt writes verbatim (`server/engine/prompts.ts`). |
+| `digest/` | Canonical content digests, so a cited blob can be proved unchanged. | present | `MaterialEntry.captureDigest` / `sourceDigest` (`contract.ts`), computed in `machine/prepare.ts`. |
+| `disposition/` | Typed next actions a run proposes — draft an issue, propose a fact, store a memory — and the operator's ledger on them. | absent | `plans` is the right shape and its `CHECK` admits only `topic` and `backlog`; `machine/results.ts` says so where the fields would go. Issue: **"plugin: a run's proposed next action has nowhere to land"**. |
+| `durable/` | Disciplined SQLite: immediate transactions, one writer, sized busy timeout. | absent by decision | The engine owns the handle. A `batch` is the transaction and there is no open connection to discipline (`plugins/README.md`). |
+| `envelope/` | Seal sensitive payloads with AES-256-GCM before they leave the machine. | absent by decision | `store/schema.ts`: "a row is plaintext on the operator's own server". Nothing leaves the hub, so nothing is sealed. |
+| `evaluation/` | Votes, comments, outcome assessments, budgeted assignment, operator criteria. | present | `assessments`, `claims`, `feedback` (`store/schema.ts`); `store/coordinator.ts`; the `rule`/`comment`/`answer` doors. |
+| `event/` | Normalize a harness log into the five evidence categories with content-addressed locators. | present | `machine/prepare.ts`; `MaterialEntry` and `RecordPeel.evidence` (`contract.ts`). |
+| `explore/` | Turn one analysis run into durable records: stages, prompts, submission contracts, receipts. | present | `server/engine/prompts.ts` composes and reads; `machine/results.ts` is the contract; `server/engine/records.ts` turns an accepted answer into `records`, `edges`, `status_events` and `questions`; `server/conductor.ts`'s `settleSession` writes them. See the stage row below. |
+| `fleet/` | Read every host's published analysis and attribute it by host. | absent by decision | `store/schema.ts`: "the hub is the one place". There is no fleet of Babel instances to read. |
+| `frontier/` | The append-only development path: hypothesis, observation, finding, proposal, and rulings. | present | `records`, `edges`, `status_events`, `dispositions` (`store/schema.ts`), immutable by trigger. |
+| `harness/` | One declaration of which harnesses Babel reads. | present | `machine/adapters/`; `sessions.harness` (`store/schema.ts`). |
+| `index/` | A rebuildable retrieval index over the corpus: full text, structure, time. | absent | Nothing indexes the corpus, so nothing retrieves against it: a preparation selects by recency or by topic. `machine/prepare.ts` says the classification it wants "belongs with the retrieval index". Issue: **"plugin: nothing retrieves over the corpus"**. |
+| `objectstore/` | An S3-compatible store for sealed payloads, write-then-verify, never delete. | absent by decision | `store/schema.ts`: "nothing is sealed". `records.payload` is JSON in SQLite. |
+| `pgtest/` | Throwaway PostgreSQL clusters for tests that need a real server. | absent by decision | There is no PostgreSQL. Tests open the plugin's own store (`store/coordinator.test.ts`, `store/acts.test.ts`). |
+| `preflight/` | A deterministic secret scan before anything reaches a model, with locator-bearing findings. | absent | Nothing scans a preparation before it is bound into a session's sandbox. Issue: **"plugin: nothing scans a preparation for secrets before a model reads it"**. |
+| `presence/` | What is running right now, readable off-host. | present | `run_progress` (`store/schema.ts`); `RunProgress` (`contract.ts`); Watch renders it. |
+| `reality/` | The ledger: entities, facts, questions, answers, plans, the operator's interest. | present | `entities`, `aliases`, `facts`, `fact_status`, `resolutions`, `questions`, `question_events`, `answers`, `plans` (`store/schema.ts`); the `topic`/`topics`/`interest` doors. |
+| `reference/` | A typed, resolver-validated citation graph. | present | `edges` (`store/schema.ts`), whose `kind`/`from_kind`/`to_kind` generalize it. |
+| `research/` | A broker for pre-approved public URLs — the only path to the network. | absent | The plugin reaches no network of its own. Issue: **"plugin: a claim cannot cite anything outside the corpus"**. |
+| `restic/` | A contract-bearing wrapper over the restic CLI, never `forget`, `prune` or `repair`. | present | `machine/restic.ts` and the `archive` machine operation over one HTTP-proxied storage document. The lock-inspection verbs are not reproduced, and `unlock` is prohibited anyway. |
+| `review/` | A service over the ledger: queue, history, lineage, structured refinement, export. | absent | The queue and the lineage are present as the feed and the peel; structured refinement of a record's own text and any export are not. Issue: **"plugin: a record's refinement cannot be applied and nothing exports the ledger"**. |
+| `run/` | Run lifecycle, preparation identity, receipts, redaction, authority. | present | `runs` (`store/schema.ts`); `RunRow`, `RunProgress`, `Receipt` (`contract.ts`); `machine/prepare.ts`. |
+| `sharedcatalog/` | A shared PostgreSQL schema coordinating many machines, object-first then Postgres-last. | absent by decision | `store/schema.ts`: "nothing is sealed and nothing is synced. The hub is the one place." |
+| `sync/` | Publish this host's durable records to the shared backend, with a retry journal. | absent by decision | Same: there is nowhere to publish to. |
+| `synth/` | Generate synthetic corpora on disk for fixtures. | present | `machine/test/fixtures.ts`. |
+| `title/` | A durable store of model-inferred session titles — the one session field that cannot be recomputed. | absent | `sessions.title` holds whatever the adapter read; nothing infers one, so a session whose log carries no title has none. Issue: **"plugin: a session with no title in its log never gets one"**. |
+| `transcript/` | Render a harness log as one display event stream. | present | `machine/prepare.ts` writes the material; `RecordPeel.evidence` carries the excerpt and the speaker. |
+| `web/` | Server-side feed ranking, paging and reception projection. | present | `store/feedindex.ts`, `store/rank.ts`; the `feed`/`record`/`thread`/`topics`/`topic` doors; `feed/` and `watch/` render them. |
+| `worker/` | Spawn and supervise a sandboxed analysis subprocess over RPC. | absent by decision | A run is a Code session posted through `atyrode.code.runSession` (`contract.ts`). Babel composes the prompt and holds nothing: no model, no thinking level, no account, no process. |
+
+## Two capabilities the table's rows do not name
+
+Both are inside `explore/`'s row and would be invisible as part of it.
+
+- **The challenge and synthesize stages are absent.** `machine/results.ts` declares all three
+  stages with their separate authorities, and `server/engine/prompts.ts` writes each one's
+  instructions, but every launch posts `stage: "explore"` (`doors/launch.ts`) and the settlement
+  reads the answer as that stage. So nothing criticizes a claim and nothing consolidates across
+  runs. Issue: **"plugin: only the explore stage ever runs"**.
+- **A drawn review of a record cannot be dispatched.** The drawn-review lane answers
+  `draw_pending`, so Babel's own reviewers cast no votes. Issue: **"plugin: a drawn review of a
+  record cannot be dispatched (draw_pending)"**.
+
+## What this document is for
+
+It is the evidence that deleting the Go tree lost nothing silently. A capability that is absent
+is absent in writing, with an issue naming it, rather than absent because nobody looked.

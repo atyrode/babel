@@ -3015,7 +3015,14 @@ test("the pulse counts why a cycle did not spend, and the day accumulates across
 const SERVED_FILE = "0001-omp-s1.jsonl";
 const SERVED_DIGEST = "a".repeat(64);
 
-/** One valid exploration answer, in the fenced block the prompt asks the model to end with. */
+/**
+ * ONE VALID EXPLORATION ANSWER, in the fenced block the prompt asks the model to end with.
+ *
+ * It is the whole development path on purpose — a candidate, the locator-backed observation
+ * that develops it, the finding that consolidates it, the proposal that addresses the finding,
+ * and one question the corpus could not settle — because the settlement's job is to turn all of
+ * it into rows and a fixture with only a candidate would prove nothing about the edges.
+ */
 function answered(path: string, digest: string): string {
   const result = {
     candidates: [
@@ -3039,10 +3046,36 @@ function answered(path: string, digest: string): string {
         ],
       },
     ],
-    consolidations: [],
+    consolidations: [
+      {
+        ref: "f1",
+        observations: ["o1"],
+        finding: {
+          title: "a rescan drops the archive's snapshot",
+          pattern: "every rescan after an archive loses snapshot_id",
+          significance: "the corpus cannot be restored from the catalog",
+          counter_evidence_absent: true,
+        },
+        proposal: {
+          title: "keep the snapshot a rescan did not observe",
+          problem: "a rescan names no snapshot and the upsert clears the column",
+          outcome: "an unobserved column is never mentioned by the statement",
+          impact: "high",
+          classification: "private",
+        },
+      },
+    ],
     deferred: [],
     rejected: [],
-    questions: [],
+    questions: [
+      {
+        ref: "q1",
+        subjects: ["the archive"],
+        hypothesis: "h1",
+        prompt: "is the snapshot column authoritative over the archive's own index?",
+        why_asked: "the corpus cannot say which of the two a restore should trust",
+      },
+    ],
   };
   return `Here is what I found.\n\n\`\`\`json\n${JSON.stringify(result)}\n\`\`\`\n`;
 }
@@ -3356,4 +3389,250 @@ test("a read Code refuses is recorded on the run, retried once, and then closed 
   // …and a third wake asks Code nothing more about it: two reads, and no run left to poll.
   await wake().tick();
   expect(code.asked).toHaveLength(2);
+});
+
+// ------------------------------------------- the rows one answer becomes (records.ts)
+
+/** The conductor one wake builds, as `server.ts` builds it: a new one per tick. */
+function wakeOn(store: BabelStore, draws: Draws, code: CodeEngine & { asked: unknown[] }): Conductor {
+  return conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+}
+
+test("an accepted answer becomes the records, edges, statuses and questions it claimed", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST),
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  const report = await wakeOn(store, draws, code).tick();
+  expect(report.pulse.tick.refusals).toEqual({});
+
+  // FOUR RECORDS AND THE PATH BETWEEN THEM. Every one is this run's, written as a run and not
+  // as an operator, and each is its own root at sequence zero: a correction supersedes.
+  const records = await db.query(
+    `SELECT id, kind, parent_id, run_id, recipe_id, recipe_version, actor_kind, actor_id, seq,
+            root_id, title
+       FROM records WHERE run_id = ? ORDER BY kind`,
+    [runId],
+  );
+  expect(records.map((row) => row["kind"])).toEqual([
+    "finding",
+    "hypothesis",
+    "observation",
+    "proposal",
+  ]);
+  for (const row of records) {
+    expect([row["actor_kind"], row["actor_id"], row["run_id"]]).toEqual(["run", runId, runId]);
+    expect([row["seq"], row["root_id"]]).toEqual([0n, row["id"]]);
+  }
+  const byKind = new Map(records.map((row) => [String(row["kind"]), row]));
+  const hypothesis = String(byKind.get("hypothesis")?.["id"]);
+  const observation = String(byKind.get("observation")?.["id"]);
+  const finding = String(byKind.get("finding")?.["id"]);
+  const proposal = String(byKind.get("proposal")?.["id"]);
+  expect(hypothesis).toMatch(/^hyp_[0-9a-f]{32}$/);
+  expect(observation).toMatch(/^obs_[0-9a-f]{32}$/);
+  // AN OBSERVATION HANGS OFF EXACTLY ONE HYPOTHESIS, and only it carries the recipe: the lens
+  // is what the answer attributes, and naming one on a finding would be an attribution nobody
+  // made.
+  expect(byKind.get("observation")?.["parent_id"]).toBe(hypothesis);
+  expect([
+    byKind.get("observation")?.["recipe_id"],
+    byKind.get("observation")?.["recipe_version"],
+  ]).toEqual(["catalog-integrity", 3n]);
+  expect(byKind.get("finding")?.["recipe_id"]).toBeNull();
+  expect(byKind.get("hypothesis")?.["parent_id"]).toBeNull();
+
+  const edges = await db.query(
+    `SELECT kind, from_kind, from_id, to_kind, to_id, note FROM edges
+      WHERE actor_id = ? ORDER BY kind`,
+    [runId],
+  );
+  expect(
+    edges.map((row) => [row["kind"], row["from_id"], row["to_kind"], row["to_id"]]),
+  ).toEqual([
+    ["addresses", proposal, "finding", finding],
+    ["cites", observation, "session", "omp/s1"],
+    ["consolidates", finding, "observation", observation],
+  ]);
+  expect(edges.find((row) => row["kind"] === "cites")?.["note"]).toBe("the rescan's row");
+
+  // THE LIFECYCLE STARTS WITH THE RECORD. A hypothesis with no status event is one no listing
+  // can rank or defer, and only a hypothesis has one: §4.12's lifecycle is the candidate's.
+  const statuses = await db.query(
+    `SELECT record_id, seq, status, actor_kind, run_id FROM status_events WHERE run_id = ?`,
+    [runId],
+  );
+  expect(statuses).toEqual([
+    { record_id: hypothesis, seq: 0n, status: "untriaged", actor_kind: "run", run_id: runId },
+  ]);
+
+  // A question a run raised is the one ledger write it may make: it authorizes nothing, and it
+  // is BLOCKING because it names the candidate it holds up rather than because it said so.
+  const questions = await db.query(
+    `SELECT id, kind, class, text, raised_by_kind, raised_by_id, payload FROM questions
+      WHERE raised_by_id = ?`,
+    [runId],
+  );
+  expect(questions).toHaveLength(1);
+  const question = questions[0]!;
+  expect([question["kind"], question["class"]]).toEqual(["acquire-context", "blocking"]);
+  expect([question["raised_by_kind"], question["raised_by_id"]]).toEqual(["run", runId]);
+  expect(JSON.parse(String(question["payload"]))["work"]).toEqual([
+    { kind: "hypothesis", id: hypothesis, blocking: true },
+  ]);
+
+  // The receipt counts what landed, in the same per-file shape an ingested job's does, and the
+  // run row's own `records` column is the record count a listing reads.
+  const run = (
+    await db.query(`SELECT closure, records, payload FROM runs WHERE id = ?`, [runId])
+  )[0]!;
+  expect(run["closure"]).toBe("completed");
+  expect(Number(run["records"])).toBe(4);
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(receipt["counts"]).toEqual({
+    [JOB_OUTPUT_FILES.records]: 4,
+    [JOB_OUTPUT_FILES.edges]: 3,
+    [JOB_OUTPUT_FILES.statusEvents]: 1,
+    [JOB_OUTPUT_FILES.questions]: 1,
+  });
+
+  // …and no ruling. A disposition is the operator's alone, and a run that could write one would
+  // make Babel an agent that agrees with itself.
+  expect(await db.query(`SELECT COUNT(*) AS n FROM dispositions`, [])).toEqual([{ n: 0n }]);
+});
+
+test("a refused answer writes no record at all, and the receipt is still written at cost", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(`sessions/${SERVED_FILE}`, "b".repeat(64)),
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  const report = await wakeOn(store, draws, code).tick();
+
+  // NOTHING LANDED. A partial development path is worse than none: a finding consolidating
+  // observations nobody holds is exactly the shape §4.2 forbids.
+  expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId]))
+    .toEqual([{ n: 0n }]);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM edges WHERE actor_id = ?`, [runId]))
+    .toEqual([{ n: 0n }]);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM status_events WHERE run_id = ?`, [runId]))
+    .toEqual([{ n: 0n }]);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM questions WHERE raised_by_id = ?`, [runId]))
+    .toEqual([{ n: 0n }]);
+
+  const run = (
+    await db.query(`SELECT closure, cost_usd, records, payload FROM runs WHERE id = ?`, [runId])
+  )[0]!;
+  expect(run["closure"]).toBe("failed");
+  expect(Number(run["records"])).toBe(0);
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(String(receipt["reason"])).toStartWith("unknown-reference:");
+  expect(receipt["counts"]).toEqual({});
+  expect(run["cost_usd"]).toBeCloseTo(0.31, 6);
+  expect(report.pulse.tick.refusals).toEqual({ "unknown-reference": 1 });
+});
+
+test("a consolidation resting on a candidate is the development path skipped, and writes nothing", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const result = {
+    candidates: [{ ref: "h1", hypothesis: { statement: "the catalog forgets sessions" } }],
+    consolidations: [
+      {
+        ref: "f1",
+        // A CANDIDATE, not the observation that would have developed it: §4.2's path is
+        // mandatory, and citing a guess as if it were evidence is its own refusal.
+        observations: ["h1"],
+        finding: { title: "a pattern", pattern: "it recurs", counter_evidence_absent: true },
+      },
+    ],
+    questions: [],
+  };
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: `\`\`\`json\n${JSON.stringify(result)}\n\`\`\``,
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  const report = await wakeOn(store, draws, code).tick();
+
+  expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId]))
+    .toEqual([{ n: 0n }]);
+  const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBe("failed");
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(String(receipt["reason"])).toStartWith("development-path:");
+  expect(report.pulse.tick.refusals).toEqual({ "development-path": 1 });
+});
+
+test("settling the same run twice writes the rows once: the identifiers are the run's own", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST),
+    }),
+  }));
+  const { runId, jobId } = await sessionInFlight(db);
+
+  await wakeOn(store, draws, code).tick();
+  const first = await db.query(`SELECT id FROM records WHERE run_id = ? ORDER BY id`, [runId]);
+  expect(first).toHaveLength(4);
+
+  /*
+    A CRASH BETWEEN THE ROWS AND THE RUN ROW IS REPAIRED, NOT DOUBLED. The run is re-opened the
+    way an unsettled one looks to the next wake, and the same session is read again: every
+    identifier is a digest of the run and the model's own handle, so the replay's inserts are
+    `INSERT OR IGNORE` no-ops. A counter would have produced a second corpus of the same claims.
+  */
+  await db.run(
+    `UPDATE runs SET closure = NULL, finished_at = NULL, records = 0, payload = '{}' WHERE id = ?`,
+    [runId],
+  );
+  await db.run(`UPDATE claims SET finished_at = NULL WHERE job_id = ?`, [jobId]);
+  await wakeOn(store, draws, code).tick();
+
+  expect(await db.query(`SELECT id FROM records WHERE run_id = ? ORDER BY id`, [runId]))
+    .toEqual(first);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM edges WHERE actor_id = ?`, [runId]))
+    .toEqual([{ n: 3n }]);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM status_events WHERE run_id = ?`, [runId]))
+    .toEqual([{ n: 1n }]);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM questions WHERE raised_by_id = ?`, [runId]))
+    .toEqual([{ n: 1n }]);
 });

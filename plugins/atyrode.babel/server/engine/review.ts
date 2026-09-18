@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import { JOB_OUTPUT_FILES, ROLES } from "../../contract.ts";
 import {
@@ -14,6 +13,7 @@ import {
 } from "../../machine/results.ts";
 import type { Assignment } from "../../store/coordinator.ts";
 import { ANSWER_FENCE, answerOf, type Recipe } from "./prompts.ts";
+import { mintId, titleCell, type Row } from "./rows.ts";
 
 type Role = (typeof ROLES)[number];
 /** The Code-session review contract recorded on every review receipt. */
@@ -506,13 +506,8 @@ function pointerExists(value: unknown, pointer: string): boolean {
   return true;
 }
 
-export type Cell = string | number | null;
-export type ReviewRow = Record<string, Cell>;
-
-function mintId(prefix: string, runId: string, ref: string): string {
-  const digest = createHash("sha256").update(`${prefix}\u0000${runId}\u0000${ref}`).digest("hex");
-  return `${prefix}_${digest.slice(0, 32)}`;
-}
+/** The row shape every table here is written in, as {@link Row} spells it. */
+export type ReviewRow = Row;
 
 function recordRow(
   id: string,
@@ -521,7 +516,7 @@ function recordRow(
   preparation: ReviewPreparation,
   runId: string,
   at: string,
-): ReviewRow {
+): Row {
   return {
     id,
     kind: "proposal",
@@ -534,7 +529,7 @@ function recordRow(
     recipe_version: preparation.recipe.version,
     actor_kind: "run",
     actor_id: runId,
-    title: title.length <= 200 ? title : `${title.slice(0, 199)}…`,
+    title: titleCell(title),
     created_at: at,
     payload: JSON.stringify(payload),
   };
@@ -546,7 +541,7 @@ function edgeRow(
   runId: string,
   at: string,
   kind = "addresses",
-): ReviewRow {
+): Row {
   return {
     id: mintId("edg", runId, `${kind}|${fromId}|${preparation.recordId}`),
     kind,
