@@ -482,12 +482,20 @@ async function seed(store: TestStore): Promise<void> {
       coverage_share: 0.5,
       exploration_share: 0.3,
       filing_share: 0.2,
+      // Two lenses in force and only one of them has ever been performed: the fixture carries
+      // the deployment #344 is about, where the roster read off `runs` alone showed one row.
       recipes: [
         {
           id: "outcome-integrity",
           title: "Outcome integrity",
           looksFor: "claims that do not match what happened",
           enabled: true,
+        },
+        {
+          id: "security-boundaries",
+          title: "Security, privacy, and trust boundaries",
+          looksFor: "authority crossing a boundary nobody drew",
+          enabled: false,
         },
       ],
     }),
@@ -1104,7 +1112,7 @@ describe("runs and the policy", () => {
     expect(answer.runs.find((row) => row.id === "run-a")?.calls).toBeNull();
   });
 
-  test("the policy projects its ceilings and joins the recipes to what ran", async () => {
+  test("the policy lists every recipe it declares, including one nothing has ever run", async () => {
     const answer = await harness.store.policy();
     expect(answer.version).toBe("pol-3");
     expect(answer.ceilings).toEqual({ perRunUsd: 1.5, perDayUsd: 12, concurrent: 4 });
@@ -1113,11 +1121,32 @@ describe("runs and the policy", () => {
       { lane: "exploration", role: "evidence", share: 0.3 },
       { lane: "filing", role: "filing", share: 0.2 },
     ]);
-    expect(answer.recipes).toHaveLength(1);
-    expect(answer.recipes[0]?.id).toBe("outcome-integrity");
-    expect(answer.recipes[0]?.title).toBe("Outcome integrity");
-    expect(answer.recipes[0]?.runs).toBe(4);
-    expect(answer.recipes[0]?.lastRunId).toBe("run-d");
+    // The roster is the declared list, so the lens in force that nothing has performed is a
+    // row rather than an absence: a panel built off `runs` alone could not say it existed.
+    expect(answer.recipes.map((recipe) => recipe.id)).toEqual([
+      "outcome-integrity",
+      "security-boundaries",
+    ]);
+    expect(answer.recipes[1]).toEqual({
+      id: "security-boundaries",
+      title: "Security, privacy, and trust boundaries",
+      looksFor: "authority crossing a boundary nobody drew",
+      enabled: false,
+      lastRanAt: "",
+      lastRunId: "",
+      runs: 0,
+    });
+    // And the one that has run still carries its true count and its newest run, which is what
+    // makes the zero above a reading rather than a default everything fell back to.
+    expect(answer.recipes[0]).toEqual({
+      id: "outcome-integrity",
+      title: "Outcome integrity",
+      looksFor: "claims that do not match what happened",
+      enabled: true,
+      lastRanAt: stamp(NOW - 30_000),
+      lastRunId: "run-d",
+      runs: 4,
+    });
     // Only what settled today is spent today; yesterday's finished claim is not.
     expect(answer.spentTodayUsd).toBe(0.25);
   });
@@ -1270,15 +1299,13 @@ describe("lens coverage", () => {
     // An array that omitted the zeros would be the feature failing: the recipes the hub holds and
     // has never run here are the rows worth reading.
     expect(never.length).toBeGreaterThan(0);
-    // THE DECLARED LIST IS THE AXIS, not the list that has run. `policy().recipes` is built from
-    // `runs`, so it holds only the lens something performed — which is exactly the wrong axis
-    // here, because the row worth reading is the lens with no runs behind it.
+    // THE DECLARED LIST IS THE AXIS, not the list that has run: every lens the policy holds is
+    // a row, the looked-at ones first and the never-looked ones after them.
     expect(result.coverage.map((row) => row.recipeId)).toEqual([
       "outcome-integrity",
       "test-economics",
       "time-and-spend",
     ]);
-    expect((await harness.store.policy()).recipes).toHaveLength(1);
   });
 
   test("a finding is attributed through the observation it consolidates, not by its own column", async () => {
