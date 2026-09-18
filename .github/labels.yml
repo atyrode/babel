@@ -1,0 +1,133 @@
+# The label inventory. `bun run labels` proves the live repository matches this file; `--apply`
+# makes it match. Meaning belongs to docs/TRIAGE.md §Label model — this file is the inventory,
+# never a second definition. A live label missing here is reported, never deleted.
+
+# ── State: exactly one on every open non-tracking issue (docs/TRIAGE.md §Label model)
+- name: "needs-triage"
+  color: "d4c5f9"
+  description: "Default state: not yet classified; triage assigns type, area, priority and a state"
+- name: "needs-operator"
+  color: "b60205"
+  description: "Held for a concrete operator decision written as a ## Decision block; triage drives it to an answer"
+- name: "agent-ready"
+  color: "0e8a16"
+  description: "Scoped, prioritized and settled: an agent may claim it and open a PR without asking"
+- name: "blocked"
+  color: "e99695"
+  description: "Waits on another issue or PR named in the body"
+
+# ── Priority: required on agent-ready (docs/TRIAGE.md §Priority rubric)
+- name: "p0"
+  color: "b60205"
+  description: "Priority: confirmed security exposure, data loss, the hub down or a release blocked"
+- name: "p1"
+  color: "d93f0b"
+  description: "Priority: contract violation or bug on a documented path, or prerequisite for p0/p1 work"
+- name: "p2"
+  color: "fbca04"
+  description: "Priority: accepted bug, enhancement or finding — the default"
+- name: "p3"
+  color: "c2e0c6"
+  description: "Priority: hygiene, consistency, nice-to-have"
+
+# ── Signal: applied and removed by scripts/triage-policy.ts from human activity
+- name: "aging"
+  color: "bfd4f2"
+  description: "No human activity for 14 days; a signal for review, never a reason to close"
+- name: "parked"
+  color: "c5def5"
+  description: "Still true, not next: kept deliberately, with no current claim on attention"
+
+# ── Type
+- name: "bug"
+  color: "d73a4a"
+  description: "Something isn't working"
+- name: "enhancement"
+  color: "a2eeef"
+  description: "New feature or request"
+- name: "documentation"
+  color: "0075ca"
+  description: "Improvements or additions to documentation"
+- name: "process"
+  color: "5319e7"
+  description: "Repository process: CI, releases, coordination, the tracker itself"
+- name: "design"
+  color: "c5def5"
+  description: "Needs a design or decision before implementation"
+- name: "prerequisite"
+  color: "0e8a16"
+  description: "Blocks other tracked work"
+- name: "tracking"
+  color: "006b75"
+  description: "Umbrella issue with a checklist of tracked items"
+- name: "security"
+  color: "b60205"
+  description: "Security posture, secret handling or the disclosure boundary"
+- name: "accessibility"
+  color: "f143ab"
+  description: "Barrier affecting people with disabilities"
+
+# ── Area: where a code change lands. Babel is one plugin family, so the areas are its halves
+# rather than a monorepo's packages. Required on agent-ready code work; documentation and
+# process issues carry none.
+- name: "area:store"
+  color: "c5def5"
+  description: "Lands in atyrode.babel/store: the schema, the coordinator, the feed index, ranking, acts"
+- name: "area:doors"
+  color: "c5def5"
+  description: "Lands in atyrode.babel/doors: the read doors and the operator's acts"
+- name: "area:server"
+  color: "c5def5"
+  description: "Lands in atyrode.babel/server: the conductor, the prompt engine, review, drains"
+- name: "area:machine"
+  color: "c5def5"
+  description: "Lands in atyrode.babel/machine: scan, prepare, archive, restic, the adapters"
+- name: "area:feed"
+  color: "c5def5"
+  description: "Lands in atyrode.babel/feed: the reading surface"
+- name: "area:watch"
+  color: "c5def5"
+  description: "Lands in atyrode.babel/watch: the control room"
+- name: "area:jev"
+  color: "c5def5"
+  description: "Lands in the optional atyrode.babel.jev part, which Babel never requires"
+- name: "area:infra"
+  color: "c5def5"
+  description: "CI, the gates, pack and verify, the Manifold and Code pins, the scripts"
+
+# ── Cross-repository
+- name: "cross-repo"
+  color: "5319e7"
+  description: "Needs a coordinated change in atyrode/manifold, atyrode/code or atyrode/dotfiles"
+
+# ── Subject labels that still discriminate. Five others — `manifold-transition`, `phase-b`,
+# `spec-drift`, `test-gap`, `audit-2026-08-30` — are deliberately NOT declared: they name an era
+# that ended with the Go product, and `manifold-transition` had been bulk-applied to issues that
+# are not about it. They are reported as undeclared and stripped from open issues by hand, never
+# by this script, because deleting a label strips it from every issue that carries it.
+- name: "drain"
+  color: "d93f0b"
+  description: "A usage drain failed or needs this; docs/runbook.md owns the procedure"
+- name: "postmortem-2026-09-13"
+  color: "5319e7"
+  description: "Filed from docs/postmortem-2026-09-13-drain.md"
+
+# ── Exit and intake vocabulary (GitHub defaults kept in use)
+- name: "duplicate"
+  color: "cfd3d7"
+  description: "This issue or pull request already exists"
+- name: "invalid"
+  color: "e4e669"
+  description: "This doesn't seem right"
+- name: "wontfix"
+  color: "ffffff"
+  description: "This will not be worked on"
+- name: "question"
+  color: "d876e3"
+  description: "Further information is requested"
+- name: "help wanted"
+  color: "008672"
+  description: "Extra attention is needed"
+- name: "good first issue"
+  color: "7057ff"
+  description: "Good for newcomers"

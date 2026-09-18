@@ -11,6 +11,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The tracker has a lifecycle, and six rules a script proves.** Babel's labels were leftovers
+  of a product that no longer exists — `phase-b`, `spec-drift`, `audit-2026-08-30`, and
+  `manifold-transition` bulk-applied to twenty-three issues most of which are not about it —
+  with no state dimension at all, so nothing said whether an issue was ready for an agent, held
+  for the operator, or waiting on something named. It now carries atyrode/manifold's model,
+  adapted: `docs/TRIAGE.md` owns label meaning, intake, holds, claims and exit;
+  `.github/labels.yml` is the inventory and `bun run labels` proves the live tracker matches it;
+  `bun run triage` enforces T1–T6 hourly and on every issue event, writing only the two that are
+  bookkeeping; `bun run dispatch` answers what may be picked up now. The areas are this family's
+  halves rather than a monorepo's packages, and delivery stays in `AGENTS.md` instead of being
+  restated, because Babel has one gate where Manifold has four CI boundaries.
+  `scripts/triage-policy.test.ts` proves all six rules against constructed issues, including
+  both sides of the fourteen-day boundary the live tracker cannot exercise on demand — a test
+  the upstream implementation's own comment asks for and never got.
 - **A record shows how many runs it rests on, not just how many supports it has.** Three
   observations under a finding read as corroboration; three from one run are one reading
   restated, and the page said only the count — while 175 of 207 findings in this deployment's
