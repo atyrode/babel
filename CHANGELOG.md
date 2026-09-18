@@ -376,6 +376,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The family is at 0.4.0.** The baseline stayed on 0.3.0 through a night that gave it a fourth
+  machine operation, a secret preflight, correction edges, a steering memory, a corroboration
+  determination, a repository on every record, a cycle's reasons on the pulse door and two new
+  tables. Feed and Watch were a patch apart from each other for no reason either could name. All
+  three go to 0.4.0 together, which is how they ship and how a hub installs them;
+  `atyrode.babel.jev` stays at 0.1.0, because a part that has published nothing has not reached
+  its first minor. Tagging a release remains the operator's act.
 - **The Feed part's list panel is called Home, not Babel.** The plugin manager nests the parts
   under their parent, so the tree read `babel` → `Babel` → the one list, which says the part is
   the product rather than a view of it. The part itself has been titled `Feed` since the layout
