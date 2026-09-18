@@ -16,7 +16,7 @@ Babel executes in three places and holds a process in none of them.
   the hub gives it. It has no open database handle, no port, no timer and no credential: a `batch`
   is its transaction and a service binding is its secret.
 - **The machine half** is a Bun bundle the hub installs and runs as a **job** on an enrolled
-  machine: `scan`, `archive`, `prepare`, and nothing else
+  machine: `scan`, `archive`, `prepare`, `verify`, and nothing else
   (`atyrode.babel/manifest.json`; `atyrode.babel/machine/main.ts`). It reads
   session logs, runs restic, and writes sealed outputs. It never reaches a model.
 - **A run that reaches a model is a Code session.** Babel composes a prompt and posts it through
@@ -46,27 +46,45 @@ tmpfs home and the artifacts the operation declares — so it carries no libc un
 names the machine's native closure, and what is not declared does not exist inside. The manifest
 is the whole of what each operation may touch, and it is committed, reviewed code.
 
-| Operation | Reads                                        | Writes                                             | Network  | Ceilings                                       |
-| --------- | -------------------------------------------- | -------------------------------------------------- | -------- | ---------------------------------------------- |
-| `scan`    | `~/.omp`, `~/.codex`, `~/.claude`, read-only | the sealed output lease                            | **none** | 10 min, 1 GiB, 64 processes, 64 MiB of output  |
-| `prepare` | the same three, read-only                    | the sealed output lease                            | **none** | 30 min, 1 GiB, 64 processes, 512 MiB of output |
-| `archive` | the same three, read-only                    | the sealed output lease, and the restic repository | **host** | 10 min, 1 GiB, 64 processes                    |
+| Operation | Reads                                         | Writes                                                                      | Network  | Ceilings                                       |
+| --------- | --------------------------------------------- | --------------------------------------------------------------------------- | -------- | ---------------------------------------------- |
+| `scan`    | `~/.omp`, `~/.codex`, `~/.claude`, read-only  | the sealed output lease                                                     | **none** | 10 min, 1 GiB, 64 processes, 64 MiB of output  |
+| `prepare` | the same three, read-only                     | the sealed output lease                                                     | **none** | 30 min, 1 GiB, 64 processes, 512 MiB of output |
+| `archive` | the same three, read-only                     | the sealed output lease, and the restic repository                          | **host** | 10 min, 1 GiB, 64 processes                    |
+| `verify`  | the restic repository, and none of the corpus | the sealed output lease, and a restore target inside a location it declares | **host** | 60 min, 1 GiB, 64 processes                    |
 
-Four properties of that table carry the weight:
+Five properties of that table carry the weight:
 
-- **No operation writes into the corpus.** The session directories are bound read-only. A job
+- **No operation writes into the corpus.** The session directories are bound read-only where they
+  are bound at all, and `verify` does not mount them: it reads a repository, not a harness. A job
   cannot edit the evidence it read.
-- **Two of the three have no network at all.** Reading and preparing the corpus — the two
-  operations that touch the most hostile bytes — have no route out, so a log that persuades
-  something to exfiltrate has nothing to exfiltrate through.
-- **`archive` has host network because restic must reach the repository**, and its one secret
-  arrives through a loopback service proxy the engine opens for that job alone: a capability minted
-  per job, not the operator's upstream credential. The repository password reaches restic as
-  `RESTIC_PASSWORD` in the **child's** environment only — never argv, never the parent's
-  environment, never a receipt — and each child gets a minimal environment, so no ambient
-  `RESTIC_*` variable can redirect an archive (`atyrode.babel/machine/restic.ts`).
-- **Nothing deletes.** There is no `forget`, no `prune` and no `repair` code path. A compromised
-  `archive` could write a snapshot; it has no verb that removes one.
+- **Two of the four have no network at all, and they are the two that read the most hostile
+  bytes.** Reading and preparing the corpus have no route out, so a log that persuades something
+  to exfiltrate has nothing to exfiltrate through. What the other two reach is one restic
+  repository.
+- **`archive` and `verify` have host network because restic must reach the repository**, and their
+  one secret arrives through a loopback service proxy the engine opens for that job alone: a
+  capability minted per job, not the operator's upstream credential. The repository password
+  reaches restic as `RESTIC_PASSWORD` in the **child's** environment only — never argv, never the
+  parent's environment, never a receipt — and each child gets a minimal environment, so no ambient
+  `RESTIC_*` variable can redirect an archive or aim a verification at another repository
+  (`atyrode.babel/machine/restic.ts`).
+- **A restore writes corpus bytes onto the machine, and the sandbox is what bounds where.**
+  `verify` restores a catalogued session to prove it comes back byte for byte, so those bytes
+  land outside the repository: under the job's own managed cache location, or in the target the
+  caller named. Either path must be inside a location the operation declares writable, or the
+  sandbox refuses the write — what stops a restore landing somewhere else is the manifest and the
+  hub's enforcement of it, not the operation's good behaviour. The scratch directory is removed
+  once the comparison is made, and that is cleanup rather than a boundary: an operation killed
+  between the restore and the removal leaves the bytes where they fell (residual 4).
+- **Nothing deletes, and the absence is enforced rather than incidental.** The verbs restic may be
+  asked for are a closed set of eight — `cat`, `init`, `backup`, `snapshots`, `check`, `ls`,
+  `dump`, `restore` — and every invocation is built by the one function that admits a verb or
+  throws (`RESTIC_VERBS` and `resticArgv`, `atyrode.babel/machine/restic.ts`), with a test that
+  pins the refusal of `forget`, `prune`, `repair` and `unlock`. A compromised `archive` could
+  write a snapshot and a compromised `verify` could read one; neither has a verb that removes one,
+  and a fifth destructive verb costs a deliberate edit to a named list and a failing test rather
+  than a moment's inattention.
 
 The residual here is the hub's own sandbox: Babel declares what it needs and the hub constructs the
 confinement. A defect in that construction is outside this document and inside Manifold's.
@@ -115,10 +133,14 @@ Most reachable first. A residual discovered in the system belongs in this list i
 3. **The provider credential is Code's, and Babel never sees it.** This removes a residual rather
    than adding one, but it relocates it: a compromise of the session reaches whatever credential
    Code placed there, and Babel's receipt cannot tell a reviewer what that was.
-4. **The material is a second copy of sensitive bytes.** A preparation seals real session logs into
-   a job output lease, which is then bound into a session's sandbox. The corpus's sensitivity
-   travels with it, and a machine that may run `prepare` is a machine that may read every session
-   the selection names.
+4. **The material is a second copy of sensitive bytes, and a restore is a third.** A preparation
+   seals real session logs into a job output lease, which is then bound into a session's sandbox.
+   The corpus's sensitivity travels with it, and a machine that may run `prepare` is a machine
+   that may read every session the selection names. A `verify` that restores a session writes
+   those bytes into the job's own cache location, and removes them when the comparison is made —
+   an operation killed in between leaves them until the job's state is reclaimed. A restore that
+   named a target meant to be kept is a copy the operator now owns, in the open, with none of the
+   repository's encryption around it.
 5. **Nothing scans a preparation before a model reads it.** The retired product had a deterministic
    secret preflight; the plugin has none, which `docs/parity.md` records. A credential pasted into
    a transcript years ago is sent to the provider along with everything else.
@@ -133,6 +155,8 @@ Most reachable first. A residual discovered in the system belongs in this list i
 - Running an analysis means sending selected archived conversations to a model provider.
 - Running `archive` means a job on that machine can write to the repository and cannot delete from
   it.
+- Running `verify` means a job on that machine can read the whole repository, and can write a
+  session restored out of it back onto that machine.
 - Enabling a machine for `prepare` means that machine can read every session the selection names.
 - Nothing Babel runs scans that material for secrets first.
 
@@ -143,8 +167,13 @@ Most reachable first. A residual discovered in the system belongs in this list i
   line and requires a declared backend with measured properties.
 - **A machine operation gaining network, or write access to the corpus.** Both are manifest facts
   today, and §3's table is the claim; either change rewrites it.
-- **A fourth machine operation**, or one whose secret arrives by any path other than the job's own
-  service binding.
+- **A machine operation this table does not name**, or one whose secret arrives by any path other
+  than the job's own service binding. The table is the claim operation by operation, so an
+  operation added without a row here is one running with no stated boundary at all.
+- **Restored bytes reaching a path the sandbox does not bound.** The fourth property above rests
+  on every write going to a location the operation declares; a restore that escaped that — an
+  absolute target the hub does not check, a write outside the job's own filesystem — is a
+  different document.
 - **A secret preflight landing.** Residual 5 disappears and the accepted-risk list in §6 shrinks by
   one line.
 - **Citations ceasing to be checked against the material index**, which is the only mechanism that

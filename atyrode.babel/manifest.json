@@ -371,6 +371,89 @@
           "outputBytes": 536870912
         },
         "stdin": false
+      },
+      "atyrode.babel.verify": {
+        "argv": [
+          {
+            "literal": "/job/artifact"
+          },
+          {
+            "literal": "verify"
+          },
+          {
+            "literal": "--input"
+          },
+          {
+            "literal": "/inputs/input"
+          },
+          {
+            "literal": "--out"
+          },
+          {
+            "literal": "/outputs/outputs"
+          }
+        ],
+        "input": {
+          "input": {
+            "type": "string",
+            "required": true,
+            "maxLength": 65536
+          }
+        },
+        "inputFiles": {
+          "input": {
+            "input": "input"
+          },
+          "restic": {
+            "literal": "{\"url\":\"\",\"bearer\":\"\"}",
+            "jsonValues": [
+              {
+                "path": ["url"],
+                "serviceId": "atyrode.babel.restic",
+                "value": "url"
+              },
+              {
+                "path": ["bearer"],
+                "serviceId": "atyrode.babel.restic",
+                "value": "bearer"
+              }
+            ]
+          }
+        },
+        "services": [
+          {
+            "serviceId": "atyrode.babel.restic",
+            "revision": "1",
+            "operationIds": ["storage"]
+          }
+        ],
+        "environment": {
+          "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic",
+          "BABEL_VERIFY_SCRATCH_DIR": "/home/job/.cache/verify"
+        },
+        "runtimeTools": ["bun", "restic", "system"],
+        "executable": {
+          "runtimeTool": "bun"
+        },
+        "locations": [
+          {
+            "locationId": "atyrode.babel.outputs",
+            "access": "write"
+          },
+          {
+            "locationId": "atyrode.babel.cache",
+            "access": "write"
+          }
+        ],
+        "outputs": ["outputs"],
+        "network": "host",
+        "limits": {
+          "timeoutMs": 3600000,
+          "memoryBytes": 1073741824,
+          "processes": 64,
+          "outputBytes": 67108864
+        },
+        "stdin": false
       }
     }
   },

@@ -298,13 +298,14 @@ afterEach(() => {
   harness.close();
 });
 
-test("the roster is profiles, launch and stop, and none of them is governed at a node that is gone", () => {
+test("the roster is profiles, launch, verify and stop, and none is governed at a node that is gone", () => {
   expect(doors.map((entry) => entry.action.name)).toEqual([
     ACTIONS.profiles,
     ACTIONS.launch,
+    ACTIONS.verify,
     ACTIONS.stop,
   ]);
-  const [profiles, launch, stop] = doors as readonly Door[];
+  const [profiles, launch, verify, stop] = doors as readonly Door[];
 
   // Reading Code's saved profiles is a read of containers and nothing else.
   expect(profiles?.action.caps).toEqual(["containers:read"]);
@@ -318,6 +319,18 @@ test("the roster is profiles, launch and stop, and none of them is governed at a
   expect(launch?.action.caps).toEqual(["containers:read"]);
   expect(launch?.action.requirements).toBeUndefined();
   expect(launch?.action.delegates).toEqual([
+    "jobs:read",
+    "locations:read",
+    "locations:write",
+    "machines:read",
+  ]);
+
+  // Verifying the archive posts one of Babel's OWN jobs and writes its run row, so it carries
+  // a write of this plugin's rows and the delegates a posting needs — the same ones, because
+  // it is the same posting path.
+  expect(verify?.action.caps).toEqual(["containers:write"]);
+  expect(verify?.action.requirements).toBeUndefined();
+  expect(verify?.action.delegates).toEqual([
     "jobs:read",
     "locations:read",
     "locations:write",
@@ -746,4 +759,123 @@ test("stopping a run that is still preparing cancels the preparation and closes 
   // Nothing was said to Code: there is no session to say it about.
   expect(code.cancelled).toEqual([]);
   expect((await harness.store.run("run_preparing")).run).toMatchObject({ state: "stopped" });
+});
+
+/** A verification as the operator posts one: the request plus the node it is authorized at. */
+async function check(args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  const machineId = typeof args["machineId"] === "string" ? args["machineId"] : MACHINE;
+  return await dispatch(ACTIONS.verify, {
+    ...args,
+    machineId,
+    operation: { kind: "operation", machineId, operationId: MACHINE_OPERATIONS.verify },
+  });
+}
+
+test("a verification posts Babel's own job and asks for the depth the operator chose", async () => {
+  const answer = await check({ readData: "10%" });
+
+  const runId = String(answer["runId"]);
+  const jobId = String(answer["jobId"]);
+  expect(runId).toMatch(/^run_/);
+  expect(answer).toEqual({
+    runId,
+    jobId,
+    machineId: MACHINE,
+    // Nothing was asked to be restored, so the answer names no snapshot rather than a default.
+    snapshotId: "",
+  });
+  const [posted] = fleet.executed;
+  expect(posted?.operationId).toBe(MACHINE_OPERATIONS.verify);
+  expect(posted?.machineId).toBe(MACHINE);
+  expect(posted?.outputs).toEqual([
+    { name: OUTPUT_BINDING, locationId: "atyrode.babel.outputs", components: [jobId] },
+  ]);
+  expect(JSON.parse(String(posted?.input?.["input"] ?? "null"))).toEqual({
+    runId,
+    machineId: MACHINE,
+    readData: "10%",
+  });
+  // The run row is what the conductor settles the receipt onto, so the verdict has somewhere
+  // to land before the job is posted anywhere.
+  expect((await harness.store.run(runId)).run).toMatchObject({
+    id: runId,
+    kind: MACHINE_OPERATIONS.verify,
+    state: "running",
+  });
+});
+
+test("a restore is built from the catalogued snapshot and digest, never from the request", async () => {
+  const snapshot = "c".repeat(64);
+  const digest = `sha256:${"a".repeat(64)}`;
+  await insert(harness.db, "sessions", {
+    selector: "omp/s2",
+    host: MACHINE,
+    harness: "omp",
+    source_id: "s2",
+    content_digest: digest,
+    snapshot_id: snapshot,
+    seen_at: stamp(NOW - HOUR),
+  });
+
+  const answer = await check({ session: { selector: "omp/s2" } });
+
+  expect(answer).toMatchObject({ snapshotId: snapshot });
+  expect(JSON.parse(String(fleet.executed[0]?.input?.["input"] ?? "null"))).toEqual({
+    runId: answer["runId"],
+    machineId: MACHINE,
+    readData: false,
+    // The machine is told what the HUB recorded: a digest the asker supplied would be a
+    // comparison against whatever he believed, which proves nothing about the archive.
+    restore: { snapshotId: snapshot, selector: "omp/s2", digest, target: "" },
+  });
+});
+
+test("a session whose catalogued snapshot is not a restic id is refused, not posted", async () => {
+  // `omp/s1` is the seeded row of an imported corpus: `snap-1` is the Go deployment's own
+  // spelling, and a job carrying it would fail parsing its input on a machine nobody watches.
+  const answer = await check({ session: { selector: "omp/s1" } });
+
+  expect(answer["refused"]).toContain('"snap-1"');
+  expect(answer["refused"]).toContain("not a restic snapshot id");
+  expect(fleet.executed).toEqual([]);
+
+  // Naming the snapshot to read is the remedy the refusal offers, and it works.
+  const named = await check({ session: { selector: "omp/s1", snapshotId: "latest" } });
+  expect(named).toMatchObject({ snapshotId: "latest" });
+  // The digest column of that row is the Go spelling too, so the catalog is dropped from the
+  // comparison rather than the restore being refused: the machine still compares the restored
+  // bytes against the snapshot's own.
+  expect(JSON.parse(String(fleet.executed[0]?.input?.["input"] ?? "null"))).toMatchObject({
+    restore: { snapshotId: "latest", selector: "omp/s1", digest: "" },
+  });
+});
+
+test("a verification refuses a session this machine does not hold, and one nobody catalogued", async () => {
+  await insert(harness.db, "sessions", {
+    selector: "omp/elsewhere",
+    host: "m-other-02",
+    harness: "omp",
+    source_id: "elsewhere",
+    snapshot_id: "d".repeat(64),
+    seen_at: stamp(NOW - HOUR),
+  });
+
+  const wrong = await check({ session: { selector: "omp/elsewhere" } });
+  expect(wrong["refused"]).toContain("m-other-02");
+
+  const unknown = await check({ session: { selector: "omp/never-seen" } });
+  expect(unknown["refused"]).toBe("no catalogued session omp/never-seen");
+
+  expect(fleet.executed).toEqual([]);
+});
+
+test("a verification asked at the wrong node is refused before anything is posted", async () => {
+  const answer = await dispatch(ACTIONS.verify, {
+    machineId: MACHINE,
+    operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.archive },
+  });
+
+  expect(answer["refused"]).toContain(MACHINE_OPERATIONS.verify);
+  expect(answer["refused"]).toContain(OPERATIONS.archive);
+  expect(fleet.executed).toEqual([]);
 });

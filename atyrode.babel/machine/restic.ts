@@ -20,7 +20,16 @@
   - restic itself is taken from where the owner bound it (`RUNTIME_TOOL_BIN/restic`) first and
     from PATH second — the same rule as git in machine/repository.ts, because inside a job
     sandbox there is no PATH and outside one nothing is bound.
-  - Nothing here deletes anything: no forget, no prune, no repair. Never-delete is policy.
+  - THE VERBS ARE A CLOSED SET ({@link RESTIC_VERBS}) and every invocation is built by
+    {@link resticArgv}, which admits a verb or throws. `forget`, `prune`, `repair` and
+    `unlock` are absent from that set and from this file: never-delete is policy, and an
+    allowlist is what makes adding one a deliberate act rather than an accident. `unlock`
+    belongs to the same rule for a subtler reason — it removes another process's claim on the
+    repository, and a stale lock is the operator's to clear with restic in his own hand.
+  - The repository is READ as well as written: `check` proves it, `ls` says what a snapshot
+    holds, `dump` streams one archived file without touching a disk, and `restore` writes the
+    files back. An archive whose restore path has never been run is an archive nobody has
+    tested.
 
   Snapshots are crash-consistent per file, not transactional across files: a backup taken
   while a session log is being appended to may capture a torn final line. Readers tolerate
@@ -89,12 +98,89 @@ export const BABEL_TAG = "babel";
 const EXIT_INCOMPLETE = 3; // the snapshot was created, some source files were unreadable
 const EXIT_NO_SUCH_REPO = 10;
 
+/** `check` exits 1 when it FOUND something. The repository answered and its errors ARE the
+ *  answer, so that status is an outcome rather than a failed invocation; every other nonzero
+ *  status (10 no repository, 12 wrong password) is the invocation failing. */
+const EXIT_ERRORS_FOUND = 1;
+
 /** One line of restic's --json stream, bounded. A status line names the files being read, so
  *  it can be long; past this a line is not a message worth parsing. */
 const MAX_JSON_LINE = 1 << 20;
 
 /** How much of the child's stderr an error carries. */
 const STDERR_TAIL = 4 << 10;
+
+/** How many of `check`'s own error messages an outcome carries. A repository reporting more
+ *  than this is broken in a way the first few messages already name. */
+const MAX_CHECK_ERRORS = 64;
+
+/** How many entries one listing holds. A snapshot of a session root is thousands of files, and
+ *  a caller that needs more than this wants `restore`, not a listing in memory. */
+const MAX_LISTED_ENTRIES = 20_000;
+
+/** What `dump` returns without being told otherwise. The caller that knows the file's
+ *  catalogued size raises it; the default keeps one unexpected file from becoming the job's
+ *  whole memory. */
+const MAX_DUMP_BYTES = 64 << 20;
+
+/**
+ * THE VERBS THIS MODULE MAY RUN, as a closed set rather than an open passthrough.
+ *
+ * `forget`, `prune`, `repair`, `unlock` and `rewrite` are not here. Never-delete is policy, so
+ * the boundary is drawn where a verb is ADMITTED rather than where one is called: there is no
+ * `run(verb, args)` on {@link Repo} for a caller to reach past this list with, and a verb added
+ * to it is a reviewable line in a diff.
+ *
+ * `cat` is here because `exists()` asks the repository for its config, which is the cheapest
+ * question that distinguishes "no repository" from "wrong password".
+ */
+export const RESTIC_VERBS = [
+  "cat",
+  "init",
+  "backup",
+  "snapshots",
+  "check",
+  "ls",
+  "dump",
+  "restore",
+] as const;
+
+/** A snapshot as restic names one: a full or short id, or `latest`. It is checked because it
+ *  travels into argv as a POSITIONAL, where a value beginning with `-` would be read as a flag
+ *  — and the values reaching this module come from a door's caller. */
+const SNAPSHOT_ID = /^(latest|[0-9a-f]{8,64})$/;
+
+/**
+ * One invocation's argv, and the ONE place a verb is admitted.
+ *
+ * Every child of this module is spawned from this, so a verb outside {@link RESTIC_VERBS}
+ * cannot be reached by any path — including a future one whose author never read the policy.
+ * The refusal happens before restic exists: nothing is contacted and nothing is written.
+ */
+export function resticArgv(verb: string, flags: readonly string[] = []): readonly string[] {
+  if (!(RESTIC_VERBS as readonly string[]).includes(verb)) {
+    throw new ResticError("refused", `restic ${verb} is not a verb Babel runs`);
+  }
+  return [verb, ...flags];
+}
+
+/** A snapshot id fit to pass as a positional, or the refusal naming what was asked. */
+function snapshotArgument(snapshotId: string): string {
+  if (!SNAPSHOT_ID.test(snapshotId)) {
+    throw new ResticError("refused", `${snapshotId} is not a snapshot id`);
+  }
+  return snapshotId;
+}
+
+/** A path inside a snapshot, which restic records absolute. A relative one would match nothing
+ *  and a NUL cannot cross execve, so both are refused with the value named rather than being
+ *  passed on to fail as something else. */
+function pathArgument(path: string): string {
+  if (!path.startsWith("/") || path.includes("\0")) {
+    throw new ResticError("refused", `${path} is not an absolute path inside a snapshot`);
+  }
+  return path;
+}
 
 export interface ObjectStoreCredential {
   readonly accessKeyId: string;
@@ -112,27 +198,28 @@ export interface ResticConfig {
   readonly objectStore: ObjectStoreCredential | null;
 }
 
+/** Which half of the delivery failed; {@link ResticError} carries one. */
+export type ResticFailure = "binding" | "service" | "binary" | "refused" | "exit";
+
 /**
  * What went wrong, in the one shape callers match on.
  *
- * `kind` separates the four problems that need different remedies: a service binding the job
+ * `kind` separates the five problems that need different remedies: a service binding the job
  * did not carry, a bound service that would not answer with a storage document (the operator's
- * policy), an executable that cannot be run, and a restic invocation that failed. The first
- * three all mean the repository was never contacted and nothing was written. `stderr` is a
- * bounded tail of restic's own diagnostics, rendered as one line — restic never prints the
- * password, and its messages carry the remedy, so they are surfaced rather than summarized.
+ * policy), an executable that cannot be run, an invocation this module refuses to make, and a
+ * restic invocation that failed. The first four all mean the repository was never contacted and
+ * nothing was written — `refused` most emphatically, since it is this file declining to build
+ * the argv at all (a verb outside {@link RESTIC_VERBS}, an argument that is not a snapshot or a
+ * path). `stderr` is a bounded tail of restic's own diagnostics, rendered as one line — restic
+ * never prints the password, and its messages carry the remedy, so they are surfaced rather
+ * than summarized.
  */
 export class ResticError extends Error {
-  readonly kind: "binding" | "service" | "binary" | "exit";
+  readonly kind: ResticFailure;
   readonly code: number;
   readonly stderr: string;
 
-  constructor(
-    kind: "binding" | "service" | "binary" | "exit",
-    message: string,
-    code = -1,
-    stderr = "",
-  ) {
+  constructor(kind: ResticFailure, message: string, code = -1, stderr = "") {
     super(message);
     this.name = "ResticError";
     this.kind = kind;
@@ -194,6 +281,76 @@ export interface Snapshot {
   readonly tags: readonly string[];
 }
 
+/** How deep a verification reads. Structure is always checked; this says what else. */
+export interface CheckOptions {
+  /**
+   * `false` checks the index, the trees and the pack headers — everything but the stored bytes.
+   * `true` reads every data blob and verifies its hash (restic's `--read-data`). A string is
+   * restic's own subset spelling, `n/t`, `x%` or a size with a `k`/`m`/`g`/`t` suffix, for a
+   * deployment whose repository is too large to read whole on a cadence.
+   */
+  readonly readData?: boolean | string;
+}
+
+/**
+ * What a verification found. A structural pass that reports nothing and a `--read-data` pass
+ * that reports nothing are different assurances, so `dataRead` says which one was bought.
+ *
+ * `ok === false` is a REPOSITORY with errors, not a failed call: restic answered, and what it
+ * found is the answer. A repository that could not be opened at all throws instead.
+ */
+export interface CheckOutcome {
+  readonly ok: boolean;
+  /** "" for a structural check, "all" for every data blob, or the subset restic was given. */
+  readonly dataRead: string;
+  /** How many errors restic counted, which can exceed the messages kept beside it. */
+  readonly errorCount: number;
+  /** restic's own error messages, bounded; the remedy is written in them. */
+  readonly errors: readonly string[];
+  /** The packs restic named as damaged, from its summary. */
+  readonly brokenPacks: readonly string[];
+}
+
+/** One node of a snapshot, as `ls` reports it. */
+export interface ArchivedEntry {
+  /** The absolute path the backup recorded, which is the path `dump` and `restore` name. */
+  readonly path: string;
+  readonly type: "file" | "dir" | "symlink" | "other";
+  /** Bytes, for a file; 0 for everything else, which restic reports no size for. */
+  readonly size: number;
+  readonly modifiedAt: string;
+}
+
+export interface Listing {
+  readonly entries: readonly ArchivedEntry[];
+  /** The snapshot holds more entries than one listing carries, and these are the first of
+   *  them. A caller that needs the rest wants `restore`, not a bigger listing. */
+  readonly truncated: boolean;
+}
+
+export interface DumpOptions {
+  /** The most the dumped file may be. A file past it is refused with its size named rather
+   *  than becoming the job's whole memory. */
+  readonly maxBytes?: number;
+}
+
+export interface RestoreOptions {
+  /** Where the files are written. restic recreates each one's absolute path UNDER this
+   *  directory, so a snapshot of `/home/x/log` restores to `<target>/home/x/log`. */
+  readonly target: string;
+  /** The paths of the snapshot to write; empty restores all of it. */
+  readonly include?: readonly string[];
+}
+
+/** What a restore wrote, from restic's own summary. Both counts are null when this restic
+ *  printed no summary: the files on disk are the outcome either way, and an unknown number is
+ *  not the number zero. */
+export interface RestoreOutcome {
+  readonly target: string;
+  readonly filesRestored: number | null;
+  readonly bytesRestored: number | null;
+}
+
 /** An opened handle on one repository. It holds no connection: each operation is one child
  *  process, and the handle is safe to use concurrently. */
 export interface Repo {
@@ -212,6 +369,24 @@ export interface Repo {
   ): Promise<BackupOutcome>;
   /** Every snapshot the repository holds, restic's own order (newest last). */
   snapshots(): Promise<readonly Snapshot[]>;
+  /**
+   * Verifies the repository and reports what it found. Structure always; the stored bytes when
+   * {@link CheckOptions.readData} asks for them.
+   *
+   * restic takes an EXCLUSIVE lock for this, so a check and a backup of the same repository do
+   * not overlap — one of them waits and then fails. A lock left behind by a killed process is
+   * cleared with restic's `unlock`, which Babel does not run: removing another process's claim
+   * is the operator's act.
+   */
+  check(options?: CheckOptions): Promise<CheckOutcome>;
+  /** What one snapshot holds, entirely or under the given absolute paths. */
+  ls(snapshotId: string, paths?: readonly string[]): Promise<Listing>;
+  /** One archived file's bytes, straight out of the snapshot: nothing is written to a disk, so
+   *  a session can be proved recoverable without a target directory or a cleanup. */
+  dump(snapshotId: string, path: string, options?: DumpOptions): Promise<Uint8Array>;
+  /** Writes a snapshot's files back, under `target`. It writes to the machine and never to the
+   *  repository: a restore adds and removes nothing there. */
+  restore(snapshotId: string, options: RestoreOptions): Promise<RestoreOutcome>;
 }
 
 /**
@@ -339,7 +514,7 @@ class ResticRepo implements Repo {
 
   async exists(): Promise<boolean> {
     try {
-      await this.#run("open repository", ["cat", "config"]);
+      await this.#run("open repository", resticArgv("cat", ["config"]));
       return true;
     } catch (err) {
       if (err instanceof ResticError && err.kind === "exit" && err.missingRepository) return false;
@@ -349,7 +524,7 @@ class ResticRepo implements Repo {
 
   async init(): Promise<boolean> {
     if (await this.exists()) return false;
-    await this.#run("init repository", ["init", "--json"]);
+    await this.#run("init repository", resticArgv("init", ["--json"]));
     return true;
   }
 
@@ -358,10 +533,11 @@ class ResticRepo implements Repo {
     attribution: { host: string; tags: readonly string[] },
   ): Promise<BackupOutcome> {
     if (paths.length === 0) throw new ResticError("exit", "restic backup: no paths");
-    const args = ["backup", "--json", "--verbose", "--host", attribution.host];
-    for (const tag of attribution.tags) args.push("--tag", tag);
+    const flags = ["--json", "--verbose", "--host", attribution.host];
+    for (const tag of attribution.tags) flags.push("--tag", tag);
     // `--` keeps a path that starts with "-" from being read as a flag.
-    args.push("--", ...paths);
+    flags.push("--", ...paths);
+    const args = resticArgv("backup", flags);
 
     const child = this.#spawn(args);
     const tail = new Tail();
@@ -394,7 +570,7 @@ class ResticRepo implements Repo {
   }
 
   async snapshots(): Promise<readonly Snapshot[]> {
-    const stdout = await this.#run("list snapshots", ["snapshots", "--json"]);
+    const stdout = await this.#run("list snapshots", resticArgv("snapshots", ["--json"]));
     const parsed: unknown = JSON.parse(stdout.trim() === "" ? "[]" : stdout);
     if (!Array.isArray(parsed)) return [];
     const snapshots: Snapshot[] = [];
@@ -414,6 +590,176 @@ class ResticRepo implements Repo {
       });
     }
     return snapshots;
+  }
+
+  async check(options: CheckOptions = {}): Promise<CheckOutcome> {
+    const readData = options.readData ?? false;
+    // A fresh cache is the stronger question: `--with-cache` would let a corrupted pack that
+    // is already cached answer for itself, which is the one thing a verification must not
+    // allow. restic makes its own temporary cache under RESTIC_CACHE_DIR and removes it.
+    const depth =
+      readData === false
+        ? []
+        : readData === true
+          ? ["--read-data"]
+          : ["--read-data-subset", readData];
+    const child = this.#spawn(resticArgv("check", ["--json", ...depth]));
+    const tail = new Tail();
+    const errors: string[] = [];
+    let reported = 0;
+    let brokenPacks: readonly string[] = [];
+    const keep = (line: string): void => {
+      if (line.length === 0 || line.charCodeAt(0) !== 0x7b /* { */) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (!isRow(parsed)) return;
+      switch (text(parsed, "message_type")) {
+        case "error": {
+          reported += 1;
+          if (errors.length < MAX_CHECK_ERRORS) errors.push(text(parsed, "message").trim());
+          break;
+        }
+        case "summary":
+          // `num_errors` is restic's own count, which survives the bound on the messages above.
+          reported = Math.max(reported, count(parsed, "num_errors"));
+          brokenPacks = strings(parsed, "broken_packs");
+          break;
+        default:
+          break;
+      }
+    };
+    await Promise.all([
+      (async () => {
+        for await (const line of readLines(child.stdout)) keep(line);
+      })(),
+      (async () => {
+        for await (const line of readLines(child.stderr)) {
+          tail.push(line);
+          keep(line);
+        }
+      })(),
+    ]);
+    const code = await child.exited;
+    if (code !== 0 && code !== EXIT_ERRORS_FOUND) {
+      // 10 and 12 are a repository that was never read: no config, or a password that does not
+      // open it. Those are not a verdict on the archive's integrity and must not read as one.
+      throw new ResticError("exit", `restic check failed (exit ${code})`, code, tail.toString());
+    }
+    const account = errors.length > 0 || code === 0 ? errors : [tail.toString()];
+    return {
+      ok: code === 0 && reported === 0,
+      dataRead: readData === false ? "" : readData === true ? "all" : readData,
+      // A nonzero exit with nothing parsed still has to say something: restic's own tail is
+      // the only account of it there is, and it counts as one error.
+      errorCount: reported > 0 ? reported : account.length,
+      errors: account,
+      brokenPacks,
+    };
+  }
+
+  async ls(snapshotId: string, paths: readonly string[] = []): Promise<Listing> {
+    const within = paths.map(pathArgument);
+    const args = resticArgv("ls", ["--json", "--", snapshotArgument(snapshotId), ...within]);
+    const child = this.#spawn(args);
+    const tail = new Tail();
+    const entries: ArchivedEntry[] = [];
+    let truncated = false;
+    await Promise.all([
+      (async () => {
+        // The stream is read to its end even once the bound is reached: a child left with a
+        // full pipe never exits, and the alternative — killing it — turns a complete listing
+        // into an exit status nobody can tell from a failure.
+        for await (const line of readLines(child.stdout)) {
+          const node = parseNode(line);
+          if (node === null) continue;
+          if (entries.length >= MAX_LISTED_ENTRIES) {
+            truncated = true;
+            continue;
+          }
+          entries.push(node);
+        }
+      })(),
+      (async () => {
+        for await (const line of readLines(child.stderr)) tail.push(line);
+      })(),
+    ]);
+    const code = await child.exited;
+    if (code !== 0) {
+      throw new ResticError("exit", `restic ls failed (exit ${code})`, code, tail.toString());
+    }
+    return { entries, truncated };
+  }
+
+  async dump(snapshotId: string, path: string, options: DumpOptions = {}): Promise<Uint8Array> {
+    const bound = options.maxBytes ?? MAX_DUMP_BYTES;
+    const args = resticArgv("dump", ["--", snapshotArgument(snapshotId), pathArgument(path)]);
+    const child = this.#spawn(args);
+    const tail = new Tail();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    let over = false;
+    await Promise.all([
+      (async () => {
+        for await (const chunk of child.stdout as unknown as AsyncIterable<Uint8Array>) {
+          bytes += chunk.byteLength;
+          if (bytes > bound) {
+            // Past the bound the bytes are dropped and the stream is still drained, for the
+            // same reason `ls` drains its own: a child nobody reads from does not exit.
+            over = true;
+            chunks.length = 0;
+            continue;
+          }
+          if (!over) chunks.push(chunk);
+        }
+      })(),
+      (async () => {
+        for await (const line of readLines(child.stderr)) tail.push(line);
+      })(),
+    ]);
+    const code = await child.exited;
+    if (code !== 0) {
+      throw new ResticError("exit", `restic dump failed (exit ${code})`, code, tail.toString());
+    }
+    if (over) {
+      throw new ResticError(
+        "refused",
+        `${path} is ${bytes} bytes in ${snapshotId}, past the ${bound} this dump holds`,
+      );
+    }
+    const held = new Uint8Array(bytes);
+    let at = 0;
+    for (const chunk of chunks) {
+      held.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    return held;
+  }
+
+  async restore(snapshotId: string, options: RestoreOptions): Promise<RestoreOutcome> {
+    const target = pathArgument(options.target);
+    const flags = ["--json", "--target", target];
+    for (const path of options.include ?? []) flags.push("--include", pathArgument(path));
+    flags.push("--", snapshotArgument(snapshotId));
+    const stdout = await this.#run("restore", resticArgv("restore", flags));
+    let filesRestored: number | null = null;
+    let bytesRestored: number | null = null;
+    for (const line of stdout.split("\n")) {
+      if (line.length === 0 || line.charCodeAt(0) !== 0x7b /* { */) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!isRow(parsed) || text(parsed, "message_type") !== "summary") continue;
+      filesRestored = count(parsed, "files_restored");
+      bytesRestored = count(parsed, "bytes_restored");
+    }
+    return { target, filesRestored, bytesRestored };
   }
 
   /** One invocation whose whole output is small enough to buffer. */
@@ -603,6 +949,35 @@ class Tail {
 
 function isRow(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * One node of `restic ls --json`, or null for anything else on that stream.
+ *
+ * The stream opens with the SNAPSHOT itself (`struct_type: "snapshot"`) and then carries one
+ * object per entry, so the type is what separates the listing from its header. A kind restic
+ * reports that is neither a file nor a directory nor a link is kept as `other` rather than
+ * dropped: a device node or a socket inside a session root is still evidence of what the
+ * snapshot holds.
+ */
+function parseNode(line: string): ArchivedEntry | null {
+  if (line.length === 0 || line.charCodeAt(0) !== 0x7b /* { */) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!isRow(parsed) || text(parsed, "struct_type") !== "node") return null;
+  const path = text(parsed, "path");
+  if (path === "") return null;
+  const kind = text(parsed, "type");
+  return {
+    path,
+    type: kind === "file" || kind === "dir" || kind === "symlink" ? kind : "other",
+    size: count(parsed, "size"),
+    modifiedAt: text(parsed, "mtime"),
+  };
 }
 
 function text(row: Record<string, unknown>, key: string): string {
