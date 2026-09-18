@@ -578,6 +578,15 @@ const POLICY = {
   batchSize: 4,
 };
 
+/**
+ * The model a fixture's session says answered it. NOT A PUBLISHED ID, deliberately: the fixtures
+ * here named `openrouter/stealth/union-alpha` until the provider withdrew it, and a test naming a
+ * model that no longer exists sends the next reader looking for one. Nothing in this file depends
+ * on which model answered — a receipt records the name it was given — so the name says what it
+ * is.
+ */
+const FIXTURE_MODEL = "fixture/model-under-test";
+
 const ASSIGNMENT = {
   id: "asg_a1b2",
   recordId: "hyp_00000001",
@@ -2555,7 +2564,7 @@ test("a drawn review is blinded, fenced, settled, and promotes granular refineme
   code.read = sessionRead({
     jobId: "job_code_review",
     state: "exited",
-    model: "openrouter/stealth/union-alpha",
+    model: FIXTURE_MODEL,
     usage: { input: 4200, output: 300, cacheRead: 0, cacheWrite: 0, cost: 0 },
     finalMessage:
       "```json\n" +
@@ -2656,7 +2665,7 @@ test("a review with one refused contribution records the rest, and its receipt c
   code.read = sessionRead({
     jobId: "job_code_review",
     state: "exited",
-    model: "openrouter/stealth/union-alpha",
+    model: FIXTURE_MODEL,
     finalMessage:
       "```json\n" +
       JSON.stringify({
