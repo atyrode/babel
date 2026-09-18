@@ -1180,3 +1180,73 @@ test("over the real launch path a drain's fan seals material, and the settle wak
   expect(await machinery.postPrepared(fleet, deps.engine, PLAN)).toEqual([]);
   expect(code.posted).toHaveLength(1);
 });
+
+test("the session a wake posts quotes what the operator told Babel, and the run records which", async () => {
+  /*
+    THE MEMORY HALF OF `tell` (#331). The remarks were written by a door, read back by the
+    `policy` door, and reached no run: the operator could say "stop proposing work on the
+    staging queue" and the next run proposed it again. This is the whole path — a row he
+    wrote, the prompt Code is handed, and the run row the receipt is built from.
+  */
+  const machinery = launchMachinery(harness.store, {
+    coordinator: deps.coordinator,
+    jobs: () => fleet,
+    engine: () => deps.engine,
+    cookbook: async () =>
+      await Promise.resolve({
+        "code-health": { id: "code-health", version: 3, body: "look for what keeps breaking" },
+      }),
+    plan: () => PLAN,
+    now: () => harness.store.now(),
+  });
+  deps = { ...deps, launch: machinery };
+  for (const [id, text, at] of [
+    ["stg_0001", "stop proposing work on the staging queue, it is going away", NOW - HOUR],
+    ["stg_0002", "the restic lane is mine, do not file issues about it", NOW - 2 * HOUR],
+  ] as const) {
+    await insert(harness.db, "steering", {
+      id,
+      root_id: id,
+      reply_to_id: null,
+      seq: 1,
+      actor_kind: "operator",
+      actor_id: "operator",
+      target_kind: null,
+      target_id: null,
+      text,
+      recorded_at: stamp(at),
+    });
+  }
+
+  const answer = await start({
+    concurrent: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+  const drainId = String(answer["drainId"]);
+  await harness.db.run(
+    `UPDATE runs SET closure = 'completed', finished_at = ?, payload = ? WHERE job_id = ?`,
+    [stamp(NOW), sealedMaterial(), `job_${drainId}_0_material`],
+  );
+  await machinery.postPrepared(fleet, deps.engine, PLAN);
+
+  // HIS WORDS ARE IN THE PROMPT, quoted and attributed, newest first.
+  const prompt = code.posted[0]?.prompt ?? "";
+  expect(prompt).toContain("## What the operator has told Babel");
+  expect(prompt).toContain("- stg_0001 (");
+  expect(prompt).toContain('"stop proposing work on the staging queue, it is going away"');
+  expect(prompt.indexOf("stg_0001")).toBeLessThan(prompt.indexOf("stg_0002"));
+
+  // AND THE RUN ROW SAYS WHAT IT WAS TOLD, which is what the receipt is built from: a claim
+  // this run makes can be read against the remarks that were in front of it.
+  const row = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE id = ?`,
+    [`run_${drainId}_0`],
+  );
+  const asked = JSON.parse(String(row[0]?.preparation)) as {
+    preset: string;
+    steering: { carried: { id: string; text: string }[]; omitted: number };
+  };
+  expect(asked.preset).toBe("read-whats-new");
+  expect(asked.steering.carried.map((remark) => remark.id)).toEqual(["stg_0001", "stg_0002"]);
+  expect(asked.steering.omitted).toBe(0);
+});

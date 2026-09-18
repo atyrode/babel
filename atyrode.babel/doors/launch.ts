@@ -27,6 +27,7 @@ import {
 } from "../contract.ts";
 import type { Coordinator, Policy } from "../store/coordinator.ts";
 import {
+  carriedSteering,
   composeExplorePrompt,
   PARAM,
   PROMPT_VERSION,
@@ -975,6 +976,17 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       }
       // THE PROMPT IS BUILT FROM WHAT WAS ACTUALLY SEALED: the index's own file names, record
       // counts and digests, rather than the selectors the press could only guess from.
+      //
+      // AND FROM WHAT THE OPERATOR HAS TOLD BABEL (#331). `tell` wrote those rows and the
+      // `policy` door reads them back; this is that same read and there is no second one. The
+      // prompt quotes a bounded selection of them as evidence — `carriedSteering` is the rule —
+      // and the same call says which ones, so the receipt records what the run was told.
+      const told = (await store.policy()).steering;
+      const params = {
+        [PARAM.stage]: "explore",
+        [PARAM.runId]: run.id,
+        [PARAM.preparation]: material.preparationId,
+      };
       const prompt = composeExplorePrompt({
         stage: "explore",
         recipes,
@@ -983,11 +995,8 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           file: entry.file,
         })),
         preparationId: material.preparationId,
-        params: {
-          [PARAM.stage]: "explore",
-          [PARAM.runId]: run.id,
-          [PARAM.preparation]: material.preparationId,
-        },
+        params,
+        steering: told,
       });
       /*
         CODE BOUNDS A SESSION'S PROMPT IN BYTES, and the bound is the hub's own: a prompt is
@@ -1040,9 +1049,22 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         posted.push({ runId: run.id, refused: answered.refused });
         continue;
       }
+      /*
+        WHAT THE PROMPT QUOTED HIM AS SAYING, ONTO THE RUN ROW (#331).
+
+        The run's own document is the only thing that reaches the settlement — the prompt is
+        Code's job's input and nothing reads it back — and the settlement is where the receipt
+        is written. So the selection travels with the intent it is part of: what this run was
+        asked is what it was told as well, and `settleSession` lifts it onto `receipt.steering`.
+      */
       await store.db.run(
-        `UPDATE runs SET job_id = ?, payload = ? WHERE id = ? AND job_id IS NULL`,
-        [answered.value.jobId, JSON.stringify({ closure: null, requestedAt: deps.now() }), run.id],
+        `UPDATE runs SET job_id = ?, preparation = ?, payload = ? WHERE id = ? AND job_id IS NULL`,
+        [
+          answered.value.jobId,
+          JSON.stringify({ ...intent, steering: carriedSteering(told, params) }),
+          JSON.stringify({ closure: null, requestedAt: deps.now() }),
+          run.id,
+        ],
       );
       store.touch();
       posted.push({ runId: run.id, jobId: answered.value.jobId });

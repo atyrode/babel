@@ -11,6 +11,27 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **What the operator told Babel reaches the run.** `tell` has written `steering` rows since it
+  shipped and the `policy` door reads them back, which fixed the worse half — a box that accepts a
+  sentence and shows it nowhere. The remaining half is what makes it a memory rather than a log:
+  he could tell Babel to stop proposing work on a subject and the next run proposed it again. A
+  run's prompt now carries his standing remarks and the remarks about the records in its own
+  brief, **bounded** at eight remarks and two thousand characters, specific before standing and
+  newest first. A remark that does not fit is skipped whole and the next considered, so one long
+  remark cannot starve the short ones behind it, and nothing is truncated — half a sentence he
+  wrote is a different sentence.
+
+  **A remark is quoted evidence, never an instruction**, and it gets the boundary the prompt
+  already gives untrusted material rather than a second one invented for it: uncitable, no
+  locator, not under the material root, so a claim resting on one is the same refusal as any other
+  unserved citation. The section is composed last, after the material and the prior records, so
+  nothing he said sits among the sentences the model reads as its own contract — and a remark
+  containing a `## How to answer` heading renders on one line, which a test pins by counting the
+  headings in the composed prompt.
+
+  The receipt names **which** remarks were carried and how many the bound left out, so a claim can
+  be read against what the run was told and "told one thing" is distinguishable from "told one of
+  four". It travels in the preparation document the run already carries: no new column.
 - **Three surfaces instead of one list, two axes instead of one label, and a concept holds one
   slot.** Babel produced one ordering of everything, so a record needing the operator's judgement
   competed with a record an agent could execute unattended and with a record worth keeping but not
