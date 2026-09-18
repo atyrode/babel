@@ -62,10 +62,9 @@ test("an overlay in force says what it moved, from what, and how much longer it 
   expect(strip.querySelector(".plugin-atyrode_babel_watch__stat-label")?.textContent).toBe(
     "Overlay for 42m",
   );
-  expect([...strip.querySelectorAll(".plugin-atyrode_babel_watch__lane")].map((row) => row.textContent)).toEqual([
-    "At once, per machine 3 → 16",
-    "Per day $20.00 → $40.00",
-  ]);
+  expect(
+    [...strip.querySelectorAll(".plugin-atyrode_babel_watch__lane")].map((row) => row.textContent),
+  ).toEqual(["At once, per machine 3 → 16", "Per day $20.00 → $40.00"]);
   expect(strip.querySelector(".plugin-atyrode_babel_watch__muted")?.textContent).toBe(
     "draining victorballu before the 13:00Z reset",
   );

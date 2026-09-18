@@ -65,7 +65,11 @@ export const claude: Adapter = {
     const segments = path.split("/");
     const file = segments[segments.length - 1];
     const project = segments[segments.length - 2];
-    if (segments[segments.length - 3] !== PROJECTS_DIR || project === undefined || file === undefined) {
+    if (
+      segments[segments.length - 3] !== PROJECTS_DIR ||
+      project === undefined ||
+      file === undefined
+    ) {
       return null;
     }
     const session = file.slice(0, -SESSION_EXT.length);
@@ -134,7 +138,8 @@ export const claude: Adapter = {
     }
     const unreadable = scan.malformed + stream.oversized;
     if (unreadable > 0) {
-      absent["records"] = `${unreadable} of this transcript's ${stream.records} records could not be read`;
+      absent["records"] =
+        `${unreadable} of this transcript's ${stream.records} records could not be read`;
     }
     absent["usage"] = "the Claude Code on-disk format records no per-turn usage this adapter reads";
 

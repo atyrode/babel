@@ -144,13 +144,22 @@ test("a different capture, a different reading, or a different scope is a differ
   const ids = new Set([
     id,
     // one session's bytes changed
-    newPreparation("2026-09-12T10:00:00.000Z", [entry("a1b2c3", "e", "b"), entry("d4e5f6", "c", "d")]).id,
+    newPreparation("2026-09-12T10:00:00.000Z", [
+      entry("a1b2c3", "e", "b"),
+      entry("d4e5f6", "c", "d"),
+    ]).id,
     // the same bytes, normalized differently: our reading of the corpus changed
-    newPreparation("2026-09-12T10:00:00.000Z", [entry("a1b2c3", "a", "e"), entry("d4e5f6", "c", "d")]).id,
+    newPreparation("2026-09-12T10:00:00.000Z", [
+      entry("a1b2c3", "a", "e"),
+      entry("d4e5f6", "c", "d"),
+    ]).id,
     // a narrower scope over unchanged sessions
     newPreparation("2026-09-12T10:00:00.000Z", [entry("a1b2c3", "a", "b")]).id,
     // the same sessions, held by another machine
-    newPreparation("2026-09-12T10:00:00.000Z", base.map((held) => ({ ...held, host: "other-machine" }))).id,
+    newPreparation(
+      "2026-09-12T10:00:00.000Z",
+      base.map((held) => ({ ...held, host: "other-machine" })),
+    ).id,
   ]);
   expect(ids.size).toBe(5);
 });
@@ -158,13 +167,18 @@ test("a different capture, a different reading, or a different scope is a differ
 test("a scope that names nothing, or one session twice, is refused", () => {
   expect(() => newPreparation("2026-09-12T10:00:00.000Z", [])).toThrow(/selection is empty/);
   expect(() =>
-    newPreparation("2026-09-12T10:00:00.000Z", [entry("a1b2c3", "a", "b"), entry("a1b2c3", "a", "b")]),
+    newPreparation("2026-09-12T10:00:00.000Z", [
+      entry("a1b2c3", "a", "b"),
+      entry("a1b2c3", "a", "b"),
+    ]),
   ).toThrow(/twice/);
   expect(() =>
     newPreparation("2026-09-12T10:00:00.000Z", [{ ...entry("a1b2c3", "a", "b"), sourceId: "" }]),
   ).toThrow(/names no session/);
   expect(() =>
-    newPreparation("2026-09-12T10:00:00.000Z", [{ ...entry("a1b2c3", "a", "b"), captureDigest: "" }]),
+    newPreparation("2026-09-12T10:00:00.000Z", [
+      { ...entry("a1b2c3", "a", "b"), captureDigest: "" },
+    ]),
   ).toThrow(/no capture digest/);
 });
 
@@ -209,8 +223,7 @@ test("the operation fixes a scope over every session it discovered", async () =>
   expect(receipt.counts["bytes"]).toBeGreaterThan(0);
 
   const preparation = receipt.preparation as
-    | { id: string; selection: readonly PreparationEntry[] }
-    | undefined;
+    { id: string; selection: readonly PreparationEntry[] } | undefined;
   expect(preparation?.id).toMatch(/^prep-[0-9a-f]{64}$/);
   expect(preparation?.selection.map((held) => `${held.harness}/${held.sourceId}`)).toEqual([
     "codex/0192ab",
@@ -278,7 +291,10 @@ test("a session being appended to is left out, so the scope's id does not move w
 });
 
 test("a scope holds none of Babel's own run transcripts unless it asks for them", async () => {
-  const own = settle(join(root, "omp", "run-abc.babel.jsonl"), '{"type":"session","runId":"run-abc"}\n');
+  const own = settle(
+    join(root, "omp", "run-abc.babel.jsonl"),
+    '{"type":"session","runId":"run-abc"}\n',
+  );
   const over = [...sessions, ref("omp", "run-abc.babel")];
 
   const ordinary = await run({}, over);
@@ -390,11 +406,10 @@ test("the material is an index plus one canonical record stream per session", as
   const dir = mkdtempSync(join(tmpdir(), "babel-material-"));
   try {
     const recorder = new Recorder();
-    const receipt = await prepare(
-      PrepareInputSchema.parse({ machineId: MACHINE }),
-      recorder,
-      { ...deps(), material: materialSink(dir) },
-    );
+    const receipt = await prepare(PrepareInputSchema.parse({ machineId: MACHINE }), recorder, {
+      ...deps(),
+      material: materialSink(dir),
+    });
 
     const index = MaterialIndexSchema.parse(
       JSON.parse(readFileSync(join(dir, MATERIAL_INDEX), "utf8")),

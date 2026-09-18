@@ -80,7 +80,9 @@ test("a frame the owner would refuse is never written, because the refusal is th
   expect(progress.written).toBe(0);
   // And each one is refused for its own reason, so a defect names itself.
   expect(stageShortfall({ stage: "At The Model" })).toContain("stage");
-  expect(stageShortfall({ stage: RUN_STAGES.preparing, message: "a\nb" })).toContain("control character");
+  expect(stageShortfall({ stage: RUN_STAGES.preparing, message: "a\nb" })).toContain(
+    "control character",
+  );
   expect(stageShortfall({ stage: RUN_STAGES.preparing, fraction: 1.5 })).toContain("fraction");
   expect(stageShortfall({ stage: RUN_STAGES.atModel, message: "explore", fraction: 1 })).toBe("");
 });

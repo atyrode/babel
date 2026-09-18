@@ -69,7 +69,8 @@ export function stageShortfall(report: StageReport): string {
   if (!STAGE_PATTERN.test(report.stage)) return `stage ${JSON.stringify(report.stage)}`;
   const message = report.message;
   if (message !== undefined) {
-    if (message.length > STAGE_MESSAGE_MAX) return `a message of ${String(message.length)} characters`;
+    if (message.length > STAGE_MESSAGE_MAX)
+      return `a message of ${String(message.length)} characters`;
     if (/\p{Cc}/u.test(message)) return "a message carrying a control character";
   }
   const fraction = report.fraction;
@@ -110,10 +111,15 @@ function descriptorSink(raw: string | undefined): ProgressSink | null {
  * hand-run and every unit test that does not ask for a sink get.
  */
 export function openProgress(
-  options: { readonly sink?: ProgressSink | null; readonly env?: Readonly<Record<string, string | undefined>> } = {},
+  options: {
+    readonly sink?: ProgressSink | null;
+    readonly env?: Readonly<Record<string, string | undefined>>;
+  } = {},
 ): ProgressChannel {
   const sink =
-    options.sink === undefined ? descriptorSink((options.env ?? process.env)[CONTEXT_FD_ENV]) : options.sink;
+    options.sink === undefined
+      ? descriptorSink((options.env ?? process.env)[CONTEXT_FD_ENV])
+      : options.sink;
   let written = 0;
   let refused = 0;
   let silenced = false;

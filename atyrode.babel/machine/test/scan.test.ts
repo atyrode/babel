@@ -7,7 +7,12 @@ import { join } from "node:path";
 import type { Receipt } from "../../contract.ts";
 import type { OutputFile, OutputSink } from "../output.ts";
 import { type SessionCatalogRow, ScanInputSchema, scan } from "../scan.ts";
-import { writeClaudeSession, writeCodexRollout, writeCodexState, writeOmpSession } from "./fixtures.ts";
+import {
+  writeClaudeSession,
+  writeCodexRollout,
+  writeCodexState,
+  writeOmpSession,
+} from "./fixtures.ts";
 
 /*
   The `scan` operation over a whole synthetic machine: three harnesses, a real git checkout as
@@ -150,7 +155,10 @@ test("a scan of this machine writes one catalog row per session", async () => {
 
 test("the receipt accounts for what the scan read", async () => {
   const { sink, written } = memorySink();
-  const receipt = await scan(ScanInputSchema.parse({ machineId: "dev-01", runId: "run_fixed" }), sink);
+  const receipt = await scan(
+    ScanInputSchema.parse({ machineId: "dev-01", runId: "run_fixed" }),
+    sink,
+  );
 
   expect(written.receipt).toEqual(receipt);
   expect(receipt.kind).toBe("scan");
@@ -244,13 +252,22 @@ test("a machine with no sessions writes an empty catalog and a receipt", async (
 test("a session still being written is live; one written ten minutes ago is not", async () => {
   const root = await mkdtemp(join(tmpdir(), "babel-scan-live-"));
   await writeOmpSession(root, { project: "-checkout", stem: "moving", title: "Open now" });
-  const settled = await writeOmpSession(root, { project: "-checkout", stem: "settled", title: "Closed" });
+  const settled = await writeOmpSession(root, {
+    project: "-checkout",
+    stem: "settled",
+    title: "Closed",
+  });
   const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
   await utimes(settled, tenMinutesAgo, tenMinutesAgo);
 
   const { sink, written } = memorySink();
   const receipt = await scan(
-    ScanInputSchema.parse({ machineId: "dev-01", runId: "run_live", harnesses: ["omp"], roots: [root] }),
+    ScanInputSchema.parse({
+      machineId: "dev-01",
+      runId: "run_live",
+      harnesses: ["omp"],
+      roots: [root],
+    }),
     sink,
   );
   const rows = rowsOf(written);
@@ -271,7 +288,11 @@ test("a session one of Babel's own runs wrote is an agent session, by its tree o
   const analysis = join(data, "babel", "analysis");
   const sessions = join(data, ".omp", "agent", "sessions");
   // Under Babel's own analysis tree, named as anything: the path alone settles it.
-  await writeOmpSession(analysis, { project: "run-cyc-1", stem: "explore", title: "babel explore pass" });
+  await writeOmpSession(analysis, {
+    project: "run-cyc-1",
+    stem: "explore",
+    title: "babel explore pass",
+  });
   // In the operator's own sessions tree, named as anything: the header settles it, because
   // Babel writes its transcripts in OMP's record language and names the run in them.
   await writeOmpSession(sessions, {
@@ -280,7 +301,11 @@ test("a session one of Babel's own runs wrote is an agent session, by its tree o
     title: "babel review pass of run eval-7",
     runId: "eval-7",
   });
-  await writeOmpSession(sessions, { project: "-checkout", stem: "the-operators-own", title: "A person's work" });
+  await writeOmpSession(sessions, {
+    project: "-checkout",
+    stem: "the-operators-own",
+    title: "A person's work",
+  });
 
   const previous = process.env["XDG_DATA_HOME"];
   process.env["XDG_DATA_HOME"] = data;

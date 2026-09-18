@@ -68,7 +68,11 @@ export class Denial extends Error {}
  */
 export function fakeHost(
   answers: Record<string, (args: unknown) => unknown>,
-  opens: (request: OpenPanelRequest) => OpenPanelOutcome = () => ({ ok: true, tileId: "tile_seat", placed: true }),
+  opens: (request: OpenPanelRequest) => OpenPanelOutcome = () => ({
+    ok: true,
+    tileId: "tile_seat",
+    placed: true,
+  }),
 ): Fake {
   const listeners = new Set<() => void>();
   const calls: DoorCall[] = [];
@@ -79,13 +83,19 @@ export function fakeHost(
       const local = name.replace("atyrode.babel.", "");
       const answer = answers[local];
       if (answer === undefined) {
-        return Promise.resolve({ ok: false, denial: { rule: "unknown_action", message: `no fake for ${local}` } });
+        return Promise.resolve({
+          ok: false,
+          denial: { rule: "unknown_action", message: `no fake for ${local}` },
+        });
       }
       try {
         return Promise.resolve({ ok: true, result: answer(args) });
       } catch (reason) {
         if (reason instanceof Denial) {
-          return Promise.resolve({ ok: false, denial: { rule: "refused", message: reason.message } });
+          return Promise.resolve({
+            ok: false,
+            denial: { rule: "refused", message: reason.message },
+          });
         }
         throw reason;
       }
@@ -112,7 +122,8 @@ export function fakeHost(
     host,
     calls,
     opened,
-    last: (name) => [...calls].reverse().find((call) => call.name === `atyrode.babel.${name}`)?.args,
+    last: (name) =>
+      [...calls].reverse().find((call) => call.name === `atyrode.babel.${name}`)?.args,
     to: (name) => calls.filter((call) => call.name === `atyrode.babel.${name}`),
     announce: () => {
       for (const listener of listeners) listener();
@@ -145,7 +156,8 @@ export async function mount(node: ReactElement): Promise<Mounted> {
   await act(async () => root.render(node));
   const one = (selector: string): HTMLElement => {
     const found = container.querySelector<HTMLElement>(selector);
-    if (found === null) throw new Error(`nothing matches ${selector} in: ${container.textContent ?? ""}`);
+    if (found === null)
+      throw new Error(`nothing matches ${selector} in: ${container.textContent ?? ""}`);
     return found;
   };
   return {
@@ -176,7 +188,9 @@ export async function mount(node: ReactElement): Promise<Mounted> {
       */
       const target = document.activeElement ?? document.body;
       await act(async () => {
-        target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+        target.dispatchEvent(
+          new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+        );
       });
     },
     settle: async () => {
@@ -285,11 +299,21 @@ export function topics(overrides: Partial<TopicsResult> = {}): TopicsResult {
         id: "ent_0000beef",
         name: "babel",
         kind: "repository",
-        binding: { kind: "repository", identity: "github.com/atyrode/babel", remote: "github.com/atyrode/babel", paths: ["/home/alex/babel"] },
+        binding: {
+          kind: "repository",
+          identity: "github.com/atyrode/babel",
+          remote: "github.com/atyrode/babel",
+          paths: ["/home/alex/babel"],
+        },
         posts: 42,
         awaiting: 3,
         latestAt: "2026-09-12T08:00:00Z",
-        interest: { state: "working", reason: "the rewrite", at: "2026-09-12T07:00:00Z", by: "the operator" },
+        interest: {
+          state: "working",
+          reason: "the rewrite",
+          at: "2026-09-12T07:00:00Z",
+          by: "the operator",
+        },
       },
       {
         id: "ent_0000cafe",
@@ -326,13 +350,20 @@ export function peel(overrides: Partial<RecordPeel> = {}): RecordPeel {
     },
     case: {
       problem: "A run that names its model after the fact cannot be priced before it starts.",
-      verification_criteria: ["The runtime report arrives before the first byte.", "The ceiling is refused, not clamped."],
+      verification_criteria: [
+        "The runtime report arrives before the first byte.",
+        "The ceiling is refused, not clamped.",
+      ],
     },
     evidence: [
       {
         excerpt: "I want to know what it will cost before I press go.",
         speaker: "the operator",
-        session: { selector: "omp/2026-09-01T10:00:00Z", title: "planning the watch page", href: "/s/omp-1" },
+        session: {
+          selector: "omp/2026-09-01T10:00:00Z",
+          title: "planning the watch page",
+          href: "/s/omp-1",
+        },
         note: "Read as a requirement on the launch form.",
         line: 412,
       },
@@ -340,13 +371,26 @@ export function peel(overrides: Partial<RecordPeel> = {}): RecordPeel {
     reception: {
       byRole: [
         { role: "reception", support: 1, oppose: 0, unsure: 0, opposingRationales: [] },
-        { role: "challenge", support: 0, oppose: 1, unsure: 0, opposingRationales: ["The report is not available on every machine."] },
+        {
+          role: "challenge",
+          support: 0,
+          oppose: 1,
+          unsure: 0,
+          opposingRationales: ["The report is not available on every machine."],
+        },
       ],
       contested: true,
       operatorHistory: [],
     },
     machinery: { record: "pro_0000000a", revision: "3", policy: "2026-09-01" },
-    related: [{ relation: "addresses", id: "hyp_0000000d", kind: "hypothesis", title: "Cost is invisible until a run ends" }],
+    related: [
+      {
+        relation: "addresses",
+        id: "hyp_0000000d",
+        kind: "hypothesis",
+        title: "Cost is invisible until a run ends",
+      },
+    ],
     plan: null,
     ...overrides,
   };
@@ -378,7 +422,13 @@ export function thread(overrides: Partial<ThreadResult> = {}): ThreadResult {
       },
     ],
     acts: [
-      { id: "act_1", act: "defer", by: "the operator", at: "2026-09-11T12:00:00Z", reason: "waiting on the engine report" },
+      {
+        id: "act_1",
+        act: "defer",
+        by: "the operator",
+        at: "2026-09-11T12:00:00Z",
+        reason: "waiting on the engine report",
+      },
     ],
     total: 3,
     ...overrides,

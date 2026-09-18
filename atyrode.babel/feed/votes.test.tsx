@@ -13,7 +13,11 @@ describe("the vote strip", () => {
   test("draws one dot per assessment, coloured by vote and shaped by role", async () => {
     const view = await mount(<Votes post={post()} ticked={false} />);
     const dots = view.all(".babel-dot");
-    expect(dots.map((dot) => dot.getAttribute("data-role"))).toEqual(["reception", "evidence", "challenge"]);
+    expect(dots.map((dot) => dot.getAttribute("data-role"))).toEqual([
+      "reception",
+      "evidence",
+      "challenge",
+    ]);
     expect(dots.map((dot) => dot.getAttribute("data-tone"))).toEqual(["good", "good", "bad"]);
     // The shape says which question was answered; two supports on two roles are two marks.
     expect(dots.map((dot) => dot.textContent)).toEqual(["●", "■", "▲"]);
@@ -23,7 +27,10 @@ describe("the vote strip", () => {
 
   test("a record no reviewer assessed shows the ring and no figure at all", async () => {
     const view = await mount(
-      <Votes post={post({ votes: [], support: 0, oppose: 0, unsure: 0, score: 0, contested: false })} ticked={false} />,
+      <Votes
+        post={post({ votes: [], support: 0, oppose: 0, unsure: 0, score: 0, contested: false })}
+        ticked={false}
+      />,
     );
     const dots = view.all(".babel-dot");
     expect(dots).toHaveLength(1);
@@ -43,7 +50,10 @@ describe("the vote strip", () => {
 
   test("totals without assessments still colour, and never invent a role shape", async () => {
     const view = await mount(
-      <Votes post={post({ votes: [], support: 1, oppose: 0, unsure: 1, score: 1 })} ticked={false} />,
+      <Votes
+        post={post({ votes: [], support: 1, oppose: 0, unsure: 1, score: 1 })}
+        ticked={false}
+      />,
     );
     const dots = view.all(".babel-dot");
     expect(dots.map((dot) => dot.getAttribute("data-tone"))).toEqual(["good", "faint"]);
@@ -53,7 +63,10 @@ describe("the vote strip", () => {
   });
 
   test("past five marks the strip counts the rest instead of drawing a chart", async () => {
-    const many = Array.from({ length: 8 }, () => ({ role: "reception" as const, vote: "support" as const }));
+    const many = Array.from({ length: 8 }, () => ({
+      role: "reception" as const,
+      vote: "support" as const,
+    }));
     const view = await mount(<Votes post={post({ votes: many })} ticked={false} />);
     expect(view.all(".babel-dot")).toHaveLength(5);
     expect(view.one(".babel-dots-more").textContent).toBe("+3");
@@ -62,7 +75,10 @@ describe("the vote strip", () => {
 
   test("a zero score is dimmed rather than absent when reviewers did assess it", async () => {
     const view = await mount(
-      <Votes post={post({ score: 0, votes: [{ role: "reception", vote: "unsure" }] })} ticked={false} />,
+      <Votes
+        post={post({ score: 0, votes: [{ role: "reception", vote: "unsure" }] })}
+        ticked={false}
+      />,
     );
     expect(view.one(".babel-score").hasAttribute("data-zero")).toBe(true);
     await view.unmount();

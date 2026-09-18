@@ -40,7 +40,10 @@ export interface FakeHost {
   callsTo(action: ActionName): readonly DoorCall[];
 }
 
-export function fakeHost(doors: Readonly<Record<string, Doorman>>, machines: readonly MachineSummary[]): FakeHost {
+export function fakeHost(
+  doors: Readonly<Record<string, Doorman>>,
+  machines: readonly MachineSummary[],
+): FakeHost {
   const calls: DoorCall[] = [];
   const client = {
     async action(name: string, args: unknown): Promise<ActionOutcome> {
@@ -54,7 +57,10 @@ export function fakeHost(doors: Readonly<Record<string, Doorman>>, machines: rea
       } catch (error) {
         return {
           ok: false,
-          denial: { rule: "refused", message: error instanceof Error ? error.message : String(error) },
+          denial: {
+            rule: "refused",
+            message: error instanceof Error ? error.message : String(error),
+          },
         };
       }
     },
@@ -78,7 +84,9 @@ export const MACHINES: readonly MachineSummary[] = [
   { id: "m-old", name: "retired-box", online: false },
 ];
 
-export function runRow(row: Partial<RunRow> & Pick<RunRow, "id" | "state" | "startedAt" | "lastWord">): RunRow {
+export function runRow(
+  row: Partial<RunRow> & Pick<RunRow, "id" | "state" | "startedAt" | "lastWord">,
+): RunRow {
   return {
     kind: OPERATIONS.explore,
     machineId: "m-dev-01",
@@ -97,7 +105,9 @@ export function runRow(row: Partial<RunRow> & Pick<RunRow, "id" | "state" | "sta
 }
 
 /** What the conductor folded out of a running job's replay ring, as a row carries it. */
-export function runProgress(over: Partial<RunProgress> & Pick<RunProgress, "stage" | "since">): RunProgress {
+export function runProgress(
+  over: Partial<RunProgress> & Pick<RunProgress, "stage" | "since">,
+): RunProgress {
   return {
     message: "",
     fraction: null,
@@ -208,7 +218,6 @@ export const PROFILES: readonly ProfileRow[] = [
   },
 ];
 
-
 /**
  * One drain as the status door answers for it (#258). The defaults are a drain that has just
  * started and said nothing yet, so a test names only the figures it is about.
@@ -266,8 +275,7 @@ export function watchDoors(answers: {
     [door(ACTIONS.topics)]: () => (answers.topics ?? (() => TOPICS))(),
     [door(ACTIONS.launch)]: (args) => (answers.launch ?? (() => ({ asked: true })))(args),
     [door(ACTIONS.stop)]: (args) => (answers.stop ?? (() => ({ asked: true })))(args),
-    [door(ACTIONS.drainStatus)]: (args) =>
-      (answers.drainStatus ?? (() => ({ drains: [] })))(args),
+    [door(ACTIONS.drainStatus)]: (args) => (answers.drainStatus ?? (() => ({ drains: [] })))(args),
     [door(ACTIONS.profiles)]: (args) =>
       (answers.profiles ?? (() => ({ profiles: PROFILES, unavailable: "" })))(args),
     [door(ACTIONS.drainStart)]: (args) =>

@@ -35,12 +35,7 @@ import {
   type ActionsSlice,
   type CodeEngine,
 } from "../server/engine/session.ts";
-import {
-  describeHost,
-  type JobLaunch,
-  type JobsSlice,
-  type RunPlan,
-} from "../server/conductor.ts";
+import { describeHost, type JobLaunch, type JobsSlice, type RunPlan } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
@@ -145,11 +140,31 @@ interface PresetPlan {
 }
 
 const PRESET_PLANS: Record<LaunchInput["preset"], PresetPlan> = {
-  "read-whats-new": { kind: "explore", operationId: PRESET_OPERATIONS["read-whats-new"], start: PRESET_START["read-whats-new"] },
-  "explore-topic": { kind: "explore", operationId: PRESET_OPERATIONS["explore-topic"], start: PRESET_START["explore-topic"] },
-  "review-backlog": { kind: "evaluate", operationId: PRESET_OPERATIONS["review-backlog"], start: PRESET_START["review-backlog"] },
-  "file-and-tidy": { kind: "evaluate", operationId: PRESET_OPERATIONS["file-and-tidy"], start: PRESET_START["file-and-tidy"] },
-  "keep-going": { kind: "conductor", operationId: PRESET_OPERATIONS["keep-going"], start: PRESET_START["keep-going"] },
+  "read-whats-new": {
+    kind: "explore",
+    operationId: PRESET_OPERATIONS["read-whats-new"],
+    start: PRESET_START["read-whats-new"],
+  },
+  "explore-topic": {
+    kind: "explore",
+    operationId: PRESET_OPERATIONS["explore-topic"],
+    start: PRESET_START["explore-topic"],
+  },
+  "review-backlog": {
+    kind: "evaluate",
+    operationId: PRESET_OPERATIONS["review-backlog"],
+    start: PRESET_START["review-backlog"],
+  },
+  "file-and-tidy": {
+    kind: "evaluate",
+    operationId: PRESET_OPERATIONS["file-and-tidy"],
+    start: PRESET_START["file-and-tidy"],
+  },
+  "keep-going": {
+    kind: "conductor",
+    operationId: PRESET_OPERATIONS["keep-going"],
+    start: PRESET_START["keep-going"],
+  },
 };
 
 /**
@@ -351,8 +366,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * adjacent number as the one that was asked for.
    */
   async function selection(input: LaunchInput): Promise<Selected> {
-    const cited =
-      `FROM filings f
+    const cited = `FROM filings f
          JOIN edges e ON e.from_id = f.record_id AND e.kind = 'cites' AND e.to_kind = 'session'
          JOIN sessions s ON s.selector = e.to_id
         WHERE f.entity_id = ? AND f.withdrawn = 0 AND s.host = ?`;
@@ -792,7 +806,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       const report = documentOf(run.profile);
       const asked = new Set(
         (Array.isArray(intent["recipes"]) ? intent["recipes"] : [])
-          .map((entry) => (typeof entry === "object" && entry !== null ? String((entry as Record<string, unknown>)["id"]) : ""))
+          .map((entry) =>
+            typeof entry === "object" && entry !== null
+              ? String((entry as Record<string, unknown>)["id"])
+              : "",
+          )
           .filter((id) => id !== ""),
       );
       const cookbook = await deps.cookbook();
@@ -876,11 +894,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       }
       await store.db.run(
         `UPDATE runs SET job_id = ?, payload = ? WHERE id = ? AND job_id IS NULL`,
-        [
-          answered.value.jobId,
-          JSON.stringify({ closure: null, requestedAt: deps.now() }),
-          run.id,
-        ],
+        [answered.value.jobId, JSON.stringify({ closure: null, requestedAt: deps.now() }), run.id],
       );
       store.touch();
       posted.push({ runId: run.id, jobId: answered.value.jobId });

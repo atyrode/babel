@@ -11,11 +11,11 @@ independently enable-able **parts**, each a directory, each packed as one
 readable at the tag `v0.4.0` — `git show v0.4.0:internal/<pkg>` — and `docs/parity.md` records,
 per capability, what it did and whether this family does it.
 
-| Plugin                | Directory                | Halves       | What it is                                                                                                                                                                   |
-| --------------------- | ------------------------ | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `atyrode.babel`       | `atyrode.babel/`         | server + web | The baseline: the store (one SQLite file of its own), the nine read doors, the operator's acts, the three drain doors, the machine operations and the conductor. Contributes the five event kinds and no panel. |
-| `atyrode.babel.feed`  | `atyrode.babel/feed/`    | web          | Home — every record Babel produced, ranked by what needs the operator — the peeled record, and a topic with its filings and his interest. Panels `home`, `record`, `topic`.     |
-| `atyrode.babel.watch` | `atyrode.babel/watch/`   | web          | What is running, what will run and what a drain is spending: presets instead of flags, the model and the ceiling up front, the live pulse, the receipt afterwards. Panel `watch`. |
+| Plugin                | Directory              | Halves       | What it is                                                                                                                                                                                                      |
+| --------------------- | ---------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `atyrode.babel`       | `atyrode.babel/`       | server + web | The baseline: the store (one SQLite file of its own), the nine read doors, the operator's acts, the three drain doors, the machine operations and the conductor. Contributes the five event kinds and no panel. |
+| `atyrode.babel.feed`  | `atyrode.babel/feed/`  | web          | Home — every record Babel produced, ranked by what needs the operator — the peeled record, and a topic with its filings and his interest. Panels `home`, `record`, `topic`.                                     |
+| `atyrode.babel.watch` | `atyrode.babel/watch/` | web          | What is running, what will run and what a drain is spending: presets instead of flags, the model and the ceiling up front, the live pulse, the receipt afterwards. Panel `watch`.                               |
 
 A part is a directory inside its parent's and says so with
 `dependencies: { "atyrode.babel": { type: "required" } }`; assembly refuses it otherwise. The
@@ -262,7 +262,7 @@ password goes and not where one deployment's `s3:` locator belongs either. Both 
 ONE service the operator installs, `atyrode.babel.restic`:
 
 - the operation declares `services: [{ serviceId: "atyrode.babel.restic", revision: "1",
-  operationIds: ["storage"] }]` and a second input file whose literal is `{"url":"","bearer":""}`
+operationIds: ["storage"] }]` and a second input file whose literal is `{"url":"","bearer":""}`
   with `jsonValues` filling `url` and `bearer` from that binding;
 - the engine opens a loopback proxy for the job, mints a capability for that job alone, writes
   both into `/inputs/restic`, and refuses to open it at all unless the operation is
@@ -283,7 +283,7 @@ re-reads every byte it already archived, and a confined job has nowhere else to 
 and the bearer is 32 random bytes the owner mints per job for its own proxy
 (`packages/agent/src/job-service-proxy.ts`: "Fresh job capability, never an upstream
 credential"); the protocol can materialize a capability into a job's file and has no way to
-materialize an owner-held secret *value* into one. So the capability is what the job is given
+materialize an owner-held secret _value_ into one. So the capability is what the job is given
 and the document behind it is what carries the secret — which is also why the policy's upstream
 is the operator's own store rather than anything Babel ships or generates: Babel never creates
 or emits a credential, and stays vault-agnostic (`SPEC.md`).
@@ -368,11 +368,11 @@ A **drain** is the one operation that spends a chosen account's remaining usage 
 before it resets, and stops itself (#258; `docs/runbook.md` §11 is the procedure). It is three
 doors of the baseline and one section of Watch:
 
-| Door           | Governed at                             | What it does                                                                                                                                                      |
-| -------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `drainStart`   | `machines:run` at the **operation** node | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts the first fan of jobs through the same launch path the operator's own button uses, and writes the `drains` row. |
-| `drainStatus`  | `containers:read`, delegating `jobs:read` | What is draining: jobs live, jobs at the model, tokens and cost a minute over the last three minutes, spend against target, ETA against deadline, refusals by reason, the account. A cycle follows it, and the delegate is what lets that cycle read a running job back. |
-| `drainStop`    | `jobs:cancel` at the **operation** node | Cancels every job the drain holds, and marks the row `closing` — or `stopped`, when it holds none.                                                                  |
+| Door          | Governed at                               | What it does                                                                                                                                                                                                                                                             |
+| ------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `drainStart`  | `machines:run` at the **operation** node  | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts the first fan of jobs through the same launch path the operator's own button uses, and writes the `drains` row.                                                                         |
+| `drainStatus` | `containers:read`, delegating `jobs:read` | What is draining: jobs live, jobs at the model, tokens and cost a minute over the last three minutes, spend against target, ETA against deadline, refusals by reason, the account. A cycle follows it, and the delegate is what lets that cycle read a running job back. |
+| `drainStop`   | `jobs:cancel` at the **operation** node   | Cancels every job the drain holds, and marks the row `closing` — or `stopped`, when it holds none.                                                                                                                                                                       |
 
 Four things are worth knowing before reading `server/drain.ts`:
 

@@ -156,7 +156,10 @@ export const FeedQuerySchema = z.strictObject({
 export type FeedQuery = z.infer<typeof FeedQuerySchema>;
 
 /** One reviewer's vote as the row's strip shows it. */
-export const FeedVoteSchema = z.strictObject({ role: RoleSchema.or(z.literal("")), vote: VoteSchema });
+export const FeedVoteSchema = z.strictObject({
+  role: RoleSchema.or(z.literal("")),
+  vote: VoteSchema,
+});
 
 export const FeedPostSchema = z.strictObject({
   id: z.string(),
@@ -201,19 +204,40 @@ export const RecordPeelSchema = z.strictObject({
     z.strictObject({
       excerpt: z.string(),
       speaker: z.string(),
-      session: z.strictObject({ selector: z.string(), title: z.string(), href: z.string() }).nullable(),
+      session: z
+        .strictObject({ selector: z.string(), title: z.string(), href: z.string() })
+        .nullable(),
       note: z.string(),
       line: z.number().int().nullable(),
     }),
   ),
   reception: z.strictObject({
-    byRole: z.array(z.strictObject({ role: RoleSchema, support: z.number().int(), oppose: z.number().int(), unsure: z.number().int(), opposingRationales: z.array(z.string()) })),
+    byRole: z.array(
+      z.strictObject({
+        role: RoleSchema,
+        support: z.number().int(),
+        oppose: z.number().int(),
+        unsure: z.number().int(),
+        opposingRationales: z.array(z.string()),
+      }),
+    ),
     contested: z.boolean(),
-    operatorHistory: z.array(z.strictObject({ stance: z.string(), reason: z.string(), at: z.string() })),
+    operatorHistory: z.array(
+      z.strictObject({ stance: z.string(), reason: z.string(), at: z.string() }),
+    ),
   }),
   machinery: z.record(z.string(), z.string()),
-  related: z.array(z.strictObject({ relation: z.string(), id: z.string(), kind: RecordKindSchema, title: z.string() })),
-  plan: z.strictObject({ kind: z.enum(["topic", "backlog"]), operation: z.string(), state: z.string() }).nullable(),
+  related: z.array(
+    z.strictObject({
+      relation: z.string(),
+      id: z.string(),
+      kind: RecordKindSchema,
+      title: z.string(),
+    }),
+  ),
+  plan: z
+    .strictObject({ kind: z.enum(["topic", "backlog"]), operation: z.string(), state: z.string() })
+    .nullable(),
 });
 export type RecordPeel = z.infer<typeof RecordPeelSchema>;
 
@@ -225,7 +249,14 @@ export const ThreadQuerySchema = z.strictObject({ id: RecordIdSchema });
 export const CommentSchema: z.ZodType<Comment> = z.lazy(() =>
   z.strictObject({
     id: z.string(),
-    kind: z.enum(["comment", "question", "contribution", "refinement", "answer", "reconsideration"]),
+    kind: z.enum([
+      "comment",
+      "question",
+      "contribution",
+      "refinement",
+      "answer",
+      "reconsideration",
+    ]),
     author: z.strictObject({ kind: z.enum(["run", "operator"]), id: z.string() }),
     role: z.string(),
     text: z.string(),
@@ -269,12 +300,22 @@ export const TopicRowSchema = z.strictObject({
   name: z.string(),
   kind: z.string(),
   binding: z
-    .strictObject({ kind: z.string(), identity: z.string(), remote: z.string(), paths: z.array(z.string()) })
+    .strictObject({
+      kind: z.string(),
+      identity: z.string(),
+      remote: z.string(),
+      paths: z.array(z.string()),
+    })
     .nullable(),
   posts: z.number().int(),
   awaiting: z.number().int(),
   latestAt: z.string(),
-  interest: z.strictObject({ state: InterestStateSchema.or(z.literal("")), reason: z.string(), at: z.string(), by: z.string() }),
+  interest: z.strictObject({
+    state: InterestStateSchema.or(z.literal("")),
+    reason: z.string(),
+    at: z.string(),
+    by: z.string(),
+  }),
 });
 
 export const TopicProposalSchema = z.strictObject({
@@ -382,7 +423,9 @@ export const PulseResultSchema = z.strictObject({
     topicProposals: z.number().int(),
     ruled: z.number().int(),
   }),
-  reviewing: z.array(z.strictObject({ id: z.string(), kind: z.string(), title: z.string(), since: z.string() })),
+  reviewing: z.array(
+    z.strictObject({ id: z.string(), kind: z.string(), title: z.string(), since: z.string() }),
+  ),
 });
 
 // ---------------------------------------------------------------------------- machine operations
@@ -487,7 +530,10 @@ export const PANELS = {
 export const ImportChunkSchema = z.strictObject({
   source: bounded(200),
   table: bounded(64),
-  rows: z.array(z.record(z.string(), z.union([z.string(), z.number(), z.null()]))).min(1).max(500),
+  rows: z
+    .array(z.record(z.string(), z.union([z.string(), z.number(), z.null()])))
+    .min(1)
+    .max(500),
 });
 
 /**
@@ -785,7 +831,13 @@ export type EngineRefusalCode = (typeof ENGINE_REFUSALS)[keyof typeof ENGINE_REF
 // ---------------------------------------------------------------------------- runs and launches
 
 /** What Watch offers instead of flags: a preset is a named request the operator understands. */
-export const PRESETS = ["read-whats-new", "explore-topic", "review-backlog", "file-and-tidy", "keep-going"] as const;
+export const PRESETS = [
+  "read-whats-new",
+  "explore-topic",
+  "review-backlog",
+  "file-and-tidy",
+  "keep-going",
+] as const;
 export const PresetSchema = z.enum(PRESETS);
 
 /** The five states a run passes through; `stopped` is the only one an operator can cause. */
@@ -844,7 +896,12 @@ export const LaunchInputSchema = z.strictObject({
   /** For `review-backlog`: how many draws. */
   draws: z.number().int().min(1).max(50).optional(),
   /** For `keep-going`: how long, in minutes. */
-  minutes: z.number().int().min(5).max(24 * 60).optional(),
+  minutes: z
+    .number()
+    .int()
+    .min(5)
+    .max(24 * 60)
+    .optional(),
   /** Cookbook recipe ids to run; empty runs the enabled default set. */
   recipes: z.array(bounded(80)).max(16).default([]),
   /**
@@ -1401,7 +1458,12 @@ export const DrainStartInputSchema = z.strictObject({
   /** For `read-whats-new`: how far back, in days. */
   sinceDays: z.number().int().min(1).max(365).optional(),
   /** For `keep-going`: how long one beat runs, in minutes. */
-  minutes: z.number().int().min(5).max(24 * 60).optional(),
+  minutes: z
+    .number()
+    .int()
+    .min(5)
+    .max(24 * 60)
+    .optional(),
   recipes: z.array(bounded(80)).max(16).default([]),
   /** Whether a preparation may hold Babel's own transcripts (#262); absent unless asked. */
   agentSessions: z.boolean().optional(),

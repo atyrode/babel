@@ -287,7 +287,9 @@ test("the recipes read as names with what each looks for and when it last ran", 
   const root = await mount(<Watch host={fake.host} />);
   await settle();
 
-  const rows = [...root.querySelectorAll(".plugin-atyrode_babel_watch__recipe")].map((row) => row.textContent ?? "");
+  const rows = [...root.querySelectorAll(".plugin-atyrode_babel_watch__recipe")].map(
+    (row) => row.textContent ?? "",
+  );
   expect(root.textContent).toContain("1 of 2 enabled");
   expect(rows[0]).toContain("Code health: comprehensibility");
   expect(rows[0]).toContain("Where the code is hard to read, and what that cost.");
@@ -303,7 +305,9 @@ test("the ceilings section states both ceilings, the concurrency and today's spe
   const root = await mount(<Watch host={fake.host} />);
   await settle();
 
-  const stats = [...root.querySelectorAll(".plugin-atyrode_babel_watch__stat")].map((stat) => stat.textContent ?? "");
+  const stats = [...root.querySelectorAll(".plugin-atyrode_babel_watch__stat")].map(
+    (stat) => stat.textContent ?? "",
+  );
   expect(stats[0]).toContain("$2.00");
   expect(stats[1]).toContain("$20.00");
   expect(stats[1]).toContain("$4.50 spent since midnight UTC.");

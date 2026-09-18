@@ -2,20 +2,18 @@ import { useSyncExternalStore } from "react";
 import type { HostServices, OpenPanelRefusal } from "@manifold/plugin";
 import type { ManifoldRef, PanelArg } from "@manifold/protocol";
 import { z } from "zod";
+import type { FeedQuerySchema, TopicProposalSchema, TopicRowSchema } from "../contract.ts";
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   FEED_PLUGIN_ID,
   FeedResultSchema,
-  FeedQuerySchema,
   PANELS,
   PulseResultSchema,
   RecordPeelSchema,
   RuleResultSchema,
   ThreadResultSchema,
-  TopicProposalSchema,
   TopicResultSchema,
-  TopicRowSchema,
   TopicsResultSchema,
   door,
   type ActionName,
@@ -134,7 +132,10 @@ export function looking(): Selection {
 
 /** Points the panels at something. Unchanged fields stay; an unchanged selection notifies nobody. */
 export function look(at: Partial<Selection>): void {
-  const next: Selection = { recordId: at.recordId ?? selection.recordId, topic: at.topic ?? selection.topic };
+  const next: Selection = {
+    recordId: at.recordId ?? selection.recordId,
+    topic: at.topic ?? selection.topic,
+  };
   if (next.recordId === selection.recordId && next.topic === selection.topic) return;
   selection = next;
   for (const watcher of watchers) watcher();

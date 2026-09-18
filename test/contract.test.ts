@@ -117,7 +117,10 @@ describe("the parts are parts of the baseline", () => {
     // running sits next to it. A panel with no seat (a record, a topic) opens on demand.
     const seated = [feed, watch]
       .flatMap((manifest) =>
-        (manifest.contributes.seats ?? []).map((seat) => ({ ...seat, id: `${manifest.id}.${seat.panel}` })),
+        (manifest.contributes.seats ?? []).map((seat) => ({
+          ...seat,
+          id: `${manifest.id}.${seat.panel}`,
+        })),
       )
       .sort((left, right) => left.order - right.order);
     expect(seated.map((seat) => seat.id)).toEqual([
@@ -284,10 +287,12 @@ describe("the machine half is declared as the machine half is built", () => {
     delete process.env["CODEX_HOME"];
     try {
       for (const operation of [OPERATIONS.scan, OPERATIONS.archive]) {
-        const mounted = machine.operations[operation]!.locations
-          .filter((location) => location.access === "read")
-          .map((location) => machine.locations[location.locationId]?.guestPath);
-        expect(mounted.toSorted()).toEqual(ADAPTERS.flatMap((adapter) => adapter.defaultRoots()).toSorted());
+        const mounted = machine.operations[operation]!.locations.filter(
+          (location) => location.access === "read",
+        ).map((location) => machine.locations[location.locationId]?.guestPath);
+        expect(mounted.toSorted()).toEqual(
+          ADAPTERS.flatMap((adapter) => adapter.defaultRoots()).toSorted(),
+        );
       }
     } finally {
       if (home === undefined) delete process.env["HOME"];

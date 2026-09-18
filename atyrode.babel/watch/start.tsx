@@ -257,7 +257,11 @@ function Profiles({
         <a
           className="plugin-atyrode_babel_watch__link"
           data-panel={GENERATOR_PANEL}
-          href={generatorUri(draft.containerId === "" ? (profiles.profiles[0]?.containerId ?? "") : draft.containerId)}
+          href={generatorUri(
+            draft.containerId === ""
+              ? (profiles.profiles[0]?.containerId ?? "")
+              : draft.containerId,
+          )}
           onClick={(event) => {
             event.preventDefault();
             const containerId =
@@ -293,7 +297,8 @@ export function Start({
   const card = LAUNCH_CARDS[draft.preset];
   const profile = chosenProfile(draft, profiles.profiles);
   const reaches = PRESET_START[draft.preset] === "explore";
-  const blocked = profiles.unavailable !== "" && reaches ? profiles.unavailable : launchUnready(draft, profile);
+  const blocked =
+    profiles.unavailable !== "" && reaches ? profiles.unavailable : launchUnready(draft, profile);
   return (
     // The section names itself, as the drain's does and for the same reason: two forms on this
     // screen offer a "Machine" picker, and `watch/test/start.test.tsx` scopes its reads to this
@@ -305,9 +310,9 @@ export function Start({
       <Stack gap="var(--babel-space-1)">
         <h2 className="plugin-atyrode_babel_watch__title">Start something</h2>
         <p className="plugin-atyrode_babel_watch__lede">
-          Three requests in your own words, on a Code profile. A run that reaches a model is a
-          Code session: Code owns the model, the thinking level and the account, and Babel posts
-          the run through its <code>runSession</code> door.
+          Three requests in your own words, on a Code profile. A run that reaches a model is a Code
+          session: Code owns the model, the thinking level and the account, and Babel posts the run
+          through its <code>runSession</code> door.
         </p>
       </Stack>
       <Cluster gap="var(--babel-space-2)" className="plugin-atyrode_babel_watch__presets">

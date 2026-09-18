@@ -39,11 +39,7 @@ if (!/^[a-f0-9]{40}$/.test(revision)) {
 const manifoldRevision = (await readFile(join(repo, "MANIFOLD_REV"), "utf8")).trim();
 
 /** The SDK checkout every script in this tree builds against (`manifold-dir.sh`). */
-const manifold = await realpath(
-  (
-    await run([join(repo, "manifold-dir.sh")], repo)
-  ).trim(),
-);
+const manifold = await realpath((await run([join(repo, "manifold-dir.sh")], repo)).trim());
 
 const root = join(repo, ".integration");
 const snapshot = join(root, revision);

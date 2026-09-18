@@ -58,25 +58,29 @@ export const ACTS: Record<RuleAct, ActWord> = {
   accept: {
     label: "Accept",
     key: "y",
-    confirm: "Endorse this record for projection and follow-on work. The event is appended permanently.",
+    confirm:
+      "Endorse this record for projection and follow-on work. The event is appended permanently.",
     done: "accepted",
   },
   reject: {
     label: "Reject",
     key: "n",
-    confirm: "Record disagreement. The record is kept, visibly rejected, and the event is appended permanently.",
+    confirm:
+      "Record disagreement. The record is kept, visibly rejected, and the event is appended permanently.",
     done: "rejected",
   },
   defer: {
     label: "Defer",
     key: "d",
-    confirm: "Not now. The record stays readable with its history and the event is appended permanently.",
+    confirm:
+      "Not now. The record stays readable with its history and the event is appended permanently.",
     done: "deferred",
   },
   duplicate: {
     label: "Duplicate",
     key: "",
-    confirm: "Point this record at an original, which you name below. The event is appended permanently.",
+    confirm:
+      "Point this record at an original, which you name below. The event is appended permanently.",
     done: "marked duplicate",
   },
   reopen: {
@@ -121,7 +125,9 @@ export const POST_ACTS: readonly RuleAct[] = [
 
 /** The keys that press an act, for the surfaces that have a focused record. */
 export const RULE_KEYS: Record<string, RuleAct> = Object.fromEntries(
-  (Object.keys(ACTS) as RuleAct[]).filter((act) => ACTS[act].key !== "").map((act) => [ACTS[act].key, act]),
+  (Object.keys(ACTS) as RuleAct[])
+    .filter((act) => ACTS[act].key !== "")
+    .map((act) => [ACTS[act].key, act]),
 );
 
 /** §4.8's three outcomes, each with the one sentence that says what recording it does next. */
@@ -135,24 +141,21 @@ export const ANSWER_OUTCOMES: ReadonlyArray<{
   {
     value: "answered",
     label: "Answer",
-    note:
-      "Kept verbatim and attributed to you, then read by the answer interpreter. What it proposes changes nothing until you accept the plan.",
+    note: "Kept verbatim and attributed to you, then read by the answer interpreter. What it proposes changes nothing until you accept the plan.",
     verb: "Record answer",
     done: "answered",
   },
   {
     value: "unknown",
     label: "I don't know",
-    note:
-      "Closes the question with nothing to interpret, and stops Babel asking it again until materially new evidence turns up.",
+    note: "Closes the question with nothing to interpret, and stops Babel asking it again until materially new evidence turns up.",
     verb: "Record that you don't know",
     done: "recorded that you don't know",
   },
   {
     value: "declined",
     label: "Stop asking",
-    note:
-      "Refuses the question. It stays on the record, visibly declined, and is suppressed until materially new evidence justifies asking again.",
+    note: "Refuses the question. It stays on the record, visibly declined, and is suppressed until materially new evidence justifies asking again.",
     verb: "Decline the question",
     done: "declined",
   },
@@ -205,7 +208,11 @@ export function RuleActs({
   const [open, setOpen] = useState<RuleAct | null>(null);
   return (
     <>
-      <div className={plain ? "babel-acts-text" : "babel-acts-bar"} role="group" aria-label="Act on this record">
+      <div
+        className={plain ? "babel-acts-text" : "babel-acts-bar"}
+        role="group"
+        aria-label="Act on this record"
+      >
         {acts.map((act) => (
           <button
             type="button"
@@ -594,7 +601,10 @@ export function FeedRow({
             </button>
           )}
           {rest.length > 0 && (
-            <span className="babel-topic" title={rest.map((topic) => `t/${topic.name}`).join(" · ")}>
+            <span
+              className="babel-topic"
+              title={rest.map((topic) => `t/${topic.name}`).join(" · ")}
+            >
               +{rest.length}
             </span>
           )}

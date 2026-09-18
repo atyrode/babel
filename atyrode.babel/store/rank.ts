@@ -147,7 +147,11 @@ export function controversialRank(support: number, oppose: number): number {
  * those rather than ranking them last: a rising list whose tail is every silent record in the
  * corpus is a list of every record in the corpus.
  */
-export function risingRank(activity: readonly number[], createdAtMs: number, nowMs: number): number {
+export function risingRank(
+  activity: readonly number[],
+  createdAtMs: number,
+  nowMs: number,
+): number {
   const cutoff = nowMs - RISING_WINDOW_MS;
   let recent = 0;
   for (const at of activity) {

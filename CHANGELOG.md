@@ -11,6 +11,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Five gates, each watched to fail.** The repository had no linter, no formatter and no
+  unused-code check: `gofmt -l .` was the only formatting gate and it died with the Go tree.
+  `bun run check` is now the aggregate the CI workflow runs — a typecheck, ESLint and Prettier at
+  the Manifold sibling's own versions and settings, `knip` reachability over the entry points the
+  manifests declare, a checker that every backticked repository path and every `bun run <script>`
+  in a tracked document exists, and two rules about tests: a test may not read a `.md` file,
+  because prose is not a contract, and may not skip itself on an environment variable, because a
+  lane that cannot run should be zero tests rather than a green run full of silent skips. Each
+  was proven by breaking it: an unimported file, an unresolved import, a document naming a page
+  that does not exist, a test reading `SPEC.md`, a test skipping itself, a `==`, and a
+  misformatted line. The checkers have their own suites, whose fixtures are violations by
+  construction. Two `react-hooks` rules warn rather than error, and `eslint.config.js` records
+  the four real defects they found in the reading surface and why fixing render semantics does
+  not belong in a tooling change.
 - **An exploration now produces records, which Babel-as-a-plugin had never done.** A settled Code
   session used to be read, checked against the material it cited and turned into a receipt, and
   the hypotheses, observations, findings and proposals inside the answer went nowhere: every

@@ -23,10 +23,10 @@
 */
 
 import type { PluginDatabase, SqlParam, SqlRow } from "@manifold/plugin";
+import type { PulseResultSchema } from "../contract.ts";
 import {
   FEED_SORTS,
   POST_KINDS,
-  PulseResultSchema,
   ROLES,
   RULINGS,
   type BudgetOverlay,
@@ -41,12 +41,7 @@ import {
 } from "../contract.ts";
 import type { z } from "zod";
 import { standingOf, type Standing } from "./acts.ts";
-import {
-  budgetChanges,
-  DEFAULT_POLICY,
-  type Budget,
-  type Policy,
-} from "./coordinator.ts";
+import { budgetChanges, DEFAULT_POLICY, type Budget, type Policy } from "./coordinator.ts";
 import {
   buildFeedIndex,
   filterFeed,
@@ -85,7 +80,12 @@ function isRuling(value: string): value is Ruling {
  * holding a value its own CHECK forbids, and saying so is better than picking a label.
  */
 function postKind(value: string): PostKind {
-  if (value === "hypothesis" || value === "finding" || value === "proposal" || value === "question") {
+  if (
+    value === "hypothesis" ||
+    value === "finding" ||
+    value === "proposal" ||
+    value === "question"
+  ) {
     return value;
   }
   throw new Error(`a record of kind ${value} is not a post`);
@@ -102,7 +102,12 @@ export interface TopicRow {
   posts: number;
   awaiting: number;
   latestAt: string;
-  interest: { state: "" | "working" | "watching" | "not-now" | "excluded"; reason: string; at: string; by: string };
+  interest: {
+    state: "" | "working" | "watching" | "not-now" | "excluded";
+    reason: string;
+    at: string;
+    by: string;
+  };
 }
 
 /** One topic change Babel has published and nobody has ruled on. */
@@ -132,7 +137,13 @@ export interface TopicResult {
 
 export interface ThreadResult {
   comments: Comment[];
-  acts: { id: string; act: "accept" | "reject" | "defer" | "duplicate" | "reopen" | "refine"; by: string; at: string; reason: string }[];
+  acts: {
+    id: string;
+    act: "accept" | "reject" | "defer" | "duplicate" | "reopen" | "refine";
+    by: string;
+    at: string;
+    reason: string;
+  }[];
   total: number;
 }
 
@@ -337,9 +348,10 @@ function citations(kind: string, payload: Record<string, unknown>): Citation[] {
   const out: Citation[] = [];
   const take = (key: string, counter: boolean): void => {
     for (const item of objectsField(payload, key)) {
-      const locator = typeof item["locator"] === "object" && item["locator"] !== null
-        ? (item["locator"] as Record<string, unknown>)
-        : {};
+      const locator =
+        typeof item["locator"] === "object" && item["locator"] !== null
+          ? (item["locator"] as Record<string, unknown>)
+          : {};
       out.push({
         note: stringField(item, "note"),
         line: numberField(locator, "line"),
@@ -466,7 +478,11 @@ function runState(closure: string, startedAt: string, finishedAt: string): RunRo
  * likely a process that died than a process that is quiet. Neither says a process is dead:
  * nothing here observed one.
  */
-function runFreshness(state: RunRow["state"], lastWordMs: number, nowMs: number): RunRow["freshness"] {
+function runFreshness(
+  state: RunRow["state"],
+  lastWordMs: number,
+  nowMs: number,
+): RunRow["freshness"] {
   if (state !== "running" && state !== "queued") return "ended";
   const age = nowMs - lastWordMs;
   if (age >= 15 * 60_000) return "lost";
@@ -666,7 +682,11 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     out.sort((left, right) =>
       left.posts !== right.posts
         ? right.posts - left.posts
-        : left.title < right.title ? -1 : left.title > right.title ? 1 : 0,
+        : left.title < right.title
+          ? -1
+          : left.title > right.title
+            ? 1
+            : 0,
     );
     return out;
   };
@@ -687,7 +707,11 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
 
   const feed = async (query: FeedQuery): Promise<FeedResult> => {
     const current = await index();
-    const eligible = filterFeed(current.posts, { ...query, topic: query.topic ?? "" }, current.builtAt);
+    const eligible = filterFeed(
+      current.posts,
+      { ...query, topic: query.topic ?? "" },
+      current.builtAt,
+    );
     sortFeed(eligible, query.sort, current.builtAt);
     return page(eligible, query, current);
   };
@@ -718,7 +742,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     if (kind === "observation") return null;
     const payload = document(row["payload"]);
     const current = await index();
-    const post = current.posts.find((entry) => entry.post.id === id)?.post ?? (await soloPost(row, current));
+    const post =
+      current.posts.find((entry) => entry.post.id === id)?.post ?? (await soloPost(row, current));
 
     const replacedBy = await one(`SELECT id FROM records WHERE supersedes_id = ? LIMIT 1`, [id]);
     const ruling = await one(
@@ -727,9 +752,14 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     );
     const last = ruling === null ? null : text(ruling["disposition"]);
     const reviewable = REVIEWABLE[kind] === true;
-    let standing: string = reviewable ? (last === "reopen" ? STANDING_REOPENED : standingOf(last)) : "";
+    let standing: string = reviewable
+      ? last === "reopen"
+        ? STANDING_REOPENED
+        : standingOf(last)
+      : "";
     if (replacedBy !== null) standing = "superseded";
-    const act = reviewable && (standing === "new" || standing === STANDING_REOPENED) ? "Rule on this" : "";
+    const act =
+      reviewable && (standing === "new" || standing === STANDING_REOPENED) ? "Rule on this" : "";
 
     return {
       post,
@@ -748,10 +778,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     const current = await index();
     const entry = current.posts.find((post) => post.post.id === id);
     if (entry === undefined) return null;
-    const row = await one(
-      `SELECT text, why, class, kind, created_at FROM questions WHERE id = ?`,
-      [id],
-    );
+    const row = await one(`SELECT text, why, class, kind, created_at FROM questions WHERE id = ?`, [
+      id,
+    ]);
     if (row === null) return null;
     const why = text(row["why"]);
     return {
@@ -764,7 +793,11 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       case: why === "" ? {} : { problem: why },
       evidence: [],
       reception: { byRole: [], contested: false, operatorHistory: [] },
-      machinery: { class: text(row["class"]), kind: text(row["kind"]), createdAt: text(row["created_at"]) },
+      machinery: {
+        class: text(row["class"]),
+        kind: text(row["kind"]),
+        createdAt: text(row["created_at"]),
+      },
       related: [],
       plan: await planOf(id),
     };
@@ -858,7 +891,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       // against the path is the proof, so a stem two sessions share cannot resolve to the wrong
       // conversation.
       const matched =
-        held !== undefined && held.sourceId !== "" && stripped.endsWith(held.sourceId) ? held : null;
+        held !== undefined && held.sourceId !== "" && stripped.endsWith(held.sourceId)
+          ? held
+          : null;
       const event = item.line > 0 ? item.line - 1 : 0;
       return {
         excerpt: "",
@@ -921,7 +956,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         rationale: text(row["rationale"]),
       });
     }
-    const byRole = new Map<string, { support: number; oppose: number; unsure: number; opposingRationales: string[] }>();
+    const byRole = new Map<
+      string,
+      { support: number; oppose: number; unsure: number; opposingRationales: string[] }
+    >();
     for (const held of votes.values()) {
       if (held.role === "") continue;
       let tally = byRole.get(held.role);
@@ -934,7 +972,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       else tally.unsure++;
       // A reader looking at a contested role needs the argument against; the arguments for are
       // already beside every reviewer's own line.
-      if (held.vote === "oppose" && held.rationale !== "") tally.opposingRationales.push(held.rationale);
+      if (held.vote === "oppose" && held.rationale !== "")
+        tally.opposingRationales.push(held.rationale);
     }
     let contested = false;
     const roles: RecordPeel["reception"]["byRole"] = [];
@@ -1067,7 +1106,12 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       [id, id],
     );
     for (const row of edges) {
-      add(text(row["relation"]), text(row["other_id"]), text(row["other_kind"]), text(row["title"]));
+      add(
+        text(row["relation"]),
+        text(row["other_id"]),
+        text(row["other_kind"]),
+        text(row["title"]),
+      );
     }
     if (runId !== "") {
       const siblings = await db.query(
@@ -1286,8 +1330,14 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     // ordered by identifier would reshuffle every poll. Ties resolve by identifier.
     reviewing.sort((left, right) =>
       left.since !== right.since
-        ? left.since < right.since ? -1 : 1
-        : left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+        ? left.since < right.since
+          ? -1
+          : 1
+        : left.id < right.id
+          ? -1
+          : left.id > right.id
+            ? 1
+            : 0,
     );
 
     return {
@@ -1327,7 +1377,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   const run = async (id: string): Promise<RunResult> => {
-    const row = await one(`SELECT ${RUN_COLUMNS}, r.payload AS payload FROM ${RUN_FROM} WHERE r.id = ?`, [id]);
+    const row = await one(
+      `SELECT ${RUN_COLUMNS}, r.payload AS payload FROM ${RUN_FROM} WHERE r.id = ?`,
+      [id],
+    );
     if (row === null) return { run: null, receipt: null };
     const receipt = document(row["payload"]);
     return {
@@ -1416,7 +1469,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         ? (heldReview as Record<string, unknown>)
         : {};
     const routedRecipes = objectsField(review, "recipes");
-    const recipeDocuments = routedRecipes.length > 0 ? routedRecipes : objectsField(payload, "recipes");
+    const recipeDocuments =
+      routedRecipes.length > 0 ? routedRecipes : objectsField(payload, "recipes");
     for (const entry of recipeDocuments) {
       described[stringField(entry, "id")] = entry;
     }
@@ -1478,7 +1532,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   const topic = async (name: string): Promise<TopicResult> => {
     const current = await index();
     const rows = await topicRows();
-    const match = rows.find((row) => row.id === name) ?? rows.find((row) => row.name === name) ?? null;
+    const match =
+      rows.find((row) => row.id === name) ?? rows.find((row) => row.name === name) ?? null;
     const proposed = (await topicProposals()).filter((proposal) =>
       match === null ? false : proposal.targets.some((target) => target.id === match.id),
     );
@@ -1591,6 +1646,10 @@ function nest(flat: readonly Comment[]): Comment[] {
 }
 
 /** The vocabulary the feed door refuses by name rather than answering with an empty list. */
-export const FEED_VOCABULARY = { sorts: FEED_SORTS, kinds: POST_KINDS, unfiled: TOPIC_UNFILED } as const;
+export const FEED_VOCABULARY = {
+  sorts: FEED_SORTS,
+  kinds: POST_KINDS,
+  unfiled: TOPIC_UNFILED,
+} as const;
 
 export type { Standing };

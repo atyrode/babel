@@ -1,0 +1,65 @@
+{
+  // REACHABILITY, not style. The question this answers is the one no typechecker asks: is there
+  // a file, an export or a dependency here that nothing can reach? A retired product leaves that
+  // debt behind by the thousand, and the only way it does not come back is a gate.
+  //
+  // THE ENTRY POINTS ARE WHAT THE MANIFESTS DECLARE, and the manifests are authoritative over
+  // this list. `atyrode.babel/manifest.json` declares `entry.server` and `entry.web`; each part
+  // declares its own `entry.web`; the baseline's `machine.artifacts` names the machine half's
+  // bundle, which `pack.sh` builds from `machine/main.ts`. Anything else a bundle contains is
+  // reached from one of those four, and if it is not, that is the finding.
+  //
+  // `tools/` and `scripts/` are entry points too, and deliberately: they are dev-time CLIs that
+  // never enter a packed artifact, so nothing imports them and a reachability check that did not
+  // name them would report every one of their modules as dead.
+  //
+  // WHAT THIS GATE FAILS ON is narrower than what knip can report, and the narrowing is the
+  // judgement rather than a concession. It fails on an unreachable FILE, an unlisted or
+  // unresolved IMPORT, and an unused DEPENDENCY: each is a defect with one remedy and no
+  // defensible reason to exist. It does not fail on an unused EXPORT, because this family's
+  // stated convention is that every id, door name, event kind and schema is spelled ONCE in
+  // `atyrode.babel/contract.ts` whether or not a consumer exists yet — `test/contract.test.ts`
+  // pins the manifests to those names — so enforcing it would delete the vocabulary to satisfy
+  // a tool. `bun run lint:reachability -- --include exports,types` reports them when that is
+  // the question being asked.
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "include": ["files", "dependencies", "unlisted", "unresolved"],
+  "entry": [
+    "atyrode.babel/server.ts",
+    "atyrode.babel/web.ts",
+    "atyrode.babel/feed/web.tsx",
+    "atyrode.babel/watch/web.tsx",
+    "atyrode.babel/machine/main.ts",
+    "atyrode.babel/tools/import.ts",
+    "atyrode.babel/tools/seed-recipes.ts",
+    "scripts/*.ts",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+  ],
+  "project": ["**/*.{ts,tsx}"],
+  "ignore": [
+    // The built machine half: `pack.sh` writes it from `machine/main.ts` and deletes it after,
+    // and `.gitignore` excludes it. It is an output, never a source.
+    "atyrode.babel/machine.js",
+    // Another repository's source and another family's bundles, prepared by `deps:code` so a
+    // required dependency can be composed at verification.
+    ".integration/**",
+  ],
+  "ignoreDependencies": [
+    // Shared externals: the host provides one copy at runtime and `link-externals.sh` links them
+    // from the SDK's own resolution root, so they are not dependencies of this package and
+    // nothing here may bundle a second copy.
+    "react",
+    "react-dom",
+    "@types/react",
+    "@types/react-dom",
+    // The test runtime's DOM. `happy-dom/global-registrator` is registered by a preload rather
+    // than imported by a module, which is exactly the shape a reachability check cannot see.
+    "@happy-dom/global-registrator",
+    "happy-dom",
+  ],
+  "ignoreBinaries": [
+    // Resolved from the SDK checkout `manifold-dir.sh` finds, not from this package.
+    "manifold-dir.sh",
+  ],
+}

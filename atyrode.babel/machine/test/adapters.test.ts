@@ -3,7 +3,15 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { claude, claim, codex, contentDigest, discover, existingRoots, omp } from "../adapters/index.ts";
+import {
+  claude,
+  claim,
+  codex,
+  contentDigest,
+  discover,
+  existingRoots,
+  omp,
+} from "../adapters/index.ts";
 import { readRecords } from "../adapters/records.ts";
 import {
   digestOf,
@@ -51,7 +59,12 @@ beforeAll(async () => {
     ],
     toolErrors: 1,
   });
-  await writeOmpArtifact(ompRoot, "-home-alex-babel", "2026-09-01T00-00-00-000Z_01a0", "__advisor.jsonl");
+  await writeOmpArtifact(
+    ompRoot,
+    "-home-alex-babel",
+    "2026-09-01T00-00-00-000Z_01a0",
+    "__advisor.jsonl",
+  );
   await writeCodexRollout(codexRoot, {
     date: ["2026", "09", "02"],
     name: "rollout-2026-09-02T10-00-00-000Z-abc",
@@ -92,9 +105,15 @@ describe("each adapter recognizes its own layout and refuses the others'", () =>
 
   test("a path is claimed by exactly one adapter", () => {
     const ompLog = join(ompRoot, "-home-alex-babel", "2026-09-01T00-00-00-000Z_01a0.jsonl");
-    const codexLog = join(codexRoot, "sessions/2026/09/02/rollout-2026-09-02T10-00-00-000Z-abc.jsonl");
+    const codexLog = join(
+      codexRoot,
+      "sessions/2026/09/02/rollout-2026-09-02T10-00-00-000Z-abc.jsonl",
+    );
     const codexHistory = join(codexRoot, "history.jsonl");
-    const claudeLog = join(claudeRoot, "projects/-home-alex-code/11111111-2222-4333-8444-555555555555.jsonl");
+    const claudeLog = join(
+      claudeRoot,
+      "projects/-home-alex-code/11111111-2222-4333-8444-555555555555.jsonl",
+    );
 
     expect(omp.claim(ompLog)?.selector).toBe("omp/-home-alex-babel/2026-09-01T00-00-00-000Z_01a0");
     expect(omp.claim(codexLog)).toBeNull();
@@ -107,7 +126,9 @@ describe("each adapter recognizes its own layout and refuses the others'", () =>
     expect(codex.claim(ompLog)).toBeNull();
     expect(codex.claim(claudeLog)).toBeNull();
 
-    expect(claude.claim(claudeLog)?.selector).toBe("claude/-home-alex-code/11111111-2222-4333-8444-555555555555");
+    expect(claude.claim(claudeLog)?.selector).toBe(
+      "claude/-home-alex-code/11111111-2222-4333-8444-555555555555",
+    );
     expect(claude.claim(ompLog)).toBeNull();
     expect(claude.claim(codexLog)).toBeNull();
 
@@ -117,7 +138,10 @@ describe("each adapter recognizes its own layout and refuses the others'", () =>
   });
 
   test("a sibling artifact tree's own logs are not sessions", async () => {
-    const artifact = join(ompRoot, "-home-alex-babel/2026-09-01T00-00-00-000Z_01a0/__advisor.jsonl");
+    const artifact = join(
+      ompRoot,
+      "-home-alex-babel/2026-09-01T00-00-00-000Z_01a0/__advisor.jsonl",
+    );
     expect(omp.claim(artifact)).toBeNull();
     const selectors = (await discover([ompRoot])).map((ref) => ref.selector);
     expect(selectors).not.toContain("omp/2026-09-01T00-00-00-000Z_01a0/__advisor");
@@ -162,7 +186,11 @@ describe("omp", () => {
   });
 
   test("a log without usage blocks reports no spend, with the reason", async () => {
-    await writeOmpSession(ompRoot, { project: "-tmp-quiet", stem: "quiet", title: "No turns at all" });
+    await writeOmpSession(ompRoot, {
+      project: "-tmp-quiet",
+      stem: "quiet",
+      title: "No turns at all",
+    });
     const refs = await omp.discover([ompRoot]);
     const ref = refs.find((candidate) => candidate.sourceId.startsWith("-tmp-quiet/"));
     expect(ref).toBeDefined();
@@ -227,10 +255,13 @@ describe("codex", () => {
     const injected = await rollout({
       date: ["2026", "09", "04"],
       name: "injected-only",
-      responseItem: "<recommended_plugins>\nHere is a list of plugins that are available\n</recommended_plugins>",
+      responseItem:
+        "<recommended_plugins>\nHere is a list of plugins that are available\n</recommended_plugins>",
     });
     expect(injected.title).toBeNull();
-    expect(injected.absent["title"]).toContain("no delivered request record exposed titleable text");
+    expect(injected.absent["title"]).toContain(
+      "no delivered request record exposed titleable text",
+    );
 
     const real = await rollout({
       date: ["2026", "09", "04"],
@@ -256,7 +287,9 @@ describe("codex", () => {
     const named = await rollout({
       date: ["2026", "09", "05"],
       name: "spawn-named",
-      source: { subagent: { thread_spawn: { agent_path: "/root/audit_dotfiles/pr49_safety_review" } } },
+      source: {
+        subagent: { thread_spawn: { agent_path: "/root/audit_dotfiles/pr49_safety_review" } },
+      },
       delivered: "Here is the parent's whole conversation, replayed",
     });
     expect(named.title).toBe("Pr49 safety review");
@@ -331,7 +364,12 @@ describe("claude", () => {
   });
 
   test("an unparseable record is counted, and the rest of the transcript still reads", async () => {
-    const path = join(claudeRoot, "projects", "-home-alex-broken", "55555555-4444-4333-8222-111111111111.jsonl");
+    const path = join(
+      claudeRoot,
+      "projects",
+      "-home-alex-broken",
+      "55555555-4444-4333-8222-111111111111.jsonl",
+    );
     await mkdir(dirname(path), { recursive: true });
     await Bun.write(
       path,
@@ -359,7 +397,10 @@ describe("the bytes a session is identified by", () => {
   test("a record too long to hold is counted, and still digested", async () => {
     const path = join(home, "long.jsonl");
     const long = JSON.stringify({ type: "message", text: "x".repeat(4096) });
-    await Bun.write(path, `{"type":"session","cwd":"/w"}\n${long}\n{"type":"title","title":"after"}\n`);
+    await Bun.write(
+      path,
+      `{"type":"session","cwd":"/w"}\n${long}\n{"type":"title","title":"after"}\n`,
+    );
     const seen: string[] = [];
     const stream = await readRecords(path, (record) => seen.push(record), 1024);
     // The oversized record is skipped for parsing and the reader resumes at the next one.
@@ -373,7 +414,10 @@ describe("the bytes a session is identified by", () => {
 
   test("a log whose last record has no newline is read to its end", async () => {
     const path = join(home, "unterminated.jsonl");
-    await Bun.write(path, '{"type":"session","cwd":"/w"}\n{"type":"title","title":"still writing"}');
+    await Bun.write(
+      path,
+      '{"type":"session","cwd":"/w"}\n{"type":"title","title":"still writing"}',
+    );
     const seen: string[] = [];
     const stream = await readRecords(path, (record) => seen.push(record));
     expect(seen).toHaveLength(2);

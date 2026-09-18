@@ -109,7 +109,11 @@ export function repositoryObserver(): RepositoryObserver {
     observe(workspace) {
       const path = workspace?.trim() ?? "";
       if (path === "") {
-        return Promise.resolve({ identity: null, remote: "", reason: REPOSITORY_REASONS.noWorkspace });
+        return Promise.resolve({
+          identity: null,
+          remote: "",
+          reason: REPOSITORY_REASONS.noWorkspace,
+        });
       }
       let pending = observed.get(path);
       if (pending === undefined) {

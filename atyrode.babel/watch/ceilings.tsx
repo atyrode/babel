@@ -27,7 +27,15 @@ export interface CeilingsProps {
   readonly note: string;
 }
 
-function Figure({ label, value, note }: { readonly label: string; readonly value: string; readonly note: string }) {
+function Figure({
+  label,
+  value,
+  note,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly note: string;
+}) {
   return (
     <Stack gap="var(--babel-space-1)" className="plugin-atyrode_babel_watch__stat">
       <span className="plugin-atyrode_babel_watch__stat-label">{label}</span>
@@ -43,7 +51,13 @@ function Figure({ label, value, note }: { readonly label: string; readonly value
  * operator acts on, and `expired` is shown rather than hidden — a panel holding a stale read is
  * a panel that must say so.
  */
-function Overlay({ overlay, now }: { readonly overlay: NonNullable<PolicyResult["overlay"]>; readonly now: number }) {
+function Overlay({
+  overlay,
+  now,
+}: {
+  readonly overlay: NonNullable<PolicyResult["overlay"]>;
+  readonly now: number;
+}) {
   return (
     <Stack gap="var(--babel-space-1)" className="plugin-atyrode_babel_watch__overlay">
       <span className="plugin-atyrode_babel_watch__stat-label">
@@ -133,7 +147,10 @@ export function Ceilings({ policy, now, note }: CeilingsProps) {
         <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
           {policy.lanes.map((lane) => (
             <span key={`${lane.lane}:${lane.role}`} className="plugin-atyrode_babel_watch__lane">
-              <span className="plugin-atyrode_babel_watch__mono">{Math.round(lane.share * 100)}%</span> {lane.lane}
+              <span className="plugin-atyrode_babel_watch__mono">
+                {Math.round(lane.share * 100)}%
+              </span>{" "}
+              {lane.lane}
               {lane.role === "" ? "" : ` · ${lane.role}`}
             </span>
           ))}

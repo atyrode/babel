@@ -46,7 +46,13 @@ export interface OmpSpec {
 export async function writeOmpSession(root: string, spec: OmpSpec): Promise<string> {
   const records: unknown[] = [];
   if (spec.title !== undefined) {
-    records.push({ type: "title", v: 1, title: spec.title, updatedAt: "2026-09-01T00:00:00.000Z", pad: " ".repeat(32) });
+    records.push({
+      type: "title",
+      v: 1,
+      title: spec.title,
+      updatedAt: "2026-09-01T00:00:00.000Z",
+      pad: " ".repeat(32),
+    });
   }
   records.push({
     type: "session",
@@ -83,7 +89,11 @@ export async function writeOmpSession(root: string, spec: OmpSpec): Promise<stri
     });
   }
   for (let i = 0; i < (spec.toolErrors ?? 0); i++) {
-    records.push({ type: "message", id: `error-${i}`, message: { role: "toolResult", isError: true } });
+    records.push({
+      type: "message",
+      id: `error-${i}`,
+      message: { role: "toolResult", isError: true },
+    });
   }
   const path = join(root, spec.project, `${spec.stem}.jsonl`);
   await writeLines(path, records);
@@ -95,8 +105,15 @@ export async function writeOmpSession(root: string, spec: OmpSpec): Promise<stri
 }
 
 /** A session's sibling artifact tree: JSONL files one level deeper than a session log. */
-export async function writeOmpArtifact(root: string, project: string, stem: string, name: string): Promise<string> {
-  return writeLines(join(root, project, stem, name), [{ type: "message", message: { role: "assistant" } }]);
+export async function writeOmpArtifact(
+  root: string,
+  project: string,
+  stem: string,
+  name: string,
+): Promise<string> {
+  return writeLines(join(root, project, stem, name), [
+    { type: "message", message: { role: "assistant" } },
+  ]);
 }
 
 export interface CodexSpec {
@@ -141,7 +158,11 @@ export async function writeCodexRollout(root: string, spec: CodexSpec): Promise<
     records.push({
       timestamp: "2026-09-02T10:02:00.000Z",
       type: "response_item",
-      payload: { type: "message", role: "user", content: [{ type: "input_text", text: spec.responseItem }] },
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: spec.responseItem }],
+      },
     });
   }
   return writeLines(join(root, "sessions", year, month, day, `${spec.name}.jsonl`), records);

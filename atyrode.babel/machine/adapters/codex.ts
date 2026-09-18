@@ -113,9 +113,13 @@ export const codex: Adapter = {
       // Codex partitions rollouts by date, three levels below the sessions tree.
       for (const year of await readdir(sessions, { withFileTypes: true }).catch(() => [])) {
         if (!year.isDirectory() || !digits(year.name, 4)) continue;
-        for (const month of await readdir(join(sessions, year.name), { withFileTypes: true }).catch(() => [])) {
+        for (const month of await readdir(join(sessions, year.name), { withFileTypes: true }).catch(
+          () => [],
+        )) {
           if (!month.isDirectory() || !digits(month.name, 2)) continue;
-          for (const day of await readdir(join(sessions, year.name, month.name), { withFileTypes: true }).catch(() => [])) {
+          for (const day of await readdir(join(sessions, year.name, month.name), {
+            withFileTypes: true,
+          }).catch(() => [])) {
             if (!day.isDirectory() || !digits(day.name, 2)) continue;
             const dayDir = join(sessions, year.name, month.name, day.name);
             for (const entry of await readdir(dayDir, { withFileTypes: true }).catch(() => [])) {
@@ -168,7 +172,8 @@ export const codex: Adapter = {
       title = derived.title;
       basis = derived.basis;
       if (title === "") {
-        absent["title"] = "codex session logs record no title, and none could be derived: " + derived.reason;
+        absent["title"] =
+          "codex session logs record no title, and none could be derived: " + derived.reason;
       }
       if (scan.cwd === "" && scan.lastTurnCwd === "") {
         absent["workspace"] = "no session_meta or turn_context record exposed a working directory";
@@ -256,7 +261,8 @@ function observeRollout(record: string, scan: RolloutScan): void {
   const timestamp = fields["timestamp"];
   if (typeof timestamp === "string") observeTime(scan, timestamp);
   const payload = fields["payload"];
-  const body = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : null;
+  const body =
+    typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : null;
 
   switch (fields["type"]) {
     case "session_meta": {

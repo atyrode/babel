@@ -29,7 +29,8 @@
 */
 
 import { z } from "zod";
-import { ROLES, VOTES } from "../contract.ts";
+import type { ROLES } from "../contract.ts";
+import { VOTES } from "../contract.ts";
 
 // ---------------------------------------------------------------------------- versions
 
@@ -158,7 +159,8 @@ export const ObservationPayloadSchema = z
     temporal_status: z.enum(TEMPORAL_STATUSES).optional(),
   })
   .refine((p) => p.counter_evidence.length > 0 !== p.counter_evidence_absent, {
-    message: "state either counter_evidence or counter_evidence_absent, never both and never neither",
+    message:
+      "state either counter_evidence or counter_evidence_absent, never both and never neither",
   });
 
 /** One §4.4 consolidation: what recurs, why it matters, and the scope it was consolidated across. */
@@ -292,9 +294,27 @@ interface StageAuthority {
 }
 
 const STAGE_AUTHORITY: Record<Stage, StageAuthority> = {
-  explore: { observations: true, consolidate: true, remedies: true, objections: false, schedule: true },
-  challenge: { observations: false, consolidate: false, remedies: false, objections: true, schedule: false },
-  synthesize: { observations: false, consolidate: true, remedies: true, objections: false, schedule: false },
+  explore: {
+    observations: true,
+    consolidate: true,
+    remedies: true,
+    objections: false,
+    schedule: true,
+  },
+  challenge: {
+    observations: false,
+    consolidate: false,
+    remedies: false,
+    objections: true,
+    schedule: false,
+  },
+  synthesize: {
+    observations: false,
+    consolidate: true,
+    remedies: true,
+    objections: false,
+    schedule: false,
+  },
 };
 
 /** What one exploration submitted, normalized so an absent list reads as the empty one. */
@@ -320,7 +340,10 @@ function exploreSchema(stage: Stage): z.ZodType {
     ...(authority.consolidate ? { consolidations: z.array(ConsolidationSchema).default([]) } : {}),
     ...(authority.objections ? { objections: z.array(ObjectionSchema).default([]) } : {}),
     ...(authority.schedule
-      ? { deferred: z.array(DisposalSchema).default([]), rejected: z.array(DisposalSchema).default([]) }
+      ? {
+          deferred: z.array(DisposalSchema).default([]),
+          rejected: z.array(DisposalSchema).default([]),
+        }
       : {}),
     questions: z.array(QuestionDraftSchema).default([]),
   });
@@ -344,7 +367,10 @@ export function exploreJsonSchema(stage: Stage): unknown {
 export function parseExploreResult(stage: Stage, payload: unknown): ExploreResult {
   const parsed = exploreSchemas[stage].safeParse(payload);
   if (!parsed.success) {
-    throw new ResultRefusal(REFUSALS.schema, `the ${stage} result does not match its schema: ${issues(parsed.error)}`);
+    throw new ResultRefusal(
+      REFUSALS.schema,
+      `the ${stage} result does not match its schema: ${issues(parsed.error)}`,
+    );
   }
   const shaped = ExploreResultShape.parse(parsed.data);
   const result: ExploreResult = {
@@ -359,25 +385,37 @@ export function parseExploreResult(stage: Stage, payload: unknown): ExploreResul
   const refs: Record<string, "hypothesis" | "observation" | "finding" | "proposal"> = {};
   for (const candidate of result.candidates) {
     if (refs[candidate.ref] !== undefined) {
-      throw new ResultRefusal(REFUSALS.schema, `ref ${JSON.stringify(candidate.ref)} is used twice`);
+      throw new ResultRefusal(
+        REFUSALS.schema,
+        `ref ${JSON.stringify(candidate.ref)} is used twice`,
+      );
     }
     refs[candidate.ref] = "hypothesis";
     for (const observation of candidate.observations) {
       if (refs[observation.ref] !== undefined) {
-        throw new ResultRefusal(REFUSALS.schema, `ref ${JSON.stringify(observation.ref)} is used twice`);
+        throw new ResultRefusal(
+          REFUSALS.schema,
+          `ref ${JSON.stringify(observation.ref)} is used twice`,
+        );
       }
       refs[observation.ref] = "observation";
     }
     if (candidate.remedy !== undefined) {
       if (refs[candidate.remedy.ref] !== undefined) {
-        throw new ResultRefusal(REFUSALS.schema, `ref ${JSON.stringify(candidate.remedy.ref)} is used twice`);
+        throw new ResultRefusal(
+          REFUSALS.schema,
+          `ref ${JSON.stringify(candidate.remedy.ref)} is used twice`,
+        );
       }
       refs[candidate.remedy.ref] = "proposal";
     }
   }
   for (const consolidation of result.consolidations) {
     if (refs[consolidation.ref] !== undefined) {
-      throw new ResultRefusal(REFUSALS.schema, `ref ${JSON.stringify(consolidation.ref)} is used twice`);
+      throw new ResultRefusal(
+        REFUSALS.schema,
+        `ref ${JSON.stringify(consolidation.ref)} is used twice`,
+      );
     }
     refs[consolidation.ref] = "finding";
   }
@@ -426,7 +464,10 @@ export function parseExploreResult(stage: Stage, payload: unknown): ExploreResul
     }
   }
   for (const disposal of [...result.deferred, ...result.rejected]) {
-    if (refs[disposal.hypothesis] === undefined && !/^hyp_[0-9a-f]{8,64}$/.test(disposal.hypothesis)) {
+    if (
+      refs[disposal.hypothesis] === undefined &&
+      !/^hyp_[0-9a-f]{8,64}$/.test(disposal.hypothesis)
+    ) {
       throw new ResultRefusal(
         REFUSALS.unknownReference,
         `${JSON.stringify(disposal.hypothesis)} was set down and is not a candidate this result or the brief named`,
@@ -434,7 +475,11 @@ export function parseExploreResult(stage: Stage, payload: unknown): ExploreResul
     }
   }
   for (const question of result.questions) {
-    if (question.hypothesis !== "" && refs[question.hypothesis] === undefined && !/^hyp_/.test(question.hypothesis)) {
+    if (
+      question.hypothesis !== "" &&
+      refs[question.hypothesis] === undefined &&
+      !/^hyp_/.test(question.hypothesis)
+    ) {
       throw new ResultRefusal(
         REFUSALS.unknownReference,
         `question ${JSON.stringify(question.ref)} blocks ${JSON.stringify(question.hypothesis)}, which is not a candidate it named`,
@@ -640,14 +685,70 @@ interface RoleAuthority {
 }
 
 const ROLE_AUTHORITY: Record<Role, RoleAuthority> = {
-  reception: { vote: true, outcome: false, criteria: false, alternatives: false, filing: false, backlog: false },
-  evidence: { vote: false, outcome: false, criteria: true, alternatives: false, filing: false, backlog: false },
-  challenge: { vote: false, outcome: false, criteria: false, alternatives: false, filing: false, backlog: false },
-  comparison: { vote: false, outcome: false, criteria: false, alternatives: true, filing: false, backlog: false },
-  outcome: { vote: false, outcome: true, criteria: true, alternatives: false, filing: false, backlog: false },
-  relevance: { vote: false, outcome: false, criteria: false, alternatives: false, filing: false, backlog: false },
-  filing: { vote: false, outcome: false, criteria: false, alternatives: false, filing: true, backlog: false },
-  backlog: { vote: false, outcome: false, criteria: false, alternatives: false, filing: false, backlog: true },
+  reception: {
+    vote: true,
+    outcome: false,
+    criteria: false,
+    alternatives: false,
+    filing: false,
+    backlog: false,
+  },
+  evidence: {
+    vote: false,
+    outcome: false,
+    criteria: true,
+    alternatives: false,
+    filing: false,
+    backlog: false,
+  },
+  challenge: {
+    vote: false,
+    outcome: false,
+    criteria: false,
+    alternatives: false,
+    filing: false,
+    backlog: false,
+  },
+  comparison: {
+    vote: false,
+    outcome: false,
+    criteria: false,
+    alternatives: true,
+    filing: false,
+    backlog: false,
+  },
+  outcome: {
+    vote: false,
+    outcome: true,
+    criteria: true,
+    alternatives: false,
+    filing: false,
+    backlog: false,
+  },
+  relevance: {
+    vote: false,
+    outcome: false,
+    criteria: false,
+    alternatives: false,
+    filing: false,
+    backlog: false,
+  },
+  filing: {
+    vote: false,
+    outcome: false,
+    criteria: false,
+    alternatives: false,
+    filing: true,
+    backlog: false,
+  },
+  backlog: {
+    vote: false,
+    outcome: false,
+    criteria: false,
+    alternatives: false,
+    filing: false,
+    backlog: true,
+  },
 };
 
 /**
@@ -711,7 +812,11 @@ function reviewSchema(role: Role): z.ZodType {
     ...(work ? {} : { contributions: reviewShape.contributions }),
     ...(authority.outcome ? { outcome: reviewShape.outcome } : {}),
     ...(authority.criteria
-      ? { results: reviewShape.results, environment: reviewShape.environment, as_of: reviewShape.as_of }
+      ? {
+          results: reviewShape.results,
+          environment: reviewShape.environment,
+          as_of: reviewShape.as_of,
+        }
       : {}),
     uncertainty: reviewShape.uncertainty,
     ...(authority.filing
@@ -865,7 +970,11 @@ export function acceptReviewResult(role: Role, payload: unknown, self?: ReviewSe
   }
   const result = accepted.data;
   refuseBeyondAuthority(role, result);
-  const filed = result.filing !== null || result.topic !== null || result.noTopic !== null || result.noChange !== null;
+  const filed =
+    result.filing !== null ||
+    result.topic !== null ||
+    result.noTopic !== null ||
+    result.noChange !== null;
   const settled =
     result.consolidate !== null ||
     result.supersede !== null ||
@@ -899,11 +1008,21 @@ export function acceptReviewResult(role: Role, payload: unknown, self?: ReviewSe
 
   // A run arguing against what it produced is the honest direction, so only endorsement is
   // refused: independence is the whole value of the judgement.
-  if (self?.target === true && (result.vote === "support" || result.outcome === "implemented" || result.outcome === "verified")) {
+  if (
+    self?.target === true &&
+    (result.vote === "support" || result.outcome === "implemented" || result.outcome === "verified")
+  ) {
     throw new ResultRefusal(REFUSALS.selfBoost, "this run authored the record under review");
   }
-  if (result.outcome !== "" && result.outcome !== "unverifiable" && reviewEvidence(result).length === 0) {
-    throw new ResultRefusal(REFUSALS.support, `an observed outcome of ${result.outcome} needs evidence`);
+  if (
+    result.outcome !== "" &&
+    result.outcome !== "unverifiable" &&
+    reviewEvidence(result).length === 0
+  ) {
+    throw new ResultRefusal(
+      REFUSALS.support,
+      `an observed outcome of ${result.outcome} needs evidence`,
+    );
   }
   const scoped = result.outcome !== "" || result.results.length > 0;
   if (scoped && (result.environment === "" || result.asOf === "")) {
@@ -923,7 +1042,10 @@ export function acceptReviewResult(role: Role, payload: unknown, self?: ReviewSe
     );
   }
   if (result.outcome === "unverifiable" && result.uncertainty === "") {
-    throw new ResultRefusal(REFUSALS.support, "an unverifiable outcome must name what could not be checked");
+    throw new ResultRefusal(
+      REFUSALS.support,
+      "an unverifiable outcome must name what could not be checked",
+    );
   }
   for (const criterion of result.results) {
     if (criterion.satisfied && criterion.evidence.length === 0) {
@@ -990,7 +1112,10 @@ export function contributionRefusal(
     );
   }
   if (contribution.kind === "evidence" && contribution.evidence.length === 0) {
-    return new ResultRefusal(REFUSALS.support, `contribution ${index + 1} offers evidence and cites none`);
+    return new ResultRefusal(
+      REFUSALS.support,
+      `contribution ${index + 1} offers evidence and cites none`,
+    );
   }
   if (compares && contribution.alternatives.length < 2) {
     return new ResultRefusal(
@@ -999,15 +1124,28 @@ export function contributionRefusal(
     );
   }
   const preferred = contribution.preferred;
-  if (compares && preferred !== undefined && !contribution.alternatives.some((alt) => alt.id === preferred.id)) {
-    return new ResultRefusal(REFUSALS.schema, `contribution ${index + 1} prefers an alternative it did not compare`);
+  if (
+    compares &&
+    preferred !== undefined &&
+    !contribution.alternatives.some((alt) => alt.id === preferred.id)
+  ) {
+    return new ResultRefusal(
+      REFUSALS.schema,
+      `contribution ${index + 1} prefers an alternative it did not compare`,
+    );
   }
   if (!compares && contribution.text === "" && contribution.evidence.length === 0) {
-    return new ResultRefusal(REFUSALS.empty, `contribution ${index + 1} carries neither text nor evidence`);
+    return new ResultRefusal(
+      REFUSALS.empty,
+      `contribution ${index + 1} carries neither text nor evidence`,
+    );
   }
   if (contribution.kind === "refinement") {
     if (contribution.target === undefined) {
-      return new ResultRefusal(REFUSALS.schema, `refinement ${index + 1} names no part of the record`);
+      return new ResultRefusal(
+        REFUSALS.schema,
+        `refinement ${index + 1} names no part of the record`,
+      );
     }
     if (contribution.text.trim() === "" || contribution.would_change.trim() === "") {
       return new ResultRefusal(
@@ -1038,11 +1176,21 @@ function refuseBeyondAuthority(role: Role, result: ReviewResult): void {
   const beyond: string[] = [];
   if (!authority.vote && result.vote !== "") beyond.push("a vote");
   if (!authority.outcome && result.outcome !== "") beyond.push("an observed outcome");
-  if (!authority.criteria && (result.results.length > 0 || result.environment !== "" || result.asOf !== "")) {
+  if (
+    !authority.criteria &&
+    (result.results.length > 0 || result.environment !== "" || result.asOf !== "")
+  ) {
     beyond.push("criterion results");
   }
-  if ((authority.filing || authority.backlog) && result.contributions.length > 0) beyond.push("contributions");
-  if (!authority.filing && (result.filing !== null || result.topic !== null || result.noTopic !== null || result.noChange !== null)) {
+  if ((authority.filing || authority.backlog) && result.contributions.length > 0)
+    beyond.push("contributions");
+  if (
+    !authority.filing &&
+    (result.filing !== null ||
+      result.topic !== null ||
+      result.noTopic !== null ||
+      result.noChange !== null)
+  ) {
     beyond.push("a filing answer");
   }
   if (
@@ -1056,7 +1204,10 @@ function refuseBeyondAuthority(role: Role, result: ReviewResult): void {
     beyond.push("a backlog answer");
   }
   if (beyond.length > 0) {
-    throw new ResultRefusal(REFUSALS.schema, `the ${role} result does not match its schema: it states ${beyond.join(", ")}`);
+    throw new ResultRefusal(
+      REFUSALS.schema,
+      `the ${role} result does not match its schema: it states ${beyond.join(", ")}`,
+    );
   }
 }
 
@@ -1074,7 +1225,9 @@ function reviewEvidence(result: ReviewResult): Evidence[] {
  * filed a record and proposed a topic for it in the same breath has not decided what it is about.
  */
 function validateFiling(result: ReviewResult): void {
-  const answers = [result.filing, result.topic, result.noTopic, result.noChange].filter((a) => a !== null).length;
+  const answers = [result.filing, result.topic, result.noTopic, result.noChange].filter(
+    (a) => a !== null,
+  ).length;
   if (answers === 0) {
     throw new ResultRefusal(
       REFUSALS.empty,
@@ -1115,7 +1268,10 @@ function validateTopicProposal(topic: TopicProposal): void {
     return;
   }
   if (topic.name === "") {
-    throw new ResultRefusal(REFUSALS.schema, `a ${topic.operation} needs the name of the topic it would create`);
+    throw new ResultRefusal(
+      REFUSALS.schema,
+      `a ${topic.operation} needs the name of the topic it would create`,
+    );
   }
   if (!ENTITY_KINDS.includes(topic.kind as (typeof ENTITY_KINDS)[number])) {
     throw new ResultRefusal(
@@ -1124,7 +1280,10 @@ function validateTopicProposal(topic: TopicProposal): void {
     );
   }
   if (topic.identity === "") {
-    throw new ResultRefusal(REFUSALS.schema, `a ${topic.operation} needs the identity that deduplicates it`);
+    throw new ResultRefusal(
+      REFUSALS.schema,
+      `a ${topic.operation} needs the identity that deduplicates it`,
+    );
   }
   if (topic.remote === "" && topic.paths.length === 0 && topic.definition === "") {
     throw new ResultRefusal(
@@ -1136,9 +1295,13 @@ function validateTopicProposal(topic: TopicProposal): void {
 
 /** Checks one backlog result against the five shapes. Exactly one, on filing's reasoning. */
 function validateBacklog(result: ReviewResult): void {
-  const answers = [result.consolidate, result.supersede, result.retire, result.promote, result.keep].filter(
-    (a) => a !== null,
-  ).length;
+  const answers = [
+    result.consolidate,
+    result.supersede,
+    result.retire,
+    result.promote,
+    result.keep,
+  ].filter((a) => a !== null).length;
   if (answers === 0) {
     throw new ResultRefusal(
       REFUSALS.empty,

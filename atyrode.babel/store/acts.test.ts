@@ -5,7 +5,12 @@ import { join } from "node:path";
 import type { PluginDatabase, SqlRow } from "@manifold/plugin";
 import { openPluginDatabase } from "@manifold/server/plugin-database";
 import { BABEL_PLUGIN_ID } from "../contract.ts";
-import { parseReviewResult, ResultRefusal, type RefusalCode, type Role } from "../machine/results.ts";
+import {
+  parseReviewResult,
+  ResultRefusal,
+  type RefusalCode,
+  type Role,
+} from "../machine/results.ts";
 import {
   ActRefused,
   DEFAULT_POLICY,
@@ -48,7 +53,9 @@ const cleanup: string[] = [];
  *  hands it to the acts that write a bound. */
 const CONCURRENT_JOBS = 16;
 
-function openStore(at = Date.UTC(2026, 8, 12, 12, 0, 0)): ActsStore & { db: PluginDatabase; clock: { now: number } } {
+function openStore(
+  at = Date.UTC(2026, 8, 12, 12, 0, 0),
+): ActsStore & { db: PluginDatabase; clock: { now: number } } {
   const dataDir = mkdtempSync(join(tmpdir(), "babel-acts-"));
   cleanup.push(dataDir);
   const db = openPluginDatabase({ dataDir, pluginId: BABEL_PLUGIN_ID });
@@ -104,18 +111,37 @@ async function seedEntity(store: ActsStore, id: string, name: string): Promise<s
 
 async function seedPlan(
   store: ActsStore,
-  args: { id: string; kind: "topic" | "backlog"; subjectId: string; operation: string; payload: unknown; by?: string },
+  args: {
+    id: string;
+    kind: "topic" | "backlog";
+    subjectId: string;
+    operation: string;
+    payload: unknown;
+    by?: string;
+  },
 ): Promise<string> {
   await store.db.run(
     `INSERT INTO plans(id, kind, subject_kind, subject_id, operation, dedupe_key, payload,
        proposed_by_kind, proposed_by_id, state, created_at)
      VALUES(?, ?, 'proposal', ?, ?, NULL, ?, 'run', ?, 'open', ?)`,
-    [args.id, args.kind, args.subjectId, args.operation, JSON.stringify(args.payload), args.by ?? "run_1", stamp(store.now())],
+    [
+      args.id,
+      args.kind,
+      args.subjectId,
+      args.operation,
+      JSON.stringify(args.payload),
+      args.by ?? "run_1",
+      stamp(store.now()),
+    ],
   );
   return args.id;
 }
 
-async function rows<Row extends SqlRow>(store: ActsStore, sql: string, params: readonly string[] = []): Promise<readonly Row[]> {
+async function rows<Row extends SqlRow>(
+  store: ActsStore,
+  sql: string,
+  params: readonly string[] = [],
+): Promise<readonly Row[]> {
   return await store.db.query<Row>(sql, params);
 }
 
@@ -128,7 +154,11 @@ test("a ruling appends, and the row it wrote can never be edited or deleted", as
   await migrate(store);
   await seedRecord(store, "pro_00000001");
 
-  const first = await rule(store, { id: "pro_00000001", ruling: "defer", note: "next week" }, OPERATOR);
+  const first = await rule(
+    store,
+    { id: "pro_00000001", ruling: "defer", note: "next week" },
+    OPERATOR,
+  );
   expect(first).toMatchObject({ standing: "deferred", seq: 1, plan: null });
 
   const second = await rule(store, { id: "pro_00000001", ruling: "accept", note: "" }, OPERATOR);
@@ -156,17 +186,21 @@ test("a ruling that says nothing new, and one on a record decided elsewhere, are
   await seedRecord(store, "pro_00000002");
   await seedRecord(store, "pro_00000003");
 
-  expect(rule(store, { id: "pro_00000002", ruling: "reopen", note: "new evidence" }, OPERATOR)).rejects.toThrow(
-    /nothing has been decided here to reopen/,
-  );
+  expect(
+    rule(store, { id: "pro_00000002", ruling: "reopen", note: "new evidence" }, OPERATOR),
+  ).rejects.toThrow(/nothing has been decided here to reopen/);
   await rule(store, { id: "pro_00000002", ruling: "reject", note: "no" }, OPERATOR);
-  expect(rule(store, { id: "pro_00000002", ruling: "reject", note: "still no" }, OPERATOR)).rejects.toThrow(
-    /already rejected/,
-  );
+  expect(
+    rule(store, { id: "pro_00000002", ruling: "reject", note: "still no" }, OPERATOR),
+  ).rejects.toThrow(/already rejected/);
   expect(rule(store, { id: "pro_00000002", ruling: "reopen", note: "" }, OPERATOR)).rejects.toThrow(
     /states no reason/,
   );
-  const reopened = await rule(store, { id: "pro_00000002", ruling: "reopen", note: "new evidence" }, OPERATOR);
+  const reopened = await rule(
+    store,
+    { id: "pro_00000002", ruling: "reopen", note: "new evidence" },
+    OPERATOR,
+  );
   expect(reopened.standing).toBe("new");
 
   await rule(
@@ -177,9 +211,9 @@ test("a ruling that says nothing new, and one on a record decided elsewhere, are
   expect(rule(store, { id: "pro_00000003", ruling: "accept", note: "" }, OPERATOR)).rejects.toThrow(
     /decided at the record it duplicates/,
   );
-  expect(rule(store, { id: "pro_00000002", ruling: "duplicate", note: "" }, OPERATOR)).rejects.toThrow(
-    /names no original/,
-  );
+  expect(
+    rule(store, { id: "pro_00000002", ruling: "duplicate", note: "" }, OPERATOR),
+  ).rejects.toThrow(/names no original/);
   expect(rule(store, { id: "pro_99999999", ruling: "accept", note: "" }, OPERATOR)).rejects.toThrow(
     /no record pro_99999999/,
   );
@@ -193,7 +227,11 @@ test("standing is derived from the newest ruling, and refine is one row", async 
   const store = openStore();
   await migrate(store);
   await seedRecord(store, "pro_00000004");
-  const refined = await rule(store, { id: "pro_00000004", ruling: "refine", note: "narrow it" }, OPERATOR);
+  const refined = await rule(
+    store,
+    { id: "pro_00000004", ruling: "refine", note: "narrow it" },
+    OPERATOR,
+  );
   expect(refined.standing).toBe("refine-requested");
   expect(rule(store, { id: "pro_00000004", ruling: "accept", note: "" }, OPERATOR)).rejects.toThrow(
     /decided at the descendant/,
@@ -225,16 +263,24 @@ test("accepting a topic proposal creates the entity, binds it and files the reco
   });
 
   const ruled = await rule(store, { id: "pro_00000010", ruling: "accept", note: "" }, OPERATOR);
-  expect(ruled.plan).toMatchObject({ kind: "topic", operation: "create", applied: true, declined: false });
+  expect(ruled.plan).toMatchObject({
+    kind: "topic",
+    operation: "create",
+    applied: true,
+    declined: false,
+  });
   const entityId = ruled.plan?.entityId ?? "";
   expect(entityId).toMatch(/^ent_[0-9a-f]{16}$/);
 
-  const entity = await rows<{ name: string; kind: string; canonical_id: string; created_by: string }>(
-    store,
-    `SELECT name, kind, canonical_id, created_by FROM entities WHERE id = ?`,
-    [entityId],
-  );
-  expect(entity).toEqual([{ name: "babel", kind: "repository", canonical_id: entityId, created_by: OPERATOR }]);
+  const entity = await rows<{
+    name: string;
+    kind: string;
+    canonical_id: string;
+    created_by: string;
+  }>(store, `SELECT name, kind, canonical_id, created_by FROM entities WHERE id = ?`, [entityId]);
+  expect(entity).toEqual([
+    { name: "babel", kind: "repository", canonical_id: entityId, created_by: OPERATOR },
+  ]);
 
   const aliases = await rows<{ kind: string; value: string; value_key: string }>(
     store,
@@ -242,12 +288,21 @@ test("accepting a topic proposal creates the entity, binds it and files the reco
     [entityId],
   );
   expect(aliases).toEqual([
-    { kind: "identifier", value: "git@github.com:atyrode/babel.git", value_key: "git@github.com:atyrode/babel.git" },
+    {
+      kind: "identifier",
+      value: "git@github.com:atyrode/babel.git",
+      value_key: "git@github.com:atyrode/babel.git",
+    },
     { kind: "name", value: "babel", value_key: "babel" },
     { kind: "path", value: "/home/alex/babel", value_key: "/home/alex/babel" },
   ]);
 
-  const facts = await rows<{ predicate: string; value: string; authority_kind: string; authority_id: string }>(
+  const facts = await rows<{
+    predicate: string;
+    value: string;
+    authority_kind: string;
+    authority_id: string;
+  }>(
     store,
     `SELECT predicate, value, authority_kind, authority_id FROM facts WHERE entity_id = ?`,
     [entityId],
@@ -269,7 +324,13 @@ test("accepting a topic proposal creates the entity, binds it and files the reco
   ).toEqual([{ status: "active" }]);
 
   // The filing is the RUN's: it judged the membership, and the operator accepted the topic.
-  const filings = await rows<{ record_id: string; entity_id: string; author_kind: string; author_id: string; rationale: string }>(
+  const filings = await rows<{
+    record_id: string;
+    entity_id: string;
+    author_kind: string;
+    author_id: string;
+    rationale: string;
+  }>(
     store,
     `SELECT record_id, entity_id, author_kind, author_id, rationale FROM filings WHERE entity_id = ?`,
     [entityId],
@@ -291,7 +352,10 @@ test("accepting a topic proposal creates the entity, binds it and files the reco
   );
   expect(plan[0]?.state).toBe("applied");
   expect(plan[0]?.ruled_by).toBe(OPERATOR);
-  expect(JSON.parse(String(plan[0]?.result))).toMatchObject({ entityId, filed: [expect.any(String)] });
+  expect(JSON.parse(String(plan[0]?.result))).toMatchObject({
+    entityId,
+    filed: [expect.any(String)],
+  });
 });
 
 test("rejecting a topic proposal declines the plan with the note as the reason, and an empty note is refused first", async () => {
@@ -306,14 +370,18 @@ test("rejecting a topic proposal declines the plan with the note as the reason, 
     payload: { reasoning: "one session mentions it", identity: "acme", name: "acme" },
   });
 
-  expect(rule(store, { id: "pro_00000020", ruling: "reject", note: "   " }, OPERATOR)).rejects.toThrow(
-    /keeps the reason verbatim/,
-  );
+  expect(
+    rule(store, { id: "pro_00000020", ruling: "reject", note: "   " }, OPERATOR),
+  ).rejects.toThrow(/keeps the reason verbatim/);
   // Refused BEFORE the ruling: the record is still undecided and the plan still open.
-  expect(await rows(store, `SELECT seq FROM dispositions WHERE record_id = ?`, ["pro_00000020"])).toEqual([]);
-  expect((await rows<{ state: string }>(store, `SELECT state FROM plans WHERE id = ?`, ["pln_00000020"]))[0]?.state).toBe(
-    "open",
-  );
+  expect(
+    await rows(store, `SELECT seq FROM dispositions WHERE record_id = ?`, ["pro_00000020"]),
+  ).toEqual([]);
+  expect(
+    (
+      await rows<{ state: string }>(store, `SELECT state FROM plans WHERE id = ?`, ["pln_00000020"])
+    )[0]?.state,
+  ).toBe("open");
 
   const ruled = await rule(
     store,
@@ -350,9 +418,11 @@ test("a plan the ledger has moved past leaves the ruling standing and reports wh
   expect(ruled.seq).toBe(1);
   expect(ruled.plan?.applied).toBe(false);
   expect(ruled.plan?.error).toMatch(/was merged into ent_00000031/);
-  expect((await rows<{ state: string }>(store, `SELECT state FROM plans WHERE id = ?`, ["pln_00000030"]))[0]?.state).toBe(
-    "open",
-  );
+  expect(
+    (
+      await rows<{ state: string }>(store, `SELECT state FROM plans WHERE id = ?`, ["pln_00000030"])
+    )[0]?.state,
+  ).toBe("open");
 });
 
 test("a proposal carrying two plans is refused before anything is appended", async () => {
@@ -396,7 +466,13 @@ test("a merge folds the identity and a retirement is a lifecycle fact", async ()
   const merged = await rule(store, { id: "pro_00000050", ruling: "accept", note: "" }, OPERATOR);
   expect(merged.plan).toMatchObject({ applied: true, operation: "merge", entityId: target });
   expect(
-    (await rows<{ canonical_id: string }>(store, `SELECT canonical_id FROM entities WHERE id = ?`, [source]))[0],
+    (
+      await rows<{ canonical_id: string }>(
+        store,
+        `SELECT canonical_id FROM entities WHERE id = ?`,
+        [source],
+      )
+    )[0],
   ).toEqual({ canonical_id: target });
   const members = await rows<{ role: string; entity_id: string }>(
     store,
@@ -468,7 +544,13 @@ test("a split carves the new topic out, naming the parent it came from, and decl
   const part = split.plan?.entityId ?? "";
   expect(split.plan).toMatchObject({ operation: "split", applied: true });
   expect(
-    (await rows<{ name: string; kind: string }>(store, `SELECT name, kind FROM entities WHERE id = ?`, [part]))[0],
+    (
+      await rows<{ name: string; kind: string }>(
+        store,
+        `SELECT name, kind FROM entities WHERE id = ?`,
+        [part],
+      )
+    )[0],
   ).toEqual({ name: "babel-web", kind: "project" });
   expect(
     await rows<{ kind: string; role: string; entity_id: string }>(
@@ -483,7 +565,10 @@ test("a split carves the new topic out, naming the parent it came from, and decl
   // The parent keeps its facts and its history; the records the plan named move by being filed
   // under the part.
   expect(
-    await rows<{ record_id: string; entity_id: string }>(store, `SELECT record_id, entity_id FROM filings`),
+    await rows<{ record_id: string; entity_id: string }>(
+      store,
+      `SELECT record_id, entity_id FROM filings`,
+    ),
   ).toEqual([{ record_id: "fnd_00000055", entity_id: part }]);
 
   await seedPlan(store, {
@@ -494,7 +579,12 @@ test("a split carves the new topic out, naming the parent it came from, and decl
     payload: { reasoning: "gone", targets: [parent] },
   });
   const declined = await declinePlan(store, "pro_00000056", OPERATOR, "the topic is still in use");
-  expect(declined).toMatchObject({ kind: "topic", operation: "retire", declined: true, applied: false });
+  expect(declined).toMatchObject({
+    kind: "topic",
+    operation: "retire",
+    declined: true,
+    applied: false,
+  });
   expect(
     (
       await rows<{ state: string; ruling_reason: string }>(
@@ -504,7 +594,9 @@ test("a split carves the new topic out, naming the parent it came from, and decl
       )
     )[0],
   ).toEqual({ state: "declined", ruling_reason: "the topic is still in use" });
-  expect(declinePlan(store, "pro_00000056", OPERATOR, "  ")).rejects.toThrow(/keeps the operator's reason/);
+  expect(declinePlan(store, "pro_00000056", OPERATOR, "  ")).rejects.toThrow(
+    /keeps the operator's reason/,
+  );
 });
 
 test("a plan naming a record the store does not hold is refused whole, and the topic is not created", async () => {
@@ -611,7 +703,15 @@ test("a consolidation promotes every candidate the finding speaks for", async ()
     { record_id: "hyp_00000066", status: "promoted" },
   ]);
   expect(
-    JSON.parse(String((await rows<{ result: string }>(store, `SELECT result FROM plans WHERE id = ?`, ["pln_00000065"]))[0]?.result)),
+    JSON.parse(
+      String(
+        (
+          await rows<{ result: string }>(store, `SELECT result FROM plans WHERE id = ?`, [
+            "pln_00000065",
+          ])
+        )[0]?.result,
+      ),
+    ),
   ).toMatchObject({ settled: ["hyp_00000065", "hyp_00000066"] });
   // Nothing was minted on the ledger: a consolidation is frontier history.
   expect(await rows(store, `SELECT id FROM facts`)).toEqual([]);
@@ -670,13 +770,25 @@ test("a promotion asserts the fact under the operator's authority and applyPlan 
       `SELECT predicate, value, confidence, authority_id FROM facts WHERE entity_id = ?`,
       [entityId],
     ),
-  ).toEqual([{ predicate: "ownership", value: "alex", confidence: "high", authority_id: OPERATOR }]);
-  expect((await rows<{ status: string }>(store, `SELECT status FROM status_events WHERE record_id = ? ORDER BY seq DESC LIMIT 1`, ["hyp_00000080"]))[0]).toEqual(
-    { status: "promoted" },
-  );
+  ).toEqual([
+    { predicate: "ownership", value: "alex", confidence: "high", authority_id: OPERATOR },
+  ]);
+  expect(
+    (
+      await rows<{ status: string }>(
+        store,
+        `SELECT status FROM status_events WHERE record_id = ? ORDER BY seq DESC LIMIT 1`,
+        ["hyp_00000080"],
+      )
+    )[0],
+  ).toEqual({ status: "promoted" });
   // One plan, one ruling: a second application finds nothing open.
-  expect(applyPlan(store, "pro_00000080", OPERATOR, "again")).rejects.toThrow(/carries no open plan/);
-  expect(declinePlan(store, "pro_00000080", OPERATOR, "no")).rejects.toThrow(/carries no open plan/);
+  expect(applyPlan(store, "pro_00000080", OPERATOR, "again")).rejects.toThrow(
+    /carries no open plan/,
+  );
+  expect(declinePlan(store, "pro_00000080", OPERATOR, "no")).rejects.toThrow(
+    /carries no open plan/,
+  );
 });
 
 // ---------------------------------------------------------------------------- interest
@@ -686,7 +798,11 @@ test("interest round-trips through the facts and supersedes the stance it replac
   await migrate(store);
   const entityId = await seedEntity(store, "ent_00000090", "babel");
 
-  const working = await interest(store, { entityId, state: "working", reason: "shipping it" }, OPERATOR);
+  const working = await interest(
+    store,
+    { entityId, state: "working", reason: "shipping it" },
+    OPERATOR,
+  );
   expect(working.facts).toHaveLength(2);
   expect(
     await rows<{ predicate: string; value: string; note: string }>(
@@ -700,9 +816,18 @@ test("interest round-trips through the facts and supersedes the stance it replac
   ]);
 
   store.clock.now += 60_000;
-  const paused = await interest(store, { entityId, state: "not-now", reason: "the benchmark lands first" }, OPERATOR);
+  const paused = await interest(
+    store,
+    { entityId, state: "not-now", reason: "the benchmark lands first" },
+    OPERATOR,
+  );
   expect(paused.facts).toHaveLength(2);
-  const lifecycle = await rows<{ id: string; value: string; supersedes_id: string | null; status: string }>(
+  const lifecycle = await rows<{
+    id: string;
+    value: string;
+    supersedes_id: string | null;
+    status: string;
+  }>(
     store,
     `SELECT f.id, f.value, f.supersedes_id,
             (SELECT s.status FROM fact_status s WHERE s.fact_id = f.id ORDER BY s.seq DESC LIMIT 1) AS status
@@ -717,7 +842,11 @@ test("interest round-trips through the facts and supersedes the stance it replac
 
   // `excluded` is a policy statement and leaves the lifecycle alone.
   store.clock.now += 60_000;
-  const excluded = await interest(store, { entityId, state: "excluded", reason: "not Babel's business" }, OPERATOR);
+  const excluded = await interest(
+    store,
+    { entityId, state: "excluded", reason: "not Babel's business" },
+    OPERATOR,
+  );
   expect(excluded.facts).toHaveLength(1);
   expect(
     (
@@ -732,9 +861,9 @@ test("interest round-trips through the facts and supersedes the stance it replac
   expect(interest(store, { entityId, state: "curious", reason: "" }, OPERATOR)).rejects.toThrow(
     /interest state "curious"/,
   );
-  expect(interest(store, { entityId: "ent_ffffffff", state: "working", reason: "" }, OPERATOR)).rejects.toThrow(
-    /no topic/,
-  );
+  expect(
+    interest(store, { entityId: "ent_ffffffff", state: "working", reason: "" }, OPERATOR),
+  ).rejects.toThrow(/no topic/);
 });
 
 test("interest follows a merged topic to the one that speaks for it", async () => {
@@ -743,7 +872,11 @@ test("interest follows a merged topic to the one that speaks for it", async () =
   const source = await seedEntity(store, "ent_000000a0", "babel-old");
   const target = await seedEntity(store, "ent_000000a1", "babel");
   await store.db.run(`UPDATE entities SET canonical_id = ? WHERE id = ?`, [target, source]);
-  const stated = await interest(store, { entityId: source, state: "watching", reason: "keep an eye" }, OPERATOR);
+  const stated = await interest(
+    store,
+    { entityId: source, state: "watching", reason: "keep an eye" },
+    OPERATOR,
+  );
   expect(stated.entityId).toBe(target);
 });
 
@@ -758,16 +891,28 @@ test("unfile withdraws and file supersedes the withdrawal, within one millisecon
   await seedRecord(store, "fnd_000000b0", "finding", "a finding");
   const entityId = await seedEntity(store, "ent_000000b0", "babel");
 
-  const filed = await file(store, { id: "fnd_000000b0", entity: "babel", rationale: "it is about babel" }, OPERATOR);
+  const filed = await file(
+    store,
+    { id: "fnd_000000b0", entity: "babel", rationale: "it is about babel" },
+    OPERATOR,
+  );
   expect(filed).toMatchObject({ entityId, withdrawn: false, supersedes: "" });
 
-  const withdrawn = await unfile(store, { id: "fnd_000000b0", entity: entityId, reason: "wrong topic" }, OPERATOR);
-  expect(withdrawn).toMatchObject({ withdrawn: true, supersedes: filed.id });
-  expect(unfile(store, { id: "fnd_000000b0", entity: entityId, reason: "again" }, OPERATOR)).rejects.toThrow(
-    /is not filed under/,
+  const withdrawn = await unfile(
+    store,
+    { id: "fnd_000000b0", entity: entityId, reason: "wrong topic" },
+    OPERATOR,
   );
+  expect(withdrawn).toMatchObject({ withdrawn: true, supersedes: filed.id });
+  expect(
+    unfile(store, { id: "fnd_000000b0", entity: entityId, reason: "again" }, OPERATOR),
+  ).rejects.toThrow(/is not filed under/);
 
-  const refiled = await file(store, { id: "fnd_000000b0", entity: entityId, rationale: "it is, after all" }, OPERATOR);
+  const refiled = await file(
+    store,
+    { id: "fnd_000000b0", entity: entityId, rationale: "it is, after all" },
+    OPERATOR,
+  );
   expect(refiled.supersedes).toBe(withdrawn.id);
 
   const history = await rows<{ withdrawn: bigint; rationale: string; author_kind: string }>(
@@ -780,7 +925,9 @@ test("unfile withdraws and file supersedes the withdrawal, within one millisecon
     { withdrawn: 1n, rationale: "wrong topic", author_kind: "operator" },
     { withdrawn: 0n, rationale: "it is, after all", author_kind: "operator" },
   ]);
-  expect(store.db.run(`DELETE FROM filings WHERE record_id = 'fnd_000000b0'`)).rejects.toThrow(/never deleted/);
+  expect(store.db.run(`DELETE FROM filings WHERE record_id = 'fnd_000000b0'`)).rejects.toThrow(
+    /never deleted/,
+  );
 });
 
 test("a record about nothing in particular is filed under the reserved word", async () => {
@@ -794,14 +941,17 @@ test("a record about nothing in particular is filed under the reserved word", as
   );
   expect(answered.entityId).toBe("");
   expect(
-    await rows<{ entity_id: string; rationale: string }>(store, `SELECT entity_id, rationale FROM filings`),
+    await rows<{ entity_id: string; rationale: string }>(
+      store,
+      `SELECT entity_id, rationale FROM filings`,
+    ),
   ).toEqual([{ entity_id: "", rationale: "it is about the harness, not a topic" }]);
-  expect(file(store, { id: "obs_000000c0", entity: "nowhere", rationale: "x" }, OPERATOR)).rejects.toThrow(
-    /no topic "nowhere"/,
-  );
-  expect(file(store, { id: "obs_000000c0", entity: NO_TOPIC, rationale: "  " }, OPERATOR)).rejects.toThrow(
-    /says why/,
-  );
+  expect(
+    file(store, { id: "obs_000000c0", entity: "nowhere", rationale: "x" }, OPERATOR),
+  ).rejects.toThrow(/no topic "nowhere"/);
+  expect(
+    file(store, { id: "obs_000000c0", entity: NO_TOPIC, rationale: "  " }, OPERATOR),
+  ).rejects.toThrow(/says why/);
 });
 
 // ---------------------------------------------------------------------------- words
@@ -817,24 +967,40 @@ test("a question comment carries question=1 and a plain one does not", async () 
     OPERATOR,
   );
   expect(asked.question).toBe(true);
-  const said = await comment(store, { id: "pro_000000d0", text: "reads well", kind: "comment" }, OPERATOR);
+  const said = await comment(
+    store,
+    { id: "pro_000000d0", text: "reads well", kind: "comment" },
+    OPERATOR,
+  );
   expect(said.question).toBe(false);
 
   expect(
-    await rows<{ id: string; question: bigint; reason: string; actor_id: string; stance: string | null }>(
+    await rows<{
+      id: string;
+      question: bigint;
+      reason: string;
+      actor_id: string;
+      stance: string | null;
+    }>(
       store,
       `SELECT id, question, reason, actor_id, stance FROM feedback WHERE record_id = ? ORDER BY recorded_at, id`,
       ["pro_000000d0"],
     ),
   ).toEqual(
     expect.arrayContaining([
-      { id: asked.id, question: 1n, reason: "what would this cost per week?", actor_id: OPERATOR, stance: null },
+      {
+        id: asked.id,
+        question: 1n,
+        reason: "what would this cost per week?",
+        actor_id: OPERATOR,
+        stance: null,
+      },
       { id: said.id, question: 0n, reason: "reads well", actor_id: OPERATOR, stance: null },
     ]),
   );
-  expect(comment(store, { id: "pro_000000d0", text: "   ", kind: "comment" }, OPERATOR)).rejects.toThrow(
-    /has none/,
-  );
+  expect(
+    comment(store, { id: "pro_000000d0", text: "   ", kind: "comment" }, OPERATOR),
+  ).rejects.toThrow(/has none/);
 });
 
 test("an answer records the words and moves the question's state", async () => {
@@ -847,7 +1013,11 @@ test("an answer records the words and moves the question's state", async () => {
     [stamp(store.now())],
   );
 
-  const answered = await answer(store, { id: "qst_000000e0", outcome: "answered", text: "the babel one" }, OPERATOR);
+  const answered = await answer(
+    store,
+    { id: "qst_000000e0", outcome: "answered", text: "the babel one" },
+    OPERATOR,
+  );
   expect(answered.state).toBe("answered-uninterpreted");
   expect(
     await rows<{ outcome: string; text: string; actor_id: string }>(
@@ -865,12 +1035,12 @@ test("an answer records the words and moves the question's state", async () => {
   ).toEqual([{ seq: 1n, state: "answered-uninterpreted" }]);
 
   // `answered-uninterpreted` has no edge to `declined`: the state machine refuses it.
-  expect(answer(store, { id: "qst_000000e0", outcome: "declined", text: "" }, OPERATOR)).rejects.toThrow(
-    /cannot become declined/,
-  );
-  expect(answer(store, { id: "qst_ffffffff", outcome: "unknown", text: "" }, OPERATOR)).rejects.toThrow(
-    /no question/,
-  );
+  expect(
+    answer(store, { id: "qst_000000e0", outcome: "declined", text: "" }, OPERATOR),
+  ).rejects.toThrow(/cannot become declined/);
+  expect(
+    answer(store, { id: "qst_ffffffff", outcome: "unknown", text: "" }, OPERATOR),
+  ).rejects.toThrow(/no question/);
 });
 
 test("a substantive answer with no words is refused", async () => {
@@ -881,10 +1051,14 @@ test("a substantive answer with no words is refused", async () => {
      VALUES('qst_000000e1', 'set-focus', 'curiosity', 'what next?', 'nothing queued', NULL, 'run', 'run_1', '{}', ?)`,
     [stamp(store.now())],
   );
-  expect(answer(store, { id: "qst_000000e1", outcome: "answered", text: " " }, OPERATOR)).rejects.toThrow(
-    /substantive answer has no text/,
+  expect(
+    answer(store, { id: "qst_000000e1", outcome: "answered", text: " " }, OPERATOR),
+  ).rejects.toThrow(/substantive answer has no text/);
+  const declined = await answer(
+    store,
+    { id: "qst_000000e1", outcome: "declined", text: "" },
+    OPERATOR,
   );
-  const declined = await answer(store, { id: "qst_000000e1", outcome: "declined", text: "" }, OPERATOR);
   expect(declined.state).toBe("declined");
 });
 
@@ -893,22 +1067,50 @@ test("steering threads by root and carries its target", async () => {
   await migrate(store);
   const first = await tell(
     store,
-    { text: "I am having a hard time enforcing my repository rules", target: { kind: "entity", id: "ent_1" } },
+    {
+      text: "I am having a hard time enforcing my repository rules",
+      target: { kind: "entity", id: "ent_1" },
+    },
     OPERATOR,
   );
   expect(first).toMatchObject({ rootId: first.id, seq: 1 });
 
-  const reply = await tell(store, { text: "and it is worse on dev-01", replyTo: first.id }, OPERATOR);
+  const reply = await tell(
+    store,
+    { text: "and it is worse on dev-01", replyTo: first.id },
+    OPERATOR,
+  );
   expect(reply).toMatchObject({ rootId: first.id, seq: 2 });
 
   expect(
-    await rows<{ id: string; root_id: string; reply_to_id: string | null; seq: bigint; target_kind: string | null; target_id: string | null }>(
+    await rows<{
+      id: string;
+      root_id: string;
+      reply_to_id: string | null;
+      seq: bigint;
+      target_kind: string | null;
+      target_id: string | null;
+    }>(
       store,
       `SELECT id, root_id, reply_to_id, seq, target_kind, target_id FROM steering ORDER BY seq`,
     ),
   ).toEqual([
-    { id: first.id, root_id: first.id, reply_to_id: null, seq: 1n, target_kind: "entity", target_id: "ent_1" },
-    { id: reply.id, root_id: first.id, reply_to_id: first.id, seq: 2n, target_kind: null, target_id: null },
+    {
+      id: first.id,
+      root_id: first.id,
+      reply_to_id: null,
+      seq: 1n,
+      target_kind: "entity",
+      target_id: "ent_1",
+    },
+    {
+      id: reply.id,
+      root_id: first.id,
+      reply_to_id: first.id,
+      seq: 2n,
+      target_kind: null,
+      target_id: null,
+    },
   ]);
   expect(tell(store, { text: "nobody there", replyTo: "stg_ffffffff" }, OPERATOR)).rejects.toThrow(
     /no steering stg_ffffffff to reply to/,
@@ -925,7 +1127,9 @@ test("a policy below the measured lease floor is refused, and the floor is the m
   // The policy this deployment actually lost four runs under, on 2026-09-12, with a per-machine
   // bound the manifest's ceiling allows: what the lease must cover is the batch behind it.
   const lost = { ...DEFAULT_POLICY, leaseSeconds: 240, batchSize: 24, concurrentPerMachine: 4 };
-  expect(validateNewPolicy(lost, CONCURRENT_JOBS)).toMatch(/cannot cover a batch of 24.*needs 480s/);
+  expect(validateNewPolicy(lost, CONCURRENT_JOBS)).toMatch(
+    /cannot cover a batch of 24.*needs 480s/,
+  );
   expect(validateNewPolicy({ ...DEFAULT_POLICY, explorationShare: 0 }, CONCURRENT_JOBS)).toMatch(
     /protected allocation/,
   );
@@ -942,7 +1146,9 @@ test("a policy below the measured lease floor is refused, and the floor is the m
     /below the per-cycle cost/,
   );
   // A zero filing or backlog share is a policy, not a fault.
-  expect(validateNewPolicy({ ...DEFAULT_POLICY, filingShare: 0, backlogShare: 0 }, CONCURRENT_JOBS)).toBeNull();
+  expect(
+    validateNewPolicy({ ...DEFAULT_POLICY, filingShare: 0, backlogShare: 0 }, CONCURRENT_JOBS),
+  ).toBeNull();
 
   const store = openStore();
   await migrate(store);
@@ -985,13 +1191,22 @@ test("a policy below the measured lease floor is refused, and the floor is the m
     `SELECT version, payload, actor_id FROM policies ORDER BY seq`,
   );
   expect(stored.map((row) => row.version)).toEqual(["1", "2026-09-tuned"]);
-  expect(JSON.parse(String(stored[0]?.payload))).toMatchObject({ enabled: true, leaseSeconds: 900 });
+  expect(JSON.parse(String(stored[0]?.payload))).toMatchObject({
+    enabled: true,
+    leaseSeconds: 900,
+  });
 });
 
 test("an overlay is a row of its own: setting and clearing one writes no policies row", async () => {
   const store = openStore();
   await migrate(store);
-  await setPolicy(store, { ...DEFAULT_POLICY, enabled: true, batchSize: 4 }, "turning it on", OPERATOR, CONCURRENT_JOBS);
+  await setPolicy(
+    store,
+    { ...DEFAULT_POLICY, enabled: true, batchSize: 4 },
+    "turning it on",
+    OPERATOR,
+    CONCURRENT_JOBS,
+  );
   const before = await rows<{ version: string; payload: string; seq: bigint }>(
     store,
     `SELECT version, payload, seq FROM policies ORDER BY seq`,
@@ -1014,7 +1229,11 @@ test("an overlay is a row of its own: setting and clearing one writes no policie
     { field: "dailyCost", standing: 2, overlaid: 20 },
     { field: "concurrentPerMachine", standing: 4, overlaid: 8 },
   ]);
-  const cleared = await clearBudget(store, { id: overlaid.id, reason: "the window reset early" }, OPERATOR);
+  const cleared = await clearBudget(
+    store,
+    { id: overlaid.id, reason: "the window reset early" },
+    OPERATOR,
+  );
   expect(cleared.id).toBe(overlaid.id);
 
   // THE ACCEPTANCE OF #260: the standing policy is byte-for-byte what it was, so every
@@ -1069,23 +1288,42 @@ test("an overlay the standing lease cannot cover is refused, and so is one that 
   // host runs at once, so two hundred and fifty-six is refused at the door rather than admitted
   // and refused a posting at a time, each one paid for.
   expect(
-    setBudget(store, { expiresAt, concurrentPerMachine: 256, perCycleCost: 4, dailyCost: 8, reason: "drain" }, OPERATOR, CONCURRENT_JOBS),
+    setBudget(
+      store,
+      { expiresAt, concurrentPerMachine: 256, perCycleCost: 4, dailyCost: 8, reason: "drain" },
+      OPERATOR,
+      CONCURRENT_JOBS,
+    ),
   ).rejects.toThrow(/above the 16 jobs a machine runs at once/);
   // And at the ceiling, the lease the deployment actually has is what refuses: a bound of
   // sixteen needs 320s and this policy grants 300.
   expect(
-    setBudget(store, { expiresAt, concurrentPerMachine: 16, perCycleCost: 4, dailyCost: 8, reason: "drain" }, OPERATOR, CONCURRENT_JOBS),
+    setBudget(
+      store,
+      { expiresAt, concurrentPerMachine: 16, perCycleCost: 4, dailyCost: 8, reason: "drain" },
+      OPERATOR,
+      CONCURRENT_JOBS,
+    ),
   ).rejects.toThrow(/needs 320s/);
-  expect(setBudget(store, { expiresAt, reason: "drain" }, OPERATOR, CONCURRENT_JOBS)).rejects.toThrow(
-    /moves no number/,
-  );
   expect(
-    setBudget(store, { expiresAt: "not an instant", concurrentPerMachine: 8, reason: "drain" }, OPERATOR, CONCURRENT_JOBS),
+    setBudget(store, { expiresAt, reason: "drain" }, OPERATOR, CONCURRENT_JOBS),
+  ).rejects.toThrow(/moves no number/);
+  expect(
+    setBudget(
+      store,
+      { expiresAt: "not an instant", concurrentPerMachine: 8, reason: "drain" },
+      OPERATOR,
+      CONCURRENT_JOBS,
+    ),
   ).rejects.toThrow(/is not an instant/);
   expect(
     setBudget(
       store,
-      { expiresAt: new Date(store.now() - 1000).toISOString(), concurrentPerMachine: 8, reason: "drain" },
+      {
+        expiresAt: new Date(store.now() - 1000).toISOString(),
+        concurrentPerMachine: 8,
+        reason: "drain",
+      },
       OPERATOR,
       CONCURRENT_JOBS,
     ),
@@ -1153,7 +1391,10 @@ test("importing a chunk is idempotent by primary key and keeps its own ledger", 
   expect(again).toEqual({ source: "durable.db", table: "records", inserted: 0, skipped: 2 });
 
   expect(
-    await rows<{ title: string; created_at: string }>(store, `SELECT title, created_at FROM records ORDER BY id`),
+    await rows<{ title: string; created_at: string }>(
+      store,
+      `SELECT title, created_at FROM records ORDER BY id`,
+    ),
   ).toEqual([
     { title: "a candidate the Go tree held", created_at: "2026-03-01T09:00:00.000000000Z" },
     { title: "another", created_at: "2026-03-01T09:00:01.000000000Z" },
@@ -1168,9 +1409,9 @@ test("importing a chunk is idempotent by primary key and keeps its own ledger", 
     { source: "durable.db", table_name: "records", rows: 0n },
   ]);
 
-  expect(importLedger(store, { source: "x", table: "records; DROP TABLE records", rows: rowsIn })).rejects.toThrow(
-    /holds no table named/,
-  );
+  expect(
+    importLedger(store, { source: "x", table: "records; DROP TABLE records", rows: rowsIn }),
+  ).rejects.toThrow(/holds no table named/);
   expect(
     importLedger(store, { source: "x", table: "records", rows: [{ id: "hyp_x", nonsense: "1" }] }),
   ).rejects.toThrow(/has no column "nonsense"/);
@@ -1233,14 +1474,28 @@ test("the store writes an evidence check: criterion results with an environment 
     `INSERT INTO assessments(id, record_id, revision_id, run_id, role, vote, lane, claim_id, payload, recorded_at)
      VALUES(?,?,?,?,?,?,?,?,?,?)`,
     [
-      row.id, row.record_id, row.revision_id, row.run_id, row.role, row.vote, row.lane, row.claim_id,
-      row.payload, row.recorded_at,
+      row.id,
+      row.record_id,
+      row.revision_id,
+      row.run_id,
+      row.role,
+      row.vote,
+      row.lane,
+      row.claim_id,
+      row.payload,
+      row.recorded_at,
     ],
   );
   // A review with no vote is still a review: the criterion results are what it judged, and the
   // scope it judged them in is in the row. `outcome` is not in the payload at all, which is the
   // answer rather than a missing field — and the answer the store accepts.
-  const held = await rows<{ role: string; vote: string | null; outcome: string | null; environment: string; criteria: string }>(
+  const held = await rows<{
+    role: string;
+    vote: string | null;
+    outcome: string | null;
+    environment: string;
+    criteria: string;
+  }>(
     store,
     `SELECT role, vote, json_extract(payload, '$.outcome') AS outcome,
             json_extract(payload, '$.environment') AS environment,
@@ -1248,26 +1503,43 @@ test("the store writes an evidence check: criterion results with an environment 
        FROM assessments WHERE id = ?`,
     ["asm_00000001"],
   );
-  expect(held).toEqual([{ role: "evidence", vote: null, outcome: null, environment: "dev-01", criteria: "crit_1" }]);
+  expect(held).toEqual([
+    { role: "evidence", vote: null, outcome: null, environment: "dev-01", criteria: "crit_1" },
+  ]);
 });
 
 test("the store refuses what the engine's schema refuses, under the same code", () => {
   const cases: { role: Role; submission: Record<string, unknown>; code: RefusalCode | null }[] = [
     { role: "evidence", submission: CHECKED, code: null },
     { role: "reception", submission: { vote: "support" }, code: null },
-    { role: "reception", submission: { skip: "the evidence is unreachable from here" }, code: null },
+    {
+      role: "reception",
+      submission: { skip: "the evidence is unreachable from here" },
+      code: null,
+    },
     // F8 itself, the other way round: a setting with no claim about it scopes nothing.
     {
       role: "evidence",
-      submission: { contributions: [{ kind: "comment", text: "the criteria are not stated" }], environment: "dev-01" },
+      submission: {
+        contributions: [{ kind: "comment", text: "the criteria are not stated" }],
+        environment: "dev-01",
+      },
       code: "schema",
     },
     // A criterion result with no setting is the claim about every setting at every time.
-    { role: "evidence", submission: { results: [{ criterion_id: "crit_1", satisfied: false }] }, code: "support" },
+    {
+      role: "evidence",
+      submission: { results: [{ criterion_id: "crit_1", satisfied: false }] },
+      code: "support",
+    },
     // A satisfied criterion nobody can check is the manufactured result §4.12 forbids.
     {
       role: "evidence",
-      submission: { results: [{ criterion_id: "crit_1", satisfied: true }], environment: "dev-01", as_of: "2026-09-12T10:00:00Z" },
+      submission: {
+        results: [{ criterion_id: "crit_1", satisfied: true }],
+        environment: "dev-01",
+        as_of: "2026-09-12T10:00:00Z",
+      },
       code: "support",
     },
     { role: "reception", submission: {}, code: "empty" },
@@ -1291,10 +1563,15 @@ test("the store refuses what the engine's schema refuses, under the same code", 
 });
 
 test("the store refuses a row whose role this build never heard of, and reads a payload object or its JSON", () => {
-  const later = refuseRow("assessments", { role: "provenance", payload: stored({ vote: "support" }) });
+  const later = refuseRow("assessments", {
+    role: "provenance",
+    payload: stored({ vote: "support" }),
+  });
   expect(later?.code).toBe("schema");
   expect(later?.message).toContain("not a review role");
-  expect(refuseRow("assessments", { role: "reception", payload: "{" })?.message).toContain("not JSON");
+  expect(refuseRow("assessments", { role: "reception", payload: "{" })?.message).toContain(
+    "not JSON",
+  );
   expect(refuseRow("assessments", { role: "reception", payload: { vote: "support" } })).toBeNull();
   // Every other table is the store's own shape; only a submission has this contract.
   expect(refuseRow("records", { id: "hyp_1", payload: "{}" })).toBeNull();
@@ -1311,9 +1588,11 @@ test("an instant is nine fractional digits so text order is time order", () => {
 test("every refusal is an ActRefused, so a door can tell a mistake from a bug", async () => {
   const store = openStore();
   await migrate(store);
-  const caught = await rule(store, { id: "pro_missing", ruling: "accept", note: "" }, OPERATOR).catch(
-    (error: unknown) => error,
-  );
+  const caught = await rule(
+    store,
+    { id: "pro_missing", ruling: "accept", note: "" },
+    OPERATOR,
+  ).catch((error: unknown) => error);
   expect(caught).toBeInstanceOf(ActRefused);
   expect(touched).toBeGreaterThan(0);
 });

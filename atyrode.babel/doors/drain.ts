@@ -357,7 +357,10 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         deadline: deadlineAt,
         account: accountName(ledger),
         model: ledger.model,
-        note: refused === "" ? note : `${note === "" ? "" : `${note}; `}only ${String(live.length)} of ${String(input.concurrent)} started: ${refused}`,
+        note:
+          refused === ""
+            ? note
+            : `${note === "" ? "" : `${note}; `}only ${String(live.length)} of ${String(input.concurrent)} started: ${refused}`,
       };
     },
   );

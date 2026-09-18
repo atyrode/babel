@@ -39,7 +39,11 @@ interface Harness {
  * door will not write one the hub cannot describe, so the harness has to be able to answer
  * that question both ways (#310).
  */
-function openHarness(principal = "alex", isRoot = false, describable: readonly string[] = []): Harness {
+function openHarness(
+  principal = "alex",
+  isRoot = false,
+  describable: readonly string[] = [],
+): Harness {
   const dataDir = mkdtempSync(join(tmpdir(), "babel-doors-"));
   cleanup.push(dataDir);
   const db = openPluginDatabase({ dataDir, pluginId: BABEL_PLUGIN_ID });
@@ -48,7 +52,12 @@ function openHarness(principal = "alex", isRoot = false, describable: readonly s
   const ctx = {
     pluginId: BABEL_PLUGIN_ID,
     principal: { id: principal, kind: "human", name: principal },
-    auth: { principal: { id: principal }, caps: ["containers:write"], containerScope: null, isRoot },
+    auth: {
+      principal: { id: principal },
+      caps: ["containers:write"],
+      containerScope: null,
+      isRoot,
+    },
     emit: (_ref: unknown, kind: string, payload: unknown) => {
       emitted.push({ kind, payload });
     },
@@ -83,7 +92,8 @@ async function refusal(harness: Harness, name: string, args: unknown): Promise<s
   const result = (await door.handler(harness.ctx, door.action.input.parse(args) as never)) as {
     refused?: string;
   };
-  if (typeof result.refused !== "string") throw new Error(`${name} did not refuse: ${JSON.stringify(result)}`);
+  if (typeof result.refused !== "string")
+    throw new Error(`${name} did not refuse: ${JSON.stringify(result)}`);
   return result.refused;
 }
 
@@ -138,7 +148,10 @@ test("a ruling is attributed to the dispatch's principal and emits `ruled`", asy
   const ruled = await knock(harness, ACTIONS.rule, { id: "pro_00000001", ruling: "accept" });
   expect(ruled).toEqual({ id: "pro_00000001", standing: "accepted", seq: 1, plan: null });
   expect(harness.emitted).toEqual([
-    { kind: EVENTS.ruled, payload: { id: "pro_00000001", ruling: "accept", standing: "accepted", seq: 1 } },
+    {
+      kind: EVENTS.ruled,
+      payload: { id: "pro_00000001", ruling: "accept", standing: "accepted", seq: 1 },
+    },
   ]);
   expect(
     await harness.store.db.query<{ actor_id: string }>(`SELECT actor_id FROM dispositions`),
@@ -164,7 +177,11 @@ test("accepting a topic proposal through the door emits the plan event with the 
      VALUES(?, 'topic', 'proposal', 'pro_00000002', 'create', NULL, ?, 'run', 'run_1', 'open', ?)`,
     [
       newId("pln"),
-      JSON.stringify({ reasoning: "one checkout, many sessions", identity: "babel.git", name: "babel" }),
+      JSON.stringify({
+        reasoning: "one checkout, many sessions",
+        identity: "babel.git",
+        name: "babel",
+      }),
       stamp(harness.store.now()),
     ],
   );
@@ -173,7 +190,10 @@ test("accepting a topic proposal through the door emits the plan event with the 
     plan: { applied: boolean; entityId?: string };
   };
   expect(ruled.plan.applied).toBe(true);
-  expect(harness.emitted.map((emission) => emission.kind)).toEqual([EVENTS.ruled, EVENTS.planApplied]);
+  expect(harness.emitted.map((emission) => emission.kind)).toEqual([
+    EVENTS.ruled,
+    EVENTS.planApplied,
+  ]);
   expect(harness.emitted[1]?.payload).toEqual({
     id: "pro_00000002",
     kind: "topic",
@@ -187,7 +207,10 @@ test("a comment defaults to a comment and a question is marked as one", async ()
   await migrate(harness.store);
   await seedRecord(harness.store, "pro_00000003");
 
-  const said = (await knock(harness, ACTIONS.comment, { id: "pro_00000003", text: "reads well" })) as {
+  const said = (await knock(harness, ACTIONS.comment, {
+    id: "pro_00000003",
+    text: "reads well",
+  })) as {
     question: boolean;
   };
   expect(said.question).toBe(false);
@@ -239,9 +262,13 @@ test("the stance, the filing and its withdrawal all go through their own doors",
     reason: "wrong topic",
   })) as { withdrawn: boolean; supersedes: string };
   expect(withdrawn).toMatchObject({ withdrawn: true, supersedes: filed.id });
-  expect(await refusal(harness, ACTIONS.unfile, { id: "fnd_00000004", entity: entityId, reason: "again" })).toMatch(
-    /is not filed under/,
-  );
+  expect(
+    await refusal(harness, ACTIONS.unfile, {
+      id: "fnd_00000004",
+      entity: entityId,
+      reason: "again",
+    }),
+  ).toMatch(/is not filed under/);
 });
 
 test("telling Babel something threads, and a policy under the floor is refused at the door", async () => {
@@ -252,7 +279,10 @@ test("telling Babel something threads, and a policy under the floor is refused a
     text: "the repository rules keep slipping",
   })) as { id: string; rootId: string; seq: number };
   expect(first).toMatchObject({ rootId: first.id, seq: 1 });
-  const reply = (await knock(harness, ACTIONS.tell, { text: "on dev-01 especially", replyTo: first.id })) as {
+  const reply = (await knock(harness, ACTIONS.tell, {
+    text: "on dev-01 especially",
+    replyTo: first.id,
+  })) as {
     rootId: string;
     seq: number;
   };
@@ -338,19 +368,21 @@ test("a re-host moves a catalogued corpus onto an id the hub knows, and refuses 
   expect(await refusal(owner, ACTIONS.rehostSessions, { from: "dev-01", to: "dev-02" })).toMatch(
     /dev-02 is not a machine this hub can describe/,
   );
-  expect(await owner.store.db.query<{ host: string }>(`SELECT DISTINCT host FROM sessions`)).toEqual([
-    { host: "dev-01" },
-  ]);
+  expect(
+    await owner.store.db.query<{ host: string }>(`SELECT DISTINCT host FROM sessions`),
+  ).toEqual([{ host: "dev-01" }]);
   expect(await knock(owner, ACTIONS.rehostSessions, { from: "dev-01", to: machineId })).toEqual({
     from: "dev-01",
     to: machineId,
     sessions: 2,
   });
-  expect(await owner.store.db.query<{ host: string }>(`SELECT DISTINCT host FROM sessions`)).toEqual([
-    { host: machineId },
-  ]);
+  expect(
+    await owner.store.db.query<{ host: string }>(`SELECT DISTINCT host FROM sessions`),
+  ).toEqual([{ host: machineId }]);
   // Idempotent: the second run has nothing left under the name and says so rather than refusing.
-  expect(await knock(owner, ACTIONS.rehostSessions, { from: "dev-01", to: machineId })).toMatchObject({
+  expect(
+    await knock(owner, ACTIONS.rehostSessions, { from: "dev-01", to: machineId }),
+  ).toMatchObject({
     sessions: 0,
   });
   // The owner's act, like the crossing it repairs.
@@ -367,5 +399,7 @@ test("a door refuses arguments its schema does not admit before any handler runs
   expect(() => rule?.action.input.parse({ id: "pro_00000005", ruling: "burn-it" })).toThrow();
   expect(() => rule?.action.input.parse({ id: "not-a-record-id", ruling: "accept" })).toThrow();
   const interest = harness.doors.find((door) => door.action.name === ACTIONS.interest);
-  expect(() => interest?.action.input.parse({ entityId: "ent_00000001", state: "curious" })).toThrow();
+  expect(() =>
+    interest?.action.input.parse({ entityId: "ent_00000001", state: "curious" }),
+  ).toThrow();
 });

@@ -148,10 +148,14 @@ export function Watch({ host }: PanelProps) {
     { key: "atyrode.babel.topics", initial: NO_TOPICS },
   );
 
-  const machines = usePolledResource<readonly MachineSummary[]>(() => host.client.machines(), MACHINES_POLL_MS, {
-    key: "atyrode.babel.machines",
-    initial: NO_MACHINES,
-  });
+  const machines = usePolledResource<readonly MachineSummary[]>(
+    () => host.client.machines(),
+    MACHINES_POLL_MS,
+    {
+      key: "atyrode.babel.machines",
+      initial: NO_MACHINES,
+    },
+  );
 
   /*
     THE SAVED CODE PROFILES, and the sentence saying Code could not be asked. Both halves are

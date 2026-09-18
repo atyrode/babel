@@ -78,7 +78,8 @@ function members(zip: Buffer): readonly ZipMember[] {
     found.push(member);
     cursor += 46 + nameLength + zip.readUInt16LE(cursor + 30) + zip.readUInt16LE(cursor + 32);
   }
-  if (cursor !== offset + size) throw new Error("central directory size disagrees with its records");
+  if (cursor !== offset + size)
+    throw new Error("central directory size disagrees with its records");
   return found;
 }
 
@@ -86,7 +87,8 @@ function extract(zip: Buffer, member: ZipMember): Buffer {
   if (zip.readUInt32LE(member.localOffset) !== 0x04034b50) {
     throw new Error(`local header is malformed: ${member.name}`);
   }
-  const data = member.localOffset +
+  const data =
+    member.localOffset +
     30 +
     zip.readUInt16LE(member.localOffset + 26) +
     zip.readUInt16LE(member.localOffset + 28);
@@ -114,7 +116,9 @@ function nativeRequirements(elf: Buffer, expectedMachine: number): NativeRequire
   }
   const machine = elf.readUInt16LE(0x12);
   if (machine !== expectedMachine) {
-    throw new Error(`asset is built for ELF machine ${String(machine)}, not ${String(expectedMachine)}`);
+    throw new Error(
+      `asset is built for ELF machine ${String(machine)}, not ${String(expectedMachine)}`,
+    );
   }
   const headers = Number(elf.readBigUInt64LE(0x20));
   const entrySize = elf.readUInt16LE(0x36);
@@ -131,7 +135,9 @@ function nativeRequirements(elf: Buffer, expectedMachine: number): NativeRequire
     if (type === 1) loads.push({ vaddr, offset, size });
     if (type === 2) dynamic = { offset: Number(offset), size: Number(size) };
     if (type === 3) {
-      interpreter = elf.toString("utf8", Number(offset), Number(offset + size)).replace(/\0.*$/, "");
+      interpreter = elf
+        .toString("utf8", Number(offset), Number(offset + size))
+        .replace(/\0.*$/, "");
     }
   }
   if (!dynamic) return { interpreter, needed: [] };

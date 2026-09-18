@@ -77,8 +77,7 @@ describe("the answer is the last fenced block of the final message", () => {
 
   test("a message with no block, and a message with none at all, say which happened", () => {
     expect(answerOf("I could not find anything worth reporting.")).toEqual({
-      refused:
-        `the final message carries no ${ANSWER_FENCE} block, so this run submitted no result`,
+      refused: `the final message carries no ${ANSWER_FENCE} block, so this run submitted no result`,
     });
     expect(answerOf("   ")).toEqual({ refused: "the session ended with no final message at all" });
   });
@@ -114,7 +113,10 @@ describe("reading one exploration's answer", () => {
     // `objections` belong to the challenge stage; an explore that emitted one exceeded its
     // authority, and the stage schema is the enforcement rather than a comment about it.
     const payload = { candidates: [], objections: [{ ref: "x" }] };
-    const read = readExploreAnswer("explore", `${ANSWER_FENCE}\n${JSON.stringify(payload)}\n\`\`\``);
+    const read = readExploreAnswer(
+      "explore",
+      `${ANSWER_FENCE}\n${JSON.stringify(payload)}\n\`\`\``,
+    );
 
     expect("refusal" in read).toBe(true);
     if (!("refusal" in read)) return;
@@ -132,16 +134,16 @@ describe("a locator is admissible exactly when the material served those bytes",
   });
 
   test("a file the index does not name is not a file this run was served", () => {
-    const unserved = unservedLocator(cited(`${MATERIAL_SESSIONS}/0002-other.jsonl`, DIGEST), SERVED);
+    const unserved = unservedLocator(
+      cited(`${MATERIAL_SESSIONS}/0002-other.jsonl`, DIGEST),
+      SERVED,
+    );
     expect(unserved).toContain("0002-other.jsonl");
     expect(unserved).toContain("not a file this run was served");
   });
 
   test("a retyped digest names the two values, so the claim can be seen to be wrong", () => {
-    const unserved = unservedLocator(
-      cited(`${MATERIAL_SESSIONS}/${FILE}`, "b".repeat(64)),
-      SERVED,
-    );
+    const unserved = unservedLocator(cited(`${MATERIAL_SESSIONS}/${FILE}`, "b".repeat(64)), SERVED);
     expect(unserved).toContain(DIGEST);
     expect(unserved).toContain("b".repeat(64));
   });

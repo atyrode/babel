@@ -58,22 +58,30 @@ function RecordView({ host, id }: { host: HostServices; id: string }): ReactElem
   const [now, setNow] = useState(() => Date.now());
   const root = useRef<HTMLDivElement | null>(null);
 
-  const peel = usePolledResource<RecordPeel | null>(async () => ask(host, ACTIONS.record, { id }), RECORD_POLL_MS, {
-    key: "atyrode.babel.record",
-    restartKey: id,
-    initial: null,
-    topics: [BABEL_NODE],
-    events: host.client,
-    onError: (reason) => setFailure(refusal(reason)),
-    onSuccess: () => setFailure(""),
-  });
-  const thread = usePolledResource<ThreadResult | null>(async () => ask(host, ACTIONS.thread, { id }), RECORD_POLL_MS, {
-    key: "atyrode.babel.thread",
-    restartKey: id,
-    initial: null,
-    topics: [BABEL_NODE],
-    events: host.client,
-  });
+  const peel = usePolledResource<RecordPeel | null>(
+    async () => ask(host, ACTIONS.record, { id }),
+    RECORD_POLL_MS,
+    {
+      key: "atyrode.babel.record",
+      restartKey: id,
+      initial: null,
+      topics: [BABEL_NODE],
+      events: host.client,
+      onError: (reason) => setFailure(refusal(reason)),
+      onSuccess: () => setFailure(""),
+    },
+  );
+  const thread = usePolledResource<ThreadResult | null>(
+    async () => ask(host, ACTIONS.thread, { id }),
+    RECORD_POLL_MS,
+    {
+      key: "atyrode.babel.thread",
+      restartKey: id,
+      initial: null,
+      topics: [BABEL_NODE],
+      events: host.client,
+    },
+  );
 
   useEffect(() => setNow(Date.now()), [peel.value]);
 
@@ -91,7 +99,11 @@ function RecordView({ host, id }: { host: HostServices; id: string }): ReactElem
       tabIndex={-1}
       onKeyDown={(event) => {
         if (event.metaKey || event.ctrlKey || event.altKey) return;
-        if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select") !== null) return;
+        if (
+          event.target instanceof HTMLElement &&
+          event.target.closest("input, textarea, select") !== null
+        )
+          return;
         const act = RULE_KEYS[event.key];
         if (act === undefined || record === null) return;
         const control = root.current?.querySelector<HTMLButtonElement>(`[data-ruling="${act}"]`);
@@ -125,7 +137,13 @@ function RecordView({ host, id }: { host: HostServices; id: string }): ReactElem
               peel.refresh();
             }}
           />
-          <Thread host={host} id={id} thread={thread.value} onPosted={() => thread.refresh()} now={now} />
+          <Thread
+            host={host}
+            id={id}
+            thread={thread.value}
+            onPosted={() => thread.refresh()}
+            now={now}
+          />
         </Stack>
       )}
     </div>
@@ -215,8 +233,15 @@ function FilingDesk({
               )}
             </label>
             <label>
-              {withdrawing === "" ? "Why this record is about it (required)" : "Why it is not (required)"}
-              <textarea value={words} rows={2} required onInput={(event) => setWords(event.currentTarget.value)} />
+              {withdrawing === ""
+                ? "Why this record is about it (required)"
+                : "Why it is not (required)"}
+              <textarea
+                value={words}
+                rows={2}
+                required
+                onInput={(event) => setWords(event.currentTarget.value)}
+              />
             </label>
             <Cluster className="babel-confirm-acts" gap="var(--babel-space-3)">
               <button

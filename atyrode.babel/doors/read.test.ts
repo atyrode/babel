@@ -30,7 +30,8 @@ async function dispatch(name: string, args: unknown): Promise<unknown> {
   const found = doors.find((entry) => entry.action.name === name);
   if (found === undefined) throw new Error(`no door ${name}`);
   const parsed = found.action.input.safeParse(args);
-  if (!parsed.success) return { invalid: parsed.error.issues.map((issue) => issue.message).join("; ") };
+  if (!parsed.success)
+    return { invalid: parsed.error.issues.map((issue) => issue.message).join("; ") };
   // The read handlers touch no slice of the host, which is what makes them dispatchable with
   // nothing but their arguments; a handler that reached for one would fail here by name.
   const produced = await found.handler(undefined as unknown as GuestCtx, parsed.data as never);
@@ -46,28 +47,65 @@ beforeEach(async () => {
   harness = await openTestStore(NOW);
   const { db } = harness;
   await insert(db, "entities", {
-    id: TOPIC, kind: "repository", name: "tyrode-infra", canonical_id: TOPIC,
-    created_by: "operator", created_at: stamp(NOW - HOUR),
+    id: TOPIC,
+    kind: "repository",
+    name: "tyrode-infra",
+    canonical_id: TOPIC,
+    created_by: "operator",
+    created_at: stamp(NOW - HOUR),
   });
   await insert(db, "records", {
-    id: RECORD, kind: "proposal", root_id: RECORD, seq: 1, run_id: "run-a",
-    recipe_id: "outcome-integrity", recipe_version: 3, actor_kind: "run", actor_id: "run-a",
-    title: "a proposal a reader can open", created_at: stamp(NOW - HOUR),
-    payload: JSON.stringify({ schema: 1, title: "a proposal a reader can open", problem: "p", outcome: "o" }),
+    id: RECORD,
+    kind: "proposal",
+    root_id: RECORD,
+    seq: 1,
+    run_id: "run-a",
+    recipe_id: "outcome-integrity",
+    recipe_version: 3,
+    actor_kind: "run",
+    actor_id: "run-a",
+    title: "a proposal a reader can open",
+    created_at: stamp(NOW - HOUR),
+    payload: JSON.stringify({
+      schema: 1,
+      title: "a proposal a reader can open",
+      problem: "p",
+      outcome: "o",
+    }),
   });
   await insert(db, "records", {
-    id: OBSERVATION, kind: "observation", root_id: OBSERVATION, seq: 1, run_id: "run-a",
-    actor_kind: "run", actor_id: "run-a", title: "an observation", created_at: stamp(NOW - HOUR),
+    id: OBSERVATION,
+    kind: "observation",
+    root_id: OBSERVATION,
+    seq: 1,
+    run_id: "run-a",
+    actor_kind: "run",
+    actor_id: "run-a",
+    title: "an observation",
+    created_at: stamp(NOW - HOUR),
     payload: JSON.stringify({ schema: 1, claim: "an observation", evidence: [] }),
   });
   await insert(db, "filings", {
-    id: "fil_0001", record_id: RECORD, entity_id: TOPIC, rationale: "it is about this",
-    author_kind: "operator", author_id: "operator", created_at: stamp(NOW - HOUR),
+    id: "fil_0001",
+    record_id: RECORD,
+    entity_id: TOPIC,
+    rationale: "it is about this",
+    author_kind: "operator",
+    author_id: "operator",
+    created_at: stamp(NOW - HOUR),
   });
   await insert(db, "runs", {
-    id: "run-a", kind: "explore", machine_id: "dev-01", job_id: "job-a",
-    recipe_id: "outcome-integrity", started_at: stamp(NOW - 2 * HOUR),
-    finished_at: stamp(NOW - HOUR), closure: "completed", cost_usd: 0.2, tokens: 1000, records: 1,
+    id: "run-a",
+    kind: "explore",
+    machine_id: "dev-01",
+    job_id: "job-a",
+    recipe_id: "outcome-integrity",
+    started_at: stamp(NOW - 2 * HOUR),
+    finished_at: stamp(NOW - HOUR),
+    closure: "completed",
+    cost_usd: 0.2,
+    tokens: 1000,
+    records: 1,
     payload: JSON.stringify({ runId: "run-a", counts: { records: 1 } }),
   });
   doors = readDoors(harness.store);
@@ -81,8 +119,15 @@ describe("the roster", () => {
   test("declares the nine reading doors, once each, read-only", () => {
     const names = doors.map((entry) => entry.action.name);
     expect(names).toEqual([
-      ACTIONS.feed, ACTIONS.record, ACTIONS.thread, ACTIONS.topics, ACTIONS.topic,
-      ACTIONS.pulse, ACTIONS.runs, ACTIONS.run, ACTIONS.policy,
+      ACTIONS.feed,
+      ACTIONS.record,
+      ACTIONS.thread,
+      ACTIONS.topics,
+      ACTIONS.topic,
+      ACTIONS.pulse,
+      ACTIONS.runs,
+      ACTIONS.run,
+      ACTIONS.policy,
     ]);
     expect(new Set(names).size).toBe(names.length);
     for (const entry of doors) {
@@ -120,7 +165,11 @@ describe("the vocabulary", () => {
   // feed from the one he asked for; a kind nothing matches answered with an empty list reads as
   // a deployment that has produced none of them. Both refuse, and the refusal names the value.
   test("a sort, a window and a kind this feed does not have are refused by name", async () => {
-    for (const [field, value] of [["sort", "popular"], ["window", "fortnight"], ["kinds", "rumour"]] as const) {
+    for (const [field, value] of [
+      ["sort", "popular"],
+      ["window", "fortnight"],
+      ["kinds", "rumour"],
+    ] as const) {
       const args = field === "kinds" ? { kinds: [value] } : { [field]: value };
       const answer = await dispatch(ACTIONS.feed, args);
       expect(answer).toHaveProperty("invalid");
@@ -153,20 +202,33 @@ describe("the answers", () => {
 
   test("the peel answers inside its own schema", async () => {
     const answer = await dispatch(ACTIONS.record, { id: RECORD });
-    expect(answer).toMatchObject({ claim: { statement: "o", standing: "new", act: "Rule on this" } });
+    expect(answer).toMatchObject({
+      claim: { statement: "o", standing: "new", act: "Rule on this" },
+    });
   });
 
   test("a stored question returned by Feed can be opened through the record door", async () => {
     const id = "qst_0123456789abcdef";
     const text = "Which repository owns this configuration?";
     await insert(harness.db, "questions", {
-      id, kind: "clarify", class: "curiosity", text, why: "two repositories share the name",
-      dedupe_key: null, raised_by_kind: "run", raised_by_id: "run-a", payload: "{}",
+      id,
+      kind: "clarify",
+      class: "curiosity",
+      text,
+      why: "two repositories share the name",
+      dedupe_key: null,
+      raised_by_kind: "run",
+      raised_by_id: "run-a",
+      payload: "{}",
       created_at: stamp(NOW - HOUR),
     });
-    const feed = FeedResultSchema.parse(await dispatch(ACTIONS.feed, {
-      kinds: ["question"], needs: "all", window: "all",
-    }));
+    const feed = FeedResultSchema.parse(
+      await dispatch(ACTIONS.feed, {
+        kinds: ["question"],
+        needs: "all",
+        window: "all",
+      }),
+    );
     expect(feed.posts).toMatchObject([{ id, kind: "question" }]);
     const selected = feed.posts[0]!;
     expect(await dispatch(ACTIONS.record, { id: selected.id })).toMatchObject({
@@ -187,7 +249,11 @@ describe("the answers", () => {
   });
 
   test("the thread, the topics, one topic and the pulse answer inside their schemas", async () => {
-    expect(await dispatch(ACTIONS.thread, { id: RECORD })).toEqual({ comments: [], acts: [], total: 0 });
+    expect(await dispatch(ACTIONS.thread, { id: RECORD })).toEqual({
+      comments: [],
+      acts: [],
+      total: 0,
+    });
     expect(await dispatch(ACTIONS.topics, {})).toMatchObject({ unfiled: 0 });
     expect(await dispatch(ACTIONS.topic, { topic: "tyrode-infra" })).toMatchObject({
       topic: { id: TOPIC, name: "tyrode-infra", posts: 1 },

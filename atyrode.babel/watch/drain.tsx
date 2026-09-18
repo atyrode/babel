@@ -236,11 +236,15 @@ function Running({
     <Stack gap="var(--babel-space-2)" className="plugin-atyrode_babel_watch__drain">
       <Cluster gap="var(--babel-space-3)">
         <span className="plugin-atyrode_babel_watch__mono">{drain.drainId}</span>
-        <span className="plugin-atyrode_babel_watch__stat-label" title={DRAIN_STATE_NOTE[drain.state] ?? ""}>
+        <span
+          className="plugin-atyrode_babel_watch__stat-label"
+          title={DRAIN_STATE_NOTE[drain.state] ?? ""}
+        >
           {drain.state}
         </span>
         <span className="plugin-atyrode_babel_watch__muted">
-          {DRAIN_CARDS[drain.preset].title} on {drain.machineId} · started {since(drain.startedAt, now)}
+          {DRAIN_CARDS[drain.preset].title} on {drain.machineId} · started{" "}
+          {since(drain.startedAt, now)}
         </span>
       </Cluster>
       {/*
@@ -386,10 +390,18 @@ export function Drain({
       </Stack>
       {note === "" ? null : <p className="plugin-atyrode_babel_watch__note">{note}</p>}
       {drains.length === 0 ? (
-        <p className="plugin-atyrode_babel_watch__muted">Nothing has been drained on this hub yet.</p>
+        <p className="plugin-atyrode_babel_watch__muted">
+          Nothing has been drained on this hub yet.
+        </p>
       ) : (
         drains.map((drain) => (
-          <Running key={drain.drainId} drain={drain} now={now} stopping={stopping} onStop={onStop} />
+          <Running
+            key={drain.drainId}
+            drain={drain}
+            now={now}
+            stopping={stopping}
+            onStop={onStop}
+          />
         ))
       )}
       <Stack gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__open">
@@ -409,8 +421,12 @@ export function Drain({
               aria-pressed={preset === draft.preset}
               onClick={() => onDraft({ ...draft, preset })}
             >
-              <span className="plugin-atyrode_babel_watch__preset-title">{DRAIN_CARDS[preset].title}</span>
-              <span className="plugin-atyrode_babel_watch__preset-does">{DRAIN_CARDS[preset].does}</span>
+              <span className="plugin-atyrode_babel_watch__preset-title">
+                {DRAIN_CARDS[preset].title}
+              </span>
+              <span className="plugin-atyrode_babel_watch__preset-does">
+                {DRAIN_CARDS[preset].does}
+              </span>
             </button>
           ))}
         </Cluster>
@@ -486,7 +502,11 @@ export function Drain({
           />
           <Spinner
             label="Or at"
-            unit={draft.targetUsd > 0 ? `${usd(draft.targetUsd)} metered` : "dollars (0 = no cost target)"}
+            unit={
+              draft.targetUsd > 0
+                ? `${usd(draft.targetUsd)} metered`
+                : "dollars (0 = no cost target)"
+            }
             value={draft.targetUsd}
             bounds={{ min: 0, max: 10_000, step: 1 }}
             onValue={(targetUsd) => onDraft({ ...draft, targetUsd })}
@@ -519,7 +539,9 @@ export function Drain({
           >
             {starting ? "Starting…" : `Drain with ${card.title.toLowerCase()}`}
           </button>
-          {blocked === "" ? null : <span className="plugin-atyrode_babel_watch__muted">{blocked}</span>}
+          {blocked === "" ? null : (
+            <span className="plugin-atyrode_babel_watch__muted">{blocked}</span>
+          )}
         </Cluster>
       </Stack>
     </Stack>

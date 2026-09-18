@@ -3,7 +3,16 @@ import type { HostServices, PanelProps } from "@manifold/plugin";
 import { usePolledResource } from "@manifold/plugin/hooks";
 import { Cluster, Disclosure, ScrollRegion, Stack } from "@manifold/ui";
 import { ACTIONS, FEED_PLUGIN_ID, INTEREST_STATES } from "../contract.ts";
-import { BABEL_NODE, ask, refusal, since, useShown, type FeedQuery, type TopicResult, type TopicRow } from "./api.ts";
+import {
+  BABEL_NODE,
+  ask,
+  refusal,
+  since,
+  useShown,
+  type FeedQuery,
+  type TopicResult,
+  type TopicRow,
+} from "./api.ts";
 import { EMPTY_QUERY, FeedListing } from "./home.tsx";
 import { INTEREST_LABEL, INTEREST_MEANS, RAIL_POLL_MS } from "./rail.tsx";
 
@@ -26,7 +35,11 @@ import { INTEREST_LABEL, INTEREST_MEANS, RAIL_POLL_MS } from "./rail.tsx";
   seat's own argument when it was opened for one, and from Home's selection when it was not.
 */
 
-const ASKS: ReadonlyArray<{ readonly value: string; readonly label: string; readonly asks: string }> = [
+const ASKS: ReadonlyArray<{
+  readonly value: string;
+  readonly label: string;
+  readonly asks: string;
+}> = [
   { value: "retire", label: "Retire this topic", asks: "retire this" },
   { value: "split", label: "Split this topic", asks: "split this" },
   { value: "merge", label: "Merge this topic into…", asks: "merge this" },
@@ -51,19 +64,28 @@ export function TopicPanel({ host, arg }: PanelProps): ReactElement {
 }
 
 function TopicView({ host, topic }: { host: HostServices; topic: string }): ReactElement {
-  const [query, setQuery] = useState<FeedQuery>({ ...EMPTY_QUERY, needs: "all", sort: "new", topic });
+  const [query, setQuery] = useState<FeedQuery>({
+    ...EMPTY_QUERY,
+    needs: "all",
+    sort: "new",
+    topic,
+  });
   const [failure, setFailure] = useState("");
   const [now, setNow] = useState(() => Date.now());
 
-  const read = usePolledResource<TopicResult | null>(async () => ask(host, ACTIONS.topic, { topic }), RAIL_POLL_MS, {
-    key: "atyrode.babel.topic",
-    restartKey: topic,
-    initial: null,
-    topics: [BABEL_NODE],
-    events: host.client,
-    onError: (reason) => setFailure(refusal(reason)),
-    onSuccess: () => setFailure(""),
-  });
+  const read = usePolledResource<TopicResult | null>(
+    async () => ask(host, ACTIONS.topic, { topic }),
+    RAIL_POLL_MS,
+    {
+      key: "atyrode.babel.topic",
+      restartKey: topic,
+      initial: null,
+      topics: [BABEL_NODE],
+      events: host.client,
+      onError: (reason) => setFailure(refusal(reason)),
+      onSuccess: () => setFailure(""),
+    },
+  );
 
   // The list follows the rail: pointing the panels at another topic re-narrows the feed.
   useEffect(() => {
@@ -99,13 +121,14 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
             {failure !== "" && <p className="babel-note">{failure}</p>}
             {read.value !== null && row === null && (
               <p className="babel-note">
-                No topic in this hub answers to that name. What follows is the feed narrowed to it, which is why it
-                is empty: only you create a topic, and Babel proposes the identity.
+                No topic in this hub answers to that name. What follows is the feed narrowed to it,
+                which is why it is empty: only you create a topic, and Babel proposes the identity.
               </p>
             )}
             {row !== null && row.posts === 0 && (
               <p className="babel-note">
-                Nothing is filed under this topic yet. It exists, and no record has been said to be about it.
+                Nothing is filed under this topic yet. It exists, and no record has been said to be
+                about it.
               </p>
             )}
             {row !== null && (
@@ -133,7 +156,10 @@ function Binding({ topic }: { topic: TopicRow }): ReactElement {
   if (topic.binding === null) return <span className="babel-note">no binding recorded</span>;
   const paths = topic.binding.paths;
   return (
-    <span className="babel-note" title={paths.length === 0 ? undefined : `${paths.length} checkouts seen`}>
+    <span
+      className="babel-note"
+      title={paths.length === 0 ? undefined : `${paths.length} checkouts seen`}
+    >
       {topic.binding.remote === "" ? topic.binding.kind : topic.binding.remote}
       {paths.length > 0 && ` · ${paths.length.toLocaleString()} checkouts`}
     </span>
@@ -169,7 +195,11 @@ function Interest({
     setWorking(true);
     setFailure("");
     try {
-      await ask(host, ACTIONS.interest, { entityId: topic.id, state: chosen, reason: reason.trim() });
+      await ask(host, ACTIONS.interest, {
+        entityId: topic.id,
+        state: chosen,
+        reason: reason.trim(),
+      });
       setChosen("");
       setReason("");
       onStated();
@@ -205,11 +235,17 @@ function Interest({
         <form className="babel-confirm" onSubmit={(event) => void submit(event)}>
           <label>
             Why {(INTEREST_LABEL[chosen] ?? chosen).toLowerCase()}? Kept verbatim, and optional.
-            <input value={reason} onInput={(event) => setReason(event.currentTarget.value)} autoFocus />
+            <input
+              value={reason}
+              onInput={(event) => setReason(event.currentTarget.value)}
+              autoFocus
+            />
           </label>
           <Cluster className="babel-confirm-acts" gap="var(--babel-space-3)">
             <button type="submit" className="babel-primary" disabled={working}>
-              {working ? "Recording…" : `Record ${(INTEREST_LABEL[chosen] ?? chosen).toLowerCase()}`}
+              {working
+                ? "Recording…"
+                : `Record ${(INTEREST_LABEL[chosen] ?? chosen).toLowerCase()}`}
             </button>
             <button type="button" onClick={() => setChosen("")} disabled={working}>
               Cancel
@@ -227,7 +263,9 @@ function Interest({
       ) : (
         <p className="babel-stance">
           {INTEREST_LABEL[current] ?? current}
-          {topic.interest.reason !== "" && <span className="babel-quote"> {topic.interest.reason}</span>}
+          {topic.interest.reason !== "" && (
+            <span className="babel-quote"> {topic.interest.reason}</span>
+          )}
           {topic.interest.by !== "" && ` · ${topic.interest.by}`}
           {topic.interest.at !== "" && ` · ${since(topic.interest.at, now)}`}
         </p>
@@ -259,7 +297,9 @@ function AskBabel({ host, topic }: { host: HostServices; topic: TopicRow }): Rea
     setFailure("");
     try {
       await ask(host, ACTIONS.tell, { text: words, target: { kind: "entity", id: topic.id } });
-      setSaid("Recorded. Babel's next filing run answers with a proposal you rule on like any other.");
+      setSaid(
+        "Recorded. Babel's next filing run answers with a proposal you rule on like any other.",
+      );
       setInto("");
       setReason("");
     } catch (failed) {
@@ -270,7 +310,12 @@ function AskBabel({ host, topic }: { host: HostServices; topic: TopicRow }): Rea
   }
 
   return (
-    <Disclosure className="babel-asks" open={open} onOpenChange={setOpen} header="Ask Babel to change this topic">
+    <Disclosure
+      className="babel-asks"
+      open={open}
+      onOpenChange={setOpen}
+      header="Ask Babel to change this topic"
+    >
       <form className="babel-confirm" onSubmit={(event) => void submit(event)}>
         <div className="babel-acts-bar" role="group" aria-label="Ask">
           {ASKS.map((entry) => (
@@ -293,7 +338,11 @@ function AskBabel({ host, topic }: { host: HostServices; topic: TopicRow }): Rea
         )}
         <label>
           Why, in your own words
-          <textarea value={reason} rows={2} onInput={(event) => setReason(event.currentTarget.value)} />
+          <textarea
+            value={reason}
+            rows={2}
+            onInput={(event) => setReason(event.currentTarget.value)}
+          />
         </label>
         <Cluster className="babel-confirm-acts" gap="var(--babel-space-3)">
           <button type="submit" className="babel-primary" disabled={working}>
