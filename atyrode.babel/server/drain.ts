@@ -522,8 +522,13 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
         already there (it is written by the same call that posted the job), so taking the job
         back onto `live` is enough: it settles like any other and its receipt lands in `spent`.
         If the row is NOT there, the next tick's `missing` releases the slot.
+
+        IT IS THE HUB'S WORD THAT DECIDES, not the sentence: `refused` is written for the
+        operator and this branch is a behaviour, so it turns on the code `post` carried out of
+        the error the hub threw (#288). A code is present only when the hub refused, so a
+        sentence of Babel's own can never reach here.
       */
-      if (started.refused.includes("job_digest_conflict")) {
+      if (started.code === "job_digest_conflict") {
         notes.push(`${identity.jobId} was already posted by an earlier tick, and is taken back`);
         await recordLaunch(deps.store, row.id, job, holding);
         holding.push(job);
