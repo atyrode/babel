@@ -1161,3 +1161,184 @@ describe("runs and the policy", () => {
     expect((await harness.store.policy()).overlay).toBeNull();
   });
 });
+
+// ------------------------------------------- what a record rests on, and what has looked here
+
+describe("corroboration", () => {
+  /*
+    THE NUMBER THAT WAS MISSING. Three supports read as corroboration; three supports from one
+    run are one reading restated, and the peel said only the count. In this deployment's own
+    corpus 175 of 207 findings rest on a single run and every one of 116 proposals shares its
+    finding's run, so the word the page implied was one the data did not support.
+  */
+  test("a record's supports are counted, and so are the runs behind them", async () => {
+    const seed = async (id: string, runId: string, edge: string) => {
+      await insert(harness.db, "records", {
+        id,
+        kind: "observation",
+        root_id: id,
+        seq: 0,
+        parent_id: CANDIDATE,
+        run_id: runId,
+        recipe_id: "outcome-integrity",
+        recipe_version: 3,
+        actor_kind: "run",
+        actor_id: runId,
+        title: `an observation from ${runId}`,
+        created_at: stamp(NOW - HOUR),
+        payload: JSON.stringify({ schema: 1, claim: "it happened", confidence: "high" }),
+      });
+      await insert(harness.db, "edges", {
+        id: edge,
+        kind: "consolidates",
+        from_kind: "finding",
+        from_id: FINDING,
+        to_kind: "observation",
+        to_id: id,
+        position: 0,
+        note: null,
+        actor_kind: "run",
+        actor_id: runId,
+        created_at: stamp(NOW - HOUR),
+      });
+    };
+    // The fixture already consolidates one observation from run-a; two more, one of them from a
+    // second run, make the two numbers differ.
+    await seed("obs_00000101", "run-a", "edg_0101");
+    await seed("obs_00000102", "run-c", "edg_0102");
+
+    const peel = await harness.store.record(FINDING);
+    expect(peel?.corroboration).toEqual({ supports: 3, distinctRuns: 2 });
+  });
+
+  test("supports that all came from one run say so, which is the common case", async () => {
+    // The seeded finding consolidates exactly one observation, from run-a.
+    const peel = await harness.store.record(FINDING);
+    expect(peel?.corroboration).toEqual({ supports: 1, distinctRuns: 1 });
+  });
+
+  test("a record resting on nothing answers zero rather than being absent", async () => {
+    // A candidate is not consolidated from anything: the shape is one shape for every peel, so a
+    // panel never has to ask whether the field is there.
+    expect((await harness.store.record(CANDIDATE))?.corroboration).toEqual({
+      supports: 0,
+      distinctRuns: 0,
+    });
+  });
+
+  test("a cites edge is not a support: a transcript corroborates nothing on its own", async () => {
+    // The fixture cites a session from the observation. Counting it would make every record that
+    // quoted anything look corroborated.
+    const peel = await harness.store.record(FINDING);
+    expect(peel?.corroboration.supports).toBe(1);
+  });
+});
+
+describe("lens coverage", () => {
+  /*
+    THE ZEROS ARE THE FEATURE. Nothing could say "this method has produced nothing about this
+    subject", so nothing could propose the pair. A grid that grouped `records.recipe_id` directly
+    would have reported zero for every lens that ever produced a finding, because only an
+    observation carries a recipe — which is a false zero and worse than no grid.
+  */
+  /** A later policy naming three lenses, only one of which this deployment has ever run. */
+  const threeLenses = async () =>
+    insert(harness.db, "policies", {
+      version: "pol-4",
+      seq: 4,
+      actor_id: "operator",
+      reason: "two more lenses",
+      payload: JSON.stringify({
+        per_cycle_cost: 1.5,
+        daily_cost: 12,
+        batch_size: 4,
+        recipes: [
+          { id: "outcome-integrity", title: "Outcome integrity", enabled: true },
+          { id: "test-economics", title: "Test economics", enabled: true },
+          { id: "time-and-spend", title: "Time sinks and token spend", enabled: false },
+        ],
+      }),
+      recorded_at: stamp(NOW - HOUR),
+    });
+
+  test("a topic reports every recipe the policy holds, including the ones at zero", async () => {
+    await threeLenses();
+    const result = await harness.store.topic(REPOSITORY);
+    const looked = result.coverage.filter((row) => row.records > 0);
+    const never = result.coverage.filter((row) => row.records === 0);
+    expect(looked.length).toBeGreaterThan(0);
+    // An array that omitted the zeros would be the feature failing: the recipes the hub holds and
+    // has never run here are the rows worth reading.
+    expect(never.length).toBeGreaterThan(0);
+    // THE DECLARED LIST IS THE AXIS, not the list that has run. `policy().recipes` is built from
+    // `runs`, so it holds only the lens something performed — which is exactly the wrong axis
+    // here, because the row worth reading is the lens with no runs behind it.
+    expect(result.coverage.map((row) => row.recipeId)).toEqual([
+      "outcome-integrity",
+      "test-economics",
+      "time-and-spend",
+    ]);
+    expect((await harness.store.policy()).recipes).toHaveLength(1);
+  });
+
+  test("a finding is attributed through the observation it consolidates, not by its own column", async () => {
+    await threeLenses();
+    // The finding filed under the repository carries a recipe of its own in this fixture, and the
+    // observation beneath it carries one too; the walk must not count the record twice.
+    const result = await harness.store.topic(REPOSITORY);
+    const row = result.coverage.find((entry) => entry.recipeId === "outcome-integrity");
+    const filed = 2; // the candidate and the finding
+    expect(row?.records).toBeLessThanOrEqual(filed);
+    expect(row?.records).toBeGreaterThan(0);
+  });
+
+  test("a topic with no filings still reports every lens, all at zero", async () => {
+    await threeLenses();
+    const result = await harness.store.topic(RETIRED);
+    expect(result.coverage.every((row) => row.records === 0)).toBe(true);
+    expect(result.coverage.length).toBeGreaterThan(0);
+  });
+});
+
+describe("the operator's steering, read back", () => {
+  test("what he told Babel comes back newest first, with what it was about", async () => {
+    const told = async (id: string, text: string, at: number, about: string | null) =>
+      insert(harness.db, "steering", {
+        id,
+        root_id: id,
+        reply_to_id: null,
+        seq: 0,
+        actor_kind: "operator",
+        actor_id: "operator",
+        target_kind: about === null ? null : "record",
+        target_id: about,
+        text,
+        recorded_at: stamp(at),
+      });
+    await told("str_0001", "stop proposing work on the staging queue", NOW - 2 * DAY, null);
+    await told("str_0002", "this one is about the drain", NOW - HOUR, FINDING);
+
+    const policy = await harness.store.policy();
+    expect(policy.steering.map((remark) => remark.id)).toEqual(["str_0002", "str_0001"]);
+    expect(policy.steering[0]?.about).toBe(`record:${FINDING}`);
+    expect(policy.steering[1]?.about).toBe("");
+  });
+
+  test("a run's own steering reply is not the operator's words", async () => {
+    // The table carries a run's replies too. Reading them back here would put a model's sentence
+    // under a heading that says the operator wrote it.
+    await insert(harness.db, "steering", {
+      id: "str_0003",
+      root_id: "str_0003",
+      reply_to_id: null,
+      seq: 0,
+      actor_kind: "run",
+      actor_id: "run-a",
+      target_kind: null,
+      target_id: null,
+      text: "a run answering a question",
+      recorded_at: stamp(NOW),
+    });
+    expect((await harness.store.policy()).steering).toEqual([]);
+  });
+});

@@ -336,7 +336,22 @@ export function topic(overrides: Partial<TopicResult> = {}): TopicResult {
   const rows = topics().topics;
   const first = rows[0];
   if (first === undefined) throw new Error("the topics fixture is empty");
-  return { topic: first, proposed: [], feed: feed({ posts: [post()], total: 1 }), ...overrides };
+  return {
+    topic: first,
+    proposed: [],
+    // A lens that has looked and two that never have: the zeros are what the panel renders.
+    coverage: [
+      {
+        recipeId: "outcome-integrity",
+        title: "Outcome integrity and unresolved state",
+        records: 2,
+      },
+      { recipeId: "test-economics", title: "Test economics", records: 0 },
+      { recipeId: "time-and-spend", title: "Time sinks and token spend", records: 0 },
+    ],
+    feed: feed({ posts: [post()], total: 1 }),
+    ...overrides,
+  };
 }
 
 export function peel(overrides: Partial<RecordPeel> = {}): RecordPeel {
@@ -368,6 +383,8 @@ export function peel(overrides: Partial<RecordPeel> = {}): RecordPeel {
         line: 412,
       },
     ],
+    // Three supports from one run: the 84.5% case, and the one the prose has to read correctly.
+    corroboration: { supports: 3, distinctRuns: 1 },
     reception: {
       byRole: [
         { role: "reception", support: 1, oppose: 0, unsure: 0, opposingRationales: [] },

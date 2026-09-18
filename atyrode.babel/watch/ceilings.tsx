@@ -85,6 +85,42 @@ function Overlay({
   );
 }
 
+/**
+ * WHAT THE OPERATOR TOLD BABEL, beside what Babel is set to do.
+ *
+ * `tell` wrote these rows and nothing read one back: his own words went into a table no surface
+ * opened, which is worse than not offering the act — a box that accepts a sentence and shows it
+ * nowhere reads as a sentence that was heard. This is the read-back and nothing more: feeding a
+ * remark into a run's prompt is what would make it a memory rather than a log, and that is its
+ * own change.
+ *
+ * Nothing told renders as nothing, not as an empty heading.
+ */
+function Steering({
+  told,
+  now,
+}: {
+  readonly told: PolicyResult["steering"];
+  readonly now: number;
+}) {
+  if (told.length === 0) return null;
+  return (
+    <Stack gap="var(--babel-space-1)" className="plugin-atyrode_babel_watch__steering">
+      <h3 className="plugin-atyrode_babel_watch__steering-title">What you told it</h3>
+      {told.map((remark) => (
+        <p className="plugin-atyrode_babel_watch__remark" key={remark.id}>
+          {remark.text}
+          <span className="plugin-atyrode_babel_watch__muted">
+            {" · "}
+            {since(remark.at, now)}
+            {remark.about === "" ? "" : ` · on ${remark.about}`}
+          </span>
+        </p>
+      ))}
+    </Stack>
+  );
+}
+
 export function Ceilings({ policy, now, note }: CeilingsProps) {
   if (policy === null) {
     return (
@@ -128,6 +164,7 @@ export function Ceilings({ policy, now, note }: CeilingsProps) {
         />
       </Switcher>
       {policy.overlay === null ? null : <Overlay overlay={policy.overlay} now={now} />}
+      <Steering told={policy.steering} now={now} />
       {unset ? null : (
         <div
           className="plugin-atyrode_babel_watch__spend"

@@ -160,6 +160,21 @@ export const POLICY: PolicyResult = {
     },
   ],
   overlay: null,
+  // Two remarks, newest first: `tell` wrote these and nothing read one back until now.
+  steering: [
+    {
+      id: "str_2",
+      text: "stop proposing work on the staging queue, it is going away",
+      about: "",
+      at: "2026-09-12T08:40:00.000Z",
+    },
+    {
+      id: "str_1",
+      text: "this one is about the drain, not about the coordinator",
+      about: "record:fnd_00000002",
+      at: "2026-09-11T17:05:00.000Z",
+    },
+  ],
   payload: { batchSize: 3 },
 };
 

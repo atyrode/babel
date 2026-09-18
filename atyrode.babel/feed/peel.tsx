@@ -42,6 +42,27 @@ function label(key: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+const COUNTED = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+
+/** A count as a word up to nine, because a sentence reads and a numeral tallies. */
+function counted(value: number): string {
+  return COUNTED[value] ?? String(value);
+}
+
+/**
+ * WHAT A RECORD RESTS ON, AS A SENTENCE.
+ *
+ * "three observations, from one run" and "three observations, from three runs" are the same
+ * count and different evidence, and the surface said only the count. The second clause is
+ * always present when there is anything to say: a reader who has to notice an absence to learn
+ * that three supports came from one reading is a reader the page misled.
+ */
+function corroboration(of: { supports: number; distinctRuns: number }): string {
+  const supports = `${counted(of.supports)} support${of.supports === 1 ? "" : "s"}`;
+  const runs = `${counted(of.distinctRuns)} run${of.distinctRuns === 1 ? "" : "s"}`;
+  return `${supports}, from ${runs}`;
+}
+
 function Depth({
   index,
   title,
@@ -176,6 +197,12 @@ export function Peel({
           open={open}
           onToggle={toggle}
         >
+          {/* WHAT IT RESTS ON, IN WORDS, before the excerpts. Prose rather than a badge: a
+              badge is rationed to standing and kind, and this is the sentence that decides
+              whether the excerpts below are three readings or one restated. */}
+          {peel.corroboration.supports > 0 && (
+            <p className="babel-corroboration">{corroboration(peel.corroboration)}</p>
+          )}
           <Stack gap="var(--babel-space-4)">
             {peel.evidence.map((item, index) => (
               <figure

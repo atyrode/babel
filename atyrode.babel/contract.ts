@@ -211,6 +211,20 @@ export const RecordPeelSchema = z.strictObject({
       line: z.number().int().nullable(),
     }),
   ),
+  /**
+   * HOW MANY RUNS THIS RECORD RESTS ON, beside how many supports it has.
+   *
+   * Three observations under one finding read as corroboration; three observations from ONE run
+   * are one reading restated. The surface said nothing about the difference, and in this
+   * deployment's own corpus 175 of 207 findings rest on a single run while every one of 116
+   * proposals shares its finding's run — so "corroborated" was a word the page implied and the
+   * data did not support. It is computed at read time from `records.run_id` and the typed edges,
+   * and a record with no supports answers zero rather than being absent.
+   */
+  corroboration: z.strictObject({
+    supports: z.number().int().min(0),
+    distinctRuns: z.number().int().min(0),
+  }),
   reception: z.strictObject({
     byRole: z.array(
       z.strictObject({
@@ -345,6 +359,19 @@ export const TopicsResultSchema = z.strictObject({
 export const TopicResultSchema = z.strictObject({
   topic: TopicRowSchema.nullable(),
   proposed: z.array(TopicProposalSchema),
+  /**
+   * WHICH LENSES HAVE LOOKED AT THIS TOPIC, one row per recipe the policy holds — and the rows
+   * at zero are the point. Nothing could say "this method has produced nothing about this
+   * subject", so nothing could propose the pair, and a coverage gap that is only an absence is
+   * one nobody notices. A hub whose policy names no recipe answers an empty array.
+   */
+  coverage: z.array(
+    z.strictObject({
+      recipeId: z.string(),
+      title: z.string(),
+      records: z.number().int().min(0),
+    }),
+  ),
   feed: FeedResultSchema,
 });
 
@@ -1156,6 +1183,23 @@ export const PolicyResultSchema = z.strictObject({
   recipes: z.array(RecipeRowSchema),
   /** Null when nothing is overlaid: the standing numbers are the numbers. */
   overlay: BudgetOverlaySchema.nullable(),
+  /**
+   * WHAT THE OPERATOR TOLD BABEL, newest first, bounded.
+   *
+   * `tell` has written `steering` rows since it shipped and nothing read one back: his own words
+   * went into a table no surface opened. A box that accepts a sentence and shows it nowhere
+   * reads as a sentence that was heard. `about` names the record it concerns, or is empty for a
+   * standing remark. Reading it back is not the same as feeding it into a run's prompt, which is
+   * what would make it a memory rather than a log.
+   */
+  steering: z.array(
+    z.strictObject({
+      id: z.string(),
+      text: z.string(),
+      about: z.string(),
+      at: z.string(),
+    }),
+  ),
   payload: z.record(z.string(), z.unknown()),
 });
 

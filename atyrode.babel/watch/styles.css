@@ -71,6 +71,23 @@
   color: var(--babel-ink-muted);
 }
 
+/* WHAT THE OPERATOR TOLD BABEL. His own words, so they are set in the editorial face rather than
+   in the observatory's figures: this is the one thing on the panel a person wrote. */
+.plugin-atyrode_babel_watch__steering-title {
+  margin: 0;
+  color: var(--babel-ink-strong);
+  font-family: var(--babel-font-editorial);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.plugin-atyrode_babel_watch__remark {
+  margin: 0;
+  max-width: 68ch;
+  color: var(--babel-ink);
+  font-family: var(--babel-font-editorial);
+}
+
 .plugin-atyrode_babel_watch__muted {
   color: var(--babel-ink-muted);
 }

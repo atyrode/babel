@@ -11,6 +11,30 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A record shows how many runs it rests on, not just how many supports it has.** Three
+  observations under a finding read as corroboration; three from one run are one reading
+  restated, and the page said only the count — while 175 of 207 findings in this deployment's
+  corpus rest on a single run and every one of 116 proposals shares its finding's run. The
+  `record` door answers `corroboration`, computed at read time from `records.run_id` and the
+  typed edges, and the peel reads "three supports, from one run" at the evidence depth. No
+  column, no migration.
+- **A topic says which lenses have never looked at it.** The `topic` door answers `coverage`: one
+  row per recipe the policy declares, with the records filed under that topic reached through
+  each, and the rows at **zero** are the point — nothing could say "this method has produced
+  nothing about this subject", so nothing could propose the pair. The lens is reached through a
+  bounded walk over the typed edges rather than read off `records.recipe_id`, because only an
+  observation carries a recipe: grouping the column directly would have reported zero for every
+  lens that ever produced a finding, which is a false zero and worse than no grid.
+- **The operator's steering is read back.** `tell` has written `steering` rows since it shipped
+  and nothing ever read one; his own words went into a table no surface opened, which is worse
+  than not offering the act. The `policy` door answers his recent remarks and Watch renders them
+  beside the ceilings. Feeding a remark into a run's prompt — what would make it a memory rather
+  than a log — is #331.
+- **`docs/jev-case-study-audit.md`** records what the outside evaluation of Babel's 6,038-record
+  corpus measured, which mechanism each finding indicts and whether it is built, three
+  corrections a reader must not miss, the question-design rules that are constraints rather than
+  work, the stability bounds every quoted percentage needs, and the disposition of every issue
+  this pass touched. Eighteen issues were filed from it (#328–#345) and twenty-four closed.
 - **Five gates, each watched to fail.** The repository had no linter, no formatter and no
   unused-code check: `gofmt -l .` was the only formatting gate and it died with the Go tree.
   `bun run check` is now the aggregate the CI workflow runs — a typecheck, ESLint and Prettier at
