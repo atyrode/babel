@@ -11,6 +11,36 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Babel reads the archive back.** `machine/restic.ts` ran `init`, `backup` and `snapshots`: the
+  whole writing half and none of the reading one, so Babel could fill an archive and neither verify
+  one nor restore a session from it. An archive whose restore path lives only in an operator's head
+  is an archive nobody has tested. `check` (structural or over every stored byte), `ls`, `dump` and
+  `restore` join the wrapper, surfaced as a fourth machine operation and the `atyrode.babel.verify`
+  door: it checks the repository, then restores one catalogued session from a named snapshot and
+  compares what comes back against both the snapshot's own bytes and the digest `scan` recorded.
+  The snapshot and the digest come out of `sessions`, never out of the request, so a verification
+  cannot be aimed at something the deployment never archived. The password reaches restic exactly
+  as it always did — `RESTIC_PASSWORD` in the child's environment, out of the job's own service
+  binding, never argv, never a log, never a file — and `test/contract.test.ts` now holds both
+  repository-touching operations to that one delivery in a single loop.
+
+  **Never-delete stops being an absence and becomes a rule.** The verbs restic may be asked for are
+  a closed set of eight, every invocation is built by the one function that admits a verb or
+  throws, and a test pins the refusal of `forget`, `prune`, `repair` and `unlock`. A compromised
+  `archive` could write a snapshot and a compromised `verify` could read one; neither has a verb
+  that removes one, and a fifth destructive verb now costs a deliberate edit to a named list and a
+  failing test rather than a moment's inattention. Snapshot ids and paths are validated before they
+  reach argv, because both now come from a door's caller.
+
+  `docs/sandbox-threat-model.md` §7 named "a fourth machine operation" as a condition that
+  invalidates it, so the document was rewritten rather than reworded around: §3's table gains a
+  `verify` row, the network property is restated as two of four with the substance kept (the two
+  operations reading the most hostile bytes still have no route out), and a new property says a
+  restore writes corpus bytes onto the machine and names the sandbox as what bounds where. Residual
+  4 gains the third copy, and §7's spent condition is rewritten so it would have caught `verify`
+  itself. `docs/runbook.md` §2, `docs/parity.md`'s `restic/` row, `SPEC.md` §6.1 and the
+  `babel-cli` skill all said Babel could not read the archive; they say what it can, and keep the
+  by-hand path for the cases it still owns — no hub, no catalog row, a whole snapshot, or a lock.
 - **A record's own words about another record become an edge.** Records in the corpus open with
   explicit self-correction markers — `CONTRADICTS hyp_…`, `CITATION CORRECTION for o2 …` — and
   nothing turned one into a link, so a record that announced what it superseded was, to every

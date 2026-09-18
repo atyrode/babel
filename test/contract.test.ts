@@ -154,12 +154,19 @@ describe("the machine half is declared as the machine half is built", () => {
   }
 
   test("it declares every operation the machine half implements, in the contract's order", () => {
-    // Three, not five: `explore` and `evaluate` are NAMED by this plugin and DECLARED by
+    // Four, not six: `explore` and `evaluate` are NAMED by this plugin and DECLARED by
     // nobody (#279). A Babel run is a Code session — the operator picks a Code profile or
     // parametrizes one in Code's generator, and Code's `runSession` door posts the omp job —
-    // so neither is an operation of this bundle's machine half any more.
+    // so neither is an operation of this bundle's machine half any more. `verify` is the
+    // archive's reading half (#338) and is one, because reading a repository back is work
+    // that happens on the machine that holds it.
     expect(declared).toEqual(Object.values(MACHINE_OPERATIONS));
-    expect(declared).toEqual([OPERATIONS.scan, OPERATIONS.archive, OPERATIONS.prepare]);
+    expect(declared).toEqual([
+      OPERATIONS.scan,
+      OPERATIONS.archive,
+      OPERATIONS.prepare,
+      MACHINE_OPERATIONS.verify,
+    ]);
   });
 
   test("each operation runs the machine half with its own name and one input document", () => {
@@ -304,45 +311,58 @@ describe("the machine half is declared as the machine half is built", () => {
   test("only the operations that reach off the machine are given the network", () => {
     expect(machine.operations[OPERATIONS.scan]?.network).toBe("none");
     expect(machine.operations[OPERATIONS.prepare]?.network).toBe("none");
-    // archive reaches the repository, and its storage service proxy is loopback HTTP the
-    // engine refuses to open without it (`service_proxy_requires_host_network`).
+    // archive and verify reach the repository, and their storage service proxy is loopback
+    // HTTP the engine refuses to open without it (`service_proxy_requires_host_network`).
     expect(machine.operations[OPERATIONS.archive]?.network).toBe("host");
+    expect(machine.operations[MACHINE_OPERATIONS.verify]?.network).toBe("host");
   });
 
-  test("archive is handed its repository by a service binding, never by an environment value", () => {
+  test("the repository is handed to an operation by a service binding, never by an environment value", () => {
     // An operation's `environment` is fixed reviewed values in committed code, so neither the
     // repository password nor this deployment's locator can live there. The binding is the
     // whole delivery: the engine writes {url, bearer} of the job's own service proxy into one
     // input file, and the operation asks that service for the storage document that carries
     // the locator and its secrets together (machine/restic.ts).
-    const op = machine.operations[OPERATIONS.archive]!;
-    expect(op.services).toEqual([
-      {
-        serviceId: RESTIC_SERVICE.serviceId,
-        revision: RESTIC_SERVICE.revision,
-        operationIds: [RESTIC_SERVICE.operationId],
-      },
-    ]);
-    const bound = op.inputFiles?.[RESTIC_SERVICE.inputFile];
-    expect(bound?.literal).toBe('{"url":"","bearer":""}');
-    expect(bound?.jsonValues).toEqual([
-      { path: ["url"], serviceId: RESTIC_SERVICE.serviceId, value: "url" },
-      { path: ["bearer"], serviceId: RESTIC_SERVICE.serviceId, value: "bearer" },
-    ]);
-    // The one environment value is not a secret and not a locator: it is where restic keeps
-    // its index cache, which must be inside a location this operation may write or every
-    // backup re-reads every byte it already archived.
-    const cache = op.environment?.["BABEL_RESTIC_CACHE_DIR"] ?? "";
-    expect(cache).not.toBe("");
-    expect(Object.keys(op.environment ?? {})).toEqual(["BABEL_RESTIC_CACHE_DIR"]);
-    const writable = op.locations
-      .filter((location) => location.access === "write")
-      .map((location) => machine.locations[location.locationId]?.guestPath ?? "\0");
-    expect(writable.some((guestPath) => cache.startsWith(`${guestPath}/`))).toBe(true);
-    // Archive is the only operation with either, again (#279): the two that bound the
-    // inference service and fixed the CA bundle `SSL_CERT_FILE` names went with the launcher,
-    // because a run that reaches a model is a job Code posts under Code's own policy.
-    for (const other of declared.filter((operation) => operation !== OPERATIONS.archive)) {
+    //
+    // TWO operations touch the repository: `archive` writes it and `verify` reads it back
+    // (#338). They are held to the same delivery here, in one loop, because two ways of
+    // reaching one credential is a bug in whichever of them is the second.
+    const touching: readonly string[] = [OPERATIONS.archive, MACHINE_OPERATIONS.verify];
+    for (const operation of touching) {
+      const op = machine.operations[operation]!;
+      expect(op.services).toEqual([
+        {
+          serviceId: RESTIC_SERVICE.serviceId,
+          revision: RESTIC_SERVICE.revision,
+          operationIds: [RESTIC_SERVICE.operationId],
+        },
+      ]);
+      const bound = op.inputFiles?.[RESTIC_SERVICE.inputFile];
+      expect(bound?.literal).toBe('{"url":"","bearer":""}');
+      expect(bound?.jsonValues).toEqual([
+        { path: ["url"], serviceId: RESTIC_SERVICE.serviceId, value: "url" },
+        { path: ["bearer"], serviceId: RESTIC_SERVICE.serviceId, value: "bearer" },
+      ]);
+      // Every environment value is a DIRECTORY inside a location this operation may write:
+      // restic's index cache, or the scratch space a restore is proved in. Neither is a secret
+      // and neither is a locator — and a cache outside a writable location would make every
+      // backup re-read every byte it already archived.
+      const writable = op.locations
+        .filter((location) => location.access === "write")
+        .map((location) => machine.locations[location.locationId]?.guestPath ?? "\0");
+      const environment = Object.entries(op.environment ?? {});
+      expect(environment.length).toBeGreaterThan(0);
+      for (const [name, value] of environment) {
+        expect({ name, inside: writable.some((guest) => value.startsWith(`${guest}/`)) }).toEqual({
+          name,
+          inside: true,
+        });
+      }
+    }
+    // And nothing else has either (#279): the operations that bound the inference service and
+    // fixed the CA bundle `SSL_CERT_FILE` names went with the launcher, because a run that
+    // reaches a model is a job Code posts under Code's own policy.
+    for (const other of declared.filter((operation) => !touching.includes(operation))) {
       expect(machine.operations[other]!.services).toBeUndefined();
       expect(machine.operations[other]!.environment).toBeUndefined();
     }
@@ -362,6 +382,10 @@ describe("the machine half is declared as the machine half is built", () => {
     expect(minutes(OPERATIONS.scan)).toBe(10);
     expect(minutes(OPERATIONS.prepare)).toBe(30);
     expect(minutes(OPERATIONS.archive)).toBe(10);
+    // `verify` is an hour because `--read-data` reads every stored byte of the repository,
+    // which is the whole point of asking for it; the door posts under this ceiling and the
+    // structural check that most verifications ask for finishes in a fraction of it.
+    expect(minutes(MACHINE_OPERATIONS.verify)).toBe(60);
     expect(machine.operations[OPERATIONS.prepare]!.limits.outputBytes).toBe(512 * 1024 * 1024);
   });
 
@@ -381,14 +405,17 @@ describe("the machine half is declared as the machine half is built", () => {
         expect(required.tools).toEqual(["development", "system"]);
         expect(required.services).toEqual([]);
       }
-      // restic is the one alias still asked for by name, and only `archive` asks: upstream's
-      // whole Linux distribution is bare bzip2 while `MachineArtifactSchema` takes `raw`, `zip`
-      // or `tar.gz`, so there is nothing honest to pin. Per-operation is the point — a machine
-      // that binds no restic disables this one and leaves scan and prepare installable.
-      expect(jobResourceRequirements(machine, OPERATIONS.archive, platform).tools).toEqual([
-        "restic",
-        "system",
-      ]);
+      // restic is the one alias still asked for by name, and only the two operations that
+      // touch the repository ask: upstream's whole Linux distribution is bare bzip2 while
+      // `MachineArtifactSchema` takes `raw`, `zip` or `tar.gz`, so there is nothing honest to
+      // pin. Per-operation is the point — a machine that binds no restic disables those two
+      // and leaves scan and prepare installable.
+      for (const operation of [OPERATIONS.archive, MACHINE_OPERATIONS.verify]) {
+        expect(jobResourceRequirements(machine, operation, platform).tools).toEqual([
+          "restic",
+          "system",
+        ]);
+      }
     }
     for (const operation of declared) {
       for (const alias of machine.operations[operation]!.runtimeTools) {

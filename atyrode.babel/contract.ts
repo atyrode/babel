@@ -110,6 +110,19 @@ export const ACTIONS = {
   launch: "launch",
   stop: "stop",
   /**
+   * VERIFYING THE ARCHIVE, AND RESTORING OUT OF IT (#338).
+   *
+   * It posts `atyrode.babel.verify` on the machine that holds the repository: `restic check`,
+   * structurally or over the stored bytes, and optionally ONE catalogued session restored from
+   * a named snapshot and proved byte-exact against the digest `scan` recorded. The verdict
+   * arrives as the run's receipt, which the `run` door already serves.
+   *
+   * There is no companion act for forgetting, pruning or unlocking, and there will not be one
+   * by accident: the machine half admits a closed set of restic verbs and none of those three
+   * is in it.
+   */
+  verify: "verify",
+  /**
    * THE SAVED CODE PROFILES, as Watch's Start section offers them. It is Babel's own door and
    * not a client-side call into Code, for one reason: the panel must read exactly the list the
    * SERVER will post against, and a browser that asked Code directly would show a revision the
@@ -469,6 +482,10 @@ export const MACHINE_OPERATIONS = {
   scan: `${BABEL_PLUGIN_ID}.scan`,
   archive: `${BABEL_PLUGIN_ID}.archive`,
   prepare: `${BABEL_PLUGIN_ID}.prepare`,
+  /** The archive's reading half (#338): `restic check`, and one session restored from a named
+   *  snapshot and proved byte-exact. It deletes nothing and cannot — `machine/restic.ts`
+   *  admits a closed set of verbs that holds no `forget`, `prune`, `repair` or `unlock`. */
+  verify: `${BABEL_PLUGIN_ID}.verify`,
 } as const;
 
 /**
@@ -991,6 +1008,56 @@ export const LaunchResultSchema = z.strictObject({
 });
 
 /**
+ * WHAT A VERIFICATION IS ASKED (#338): which machine reads the repository, how deep, and which
+ * catalogued session — if any — to restore out of it and prove byte-exact.
+ *
+ * `readData` is ONE field rather than a flag with a subset beside it: `false` checks the
+ * repository's structure, `true` reads every stored byte, and a string is restic's own subset
+ * spelling (`n/t`, `x%`, a size) for a repository too large to read whole on a cadence. Two
+ * fields could contradict each other and this one cannot.
+ *
+ * A RESTORE IS ASKED FOR BY SELECTOR, never by path. The door reads the session's catalogued
+ * snapshot and digest out of `sessions` and the machine resolves the path from the SNAPSHOT
+ * itself, so a session whose log is no longer on the disk — the case an archive exists for —
+ * is still restorable, and the operator never types a filesystem path for a machine he is not
+ * standing on.
+ */
+export const VerifyInputSchema = z.strictObject({
+  machineId: bounded(120),
+  readData: z.union([z.boolean(), z.string().trim().max(16)]).default(false),
+  session: z
+    .strictObject({
+      selector: bounded(400),
+      /** The snapshot to read; empty uses the one the catalog recorded for this session. */
+      snapshotId: z
+        .union([z.literal(""), z.string().regex(/^(latest|[0-9a-f]{8,64})$/)])
+        .default(""),
+      /** Where the restored files are KEPT on the machine; empty proves and keeps nothing. */
+      target: z.string().trim().max(4096).default(""),
+    })
+    .optional(),
+});
+export type VerifyInput = z.infer<typeof VerifyInputSchema>;
+
+/** The request as the door takes it: the above plus the OPERATION NODE it is authorized at,
+ *  for the reason {@link LaunchRequestSchema} carries one. */
+export const VerifyRequestSchema = VerifyInputSchema.extend({ operation: OperationRefSchema });
+
+/**
+ * What a verification answers: the run it became, on which machine, and what it was told to
+ * read. The VERDICT is the receipt of that run — `counts.checkErrors`, `counts.restored`,
+ * `counts.restoredBytes` and a `reason` when something failed — read back through the `run`
+ * door, because a job that takes an hour cannot answer at the press.
+ */
+export const VerifyResultSchema = z.strictObject({
+  runId: z.string(),
+  jobId: z.string(),
+  machineId: z.string(),
+  /** The snapshot the restore will read, or "" when this verification restores nothing. */
+  snapshotId: z.string(),
+});
+
+/**
  * What `stop` takes: the run to end, the JOB NODE the engine holds `jobs:cancel` at, and why —
  * the reason is recorded, never required. The node travels for the same reason `launch`'s does:
  * the requirement is discharged against the raw arguments, so the run row's `job_id` and
@@ -1226,7 +1293,7 @@ export const JOB_OUTPUT_FILES = {
 /** The receipt every run writes last (§7): what it was asked, read, produced and cost. */
 export const ReceiptSchema = z.strictObject({
   runId: z.string(),
-  kind: z.enum(["scan", "archive", "prepare", "explore", "evaluate"]),
+  kind: z.enum(["scan", "archive", "prepare", "verify", "explore", "evaluate"]),
   machineId: z.string(),
   recipeId: z.string().optional(),
   role: RoleSchema.optional(),

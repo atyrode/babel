@@ -156,7 +156,8 @@ test("no operation this bundle ships binds a model service, so none of them mete
     manifest's own bindings. Babel's two model lanes were the only bindings that could carry a
     call and they went with the launcher (#279): a run that reaches a model is a job CODE
     posts, under CODE's service policy, and what the owner metered arrives on the job the fold
-    settles. What is left binding anything is `archive`, whose service is a restic repository.
+    settles. What is left binding anything reaches a restic repository: `archive`, which writes
+    one, and `verify`, which reads one back.
   */
   const shipped = PluginManifestSchema.parse(manifestJson);
   const metered = runPlan({ manifest: shipped, policy: POLICY }).metered;
@@ -164,11 +165,14 @@ test("no operation this bundle ships binds a model service, so none of them mete
     [OPERATIONS.scan]: false,
     [OPERATIONS.prepare]: false,
     [OPERATIONS.archive]: true,
+    [OPERATIONS.verify]: true,
   });
   const bindings = Object.values(shipped.machine?.operations ?? {}).flatMap(
     (operation) => operation.services ?? [],
   );
-  expect(bindings.map((binding) => binding.serviceId)).toEqual(["atyrode.babel.restic"]);
+  expect([...new Set(bindings.map((binding) => binding.serviceId))]).toEqual([
+    "atyrode.babel.restic",
+  ]);
 });
 
 test("every verb the boundary serves passes straight through, arrays and all", async () => {

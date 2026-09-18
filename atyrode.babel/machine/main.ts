@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import {
   MACHINE_OPERATIONS,
   RESTIC_CREDENTIAL_FILE,
@@ -60,8 +61,8 @@ const USAGE =
  * Each operation parses its own input with its own schema; only the module knows the shape.
  *
  * The modules are loaded dynamically because the operation is selected from argv at runtime
- * and each one pulls in a dependency tree of its own — restic for `archive`, the digesters for
- * `prepare`. A static import graph would make every scheduled scan load all three.
+ * and each one pulls in a dependency tree of its own — restic for `archive` and `verify`, the
+ * digesters for `prepare`. A static import graph would make every scheduled scan load all four.
  */
 const DISPATCH: Record<
   OperationWord,
@@ -84,6 +85,16 @@ const DISPATCH: Record<
       // Where the engine put the service binding, or where a hand-run says it is. A path is
       // not a credential: the secret is behind the service, never in this variable.
       credentialFile: process.env["BABEL_RESTIC_BINDING"]?.trim() || RESTIC_CREDENTIAL_FILE,
+    });
+  },
+  verify: async (raw, out) => {
+    const { VERIFY_ENV, VerifyInputSchema, verify } = await import("./verify.ts");
+    return verify(VerifyInputSchema.parse(raw), out, {
+      claim,
+      credentialFile: process.env["BABEL_RESTIC_BINDING"]?.trim() || RESTIC_CREDENTIAL_FILE,
+      // Inside a job this is a declared, managed, writable location; outside one — a hand-run,
+      // the tests — the system's own temporary directory is the honest default.
+      scratchDir: process.env[VERIFY_ENV.scratchDir]?.trim() || tmpdir(),
     });
   },
   prepare: async (raw, out, progress, material) => {

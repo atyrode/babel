@@ -716,12 +716,18 @@ Captures are crash-consistent per file, not transactional across files. Session 
 append-mostly, so a capture taken mid-write yields a prefix plus at most a torn final line; readers
 tolerate that and the next snapshot supersedes it.
 
-Retention is append-only. Nothing in Babel invokes `restic forget`, `prune`, `repair` or `unlock`,
-and no path deletes a snapshot.
+Retention is append-only, and the absence is enforced rather than incidental: the verbs restic may
+be asked for are a closed set of eight, every invocation is built by the one function that admits a
+verb or throws, and `forget`, `prune`, `repair` and `unlock` are not among them. Adding a ninth is
+a reviewable line in a named list, not a reachable call.
 
-**Babel writes the archive and does not read it back.** Verifying and restoring are `restic check`
-and `restic restore` run directly against the repository; `.omp/skills/babel-cli/SKILL.md` states
-the procedure and `docs/parity.md` names the issue.
+**Babel reads the archive back.** The `verify` operation runs `restic check` — structurally, or
+over every stored byte — and restores one catalogued session from a named snapshot, comparing what
+comes back against the digest the catalog recorded. It takes the snapshot and the digest out of
+`sessions` rather than out of a caller's request, so a verification cannot be aimed at something
+the deployment never archived. Restoring by hand against the repository remains the path when
+there is no hub, when the session is not catalogued, or when a whole snapshot is wanted:
+`docs/runbook.md` §2 owns both, and archive recovery depends on neither the catalog nor Babel.
 
 ### 6.2 Catalog
 

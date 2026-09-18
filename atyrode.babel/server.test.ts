@@ -469,16 +469,20 @@ test("the doors that ask a machine what it can run are lent that read, and no ot
     WHO ASKS, AND THEREFORE WHO IS LENT IT. Every door a cycle follows asks: the conductor
     describes a machine to register the beat on it. `drainStart` asks on its own account too — it
     posts the fan's first slot through `launchMachinery`, and `ready` describes before it posts.
-    The crossing's two owner-only doors ask for a different reason: `importLedger` and
-    `rehostSessions` write a session's machine column, and a column carrying a name the hub does
-    not know is provenance nothing can read back, so each checks the id against the hub before
-    writing it (#312). Nothing else in the roster asks a machine anything, and a delegate nobody
-    spends is authority nobody asked for: reading a feed, ruling on a record and stopping a run
-    all stay inside this plugin's own tables and its own job nodes.
+    `verify` asks for the same reason: it posts one of Babel's own jobs (#338) through the same
+    path, and a verification aimed at a machine with no Babel on it should be refused at the
+    press rather than by a job that never starts. The crossing's two owner-only doors ask for a
+    different reason: `importLedger` and `rehostSessions` write a session's machine column, and a
+    column carrying a name the hub does not know is provenance nothing can read back, so each
+    checks the id against the hub before writing it (#312). Nothing else in the roster asks a
+    machine anything, and a delegate nobody spends is authority nobody asked for: reading a feed,
+    ruling on a record and stopping a run all stay inside this plugin's own tables and its own
+    job nodes.
   */
   const asks: Record<string, true> = {
     ...WAKES,
     [ACTIONS.drainStart]: true,
+    [ACTIONS.verify]: true,
     [ACTIONS.importLedger]: true,
     [ACTIONS.rehostSessions]: true,
   };

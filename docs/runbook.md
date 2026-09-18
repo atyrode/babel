@@ -21,7 +21,7 @@ Where this runbook says _nothing does this_, that document says the same in a ro
 
 ## 1. Backing up: the `archive` operation
 
-The archive is `atyrode.babel.archive`, one of the three operations the machine half implements
+The archive is `atyrode.babel.archive`, one of the operations the machine half implements
 (`atyrode.babel/machine/main.ts`; `MACHINE_OPERATIONS` in
 `atyrode.babel/contract.ts`). It runs `restic backup` over this machine's session roots —
 OMP, Codex, Claude Code, and Babel's own — **one snapshot per root**, tagged `babel`, attributed
@@ -59,13 +59,44 @@ per-operation, so a missing tool disables `archive` alone (`docs/building.md`).
 
 ---
 
-## 2. Recovery: restic, directly
+## 2. Recovery: the `verify` operation, or restic directly
 
-**Babel fills the archive and cannot read it back.** `machine/restic.ts` runs `init`, `backup` and
-`snapshots`, and nothing else — no `check`, no `ls`, no `dump`, no `restore`
-(`docs/parity.md`, `.omp/skills/babel-cli/SKILL.md`). Verifying and restoring are therefore
-`restic` commands the operator types, which is also the property the old runbook cared most about:
-_archive recovery does not depend on the catalog — or on Babel._ It never did, and now it cannot.
+There are two paths, and the second is the one that must never stop working.
+
+**Through Babel.** `atyrode.babel.verify` reads the repository back: `restic check`, structurally
+or over every stored byte, and one catalogued session restored from a named snapshot and compared
+byte for byte against the digest `scan` recorded (`atyrode.babel/machine/verify.ts`). The
+`atyrode.babel.verify` door posts it and the run's receipt carries the verdict. It is the path for
+the routine question — is the archive sound, and does this session still come back — because it
+takes the snapshot and the digest out of the catalog rather than out of somebody's memory, it
+deletes nothing and cannot (the verbs restic may be asked for are a closed set that holds no
+`forget`, `prune`, `repair` or `unlock`), and it leaves a receipt a reviewer can read later.
+
+**By hand.** `restic`, with the repository and the password out of custody (§3). Use it when there
+is no hub or the store is lost; when the machine that took the snapshot is gone, or was never
+enrolled; when the session is not catalogued, or its row is an imported one whose snapshot column
+is not a restic id; when what is wanted is a whole snapshot or a root rather than one session; and
+for anything to do with a lock, which Babel cannot clear. It is also the path that proves the
+property this runbook cares most about: _archive recovery does not depend on the catalog — or on
+Babel._ It never did.
+
+> **OPERATOR STEP — verify the archive from the hub (prerequisites in §4 and §6).**
+> **Prerequisites:** those of an archive (§1), at this operation's own node: the
+> `atyrode.babel.restic` service policy installed and its fingerprint matching the installed job,
+> the `restic` runtime tool bound, consent for `services:invoke` at
+> `manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage` and for
+> `network:host` at `manifold://machine/<machine>/operation/atyrode.babel.verify`.
+> **Call:** `atyrode.babel.verify` with the machine, `readData` — `false` for the structure,
+> `true` for every stored byte, or a subset such as `"10%"` — and, to prove one session, its
+> catalogued `selector`. The door reads that session's snapshot and digest out of `sessions`; a
+> snapshot named in the call overrides the catalogued one.
+> **Success:** the run settles `completed` and its receipt carries `kind: "verify"`,
+> `counts.checked: 1`, `counts.checkErrors: 0`, and — when a session was named —
+> `counts.restored: 1` beside `counts.digestCompared: 1`. A `failed` receipt's reason names what
+> disagreed: the repository's own errors, or the two digests that did not match.
+> **A stale lock fails this step.** `restic check` wants the repository quiescent and takes an
+> exclusive lock to get it, so a stranded lock is diagnosed and cleared by hand (§2.3) before a
+> verification will run at all.
 
 ### 2.1 Find what to restore
 
@@ -118,9 +149,10 @@ the repository quiescent. `restic check --no-lock` then reported 44 snapshots an
 
 > **OPERATOR STEP — clear a stale lock (never automated, never an agent's to run).**
 > **Prerequisites:** the lock's holder is confirmed dead, by host as well as PID; a lock naming
-> another host is never judged by local PID liveness. Nothing in Babel takes, inspects or removes
-> a repository lock, and `.omp/skills/babel-cli/SKILL.md` forbids an agent from running
-> `restic unlock` at all.
+> another host is never judged by local PID liveness. Nothing in Babel inspects or removes a
+> repository lock — a verification's own `restic check` takes one and releases it, and nothing
+> else — and `.omp/skills/babel-cli/SKILL.md` forbids an agent from running `restic unlock` at
+> all.
 > **Success:** `restic list locks --no-lock` shows the lock gone and `restic check --no-lock`
 > exits 0. Measured against restic 0.19.1, plain `restic unlock` removes a stale lock including an
 > exclusive one; `--remove-all` is what a lock that is _not_ stale needs, and it removes every lock

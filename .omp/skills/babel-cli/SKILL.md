@@ -18,8 +18,8 @@ retired with the rest of the product. What replaced each half:
 | `babel archive status`    | the same operation's receipt, and `runs`/`sessions` in the store     |
 | `babel sessions list`     | the `atyrode.babel.scan` machine operation, and Babel's own surfaces |
 | `babel web`               | the Feed and Watch panels in Manifold                                |
-| `babel archive verify`    | `restic check` — see below                                           |
-| `babel sessions fetch`    | `restic restore` — see below                                         |
+| `babel archive verify`    | the `atyrode.babel.verify` operation, or `restic check` — see below  |
+| `babel sessions fetch`    | `atyrode.babel.verify` naming a session, or `restic restore` — below |
 | `babel archive fleet`     | nothing; a deployment is one hub                                     |
 | `babel storage configure` | the deployment's storage document, owned by dotfiles/clan            |
 
@@ -36,8 +36,20 @@ plugin, and snapshots are append-only.
 
 ## Verifying and restoring
 
-The plugin writes the archive and does not read it back: it runs `init`, `backup` and
-`snapshots`, and no `check`, `ls`, `dump` or `restore`. Use `restic` directly, with the
+Two paths. Prefer the first; the second is what still works when there is no hub.
+
+**The `verify` operation.** `atyrode.babel.verify` runs `restic check` — structurally, or over
+every stored byte when asked — and restores one catalogued session from a named snapshot,
+comparing the restored bytes against the snapshot's own and against the digest `scan` recorded.
+The `atyrode.babel.verify` door posts it with the machine, how deep to read, and the session's
+selector; the run's receipt carries the verdict (`counts.checkErrors`, `counts.restored`,
+`counts.digestCompared`). Its verbs are a closed set that holds no `forget`, `prune`, `repair` or
+`unlock`, so it cannot remove anything whatever it is asked. `docs/runbook.md` §2 owns the
+procedure and its prerequisites.
+
+**restic by hand.** Use it when there is no hub or the store is lost, when the machine that took
+the snapshot is gone or was never enrolled, when the session is not catalogued, when a whole
+snapshot or root is wanted rather than one session, and for anything to do with a lock. Take the
 repository and password from the deployment's storage document (`docs/runbook.md` §§3–4 and §8
 own where those live and how to read one without putting a secret in argv or shell history).
 
@@ -46,7 +58,7 @@ export RESTIC_REPOSITORY=…                 # from the storage document
 export RESTIC_PASSWORD_FILE=…              # mode 0600, never the value in argv
 
 restic snapshots --tag babel               # what this deployment has archived, by host
-restic check                               # structural integrity
+restic check --no-lock                     # structural integrity, and the form a lock allows
 restic check --read-data                   # re-reads every pack; slow, and the real check
 restic ls <snapshot-id>                    # what one snapshot holds
 restic restore <snapshot-id> --target DIR --include PATH   # byte-exact restore

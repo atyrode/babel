@@ -12,14 +12,18 @@ import {
   PRESET_START,
   ProfilesQuerySchema,
   ProfilesResultSchema,
+  MACHINE_OPERATIONS,
   StopInputSchema,
   StopResultSchema,
+  VerifyRequestSchema,
+  VerifyResultSchema,
   MaterialIndexSchema,
   type CodeProfile,
   type LaunchInput,
   type MaterialIndex,
   type OperationName,
   type PresetStart,
+  type VerifyInput,
 } from "../contract.ts";
 import type { Coordinator, Policy } from "../store/coordinator.ts";
 import {
@@ -131,6 +135,21 @@ const PROFILES_CAPS = ["containers:read"] as const;
 /** Closing a run is a write of this plugin's rows; the cancel is the door's own ceiling. */
 const STOP_CAPS = ["containers:write"] as const;
 const STOP_DELEGATES = ["jobs:cancel"] as const;
+
+/** Asking a machine to read its archive writes one of this plugin's run rows; the job itself
+ *  is discharged at the effect, under the same delegates a launch posts with. */
+const VERIFY_CAPS = ["containers:write"] as const;
+
+/**
+ * The two catalogued values a restore is built from, as restic and `scan` spell them.
+ *
+ * They are checked at the door rather than trusted because `sessions` holds IMPORTED rows too
+ * (`tools/import.ts`), and the Go deployment's snapshot and digest columns are its own
+ * spellings. `machine/verify.ts` states the same shapes in its input schema; a document that
+ * failed there would fail as a job on a machine nobody is watching.
+ */
+const RESTIC_SNAPSHOT = /^(latest|[0-9a-f]{8,64})$/;
+const CONTENT_DIGEST = /^sha256:[0-9a-f]{64}$/;
 
 /** What a preset is, in one row: the run's kind, the operation it becomes, how it is started. */
 interface PresetPlan {
@@ -252,6 +271,12 @@ export interface LaunchIdentity {
 /** What a start answered: the two ids, or the sentence naming why nothing was started. */
 export type Started = { runId: string; jobId: string } | { refused: string };
 
+/** What a verification answered: its run, its job, and the snapshot it will restore from —
+ *  empty when it only checks the repository. */
+export type Verified =
+  | { readonly runId: string; readonly jobId: string; readonly snapshotId: string }
+  | { refused: string };
+
 /**
  * THE LAUNCH PATH, EXPOSED SO THERE IS EXACTLY ONE OF IT.
  *
@@ -290,6 +315,18 @@ export interface LaunchMachinery {
     input: LaunchInput,
     plan: RunPlan,
   ): Promise<Started>;
+  /**
+   * ONE VERIFICATION of the archive (#338) — an `atyrode.babel.verify`, Babel's own job, which
+   * reads the repository and restores nothing into it. It is here beside the other two because
+   * a run row is written for it by the same statement: one path posts this plugin's jobs, so
+   * the conductor settles a verification exactly as it settles a scan.
+   */
+  startVerify(
+    identity: LaunchIdentity,
+    jobs: JobsSlice,
+    input: VerifyInput,
+    plan: RunPlan,
+  ): Promise<Verified>;
   /**
    * EVERY RUN WHOSE MATERIAL IS SEALED AND WHOSE SESSION IS NOT POSTED YET, posted now.
    *
@@ -552,6 +589,117 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     );
     if (refusal !== null) return refusal;
     return { runId: identity.runId, jobId: identity.jobId };
+  }
+
+  /**
+   * ONE VERIFICATION of the archive on one machine (#338), and the session it proves.
+   *
+   * THE SNAPSHOT AND THE DIGEST COME OUT OF THE CATALOG, not out of the request. `sessions`
+   * already holds which snapshot took a session and what `scan` measured its bytes to be, so
+   * the operator asks with a selector and the machine is told two facts this hub can be held
+   * to. A request that named its own digest would be a comparison against whatever the asker
+   * believed, which proves nothing about the archive.
+   *
+   * The session's row also says which machine holds it: a snapshot is attributed to its own
+   * host, so verifying it somewhere else would read a repository that never took it.
+   */
+  async function startVerify(
+    identity: LaunchIdentity,
+    jobs: JobsSlice,
+    input: VerifyInput,
+    plan: RunPlan,
+  ): Promise<Verified> {
+    let restore: { snapshotId: string; selector: string; digest: string; target: string } | null =
+      null;
+    if (input.session !== undefined) {
+      const asked = input.session;
+      const rows = await store.db.query<{
+        host: string;
+        snapshot_id: string | null;
+        content_digest: string | null;
+      }>(`SELECT host, snapshot_id, content_digest FROM sessions WHERE selector = ?`, [
+        asked.selector,
+      ]);
+      const row = rows[0];
+      if (row === undefined) return { refused: `no catalogued session ${asked.selector}` };
+      if (row.host !== input.machineId) {
+        return {
+          refused:
+            `${asked.selector} is catalogued on ${row.host} and this verification asks ` +
+            `${input.machineId}: a snapshot is read where it was taken`,
+        };
+      }
+      const snapshotId = asked.snapshotId !== "" ? asked.snapshotId : (row.snapshot_id ?? "");
+      if (snapshotId === "") {
+        return {
+          refused:
+            `${asked.selector} names no archived snapshot, so there is nothing to restore it ` +
+            `from; archive this machine first, or name a snapshot`,
+        };
+      }
+      if (!RESTIC_SNAPSHOT.test(snapshotId)) {
+        // An imported corpus carries the Go deployment's own snapshot column, which is not a
+        // restic id. Refusing here is the earlier and clearer answer: the machine would refuse
+        // the same document, twenty seconds later, as a job that failed to parse its input.
+        return {
+          refused:
+            `the snapshot recorded for ${asked.selector} is "${snapshotId}", which is not a ` +
+            `restic snapshot id; name the snapshot to read`,
+        };
+      }
+      // A digest this hub cannot use is dropped rather than passed on: the machine still
+      // compares the restored bytes against the snapshot's own, and `counts.digestCompared`
+      // says whether the CATALOG was part of the comparison. An imported row is the case —
+      // its digest column is the Go deployment's spelling — and it is also the session most
+      // likely to be worth restoring, so refusing it outright would be the wrong trade.
+      const catalogued = row.content_digest ?? "";
+      restore = {
+        snapshotId,
+        selector: asked.selector,
+        digest: CONTENT_DIGEST.test(catalogued) ? catalogued : "",
+        target: asked.target,
+      };
+    }
+
+    const admitted = await ready(jobs, input.machineId, MACHINE_OPERATIONS.verify);
+    if ("refused" in admitted) return admitted;
+    const built = document({
+      runId: identity.runId,
+      machineId: input.machineId,
+      readData: input.readData,
+      ...(restore === null ? {} : { restore }),
+    });
+    if ("refused" in built) return built;
+    const refusal = await post(
+      jobs,
+      {
+        jobId: identity.jobId,
+        machineId: input.machineId,
+        operationId: MACHINE_OPERATIONS.verify,
+        input: built.input,
+        outputs: [
+          { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [identity.jobId] },
+        ],
+        limits: plan.limits,
+        ...admitted.pinned,
+      },
+      {
+        runId: identity.runId,
+        kind: MACHINE_OPERATIONS.verify,
+        recipeId: "",
+        authorityId: identity.authorityId,
+        preparation: {
+          readData: input.readData,
+          ...(restore === null ? {} : { session: restore.selector, snapshot: restore.snapshotId }),
+        },
+      },
+    );
+    if (refusal !== null) return refusal;
+    return {
+      runId: identity.runId,
+      jobId: identity.jobId,
+      snapshotId: restore?.snapshotId ?? "",
+    };
   }
 
   /**
@@ -902,7 +1050,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     return posted;
   }
 
-  return { startExplore, startBeat, postPrepared };
+  return { startExplore, startBeat, startVerify, postPrepared };
 }
 
 /** A run waiting on its preparation, as the poster reads one. */
@@ -1138,7 +1286,53 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
     },
   );
 
-  return [profiles, launch, stop];
+  const verify = defineDoor(
+    defineServerAction({
+      name: ACTIONS.verify,
+      title: "Verify the archive on a machine",
+      caps: VERIFY_CAPS,
+      delegates: LAUNCH_DELEGATES,
+      input: VerifyRequestSchema,
+      result: VerifyResultSchema,
+    }),
+    async (ctx, input) => {
+      // The node this request is authorized at has to be the node it is about, for the reason
+      // `launch` states: the host discharges the requirement against the raw arguments, so a
+      // request whose two halves disagree is answered as itself rather than folded into a
+      // later refusal.
+      if (
+        input.operation.machineId !== input.machineId ||
+        input.operation.operationId !== MACHINE_OPERATIONS.verify
+      ) {
+        return {
+          refused:
+            `this verification names ${input.machineId}/${MACHINE_OPERATIONS.verify} and asks ` +
+            `for authority at ${input.operation.machineId}/${input.operation.operationId}`,
+        };
+      }
+      const inForce = await deps.coordinator.policy();
+      if (!inForce.policy.enabled) {
+        // A disabled policy ingests nothing, so the job would run on the machine and its
+        // verdict would never be folded into the run row the operator reads it from.
+        return {
+          refused:
+            `the evaluation policy in force (${inForce.version}) is disabled, so no receipt ` +
+            `would be ingested and the verification's verdict would go nowhere`,
+        };
+      }
+      const minted = await ctx.newId();
+      const started = await machinery.startVerify(
+        { runId: `run_${minted}`, jobId: `job_${minted}`, authorityId: ctx.principal.id },
+        deps.jobs(ctx),
+        input,
+        deps.plan(inForce.policy, MACHINE_OPERATIONS.verify),
+      );
+      if ("refused" in started) return started;
+      return { ...started, machineId: input.machineId };
+    },
+  );
+
+  return [profiles, launch, verify, stop];
 }
 
 function message(error: unknown): string {
