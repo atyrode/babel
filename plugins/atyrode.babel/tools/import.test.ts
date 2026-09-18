@@ -466,6 +466,13 @@ const GO_CATALOG_SCHEMA: readonly string[] = [
 
 const DEPLOYMENT = "babel-test";
 const HOST = "dev-fixture";
+/**
+ * The GO deployment's host name, which is what a preparation's selection records and what the
+ * crossing used to write into `sessions.host` in preference to `--host` (#310). It is
+ * deliberately NOT the machine id above: a fixture where the two agree cannot tell which one
+ * was written.
+ */
+const GO_HOST = "dev-01";
 
 /** `internal/sharedcatalog.SessionUID`, which is what a Go `evidence` edge addresses. */
 function sessionUid(harness: string, sourceId: string): string {
@@ -501,7 +508,7 @@ function seedDurable(path: string): void {
         schema: 1,
         id: "prep-1",
         selection: [
-          { host: HOST, harness: "omp", source_id: "-code/alpha", source_digest: "sha256:beef", capture_digest: "sha256:cafe" },
+          { host: GO_HOST, harness: "omp", source_id: "-code/alpha", source_digest: "sha256:beef", capture_digest: "sha256:cafe" },
         ],
       }),
     ],
@@ -842,9 +849,20 @@ test("a citation resolves to the session's selector, and keeps the digest when i
   const joined = await scalar(
     `SELECT s.host, s.content_digest FROM edges e JOIN sessions s ON s.selector = e.to_id WHERE e.id = 'ref_1'`,
   );
+  // The digest comes from the preparation's selection; the HOST does not. `sessions.host` is a
+  // hub machine id, the selection's `host` is the Go deployment's name, and preferring the
+  // latter is what left a whole catalogued corpus addressed to a machine the hub resolves to
+  // nothing (#310).
   expect(joined["host"]).toBe(HOST);
   expect(joined["content_digest"]).toBe("beef");
   expect(notes.some((note) => note.includes("keep the raw 64-hex shared-catalog session uid"))).toBe(true);
+});
+
+test("every catalogued session is hosted on the machine id the crossing was given (#310)", async () => {
+  const handle = store as PluginDatabaseAdmin;
+  const rows = await handle.query(`SELECT selector, host FROM sessions ORDER BY selector`);
+  expect(rows.map((row) => row["host"])).toEqual([HOST, HOST]);
+  expect(rows.some((row) => row["host"] === GO_HOST)).toBe(false);
 });
 
 test("the Go catalog's fourth harness is Babel's own, and crosses as an agent session", async () => {
