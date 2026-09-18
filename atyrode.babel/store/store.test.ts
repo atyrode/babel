@@ -1595,7 +1595,11 @@ describe("lens coverage", () => {
     would have reported zero for every lens that ever produced a finding, because only an
     observation carries a recipe — which is a false zero and worse than no grid.
   */
-  /** A later policy naming three lenses, only one of which this deployment has ever run. */
+  /**
+   * A later policy naming three lenses, only one of which this deployment has ever run — and
+   * only one of which a run could be started for: the second is declared with no body and the
+   * third is turned off, which are the two ways `server.ts`'s `cookbook()` holds no recipe.
+   */
   const threeLenses = async () =>
     insert(harness.db, "policies", {
       version: "pol-4",
@@ -1607,9 +1611,19 @@ describe("lens coverage", () => {
         daily_cost: 12,
         batch_size: 4,
         recipes: [
-          { id: "outcome-integrity", title: "Outcome integrity", enabled: true },
+          {
+            id: "outcome-integrity",
+            title: "Outcome integrity",
+            enabled: true,
+            body: "# Outcome integrity\n\nWhat was left unresolved?",
+          },
           { id: "test-economics", title: "Test economics", enabled: true },
-          { id: "time-and-spend", title: "Time sinks and token spend", enabled: false },
+          {
+            id: "time-and-spend",
+            title: "Time sinks and token spend",
+            enabled: false,
+            body: "# Time sinks\n\nWhere did the hours go?",
+          },
         ],
       }),
       recorded_at: stamp(NOW - HOUR),
@@ -1642,6 +1656,19 @@ describe("lens coverage", () => {
     const filed = 2; // the candidate and the finding
     expect(row?.records).toBeLessThanOrEqual(filed);
     expect(row?.records).toBeGreaterThan(0);
+  });
+
+  test("a zero says whether it can be acted on: the lens the launch door would accept", async () => {
+    await threeLenses();
+    const result = await harness.store.topic(RETIRED);
+    // A blank cell is only an offer when an explore of that lens could start: the hub's cookbook
+    // holds the recipes the policy both enables and gives a body, and a launch naming any other
+    // is refused by name. A row that claimed otherwise would be a control that can only fail.
+    expect(result.coverage.map((row) => [row.recipeId, row.runnable])).toEqual([
+      ["outcome-integrity", true],
+      ["test-economics", false],
+      ["time-and-spend", false],
+    ]);
   });
 
   test("a topic with no filings still reports every lens, all at zero", async () => {

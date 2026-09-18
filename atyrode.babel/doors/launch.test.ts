@@ -457,6 +457,111 @@ test("an explore seals its material and records the intent; the session waits fo
   expect(JSON.parse(explore.preparation)["recipes"]).toEqual([{ id: "code-health", version: 3 }]);
 });
 
+/*
+  THE OFFER BEHIND A BLANK COVERAGE CELL POSTS THIS (#330): one lens, scoped to one topic. The
+  panel's own test pins the document it sends; this pins what the door then DOES with it, which
+  is the half that could quietly select nothing or run the default set instead of the lens asked
+  for — a cell reporting "never looked" that started a different look would be worse than the
+  cell that could not be acted on at all.
+*/
+test("explore-topic prepares the sessions the topic's records cite, under the one lens asked for", async () => {
+  const entityId = "ent_0000beef";
+  const { db } = harness;
+  // A session on this machine that nothing filed cites: it is in the window and out of scope.
+  await insert(db, "sessions", {
+    selector: "omp/elsewhere",
+    host: MACHINE,
+    harness: "omp",
+    source_id: "elsewhere",
+    title: "another subject",
+    content_digest: "d2",
+    seen_at: stamp(NOW - HOUR),
+  });
+  await insert(db, "entities", {
+    id: entityId,
+    kind: "repository",
+    name: "babel",
+    canonical_id: entityId,
+    created_by: "operator",
+    created_at: stamp(NOW - 4 * HOUR),
+  });
+  await insert(db, "records", {
+    id: RECORD,
+    kind: "finding",
+    root_id: RECORD,
+    seq: 1,
+    run_id: "run-old",
+    actor_kind: "run",
+    actor_id: "run-old",
+    title: "the tests were adjusted to the code",
+    created_at: stamp(NOW - 3 * HOUR),
+    payload: JSON.stringify({ schema: 1 }),
+  });
+  await insert(db, "edges", {
+    id: "edg_0330",
+    kind: "cites",
+    from_kind: "finding",
+    from_id: RECORD,
+    to_kind: "session",
+    to_id: "omp/s1",
+    actor_kind: "run",
+    actor_id: "run-old",
+    created_at: stamp(NOW - 3 * HOUR),
+  });
+  await insert(db, "filings", {
+    id: "fil_0330",
+    record_id: RECORD,
+    entity_id: entityId,
+    rationale: "it is about this repository",
+    author_kind: "run",
+    author_id: "run-old",
+    created_at: stamp(NOW - 3 * HOUR),
+  });
+  cookbook = {
+    ...RECIPES,
+    "time-and-spend": {
+      id: "time-and-spend",
+      version: 2,
+      title: "Time sinks and token spend",
+      body: "Look for where the hours went.",
+    },
+  };
+
+  const answer = await start({
+    preset: "explore-topic",
+    entityId,
+    recipes: ["time-and-spend"],
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  expect(answer["refused"]).toBeUndefined();
+  expect(answer["kind"]).toBe("explore");
+  // THE SCOPE IS THE TOPIC'S OWN EVIDENCE: the cited session and not the machine's window.
+  const sealed = fleet.executed[0]!;
+  expect(JSON.parse(String(sealed.input["input"]))["selectors"]).toEqual(["omp/s1"]);
+  // …and the method is the one lens the cell offered, not the enabled default set.
+  const runs = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE kind = ?`,
+    [OPERATIONS.explore],
+  );
+  const intent = JSON.parse(String(runs[0]?.preparation)) as Record<string, unknown>;
+  expect(intent["recipes"]).toEqual([{ id: "time-and-spend", version: 2 }]);
+  expect(intent["entityId"]).toBe(entityId);
+});
+
+test("a topic whose cited sessions are not on the chosen machine is refused by name", async () => {
+  const answer = await start({
+    preset: "explore-topic",
+    entityId: "ent_0000beef",
+    recipes: ["code-health"],
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+  // Nothing is filed under it at all here, which is the same shape as a topic whose evidence
+  // lives on another machine: the operator reads why rather than watching a run find nothing.
+  expect(String(answer["refused"])).toContain("is cited by anything filed under ent_0000beef");
+  expect(fleet.executed).toEqual([]);
+});
+
 test("the selection stops at the bytes one preparation may seal, and says how many it left", async () => {
   // Three quarters of the bound apiece: the newest fits, the next does not, and the third
   // does not either. `scan`'s own `size` is the only figure the hub has before the job runs.

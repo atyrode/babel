@@ -21,17 +21,18 @@ import {
   DRAIN_CONCURRENT_MAX,
   DrainStartRequestSchema,
   DrainStopInputSchema,
-  LaunchRequestSchema,
   OPERATIONS,
   PRESETS,
   PRESET_OPERATIONS,
   PRESET_START,
   RUN_STAGES,
   StopInputSchema,
+  asLaunchRequest,
   door,
   type ActionName,
   type DrainPreset,
   type GapReason,
+  type LaunchRequest,
   type ProfileAccount,
   type StopReason,
 } from "../contract.ts";
@@ -232,21 +233,19 @@ export function generatorUri(containerId: string): string {
 }
 
 /**
- * The draft as the `launch` door takes it: the contract's own shape, with exactly the knobs the
- * chosen preset owns, plus the OPERATION NODE the door's `machines:run` is discharged at.
+ * The draft as the `launch` door takes it: exactly the knobs the chosen preset owns, assembled
+ * into the request by the contract's own {@link asLaunchRequest} — so this form and the topic
+ * page's coverage cell post one document and not two.
  *
  * A preset carries no flag it cannot use — `LaunchInputSchema` is strict, so `minutes` on a
  * `read-whats-new` would be refused whole — and the PROFILE travels only for a preset that
  * reaches a model: `keep-going` is a scan of Babel's own, and a profile on it would be a field
  * nothing reads.
  */
-export function launchRequest(
-  draft: LaunchDraft,
-  profile: ProfileRow | null,
-): z.infer<typeof LaunchRequestSchema> {
+export function launchRequest(draft: LaunchDraft, profile: ProfileRow | null): LaunchRequest {
   const card = LAUNCH_CARDS[draft.preset];
   const reaches = PRESET_START[draft.preset] === "explore";
-  return LaunchRequestSchema.parse({
+  return asLaunchRequest({
     machineId: draft.machineId,
     preset: draft.preset,
     recipes: card?.takesRecipes === true ? [...draft.recipes] : [],
@@ -256,11 +255,6 @@ export function launchRequest(
     ...(reaches && profile !== null
       ? { profile: { containerId: profile.containerId, expectedRevision: profile.revision } }
       : {}),
-    operation: {
-      kind: "operation",
-      machineId: draft.machineId,
-      operationId: PRESET_OPERATIONS[draft.preset],
-    },
   });
 }
 

@@ -676,6 +676,13 @@ export const TopicResultSchema = z.strictObject({
       recipeId: z.string(),
       title: z.string(),
       records: z.number().int().min(0),
+      /**
+       * Whether a launch of this lens would be accepted: the policy enables it and gives it a
+       * body, which is what `server.ts`'s `cookbook()` admits. The topic page offers a run of a
+       * never-looked lens (#330), and an offer the door could only refuse is a control the
+       * operator discovers by pressing it.
+       */
+      runnable: z.boolean(),
     }),
   ),
   feed: FeedResultSchema,
@@ -1422,6 +1429,32 @@ export type LaunchInput = z.infer<typeof LaunchInputSchema>;
  * composition is Code's to make.
  */
 export const LaunchRequestSchema = LaunchInputSchema.extend({ operation: OperationRefSchema });
+export type LaunchRequest = z.infer<typeof LaunchRequestSchema>;
+
+/**
+ * THE DOCUMENT A PRESS POSTS, ASSEMBLED ONCE FOR EVERY SURFACE THAT POSTS ONE.
+ *
+ * Two of them ask for a run — Watch's Start form, and a never-looked cell on a topic page
+ * (#330) — and they must not be two disciplines. A cell is a shorter way to ASK for a run and
+ * must not be a shorter way to get one, so the only thing either surface supplies is the
+ * request's own fields: the machine, the preset, its knobs and the Code profile with the
+ * revision the operator was shown.
+ *
+ * THE NODE IS DERIVED AND NEVER SUPPLIED. It is made of the two fields above it, and a caller
+ * that assembled it itself and named the wrong operation for its preset would be refused
+ * `invalid authority target` before the handler ran — a refusal that reads like a missing
+ * grant. Deriving it here is the same reason {@link PRESET_OPERATIONS} is in this file at all.
+ */
+export function asLaunchRequest(input: z.input<typeof LaunchInputSchema>): LaunchRequest {
+  return LaunchRequestSchema.parse({
+    ...input,
+    operation: {
+      kind: "operation",
+      machineId: input.machineId,
+      operationId: PRESET_OPERATIONS[input.preset],
+    },
+  });
+}
 
 /**
  * WHAT A LAUNCH ANSWERS when it started something: the run row's own id, the CODE job the

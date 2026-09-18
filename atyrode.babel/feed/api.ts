@@ -9,7 +9,9 @@ import {
   DecideResultSchema,
   FEED_PLUGIN_ID,
   FeedResultSchema,
+  LaunchResultSchema,
   PANELS,
+  ProfilesResultSchema,
   PulseResultSchema,
   RecordPeelSchema,
   RuleResultSchema,
@@ -54,6 +56,8 @@ const RESULTS = {
   topics: TopicsResultSchema,
   topic: TopicResultSchema,
   pulse: PulseResultSchema,
+  profiles: ProfilesResultSchema,
+  launch: LaunchResultSchema,
   rule: RuleResultSchema,
   decide: DecideResultSchema,
   comment: AcceptedSchema,
@@ -79,7 +83,10 @@ export type TopicsResult = z.infer<typeof TopicsResultSchema>;
 export type TopicRow = z.infer<typeof TopicRowSchema>;
 export type TopicProposal = z.infer<typeof TopicProposalSchema>;
 export type TopicResult = z.infer<typeof TopicResultSchema>;
+export type CoverageRow = TopicResult["coverage"][number];
 export type PulseResult = z.infer<typeof PulseResultSchema>;
+export type ProfilesResult = z.infer<typeof ProfilesResultSchema>;
+export type ProfileRow = ProfilesResult["profiles"][number];
 
 /**
  * Calls one door and answers what the contract says it answers.

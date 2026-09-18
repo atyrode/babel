@@ -18,10 +18,13 @@ import {
   OUTPUT_LOCATION,
   PANELS,
   MACHINE_OPERATIONS,
+  PRESET_OPERATIONS,
   RESTIC_SERVICE,
   RUNTIME_TOOLS,
   WATCH_PLUGIN_ID,
+  asLaunchRequest,
 } from "../atyrode.babel/contract.ts";
+import { launchRequest } from "../atyrode.babel/watch/api.ts";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { ADAPTERS } from "../atyrode.babel/machine/adapters/index.ts";
 import { STORE_DATA_VERSION } from "../atyrode.babel/store/schema.ts";
@@ -190,6 +193,64 @@ describe("the parts are parts of the baseline", () => {
       `${WATCH_PLUGIN_ID}.${PANELS.watch}`,
     ]);
     expect(seated[0]?.ratio).toBe(2);
+  });
+});
+
+/*
+  TWO SURFACES POST A RUN, AND THEY POST THE SAME DOCUMENT (#330).
+
+  Watch's Start form is one; a never-looked lens on a topic page is the other, and it exists
+  because reading a blank coverage cell is not acting on one. A cell is a shorter way to ASK for
+  a run and must not be a shorter way to get one — a control reaching the door by a shorter
+  route is a hole in the spend discipline, not a convenience. This is the only file that may
+  compare them: a part imports the baseline's `contract.ts` and never the other part, which is
+  what `eslint.config.js`'s import restriction holds.
+*/
+describe("what a press posts", () => {
+  test("the coverage cell's launch is the document Watch's own form builds", () => {
+    const machineId = "m-dev-01";
+    const entityId = "ent_0000beef";
+    const profile = { containerId: "ctr_workbench", expectedRevision: 11 };
+
+    // What `feed/topic.tsx` sends when the operator presses a lens nobody has pointed here…
+    const cell = asLaunchRequest({
+      machineId,
+      preset: "explore-topic",
+      entityId,
+      recipes: ["test-economics"],
+      profile,
+    });
+    // …and what Watch's form sends for the same topic, the same lens and the same profile.
+    const form = launchRequest(
+      {
+        preset: "explore-topic",
+        machineId,
+        containerId: profile.containerId,
+        entityId,
+        sinceDays: 1,
+        minutes: 60,
+        recipes: ["test-economics"],
+      },
+      {
+        containerId: profile.containerId,
+        revision: profile.expectedRevision,
+        model: "anthropic/claude-opus-5",
+        thinking: "high",
+        lastMachineId: machineId,
+        accounts: [],
+        resolved: true,
+      },
+    );
+
+    expect(cell).toEqual(form);
+    // And the node the door's `machines:run` is discharged at is the preset's own operation,
+    // derived from the request rather than named by whichever surface built it.
+    expect(cell.operation).toEqual({
+      kind: "operation",
+      machineId,
+      operationId: PRESET_OPERATIONS["explore-topic"],
+    });
+    expect(cell.profile).toEqual(profile);
   });
 });
 

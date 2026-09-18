@@ -142,8 +142,13 @@ export interface TopicsResult {
 export interface TopicResult {
   topic: TopicRow | null;
   proposed: TopicProposal[];
-  /** One row per recipe the policy holds; the rows at zero are what makes it worth reading. */
-  coverage: { recipeId: string; title: string; records: number }[];
+  /**
+   * One row per recipe the policy holds; the rows at zero are what makes it worth reading, and
+   * `runnable` is whether one of those zeros can be acted on — the policy enables the lens and
+   * gives it a body, which is exactly what `server.ts`'s `cookbook()` admits and what an
+   * explore of it would otherwise be refused for by name.
+   */
+  coverage: { recipeId: string; title: string; records: number; runnable: boolean }[];
   feed: FeedResult;
 }
 
@@ -333,6 +338,13 @@ interface DeclaredRecipe {
   readonly title: string;
   readonly looksFor: string;
   readonly enabled: boolean;
+  /**
+   * Whether an explore of this lens could actually be started on this hub: the policy enables
+   * it AND gives it a body. Both halves are `server.ts`'s `cookbook()` admission rule, which
+   * `doors/launch.ts` refuses a named-but-unheld recipe against — so a surface offering a run
+   * of a lens outside it would be offering a press that can only be discovered by failing.
+   */
+  readonly runnable: boolean;
 }
 
 /**
@@ -358,12 +370,13 @@ function declaredIn(payload: Record<string, unknown>): readonly DeclaredRecipe[]
   for (const entry of documents) {
     const id = stringField(entry, "id");
     if (id === "") continue;
-    const enabled = entry["enabled"];
+    const enabled = entry["enabled"] !== false;
     out.push({
       id,
       title: stringField(entry, "title"),
       looksFor: stringField(entry, "looksFor"),
-      enabled: typeof enabled === "boolean" ? enabled : true,
+      enabled,
+      runnable: enabled && stringField(entry, "body").trim() !== "",
     });
   }
   return out;
@@ -1873,10 +1886,16 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     */
     const performed = new Map<string, Record<string, SqlParam>>();
     for (const entry of ran) performed.set(text(entry["id"]), entry);
+    // The fields are named rather than spread: a declaration also carries whether the lens can
+    // be RUN, which is the coverage grid's business and not this roster's, and the door parses
+    // its answer strictly.
     const joined = (recipe: DeclaredRecipe): RecipeRow => {
       const entry = performed.get(recipe.id);
       return {
-        ...recipe,
+        id: recipe.id,
+        title: recipe.title,
+        looksFor: recipe.looksFor,
+        enabled: recipe.enabled,
         lastRanAt: entry === undefined ? "" : text(entry["last_ran_at"]),
         lastRunId: entry === undefined ? "" : text(entry["last_run_id"]),
         runs: entry === undefined ? 0 : count(entry["runs"]),
@@ -1891,7 +1910,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     for (const entry of ran) {
       const id = text(entry["id"]);
       if (held.has(id)) continue;
-      recipes.push(joined({ id, title: "", looksFor: "", enabled: true }));
+      recipes.push(joined({ id, title: "", looksFor: "", enabled: true, runnable: false }));
     }
     const lanes: PolicyResult["lanes"] = [];
     const shares: Record<string, string> = {
@@ -1991,6 +2010,11 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * So the walk is a bounded closure over the typed edges from each filed record, three deep,
    * and a filed record counts ONCE for a lens however many ways it reaches it. Session and
    * entity edges are excluded: a `cites` edge leads to a transcript, which carries no lens.
+   *
+   * EVERY ROW ALSO SAYS WHETHER IT CAN BE ACTED ON (#330). Reading a blank cell is not acting
+   * on one, and the surface that turns a zero into a run needs to know which zeros the launch
+   * door would accept: a lens the operator has turned off, or one his policy names without a
+   * body, is a true absence and not an offer.
    */
   const coverageOf = async (entityId: string): Promise<TopicResult["coverage"]> => {
     const recipes = await declaredRecipes();
@@ -2025,6 +2049,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       recipeId: recipe.id,
       title: recipe.title,
       records: counted.get(recipe.id) ?? 0,
+      runnable: recipe.runnable,
     }));
     coverage.sort((first, second) =>
       first.records === second.records
