@@ -1,6 +1,6 @@
 {
   "id": "atyrode.babel",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "title": "babel",
   "description": "Babel on the hub: the doors the operator rules through and the store they read. One list of every record Babel produced, ranked by what needs him; rulings, asks, answers, interest and filings as append-only acts; topics as ledger entities; runs on enrolled machines as jobs. Its data is rows — records, links, votes, filings, entities, facts — in one SQLite file of its own.",
   "capabilities": [
