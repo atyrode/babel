@@ -1,0 +1,13 @@
+# Two PRs each adding an `## [Unreleased]` bullet edit the same lines, so every landing makes
+# every other PR conflict on this file alone — three in flight cost a rebase per merge, and none
+# of those rebases resolves anything: the answer is always "keep both entries".
+#
+# Entry order carries no meaning. `.github/workflows/release.yml` extracts a version's notes by
+# taking every line between its `## [version]` heading and the next `## `, so a section is a set;
+# `AGENTS.md` asks for one bullet per user-visible change and says nothing about where it sits.
+#
+# The tradeoff, stated because `union` resolves silently: two PRs editing the SAME entry are
+# concatenated rather than conflicted, so a duplicated or half-merged bullet reaches review
+# instead of stopping the rebase. For an append-only file that is the rare case, and a duplicated
+# bullet is visible in a diff; a rebase per merge is certain and invisible in the record.
+CHANGELOG.md merge=union
