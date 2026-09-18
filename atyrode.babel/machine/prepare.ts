@@ -35,19 +35,39 @@
   a record, so nothing is ever dropped. What it is NOT, yet: v0.4.0:internal/event's classification of
   each record into §6.3's five evidence kinds, which belongs with the retrieval index that is
   its only consumer. When that lands it owns the source digest and bumps PREPARATION_SCHEMA.
+
+  THE MATERIAL IS SCANNED BEFORE IT IS SEALED (#339, SPEC §6.4). `machine/preflight.ts` replaces
+  every likely-credential span with a marker naming its class and the locator of the original,
+  and the pass is the same one: the redacted record is what the source digest covers and what the
+  sink receives, so a scan cannot disagree with the bytes a session was given. A preparation may
+  also refuse the whole scope over what was found, by class and never by value, and the receipt
+  carries the result either way — an absent report says nothing was scanned, never that a corpus
+  was clean. The only way back to a redacted value is `resolveRedaction`, which needs the log
+  this machine holds, so what crosses to the hub is a locator and a class.
 */
 
 import { z } from "zod";
 import {
   MATERIAL_SCHEMA,
+  PREFLIGHT_SCHEMA,
+  PreflightModeSchema,
   RUN_STAGES,
   materialFile,
   type MaterialEntry,
   type MaterialIndex,
+  type PreflightMode,
+  type PreflightReport,
   type Receipt,
 } from "../contract.ts";
 import { LIVE_GRACE_MS, babelOwnLog, type SessionRef } from "./adapters/index.ts";
 import type { MaterialSink, OutputSink, RecordSink } from "./output.ts";
+import {
+  PREFLIGHT_DETECTORS,
+  refusalMessage,
+  secretScan,
+  type ScanReport,
+  type SecretScan,
+} from "./preflight.ts";
 import { SILENT, type ProgressChannel } from "./progress.ts";
 
 export const PrepareInputSchema = z.strictObject({
@@ -71,6 +91,21 @@ export const PrepareInputSchema = z.strictObject({
    * selection's content, so a file whose bytes are still moving is not a scope at all.
    */
   agentSessions: z.boolean().default(false),
+  /**
+   * WHAT THIS PREPARATION DOES ABOUT A LIKELY SECRET IN THE MATERIAL (#339).
+   *
+   * `redact`, and nothing asks for anything else: no door sets this field, so the default is
+   * what every posted preparation gets, and the default is a decision rather than a fallback.
+   * Refusing a whole scope over one credential would lose the transcript in order to protect the
+   * operator from his own paste — the session that carries a stale key is usually the session
+   * worth reading — so the span is replaced with a marker naming its class, the rest of the
+   * record stays evidence, and the locator back to the original stays on this machine.
+   *
+   * `refuse` is for a scope that must not risk a disclosure at all, and `off` seals the raw
+   * stream. Both are reachable only from a job input written by hand, and both are recorded on
+   * the receipt, so an unscanned preparation is never mistaken for a clean one.
+   */
+  preflight: PreflightModeSchema.default("redact"),
 });
 export type PrepareInput = z.infer<typeof PrepareInputSchema>;
 
@@ -92,11 +127,16 @@ export interface PrepareDeps {
   discover(): Promise<readonly SessionRef[]>;
   /**
    * Both digests of one session's log, its size and its record count, from ONE pass — and, when
-   * a sink is handed, that same pass writes the normalized stream into the material (#279). The
-   * sink is a PARAMETER rather than a second verb because reading a 240 MB log twice per
-   * preparation is the only cost this operation has ever had.
+   * a sink is handed, that same pass writes the normalized stream into the material (#279); when
+   * a scan is handed, it is what the stream is written THROUGH (#339). Both are PARAMETERS
+   * rather than second verbs because reading a 240 MB log twice per preparation is the only cost
+   * this operation has ever had, and a scan that read the log a second time would have paid it.
    */
-  digests(ref: SessionRef, seal?: RecordSink | undefined): Promise<SessionDigests>;
+  digests(
+    ref: SessionRef,
+    seal?: RecordSink | undefined,
+    scan?: SecretScan | undefined,
+  ): Promise<SessionDigests>;
   /**
    * When this session's primary log was last written, in epoch ms; 0 when nothing could be
    * observed. It is asked BEFORE the digests on purpose — one `stat` against a whole read —
@@ -261,27 +301,68 @@ function writeLP(hasher: Bun.CryptoHasher, value: string): void {
  * whole reason a claim may cite a line of the material's file: the digest in the index is a
  * digest of exactly that file's contents, so a later reader recovers the bytes the model read
  * rather than the bytes the harness happened to hold when it was asked.
+ *
+ * WHICH IS WHY THE SCAN IS HERE AND NOT AFTER (#339). A redaction changes the record, so it has
+ * to happen before the source digest covers it and before the sink receives it; a scan bolted on
+ * afterwards would have produced a material whose index describes different bytes. The redacted
+ * stream is therefore what the source digest is OF, and a corpus holding a credential digests
+ * differently from the same corpus prepared raw — which is correct, and is the difference
+ * between "the corpus changed" and "our reading of it changed" the two digests exist to state.
  */
 export async function digests(
   ref: SessionRef,
   seal?: RecordSink | undefined,
+  scan?: SecretScan | undefined,
 ): Promise<SessionDigests> {
   const capture = new Bun.CryptoHasher("sha256");
   const source = new Bun.CryptoHasher("sha256");
-  const decoder = new TextDecoder();
   let bytes = 0;
   let records = 0;
+  await eachRecord(
+    ref,
+    (chunk) => {
+      capture.update(chunk);
+      bytes += chunk.byteLength;
+    },
+    (normalized) => {
+      records += 1;
+      // The ordinal is the record's line number in this stream, which is the line number the
+      // material's own file will have — so a marker's locator and the file a reader opens agree.
+      const served = scan === undefined ? normalized : scan.redact(normalized, records);
+      source.update(served);
+      seal?.write(served);
+    },
+  );
+  return {
+    captureDigest: `sha256:${capture.digest("hex")}`,
+    sourceDigest: `sha256:${source.digest("hex")}`,
+    bytes,
+    records,
+  };
+}
+
+/**
+ * One session's primary log, streamed once, as the normalized records it holds — every chunk of
+ * bytes handed to `onChunk` first, so one pass can digest the capture as well.
+ *
+ * It is a function rather than two copies of the loop because the splitting rule IS the record
+ * numbering: a second implementation that split a chunk boundary or an over-long line differently
+ * would number the same log's records differently, and a redaction's locator would then point at
+ * the wrong record. {@link digests} and {@link resolveRedaction} must agree by construction.
+ */
+async function eachRecord(
+  ref: SessionRef,
+  onChunk: (chunk: Uint8Array) => void,
+  onRecord: (normalized: string) => void,
+): Promise<void> {
+  const decoder = new TextDecoder();
   let pending = "";
   const record = (line: string): void => {
     const normalized = normalize(line);
-    if (normalized === "") return;
-    source.update(normalized);
-    records += 1;
-    seal?.write(normalized);
+    if (normalized !== "") onRecord(normalized);
   };
   for await (const chunk of Bun.file(ref.primaryPath).stream()) {
-    capture.update(chunk);
-    bytes += chunk.byteLength;
+    onChunk(chunk);
     pending += decoder.decode(chunk, { stream: true });
     let start = 0;
     for (let nl = pending.indexOf("\n"); nl >= 0; nl = pending.indexOf("\n", start)) {
@@ -296,12 +377,53 @@ export async function digests(
   }
   pending += decoder.decode();
   record(pending);
-  return {
-    captureDigest: `sha256:${capture.digest("hex")}`,
-    sourceDigest: `sha256:${source.digest("hex")}`,
-    bytes,
-    records,
-  };
+}
+
+/** What a redaction's locator recovers, and the digest saying it was recovered from the same
+ *  bytes the preparation read. */
+export interface ResolvedRedaction {
+  /** The value that was redacted. It exists only in this process, on this machine. */
+  readonly value: string;
+  /** The log's capture digest as it stands now. A reader compares it against the material
+   *  index's entry for this session: equal means the offsets still address what they addressed,
+   *  different means the log moved and this is a different corpus. */
+  readonly captureDigest: string;
+}
+
+/**
+ * WHAT A REDACTION'S LOCATOR RESOLVES AGAINST, and why it can only be resolved here (#339).
+ *
+ * A marker in the material names a class, a record and a range and carries no value; this is the
+ * only way back to the bytes, and it needs the session's own log — which lives on the machine
+ * that prepared it and nowhere else. So a receipt, a run row and a refusal can all say exactly
+ * what was found and where without any of them carrying a credential: the hub holds locators and
+ * this function holds the door, and the door is on the machine.
+ *
+ * The record is re-normalized rather than read out of the material, because the material holds
+ * the redacted stream: the value is gone from it by design. Null when this log holds no such
+ * record, or when the range is not inside it — both of which mean the log is no longer the one
+ * the preparation read, and the capture digest above is how a caller confirms that.
+ */
+export async function resolveRedaction(
+  ref: SessionRef,
+  site: { readonly line: number; readonly offset: number; readonly length: number },
+): Promise<ResolvedRedaction | null> {
+  const capture = new Bun.CryptoHasher("sha256");
+  let records = 0;
+  let found = "";
+  await eachRecord(
+    ref,
+    (chunk) => capture.update(chunk),
+    (normalized) => {
+      records += 1;
+      if (records !== site.line) return;
+      found = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
+    },
+  );
+  const captureDigest = `sha256:${capture.digest("hex")}`;
+  const end = site.offset + site.length;
+  if (found === "" || end > found.length) return null;
+  return { value: found.slice(site.offset, end), captureDigest };
 }
 
 /**
@@ -349,8 +471,19 @@ export async function prepare(
 ): Promise<Receipt> {
   const startedAt = new Date().toISOString();
   const runId = input.runId === "" ? `run_${crypto.randomUUID()}` : input.runId;
-  const counts = { discovered: 0, selected: 0, bytes: 0, records: 0, live: 0, agent: 0 };
+  const counts = {
+    discovered: 0,
+    selected: 0,
+    bytes: 0,
+    records: 0,
+    live: 0,
+    agent: 0,
+    /** Spans the secret preflight replaced, over every session in the scope (#339). */
+    redacted: 0,
+  };
   const rows: PreparedSessionRow[] = [];
+  /** What each session's scan found, folded into the receipt's report at the end. */
+  const scans: { readonly selector: string; readonly report: ScanReport }[] = [];
   /** The material's own index, built as the loop seals each session's stream. */
   const sealed: MaterialEntry[] = [];
   let preparation: Preparation | null = null;
@@ -411,9 +544,12 @@ export async function prepare(
       // half way leaves no half-written stream a later reader could mistake for a session.
       const file = materialFile(sealed.length, session.selector);
       const seal = (await deps.material?.session(file)) ?? null;
+      // NOTHING IS SEALED UNSCANNED (#339). The scan is what the stream is written THROUGH, so
+      // the redaction happens before the sink and before the source digest — see `digests`.
+      const scan = input.preflight === "off" ? null : secretScan();
       let measured;
       try {
-        measured = await deps.digests(session, seal ?? undefined);
+        measured = await deps.digests(session, seal ?? undefined, scan ?? undefined);
       } catch (err) {
         // The scope is refused whole. A preparation missing one of the sessions it was asked
         // for would be an immutable record of a corpus nobody chose.
@@ -423,6 +559,19 @@ export async function prepare(
         break;
       }
       await seal?.close();
+      if (scan !== null) {
+        const found = scan.report();
+        scans.push({ selector: session.selector, report: found });
+        counts.redacted += found.redactions;
+        if (input.preflight === "refuse" && found.redactions > 0) {
+          // The scope is refused whole, by classes and never by value. What this session already
+          // wrote into the lease is the REDACTED stream, and no index is written for a failed
+          // preparation, so the material binds nothing and holds no secret either way.
+          closure = "failed";
+          reason = refusalMessage(session.selector, found);
+          break;
+        }
+      }
       counts.bytes += measured.bytes;
       counts.records += measured.records;
       selection.push({
@@ -495,6 +644,7 @@ export async function prepare(
         }
       : null;
   if (index !== null && deps.material != null) await deps.material.index(index);
+  const preflight = preflightReport(input.preflight, scans);
   const receipt: Receipt = {
     runId,
     kind: "prepare",
@@ -505,10 +655,59 @@ export async function prepare(
     counts: { ...counts },
     ...(preparation === null ? {} : { preparation }),
     ...(index === null ? {} : { material: index }),
+    preflight,
     ...(reason === "" ? {} : { reason }),
   };
   await out.receipt(receipt);
   return receipt;
+}
+
+/** How many sites one receipt carries. The class counts above them are complete, and every
+ *  locator is in the material's own markers, so this bounds a document rather than losing
+ *  evidence: a corpus of a thousand leaky sessions must not write a receipt nobody can read. */
+const MAX_RECEIPT_SITES = 64;
+
+/**
+ * THE PREPARATION'S OWN PREFLIGHT REPORT, folded from the per-session scans.
+ *
+ * It is written for every preparation, including one that scanned nothing, because a reviewer
+ * asking "was this corpus checked before a provider read it?" must not have to read an absent
+ * field as an answer. `mode` is what was asked for and `records` is what was actually read, so
+ * `off` and "scanned and clean" cannot be confused: the first reports zero records.
+ */
+function preflightReport(
+  mode: PreflightMode,
+  scans: readonly { readonly selector: string; readonly report: ScanReport }[],
+): PreflightReport {
+  const classes = new Map<string, number>();
+  const sites: PreflightReport["sites"] = [];
+  let records = 0;
+  let redactions = 0;
+  let sitesOmitted = 0;
+  for (const scanned of scans) {
+    records += scanned.report.records;
+    redactions += scanned.report.redactions;
+    for (const row of scanned.report.classes) {
+      classes.set(row.class, (classes.get(row.class) ?? 0) + row.redactions);
+    }
+    for (const site of scanned.report.sites) {
+      if (sites.length < MAX_RECEIPT_SITES) sites.push({ ...site, selector: scanned.selector });
+      else sitesOmitted += 1;
+    }
+    sitesOmitted += scanned.report.sitesOmitted;
+  }
+  return {
+    schema: PREFLIGHT_SCHEMA,
+    detectors: PREFLIGHT_DETECTORS,
+    mode,
+    records,
+    redactions,
+    classes: [...classes.entries()]
+      .map(([name, count]) => ({ class: name, redactions: count }))
+      .sort((a, b) => (a.class < b.class ? -1 : a.class > b.class ? 1 : 0)),
+    sites,
+    sitesOmitted,
+  };
 }
 
 /** Why a session is not in a default scope; null when it belongs in one. */

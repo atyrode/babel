@@ -28,11 +28,13 @@ import {
   MATERIAL_SCHEMA,
   MATERIAL_SESSIONS,
   MaterialIndexSchema,
+  PREFLIGHT_SCHEMA,
   materialFile,
   type Receipt,
 } from "../contract.ts";
 import type { SessionRef } from "./adapters/index.ts";
 import { materialSink, type OutputFile, type OutputSink } from "./output.ts";
+import { PREFLIGHT_DETECTORS } from "./preflight.ts";
 import {
   PREPARATION_SCHEMA,
   PrepareInputSchema,
@@ -41,6 +43,7 @@ import {
   modifiedAt,
   newPreparation,
   prepare,
+  resolveRedaction,
   type PrepareDeps,
 } from "./prepare.ts";
 
@@ -92,7 +95,11 @@ function deps(over: readonly SessionRef[] = sessions): PrepareDeps {
 }
 
 async function run(
-  input: Partial<{ selectors: string[]; agentSessions: boolean }> = {},
+  input: Partial<{
+    selectors: string[];
+    agentSessions: boolean;
+    preflight: "redact" | "refuse" | "off";
+  }> = {},
   over: readonly SessionRef[] = sessions,
 ): Promise<{ receipt: Receipt; rows: readonly Record<string, unknown>[] }> {
   const recorder = new Recorder();
@@ -465,6 +472,161 @@ test("a preparation that selected nothing seals no material rather than an empty
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+/*
+  THE SECRET PREFLIGHT, AS THE OPERATION RUNS IT (#339).
+
+  `preflight.test.ts` pins the rules; what is pinned here is the property the rules exist for: a
+  credential in a session on this machine does not reach the sealed material, and a reviewer
+  reading the receipt afterwards can tell a scanned preparation from an unscanned one. The
+  fixture's key is assembled rather than written whole for the reason every fixture of this shape
+  is: a literal in the format a scanner matches is a literal a push protection rejects.
+*/
+const LEAKED_KEY = `${"AKIA"}IOSFODNN7SYNTH01`;
+
+/** A settled session holding one record with a credential in it, and the record's own text. */
+function leaky(): { readonly over: readonly SessionRef[]; readonly text: string } {
+  const session = ref("omp", "leaky");
+  const text = `deploy with aws_access_key_id ${LEAKED_KEY} and then stop`;
+  settle(session.primaryPath, `${JSON.stringify({ type: "user", text })}\n`);
+  return { over: [session], text };
+}
+
+test("a credential in a session never reaches the sealed material", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "babel-preflight-"));
+  const { over } = leaky();
+  try {
+    const receipt = await prepare(
+      PrepareInputSchema.parse({ machineId: MACHINE }),
+      new Recorder(),
+      { ...deps(over), material: materialSink(dir) },
+    );
+
+    expect(receipt.closure).toBe("completed");
+    const index = MaterialIndexSchema.parse(
+      JSON.parse(readFileSync(join(dir, MATERIAL_INDEX), "utf8")),
+    );
+    const held = index.sessions[0];
+    const body = readFileSync(join(dir, MATERIAL_SESSIONS, held?.file ?? ""), "utf8");
+    expect(body).not.toContain(LEAKED_KEY);
+    expect(body).toContain("[[babel-redacted:aws-access-key-id@1:");
+    // Still one canonical record per line, and still the digest of exactly these bytes: a
+    // redaction that broke either would have broken every citation of this session.
+    expect(JSON.stringify(JSON.parse(body.trimEnd()) as unknown)).toBe(body.trimEnd());
+    const hashed = new Bun.CryptoHasher("sha256").update(body).digest("hex");
+    expect(held?.sourceDigest).toBe(`sha256:${hashed}`);
+
+    // THE RECEIPT SAYS IT WAS SCANNED, BY WHAT, AND WHAT IT FOUND — by class, never by value.
+    expect(receipt.preflight).toEqual({
+      schema: PREFLIGHT_SCHEMA,
+      detectors: PREFLIGHT_DETECTORS,
+      mode: "redact",
+      records: 1,
+      redactions: 1,
+      classes: [{ class: "aws-access-key-id", redactions: 1 }],
+      sites: [
+        { class: "aws-access-key-id", selector: "omp/leaky", line: 1, offset: 39, length: 20 },
+      ],
+      sitesOmitted: 0,
+    });
+    expect(JSON.stringify(receipt)).not.toContain(LEAKED_KEY);
+    expect(receipt.counts["redacted"]).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the locator on a redaction recovers the original, and only on this machine", async () => {
+  const { over } = leaky();
+  const receipt = await prepare(PrepareInputSchema.parse({ machineId: MACHINE }), new Recorder(), {
+    ...deps(over),
+  });
+
+  const site = receipt.preflight?.sites[0];
+  expect(site).toBeDefined();
+  const session = over.find((candidate) => candidate.selector === site?.selector);
+  expect(session).toBeDefined();
+  const resolved =
+    session === undefined || site === undefined ? null : await resolveRedaction(session, site);
+  // The value the receipt refused to carry, recovered from the log this machine holds — which is
+  // the whole disclosure argument: the locator travels, the bytes do not.
+  expect(resolved?.value).toBe(LEAKED_KEY);
+  // And it came out of the same bytes the preparation read, which is what makes the offsets
+  // meaningful: a log that had moved would answer with a different digest.
+  expect(resolved?.captureDigest).toBe(
+    receipt.material?.sessions[0]?.captureDigest ?? "no capture digest",
+  );
+});
+
+test("a refused preparation names what it found by class, seals nothing, and quotes no value", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "babel-preflight-"));
+  const { over } = leaky();
+  try {
+    const receipt = await prepare(
+      PrepareInputSchema.parse({ machineId: MACHINE, preflight: "refuse" }),
+      new Recorder(),
+      { ...deps(over), material: materialSink(dir) },
+    );
+
+    expect(receipt.closure).toBe("failed");
+    expect(receipt.reason).toBe(
+      "secret preflight refused omp/leaky: aws-access-key-id (1); values are never named",
+    );
+    expect(receipt.reason).not.toContain(LEAKED_KEY);
+    // No index, so nothing is bound into a session's sandbox — and what the refused pass did
+    // write into the lease is the redacted stream, not the log.
+    expect(receipt.material).toBeUndefined();
+    expect(existsSync(join(dir, MATERIAL_INDEX))).toBe(false);
+    const held = materialFile(0, "omp/leaky");
+    expect(readFileSync(join(dir, MATERIAL_SESSIONS, held), "utf8")).not.toContain(LEAKED_KEY);
+    // And the refusal is still countable by class: a reviewer acts on "an AWS key id", not on
+    // "something was found".
+    expect(receipt.preflight?.classes).toEqual([{ class: "aws-access-key-id", redactions: 1 }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unscanned preparation says so, because an absent answer would read as a clean one", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "babel-preflight-"));
+  const { over } = leaky();
+  try {
+    const receipt = await prepare(
+      PrepareInputSchema.parse({ machineId: MACHINE, preflight: "off" }),
+      new Recorder(),
+      { ...deps(over), material: materialSink(dir) },
+    );
+
+    expect(receipt.closure).toBe("completed");
+    expect(receipt.preflight?.mode).toBe("off");
+    // Zero records READ is what distinguishes this from a scan that found nothing, and it is why
+    // the field is written at all rather than omitted when no rule ran.
+    expect(receipt.preflight?.records).toBe(0);
+    expect(receipt.preflight?.redactions).toBe(0);
+    const index = MaterialIndexSchema.parse(
+      JSON.parse(readFileSync(join(dir, MATERIAL_INDEX), "utf8")),
+    );
+    const body = readFileSync(join(dir, MATERIAL_SESSIONS, index.sessions[0]?.file ?? ""), "utf8");
+    expect(body).toContain(LEAKED_KEY);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a corpus with nothing to redact prepares to the same identity scanned or not", async () => {
+  // The source digest is taken over the bytes the scan produced, so a scanner that rewrote a
+  // clean record — a dropped newline, a re-serialisation — would move the id of every
+  // preparation in the corpus and orphan every citation of it.
+  const scanned = await run();
+  const unscanned = await run({ preflight: "off" });
+
+  expect(idOf(scanned.receipt)).toBe(idOf(unscanned.receipt));
+  // And the two are still distinguishable, which is the point of the field: one read the records
+  // and found nothing, the other never looked.
+  expect(scanned.receipt.preflight?.records).toBeGreaterThan(0);
+  expect(scanned.receipt.preflight?.redactions).toBe(0);
+  expect(unscanned.receipt.preflight?.records).toBe(0);
 });
 
 function idOf(receipt: Receipt): string {

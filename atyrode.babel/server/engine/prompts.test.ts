@@ -175,6 +175,12 @@ test("the material section describes the layout the machine half actually writes
   expect(prompt).toContain("job_1_material");
   // The evidence rule the locator check above enforces, said to the model in writing.
   expect(prompt).toContain('"digest" is that entry\'s "sourceDigest"');
+  // AND THE MARKER THE SCAN LEAVES BEHIND (#339). The material can contain one, so the
+  // description has to say what it is: a model meeting an unexplained marker either cites it as
+  // content or reconstructs what it hid from the words around it, and the second is the failure
+  // the redaction exists to prevent.
+  expect(prompt).toContain("[[babel-redacted:<class>@<line>:<offset>+<length>]]");
+  expect(prompt).toContain("Infer nothing about what a marker contained");
   // And no tool block: Babel runs no session, so there is nothing to call.
   expect(prompt).not.toContain("## Tools");
   expect(PROMPT_VERSION).toBe("babel.analysis-prompt/3");
