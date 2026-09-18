@@ -89,6 +89,27 @@ describe("the roster", () => {
       expect(entry.action.caps).toEqual(["containers:read"]);
       expect(entry.action.title).not.toBe("");
     }
+    /*
+      THE TWO READS A CYCLE FOLLOWS ARE LENT WHAT THAT CYCLE SPENDS, and the other seven are lent
+      nothing. `jobs:read` is the ingestion behind a wake; `machines:read` is the describe
+      `reconcileSchedule` registers the loop's cadence from, delegable since
+      atyrode/manifold#740. Neither is a cap: a reader asking for his own pulse holds
+      `containers:read` and is asked for nothing else, which the loop above has just pinned.
+    */
+    const cycled = ["jobs:read", "machines:read"];
+    const lent: Record<string, readonly string[]> = {};
+    for (const entry of doors) lent[entry.action.name] = [...(entry.action.delegates ?? [])];
+    expect(lent).toEqual({
+      [ACTIONS.feed]: [],
+      [ACTIONS.record]: [],
+      [ACTIONS.thread]: [],
+      [ACTIONS.topics]: [],
+      [ACTIONS.topic]: [],
+      [ACTIONS.pulse]: cycled,
+      [ACTIONS.runs]: cycled,
+      [ACTIONS.run]: [],
+      [ACTIONS.policy]: [],
+    });
     // The roster publishes the plugin's own prefix, which is what a button's `action` spells.
     expect(door(ACTIONS.feed)).toBe("atyrode.babel.feed");
   });
