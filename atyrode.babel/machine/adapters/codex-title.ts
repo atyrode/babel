@@ -71,7 +71,12 @@ export interface TitleEvidence {
   requestFallback: string;
 }
 
-export const NO_THREAD_SOURCE: ThreadSource = { role: "", spawn: false, agentPath: "", agentRole: "" };
+export const NO_THREAD_SOURCE: ThreadSource = {
+  role: "",
+  spawn: false,
+  agentPath: "",
+  agentRole: "",
+};
 
 export function decodeThreadSource(raw: unknown): ThreadSource {
   if (typeof raw !== "object" || raw === null) return NO_THREAD_SOURCE;
@@ -160,7 +165,7 @@ function titleFromRequest(text: string): string {
 function lastSection(text: string): string {
   if (!isMarkdownHeading(firstContentLine(text))) return text;
   let last = -1;
-  for (let i = 0; i < text.length; ) {
+  for (let i = 0; i < text.length;) {
     const newline = text.indexOf("\n", i);
     const end = newline < 0 ? text.length : newline;
     if (isMarkdownHeading(text.slice(i, end).trim())) last = end;
@@ -171,7 +176,7 @@ function lastSection(text: string): string {
 }
 
 function firstContentLine(text: string): string {
-  for (let i = 0; i < text.length; ) {
+  for (let i = 0; i < text.length;) {
     const newline = text.indexOf("\n", i);
     const end = newline < 0 ? text.length : newline;
     const line = text.slice(i, end).trim();
@@ -293,7 +298,8 @@ export function truncateUtf8(text: string, bytes: number): string {
  */
 export function messageText(payload: Record<string, unknown>): string {
   const message = payload["message"];
-  if (typeof message === "string" && message !== "") return truncateUtf8(message, MAX_REQUEST_BYTES);
+  if (typeof message === "string" && message !== "")
+    return truncateUtf8(message, MAX_REQUEST_BYTES);
   const content = payload["content"];
   if (typeof content === "string") return truncateUtf8(content, MAX_REQUEST_BYTES);
   if (!Array.isArray(content)) return "";
@@ -321,7 +327,7 @@ export function messageText(payload: Record<string, unknown>): string {
  */
 export function injectedBlock(text: string): boolean {
   let headings = 0;
-  for (let i = 0; i < text.length; ) {
+  for (let i = 0; i < text.length;) {
     const newline = text.indexOf("\n", i);
     const end = newline < 0 ? text.length : newline;
     const line = text.slice(i, end).trim();

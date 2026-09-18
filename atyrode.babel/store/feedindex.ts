@@ -39,14 +39,7 @@ import {
   type PostKind,
 } from "../contract.ts";
 import { standingOf } from "./acts.ts";
-import {
-  ageWord,
-  feedWhy,
-  risingRank,
-  URGENCY,
-  WINDOW_MS,
-  type Ranked,
-} from "./rank.ts";
+import { ageWord, feedWhy, risingRank, URGENCY, WINDOW_MS, type Ranked } from "./rank.ts";
 
 /** The reserved topic naming the posts nothing has said anything about (§4.13). */
 export const TOPIC_UNFILED = "unfiled";
@@ -343,7 +336,15 @@ async function readEntityFacts(db: PluginDatabase): Promise<Map<string, EntityFa
     const entityId = text(row["entity_id"]);
     let held = out.get(entityId);
     if (held === undefined) {
-      held = { lifecycle: "", analysisPolicy: "", remote: "", paths: [], reason: "", by: "", at: "" };
+      held = {
+        lifecycle: "",
+        analysisPolicy: "",
+        remote: "",
+        paths: [],
+        reason: "",
+        by: "",
+        at: "",
+      };
       out.set(entityId, held);
     }
     const value = text(row["value"]);
@@ -451,7 +452,10 @@ async function readFilings(
       const at = text(row["created_at"]);
       const written = count(row["written"]);
       const standing = held.get(entityId);
-      if (standing !== undefined && (standing.at > at || (standing.at === at && standing.written > written))) {
+      if (
+        standing !== undefined &&
+        (standing.at > at || (standing.at === at && standing.written > written))
+      ) {
         return;
       }
       held.set(entityId, { at, written, filed: count(row["withdrawn"]) === 0 });
@@ -541,8 +545,14 @@ async function readTallies(db: PluginDatabase): Promise<Map<string, Tally>> {
     let held = out.get(recordId);
     if (held === undefined) {
       held = {
-        support: 0, oppose: 0, unsure: 0, contested: false, comments: 0,
-        lastActivity: 0, activity: [], votes: [],
+        support: 0,
+        oppose: 0,
+        unsure: 0,
+        contested: false,
+        comments: 0,
+        lastActivity: 0,
+        activity: [],
+        votes: [],
       };
       out.set(recordId, held);
     }
@@ -564,8 +574,14 @@ async function readTallies(db: PluginDatabase): Promise<Map<string, Tally>> {
       // by-role split, exactly as a grant that carried no role at all is: crediting it to a role
       // nobody authorized it for is how a bare vote comes to read as a satisfied evidence check.
       const stored = text(row["role"]);
-      const role = REVIEW_ROLES.includes(stored) ? (stored as FeedPost["votes"][number]["role"]) : "";
-      votes.set(`${recordId}\u0000${text(row["run_id"])}\u0000${stored}`, { record: recordId, role, vote });
+      const role = REVIEW_ROLES.includes(stored)
+        ? (stored as FeedPost["votes"][number]["role"])
+        : "";
+      votes.set(`${recordId}\u0000${text(row["run_id"])}\u0000${stored}`, {
+        record: recordId,
+        role,
+        vote,
+      });
       tally.activity.push(at);
     }
     for (let said = count(row["prose"]); said > 0; said--) {
@@ -604,8 +620,14 @@ async function readTallies(db: PluginDatabase): Promise<Map<string, Tally>> {
   for (const tally of out.values()) {
     tally.votes.sort((left, right) =>
       left.role === right.role
-        ? left.vote < right.vote ? -1 : left.vote > right.vote ? 1 : 0
-        : left.role < right.role ? -1 : 1,
+        ? left.vote < right.vote
+          ? -1
+          : left.vote > right.vote
+            ? 1
+            : 0
+        : left.role < right.role
+          ? -1
+          : 1,
     );
   }
 
@@ -777,9 +799,7 @@ function questionEntry(
     topics: [],
   };
   const head =
-    state === "open"
-      ? (QUESTION_CLASS_WAITS[questionClass] ?? "curiosity")
-      : QUESTION_WAITS[state];
+    state === "open" ? (QUESTION_CLASS_WAITS[questionClass] ?? "curiosity") : QUESTION_WAITS[state];
   if (head === undefined) return entry;
   post.awaiting = true;
   post.why = feedWhy(head, `asked ${ageWord(nowMs - createdAt)}`);
@@ -848,7 +868,8 @@ export function filterFeed(
     if (needs && !entry.post.awaiting) continue;
     if (query.topic !== "" && !inTopic(entry, query.topic)) continue;
     if (since > 0 && entry.createdAt < since) continue;
-    if (query.sort === "rising" && risingRank(entry.activity, entry.createdAt, nowMs) === 0) continue;
+    if (query.sort === "rising" && risingRank(entry.activity, entry.createdAt, nowMs) === 0)
+      continue;
     out.push(entry);
   }
   return out;

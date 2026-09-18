@@ -12,16 +12,16 @@ historical capture restores byte-exactly.
 **There is no `babel` binary.** Babel is a Manifold plugin family; the standalone Go command was
 retired with the rest of the product. What replaced each half:
 
-| was | is |
-|---|---|
-| `babel archive push` | the `atyrode.babel.archive` machine operation, run as a Manifold job |
-| `babel archive status` | the same operation's receipt, and `runs`/`sessions` in the store |
-| `babel sessions list` | the `atyrode.babel.scan` machine operation, and Babel's own surfaces |
-| `babel web` | the Feed and Watch panels in Manifold |
-| `babel archive verify` | `restic check` — see below |
-| `babel sessions fetch` | `restic restore` — see below |
-| `babel archive fleet` | nothing; a deployment is one hub |
-| `babel storage configure` | the deployment's storage document, owned by dotfiles/clan |
+| was                       | is                                                                   |
+| ------------------------- | -------------------------------------------------------------------- |
+| `babel archive push`      | the `atyrode.babel.archive` machine operation, run as a Manifold job |
+| `babel archive status`    | the same operation's receipt, and `runs`/`sessions` in the store     |
+| `babel sessions list`     | the `atyrode.babel.scan` machine operation, and Babel's own surfaces |
+| `babel web`               | the Feed and Watch panels in Manifold                                |
+| `babel archive verify`    | `restic check` — see below                                           |
+| `babel sessions fetch`    | `restic restore` — see below                                         |
+| `babel archive fleet`     | nothing; a deployment is one hub                                     |
+| `babel storage configure` | the deployment's storage document, owned by dotfiles/clan            |
 
 ## Backing up
 

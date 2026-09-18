@@ -41,7 +41,7 @@
 
 import { z } from "zod";
 import type { GuestDatabase, GuestSqlParam, GuestSqlRow } from "@manifold/plugin-kit";
-import type { INTEREST_STATES} from "../contract.ts";
+import type { INTEREST_STATES } from "../contract.ts";
 import { CodeProfileSchema, ROLES } from "../contract.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
@@ -161,7 +161,11 @@ const PolicyRecipeSchema = z.strictObject({
   title: z.string().max(400).optional(),
   looksFor: z.string().max(2_000).optional(),
   enabled: z.boolean().optional(),
-  body: z.string().trim().min(1).max(64 * 1024),
+  body: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64 * 1024),
 });
 
 /**
@@ -241,7 +245,8 @@ export const DEFAULT_POLICY: Policy = PolicySchema.parse({});
  */
 export function validatePolicy(policy: Policy, concurrentJobs: number | null): string | null {
   if (policy.version.trim() === "") return "a policy has no version";
-  if (policy.cadenceSeconds <= 0) return `cadence ${String(policy.cadenceSeconds)}s must be positive`;
+  if (policy.cadenceSeconds <= 0)
+    return `cadence ${String(policy.cadenceSeconds)}s must be positive`;
   if (policy.overdueSeconds <= 0) {
     return `overdue threshold ${String(policy.overdueSeconds)}s must be positive`;
   }
@@ -300,7 +305,8 @@ export function validatePolicy(policy: Policy, concurrentJobs: number | null): s
   if (policy.review !== undefined) {
     const ids = new Set<string>();
     for (const recipe of policy.review.recipes) {
-      if (ids.has(recipe.id)) return `review recipe ${JSON.stringify(recipe.id)} appears more than once`;
+      if (ids.has(recipe.id))
+        return `review recipe ${JSON.stringify(recipe.id)} appears more than once`;
       if (recipe.enabled === false) {
         return `review recipe ${JSON.stringify(recipe.id)} is disabled but remains in the dispatch route`;
       }
@@ -547,7 +553,11 @@ export interface Assignment {
 }
 
 export type DrawResult =
-  | { readonly outcome: "assignment"; readonly assignment: Assignment; readonly gaps: readonly Gap[] }
+  | {
+      readonly outcome: "assignment";
+      readonly assignment: Assignment;
+      readonly gaps: readonly Gap[];
+    }
   | { readonly outcome: "gap"; readonly gap: Stop; readonly gaps: readonly Gap[] };
 
 export interface DrawRequest {
@@ -620,7 +630,6 @@ export interface BindRequest {
 export type BindResult =
   | { readonly outcome: "bound"; readonly claim: Claim }
   | { readonly outcome: "refused"; readonly refusal: Refusal };
-
 
 /**
  * A fence as its holder has it. Every caller of the three verbs below reads the fence out of a
@@ -1555,7 +1564,10 @@ export function coordinator(
         }
       }
 
-      if (lifecycle !== undefined && (lifecycle.status === "superseded" || lifecycle.status === "retired")) {
+      if (
+        lifecycle !== undefined &&
+        (lifecycle.status === "superseded" || lifecycle.status === "retired")
+      ) {
         gaps.push({
           recordId: head.id,
           role: "",
@@ -1582,7 +1594,13 @@ export function coordinator(
         // work — and its existence is why an empty backlog is not the same as nothing to sample.
         let revisit = false;
         if (facts.reviews >= policy.initialReviews && !materialChange) {
-          if (role !== "reception" || standing === "accept" || standing === "reject" || standing === "duplicate") continue;
+          if (
+            role !== "reception" ||
+            standing === "accept" ||
+            standing === "reject" ||
+            standing === "duplicate"
+          )
+            continue;
           revisit = true;
         }
         if (held.active > 0) {
@@ -1909,7 +1927,9 @@ export function coordinator(
     }
 
     const inputDigest = digest(
-      candidates.map((candidate) => `${candidate.head.id}:${candidate.role}:${String(candidate.ordinal)}`),
+      candidates.map(
+        (candidate) => `${candidate.head.id}:${candidate.role}:${String(candidate.ordinal)}`,
+      ),
     );
     const seed =
       request.seed ?? BigInt(`0x${digest([request.runId, String(moment), inputDigest])}`);
@@ -1926,8 +1946,7 @@ export function coordinator(
     // reservation drew them, so a cycle can say how much went to arguing about disagreement, to
     // deciding what a record is about, and to working through what was deferred.
     const chosen = sampled.chosen;
-    const lane: Lane =
-      chosen.lane ?? (chosen.role === "challenge" ? "challenge" : sampled.lane);
+    const lane: Lane = chosen.lane ?? (chosen.role === "challenge" ? "challenge" : sampled.lane);
 
     return {
       outcome: "assignment",

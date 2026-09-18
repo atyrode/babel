@@ -61,7 +61,9 @@ describe("the list", () => {
     // "never ruled on" is dropped: fifteen rows opening with the same four words say nothing.
     expect(view.one('[data-post="pro_0000000a"] .babel-why').textContent).toBe("waiting 3d");
     // The unreviewed finding carries the ring and no figure.
-    expect(view.one('[data-post="fnd_0000000b"] .babel-dot').getAttribute("data-tone")).toBe("none");
+    expect(view.one('[data-post="fnd_0000000b"] .babel-dot').getAttribute("data-tone")).toBe(
+      "none",
+    );
     expect(view.all('[data-post="fnd_0000000b"] .babel-score')).toHaveLength(0);
     // A row nobody is waiting on offers no acts and states no reason.
     expect(view.all('[data-post="fnd_0000000b"] [data-ruling]')).toHaveLength(0);
@@ -91,11 +93,9 @@ describe("the list", () => {
   test("a question row offers the three answers and no rulings", async () => {
     const fake = hub();
     const view = await mount(<HomePanel host={fake.host} />);
-    expect(view.all('[data-post="qst_0000000c"] [data-answer]').map((button) => button.textContent)).toEqual([
-      "Answer",
-      "I don't know",
-      "Stop asking",
-    ]);
+    expect(
+      view.all('[data-post="qst_0000000c"] [data-answer]').map((button) => button.textContent),
+    ).toEqual(["Answer", "I don't know", "Stop asking"]);
     expect(view.all('[data-post="qst_0000000c"] [data-ruling]')).toHaveLength(0);
     await view.unmount();
   });
@@ -234,7 +234,9 @@ describe("ruling", () => {
     await view.key("j");
     await view.key("y");
     expect(fake.to("rule")).toHaveLength(0);
-    expect(view.one('[data-post="pro_0000000a"] .babel-confirm').textContent).toContain("Endorse this record");
+    expect(view.one('[data-post="pro_0000000a"] .babel-confirm').textContent).toContain(
+      "Endorse this record",
+    );
     await view.unmount();
   });
 
@@ -255,7 +257,13 @@ describe("ruling", () => {
         id: "pro_0000000a",
         standing: "accepted",
         seq: 8,
-        plan: { kind: "topic", operation: "create", applied: true, declined: false, entityId: "ent_0000dead" },
+        plan: {
+          kind: "topic",
+          operation: "create",
+          applied: true,
+          declined: false,
+          entityId: "ent_0000dead",
+        },
       }),
     });
     const view = await mount(<HomePanel host={fake.host} />);
@@ -433,10 +441,9 @@ describe("the rail", () => {
       "Working on it",
       "Nothing said",
     ]);
-    expect(view.all(".babel-topic-list button").map((row) => row.getAttribute("data-topic"))).toEqual([
-      "ent_0000beef",
-      "ent_0000cafe",
-    ]);
+    expect(
+      view.all(".babel-topic-list button").map((row) => row.getAttribute("data-topic")),
+    ).toEqual(["ent_0000beef", "ent_0000cafe"]);
     await view.press('[data-topic="ent_0000cafe"]');
     expect(looking().topic).toBe("ent_0000cafe");
     await view.unmount();
@@ -471,7 +478,9 @@ describe("the rail", () => {
         }),
     });
     const view = await mount(<HomePanel host={fake.host} />);
-    expect(view.one(".babel-topic-why").textContent).toContain("four records cite the same checkout");
+    expect(view.one(".babel-topic-why").textContent).toContain(
+      "four records cite the same checkout",
+    );
     await view.press('[data-proposal="pro_0000ffff"]');
     await view.settle();
     expect(fake.last("rule")).toEqual({ id: "pro_0000ffff", ruling: "accept", note: "" });
@@ -488,7 +497,13 @@ describe("what the last read did", () => {
     expect(fake.to("feed")).toHaveLength(1);
     answer = feed({
       posts: [
-        post({ id: "hyp_0000000e", kind: "hypothesis", title: "Restic prune has never run", awaiting: false, why: "" }),
+        post({
+          id: "hyp_0000000e",
+          kind: "hypothesis",
+          title: "Restic prune has never run",
+          awaiting: false,
+          why: "",
+        }),
         post({ score: 4 }),
         ...feed().posts.slice(1),
       ],
@@ -500,7 +515,9 @@ describe("what the last read did", () => {
     await view.wait(120);
     expect(fake.to("feed")).toHaveLength(2);
     expect(view.one('[data-post="hyp_0000000e"]').hasAttribute("data-arrived")).toBe(true);
-    expect(view.one('[data-post="pro_0000000a"] .babel-score').hasAttribute("data-ticked")).toBe(true);
+    expect(view.one('[data-post="pro_0000000a"] .babel-score').hasAttribute("data-ticked")).toBe(
+      true,
+    );
     expect(view.one('[data-post="pro_0000000a"] .babel-score').textContent).toBe("4");
     await view.unmount();
   });

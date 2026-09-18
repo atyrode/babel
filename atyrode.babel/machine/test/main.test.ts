@@ -25,11 +25,21 @@ interface Run {
 
 async function runMachine(args: readonly string[], env: Record<string, string> = {}): Promise<Run> {
   const outputDir = await mkdtemp(join(tmpdir(), "babel-out-"));
-  const child = Bun.spawn(["bun", MAIN, ...args.map((arg) => (arg === "%OUT%" ? outputDir : arg))], {
-    env: { ...process.env, HOME: home, CODEX_HOME: join(home, "no-codex"), ...env, BABEL_JOB_OUTPUT_DIR: env["BABEL_JOB_OUTPUT_DIR"] === "%OUT%" ? outputDir : (env["BABEL_JOB_OUTPUT_DIR"] ?? "") },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const child = Bun.spawn(
+    ["bun", MAIN, ...args.map((arg) => (arg === "%OUT%" ? outputDir : arg))],
+    {
+      env: {
+        ...process.env,
+        HOME: home,
+        CODEX_HOME: join(home, "no-codex"),
+        ...env,
+        BABEL_JOB_OUTPUT_DIR:
+          env["BABEL_JOB_OUTPUT_DIR"] === "%OUT%" ? outputDir : (env["BABEL_JOB_OUTPUT_DIR"] ?? ""),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -69,7 +79,9 @@ test("a scan run through argv writes its outputs and prints its receipt", async 
   expect(receipt.closure).toBe("completed");
   expect(receipt.counts["sessions"]).toBe(1);
 
-  const rows = (await Bun.file(join(run.outputDir, JOB_OUTPUT_FILES.sessions)).json()) as SessionCatalogRow[];
+  const rows = (await Bun.file(
+    join(run.outputDir, JOB_OUTPUT_FILES.sessions),
+  ).json()) as SessionCatalogRow[];
   expect(rows).toHaveLength(1);
   expect(rows[0]?.selector).toBe("omp/-home-alex-babel/2026-09-06T12-00-00-000Z_cccc");
   expect(rows[0]?.host).toBe("dev-01");
@@ -110,7 +122,13 @@ test("an operation that throws still leaves a receipt, and exits nonzero", async
 });
 
 test("an input document that is not readable JSON fails as a run, with a receipt", async () => {
-  const run = await runMachine(["scan", "--input", join(home, "no-such-input.json"), "--out", "%OUT%"]);
+  const run = await runMachine([
+    "scan",
+    "--input",
+    join(home, "no-such-input.json"),
+    "--out",
+    "%OUT%",
+  ]);
   expect(run.code).toBe(1);
   const receipt = (await Bun.file(join(run.outputDir, JOB_OUTPUT_FILES.receipt)).json()) as Receipt;
   expect(receipt.closure).toBe("failed");
@@ -151,8 +169,12 @@ test("the material lease is argv's, and only prepare's manifest declares one", (
 
 test("argv that names no operation is a usage failure, not a default", () => {
   expect(() => parseArgv(["--input", "/in.json", "--out", "/out"])).toThrow("no operation named");
-  expect(() => parseArgv(["sacn", "--input", "/in.json", "--out", "/out"])).toThrow("unknown operation sacn");
-  expect(() => parseArgv(["scan", "extra", "--input", "/in.json", "--out", "/out"])).toThrow("unexpected argument extra");
+  expect(() => parseArgv(["sacn", "--input", "/in.json", "--out", "/out"])).toThrow(
+    "unknown operation sacn",
+  );
+  expect(() => parseArgv(["scan", "extra", "--input", "/in.json", "--out", "/out"])).toThrow(
+    "unexpected argument extra",
+  );
   expect(() => parseArgv(["scan", "--out", "/out", "--verbose"])).toThrow("unknown flag --verbose");
   expect(() => parseArgv(["scan", "--input"])).toThrow("--input needs a path");
 });

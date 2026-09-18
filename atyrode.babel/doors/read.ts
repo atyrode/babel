@@ -121,7 +121,9 @@ export function readDoors(store: BabelStore): readonly Door[] {
         // calling it a hypothesis. It is refused by name and reached from the records that cite
         // it, until `RecordPeelSchema`'s post can carry a record kind.
         if (id.startsWith("obs_")) {
-          return { refused: `${id} is an observation: evidence for the records that cite it, not a post` };
+          return {
+            refused: `${id} is an observation: evidence for the records that cite it, not a post`,
+          };
         }
         const peeled = await store.record(id);
         // A record this deployment does not hold is a refusal naming the identifier rather than

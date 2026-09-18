@@ -2,7 +2,14 @@ import { useState, type FormEvent, type ReactElement } from "react";
 import type { HostServices } from "@manifold/plugin";
 import { Cluster, Stack } from "@manifold/ui";
 import { ACTIONS } from "../contract.ts";
-import { ask, refusal, since, type ThreadAct, type ThreadComment, type ThreadResult } from "./api.ts";
+import {
+  ask,
+  refusal,
+  since,
+  type ThreadAct,
+  type ThreadComment,
+  type ThreadResult,
+} from "./api.ts";
 
 /*
   THE CONVERSATION UNDER THE POST (§8.7).
@@ -114,7 +121,11 @@ export function Thread({
     setWorking(true);
     setFailure("");
     try {
-      await ask(host, ACTIONS.comment, { id, text: written, kind: asking ? "question" : "comment" });
+      await ask(host, ACTIONS.comment, {
+        id,
+        text: written,
+        kind: asking ? "question" : "comment",
+      });
       setText("");
       onPosted();
     } catch (reason) {
@@ -125,7 +136,11 @@ export function Thread({
   }
 
   const entries: Entry[] = [
-    ...(thread?.comments ?? []).map((comment): Entry => ({ kind: "comment", at: stamp(comment.at), comment })),
+    ...(thread?.comments ?? []).map((comment): Entry => ({
+      kind: "comment",
+      at: stamp(comment.at),
+      comment,
+    })),
     ...(thread?.acts ?? []).map((act): Entry => ({ kind: "act", at: stamp(act.at), act })),
   ].sort((left, right) => right.at - left.at);
   const shown = all ? entries : entries.slice(0, COMMENT_PAGE);
@@ -134,12 +149,16 @@ export function Thread({
     <Stack className="babel-thread" gap="var(--babel-space-3)">
       <h2 className="babel-thread-head">
         The conversation
-        {thread !== null && <span className="babel-peel-count">{thread.total.toLocaleString()}</span>}
+        {thread !== null && (
+          <span className="babel-peel-count">{thread.total.toLocaleString()}</span>
+        )}
       </h2>
 
       <form className="babel-comment-box" onSubmit={(event) => void submit(event)}>
         <label>
-          {asking ? "What must Babel's next review of this record answer?" : "Your reason, kept verbatim"}
+          {asking
+            ? "What must Babel's next review of this record answer?"
+            : "Your reason, kept verbatim"}
           <textarea
             value={text}
             rows={2}

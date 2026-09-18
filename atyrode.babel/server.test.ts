@@ -230,8 +230,13 @@ function served(slice: Jobs, name: string): Jobs {
 /** A run of this plugin's whose job is still RUNNING: the only case progress can be folded for. */
 async function watched(): Promise<void> {
   await insert(harness.db, "runs", {
-    id: "run_watched", kind: OPERATIONS.explore, machine_id: MACHINE, job_id: "job_running",
-    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+    id: "run_watched",
+    kind: OPERATIONS.explore,
+    machine_id: MACHINE,
+    job_id: "job_running",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null }),
   });
 }
 
@@ -254,13 +259,26 @@ function settled(over: Partial<SettledJob> = {}): SettledJob {
 async function pending(): Promise<void> {
   const { db } = harness;
   await insert(db, "runs", {
-    id: "run_live", kind: OPERATIONS.evaluate, machine_id: MACHINE, job_id: "job_live",
-    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+    id: "run_live",
+    kind: OPERATIONS.evaluate,
+    machine_id: MACHINE,
+    job_id: "job_live",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null }),
   });
   await insert(db, "claims", {
-    id: "asg_live", record_id: RECORD, role: "reception", lane: "coverage", policy_version: "p1",
-    job_id: "job_live", run_id: "cyc_1", fence: 1, reserved_cost: 0.0625,
-    granted_at: stamp(NOW - HOUR), expires_at: stamp(NOW + HOUR),
+    id: "asg_live",
+    record_id: RECORD,
+    role: "reception",
+    lane: "coverage",
+    policy_version: "p1",
+    job_id: "job_live",
+    run_id: "cyc_1",
+    fence: 1,
+    reserved_cost: 0.0625,
+    granted_at: stamp(NOW - HOUR),
+    expires_at: stamp(NOW + HOUR),
   });
 }
 
@@ -279,15 +297,27 @@ beforeEach(async () => {
   // and `sessions.host` — a host NAME on an imported corpus — is not an identifier the hub can
   // be asked about.
   await insert(harness.db, "policies", {
-    version: "p1", seq: 1, actor_id: "operator", reason: "on",
+    version: "p1",
+    seq: 1,
+    actor_id: "operator",
+    reason: "on",
     payload: JSON.stringify({
-      enabled: true, perCycleCost: 0.25, batchSize: 4, dailyCost: 2,
+      enabled: true,
+      perCycleCost: 0.25,
+      batchSize: 4,
+      dailyCost: 2,
       review: {
         machineId: MACHINE,
         profile: { containerId: "ctr_workbench", expectedRevision: 1 },
         roleRecipes: {
-          reception: "triage", evidence: "triage", challenge: "triage", comparison: "triage",
-          outcome: "triage", relevance: "triage", filing: "triage", backlog: "triage",
+          reception: "triage",
+          evidence: "triage",
+          challenge: "triage",
+          comparison: "triage",
+          outcome: "triage",
+          relevance: "triage",
+          filing: "triage",
+          backlog: "triage",
         },
         recipes: [{ id: "triage", version: 1, body: "Assess the assigned record." }],
       },
@@ -353,7 +383,12 @@ test("the doors an operator watches run a cycle; the ones he reads with do not",
   await pending();
   const ctx = context(harness.db as unknown as GuestDatabase, jobs);
 
-  await plugin.handlers[ACTIONS.feed]?.(ctx, { sort: "new", window: "day", limit: 5, offset: 0 } as never);
+  await plugin.handlers[ACTIONS.feed]?.(ctx, {
+    sort: "new",
+    window: "day",
+    limit: 5,
+    offset: 0,
+  } as never);
   expect(jobs.statuses).toBe(0);
   expect(await closure()).toBeNull();
 
@@ -478,8 +513,13 @@ test("a second dispatch inside the floor is the same wake, not another cycle", a
   // A fresh run for the cycle past the floor: the first one it closed, so what proves the
   // third dispatch woke the loop is the second run it read back.
   await insert(harness.db, "runs", {
-    id: "run_next", kind: OPERATIONS.evaluate, machine_id: MACHINE, job_id: "job_next",
-    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+    id: "run_next",
+    kind: OPERATIONS.evaluate,
+    machine_id: MACHINE,
+    job_id: "job_next",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null }),
   });
   const later = context(harness.db as unknown as GuestDatabase, jobs, at + 30_000);
   await plugin.handlers[ACTIONS.runs]?.(later, { limit: 25, offset: 0 } as never);
@@ -543,8 +583,12 @@ test("enabling a store made before the catalog's two columns adds them and keeps
   await db.run(`ALTER TABLE sessions DROP COLUMN live`);
   await db.run(`ALTER TABLE sessions DROP COLUMN kind`);
   await insert(db, "sessions", {
-    selector: "omp/older", host: MACHINE, harness: "omp", source_id: "older",
-    title: "catalogued before the columns existed", seen_at: stamp(NOW - HOUR),
+    selector: "omp/older",
+    host: MACHINE,
+    harness: "omp",
+    source_id: "older",
+    title: "catalogued before the columns existed",
+    seen_at: stamp(NOW - HOUR),
   });
 
   await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
@@ -558,8 +602,14 @@ test("enabling a store made before the catalog's two columns adds them and keeps
 
   // And a row in the shape `scan` writes now lands, which is the whole point of the column.
   await insert(db, "sessions", {
-    selector: "omp/run-7/explore", host: MACHINE, harness: "omp", source_id: "run-7/explore",
-    title: "babel explore pass", live: 1, kind: "agent", seen_at: stamp(NOW),
+    selector: "omp/run-7/explore",
+    host: MACHINE,
+    harness: "omp",
+    source_id: "run-7/explore",
+    title: "babel explore pass",
+    live: 1,
+    kind: "agent",
+    seen_at: stamp(NOW),
   });
 
   // A second enable is the ordinary case — it runs on every one — and must do nothing.

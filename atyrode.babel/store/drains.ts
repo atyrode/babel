@@ -142,7 +142,8 @@ export interface DrainKnobs {
    * refuses `profile_required` at the seam, which is the honest answer — a Code session needs a
    * Code profile, and Babel has no model of its own to fall back on.
    */
-  readonly profile?: { readonly containerId: string; readonly expectedRevision: number } | undefined;
+  readonly profile?:
+    { readonly containerId: string; readonly expectedRevision: number } | undefined;
 }
 
 /**
@@ -291,7 +292,9 @@ function knobsOf(text: string): DrainKnobs {
  */
 function rowOf(row: DrainDbRow): DrainRow {
   if (!PRESETS.includes(row.preset)) {
-    throw new Error(`drain ${row.id} names the preset ${row.preset}, which is not one a drain runs`);
+    throw new Error(
+      `drain ${row.id} names the preset ${row.preset}, which is not one a drain runs`,
+    );
   }
   if (!STATES.includes(row.state)) {
     throw new Error(`drain ${row.id} is in the state ${row.state}, which is not one a drain has`);
@@ -349,7 +352,10 @@ export async function activeDrains(store: DrainsStore): Promise<readonly DrainRo
 }
 
 /** The newest drains, running or ended: what a panel opening cold has to show. */
-export async function recentDrains(store: DrainsStore, limit: number): Promise<readonly DrainRow[]> {
+export async function recentDrains(
+  store: DrainsStore,
+  limit: number,
+): Promise<readonly DrainRow[]> {
   const rows = await store.db.query<DrainDbRow>(
     `SELECT ${COLUMNS} FROM drains ORDER BY started_at DESC, id DESC LIMIT ?`,
     [limit],
@@ -563,7 +569,8 @@ type DrainRunRow = {
  */
 function settledOf(row: DrainRunRow): SettledRun {
   const held = parsed(row.payload);
-  const receipt = held === null || typeof held !== "object" ? {} : (held as Record<string, unknown>);
+  const receipt =
+    held === null || typeof held !== "object" ? {} : (held as Record<string, unknown>);
   const reason = typeof receipt["reason"] === "string" ? receipt["reason"] : null;
   const refusal = reason === null ? null : refusalCode(reason);
   const metered = receipt["inference"];
@@ -675,7 +682,8 @@ export function sample(
   const anchor = at - RATE_WINDOW_MS;
   const inWindow = next.filter((entry) => entry.at >= anchor);
   const older = next.filter((entry) => entry.at < anchor);
-  const kept = older.length === 0 ? inWindow : [older[older.length - 1] as DrainSample, ...inWindow];
+  const kept =
+    older.length === 0 ? inWindow : [older[older.length - 1] as DrainSample, ...inWindow];
   return kept.length > MAX_SAMPLES ? kept.slice(kept.length - MAX_SAMPLES) : kept;
 }
 

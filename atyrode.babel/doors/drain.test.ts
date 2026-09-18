@@ -52,8 +52,6 @@ const NOW = Date.UTC(2026, 8, 14, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
 const MACHINE = "m-dev-01";
 
-
-
 const LIMITS = {
   timeoutMs: 3_600_000,
   memoryBytes: 2_147_483_648,
@@ -139,7 +137,6 @@ const code: CodeEngine & {
   },
 };
 
-
 const PLAN: RunPlan = { metered: { [OPERATIONS.explore]: true }, limits: LIMITS };
 
 const READY: MachineReadiness = {
@@ -220,7 +217,11 @@ let fleet: Fleet;
 let doors: readonly Door[];
 let deps: DrainDeps;
 
-const ctx = { principal: { id: "operator" }, auth: { isRoot: true }, emit: () => {} } as unknown as GuestCtx;
+const ctx = {
+  principal: { id: "operator" },
+  auth: { isRoot: true },
+  emit: () => {},
+} as unknown as GuestCtx;
 
 async function dispatch(name: string, args: unknown): Promise<Record<string, unknown>> {
   const found = doors.find((entry) => entry.action.name === name);
@@ -272,14 +273,19 @@ async function halt(drainId: string, reason = ""): Promise<Record<string, unknow
 async function statusOf(drainId: string): Promise<Record<string, unknown>> {
   const answer = await dispatch(ACTIONS.drainStatus, { drainId });
   const drains = answer["drains"];
-  if (!Array.isArray(drains) || drains[0] === undefined) throw new Error(`no status for ${drainId}`);
+  if (!Array.isArray(drains) || drains[0] === undefined)
+    throw new Error(`no status for ${drainId}`);
   return drains[0] as Record<string, unknown>;
 }
 
 /** A job of this drain settled, the way the conductor writes one: the meter's own totals. */
 async function settleJob(
   runId: string,
-  over: { readonly costMicros?: number; readonly outputTokens?: number; readonly reason?: string } = {},
+  over: {
+    readonly costMicros?: number;
+    readonly outputTokens?: number;
+    readonly reason?: string;
+  } = {},
 ): Promise<void> {
   await harness.db.run(
     `UPDATE runs SET closure = 'completed', finished_at = ?, cost_usd = ?, tokens = ?, payload = ?
@@ -537,7 +543,6 @@ test("a start posts the whole fan, moves no policy number, and names the account
   expect(await harness.db.query(`SELECT id FROM budgets`)).toEqual([]);
   expect(await harness.db.query(`SELECT version FROM policies`)).toHaveLength(1);
 
-
   // The row remembers what it must relaunch with: the account, the fan, and the preset's knobs.
   const row = await readDrain(harness.store, drainId);
   expect(row?.state).toBe("running");
@@ -588,7 +593,9 @@ test("a drain without a target is refused, and so is a second drain on the same 
     String((await start({ target: { deadline: new Date(NOW - 1000).toISOString() } }))["refused"]),
   ).toMatch(/already passed/);
   // `keep-going` reaches no model, so a cost target on it could never be met.
-  expect(String((await start({ preset: "keep-going" }))["refused"])).toMatch(/give this drain a deadline/);
+  expect(String((await start({ preset: "keep-going" }))["refused"])).toMatch(
+    /give this drain a deadline/,
+  );
 
   expect((await start())["launched"]).toBe(2);
   expect(String((await start())["refused"])).toMatch(/is already draining under drn_/);
@@ -687,10 +694,12 @@ test("the target stops the drain and it closes on the job it cancelled, ending w
 
 test("a deadline that has passed stops the drain even while it is under its cost target", async () => {
   const drainId = String(
-    (await start({
-      concurrent: 1,
-      target: { costMicros: 1_000_000_000, deadline: new Date(NOW + 1000).toISOString() },
-    }))["drainId"],
+    (
+      await start({
+        concurrent: 1,
+        target: { costMicros: 1_000_000_000, deadline: new Date(NOW + 1000).toISOString() },
+      })
+    )["drainId"],
   );
   harness.at(NOW + 2000);
   const [report] = await drainTick(deps);
@@ -782,7 +791,9 @@ test("a stop the hub will not honour keeps the job, and its later receipt still 
     them nobody's: their receipts never reached `spent`, `closures` or `jobsSettled`, and the
     panel's final total — §11.5's "final totals from usage.inference" — was short by their spend.
   */
-  const drainId = String((await start({ concurrent: 2, target: { costMicros: 500_000 } }))["drainId"]);
+  const drainId = String(
+    (await start({ concurrent: 2, target: { costMicros: 500_000 } }))["drainId"],
+  );
   code.cancelRefusal = "jobs:cancel capability required at target";
   await settleJob(`run_${drainId}_0`, { costMicros: 600_000 });
 
@@ -809,7 +820,9 @@ test("a stop the hub will not honour keeps the job, and its later receipt still 
 });
 
 test("an operator's stop cancels the stragglers of a drain that already closed itself", async () => {
-  const drainId = String((await start({ concurrent: 2, target: { costMicros: 500_000 } }))["drainId"]);
+  const drainId = String(
+    (await start({ concurrent: 2, target: { costMicros: 500_000 } }))["drainId"],
+  );
   code.cancelRefusal = "jobs:cancel capability required at target";
   await settleJob(`run_${drainId}_0`, { costMicros: 600_000 });
   await drainTick(deps);
@@ -911,7 +924,9 @@ test("a stop that lands mid-launch keeps the job the hub already took, and ends 
 });
 
 test("the status folds the live spend, the rate over the last three minutes, and the ETA", async () => {
-  const drainId = String((await start({ concurrent: 2, target: { costMicros: 4_000_000 } }))["drainId"]);
+  const drainId = String(
+    (await start({ concurrent: 2, target: { costMicros: 4_000_000 } }))["drainId"],
+  );
 
   // What the conductor folds out of a running job's replay ring (#261) is where a live spend
   // comes from, so the rows are written the way it writes them.
@@ -955,8 +970,13 @@ test("the status folds the live spend, the rate over the last three minutes, and
 });
 
 test("a refused submission is counted as spend with a result, not as a free failure", async () => {
-  const drainId = String((await start({ concurrent: 1, target: { costMicros: 9_000_000 } }))["drainId"]);
-  await settleJob(`run_${drainId}_0`, { costMicros: 300_000, reason: "schema: no outcome on the claim" });
+  const drainId = String(
+    (await start({ concurrent: 1, target: { costMicros: 9_000_000 } }))["drainId"],
+  );
+  await settleJob(`run_${drainId}_0`, {
+    costMicros: 300_000,
+    reason: "schema: no outcome on the claim",
+  });
   await drainTick(deps);
   const row = await readDrain(harness.store, drainId);
   expect(row?.refusals).toEqual({ schema: 1 });
@@ -1015,7 +1035,9 @@ test("a job the hub already holds under this id is taken back rather than re-pos
   fleet.refusal = "job_digest_conflict";
 
   const [report] = await drainTick(deps);
-  expect(report?.notes.join(" ")).toMatch(/was already posted by an earlier tick, and is taken back/);
+  expect(report?.notes.join(" ")).toMatch(
+    /was already posted by an earlier tick, and is taken back/,
+  );
   expect(report?.launched).toBe(1);
   const row = await readDrain(harness.store, drainId);
   expect(row?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1_material`]);
@@ -1151,10 +1173,10 @@ test("over the real launch path a drain's fan seals material, and the settle wak
     `UPDATE runs SET closure = 'completed', finished_at = ?, payload = ? WHERE job_id = ?`,
     [stamp(NOW), sealedMaterial(), `job_${drainId}_1_material`],
   );
-  await harness.db.run(
-    `UPDATE runs SET closure = 'stopped', finished_at = ? WHERE id = ?`,
-    [stamp(NOW), `run_${drainId}_1`],
-  );
+  await harness.db.run(`UPDATE runs SET closure = 'stopped', finished_at = ? WHERE id = ?`, [
+    stamp(NOW),
+    `run_${drainId}_1`,
+  ]);
   expect(await machinery.postPrepared(fleet, deps.engine, PLAN)).toEqual([]);
   expect(code.posted).toHaveLength(1);
 });

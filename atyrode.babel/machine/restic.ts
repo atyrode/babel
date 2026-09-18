@@ -68,10 +68,9 @@ export const ResticStorageSchema = z
   .refine((storage) => (storage.accessKeyId === "") === (storage.secretAccessKey === ""), {
     message: "an object-store credential is two values or none",
   })
-  .refine(
-    (storage) => !storage.repository.startsWith("s3:") || storage.accessKeyId !== "",
-    { message: "an s3: repository needs an object-store credential" },
-  );
+  .refine((storage) => !storage.repository.startsWith("s3:") || storage.accessKeyId !== "", {
+    message: "an s3: repository needs an object-store credential",
+  });
 export type ResticStorage = z.infer<typeof ResticStorageSchema>;
 
 /** How long the storage document may take to arrive. The service is a loopback listener the
@@ -207,7 +206,10 @@ export interface Repo {
   init(): Promise<boolean>;
   /** Snapshots `paths` under `host` with `tags`. Paths are recorded as given, so they should
    *  be absolute. */
-  backup(paths: readonly string[], attribution: { host: string; tags: readonly string[] }): Promise<BackupOutcome>;
+  backup(
+    paths: readonly string[],
+    attribution: { host: string; tags: readonly string[] },
+  ): Promise<BackupOutcome>;
   /** Every snapshot the repository holds, restic's own order (newest last). */
   snapshots(): Promise<readonly Snapshot[]>;
 }
@@ -383,7 +385,12 @@ class ResticRepo implements Repo {
       // exit code said.
       throw new ResticError("exit", "restic backup produced no summary", code, tail.toString());
     }
-    return { ...summary, items: fromStdout.items, incomplete: code === EXIT_INCOMPLETE, unreadable };
+    return {
+      ...summary,
+      items: fromStdout.items,
+      incomplete: code === EXIT_INCOMPLETE,
+      unreadable,
+    };
   }
 
   async snapshots(): Promise<readonly Snapshot[]> {
@@ -421,7 +428,12 @@ class ResticRepo implements Repo {
     ]);
     const code = await child.exited;
     if (code !== 0) {
-      throw new ResticError("exit", `restic ${operation} failed (exit ${code})`, code, tail.toString());
+      throw new ResticError(
+        "exit",
+        `restic ${operation} failed (exit ${code})`,
+        code,
+        tail.toString(),
+      );
     }
     return stdout;
   }
@@ -477,7 +489,10 @@ interface StreamReport {
  * Unparseable lines are skipped rather than fatal: a torn line, a message type this reader
  * does not know, or a wrapper's own noise must not fail a backup restic considers successful.
  */
-async function consume(stream: ReadableStream<Uint8Array>, tail: Tail | null): Promise<StreamReport> {
+async function consume(
+  stream: ReadableStream<Uint8Array>,
+  tail: Tail | null,
+): Promise<StreamReport> {
   const report: StreamReport = { summary: null, items: [], unreadable: [] };
   for await (const line of readLines(stream)) {
     if (tail !== null) tail.push(line);

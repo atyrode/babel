@@ -126,18 +126,14 @@ export interface JobRunState {
      * the run row's `tokens` and `cost_usd` at settle, in preference to the receipt's own
      * numbers — the receipt is the engine's word about itself, this is the meter's (#261).
      */
-    readonly usage?:
-      | { readonly inference?: InferenceUsage | undefined }
-      | null
-      | undefined;
+    readonly usage?: { readonly inference?: InferenceUsage | undefined } | null | undefined;
   } | null;
   /** WHY A POSTING WAS REFUSED, which is never in `result`: a job refused at admission never
    *  ran and has no result at all. The hub's own word for it — `concurrency_limit` when the
    *  operation's declared `limits.concurrentJobs` is full — is on the authority decision
    *  (`PublicJobSchema.authority`), which the kit's own `GuestJobStatus` does not restate. */
   readonly authority?:
-    | { readonly decision?: { readonly refusal: string | null } | null | undefined }
-    | undefined;
+    { readonly decision?: { readonly refusal: string | null } | null | undefined } | undefined;
 }
 
 /** One job's metered inference, restated so the loop compiles against the slice. */
@@ -384,7 +380,6 @@ export interface ConductorDeps {
 }
 
 // ---------------------------------------------------------------------------- the report
-
 
 export type ScheduleState = "registered" | "kept" | "unregistered" | "absent";
 
@@ -861,7 +856,7 @@ function field(header: Uint8Array, at: number, length: number): string {
 
 export function tarMembers(bytes: Uint8Array): TarMember[] {
   const members: TarMember[] = [];
-  for (let offset = 0; offset + 512 <= bytes.length; ) {
+  for (let offset = 0; offset + 512 <= bytes.length;) {
     const header = bytes.subarray(offset, offset + 512);
     if (header.every((byte) => byte === 0)) break;
     const digits = field(header, 124, 12);
@@ -1138,7 +1133,10 @@ export async function ingestOutputs(
     }
     let written = 0;
     for (const row of document) {
-      const shaped = typeof row === "object" && row !== null && !Array.isArray(row) ? (row as Record<string, unknown>) : null;
+      const shaped =
+        typeof row === "object" && row !== null && !Array.isArray(row)
+          ? (row as Record<string, unknown>)
+          : null;
       // What a machine half wrote is accepted under the contract it was prompted with: the
       // submission validator the engine's schema is generated from is the one that runs here, so
       // a producer and a store cannot disagree about one payload (#263, post-mortem F8). The
@@ -1383,7 +1381,8 @@ export function conductor(deps: ConductorDeps): Conductor {
    */
   async function silence(runId: string, held: number, seen: boolean): Promise<number> {
     const next = seen ? 0 : held + 1;
-    if (next !== held) await store.db.run(`UPDATE runs SET unreadable = ? WHERE id = ?`, [next, runId]);
+    if (next !== held)
+      await store.db.run(`UPDATE runs SET unreadable = ? WHERE id = ?`, [next, runId]);
     return next;
   }
 
@@ -1512,7 +1511,10 @@ export function conductor(deps: ConductorDeps): Conductor {
    * accounting written once. A refusal is reported rather than thrown: the claim moved on under
    * a later fence, which is somebody else's live work and not this cycle's to close.
    */
-  async function release(claim: { id: string; fence: Fence }, reason: string): Promise<SettledClaim> {
+  async function release(
+    claim: { id: string; fence: Fence },
+    reason: string,
+  ): Promise<SettledClaim> {
     const abandoned = await coordinator.abandon({ id: claim.id, fence: claim.fence, reason });
     return {
       claimId: claim.id,
@@ -1708,7 +1710,6 @@ export function conductor(deps: ConductorDeps): Conductor {
     return { provider, identityKey };
   }
 
-
   function jsonRecord(value: string | null): Record<string, unknown> | undefined {
     if (value === null || value === "") return undefined;
     try {
@@ -1803,7 +1804,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     let skippedResult = false;
     let refusedContributions: RefusedContribution[] = [];
     let submittedPayload: unknown = null;
-    let acceptedRows: Readonly<Record<string, readonly Record<string, string | number | null>[]>> = {};
+    let acceptedRows: Readonly<Record<string, readonly Record<string, string | number | null>[]>> =
+      {};
     const projection = await project(preparation.recordId);
     if (session === null) {
       reason =
@@ -1863,8 +1865,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           const refused = refuseRow(ingest.table, row);
           const statement = refused === null ? rowStatement(ingest, row, liveAuthority) : null;
           if (refused !== null || statement === null) {
-            reason =
-              `${refused?.code ?? REFUSALS.schema}: ${refused?.message ?? `${file} contains a row outside the store schema`}`;
+            reason = `${refused?.code ?? REFUSALS.schema}: ${refused?.message ?? `${file} contains a row outside the store schema`}`;
             break;
           }
           statements.push(statement);
@@ -1878,7 +1879,13 @@ export function conductor(deps: ConductorDeps): Conductor {
       for (const key of Object.keys(counts)) delete counts[key];
     }
     const receiptClosure: Receipt["closure"] =
-      reason === "" ? (skippedResult ? "skipped" : "completed") : session === null ? reportedClosure : "failed";
+      reason === ""
+        ? skippedResult
+          ? "skipped"
+          : "completed"
+        : session === null
+          ? reportedClosure
+          : "failed";
     const base: Receipt = {
       runId: run.id,
       kind: "evaluate",
@@ -1981,7 +1988,13 @@ export function conductor(deps: ConductorDeps): Conductor {
     });
     if (!authorized) return;
     const outcome =
-      reason === "" ? (skippedResult ? "skipped" : "completed") : session === null ? "skipped" : "failed";
+      reason === ""
+        ? skippedResult
+          ? "skipped"
+          : "completed"
+        : session === null
+          ? "skipped"
+          : "failed";
     const finished = await coordinator.finish({
       id: preparation.assignmentId,
       runId: claimRunId,
@@ -2420,7 +2433,8 @@ export function conductor(deps: ConductorDeps): Conductor {
         // sub-second, so the word alone would read one turn's clock across three of them.
         const moved =
           frame.data.stage !== folded.stage ||
-          (frame.data.stage === RUN_STAGES.atModel && (frame.data.message ?? "") !== folded.message);
+          (frame.data.stage === RUN_STAGES.atModel &&
+            (frame.data.message ?? "") !== folded.message);
         if (moved) {
           folded.stage = frame.data.stage;
           folded.since = new Date(frame.data.at).toISOString();
@@ -2894,7 +2908,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       if (drawn.outcome === "gap") return { stop: drawn.gap, gaps };
       const assignment: Assignment = drawn.assignment;
       const recipeId = route.roleRecipes[assignment.role];
-      const recipe = route.recipes.find((candidate) => candidate.id === recipeId) as Recipe | undefined;
+      const recipe = route.recipes.find((candidate) => candidate.id === recipeId) as
+        Recipe | undefined;
       if (recipe === undefined) {
         const detail = `the ${assignment.role} role names recipe ${JSON.stringify(recipeId)}, which policy ${policy.version} does not carry`;
         refused.push({
@@ -3189,14 +3204,7 @@ export function conductor(deps: ConductorDeps): Conductor {
 
       const dispatched =
         parked === null
-          ? await dispatchReviews(
-              policy,
-              at,
-              cycleRunId,
-              requested,
-              settled,
-              refused,
-            )
+          ? await dispatchReviews(policy, at, cycleRunId, requested, settled, refused)
           : { stop: null, gaps: [] as readonly Gap[] };
       const stop = dispatched.stop;
       const gaps = dispatched.gaps;

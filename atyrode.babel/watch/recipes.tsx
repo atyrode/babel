@@ -44,7 +44,9 @@ export function Recipes({ recipes, now, note }: RecipesProps) {
                   <span className="plugin-atyrode_babel_watch__recipe-name">
                     {recipe.title === "" ? recipe.id : recipe.title}
                   </span>
-                  {recipe.enabled ? null : <span className="plugin-atyrode_babel_watch__off">off</span>}
+                  {recipe.enabled ? null : (
+                    <span className="plugin-atyrode_babel_watch__off">off</span>
+                  )}
                 </Cluster>
                 <span className="plugin-atyrode_babel_watch__mono plugin-atyrode_babel_watch__muted">
                   {recipe.lastRanAt === "" ? "never run" : `ran ${since(recipe.lastRanAt, now)}`} ·{" "}
@@ -52,7 +54,9 @@ export function Recipes({ recipes, now, note }: RecipesProps) {
                 </span>
               </Cluster>
               <p className="plugin-atyrode_babel_watch__recipe-looks">
-                {recipe.looksFor === "" ? "The policy carries no description for this one." : recipe.looksFor}
+                {recipe.looksFor === ""
+                  ? "The policy carries no description for this one."
+                  : recipe.looksFor}
               </p>
             </Stack>
           </li>

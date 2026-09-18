@@ -92,7 +92,10 @@ test("the packed machine half runs the argv its manifest declares", async () => 
   const input = join(work, "input");
   const outputs = join(work, "outputs");
   const roots = join(work, "roots");
-  await Bun.write(artifact, Buffer.from(bundles[BABEL_PLUGIN_ID]?.files["machine.js"] ?? "", "base64"));
+  await Bun.write(
+    artifact,
+    Buffer.from(bundles[BABEL_PLUGIN_ID]?.files["machine.js"] ?? "", "base64"),
+  );
   await Bun.write(input, JSON.stringify({ machineId: "bundle-test", roots: [roots] }));
   const argv = (machine?.operations[OPERATIONS.scan]?.argv ?? []).map((slot) => {
     const literal = "literal" in slot ? slot.literal : "";

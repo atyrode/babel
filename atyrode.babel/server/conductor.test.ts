@@ -75,13 +75,18 @@ import {
 const temporaries: string[] = [];
 
 afterEach(() => {
-  for (const directory of temporaries.splice(0)) rmSync(directory, { recursive: true, force: true });
+  for (const directory of temporaries.splice(0))
+    rmSync(directory, { recursive: true, force: true });
 });
 
 function openDatabase(): PluginDatabase {
   const directory = mkdtempSync(join(tmpdir(), "babel-conductor-"));
   temporaries.push(directory);
-  const db = new Database(join(directory, "data.db"), { create: true, strict: true, safeIntegers: true });
+  const db = new Database(join(directory, "data.db"), {
+    create: true,
+    strict: true,
+    safeIntegers: true,
+  });
   // The options and pragmas the engine opens a plugin's file with (`server/src/plugin-database.ts`),
   // so the triggers, the STRICT tables, the foreign keys and — `safeIntegers` — the BIGINT every
   // INTEGER column answers with behave here exactly as they do in the hub.
@@ -101,7 +106,8 @@ function openDatabase(): PluginDatabase {
     batch: async (statements: readonly SqlStatement[]) =>
       db.transaction(() =>
         statements.map(
-          (statement) => db.prepare(statement.sql).all(...(bind(statement.params) as never[])) as SqlRow[],
+          (statement) =>
+            db.prepare(statement.sql).all(...(bind(statement.params) as never[])) as SqlRow[],
         ),
       )(),
   };
@@ -209,7 +215,13 @@ function progressed(seq: number, at: number, stage: string, message?: string): F
 
 function called(
   seq: number,
-  over: Partial<{ model: string; inputTokens: number; outputTokens: number; cachedInputTokens: number; costMicros: number }> = {},
+  over: Partial<{
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    costMicros: number;
+  }> = {},
 ): FollowEvent {
   return {
     seq,
@@ -384,7 +396,8 @@ class Fleet implements JobsSlice {
     this.followed.push(node.jobId);
     const frames = job.journal.slice(-FOLLOW_RING);
     const firstSeq = frames[0]?.seq ?? null;
-    const missingThrough = firstSeq === null ? (job.journal[job.journal.length - 1]?.seq ?? 0) : firstSeq - 1;
+    const missingThrough =
+      firstSeq === null ? (job.journal[job.journal.length - 1]?.seq ?? 0) : firstSeq - 1;
     return {
       snapshot: {
         events: frames,
@@ -766,10 +779,12 @@ class Draws {
     fence: Fence;
     jobId: string;
   }): Promise<Record<string, unknown>> {
-    await this.db.run(
-      `UPDATE claims SET job_id = ? WHERE id = ? AND run_id = ? AND fence = ?`,
-      [request.jobId, request.id, request.runId, request.fence],
-    );
+    await this.db.run(`UPDATE claims SET job_id = ? WHERE id = ? AND run_id = ? AND fence = ?`, [
+      request.jobId,
+      request.id,
+      request.runId,
+      request.fence,
+    ]);
     const rows = await this.db.query<{
       record_id: string;
       role: string;
@@ -825,7 +840,11 @@ class Draws {
 
   /** `coordinator.abandon`, doing what the real one does: closes the row and charges the
    *  reservation, because a job that died mid-review cannot say what it spent. */
-  async abandon(request: { id: string; fence: Fence; reason: string }): Promise<Record<string, unknown>> {
+  async abandon(request: {
+    id: string;
+    fence: Fence;
+    reason: string;
+  }): Promise<Record<string, unknown>> {
     this.abandoned.push(request);
     const rows = await this.db.query<{ reserved_cost: number }>(
       `SELECT reserved_cost FROM claims WHERE id = ? AND fence = ? AND finished_at IS NULL`,
@@ -991,7 +1010,10 @@ function outputs(runId: string): Record<string, unknown> {
         // A real submission, because the store now accepts an assessment's payload under the
         // same contract the engine was prompted with: a row whose column said `support` while
         // its payload stated no vote at all is the producer/store drift #263 closes.
-        payload: JSON.stringify({ vote: "support", uncertainty: "the second criterion is untested" }),
+        payload: JSON.stringify({
+          vote: "support",
+          uncertainty: "the second criterion is untested",
+        }),
         recorded_at: at,
       },
     ],
@@ -1219,13 +1241,16 @@ test("a running job's stage and spend are folded out of its replay ring, and the
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   await inFlight(db, fleet);
   // The job says where it is and the owner meters two calls against it. This is served through
@@ -1234,7 +1259,12 @@ test("a running job's stage and spend are folded out of its replay ring, and the
   fleet.journals("job_asg_a1b2", [
     progressed(1, started, RUN_STAGES.preparing, "reception: composing the prompt"),
     progressed(4, started + 20_000, RUN_STAGES.atModel, "reception"),
-    called(6, { inputTokens: 12_000, outputTokens: 900, cachedInputTokens: 400, costMicros: 250_000 }),
+    called(6, {
+      inputTokens: 12_000,
+      outputTokens: 900,
+      cachedInputTokens: 400,
+      costMicros: 250_000,
+    }),
     called(9, {
       model: "claude-sonnet-4",
       inputTokens: 400,
@@ -1285,8 +1315,19 @@ test("a running job's stage and spend are folded out of its replay ring, and the
   fleet.journals("job_asg_a1b2", [
     progressed(1, started, RUN_STAGES.preparing, "reception: composing the prompt"),
     progressed(4, started + 20_000, RUN_STAGES.atModel, "reception"),
-    called(6, { inputTokens: 12_000, outputTokens: 900, cachedInputTokens: 400, costMicros: 250_000 }),
-    called(9, { model: "claude-sonnet-4", inputTokens: 400, outputTokens: 100, cachedInputTokens: 0, costMicros: 30_000 }),
+    called(6, {
+      inputTokens: 12_000,
+      outputTokens: 900,
+      cachedInputTokens: 400,
+      costMicros: 250_000,
+    }),
+    called(9, {
+      model: "claude-sonnet-4",
+      inputTokens: 400,
+      outputTokens: 100,
+      cachedInputTokens: 0,
+      costMicros: 30_000,
+    }),
     progressed(11, started + 72_000, RUN_STAGES.atModel, "challenge"),
   ]);
   clock = started + 75_000;
@@ -1339,13 +1380,16 @@ test("a metered job at the model with nothing metered for ninety seconds is stal
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
   await inFlight(db, fleet);
   fleet.journals("job_asg_a1b2", [progressed(2, started, RUN_STAGES.atModel, "reception")]);
 
@@ -1380,15 +1424,18 @@ test("a job at the model that nothing meters is never called stalled", async () 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  // The deployment this repository actually is: the review lane binds no inference service,
-  // so nothing will ever meter a call of it (#256).
-  plan: UNMETERED_PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    // The deployment this repository actually is: the review lane binds no inference service,
+    // so nothing will ever meter a call of it (#256).
+    plan: UNMETERED_PLAN,
+    now: () => clock,
+  });
   await inFlight(db, fleet);
   fleet.journals("job_asg_a1b2", [progressed(2, started, RUN_STAGES.atModel, "reception")]);
 
@@ -1460,13 +1507,16 @@ test("a running job that has said nothing has no in-flight row to read", async (
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
   await inFlight(db, fleet);
 
   // The ring holds nothing — a job the owner has not launched yet, or one inside the five-second
@@ -1503,13 +1553,16 @@ test("a settled job's every output file lands in the store, and its run and clai
   const fleet = new Fleet();
   const draws = new Draws(db);
   draws.review = ROUTE;
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   // A review already in flight, because no cycle posts one (#279). The machine finishes and
   // seals its files; the cycle that polls the job ingests them.
@@ -1591,9 +1644,7 @@ test("a settled job's every output file lands in the store, and its run and clai
       outcome: "completed",
     },
   ]);
-  const claim = await db.query(
-    `SELECT actual_cost, outcome FROM claims WHERE id = 'clm_asg_a1b2'`,
-  );
+  const claim = await db.query(`SELECT actual_cost, outcome FROM claims WHERE id = 'clm_asg_a1b2'`);
   expect(claim[0]).toEqual({ actual_cost: 0.42, outcome: "completed" });
 });
 
@@ -1603,13 +1654,16 @@ test("a job that died with no receipt abandons its claim at the reservation and 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   await inFlight(db, fleet);
   fleet.finish("job_asg_a1b2", 3, null);
@@ -1653,13 +1707,16 @@ test("a job the hub cancelled abandons its claim on the next tick", async () => 
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   await inFlight(db, fleet);
   // The operator stops a running review — or the machine's agent dies and the hub interrupts
@@ -1699,13 +1756,16 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
   const fleet = new Fleet();
   const draws = new Draws(db);
   draws.review = ROUTE;
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   const registering = await loop.tick();
   expect(registering.schedule).toBe("registered");
@@ -1779,13 +1839,16 @@ test("the beat is registered by machine id, and the name a session row holds is 
   fleet.enrolled = [MACHINE];
   const draws = new Draws(db);
   draws.review = ROUTE;
-  const loop = conductor({ engine: NO_CODE, store: openStore(db),
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   // AN IMPORTED CORPUS holds the host NAME on both columns the loop used to read for machines:
   // `sessions.host` from the seed, and `runs.machine_id`, which the same importer writes from
@@ -1819,13 +1882,16 @@ test("a cycle with no usable host for the beat says which machine it tried and w
   const fleet = new Fleet();
   fleet.enrolled = [MACHINE];
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store: openStore(db),
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   // AN ENABLED POLICY THAT NAMES NO MACHINE has no id to register a cadence on, and says so.
   // Reporting `absent` in silence here is what let a whole feature disappear: the cycle looked
@@ -1874,13 +1940,16 @@ test("folders catalogued under a host name are named in a note, not silently nev
   const folders = new Folders();
   const draws = new Draws(db);
   draws.review = ROUTE;
-  const loop = conductor({ engine: NO_CODE, store: openStore(db),
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: folders,
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: folders,
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   // An imported row: a real absolute workspace, recorded against the operator's host NAME.
   // `engine.machines.repository` is keyed on the machine id, so there is nobody to ask about it.
@@ -1947,7 +2016,9 @@ test("an assessment the review contract refuses is not written, and the run stil
   // rule the Go store and the Go review contract disagreed about (#263, post-mortem F8).
   const files = outputs("run_drift");
   const drifted = (files[JOB_OUTPUT_FILES.assessments] as Record<string, unknown>[])[0] ?? {};
-  files[JOB_OUTPUT_FILES.assessments] = [{ ...drifted, payload: JSON.stringify({ environment: "dev-01" }) }];
+  files[JOB_OUTPUT_FILES.assessments] = [
+    { ...drifted, payload: JSON.stringify({ environment: "dev-01" }) },
+  ];
   fleet.execute({
     jobId: "job_drift",
     machineId: "dev-01",
@@ -1972,7 +2043,9 @@ test("an assessment the review contract refuses is not written, and the run stil
   expect(await db.query(`SELECT id FROM assessments`, [])).toEqual([]);
   // The row was refused; the RUN was not. Its receipt is what settles the claim, with the cost.
   expect(result.receipt?.costUsd).toBe(0.42);
-  expect(await db.query(`SELECT cost_usd FROM runs WHERE id = 'run_drift'`, [])).toEqual([{ cost_usd: 0.42 }]);
+  expect(await db.query(`SELECT cost_usd FROM runs WHERE id = 'run_drift'`, [])).toEqual([
+    { cost_usd: 0.42 },
+  ]);
   // Everything else the job wrote still landed: one refused row is not a refused output.
   expect(result.rows[JOB_OUTPUT_FILES.records]).toBe(1);
 });
@@ -1984,13 +2057,16 @@ test("the beat's own job is ingested although the hub never requested it", async
   const fleet = new Fleet();
   const draws = new Draws(db);
   draws.review = ROUTE;
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
   // A scan the schedule started: no run row, and a run id the machine minted for itself.
   fleet.beat("schedule-abc", MACHINE, {
     [JOB_OUTPUT_FILES.sessions]: [
@@ -2107,7 +2183,9 @@ test("an output larger than one served chunk is read whole, and a row the table 
   expect(result.skipped).toBe(2);
   const counted = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM records`);
   expect(counted[0]?.n).toBe(601n);
-  const edges = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM edges WHERE id = 'edg_bad'`);
+  const edges = await db.query<{ n: bigint }>(
+    `SELECT COUNT(*) AS n FROM edges WHERE id = 'edg_bad'`,
+  );
   expect(edges[0]?.n).toBe(0n);
 });
 
@@ -2117,13 +2195,16 @@ test("a new policy version re-registers the beat instead of leaving two firing",
   const fleet = new Fleet();
   const draws = new Draws(db);
   draws.review = ROUTE;
-  const loop = conductor({ engine: NO_CODE, store: openStore(db),
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   await loop.tick();
   draws.version = "pol_2";
@@ -2142,13 +2223,16 @@ test("an output the hub cannot read closes its run instead of being retried for 
   const fleet = new Fleet();
   const draws = new Draws(db);
   draws.review = ROUTE;
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   await inFlight(db, fleet);
   fleet.seal("job_asg_a1b2", Buffer.alloc(1024, 0x41));
@@ -2183,13 +2267,16 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
   const folders = new Folders();
   const draws = new Draws(db);
   draws.review = ROUTE;
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: folders,
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: folders,
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   // A beat's catalogue of the machine the policy routes to: two sessions of one checkout, one
   // of a folder that is not a repository, and one whose "workspace" is Claude's lossy
@@ -2258,10 +2345,7 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
 
   expect(identified.ingested).toEqual([]);
   expect(identified.notes).toEqual([]);
-  expect(folders.asked).toEqual([
-    `${MACHINE}:/home/alex/babel`,
-    `${MACHINE}:/home/alex/notes`,
-  ]);
+  expect(folders.asked).toEqual([`${MACHINE}:/home/alex/babel`, `${MACHINE}:/home/alex/notes`]);
   expect(await catalogue()).toEqual([
     { selector: "claude/d", identity: null, remote: null, reason: "workspace absent on this host" },
     {
@@ -2291,13 +2375,16 @@ test("the reaper releases a grant whose job was never posted, once its lease has
   await seed(db);
   const store = openStore(db);
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: new Fleet(),
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   // A grant nothing will ever match `WHERE job_id = ?`: the cycle that took it died between the
   // claim and the posting. One inside its lease, one past it.
@@ -2345,13 +2432,16 @@ test("a run closed by another path leaves no claim behind: the reaper takes it o
   await seed(db);
   const store = openStore(db);
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: new Fleet(),
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   // The `stop` door closes the run itself and settles the claim in the same breath, and it
   // reads a refusal as nothing to do. This is the backstop for every such path: a closed run
@@ -2372,11 +2462,13 @@ test("a run closed by another path leaves no claim behind: the reaper takes it o
   const report = await loop.tick();
 
   expect(draws.abandoned).toEqual([
-    { id: "clm_stopped", fence: 1n, reason: "job job_stopped is closed and its claim was left open" },
+    {
+      id: "clm_stopped",
+      fence: 1n,
+      reason: "job job_stopped is closed and its claim was left open",
+    },
   ]);
-  const claim = await db.query(
-    `SELECT outcome, actual_cost FROM claims WHERE id = 'clm_stopped'`,
-  );
+  const claim = await db.query(`SELECT outcome, actual_cost FROM claims WHERE id = 'clm_stopped'`);
   expect(claim[0]).toEqual({ outcome: "abandoned", actual_cost: 0.1 });
   expect(report.notes.some((note) => note.includes("clm_stopped abandoned"))).toBe(true);
 });
@@ -2387,13 +2479,16 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   await inFlight(db, fleet);
   // The machine holding the review falls off the fleet: the hub cannot answer for its job at
@@ -2432,13 +2527,16 @@ test("an enabled policy without a review route reserves nothing", async () => {
   const draws = new Draws(db);
   // Work the coordinator would hand out the moment anything asked it for some.
   draws.pending = [{ ...ASSIGNMENT }];
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   const report = await loop.tick();
 
@@ -2646,7 +2744,9 @@ test("a review with one refused contribution records the rest, and its receipt c
       filing: recipeId,
       backlog: recipeId,
     },
-    recipes: [{ id: recipeId, version: 2, body: "Assess the assigned record under the role contract." }],
+    recipes: [
+      { id: recipeId, version: 2, body: "Assess the assigned record under the role contract." },
+    ],
   };
   draws.pending = [{ ...ASSIGNMENT }];
   const code = new ReviewCode();
@@ -2697,7 +2797,10 @@ test("a review with one refused contribution records the rest, and its receipt c
   // read off the receipts rather than guessed at.
   expect(receipt["reason"]).toBeUndefined();
   expect(receipt["refusedContributions"]).toEqual([
-    { contribution: 1, reason: "schema: contribution 1 is an objection and may not name alternatives" },
+    {
+      contribution: 1,
+      reason: "schema: contribution 1 is an objection and may not name alternatives",
+    },
   ]);
   expect((receipt["counts"] as Record<string, number>)["contributionsRefused"]).toBe(1);
   expect(settled.pulse.tick.refusals).toEqual({ schema: 1 });
@@ -2714,7 +2817,10 @@ test("a review with one refused contribution records the rest, and its receipt c
   expect(assessments[0]?.vote).toBe("oppose");
   const held = JSON.parse(assessments[0]?.payload ?? "{}") as { contributions: unknown[] };
   expect(held.contributions).toEqual([
-    expect.objectContaining({ kind: "comment", text: "the scope should name the harness it was observed on" }),
+    expect.objectContaining({
+      kind: "comment",
+      text: "the scope should name the harness it was observed on",
+    }),
   ]);
   expect(assessments[0]?.payload).not.toContain("hyp_other");
 });
@@ -2777,11 +2883,7 @@ test("a stale review completion retains usage without writing or settling the ne
                    actual_cost = NULL, granted_at = ?, expires_at = ?,
                    finished_at = NULL, outcome = NULL
              WHERE id = ? AND fence = 1 AND finished_at IS NULL`,
-      params: [
-        takenAt,
-        new Date(clock + POLICY.leaseSeconds * 1_000).toISOString(),
-        ASSIGNMENT.id,
-      ],
+      params: [takenAt, new Date(clock + POLICY.leaseSeconds * 1_000).toISOString(), ASSIGNMENT.id],
     },
   ]);
   code.read = sessionRead({
@@ -2833,9 +2935,7 @@ test("a stale review completion retains usage without writing or settling the ne
       `SELECT id, fence, job_id, finished_at FROM claims WHERE id = ?`,
       [ASSIGNMENT.id],
     ),
-  ).toEqual([
-    { id: ASSIGNMENT.id, fence: 2n, job_id: "job_code_review_new", finished_at: null },
-  ]);
+  ).toEqual([{ id: ASSIGNMENT.id, fence: 2n, job_id: "job_code_review_new", finished_at: null }]);
 });
 
 // ---------------------------------------------------------------------- the park and the pulse
@@ -2883,13 +2983,16 @@ test("three reviews the model answered and the contract refused are spend, not a
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   const flights = await threeInFlight(db, fleet);
 
@@ -2929,13 +3032,16 @@ test("three jobs that never reached the model park the loop, and an hour of quie
   const store = openStore(db);
   const fleet = new Fleet();
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store,
-  coordinator: draws as unknown as Coordinator,
-  jobs: fleet,
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   const flights = await threeInFlight(db, fleet);
 
@@ -2973,13 +3079,16 @@ test("the pulse counts why a cycle did not spend, and the day accumulates across
   const db = openDatabase();
   await seed(db);
   const draws = new Draws(db);
-  const loop = conductor({ engine: NO_CODE, store: openStore(db),
-  coordinator: draws as unknown as Coordinator,
-  jobs: new Fleet(),
-  machines: new Folders(),
-  keys: new Keys(),
-  plan: PLAN,
-  now: () => clock, });
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
 
   // One reason a cycle spent nothing, counted once: the enabled policy names no route. It is a
   // word of the coordinator's own `STOP_REASONS`, so the pulse can tally it.
@@ -3282,9 +3391,7 @@ test("a Code session still running leaves its run open and settles nothing", asy
   expect(report.settled).toEqual([]);
   const run = (await db.query(`SELECT closure FROM runs WHERE id = ?`, [runId]))[0]!;
   expect(run["closure"]).toBeNull();
-  const claim = (
-    await db.query(`SELECT finished_at FROM claims WHERE id = ?`, [claimId])
-  )[0]!;
+  const claim = (await db.query(`SELECT finished_at FROM claims WHERE id = ?`, [claimId]))[0]!;
   expect(claim["finished_at"]).toBeNull();
 });
 
@@ -3394,7 +3501,11 @@ test("a read Code refuses is recorded on the run, retried once, and then closed 
 // ------------------------------------------- the rows one answer becomes (records.ts)
 
 /** The conductor one wake builds, as `server.ts` builds it: a new one per tick. */
-function wakeOn(store: BabelStore, draws: Draws, code: CodeEngine & { asked: unknown[] }): Conductor {
+function wakeOn(
+  store: BabelStore,
+  draws: Draws,
+  code: CodeEngine & { asked: unknown[] },
+): Conductor {
   return conductor({
     engine: code,
     store,
@@ -3465,9 +3576,7 @@ test("an accepted answer becomes the records, edges, statuses and questions it c
       WHERE actor_id = ? ORDER BY kind`,
     [runId],
   );
-  expect(
-    edges.map((row) => [row["kind"], row["from_id"], row["to_kind"], row["to_id"]]),
-  ).toEqual([
+  expect(edges.map((row) => [row["kind"], row["from_id"], row["to_kind"], row["to_id"]])).toEqual([
     ["addresses", proposal, "finding", finding],
     ["cites", observation, "session", "omp/s1"],
     ["consolidates", finding, "observation", observation],
@@ -3537,14 +3646,18 @@ test("a refused answer writes no record at all, and the receipt is still written
 
   // NOTHING LANDED. A partial development path is worse than none: a finding consolidating
   // observations nobody holds is exactly the shape §4.2 forbids.
-  expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId]))
-    .toEqual([{ n: 0n }]);
-  expect(await db.query(`SELECT COUNT(*) AS n FROM edges WHERE actor_id = ?`, [runId]))
-    .toEqual([{ n: 0n }]);
-  expect(await db.query(`SELECT COUNT(*) AS n FROM status_events WHERE run_id = ?`, [runId]))
-    .toEqual([{ n: 0n }]);
-  expect(await db.query(`SELECT COUNT(*) AS n FROM questions WHERE raised_by_id = ?`, [runId]))
-    .toEqual([{ n: 0n }]);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId])).toEqual([
+    { n: 0n },
+  ]);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM edges WHERE actor_id = ?`, [runId])).toEqual([
+    { n: 0n },
+  ]);
+  expect(
+    await db.query(`SELECT COUNT(*) AS n FROM status_events WHERE run_id = ?`, [runId]),
+  ).toEqual([{ n: 0n }]);
+  expect(
+    await db.query(`SELECT COUNT(*) AS n FROM questions WHERE raised_by_id = ?`, [runId]),
+  ).toEqual([{ n: 0n }]);
 
   const run = (
     await db.query(`SELECT closure, cost_usd, records, payload FROM runs WHERE id = ?`, [runId])
@@ -3587,8 +3700,9 @@ test("a consolidation resting on a candidate is the development path skipped, an
 
   const report = await wakeOn(store, draws, code).tick();
 
-  expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId]))
-    .toEqual([{ n: 0n }]);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId])).toEqual([
+    { n: 0n },
+  ]);
   const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
   expect(run["closure"]).toBe("failed");
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
@@ -3627,12 +3741,16 @@ test("settling the same run twice writes the rows once: the identifiers are the 
   await db.run(`UPDATE claims SET finished_at = NULL WHERE job_id = ?`, [jobId]);
   await wakeOn(store, draws, code).tick();
 
-  expect(await db.query(`SELECT id FROM records WHERE run_id = ? ORDER BY id`, [runId]))
-    .toEqual(first);
-  expect(await db.query(`SELECT COUNT(*) AS n FROM edges WHERE actor_id = ?`, [runId]))
-    .toEqual([{ n: 3n }]);
-  expect(await db.query(`SELECT COUNT(*) AS n FROM status_events WHERE run_id = ?`, [runId]))
-    .toEqual([{ n: 1n }]);
-  expect(await db.query(`SELECT COUNT(*) AS n FROM questions WHERE raised_by_id = ?`, [runId]))
-    .toEqual([{ n: 1n }]);
+  expect(await db.query(`SELECT id FROM records WHERE run_id = ? ORDER BY id`, [runId])).toEqual(
+    first,
+  );
+  expect(await db.query(`SELECT COUNT(*) AS n FROM edges WHERE actor_id = ?`, [runId])).toEqual([
+    { n: 3n },
+  ]);
+  expect(
+    await db.query(`SELECT COUNT(*) AS n FROM status_events WHERE run_id = ?`, [runId]),
+  ).toEqual([{ n: 1n }]);
+  expect(
+    await db.query(`SELECT COUNT(*) AS n FROM questions WHERE raised_by_id = ?`, [runId]),
+  ).toEqual([{ n: 1n }]);
 });

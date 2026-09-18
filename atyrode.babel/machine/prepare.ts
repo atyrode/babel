@@ -170,7 +170,10 @@ const MAX_RECORD_CHARS = 4 << 20;
  * would make a broken selection indistinguishable from a deliberate one. So is the same
  * session twice, which would let a scope claim a weight it does not have.
  */
-export function newPreparation(preparedAt: string, selection: readonly PreparationEntry[]): Preparation {
+export function newPreparation(
+  preparedAt: string,
+  selection: readonly PreparationEntry[],
+): Preparation {
   if (selection.length === 0) throw new Error("preparation: the selection is empty");
   const canonical = [...selection].sort((a, b) => {
     if (a.host !== b.host) return a.host < b.host ? -1 : 1;
@@ -259,7 +262,10 @@ function writeLP(hasher: Bun.CryptoHasher, value: string): void {
  * digest of exactly that file's contents, so a later reader recovers the bytes the model read
  * rather than the bytes the harness happened to hold when it was asked.
  */
-export async function digests(ref: SessionRef, seal?: RecordSink | undefined): Promise<SessionDigests> {
+export async function digests(
+  ref: SessionRef,
+  seal?: RecordSink | undefined,
+): Promise<SessionDigests> {
   const capture = new Bun.CryptoHasher("sha256");
   const source = new Bun.CryptoHasher("sha256");
   const decoder = new TextDecoder();
@@ -330,7 +336,9 @@ function canonical(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   const keys = Object.keys(value).sort();
-  const fields = keys.map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`);
+  const fields = keys.map(
+    (key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
+  );
   return `{${fields.join(",")}}`;
 }
 
@@ -349,7 +357,10 @@ export async function prepare(
   let closure: Receipt["closure"] = "completed";
   let reason = "";
   const progress = deps.progress ?? SILENT;
-  progress.report({ stage: RUN_STAGES.preparing, message: "discovering the sessions this machine holds" });
+  progress.report({
+    stage: RUN_STAGES.preparing,
+    message: "discovering the sessions this machine holds",
+  });
 
   const discovered = await deps.discover();
   counts.discovered = discovered.length;

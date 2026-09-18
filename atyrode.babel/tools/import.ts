@@ -105,7 +105,10 @@ function nested(from: Record<string, unknown>, name: string): Record<string, unk
 const MAX_SUMMARY_BYTES = 240;
 
 export function summarize(value: string): string {
-  const line = value.split(/\s+/u).filter((word) => word !== "").join(" ");
+  const line = value
+    .split(/\s+/u)
+    .filter((word) => word !== "")
+    .join(" ");
   const bytes = ENCODER.encode(line);
   if (bytes.length <= MAX_SUMMARY_BYTES) return line;
   let cut = MAX_SUMMARY_BYTES;
@@ -173,7 +176,8 @@ export interface ImportPlan {
 /** Reads both Go stores and maps every row, without touching the target. */
 export function planImport(options: ImportOptions): ImportPlan {
   const durable = new Database(options.from, { readonly: true });
-  const catalog = options.catalog === undefined ? null : new Database(options.catalog, { readonly: true });
+  const catalog =
+    options.catalog === undefined ? null : new Database(options.catalog, { readonly: true });
   try {
     return build(durable, catalog, options);
   } finally {
@@ -226,11 +230,27 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
       );
     }
     const columns = [
-      "selector", "host", "harness", "source_id", "title", "title_provenance", "workspace",
-      "repository_identity", "repository_remote", "repository_reason", "modified_at", "size",
+      "selector",
+      "host",
+      "harness",
+      "source_id",
+      "title",
+      "title_provenance",
+      "workspace",
+      "repository_identity",
+      "repository_remote",
+      "repository_reason",
+      "modified_at",
+      "size",
       "kind",
-      "cost_usd", "total_tokens", "turns", "tool_errors", "content_digest", "snapshot_id",
-      "archived_at", "seen_at",
+      "cost_usd",
+      "total_tokens",
+      "turns",
+      "tool_errors",
+      "content_digest",
+      "snapshot_id",
+      "archived_at",
+      "seen_at",
     ] as const;
     const seenAt = now();
     const rows: SqlParam[][] = [];
@@ -239,7 +259,8 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
       const sourceId = text(row["source_id"]);
       const selector = text(row["selector"]);
       const key = `${harness}\u0000${sourceId}`;
-      if (deployment !== "") uidToSelector.set(sessionUid(deployment, host, harness, sourceId), selector);
+      if (deployment !== "")
+        uidToSelector.set(sessionUid(deployment, host, harness, sourceId), selector);
       rows.push([
         // `host` IS THE OPERATOR'S `--host`, ALWAYS. It used to prefer the host recorded in the
         // Go `run_preparation` selection a session appears in, and that field is the GO
@@ -248,17 +269,31 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
         // documents itself as with a name the hub resolves to nothing, and a whole corpus
         // arrived unreachable by every readiness check, run listing and folder question
         // (#310). The Go name is not this column's business and is not recorded here.
-        selector, host, harness, sourceId,
-        blank(row["title"]), blank(row["title_provenance"]), blank(row["workspace"]),
-        null, null, null,
-        blank(row["modified_at"]), real(row["primary_size"]),
+        selector,
+        host,
+        harness,
+        sourceId,
+        blank(row["title"]),
+        blank(row["title_provenance"]),
+        blank(row["workspace"]),
+        null,
+        null,
+        null,
+        blank(row["modified_at"]),
+        real(row["primary_size"]),
         // The Go catalog's fourth harness IS Babel's own analysis sessions (v0.4.0:internal/adapter/
         // babelself): a row it wrote is an agent<->agent conversation, and the plugin's own
         // adapters never produce that harness. `live` is not named at all — the import observed
         // no file, and the column's default says exactly that.
         harness === "babel" ? "agent" : "operator",
-        real(row["cost_usd"]), real(row["total_tokens"]), real(row["turns"]), real(row["tool_errors"]),
-        sessionDigest.get(key) ?? null, null, null, seenAt,
+        real(row["cost_usd"]),
+        real(row["total_tokens"]),
+        real(row["turns"]),
+        real(row["tool_errors"]),
+        sessionDigest.get(key) ?? null,
+        null,
+        null,
+        seenAt,
       ]);
     }
     plans.push({ table: "sessions", source: "catalog.db:sessions", columns, rows });
@@ -288,8 +323,20 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     revisions.set(text(row["entity_id"]), row);
   }
   const recordColumns = [
-    "id", "kind", "root_id", "supersedes_id", "seq", "parent_id", "run_id", "recipe_id",
-    "recipe_version", "actor_kind", "actor_id", "title", "created_at", "payload",
+    "id",
+    "kind",
+    "root_id",
+    "supersedes_id",
+    "seq",
+    "parent_id",
+    "run_id",
+    "recipe_id",
+    "recipe_version",
+    "actor_kind",
+    "actor_id",
+    "title",
+    "created_at",
+    "payload",
   ] as const;
   const recordRows: SqlParam[][] = [];
   const recordRuns = new Map<string, string>();
@@ -323,7 +370,9 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
           blank(runId),
           kind === "observation" ? blank(row["recipe_id"]) : null,
           kind === "observation" ? real(row["recipe_version"]) : null,
-          actorKind === "run" || actorKind === "operator" || actorKind === "engine" ? actorKind : "engine",
+          actorKind === "run" || actorKind === "operator" || actorKind === "engine"
+            ? actorKind
+            : "engine",
           revision === undefined ? runId : text(revision["actor_id"]),
           summarize(field(document, titleFields[kind] ?? "title")),
           text(row["created_at"]),
@@ -356,21 +405,51 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     duplicates: "duplicates",
   };
   const edgeColumns = [
-    "id", "kind", "from_kind", "from_id", "to_kind", "to_id", "position", "note",
-    "actor_kind", "actor_id", "created_at",
+    "id",
+    "kind",
+    "from_kind",
+    "from_id",
+    "to_kind",
+    "to_id",
+    "position",
+    "note",
+    "actor_kind",
+    "actor_id",
+    "created_at",
   ] as const;
   const edgeRows: SqlParam[][] = [];
   const edgeSeen = new Set<string>();
   let unresolvedCites = 0;
   const unresolvedSessions = new Set<string>();
   const pushEdge = (
-    id: string, kind: string, fromKind: string, fromId: string, toKind: string, toId: string,
-    position: number | null, note: string | null, actorKind: string, actorId: string, createdAt: string,
+    id: string,
+    kind: string,
+    fromKind: string,
+    fromId: string,
+    toKind: string,
+    toId: string,
+    position: number | null,
+    note: string | null,
+    actorKind: string,
+    actorId: string,
+    createdAt: string,
   ): void => {
     const key = `${kind}\u0000${fromKind}\u0000${fromId}\u0000${toKind}\u0000${toId}`;
     if (edgeSeen.has(key)) return;
     edgeSeen.add(key);
-    edgeRows.push([id, kind, fromKind, fromId, toKind, toId, position, note, actorKind, actorId, createdAt]);
+    edgeRows.push([
+      id,
+      kind,
+      fromKind,
+      fromId,
+      toKind,
+      toId,
+      position,
+      note,
+      actorKind,
+      actorId,
+      createdAt,
+    ]);
   };
   for (const row of rowsOf(durable, `SELECT * FROM reference_edge`)) {
     const goKind = text(row["edge_kind"]);
@@ -386,45 +465,88 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
       }
     }
     pushEdge(
-      text(row["id"]), kind, text(row["from_kind"]), text(row["from_id"]), text(row["to_kind"]), target,
-      null, blank(field(payload(row["payload_json"]), "note")),
-      text(row["actor_kind"]), text(row["actor_ref"]), text(row["created_at"]),
+      text(row["id"]),
+      kind,
+      text(row["from_kind"]),
+      text(row["from_id"]),
+      text(row["to_kind"]),
+      target,
+      null,
+      blank(field(payload(row["payload_json"]), "note")),
+      text(row["actor_kind"]),
+      text(row["actor_ref"]),
+      text(row["created_at"]),
     );
   }
   for (const row of rowsOf(durable, `SELECT * FROM frontier_hypothesis_link`)) {
     pushEdge(
-      text(row["id"]), text(row["link_type"]), "hypothesis", text(row["from_id"]),
-      "hypothesis", text(row["to_id"]), null, blank(field(payload(row["payload_json"]), "note")),
-      "run", "", text(row["created_at"]),
+      text(row["id"]),
+      text(row["link_type"]),
+      "hypothesis",
+      text(row["from_id"]),
+      "hypothesis",
+      text(row["to_id"]),
+      null,
+      blank(field(payload(row["payload_json"]), "note")),
+      "run",
+      "",
+      text(row["created_at"]),
     );
   }
   const join = (
-    sql: string, kind: string, fromKind: string, fromColumn: string, toKind: string, toColumn: string,
+    sql: string,
+    kind: string,
+    fromKind: string,
+    fromColumn: string,
+    toKind: string,
+    toColumn: string,
   ): void => {
     for (const row of rowsOf(durable, sql)) {
       const from = text(row[fromColumn]);
       const to = text(row[toColumn]);
       pushEdge(
-        minted("edg", kind, fromKind, from, toKind, to), kind, fromKind, from, toKind, to,
-        count(row["position"]), null, "run", recordRuns.get(from) ?? "", text(row["created_at"]),
+        minted("edg", kind, fromKind, from, toKind, to),
+        kind,
+        fromKind,
+        from,
+        toKind,
+        to,
+        count(row["position"]),
+        null,
+        "run",
+        recordRuns.get(from) ?? "",
+        text(row["created_at"]),
       );
     }
   };
   join(
     `SELECT j.*, f.created_at FROM frontier_finding_observation j JOIN frontier_finding f ON f.id = j.finding_id`,
-    "consolidates", "finding", "finding_id", "observation", "observation_id",
+    "consolidates",
+    "finding",
+    "finding_id",
+    "observation",
+    "observation_id",
   );
   join(
     `SELECT j.*, p.created_at FROM frontier_proposal_finding j JOIN frontier_proposal p ON p.id = j.proposal_id`,
-    "addresses", "proposal", "proposal_id", "finding", "finding_id",
+    "addresses",
+    "proposal",
+    "proposal_id",
+    "finding",
+    "finding_id",
   );
   join(
     `SELECT j.*, p.created_at FROM frontier_proposal_hypothesis j JOIN frontier_proposal p ON p.id = j.proposal_id`,
-    "addresses", "proposal", "proposal_id", "hypothesis", "hypothesis_id",
+    "addresses",
+    "proposal",
+    "proposal_id",
+    "hypothesis",
+    "hypothesis_id",
   );
   plans.push({
     table: "edges",
-    source: "durable.db:reference_edge+frontier_hypothesis_link+finding_observation+proposal_finding+proposal_hypothesis",
+    source:
+      "durable.db:reference_edge+frontier_hypothesis_link+finding_observation+proposal_finding+proposal_hypothesis",
     columns: edgeColumns,
     rows: edgeRows,
   });
@@ -444,15 +566,31 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     if (!recordIds.has(recordId)) continue;
     const actorKind = text(row["actor_kind"]);
     statusRows.push([
-      text(row["id"]), recordId, count(row["seq"]), text(row["status"]), blank(row["run_id"]),
-      actorKind === "" ? "run" : actorKind, text(row["actor_id"]) || text(row["run_id"]),
-      blank(field(payload(row["payload_json"]), "note")), text(row["recorded_at"]),
+      text(row["id"]),
+      recordId,
+      count(row["seq"]),
+      text(row["status"]),
+      blank(row["run_id"]),
+      actorKind === "" ? "run" : actorKind,
+      text(row["actor_id"]) || text(row["run_id"]),
+      blank(field(payload(row["payload_json"]), "note")),
+      text(row["recorded_at"]),
     ]);
   }
   plans.push({
     table: "status_events",
     source: "durable.db:frontier_status_event",
-    columns: ["id", "record_id", "seq", "status", "run_id", "actor_kind", "actor_id", "reason", "recorded_at"],
+    columns: [
+      "id",
+      "record_id",
+      "seq",
+      "status",
+      "run_id",
+      "actor_kind",
+      "actor_id",
+      "reason",
+      "recorded_at",
+    ],
     rows: statusRows,
   });
 
@@ -461,17 +599,30 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     const recordId = text(row["subject_id"]);
     if (!recordIds.has(recordId)) continue;
     dispositionRows.push([
-      text(row["id"]), recordId, count(row["seq"]), text(row["disposition"]),
-      blank(row["duplicate_of_id"]), blank(field(payload(row["payload_json"]), "note")),
-      blank(row["context_id"]), text(row["reviewer_id"]), text(row["recorded_at"]),
+      text(row["id"]),
+      recordId,
+      count(row["seq"]),
+      text(row["disposition"]),
+      blank(row["duplicate_of_id"]),
+      blank(field(payload(row["payload_json"]), "note")),
+      blank(row["context_id"]),
+      text(row["reviewer_id"]),
+      text(row["recorded_at"]),
     ]);
   }
   plans.push({
     table: "dispositions",
     source: "durable.db:frontier_disposition",
     columns: [
-      "id", "record_id", "seq", "disposition", "duplicate_of_id", "note", "context_id",
-      "actor_id", "recorded_at",
+      "id",
+      "record_id",
+      "seq",
+      "disposition",
+      "duplicate_of_id",
+      "note",
+      "context_id",
+      "actor_id",
+      "recorded_at",
     ],
     rows: dispositionRows,
   });
@@ -486,18 +637,32 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     const author = text(row["author"]);
     const supersedes = blank(row["supersedes_id"]);
     filingRows.push([
-      id, recordId, text(row["entity_id"]), field(payload(row["payload_json"]), "rationale"),
+      id,
+      recordId,
+      text(row["entity_id"]),
+      field(payload(row["payload_json"]), "rationale"),
       author === "operator" || author === "run" || author === "heuristic" ? author : "run",
-      text(row["author_id"]), count(row["heuristic"]), count(row["withdrawn"]),
-      supersedes !== null && filingIds.has(supersedes) ? supersedes : null, text(row["created_at"]),
+      text(row["author_id"]),
+      count(row["heuristic"]),
+      count(row["withdrawn"]),
+      supersedes !== null && filingIds.has(supersedes) ? supersedes : null,
+      text(row["created_at"]),
     ]);
   }
   plans.push({
     table: "filings",
     source: "durable.db:frontier_filing",
     columns: [
-      "id", "record_id", "entity_id", "rationale", "author_kind", "author_id", "heuristic",
-      "withdrawn", "supersedes_id", "created_at",
+      "id",
+      "record_id",
+      "entity_id",
+      "rationale",
+      "author_kind",
+      "author_id",
+      "heuristic",
+      "withdrawn",
+      "supersedes_id",
+      "created_at",
     ],
     rows: filingRows,
   });
@@ -510,18 +675,40 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     claims.set(id, row);
     const finishedAt = blank(row["finished_at"]);
     claimRows.push([
-      id, text(row["subject_id"]), text(row["role"]), text(row["lane"]), text(row["policy_version"]),
-      null, blank(row["run_id"]), count(row["fence"]), real(row["reserved_cost"]) ?? 0,
+      id,
+      text(row["subject_id"]),
+      text(row["role"]),
+      text(row["lane"]),
+      text(row["policy_version"]),
+      null,
+      blank(row["run_id"]),
+      count(row["fence"]),
+      real(row["reserved_cost"]) ?? 0,
       finishedAt === null ? null : real(row["finished_cost"]),
-      text(row["created_at"]), text(row["expires_at"]), finishedAt, null,
+      text(row["created_at"]),
+      text(row["expires_at"]),
+      finishedAt,
+      null,
     ]);
   }
   plans.push({
     table: "claims",
     source: "durable.db:evaluation_claim",
     columns: [
-      "id", "record_id", "role", "lane", "policy_version", "job_id", "run_id", "fence",
-      "reserved_cost", "actual_cost", "granted_at", "expires_at", "finished_at", "outcome",
+      "id",
+      "record_id",
+      "role",
+      "lane",
+      "policy_version",
+      "job_id",
+      "run_id",
+      "fence",
+      "reserved_cost",
+      "actual_cost",
+      "granted_at",
+      "expires_at",
+      "finished_at",
+      "outcome",
     ],
     rows: claimRows,
   });
@@ -551,17 +738,28 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
       const claim = claims.get(assignment);
       const supersedes = blank(row["supersedes_id"]);
       assessmentRows.push([
-        id, text(row["subject_id"]), text(row["read_head_id"]) || text(row["subject_id"]),
-        text(row["run_id"]), text(row["role"]), blank(field(assessment, "vote")),
-        claim === undefined ? null : blank(claim["lane"]), blank(assignment),
+        id,
+        text(row["subject_id"]),
+        text(row["read_head_id"]) || text(row["subject_id"]),
+        text(row["run_id"]),
+        text(row["role"]),
+        blank(field(assessment, "vote")),
+        claim === undefined ? null : blank(claim["lane"]),
+        blank(assignment),
         supersedes !== null && assessmentIds.has(supersedes) ? supersedes : null,
-        JSON.stringify(assessment), text(row["created_at"]),
+        JSON.stringify(assessment),
+        text(row["created_at"]),
       ]);
     } else if (kind === "feedback") {
       feedbackRows.push([
-        id, text(row["subject_id"]), text(row["actor_id"]), blank(field(document, "stance")),
-        field(document, "reason"), document["question"] === true ? 1 : 0,
-        blank(text(row["related_id"]) || field(document, "related_id")), text(row["created_at"]),
+        id,
+        text(row["subject_id"]),
+        text(row["actor_id"]),
+        blank(field(document, "stance")),
+        field(document, "reason"),
+        document["question"] === true ? 1 : 0,
+        blank(text(row["related_id"]) || field(document, "related_id")),
+        text(row["created_at"]),
       ]);
     } else if (kind === "policy") {
       // The Go policy is snake_case on the wire; the coordinator's PolicySchema is camelCase
@@ -572,8 +770,12 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
         renamed[key.replace(/_([a-z])/gu, (_, letter: string) => letter.toUpperCase())] = value;
       }
       policyRows.push([
-        field(policy, "version"), count(row["seq"]), text(row["actor_id"]),
-        field(document, "reason"), JSON.stringify(renamed), text(row["created_at"]),
+        field(policy, "version"),
+        count(row["seq"]),
+        text(row["actor_id"]),
+        field(document, "reason"),
+        JSON.stringify(renamed),
+        text(row["created_at"]),
       ]);
     }
   }
@@ -581,15 +783,33 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     table: "assessments",
     source: "durable.db:evaluation_record(kind=assessment) × evaluation_claim",
     columns: [
-      "id", "record_id", "revision_id", "run_id", "role", "vote", "lane", "claim_id",
-      "supersedes_id", "payload", "recorded_at",
+      "id",
+      "record_id",
+      "revision_id",
+      "run_id",
+      "role",
+      "vote",
+      "lane",
+      "claim_id",
+      "supersedes_id",
+      "payload",
+      "recorded_at",
     ],
     rows: assessmentRows,
   });
   plans.push({
     table: "feedback",
     source: "durable.db:evaluation_record(kind=feedback)",
-    columns: ["id", "record_id", "actor_id", "stance", "reason", "question", "related_id", "recorded_at"],
+    columns: [
+      "id",
+      "record_id",
+      "actor_id",
+      "stance",
+      "reason",
+      "question",
+      "related_id",
+      "recorded_at",
+    ],
     rows: feedbackRows,
   });
   plans.push({
@@ -622,8 +842,12 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     const id = text(row["id"]);
     entityIds.add(id);
     entityRows.push([
-      id, text(row["kind"]), field(payload(row["payload_json"]), "display_name"),
-      canonical.get(id) ?? id, "", text(row["created_at"]),
+      id,
+      text(row["kind"]),
+      field(payload(row["payload_json"]), "display_name"),
+      canonical.get(id) ?? id,
+      "",
+      text(row["created_at"]),
     ]);
   }
   plans.push({
@@ -654,7 +878,10 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     // acts resolve a topic by name through value_key, so the key is the normalized value itself.
     const value = field(payload(row["payload_json"]), "value");
     aliasRows.push([
-      id, entityId, text(row["alias_kind"]), value,
+      id,
+      entityId,
+      text(row["alias_kind"]),
+      value,
       value.trim().toLowerCase(),
       event !== undefined && text(event["state"]) === "retired" ? text(event["recorded_at"]) : null,
       text(row["created_at"]),
@@ -678,20 +905,39 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     const value = nested(document, "value");
     const supersedes = blank(row["supersedes"]);
     factRows.push([
-      id, entityId, text(row["predicate"]),
+      id,
+      entityId,
+      text(row["predicate"]),
       typeof value["text"] === "string" ? value["text"] : JSON.stringify(value),
-      blank(row["object_id"]), text(row["valid_from"]), blank(row["valid_until"]),
-      text(row["observed_at"]), text(row["authority_kind"]), text(row["authority_id"]),
-      text(row["confidence"]) || "stated", blank(field(document, "note")),
-      supersedes !== null && factIds.has(supersedes) ? supersedes : null, text(row["recorded_at"]),
+      blank(row["object_id"]),
+      text(row["valid_from"]),
+      blank(row["valid_until"]),
+      text(row["observed_at"]),
+      text(row["authority_kind"]),
+      text(row["authority_id"]),
+      text(row["confidence"]) || "stated",
+      blank(field(document, "note")),
+      supersedes !== null && factIds.has(supersedes) ? supersedes : null,
+      text(row["recorded_at"]),
     ]);
   }
   plans.push({
     table: "facts",
     source: "durable.db:reality_fact",
     columns: [
-      "id", "entity_id", "predicate", "value", "object_id", "valid_from", "valid_until",
-      "observed_at", "authority_kind", "authority_id", "confidence", "note", "supersedes_id",
+      "id",
+      "entity_id",
+      "predicate",
+      "value",
+      "object_id",
+      "valid_from",
+      "valid_until",
+      "observed_at",
+      "authority_kind",
+      "authority_id",
+      "confidence",
+      "note",
+      "supersedes_id",
       "recorded_at",
     ],
     rows: factRows,
@@ -703,8 +949,13 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     if (!factIds.has(factId)) continue;
     const document = payload(row["payload_json"]);
     factStatusRows.push([
-      text(row["id"]), factId, count(row["seq"]), text(row["status"]),
-      blank(field(document, "actor")), blank(field(document, "reason")), text(row["recorded_at"]),
+      text(row["id"]),
+      factId,
+      count(row["seq"]),
+      text(row["status"]),
+      blank(field(document, "actor")),
+      blank(field(document, "reason")),
+      text(row["recorded_at"]),
     ]);
   }
   plans.push({
@@ -721,9 +972,12 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     resolutionIds.add(id);
     const kind = text(row["resolution_kind"]);
     resolutionRows.push([
-      id, kind === "merge" || kind === "split" || kind === "undo" ? kind : "undo",
-      blank(row["reverses_id"]), text(row["actor"]),
-      field(payload(row["payload_json"]), "reason"), text(row["recorded_at"]),
+      id,
+      kind === "merge" || kind === "split" || kind === "undo" ? kind : "undo",
+      blank(row["reverses_id"]),
+      text(row["actor"]),
+      field(payload(row["payload_json"]), "reason"),
+      text(row["recorded_at"]),
     ]);
   }
   plans.push({
@@ -736,7 +990,12 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
   for (const row of rowsOf(durable, `SELECT * FROM reality_resolution_member`)) {
     const resolutionId = text(row["resolution_id"]);
     if (!resolutionIds.has(resolutionId)) continue;
-    memberRows.push([resolutionId, text(row["member_role"]), count(row["position"]), text(row["entity_id"])]);
+    memberRows.push([
+      resolutionId,
+      text(row["member_role"]),
+      count(row["position"]),
+      text(row["entity_id"]),
+    ]);
   }
   plans.push({
     table: "resolution_members",
@@ -781,8 +1040,12 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     const document = payload(row["payload_json"]);
     const opened = firstEvent.get(id);
     questionRows.push([
-      id, text(row["question_kind"]), text(row["question_class"]), field(document, "prompt"),
-      field(document, "why_asked"), blank(row["dedupe_key"]),
+      id,
+      text(row["question_kind"]),
+      text(row["question_class"]),
+      field(document, "prompt"),
+      field(document, "why_asked"),
+      blank(row["dedupe_key"]),
       opened === undefined ? "asker" : text(opened["actor"]),
       "",
       JSON.stringify({
@@ -793,7 +1056,9 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
         avoided_cost: count(row["avoided_cost"]),
         prompted_by_id: blank(row["prompted_by_id"]),
         work: (questionWork.get(id) ?? []).map((item) => ({
-          kind: text(item["work_kind"]), id: text(item["work_id"]), blocking: count(item["blocking"]) === 1,
+          kind: text(item["work_kind"]),
+          id: text(item["work_id"]),
+          blocking: count(item["blocking"]) === 1,
         })),
         entities: questionEntities.get(id) ?? [],
         evidence: questionEvidence.get(id) ?? [],
@@ -805,8 +1070,16 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     table: "questions",
     source: "durable.db:reality_question × question_work/entity/evidence",
     columns: [
-      "id", "kind", "class", "text", "why", "dedupe_key", "raised_by_kind", "raised_by_id",
-      "payload", "created_at",
+      "id",
+      "kind",
+      "class",
+      "text",
+      "why",
+      "dedupe_key",
+      "raised_by_kind",
+      "raised_by_id",
+      "payload",
+      "created_at",
     ],
     rows: questionRows,
   });
@@ -823,8 +1096,13 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     if (!questionIds.has(questionId)) continue;
     const document = payload(row["payload_json"]);
     questionEventRows.push([
-      text(row["id"]), questionId, count(row["seq"]), text(row["state"]),
-      blank(row["actor"]), blank(field(document, "reason")), text(row["recorded_at"]),
+      text(row["id"]),
+      questionId,
+      count(row["seq"]),
+      text(row["state"]),
+      blank(row["actor"]),
+      blank(field(document, "reason")),
+      text(row["recorded_at"]),
     ]);
   }
   plans.push({
@@ -839,8 +1117,12 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     const questionId = text(row["question_id"]);
     if (!questionIds.has(questionId)) continue;
     answerRows.push([
-      text(row["id"]), questionId, text(row["author"]), text(row["outcome"]),
-      field(payload(row["payload_json"]), "text"), text(row["recorded_at"]),
+      text(row["id"]),
+      questionId,
+      text(row["author"]),
+      text(row["outcome"]),
+      field(payload(row["payload_json"]), "text"),
+      text(row["recorded_at"]),
     ]);
   }
   plans.push({
@@ -862,13 +1144,19 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     const ruling = topicRulings.get(proposalId);
     const verdict = ruling === undefined ? "" : text(ruling["verdict"]);
     planRows.push([
-      proposalId, "topic", "proposal", proposalId, text(row["operation"]), blank(row["subject_key"]),
+      proposalId,
+      "topic",
+      "proposal",
+      proposalId,
+      text(row["operation"]),
+      blank(row["subject_key"]),
       JSON.stringify({
         ...payload(row["payload_json"]),
         entity_kind: text(row["entity_kind"]),
         evidence_weight: count(row["evidence_weight"]),
       }),
-      "run", recordRuns.get(proposalId) ?? "",
+      "run",
+      recordRuns.get(proposalId) ?? "",
       verdict === "accept" ? "applied" : verdict === "" ? "open" : "declined",
       ruling === undefined ? null : text(ruling["actor"]),
       ruling === undefined ? null : text(ruling["recorded_at"]),
@@ -885,9 +1173,11 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     else list.push(row);
   }
   const acceptances = new Map<string, Row>();
-  for (const row of rowsOf(durable, `SELECT * FROM reality_plan_acceptance`)) acceptances.set(text(row["plan_id"]), row);
+  for (const row of rowsOf(durable, `SELECT * FROM reality_plan_acceptance`))
+    acceptances.set(text(row["plan_id"]), row);
   const rejections = new Map<string, Row>();
-  for (const row of rowsOf(durable, `SELECT * FROM reality_plan_rejection`)) rejections.set(text(row["plan_id"]), row);
+  for (const row of rowsOf(durable, `SELECT * FROM reality_plan_rejection`))
+    rejections.set(text(row["plan_id"]), row);
   for (const row of rowsOf(durable, `SELECT * FROM reality_plan ORDER BY created_at`)) {
     const id = text(row["id"]);
     const accepted = acceptances.get(id);
@@ -895,21 +1185,29 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     const ruled = accepted ?? rejected;
     const actions = planActions.get(id) ?? [];
     planRows.push([
-      id, "answer", "question", text(row["question_id"]),
-      actions.length === 0 ? "interpret" : text(actions[0]?.["action_kind"]), null,
+      id,
+      "answer",
+      "question",
+      text(row["question_id"]),
+      actions.length === 0 ? "interpret" : text(actions[0]?.["action_kind"]),
+      null,
       JSON.stringify({
         ...payload(row["payload_json"]),
         schema: count(row["schema_version"]),
         answer_id: text(row["answer_id"]),
         interpreter_version: count(row["interpreter_version"]),
         actions: actions.map((action) => ({
-          id: text(action["id"]), position: count(action["position"]),
-          kind: text(action["action_kind"]), state: text(action["state"]),
-          result_id: blank(action["result_id"]), applied_at: blank(action["applied_at"]),
+          id: text(action["id"]),
+          position: count(action["position"]),
+          kind: text(action["action_kind"]),
+          state: text(action["state"]),
+          result_id: blank(action["result_id"]),
+          applied_at: blank(action["applied_at"]),
           payload: payload(action["payload_json"]),
         })),
       }),
-      "engine", `interpreter/${String(count(row["interpreter_version"]))}`,
+      "engine",
+      `interpreter/${String(count(row["interpreter_version"]))}`,
       accepted !== undefined ? "applied" : rejected !== undefined ? "declined" : "open",
       ruled === undefined ? null : text(ruled["actor"]),
       ruled === undefined ? null : text(ruled["recorded_at"]),
@@ -920,11 +1218,24 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
   }
   plans.push({
     table: "plans",
-    source: "durable.db:reality_topic_plan+reality_plan × plan_action/acceptance/rejection/topic_ruling",
+    source:
+      "durable.db:reality_topic_plan+reality_plan × plan_action/acceptance/rejection/topic_ruling",
     columns: [
-      "id", "kind", "subject_kind", "subject_id", "operation", "dedupe_key", "payload",
-      "proposed_by_kind", "proposed_by_id", "state", "ruled_by", "ruled_at", "ruling_reason",
-      "result", "created_at",
+      "id",
+      "kind",
+      "subject_kind",
+      "subject_id",
+      "operation",
+      "dedupe_key",
+      "payload",
+      "proposed_by_kind",
+      "proposed_by_id",
+      "state",
+      "ruled_by",
+      "ruled_at",
+      "ruling_reason",
+      "result",
+      "created_at",
     ],
     rows: planRows,
   });
@@ -947,21 +1258,30 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     const checkpoint = nested(document, "checkpoint");
     const timing = nested(document, "timing");
     const recipes = worker["Recipes"];
-    const firstRecipe = Array.isArray(recipes) && recipes.length > 0 ? (recipes[0] as Record<string, unknown>) : {};
+    const firstRecipe =
+      Array.isArray(recipes) && recipes.length > 0 ? (recipes[0] as Record<string, unknown>) : {};
     const state = field(checkpoint, "state");
     const records = checkpoint["records"];
     const stage = field(checkpoint, "stage");
-    const evaluate = stage === "review" || runId.startsWith("eval-") || text(row["authority_kind"]) === "policy";
+    const evaluate =
+      stage === "review" || runId.startsWith("eval-") || text(row["authority_kind"]) === "policy";
     runRows.push([
-      runId, evaluate ? "evaluate" : "explore", host === "" ? null : host,
-      blank(field(worker, "JobID")), blank(field(firstRecipe, "id")),
-      profile["id"] === undefined ? null : `${field(profile, "id")}@${String(count(profile["revision"]))}`,
-      blank(row["authority_kind"]), blank(row["authority_ref"]),
+      runId,
+      evaluate ? "evaluate" : "explore",
+      host === "" ? null : host,
+      blank(field(worker, "JobID")),
+      blank(field(firstRecipe, "id")),
+      profile["id"] === undefined
+        ? null
+        : `${field(profile, "id")}@${String(count(profile["revision"]))}`,
+      blank(row["authority_kind"]),
+      blank(row["authority_ref"]),
       preparations.get(text(row["preparation_id"])) ?? null,
       field(timing, "started_at") || text(row["recorded_at"]),
       blank(field(timing, "finished_at")),
       state === "closed" ? "completed" : state === "interrupted" ? "stopped" : null,
-      real(usage["cost"]), real(usage["total_tokens"]),
+      real(usage["cost"]),
+      real(usage["total_tokens"]),
       Array.isArray(records) ? records.length : 0,
       JSON.stringify({ ...document, counts: payload(row["counts"]), receipt_id: text(row["id"]) }),
     ]);
@@ -970,9 +1290,22 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     table: "runs",
     source: "durable.db:run_receipt(newest revision per run) × run_preparation",
     columns: [
-      "id", "kind", "machine_id", "job_id", "recipe_id", "profile", "authority_kind",
-      "authority_id", "preparation", "started_at", "finished_at", "closure", "cost_usd",
-      "tokens", "records", "payload",
+      "id",
+      "kind",
+      "machine_id",
+      "job_id",
+      "recipe_id",
+      "profile",
+      "authority_kind",
+      "authority_id",
+      "preparation",
+      "started_at",
+      "finished_at",
+      "closure",
+      "cost_usd",
+      "tokens",
+      "records",
+      "payload",
     ],
     rows: runRows,
   });
@@ -993,16 +1326,32 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
   for (const row of rowsOf(durable, `SELECT * FROM complaint ORDER BY seq`)) {
     const document = payload(row["payload_json"]);
     complaintRows.push([
-      text(row["id"]), text(row["root_id"]), blank(row["ancestor_id"]), count(row["seq"]),
-      "operator", text(row["operator_id"]), null, null, field(document, "text"), text(row["created_at"]),
+      text(row["id"]),
+      text(row["root_id"]),
+      blank(row["ancestor_id"]),
+      count(row["seq"]),
+      "operator",
+      text(row["operator_id"]),
+      null,
+      null,
+      field(document, "text"),
+      text(row["created_at"]),
     ]);
   }
   plans.push({
     table: "steering",
     source: "durable.db:complaint",
     columns: [
-      "id", "root_id", "reply_to_id", "seq", "actor_kind", "actor_id", "target_kind",
-      "target_id", "text", "recorded_at",
+      "id",
+      "root_id",
+      "reply_to_id",
+      "seq",
+      "actor_kind",
+      "actor_id",
+      "target_kind",
+      "target_id",
+      "text",
+      "recorded_at",
     ],
     rows: complaintRows,
   });

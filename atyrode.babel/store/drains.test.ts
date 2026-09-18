@@ -226,8 +226,13 @@ test("the rate is zero until something has been observed twice, then it is the o
   ).toBe(2_400);
   // A total that somehow went backwards is a reading to discard, never a negative burn.
   expect(
-    burnRate([{ ...two, at: NOW }, { ...one, at: NOW + MINUTE }], NOW + MINUTE)
-      .outputTokensPerMinute,
+    burnRate(
+      [
+        { ...two, at: NOW },
+        { ...one, at: NOW + MINUTE },
+      ],
+      NOW + MINUTE,
+    ).outputTokensPerMinute,
   ).toBe(0);
 });
 
@@ -297,7 +302,14 @@ test("a target is met by whichever figure reaches it, and the ETA is the nearest
   expect(Date.parse(eta)).toBe(NOW + MINUTE);
   // No rate is no ETA, and that is the reading the go/no-go rule acts on rather than a number
   // invented to fill the column.
-  expect(targetEta({ costMicros: 500_000 }, spent, { outputTokensPerMinute: 0, costMicrosPerMinute: 0 }, NOW)).toBe("");
+  expect(
+    targetEta(
+      { costMicros: 500_000 },
+      spent,
+      { outputTokensPerMinute: 0, costMicrosPerMinute: 0 },
+      NOW,
+    ),
+  ).toBe("");
   // A target with nothing to reach has no ETA either, and a deadline-only drain is that case.
   expect(targetEta({ deadline: "2026-09-14T14:00:00.000Z" }, spent, rate, NOW)).toBe("");
   // A target already met is now.
@@ -318,7 +330,10 @@ test("a state the vocabulary does not admit is refused by the store rather than 
   // A row cannot be running and ended at once, nor ended and still running: the CHECK is the
   // whole of that guarantee, so no reader has to reconcile the two columns.
   expect(
-    harness.db.run(`UPDATE drains SET finished_at = ? WHERE id = ?`, ["2026-09-14T12:30:00.000Z", "drn_one"]),
+    harness.db.run(`UPDATE drains SET finished_at = ? WHERE id = ?`, [
+      "2026-09-14T12:30:00.000Z",
+      "drn_one",
+    ]),
   ).rejects.toThrow();
   expect(
     harness.db.run(`UPDATE drains SET state = 'stopped' WHERE id = ?`, ["drn_one"]),
@@ -338,7 +353,5 @@ test("a profile Code reported no account for says so rather than leaving a blank
   // publishes no accounts on a profile at all — so the reading says which of the two
   // silences it is instead of printing nothing.
   expect(accountName(LEDGER)).toBe("ctr_workbench: the-drain-account (as Code reported at start)");
-  expect(accountName({ ...LEDGER, accounts: [] })).toBe(
-    "ctr_workbench (Code reported no account)",
-  );
+  expect(accountName({ ...LEDGER, accounts: [] })).toBe("ctr_workbench (Code reported no account)");
 });

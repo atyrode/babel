@@ -237,12 +237,20 @@ export function composeReviewPrompt(input: {
  */
 type ReviewAnswer =
   | { readonly result: ReviewResult; readonly submitted: unknown }
-  | { readonly refusal: ResultRefusal; readonly shaped: ReviewResult | null; readonly submitted: unknown };
+  | {
+      readonly refusal: ResultRefusal;
+      readonly shaped: ReviewResult | null;
+      readonly submitted: unknown;
+    };
 
 function readReviewAnswer(role: Role, finalMessage: string): ReviewAnswer {
   const answer = answerOf(finalMessage);
   if ("refused" in answer) {
-    return { refusal: new ResultRefusal(REFUSALS.schema, answer.refused), shaped: null, submitted: null };
+    return {
+      refusal: new ResultRefusal(REFUSALS.schema, answer.refused),
+      shaped: null,
+      submitted: null,
+    };
   }
   let payload: unknown;
   try {
@@ -286,7 +294,9 @@ export function rejectedSubmission(payload: unknown): {
   withheld?: "too-large";
 } {
   const bytes = new TextEncoder().encode(JSON.stringify(payload) ?? "").length;
-  return bytes > MAX_REJECTED_SUBMISSION_BYTES ? { bytes, withheld: "too-large" } : { bytes, payload };
+  return bytes > MAX_REJECTED_SUBMISSION_BYTES
+    ? { bytes, withheld: "too-large" }
+    : { bytes, payload };
 }
 
 /** One contribution the contract refused, as the receipt records it. */
@@ -362,7 +372,12 @@ export function reviewVerdict(
   let shaped: ReviewResult;
   if ("refusal" in answer) {
     if (answer.shaped === null) {
-      return { result: null, refused: [], reason: refusalReason(answer.refusal), submitted: answer.submitted };
+      return {
+        result: null,
+        refused: [],
+        reason: refusalReason(answer.refusal),
+        submitted: answer.submitted,
+      };
     }
     submitted = answer.refusal;
     shaped = answer.shaped;
@@ -384,7 +399,12 @@ export function reviewVerdict(
     // Nothing here is one contribution's fault. A refusal the acceptance raised stands exactly
     // as it did before this path existed, which is what keeps the receipts comparable.
     if (submitted !== null)
-      return { result: null, refused, reason: refusalReason(submitted), submitted: answer.submitted };
+      return {
+        result: null,
+        refused,
+        reason: refusalReason(submitted),
+        submitted: answer.submitted,
+      };
     const whole = wholeReviewReason(shaped, preparation, served);
     return whole === ""
       ? { result: shaped, refused, reason: "", submitted: answer.submitted }
@@ -400,7 +420,12 @@ export function reviewVerdict(
     // one — the same sentence today's receipt carries, so a failed review still reports the
     // defect rather than its consequence — and otherwise what the survivors failed on. Which
     // contributions were refused is `refused`, and that is reported either way.
-    return { result: null, refused, reason: refusalReason(submitted ?? error), submitted: answer.submitted };
+    return {
+      result: null,
+      refused,
+      reason: refusalReason(submitted ?? error),
+      submitted: answer.submitted,
+    };
   }
   const whole = wholeReviewReason(stands, preparation, served);
   if (whole === "") return { result: stands, refused, reason: "", submitted: answer.submitted };
@@ -500,7 +525,8 @@ function pointerExists(value: unknown, pointer: string): boolean {
       current = current[index];
       continue;
     }
-    if (typeof current !== "object" || current === null || !Object.hasOwn(current, key)) return false;
+    if (typeof current !== "object" || current === null || !Object.hasOwn(current, key))
+      return false;
     current = (current as Record<string, unknown>)[key];
   }
   return true;
@@ -597,12 +623,12 @@ export function reviewRows(
     const label =
       path === ""
         ? "the record"
-        : path
+        : (path
             .split("/")
             .filter((part) => part !== "")
             .at(-1)
             ?.replace(/~1/g, "/")
-            .replace(/~0/g, "~") ?? "the record";
+            .replace(/~0/g, "~") ?? "the record");
     const title = `Refine ${label} in ${preparation.recordId}`;
     const proposalId = mintId("pro", runId, `refinement|${String(index)}|${path}`);
     rows[JOB_OUTPUT_FILES.records]?.push(
@@ -662,7 +688,11 @@ export function reviewRows(
       });
     } else if (result.noChange !== null) {
       rows[JOB_OUTPUT_FILES.steeringReplies]?.push({
-        id: mintId("str", runId, `${result.noChange.ask_id}|${String(result.noChange.reason.length)}`),
+        id: mintId(
+          "str",
+          runId,
+          `${result.noChange.ask_id}|${String(result.noChange.reason.length)}`,
+        ),
         root_id: result.noChange.ask_id,
         reply_to_id: result.noChange.ask_id,
         seq: 0,
@@ -689,7 +719,14 @@ export function reviewRows(
         recordRow(
           proposalId,
           title,
-          { title, problem: topic.reasoning, outcome: title, impact: "moderate", classification: "private", topic },
+          {
+            title,
+            problem: topic.reasoning,
+            outcome: title,
+            impact: "moderate",
+            classification: "private",
+            topic,
+          },
           preparation,
           runId,
           at,
@@ -746,7 +783,14 @@ export function reviewRows(
       recordRow(
         proposalId,
         title,
-        { title, problem: title, outcome: title, impact: "moderate", classification: "private", backlog: payload },
+        {
+          title,
+          problem: title,
+          outcome: title,
+          impact: "moderate",
+          classification: "private",
+          backlog: payload,
+        },
         preparation,
         runId,
         at,

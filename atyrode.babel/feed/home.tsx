@@ -147,18 +147,22 @@ export function FeedListing({
     ...(query.topic === undefined || query.topic === "" ? {} : { topic: query.topic }),
   };
   const asked = JSON.stringify(wire);
-  const feed = usePolledResource<FeedResult | null>(async () => ask(host, ACTIONS.feed, wire), LIVE_MS, {
-    key: "atyrode.babel.feed",
-    restartKey: asked,
-    initial: null,
-    topics: [BABEL_NODE],
-    events: host.client,
-    // A confirmation on screen is a permanent act being written, and the row it belongs to
-    // must still be there when it is recorded.
-    hold: () => held.current,
-    onError: (reason) => setFailure(refusal(reason)),
-    onSuccess: () => setFailure(""),
-  });
+  const feed = usePolledResource<FeedResult | null>(
+    async () => ask(host, ACTIONS.feed, wire),
+    LIVE_MS,
+    {
+      key: "atyrode.babel.feed",
+      restartKey: asked,
+      initial: null,
+      topics: [BABEL_NODE],
+      events: host.client,
+      // A confirmation on screen is a permanent act being written, and the row it belongs to
+      // must still be there when it is recorded.
+      hold: () => held.current,
+      onError: (reason) => setFailure(refusal(reason)),
+      onSuccess: () => setFailure(""),
+    },
+  );
 
   const answer = feed.value;
   const posts = answer?.posts ?? [];
@@ -224,7 +228,12 @@ export function FeedListing({
       feed.setValue((current) =>
         current === null
           ? current
-          : { ...current, posts: current.posts.map((row) => (row.id === post.id ? { ...row, comments: row.comments + 1 } : row)) },
+          : {
+              ...current,
+              posts: current.posts.map((row) =>
+                row.id === post.id ? { ...row, comments: row.comments + 1 } : row,
+              ),
+            },
       );
     }
     if (act === "accept" || act === "reject") {
@@ -239,7 +248,11 @@ export function FeedListing({
         feed.setValue((current) =>
           current === null
             ? current
-            : { ...current, posts: current.posts.filter((row) => row.id !== post.id), total: Math.max(0, current.total - 1) },
+            : {
+                ...current,
+                posts: current.posts.filter((row) => row.id !== post.id),
+                total: Math.max(0, current.total - 1),
+              },
         );
         return;
       }
@@ -251,7 +264,11 @@ export function FeedListing({
   async function reopen(entry: Note): Promise<void> {
     setToast(null);
     try {
-      await ask(host, ACTIONS.rule, { id: entry.reopens, ruling: "reopen", note: "reopened from the feed" });
+      await ask(host, ACTIONS.rule, {
+        id: entry.reopens,
+        ruling: "reopen",
+        note: "reopened from the feed",
+      });
       setAnnouncement("Reopened. It is waiting on you again.");
       setRuledToday((count) => Math.max(0, count - 1));
       feed.refresh();
@@ -276,7 +293,12 @@ export function FeedListing({
         event.preventDefault();
         onQuery(
           query.needs === "me"
-            ? { ...query, needs: "all", sort: query.sort === "next" ? "hot" : query.sort, offset: 0 }
+            ? {
+                ...query,
+                needs: "all",
+                sort: query.sort === "next" ? "hot" : query.sort,
+                offset: 0,
+              }
             : { ...query, needs: "me", sort: "next", offset: 0 },
         );
         return;
@@ -297,7 +319,8 @@ export function FeedListing({
       if (focused === undefined) return;
       if (event.key === "Enter") {
         const inControl =
-          event.target instanceof HTMLElement && event.target.closest("a, button, summary") !== null;
+          event.target instanceof HTMLElement &&
+          event.target.closest("a, button, summary") !== null;
         if (inControl) return;
         event.preventDefault();
         openRecordHere(focused.id);
@@ -483,9 +506,13 @@ export function HomePanel({ host }: PanelProps): ReactElement {
             host={host}
             current={selection.topic}
             onTopic={(topic) =>
-              setRailNote(openTopic(host, topic) === "no_tile" ? { said: NO_SEAT, reopens: "" } : null)
+              setRailNote(
+                openTopic(host, topic) === "no_tile" ? { said: NO_SEAT, reopens: "" } : null,
+              )
             }
-            onUnfiled={() => setQuery({ ...query, topic: "unfiled", needs: "all", sort: "new", offset: 0 })}
+            onUnfiled={() =>
+              setQuery({ ...query, topic: "unfiled", needs: "all", sort: "new", offset: 0 })
+            }
           />
         </Sidebar>
       </Stack>

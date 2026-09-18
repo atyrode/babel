@@ -19,7 +19,14 @@ import { join } from "node:path";
 import type { PluginDatabaseAdmin } from "@manifold/plugin";
 import { openPluginDatabase } from "@manifold/server/plugin-database";
 import { BABEL_PLUGIN_ID } from "../contract.ts";
-import { applyPlan, ensureSchema, planImport, resolveTarget, summarize, type TablePlan } from "./import.ts";
+import {
+  applyPlan,
+  ensureSchema,
+  planImport,
+  resolveTarget,
+  summarize,
+  type TablePlan,
+} from "./import.ts";
 
 // ---------------------------------------------------------------------------- the Go schema
 
@@ -500,19 +507,22 @@ function seedDurable(path: string): void {
   const db = new Database(path, { create: true });
   for (const statement of GO_DURABLE_SCHEMA) db.run(statement);
 
-  db.run(
-    `INSERT INTO run_preparation VALUES (?, 1, '2026-09-01T00:00:00Z', 1, 'committed', ?)`,
-    [
-      "prep-1",
-      JSON.stringify({
-        schema: 1,
-        id: "prep-1",
-        selection: [
-          { host: GO_HOST, harness: "omp", source_id: "-code/alpha", source_digest: "sha256:beef", capture_digest: "sha256:cafe" },
-        ],
-      }),
-    ],
-  );
+  db.run(`INSERT INTO run_preparation VALUES (?, 1, '2026-09-01T00:00:00Z', 1, 'committed', ?)`, [
+    "prep-1",
+    JSON.stringify({
+      schema: 1,
+      id: "prep-1",
+      selection: [
+        {
+          host: GO_HOST,
+          harness: "omp",
+          source_id: "-code/alpha",
+          source_digest: "sha256:beef",
+          capture_digest: "sha256:cafe",
+        },
+      ],
+    }),
+  ]);
 
   const record = (
     table: string,
@@ -522,38 +532,89 @@ function seedDurable(path: string): void {
     body: Record<string, unknown>,
     extra: readonly (string | number)[] = [],
   ): void => {
-    const columns = table === "frontier_observation"
-      ? `(id, ancestor_id, hypothesis_id, run_id, recipe_id, recipe_version, schema_version, evidence_count, created_at, payload_json)`
-      : `(id, ancestor_id, run_id, schema_version, created_at, payload_json)`;
-    const values = table === "frontier_observation"
-      ? [id, null, ...extra, runId, "outcome-integrity", 3, 1, 2, createdAt, JSON.stringify(body)]
-      : [id, null, runId, 1, createdAt, JSON.stringify(body)];
-    db.run(`INSERT INTO ${table} ${columns} VALUES (${values.map(() => "?").join(", ")})`, values as never);
+    const columns =
+      table === "frontier_observation"
+        ? `(id, ancestor_id, hypothesis_id, run_id, recipe_id, recipe_version, schema_version, evidence_count, created_at, payload_json)`
+        : `(id, ancestor_id, run_id, schema_version, created_at, payload_json)`;
+    const values =
+      table === "frontier_observation"
+        ? [id, null, ...extra, runId, "outcome-integrity", 3, 1, 2, createdAt, JSON.stringify(body)]
+        : [id, null, runId, 1, createdAt, JSON.stringify(body)];
+    db.run(
+      `INSERT INTO ${table} ${columns} VALUES (${values.map(() => "?").join(", ")})`,
+      values as never,
+    );
   };
 
   record("frontier_hypothesis", "hyp_a", "run-1", "2026-09-01T01:00:00Z", {
-    statement: STATEMENT, origin_cues: ["a comment"], provisional_labels: ["verification"], novelty: 0.6, priority: 0.8, notes: "",
+    statement: STATEMENT,
+    origin_cues: ["a comment"],
+    provisional_labels: ["verification"],
+    novelty: 0.6,
+    priority: 0.8,
+    notes: "",
   });
   record("frontier_hypothesis", "hyp_a2", "run-2", "2026-09-02T01:00:00Z", {
-    statement: LONG_STATEMENT, origin_cues: [], provisional_labels: [], novelty: 0.1, priority: 0.2, notes: "refined",
+    statement: LONG_STATEMENT,
+    origin_cues: [],
+    provisional_labels: [],
+    novelty: 0.1,
+    priority: 0.2,
+    notes: "refined",
   });
-  record("frontier_observation", "obs_a", "run-1", "2026-09-01T01:05:00Z", {
-    claim: "The agent rewrote the assertion.", category: "verification-integrity", confidence: "high", impact: "high",
-    evidence: [{ locator: { path: "/s.jsonl", line: 2073, byte_offset: 7300451, digest: "a2d7" }, note: "states it will adjust" }],
-    counter_evidence: [], temporal_status: "current",
-  }, ["hyp_a"]);
+  record(
+    "frontier_observation",
+    "obs_a",
+    "run-1",
+    "2026-09-01T01:05:00Z",
+    {
+      claim: "The agent rewrote the assertion.",
+      category: "verification-integrity",
+      confidence: "high",
+      impact: "high",
+      evidence: [
+        {
+          locator: { path: "/s.jsonl", line: 2073, byte_offset: 7300451, digest: "a2d7" },
+          note: "states it will adjust",
+        },
+      ],
+      counter_evidence: [],
+      temporal_status: "current",
+    },
+    ["hyp_a"],
+  );
   record("frontier_finding", "fnd_a", "run-2", "2026-09-02T02:00:00Z", {
-    title: "One envelope, two payload classes", pattern: "…", significance: "…", scope: ["omp"], recurrence: 2,
+    title: "One envelope, two payload classes",
+    pattern: "…",
+    significance: "…",
+    scope: ["omp"],
+    recurrence: 2,
   });
   record("frontier_proposal", "pro_a", "run-2", "2026-09-02T03:00:00Z", {
-    title: "Gate the preflight batch on unmerged paths", problem: "…", outcome: "…", targets: ["code"],
+    title: "Gate the preflight batch on unmerged paths",
+    problem: "…",
+    outcome: "…",
+    targets: ["code"],
   });
 
   const revision = (
-    id: string, type: string, entityId: string, root: string, supersedes: string, seq: number, at: string,
+    id: string,
+    type: string,
+    entityId: string,
+    root: string,
+    supersedes: string,
+    seq: number,
+    at: string,
   ): void => {
     db.run(`INSERT INTO frontier_revision VALUES (?, ?, ?, ?, ?, ?, 'run', ?, ?, '{}')`, [
-      id, type, entityId, root, supersedes, seq, `run-${String(seq)}`, at,
+      id,
+      type,
+      entityId,
+      root,
+      supersedes,
+      seq,
+      `run-${String(seq)}`,
+      at,
     ]);
   };
   // hyp_a2 is a second wording of hyp_a's chain, which is the only shape that makes the target's
@@ -565,15 +626,46 @@ function seedDurable(path: string): void {
   revision("rev_5", "proposal", "pro_a", "pro_a", "", 1, "2026-09-02T03:00:00Z");
 
   const edge = (
-    id: string, kind: string, fromKind: string, fromId: string, toKind: string, toId: string, note: string,
+    id: string,
+    kind: string,
+    fromKind: string,
+    fromId: string,
+    toKind: string,
+    toId: string,
+    note: string,
   ): void => {
-    db.run(`INSERT INTO reference_edge VALUES (?, ?, ?, ?, ?, ?, 'run', 'run-2', 1, '2026-09-02T04:00:00Z', ?)`, [
-      id, kind, fromKind, fromId, toKind, toId, JSON.stringify({ schema: 1, note }),
-    ]);
+    db.run(
+      `INSERT INTO reference_edge VALUES (?, ?, ?, ?, ?, ?, 'run', 'run-2', 1, '2026-09-02T04:00:00Z', ?)`,
+      [id, kind, fromKind, fromId, toKind, toId, JSON.stringify({ schema: 1, note })],
+    );
   };
-  edge("ref_1", "evidence", "observation", "obs_a", "session", CITED_UID, "the session the claim read");
-  edge("ref_2", "evidence", "observation", "obs_a", "session", ROTATED_UID, "a session since rotated out");
-  edge("ref_3", "inspired_by", "hypothesis", "hyp_a2", "observation", "obs_a", "the run that produced this read that");
+  edge(
+    "ref_1",
+    "evidence",
+    "observation",
+    "obs_a",
+    "session",
+    CITED_UID,
+    "the session the claim read",
+  );
+  edge(
+    "ref_2",
+    "evidence",
+    "observation",
+    "obs_a",
+    "session",
+    ROTATED_UID,
+    "a session since rotated out",
+  );
+  edge(
+    "ref_3",
+    "inspired_by",
+    "hypothesis",
+    "hyp_a2",
+    "observation",
+    "obs_a",
+    "the run that produced this read that",
+  );
   edge("ref_4", "addresses", "proposal", "pro_a", "hypothesis", "hyp_a", "suggested change");
   edge("ref_5", "duplicates", "hypothesis", "hyp_a2", "hypothesis", "hyp_a", "candidate restates");
 
@@ -612,100 +704,231 @@ function seedDurable(path: string): void {
       '2026-09-04T00:00:08Z', '2026-09-04T00:00:05Z', 'eval-1', 1, 0.25)`,
   );
   const evaluation = (
-    id: string, kind: string, subjectKind: string, subjectId: string, assignment: string, actorKind: string,
-    actorId: string, runId: string, role: string, readHead: string, seq: number, at: string,
+    id: string,
+    kind: string,
+    subjectKind: string,
+    subjectId: string,
+    assignment: string,
+    actorKind: string,
+    actorId: string,
+    runId: string,
+    role: string,
+    readHead: string,
+    seq: number,
+    at: string,
     body: Record<string, unknown>,
   ): void => {
     db.run(
       `INSERT INTO evaluation_record VALUES (?, ?, ?, ?, ?, 1, '', '', '', ?, ?, ?, ?, 'ctx-1', ?, '', ?, 1, ?, ?)`,
-      [id, kind, subjectKind, subjectId, assignment, actorKind, actorId, runId, role, readHead, seq, at,
-        JSON.stringify({ schema: 1, record: { id, kind, created_at: at, ...body } })],
+      [
+        id,
+        kind,
+        subjectKind,
+        subjectId,
+        assignment,
+        actorKind,
+        actorId,
+        runId,
+        role,
+        readHead,
+        seq,
+        at,
+        JSON.stringify({ schema: 1, record: { id, kind, created_at: at, ...body } }),
+      ],
     );
   };
-  evaluation("evr_1", "assessment", "observation", "obs_a", "eval-a-1", "run", "eval-1", "eval-1", "reception",
-    "obs_a", 1, "2026-09-04T00:00:04Z", { assessment: { vote: "support", context_version: "ctx-1" } });
-  evaluation("evr_2", "feedback", "proposal", "pro_a", "", "operator", "alex", "", "", "", 2,
-    "2026-09-04T01:00:00Z", { stance: "disagree", reason: "ask Babel what it means", question: true });
-  evaluation("evr_3", "policy", "", "", "", "operator", "alex", "", "", "", 3, "2026-09-04T02:00:00Z",
-    { reason: "changed: version", policy: { version: "eval-policy-1", enabled: false, daily_cost: 25 } });
+  evaluation(
+    "evr_1",
+    "assessment",
+    "observation",
+    "obs_a",
+    "eval-a-1",
+    "run",
+    "eval-1",
+    "eval-1",
+    "reception",
+    "obs_a",
+    1,
+    "2026-09-04T00:00:04Z",
+    { assessment: { vote: "support", context_version: "ctx-1" } },
+  );
+  evaluation(
+    "evr_2",
+    "feedback",
+    "proposal",
+    "pro_a",
+    "",
+    "operator",
+    "alex",
+    "",
+    "",
+    "",
+    2,
+    "2026-09-04T01:00:00Z",
+    { stance: "disagree", reason: "ask Babel what it means", question: true },
+  );
+  evaluation(
+    "evr_3",
+    "policy",
+    "",
+    "",
+    "",
+    "operator",
+    "alex",
+    "",
+    "",
+    "",
+    3,
+    "2026-09-04T02:00:00Z",
+    {
+      reason: "changed: version",
+      policy: { version: "eval-policy-1", enabled: false, daily_cost: 25 },
+    },
+  );
   // A kind with no table of its own: it must not appear anywhere.
-  evaluation("evr_4", "attempt", "", "", "eval-a-1", "run", "eval-1", "eval-1", "reception", "", 4,
-    "2026-09-04T03:00:00Z", { attempt: { state: "failed", reason: "the lease expired" } });
+  evaluation(
+    "evr_4",
+    "attempt",
+    "",
+    "",
+    "eval-a-1",
+    "run",
+    "eval-1",
+    "eval-1",
+    "reception",
+    "",
+    4,
+    "2026-09-04T03:00:00Z",
+    { attempt: { state: "failed", reason: "the lease expired" } },
+  );
 
   db.run(`INSERT INTO reality_entity VALUES ('ent_1', 'machine', 1, '2026-09-05T00:00:00Z', ?)`, [
     JSON.stringify({ display_name: "dev-01" }),
   ]);
-  db.run(`INSERT INTO reality_entity_membership VALUES ('ent_1', 1, 'self', 'ent_1', NULL, '2026-09-05T00:00:00Z')`);
-  db.run(`INSERT INTO reality_entity_alias VALUES ('als_1', 'ent_1', 'hostname', 'k1', 1, '2026-09-05T00:00:01Z', ?)`, [
-    JSON.stringify({ value: "dev-01" }),
-  ]);
-  db.run(`INSERT INTO reality_alias_event VALUES ('ath_1', 'als_1', 1, 'retired', '2026-09-06T00:00:00Z', '{}')`);
+  db.run(
+    `INSERT INTO reality_entity_membership VALUES ('ent_1', 1, 'self', 'ent_1', NULL, '2026-09-05T00:00:00Z')`,
+  );
+  db.run(
+    `INSERT INTO reality_entity_alias VALUES ('als_1', 'ent_1', 'hostname', 'k1', 1, '2026-09-05T00:00:01Z', ?)`,
+    [JSON.stringify({ value: "dev-01" })],
+  );
+  db.run(
+    `INSERT INTO reality_alias_event VALUES ('ath_1', 'als_1', 1, 'retired', '2026-09-06T00:00:00Z', '{}')`,
+  );
   db.run(
     `INSERT INTO reality_fact VALUES ('fct_1', 1, 'ent_1', 'repository-remote', 'text', NULL, '2026-09-05T00:00:00Z',
       NULL, '2026-09-05T00:00:00Z', '2026-09-05T00:00:02Z', NULL, 'operator', 'alex', '2026-09-05T00:00:00Z',
       'stated', 'routine', NULL, NULL, NULL, ?)`,
-    [JSON.stringify({ value: { kind: "text", text: "github.com/atyrode/code" }, note: "the operator said so" })],
+    [
+      JSON.stringify({
+        value: { kind: "text", text: "github.com/atyrode/code" },
+        note: "the operator said so",
+      }),
+    ],
   );
-  db.run(`INSERT INTO reality_fact_status VALUES ('fst_1', 'fct_1', 1, 'active', '2026-09-05T00:00:03Z', ?)`, [
-    JSON.stringify({ actor: "alex", reason: "asserted" }),
-  ]);
-  db.run(`INSERT INTO reality_question VALUES ('qst_1', 1, 'acquire-context', 'blocking', 'routine', 'operator', 'dk1', 0, NULL, '2026-09-05T01:00:00Z', ?)`, [
-    JSON.stringify({ prompt: "Is the object still readable?", why_asked: "the local copy was deleted" }),
-  ]);
+  db.run(
+    `INSERT INTO reality_fact_status VALUES ('fst_1', 'fct_1', 1, 'active', '2026-09-05T00:00:03Z', ?)`,
+    [JSON.stringify({ actor: "alex", reason: "asserted" })],
+  );
+  db.run(
+    `INSERT INTO reality_question VALUES ('qst_1', 1, 'acquire-context', 'blocking', 'routine', 'operator', 'dk1', 0, NULL, '2026-09-05T01:00:00Z', ?)`,
+    [
+      JSON.stringify({
+        prompt: "Is the object still readable?",
+        why_asked: "the local copy was deleted",
+      }),
+    ],
+  );
   db.run(`INSERT INTO reality_question_work VALUES ('qst_1', 'hypothesis', 'hyp_a', 1)`);
   db.run(`INSERT INTO reality_question_entity VALUES ('qst_1', 'ent_1')`);
   db.run(`INSERT INTO reality_question_evidence VALUES ('qst_1', 'hyp_a')`);
-  db.run(`INSERT INTO reality_question_event VALUES ('qse_1', 'qst_1', 1, 'open', 'asker', '2026-09-05T01:00:01Z', '{}')`);
-  db.run(`INSERT INTO reality_answer VALUES ('ans_1', 'qst_1', 1, 1, 'alex', '2026-09-05T02:00:00Z', '2026-09-05T02:00:01Z', 'answered', NULL, ?)`, [
-    JSON.stringify({ text: "Yes, it is still there." }),
-  ]);
-  db.run(`INSERT INTO reality_topic_plan VALUES ('pro_a', 'sk1', 'create', 'repository', 21, '2026-09-05T03:00:00Z', ?)`, [
-    JSON.stringify({ identity: "github.com/atyrode/code" }),
-  ]);
-  db.run(`INSERT INTO reality_topic_ruling VALUES ('trl_1', 'pro_a', 'accept', 'ent_1', NULL, 'alex', '2026-09-05T04:00:00Z', ?)`, [
-    JSON.stringify({ reason: "the repository is the subject" }),
-  ]);
-  db.run(`INSERT INTO reality_plan VALUES ('pln_1', 'qst_1', 'ans_1', 1, 2, '2026-09-05T05:00:00Z', ?)`, [
-    JSON.stringify({ summary: "assert the object is readable" }),
-  ]);
-  db.run(`INSERT INTO reality_plan_action VALUES ('pac_1', 'pln_1', 0, 'assert-fact', 'pending', NULL, NULL, '{}')`);
-  db.run(`INSERT INTO reality_plan_rejection VALUES ('prj_1', 'pln_1', 'alex', '2026-09-05T06:00:00Z', ?)`, [
-    JSON.stringify({ reason: "the question was already answered" }),
-  ]);
+  db.run(
+    `INSERT INTO reality_question_event VALUES ('qse_1', 'qst_1', 1, 'open', 'asker', '2026-09-05T01:00:01Z', '{}')`,
+  );
+  db.run(
+    `INSERT INTO reality_answer VALUES ('ans_1', 'qst_1', 1, 1, 'alex', '2026-09-05T02:00:00Z', '2026-09-05T02:00:01Z', 'answered', NULL, ?)`,
+    [JSON.stringify({ text: "Yes, it is still there." })],
+  );
+  db.run(
+    `INSERT INTO reality_topic_plan VALUES ('pro_a', 'sk1', 'create', 'repository', 21, '2026-09-05T03:00:00Z', ?)`,
+    [JSON.stringify({ identity: "github.com/atyrode/code" })],
+  );
+  db.run(
+    `INSERT INTO reality_topic_ruling VALUES ('trl_1', 'pro_a', 'accept', 'ent_1', NULL, 'alex', '2026-09-05T04:00:00Z', ?)`,
+    [JSON.stringify({ reason: "the repository is the subject" })],
+  );
+  db.run(
+    `INSERT INTO reality_plan VALUES ('pln_1', 'qst_1', 'ans_1', 1, 2, '2026-09-05T05:00:00Z', ?)`,
+    [JSON.stringify({ summary: "assert the object is readable" })],
+  );
+  db.run(
+    `INSERT INTO reality_plan_action VALUES ('pac_1', 'pln_1', 0, 'assert-fact', 'pending', NULL, NULL, '{}')`,
+  );
+  db.run(
+    `INSERT INTO reality_plan_rejection VALUES ('prj_1', 'pln_1', 'alex', '2026-09-05T06:00:00Z', ?)`,
+    [JSON.stringify({ reason: "the question was already answered" })],
+  );
 
   const receipt = (
-    id: string, runId: string, revisionNumber: number, authorityKind: string, authorityRef: string,
-    recordedAt: string, body: Record<string, unknown>,
+    id: string,
+    runId: string,
+    revisionNumber: number,
+    authorityKind: string,
+    authorityRef: string,
+    recordedAt: string,
+    body: Record<string, unknown>,
   ): void => {
     db.run(
       `INSERT INTO run_receipt VALUES (?, 2, ?, 'prep-1', ?, NULL, ?, ?, ?, 'pending-sync', ?, ?)`,
-      [id, runId, revisionNumber, recordedAt, authorityKind, authorityRef,
-        JSON.stringify({ tool_requests: 1, failures: 0 }), JSON.stringify(body)],
+      [
+        id,
+        runId,
+        revisionNumber,
+        recordedAt,
+        authorityKind,
+        authorityRef,
+        JSON.stringify({ tool_requests: 1, failures: 0 }),
+        JSON.stringify(body),
+      ],
     );
   };
   receipt("rcpt-1", "run-2", 1, "operator", "command:explore", "2026-09-02T09:00:00Z", {
     checkpoint: { state: "running", stage: "explore", records: ["hyp_a2"] },
     timing: { started_at: "2026-09-02T08:00:00Z", finished_at: "" },
-    worker: { JobID: "run-2/job", Profile: { id: "code", revision: 2 }, Recipes: [{ id: "outcome-integrity", version: 3 }] },
+    worker: {
+      JobID: "run-2/job",
+      Profile: { id: "code", revision: 2 },
+      Recipes: [{ id: "outcome-integrity", version: 3 }],
+    },
   });
   receipt("rcpt-2", "run-2", 2, "operator", "command:explore", "2026-09-02T10:00:00Z", {
     checkpoint: { state: "closed", stage: "synthesize", records: ["hyp_a2", "fnd_a", "pro_a"] },
     timing: { started_at: "2026-09-02T08:00:00Z", finished_at: "2026-09-02T10:00:00Z" },
     worker: {
-      JobID: "run-2/synthesize/job", Profile: { id: "code", revision: 2 },
+      JobID: "run-2/synthesize/job",
+      Profile: { id: "code", revision: 2 },
       Recipes: [{ id: "outcome-integrity", version: 3 }],
       Usage: { total_tokens: 2555525, cost: 2.198 },
     },
   });
-  receipt("rcpt-3", "eval-1", 1, "policy", "evaluation:reception:eval-a-1", "2026-09-04T00:00:06Z", {
-    checkpoint: { state: "interrupted", stage: "review", records: ["evr_1"] },
-    timing: { started_at: "2026-09-04T00:00:00Z", finished_at: "2026-09-04T00:00:06Z" },
-    worker: { JobID: "eval-1/review", Profile: { id: "code", revision: 3 }, Recipes: [] },
-  });
+  receipt(
+    "rcpt-3",
+    "eval-1",
+    1,
+    "policy",
+    "evaluation:reception:eval-a-1",
+    "2026-09-04T00:00:06Z",
+    {
+      checkpoint: { state: "interrupted", stage: "review", records: ["evr_1"] },
+      timing: { started_at: "2026-09-04T00:00:00Z", finished_at: "2026-09-04T00:00:06Z" },
+      worker: { JobID: "eval-1/review", Profile: { id: "code", revision: 3 }, Recipes: [] },
+    },
+  );
 
-  db.run(`INSERT INTO complaint VALUES ('cmp_1', 'cmp_1', NULL, 1, 'alex', ?, 0, 1, '2026-09-07T00:00:00Z', ?)`, [
-    HOST, JSON.stringify({ text: "stop repinning tests" }),
-  ]);
+  db.run(
+    `INSERT INTO complaint VALUES ('cmp_1', 'cmp_1', NULL, 1, 'alex', ?, 0, 1, '2026-09-07T00:00:00Z', ?)`,
+    [HOST, JSON.stringify({ text: "stop repinning tests" })],
+  );
   db.run(
     `INSERT INTO disposition_proposal VALUES ('dis_1', 'hypothesis', 'hyp_a', 'develop-further', 'run', 'run-2', 'd1', 1, '2026-09-02T11:00:00Z', ?)`,
     [JSON.stringify({ summary: "extend the observation", rationale: "avoids a sixth copy" })],
@@ -742,7 +965,10 @@ function planned(table: string): TablePlan {
   return found;
 }
 
-async function scalar(sql: string, params: readonly string[] = []): Promise<Record<string, unknown>> {
+async function scalar(
+  sql: string,
+  params: readonly string[] = [],
+): Promise<Record<string, unknown>> {
   const rows = await (store as PluginDatabaseAdmin).query(sql, params);
   const first = rows[0];
   if (first === undefined) throw new Error(`no row for ${sql}`);
@@ -763,7 +989,10 @@ beforeAll(async () => {
   seedDurable(durablePath);
   seedCatalog(catalogPath);
   const plan = planImport({
-    from: durablePath, catalog: catalogPath, host: HOST, deployment: DEPLOYMENT,
+    from: durablePath,
+    catalog: catalogPath,
+    host: HOST,
+    deployment: DEPLOYMENT,
     now: () => "2026-09-12T00:00:00Z",
   });
   plans = plan.plans;
@@ -835,18 +1064,30 @@ test("summarize is the Go bound: whitespace collapsed, 240 bytes, never half a r
 
 test("edges speak the rewrite's vocabulary and say each relation once", async () => {
   const handle = store as PluginDatabaseAdmin;
-  const kinds = await handle.query(`SELECT kind, count(*) AS n FROM edges GROUP BY kind ORDER BY kind`);
+  const kinds = await handle.query(
+    `SELECT kind, count(*) AS n FROM edges GROUP BY kind ORDER BY kind`,
+  );
   expect(kinds.map((row) => [row["kind"], row["n"]])).toEqual([
-    ["addresses", 2n], ["cites", 2n], ["consolidates", 1n], ["contradicts", 1n], ["derived_from", 1n],
+    ["addresses", 2n],
+    ["cites", 2n],
+    ["consolidates", 1n],
+    ["contradicts", 1n],
+    ["derived_from", 1n],
     ["duplicates", 1n],
   ]);
   // reference_edge's `addresses` and frontier_proposal_hypothesis's row are the same relation; the
   // reference edge wins because it carries the real id and the note.
-  const addressed = await scalar(`SELECT id, note FROM edges WHERE kind = 'addresses' AND to_id = 'hyp_a'`);
+  const addressed = await scalar(
+    `SELECT id, note FROM edges WHERE kind = 'addresses' AND to_id = 'hyp_a'`,
+  );
   expect(addressed["id"]).toBe("ref_4");
   expect(addressed["note"]).toBe("suggested change");
   const consolidates = await scalar(`SELECT * FROM edges WHERE kind = 'consolidates'`);
-  expect([consolidates["from_id"], consolidates["to_id"], consolidates["position"]]).toEqual(["fnd_a", "obs_a", 0n]);
+  expect([consolidates["from_id"], consolidates["to_id"], consolidates["position"]]).toEqual([
+    "fnd_a",
+    "obs_a",
+    0n,
+  ]);
 });
 
 test("a citation resolves to the session's selector, and keeps the digest when it cannot", async () => {
@@ -862,7 +1103,9 @@ test("a citation resolves to the session's selector, and keeps the digest when i
   // nothing (#310).
   expect(joined["host"]).toBe(HOST);
   expect(joined["content_digest"]).toBe("beef");
-  expect(notes.some((note) => note.includes("keep the raw 64-hex shared-catalog session uid"))).toBe(true);
+  expect(
+    notes.some((note) => note.includes("keep the raw 64-hex shared-catalog session uid")),
+  ).toBe(true);
 });
 
 test("every catalogued session is hosted on the machine id the crossing was given (#310)", async () => {
@@ -887,69 +1130,118 @@ test("the Go catalog's fourth harness is Babel's own, and crosses as an agent se
 
 test("the operator's acts and Babel's votes arrive with their provenance", async () => {
   const ruling = await scalar(`SELECT * FROM dispositions WHERE record_id = 'pro_a'`);
-  expect([ruling["disposition"], ruling["actor_id"], ruling["note"]])
-    .toEqual(["reject", "alex", "the symptom, not the problem"]);
+  expect([ruling["disposition"], ruling["actor_id"], ruling["note"]]).toEqual([
+    "reject",
+    "alex",
+    "the symptom, not the problem",
+  ]);
 
   const withdrawal = await scalar(`SELECT * FROM filings WHERE id = 'fil_2'`);
-  expect([withdrawal["withdrawn"], withdrawal["supersedes_id"], withdrawal["author_kind"]])
-    .toEqual([1n, "fil_1", "run"]);
+  expect([withdrawal["withdrawn"], withdrawal["supersedes_id"], withdrawal["author_kind"]]).toEqual(
+    [1n, "fil_1", "run"],
+  );
 
   const asked = await scalar(`SELECT * FROM feedback WHERE id = 'evr_2'`);
-  expect([asked["stance"], asked["question"], asked["reason"]])
-    .toEqual(["disagree", 1n, "ask Babel what it means"]);
+  expect([asked["stance"], asked["question"], asked["reason"]]).toEqual([
+    "disagree",
+    1n,
+    "ask Babel what it means",
+  ]);
 
   const vote = await scalar(`SELECT * FROM assessments WHERE id = 'evr_1'`);
-  expect([vote["vote"], vote["role"], vote["revision_id"], vote["claim_id"], vote["lane"]])
-    .toEqual(["support", "reception", "obs_a", "eval-a-1", "exploration"]);
+  expect([vote["vote"], vote["role"], vote["revision_id"], vote["claim_id"], vote["lane"]]).toEqual(
+    ["support", "reception", "obs_a", "eval-a-1", "exploration"],
+  );
 
   const claim = await scalar(`SELECT * FROM claims WHERE id = 'eval-a-1'`);
-  expect([claim["record_id"], claim["reserved_cost"], claim["actual_cost"], claim["finished_at"]])
-    .toEqual(["obs_a", 3.125, 0.25, "2026-09-04T00:00:05Z"]);
+  expect([
+    claim["record_id"],
+    claim["reserved_cost"],
+    claim["actual_cost"],
+    claim["finished_at"],
+  ]).toEqual(["obs_a", 3.125, 0.25, "2026-09-04T00:00:05Z"]);
 
   const policy = await scalar(`SELECT * FROM policies WHERE version = 'eval-policy-1'`);
-  expect(JSON.parse(String(policy["payload"]))).toMatchObject({ version: "eval-policy-1", dailyCost: 25 });
+  expect(JSON.parse(String(policy["payload"]))).toMatchObject({
+    version: "eval-policy-1",
+    dailyCost: 25,
+  });
 
   const status = await scalar(`SELECT * FROM status_events WHERE id = 'ste_2'`);
-  expect([status["status"], status["seq"], status["actor_kind"], status["reason"]])
-    .toEqual(["promoted", 2n, "run", "consolidated into a finding"]);
+  expect([status["status"], status["seq"], status["actor_kind"], status["reason"]]).toEqual([
+    "promoted",
+    2n,
+    "run",
+    "consolidated into a finding",
+  ]);
 });
 
 test("a run is one row per run, from its newest receipt revision", async () => {
   const handle = store as PluginDatabaseAdmin;
-  expect((await handle.query(`SELECT id FROM runs ORDER BY id`)).map((row) => row["id"]))
-    .toEqual(["eval-1", "run-2"]);
+  expect((await handle.query(`SELECT id FROM runs ORDER BY id`)).map((row) => row["id"])).toEqual([
+    "eval-1",
+    "run-2",
+  ]);
 
   const explore = await scalar(`SELECT * FROM runs WHERE id = 'run-2'`);
-  expect([explore["kind"], explore["closure"], explore["records"], explore["tokens"], explore["cost_usd"]])
-    .toEqual(["explore", "completed", 3n, 2555525n, 2.198]);
-  expect([explore["machine_id"], explore["recipe_id"], explore["profile"], explore["finished_at"]])
-    .toEqual([HOST, "outcome-integrity", "code@2", "2026-09-02T10:00:00Z"]);
+  expect([
+    explore["kind"],
+    explore["closure"],
+    explore["records"],
+    explore["tokens"],
+    explore["cost_usd"],
+  ]).toEqual(["explore", "completed", 3n, 2555525n, 2.198]);
+  expect([
+    explore["machine_id"],
+    explore["recipe_id"],
+    explore["profile"],
+    explore["finished_at"],
+  ]).toEqual([HOST, "outcome-integrity", "code@2", "2026-09-02T10:00:00Z"]);
   expect(JSON.parse(String(explore["preparation"]))).toMatchObject({ id: "prep-1" });
-  expect(JSON.parse(String(explore["payload"]))).toMatchObject({ receipt_id: "rcpt-2", counts: { tool_requests: 1 } });
+  expect(JSON.parse(String(explore["payload"]))).toMatchObject({
+    receipt_id: "rcpt-2",
+    counts: { tool_requests: 1 },
+  });
 
   const evaluate = await scalar(`SELECT * FROM runs WHERE id = 'eval-1'`);
-  expect([evaluate["kind"], evaluate["closure"], evaluate["authority_kind"]])
-    .toEqual(["evaluate", "stopped", "policy"]);
+  expect([evaluate["kind"], evaluate["closure"], evaluate["authority_kind"]]).toEqual([
+    "evaluate",
+    "stopped",
+    "policy",
+  ]);
 });
 
 test("the Reality Ledger crosses whole, and a plan carries the ruling that settled it", async () => {
   const entity = await scalar(`SELECT * FROM entities WHERE id = 'ent_1'`);
-  expect([entity["name"], entity["canonical_id"], entity["kind"]]).toEqual(["dev-01", "ent_1", "machine"]);
+  expect([entity["name"], entity["canonical_id"], entity["kind"]]).toEqual([
+    "dev-01",
+    "ent_1",
+    "machine",
+  ]);
 
   const alias = await scalar(`SELECT * FROM aliases WHERE id = 'als_1'`);
   // The hub resolves a topic by name through value_key, so the key is the normalized value,
   // not the sealed digest the Go store kept.
   expect([alias["value"], alias["value_key"], alias["retired_at"]]).toEqual([
-    "dev-01", "dev-01", "2026-09-06T00:00:00Z",
+    "dev-01",
+    "dev-01",
+    "2026-09-06T00:00:00Z",
   ]);
 
   const fact = await scalar(`SELECT * FROM facts WHERE id = 'fct_1'`);
-  expect([fact["value"], fact["predicate"], fact["authority_id"], fact["note"]])
-    .toEqual(["github.com/atyrode/code", "repository-remote", "alex", "the operator said so"]);
+  expect([fact["value"], fact["predicate"], fact["authority_id"], fact["note"]]).toEqual([
+    "github.com/atyrode/code",
+    "repository-remote",
+    "alex",
+    "the operator said so",
+  ]);
 
   const question = await scalar(`SELECT * FROM questions WHERE id = 'qst_1'`);
-  expect([question["text"], question["why"], question["class"]])
-    .toEqual(["Is the object still readable?", "the local copy was deleted", "blocking"]);
+  expect([question["text"], question["why"], question["class"]]).toEqual([
+    "Is the object still readable?",
+    "the local copy was deleted",
+    "blocking",
+  ]);
   expect(JSON.parse(String(question["payload"]))).toMatchObject({
     expected_authority: "operator",
     work: [{ kind: "hypothesis", id: "hyp_a", blocking: true }],
@@ -960,12 +1252,21 @@ test("the Reality Ledger crosses whole, and a plan carries the ruling that settl
   expect([answer["text"], answer["outcome"]]).toEqual(["Yes, it is still there.", "answered"]);
 
   const topic = await scalar(`SELECT * FROM plans WHERE kind = 'topic'`);
-  expect([topic["id"], topic["subject_id"], topic["operation"], topic["state"], topic["ruled_by"], topic["result"]])
-    .toEqual(["pro_a", "pro_a", "create", "applied", "alex", "ent_1"]);
+  expect([
+    topic["id"],
+    topic["subject_id"],
+    topic["operation"],
+    topic["state"],
+    topic["ruled_by"],
+    topic["result"],
+  ]).toEqual(["pro_a", "pro_a", "create", "applied", "alex", "ent_1"]);
 
   const interpretation = await scalar(`SELECT * FROM plans WHERE kind = 'answer'`);
-  expect([interpretation["subject_id"], interpretation["state"], interpretation["operation"]])
-    .toEqual(["qst_1", "declined", "assert-fact"]);
+  expect([
+    interpretation["subject_id"],
+    interpretation["state"],
+    interpretation["operation"],
+  ]).toEqual(["qst_1", "declined", "assert-fact"]);
 });
 
 test("what the schema has no home for is reported rather than dropped in silence", () => {
@@ -986,5 +1287,7 @@ test("--into names the path the engine would open, and refuses any other file", 
   const resolved = resolveTarget(join(dir, "hub"));
   expect(resolved.path).toBe(join(dir, "hub", "plugins", BABEL_PLUGIN_ID, "data.db"));
   expect(resolveTarget(resolved.path).dataDir).toBe(join(dir, "hub"));
-  expect(() => resolveTarget(join(dir, "somewhere.db"))).toThrow(/is not a path the engine would open/u);
+  expect(() => resolveTarget(join(dir, "somewhere.db"))).toThrow(
+    /is not a path the engine would open/u,
+  );
 });

@@ -1,5 +1,12 @@
 import { useEffect, useRef, type ReactElement, type ReactNode } from "react";
-import { FEED_SORTS, FEED_WINDOWS, POST_KINDS, type FeedSort, type FeedWindow, type PostKind } from "../contract.ts";
+import {
+  FEED_SORTS,
+  FEED_WINDOWS,
+  POST_KINDS,
+  type FeedSort,
+  type FeedWindow,
+  type PostKind,
+} from "../contract.ts";
 import { since, type FeedQuery } from "./api.ts";
 
 /*
@@ -165,7 +172,11 @@ function Menu({
         </span>
       </button>
       {open && (
-        <div className={wide ? "babel-menu babel-menu-wide" : "babel-menu"} role="menu" aria-label={title}>
+        <div
+          className={wide ? "babel-menu babel-menu-wide" : "babel-menu"}
+          role="menu"
+          aria-label={title}
+        >
           {children}
         </div>
       )}
@@ -235,7 +246,12 @@ export function Sentence({
             setPick(null);
             // Turning the filter off drops the order the filter chose: "everything" arrives
             // hot, which is the front page of a feed nobody is triaging.
-            onQuery({ ...query, needs: "all", sort: query.sort === "next" ? "hot" : query.sort, offset: 0 });
+            onQuery({
+              ...query,
+              needs: "all",
+              sort: query.sort === "next" ? "hot" : query.sort,
+              offset: 0,
+            });
           }}
         >
           <span>Everything</span>
@@ -246,7 +262,11 @@ export function Sentence({
       <Menu
         name="sort"
         wide
-        label={WINDOWED[query.sort] ? `${SORT_WORD[query.sort]} · ${WINDOW_LABEL[query.window]}` : SORT_WORD[query.sort]}
+        label={
+          WINDOWED[query.sort]
+            ? `${SORT_WORD[query.sort]} · ${WINDOW_LABEL[query.window]}`
+            : SORT_WORD[query.sort]
+        }
         title={SORT_BASIS[query.sort]}
         open={pick === "sort"}
         setOpen={setPick}

@@ -121,47 +121,50 @@ async function inspect() {
   return openRepo(await resticConfig({ credentialFile, env: process.env }));
 }
 
-beforeAll(whenRestic(async () => {
-  home = mkdtempSync(join(tmpdir(), "babel-archive-"));
-  repository = join(home, "repo");
-  ompRoot = join(home, "roots", "omp");
-  codexRoot = join(home, "roots", "codex");
-  credentialFile = join(home, "restic-binding.json");
-  mkdirSync(ompRoot, { recursive: true });
-  mkdirSync(codexRoot, { recursive: true });
-  writeFileSync(join(ompRoot, "a1b2c3.jsonl"), '{"type":"user","text":"first"}\n');
-  writeFileSync(join(ompRoot, "d4e5f6.jsonl"), '{"type":"user","text":"second"}\n');
-  writeFileSync(join(ompRoot, "blob-not-a-session"), "opaque\n");
-  writeFileSync(join(codexRoot, "0192ab.jsonl"), '{"type":"message","text":"third"}\n');
+beforeAll(
+  whenRestic(async () => {
+    home = mkdtempSync(join(tmpdir(), "babel-archive-"));
+    repository = join(home, "repo");
+    ompRoot = join(home, "roots", "omp");
+    codexRoot = join(home, "roots", "codex");
+    credentialFile = join(home, "restic-binding.json");
+    mkdirSync(ompRoot, { recursive: true });
+    mkdirSync(codexRoot, { recursive: true });
+    writeFileSync(join(ompRoot, "a1b2c3.jsonl"), '{"type":"user","text":"first"}\n');
+    writeFileSync(join(ompRoot, "d4e5f6.jsonl"), '{"type":"user","text":"second"}\n');
+    writeFileSync(join(ompRoot, "blob-not-a-session"), "opaque\n");
+    writeFileSync(join(codexRoot, "0192ab.jsonl"), '{"type":"message","text":"third"}\n');
 
-  document = storage();
-  service = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch(request) {
-      asked += 1;
-      if (request.headers.get("authorization") !== `Bearer ${BEARER}`) {
-        return new Response("unauthorized", { status: 401 });
-      }
-      if (new URL(request.url).pathname !== RESTIC_SERVICE.path) {
-        return new Response("unknown", { status: 404 });
-      }
-      if (status !== 200) return new Response("refused", { status });
-      return new Response(document, { headers: { "content-type": "application/json" } });
-    },
-  });
-  // Exactly what the engine materializes for the binding: this job's proxy and its capability.
-  writeFileSync(
-    credentialFile,
-    JSON.stringify({ url: `http://127.0.0.1:${service.port}`, bearer: BEARER }),
-  );
-  deps = { roots: async () => [ompRoot, codexRoot], claim, credentialFile };
+    document = storage();
+    service = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        asked += 1;
+        if (request.headers.get("authorization") !== `Bearer ${BEARER}`) {
+          return new Response("unauthorized", { status: 401 });
+        }
+        if (new URL(request.url).pathname !== RESTIC_SERVICE.path) {
+          return new Response("unknown", { status: 404 });
+        }
+        if (status !== 200) return new Response("refused", { status });
+        return new Response(document, { headers: { "content-type": "application/json" } });
+      },
+    });
+    // Exactly what the engine materializes for the binding: this job's proxy and its capability.
+    writeFileSync(
+      credentialFile,
+      JSON.stringify({ url: `http://127.0.0.1:${service.port}`, bearer: BEARER }),
+    );
+    deps = { roots: async () => [ompRoot, codexRoot], claim, credentialFile };
 
-  process.env[RESTIC_ENV.cacheDir] = join(home, "cache");
-  // The repository is created by hand, once, for the deployment: the operation under test
-  // never creates one, so the test plays the operator.
-  expect(await (await inspect()).init()).toBe(true);
-}), RESTIC_TIMEOUT);
+    process.env[RESTIC_ENV.cacheDir] = join(home, "cache");
+    // The repository is created by hand, once, for the deployment: the operation under test
+    // never creates one, so the test plays the operator.
+    expect(await (await inspect()).init()).toBe(true);
+  }),
+  RESTIC_TIMEOUT,
+);
 
 afterAll(() => {
   service?.stop(true);
@@ -259,7 +262,10 @@ test(
 test(
   "a changed session is archived again and recatalogued under the new snapshot",
   async () => {
-    writeFileSync(join(ompRoot, "a1b2c3.jsonl"), '{"type":"user","text":"first"}\n{"type":"agent"}\n');
+    writeFileSync(
+      join(ompRoot, "a1b2c3.jsonl"),
+      '{"type":"user","text":"first"}\n{"type":"agent"}\n',
+    );
     const { receipt, sessions } = await run({ roots: [ompRoot] });
 
     expect(receipt.closure).toBe("completed");

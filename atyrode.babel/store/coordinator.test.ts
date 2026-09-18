@@ -12,7 +12,12 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import type { GuestDatabase, GuestSqlParam, GuestSqlRow, GuestSqlStatement } from "@manifold/plugin-kit";
+import type {
+  GuestDatabase,
+  GuestSqlParam,
+  GuestSqlRow,
+  GuestSqlStatement,
+} from "@manifold/plugin-kit";
 import { SCHEMA_V1 } from "./schema.ts";
 import {
   applyBudget,
@@ -116,7 +121,12 @@ async function record(
   return id;
 }
 
-async function status(db: GuestDatabase, recordId: string, state: string, daysAgo: number): Promise<void> {
+async function status(
+  db: GuestDatabase,
+  recordId: string,
+  state: string,
+  daysAgo: number,
+): Promise<void> {
   await db.run(
     `INSERT INTO status_events(id, record_id, seq, status, actor_kind, actor_id, recorded_at)
      VALUES(?,?,?,?,'run','run_seed',?)`,
@@ -208,7 +218,9 @@ async function claimRow(
 
 function drawn(result: DrawResult): Assignment {
   if (result.outcome !== "assignment") {
-    throw new Error(`expected an assignment, got the gap ${result.gap.reason}: ${result.gap.detail}`);
+    throw new Error(
+      `expected an assignment, got the gap ${result.gap.reason}: ${result.gap.detail}`,
+    );
   }
   return result.assignment;
 }
@@ -262,15 +274,23 @@ test("the policy in force is the newest row, and a deployment with none is disab
 test("the validator refuses the policies that would make something else lie", async () => {
   const ceiling = CONCURRENT_JOBS;
   expect(validatePolicy(DEFAULT_POLICY, ceiling)).toBeNull();
-  expect(validatePolicy({ ...DEFAULT_POLICY, explorationShare: 0 }, ceiling)).toContain("protected");
-  expect(validatePolicy({ ...DEFAULT_POLICY, discoveryShare: 0 }, ceiling)).toContain("protected");
-  expect(validatePolicy({ ...DEFAULT_POLICY, coverageShare: 0.6, filingShare: 0.3 }, ceiling)).toContain(
-    "over-commit",
+  expect(validatePolicy({ ...DEFAULT_POLICY, explorationShare: 0 }, ceiling)).toContain(
+    "protected",
   );
-  expect(validatePolicy({ ...DEFAULT_POLICY, maxItemReviews: 1 }, ceiling)).toContain("below initial reviews");
-  expect(validatePolicy({ ...DEFAULT_POLICY, dailyCost: 0.1 }, ceiling)).toContain("below the per-cycle cost");
+  expect(validatePolicy({ ...DEFAULT_POLICY, discoveryShare: 0 }, ceiling)).toContain("protected");
+  expect(
+    validatePolicy({ ...DEFAULT_POLICY, coverageShare: 0.6, filingShare: 0.3 }, ceiling),
+  ).toContain("over-commit");
+  expect(validatePolicy({ ...DEFAULT_POLICY, maxItemReviews: 1 }, ceiling)).toContain(
+    "below initial reviews",
+  );
+  expect(validatePolicy({ ...DEFAULT_POLICY, dailyCost: 0.1 }, ceiling)).toContain(
+    "below the per-cycle cost",
+  );
   expect(validatePolicy({ ...DEFAULT_POLICY, coverageShare: 0 }, ceiling)).toBeNull();
-  expect(validatePolicy({ ...DEFAULT_POLICY, filingShare: 0, backlogShare: 0 }, ceiling)).toBeNull();
+  expect(
+    validatePolicy({ ...DEFAULT_POLICY, filingShare: 0, backlogShare: 0 }, ceiling),
+  ).toBeNull();
 });
 
 test("a per-machine bound above the manifest's ceiling is refused, by the policy door and by the overlay's", () => {
@@ -340,7 +360,11 @@ test("a manifest that declares no ceiling bounds nothing, rather than bounding b
   // …and the lease still has to cover the fan the overlay names, which is the rule that is
   // about this deployment's own numbers rather than about a manifest.
   expect(
-    validateBudget({ ...standing, leaseSeconds: 300 }, { ...drain, concurrentPerMachine: 16 }, null),
+    validateBudget(
+      { ...standing, leaseSeconds: 300 },
+      { ...drain, concurrentPerMachine: 16 },
+      null,
+    ),
   ).toContain("320s");
 });
 
@@ -353,7 +377,12 @@ test("the lease floor refuses a new policy that would need renewal to work at al
   // The policy four runs were lost under, with a bound the manifest's ceiling allows: what the
   // lease has to cover is the larger of the two, and twenty-four claims behind one lease is
   // twenty-four whether they are spread over a fleet or held by one host.
-  const lost: Policy = { ...DEFAULT_POLICY, leaseSeconds: 240, batchSize: 24, concurrentPerMachine: 4 };
+  const lost: Policy = {
+    ...DEFAULT_POLICY,
+    leaseSeconds: 240,
+    batchSize: 24,
+    concurrentPerMachine: 4,
+  };
   expect(validateNewPolicy(lost, CONCURRENT_JOBS)).toContain("480s");
   // …and the same policy already stored keeps drawing: refusing it at draw time would stop every
   // review on the deployment until the operator noticed.
@@ -508,13 +537,15 @@ test("the filing lane draws unfiled records and nothing else", async () => {
   expect(filings.every((assignment) => assignment.lane === "filing")).toBe(true);
   // The oldest record carries a filing, so the share skips it however long it has been there;
   // the oldest record whose only filing is heuristic is what it draws.
-  expect(new Set(filings.map((assignment) => assignment.recordId))).toEqual(new Set([heuristically]));
+  expect(new Set(filings.map((assignment) => assignment.recordId))).toEqual(
+    new Set([heuristically]),
+  );
   // A filing draw is work, never a review: it must not arrive at a reviewer. And a challenge is
   // accounted to its own lane whichever reservation drew it, so a cycle can say how much went to
   // arguing rather than to reviewing.
-  expect(draws.every((assignment) => (assignment.lane === "filing") === (assignment.role === "filing"))).toBe(
-    true,
-  );
+  expect(
+    draws.every((assignment) => (assignment.lane === "filing") === (assignment.role === "filing")),
+  ).toBe(true);
   const challenges = draws.filter((assignment) => assignment.role === "challenge");
   expect(challenges.length).toBeGreaterThan(0);
   expect(challenges.every((assignment) => assignment.lane === "challenge")).toBe(true);
@@ -542,8 +573,12 @@ test("the filing lane draws unfiled records and nothing else", async () => {
        'fil_confirmed',?)`,
     [heuristically, new Date(NOW + 1000).toISOString()],
   );
-  const withdrawn = (await sampleDraws(coord, 80)).filter((assignment) => assignment.role === "filing");
-  expect(new Set(withdrawn.map((assignment) => assignment.recordId))).toEqual(new Set([heuristically]));
+  const withdrawn = (await sampleDraws(coord, 80)).filter(
+    (assignment) => assignment.role === "filing",
+  );
+  expect(new Set(withdrawn.map((assignment) => assignment.recordId))).toEqual(
+    new Set([heuristically]),
+  );
 });
 
 test("the backlog lane draws deferred hypotheses and nothing else", async () => {
@@ -605,7 +640,11 @@ test("a live claim withholds its own role and nothing else", async () => {
 
 // ---------------------------------------------------------------------------- claims
 
-async function oneAssignment(): Promise<{ db: GuestDatabase; coord: Coordinator; assignment: Assignment }> {
+async function oneAssignment(): Promise<{
+  db: GuestDatabase;
+  coord: Coordinator;
+  assignment: Assignment;
+}> {
   const { db, coord } = await deployment({ enabled: true });
   const id = await record(db, "hyp_00000001", "hypothesis", 40);
   await filing(db, id, "ent_0000000a");
@@ -683,16 +722,31 @@ test("renewal moves the lease forward only, and is refused after expiry or under
   const granted = await coord.claim({ assignment, runId: "run_a", now: NOW });
   if (granted.outcome !== "granted") throw new Error(granted.refusal.detail);
 
-  const early = await coord.renew({ id: assignment.id, runId: "run_a", fence: 1, now: NOW + 60_000 });
+  const early = await coord.renew({
+    id: assignment.id,
+    runId: "run_a",
+    fence: 1,
+    now: NOW + 60_000,
+  });
   if (early.outcome !== "renewed") throw new Error(early.refusal.detail);
   expect(early.expiresAt).toBe(NOW + 60_000 + 900_000);
 
   // The expiry never moves backwards: a renewal is the holder keeping the authority it has.
-  const backwards = await coord.renew({ id: assignment.id, runId: "run_a", fence: 1, now: NOW + 1000 });
+  const backwards = await coord.renew({
+    id: assignment.id,
+    runId: "run_a",
+    fence: 1,
+    now: NOW + 1000,
+  });
   if (backwards.outcome !== "renewed") throw new Error(backwards.refusal.detail);
   expect(backwards.expiresAt).toBe(early.expiresAt);
 
-  const wrongFence = await coord.renew({ id: assignment.id, runId: "run_a", fence: 2, now: NOW + 1000 });
+  const wrongFence = await coord.renew({
+    id: assignment.id,
+    runId: "run_a",
+    fence: 2,
+    now: NOW + 1000,
+  });
   if (wrongFence.outcome !== "refused") throw new Error("a superseded fence renewed a lease");
   expect(wrongFence.refusal.reason).toBe("taken-over");
 
@@ -909,7 +963,12 @@ test("abandoning a stale epoch never closes the claim its successor holds", asyn
   });
   if (stale.outcome !== "refused") throw new Error("a stale epoch closed the live claim");
   expect(stale.refusal.reason).toBe("taken-over");
-  const held = await coord.renew({ id: assignment.id, runId: "run_b", fence: 2, now: later + 2000 });
+  const held = await coord.renew({
+    id: assignment.id,
+    runId: "run_b",
+    fence: 2,
+    now: later + 2000,
+  });
   expect(held.outcome).toBe("renewed");
 });
 
@@ -1097,7 +1156,12 @@ async function runOn(db: GuestDatabase, jobId: string, machineId: string): Promi
 }
 
 test("an overlay moves the bound and the ceilings while it lasts, and nothing when it has expired", async () => {
-  const { db, coord } = await deployment({ enabled: true, batchSize: 1, perCycleCost: 0.1, dailyCost: 0.2 });
+  const { db, coord } = await deployment({
+    enabled: true,
+    batchSize: 1,
+    perCycleCost: 0.1,
+    dailyCost: 0.2,
+  });
   const id = await record(db, "hyp_00000001", "hypothesis", 40);
   await filing(db, id, "ent_0000000a");
   await fact(db, "ent_0000000a", "lifecycle", "active");
@@ -1137,7 +1201,11 @@ test("an overlay moves the bound and the ceilings while it lasts, and nothing wh
 
 test("a cleared overlay stops applying, and the one it covered applies again for what is left of its own TTL", async () => {
   const { db, coord } = await deployment({ enabled: true, batchSize: 2 });
-  await overlay(db, "bdg_first", { createdAt: NOW - 5000, expiresAt: NOW + 600_000, concurrentPerMachine: 8 });
+  await overlay(db, "bdg_first", {
+    createdAt: NOW - 5000,
+    expiresAt: NOW + 600_000,
+    concurrentPerMachine: 8,
+  });
   await overlay(db, "bdg_second", {
     createdAt: NOW - 1000,
     expiresAt: NOW + 60_000,
@@ -1146,7 +1214,9 @@ test("a cleared overlay stops applying, and the one it covered applies again for
   });
   expect((await coord.policy(NOW)).policy.batchSize).toBe(8);
 
-  await db.run(`UPDATE budgets SET cleared_at = ? WHERE id = 'bdg_first'`, [new Date(NOW).toISOString()]);
+  await db.run(`UPDATE budgets SET cleared_at = ? WHERE id = 'bdg_first'`, [
+    new Date(NOW).toISOString(),
+  ]);
   expect((await coord.policy(NOW)).policy.batchSize).toBe(2);
 });
 
@@ -1222,12 +1292,15 @@ test("the batch is per machine: two machines hold four, the fifth draw is refuse
     now: NOW,
   });
   expect(settled.outcome).toBe("finished");
-  expect(drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n, machines: fleet })).recordId).toBe(id);
+  expect(
+    drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n, machines: fleet })).recordId,
+  ).toBe(id);
 
   // …and a caller that cannot say where the work would run is judged against ONE machine's
   // worth, so a draw with no fleet named never claims the fan a fleet would allow.
   const alone = await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n });
-  if (alone.outcome !== "gap") throw new Error("an unnamed fleet drew against the whole deployment");
+  if (alone.outcome !== "gap")
+    throw new Error("an unnamed fleet drew against the whole deployment");
   expect(alone.gap.reason).toBe("batch");
 });
 
@@ -1288,7 +1361,8 @@ test("an overlay that raises the per-machine bound raises the fleet's cap with i
 
   await overlay(db, "bdg_drain", { expiresAt: NOW + 600_000, concurrentPerMachine: 4 });
   expect(
-    drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n, machines: ["dev-01"] })).recordId,
+    drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n, machines: ["dev-01"] }))
+      .recordId,
   ).toBe(id);
 });
 
@@ -1308,17 +1382,29 @@ test("the overlay's own validator refuses what a policy being installed would be
   // A lease is the standing policy's and an overlay may not move it, so a bound the lease cannot
   // cover is refused here rather than discovered as expired claims.
   const short: Policy = { ...standing, leaseSeconds: 300 };
-  expect(validateBudget(short, { ...drain, concurrentPerMachine: 16 }, CONCURRENT_JOBS)).toContain("320s");
+  expect(validateBudget(short, { ...drain, concurrentPerMachine: 16 }, CONCURRENT_JOBS)).toContain(
+    "320s",
+  );
   // The standing rules, judged against the policy the overlay would produce.
   expect(validateBudget(standing, { ...drain, dailyCost: 0.1 }, CONCURRENT_JOBS)).toContain(
     "below the per-cycle cost",
   );
-  expect(validateBudget(standing, { ...drain, perCycleCost: 0 }, CONCURRENT_JOBS)).toContain("must be positive");
+  expect(validateBudget(standing, { ...drain, perCycleCost: 0 }, CONCURRENT_JOBS)).toContain(
+    "must be positive",
+  );
   expect(
-    validateBudget(standing, { ...drain, expiresAt: NOW, concurrentPerMachine: 8 }, CONCURRENT_JOBS),
+    validateBudget(
+      standing,
+      { ...drain, expiresAt: NOW, concurrentPerMachine: 8 },
+      CONCURRENT_JOBS,
+    ),
   ).toContain("no time at all");
   expect(
-    validateBudget(standing, { ...drain, concurrentPerMachine: 8, perCycleCost: 1, dailyCost: 2 }, CONCURRENT_JOBS),
+    validateBudget(
+      standing,
+      { ...drain, concurrentPerMachine: 8, perCycleCost: 1, dailyCost: 2 },
+      CONCURRENT_JOBS,
+    ),
   ).toBeNull();
 
   // And what it produces is the standing policy with those numbers and nothing else moved: the

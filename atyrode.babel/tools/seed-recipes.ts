@@ -119,7 +119,9 @@ function recipeOf(file: string, text: string, versions: Map<string, number>): Po
   const id = field(front, "id");
   if (id === "") throw new Error(`${file}: the frontmatter names no id`);
   if (id !== basename(file, ".md")) {
-    throw new Error(`${file}: the frontmatter calls it ${id}, so the file name and the id disagree`);
+    throw new Error(
+      `${file}: the frontmatter calls it ${id}, so the file name and the id disagree`,
+    );
   }
   const declared = Number(field(front, "version"));
   const recorded = versions.get(id);

@@ -27,7 +27,14 @@ const DAY = 24 * HOUR;
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 
 interface Entry extends Ranked {
-  post: { id: string; kind: PostKind; score: number; support: number; oppose: number; awaiting: boolean };
+  post: {
+    id: string;
+    kind: PostKind;
+    score: number;
+    support: number;
+    oppose: number;
+    awaiting: boolean;
+  };
   createdAt: number;
   activity: number[];
   urgency: number;
@@ -37,7 +44,14 @@ function entry(
   id: string,
   createdAt: number,
   score: number,
-  extra: Partial<{ kind: PostKind; support: number; oppose: number; awaiting: boolean; urgency: number; activity: number[] }> = {},
+  extra: Partial<{
+    kind: PostKind;
+    support: number;
+    oppose: number;
+    awaiting: boolean;
+    urgency: number;
+    activity: number[];
+  }> = {},
 ): Entry {
   return {
     post: {
@@ -173,36 +187,57 @@ describe("every sort", () => {
 describe("next", () => {
   test("orders by urgency, then kind, then the longest wait", () => {
     const blocked = entry("qst_block", NOW - 60_000, 0, {
-      kind: "question", awaiting: true, urgency: URGENCY.blocked,
+      kind: "question",
+      awaiting: true,
+      urgency: URGENCY.blocked,
     });
     const reopened = entry("fnd_reopened", NOW - HOUR, 0, {
-      kind: "finding", awaiting: true, urgency: URGENCY.reopened,
+      kind: "finding",
+      awaiting: true,
+      urgency: URGENCY.reopened,
     });
     const proposal = entry("pro_new", NOW - 2 * HOUR, 0, {
-      kind: "proposal", awaiting: true, urgency: URGENCY.unruled,
+      kind: "proposal",
+      awaiting: true,
+      urgency: URGENCY.unruled,
     });
     const finding = entry("fnd_new", NOW - 3 * HOUR, 0, {
-      kind: "finding", awaiting: true, urgency: URGENCY.unruled,
+      kind: "finding",
+      awaiting: true,
+      urgency: URGENCY.unruled,
     });
     const candidate = entry("hyp_new", NOW - 4 * HOUR, 0, {
-      kind: "hypothesis", awaiting: true, urgency: URGENCY.unruled,
+      kind: "hypothesis",
+      awaiting: true,
+      urgency: URGENCY.unruled,
     });
     const asked = entry("qst_idle", NOW - 5 * HOUR, 0, {
-      kind: "question", awaiting: true, urgency: URGENCY.asked,
+      kind: "question",
+      awaiting: true,
+      urgency: URGENCY.asked,
     });
     const settled = entry("pro_done", NOW - 10 * HOUR, 4);
 
     const posts = [settled, asked, candidate, finding, proposal, reopened, blocked];
     sortFeed(posts, "next", NOW);
     expect(ids(posts)).toEqual([
-      "qst_block", "fnd_reopened", "pro_new", "fnd_new", "hyp_new", "qst_idle", "pro_done",
+      "qst_block",
+      "fnd_reopened",
+      "pro_new",
+      "fnd_new",
+      "hyp_new",
+      "qst_idle",
+      "pro_done",
     ]);
   });
 
   // The one place the order inverts every other sort: a queue nobody drains from the bottom has
   // a permanent bottom.
   test("drains the oldest wait first inside one kind and urgency", () => {
-    const older = entry("pro_older", NOW - 5 * HOUR, 0, { awaiting: true, urgency: URGENCY.unruled });
+    const older = entry("pro_older", NOW - 5 * HOUR, 0, {
+      awaiting: true,
+      urgency: URGENCY.unruled,
+    });
     const newer = entry("pro_newer", NOW - HOUR, 0, { awaiting: true, urgency: URGENCY.unruled });
     expect(nextBefore(older, newer)).toBeLessThan(0);
     // …while a post awaiting nothing keeps the newest-first order of every other sort.

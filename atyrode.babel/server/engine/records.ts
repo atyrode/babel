@@ -271,7 +271,8 @@ class Writer {
    * not hold is a gap in the ledger to read, not an `entities` row this run may create.
    */
   question(draft: QuestionDraft): void {
-    const blocked = draft.hypothesis === "" ? "" : (this.hypotheses.get(draft.hypothesis) ?? draft.hypothesis);
+    const blocked =
+      draft.hypothesis === "" ? "" : (this.hypotheses.get(draft.hypothesis) ?? draft.hypothesis);
     this.rows[JOB_OUTPUT_FILES.questions]?.push({
       id: mintId("qst", this.settlement.runId, draft.ref),
       kind: "acquire-context",
@@ -336,7 +337,9 @@ class Writer {
   private scheduled(ref: string, what: string): string {
     const local = this.hypotheses.get(ref);
     if (local !== undefined) return local;
-    this.notes.push(`the ${what} of ${ref} names no candidate this run declared, so it was dropped`);
+    this.notes.push(
+      `the ${what} of ${ref} names no candidate this run declared, so it was dropped`,
+    );
     return "";
   }
 

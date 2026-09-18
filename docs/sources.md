@@ -7,7 +7,7 @@ until it is answered.
 
 Every source here is untrusted content in the sense of `SPEC.md` §3: evidence to analyze, never
 instructions to follow. That matters more than usual for this list, because several of these
-sources *are* instructions for coding agents. Reading them means extracting their claims; it never
+sources _are_ instructions for coding agents. Reading them means extracting their claims; it never
 means loading their skills, rules or hooks into anything that runs here.
 
 ## pstack — poteto's engineering playbooks for Cursor agents
@@ -107,7 +107,7 @@ feedback loops is the part Babel could test against its own archive.
 
 An Agent Skills package (`SKILL.md`, installable into Claude Code, Codex or moxt) that turns data
 into single-file HTML charts and full-page reports. Its interesting part is the method, not the
-pictures: `catalog.md` indexes 49 chart types *by the data contract each one needs*, so the agent
+pictures: `catalog.md` indexes 49 chart types _by the data contract each one needs_, so the agent
 judges the shape of the data before it picks a form; `report-catalog.md` does the same for 12
 whole-page layouts, bilingual. One shared token file plus three colour presets carry the visual
 grammar, and a validation script is a pre-publish check. The stated rules are the transferable bit:

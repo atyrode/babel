@@ -54,7 +54,8 @@ function field(root: HTMLElement, label: string): HTMLElement {
 /** One figure of the running-drain strip, by its label. */
 function stat(root: HTMLElement, label: string): string {
   for (const box of section(root).querySelectorAll(STAT)) {
-    if (box.querySelector(".plugin-atyrode_babel_watch__stat-label")?.textContent !== label) continue;
+    if (box.querySelector(".plugin-atyrode_babel_watch__stat-label")?.textContent !== label)
+      continue;
     return box.querySelector(".plugin-atyrode_babel_watch__stat-value")?.textContent ?? "";
   }
   throw new Error(`no figure labelled ${label}`);
@@ -86,11 +87,11 @@ async function compose(root: HTMLElement): Promise<void> {
 test("the three drain presets are the ones a drain fans out, and the beat says it spends nothing", async () => {
   const { root } = await open();
   const cards = [...section(root).querySelectorAll(DRAIN_PRESET)];
-  expect(cards.map((card) => card.querySelector(".plugin-atyrode_babel_watch__preset-title")?.textContent)).toEqual([
-    "Read what's new",
-    "Explore a topic",
-    "Keep going",
-  ]);
+  expect(
+    cards.map(
+      (card) => card.querySelector(".plugin-atyrode_babel_watch__preset-title")?.textContent,
+    ),
+  ).toEqual(["Read what's new", "Explore a topic", "Keep going"]);
   // THE DRAWN PRESETS ARE ABSENT BY DESIGN: fanning them out would be a second implementation of
   // the coordinator, and the panel must not offer what the door refuses.
   expect(section(root).textContent).not.toContain("Review the backlog");
@@ -182,7 +183,10 @@ test("a running drain shows the six figures the runbook names, and the account i
           costMicrosPerMinute: 310_000,
           spent: { calls: 18, inputTokens: 420_000, outputTokens: 9_100, costMicros: 2_400_000 },
           settled: { calls: 12, inputTokens: 300_000, outputTokens: 6_000, costMicros: 1_800_000 },
-          target: { costMicros: 5_000_000, deadline: new Date(Date.now() + 40 * 60_000).toISOString() },
+          target: {
+            costMicros: 5_000_000,
+            deadline: new Date(Date.now() + 40 * 60_000).toISOString(),
+          },
           etaAt: new Date(Date.now() + 8 * 60_000).toISOString(),
           refusals: { schema: 2 },
           closures: { completed: 3, failed: 1 },
@@ -221,7 +225,10 @@ test("an ETA past the deadline says so, because that is the operator's cue to ac
       drains: [
         drainStatus({
           drainId: "drn_slow",
-          target: { costMicros: 5_000_000, deadline: new Date(Date.now() + 10 * 60_000).toISOString() },
+          target: {
+            costMicros: 5_000_000,
+            deadline: new Date(Date.now() + 10 * 60_000).toISOString(),
+          },
           etaAt: new Date(Date.now() + 90 * 60_000).toISOString(),
         }),
       ],

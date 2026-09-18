@@ -2,12 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { ENGINE_REFUSALS, MATERIAL_OUTPUT } from "../../contract.ts";
-import {
-  ENGINE_WITHOUT_ACTIONS,
-  codeEngine,
-  materialInput,
-  type ActionsSlice,
-} from "./session.ts";
+import { ENGINE_WITHOUT_ACTIONS, codeEngine, materialInput, type ActionsSlice } from "./session.ts";
 
 /*
   BABEL'S SIDE OF CODE'S DOORS, held to the two roads a refusal arrives by (ADR 0041).
@@ -76,7 +71,9 @@ describe("a refusal the host raised", () => {
 
   test("Code's own word inside the host's detail still moves a stale profile out of the generic refusal", async () => {
     const slice = actions(
-      hostRefusal(`refused: atyrode.babel -> ${CODE_PLUGIN_ID}.runSession (code_stale_preferences)`),
+      hostRefusal(
+        `refused: atyrode.babel -> ${CODE_PLUGIN_ID}.runSession (code_stale_preferences)`,
+      ),
     );
     const answered = await codeEngine(slice).readSession({ containerId: "c", jobId: "j" });
 
@@ -197,9 +194,7 @@ test("a session is posted with its material bound, and Code's own schema takes t
     artifactSha256: "a".repeat(64),
     inputDigest: "b".repeat(64),
     resourceBindingDigest: "c".repeat(64),
-    inputs: [
-      { name: MATERIAL_OUTPUT, from: { jobId: "job_1_material", output: MATERIAL_OUTPUT } },
-    ],
+    inputs: [{ name: MATERIAL_OUTPUT, from: { jobId: "job_1_material", output: MATERIAL_OUTPUT } }],
     state: "queued",
     nextInputSeq: null,
     result: null,
@@ -236,16 +231,12 @@ test("a session is posted with its material bound, and Code's own schema takes t
     machineId: "m-dev-01",
     expectedRevision: 4,
     prompt: "read the material",
-    inputs: [
-      { name: MATERIAL_OUTPUT, from: { jobId: "job_1_material", output: MATERIAL_OUTPUT } },
-    ],
+    inputs: [{ name: MATERIAL_OUTPUT, from: { jobId: "job_1_material", output: MATERIAL_OUTPUT } }],
   });
 });
 
 test("the material input names one binding: prepare's own sealed output", () => {
   expect(materialInput("job_7_material")).toEqual({
-    inputs: [
-      { name: MATERIAL_OUTPUT, from: { jobId: "job_7_material", output: MATERIAL_OUTPUT } },
-    ],
+    inputs: [{ name: MATERIAL_OUTPUT, from: { jobId: "job_7_material", output: MATERIAL_OUTPUT } }],
   });
 });

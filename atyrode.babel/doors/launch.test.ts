@@ -31,11 +31,7 @@ import {
 } from "../contract.ts";
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
-import {
-  type CodeEngine,
-  type CodeJob,
-  type EngineAnswer,
-} from "../server/engine/session.ts";
+import { type CodeEngine, type CodeJob, type EngineAnswer } from "../server/engine/session.ts";
 import type { Recipe } from "../server/engine/prompts.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
@@ -156,7 +152,6 @@ class Code implements CodeEngine {
     throw new Error("the press must not post a session: the preparation is still running");
   }
 
-
   /** What a Stop reaches for on a Code session; the launch tests never press one. */
   cancelled: { containerId: string; jobId: string }[] = [];
 
@@ -207,7 +202,8 @@ async function dispatch(name: string, args: unknown): Promise<Record<string, unk
   const found = doors.find((entry) => entry.action.name === name);
   if (found === undefined) throw new Error(`no door ${name}`);
   const parsed = found.action.input.safeParse(args);
-  if (!parsed.success) return { invalid: parsed.error.issues.map((issue) => issue.message).join("; ") };
+  if (!parsed.success)
+    return { invalid: parsed.error.issues.map((issue) => issue.message).join("; ") };
   const produced = await found.handler(ctx, parsed.data as never);
   if (typeof produced === "object" && produced !== null && "refused" in produced) {
     return produced as Record<string, unknown>;
@@ -268,8 +264,14 @@ beforeEach(async () => {
     recorded_at: stamp(NOW - HOUR),
   });
   await insert(db, "sessions", {
-    selector: "omp/s1", host: MACHINE, harness: "omp", source_id: "s1", title: "yesterday",
-    content_digest: "d1", snapshot_id: "snap-1", seen_at: stamp(NOW - 2 * HOUR),
+    selector: "omp/s1",
+    host: MACHINE,
+    harness: "omp",
+    source_id: "s1",
+    title: "yesterday",
+    content_digest: "d1",
+    snapshot_id: "snap-1",
+    seen_at: stamp(NOW - 2 * HOUR),
   });
   code = new Code();
   cookbook = { ...RECIPES };
@@ -412,7 +414,9 @@ test("an explore seals its material and records the intent; the session waits fo
   */
   expect(answer["refused"]).toBeUndefined();
   expect(answer["kind"]).toBe("explore");
-  expect(answer["jobId"]).toBe(`job_${answer["runId"] as string}`.replace("job_run_", "job_") + "_material");
+  expect(answer["jobId"]).toBe(
+    `job_${answer["runId"] as string}`.replace("job_run_", "job_") + "_material",
+  );
 
   // THE MATERIAL IS REAL WORK, POSTED: one `atyrode.babel.prepare` job with TWO sealed leases,
   // the ordinary outputs and the material a session will read. Code was not called at all.
@@ -450,8 +454,14 @@ test("the selection stops at the bytes one preparation may seal, and says how ma
     ["big3", NOW - 3000],
   ] as const) {
     await insert(harness.db, "sessions", {
-      selector: `omp/${n}`, host: MACHINE, harness: "omp", source_id: n, title: n,
-      content_digest: `d-${n}`, size: big, seen_at: stamp(at),
+      selector: `omp/${n}`,
+      host: MACHINE,
+      harness: "omp",
+      source_id: n,
+      title: n,
+      content_digest: `d-${n}`,
+      size: big,
+      seen_at: stamp(at),
     });
   }
 
@@ -481,8 +491,14 @@ test("a window offering nothing the lease can hold is refused by name, not as an
   // every byte of it; the door says it before a job exists.
   await harness.db.run(`DELETE FROM sessions`);
   await insert(harness.db, "sessions", {
-    selector: "omp/huge", host: MACHINE, harness: "omp", source_id: "huge", title: "huge",
-    content_digest: "d-huge", size: MAX_MATERIAL_BYTES + 1, seen_at: stamp(NOW - 1000),
+    selector: "omp/huge",
+    host: MACHINE,
+    harness: "omp",
+    source_id: "huge",
+    title: "huge",
+    content_digest: "d-huge",
+    size: MAX_MATERIAL_BYTES + 1,
+    seen_at: stamp(NOW - 1000),
   });
 
   const answer = await start({
@@ -539,13 +555,26 @@ test("a request authorized at one node and aimed at another is refused as itself
 test("stop cancels the job, closes the run and releases what it reserved", async () => {
   const { db, store } = harness;
   await insert(db, "runs", {
-    id: "run_live", kind: OPERATIONS.evaluate, machine_id: MACHINE, job_id: "job_live",
-    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+    id: "run_live",
+    kind: OPERATIONS.evaluate,
+    machine_id: MACHINE,
+    job_id: "job_live",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null }),
   });
   await insert(db, "claims", {
-    id: "asg_live", record_id: RECORD, role: "reception", lane: "coverage", policy_version: "p1",
-    job_id: "job_live", run_id: "cyc_1", fence: 1, reserved_cost: 0.0625,
-    granted_at: stamp(NOW - HOUR), expires_at: stamp(NOW + HOUR),
+    id: "asg_live",
+    record_id: RECORD,
+    role: "reception",
+    lane: "coverage",
+    policy_version: "p1",
+    job_id: "job_live",
+    run_id: "cyc_1",
+    fence: 1,
+    reserved_cost: 0.0625,
+    granted_at: stamp(NOW - HOUR),
+    expires_at: stamp(NOW + HOUR),
   });
 
   const answer = await halt(
@@ -555,14 +584,21 @@ test("stop cancels the job, closes the run and releases what it reserved", async
   );
 
   expect(answer).toEqual({
-    runId: "run_live", jobId: "job_live", machineId: MACHINE, closure: "stopped",
+    runId: "run_live",
+    jobId: "job_live",
+    machineId: MACHINE,
+    closure: "stopped",
   });
   expect(fleet.cancelled).toEqual([
     { kind: "job", machineId: MACHINE, operationId: OPERATIONS.evaluate, jobId: "job_live" },
   ]);
   const run = await store.run("run_live");
   expect(run.run).toMatchObject({ state: "stopped", freshness: "ended" });
-  expect(run.receipt).toMatchObject({ closure: "stopped", stoppedBy: "operator", reason: "it is arguing with itself" });
+  expect(run.receipt).toMatchObject({
+    closure: "stopped",
+    stoppedBy: "operator",
+    reason: "it is arguing with itself",
+  });
   // The reservation is released at what it actually spent, so the day's allowance is not held
   // by a worker the operator has just sent home.
   const claim = await db.query<{ outcome: string; actual_cost: number; finished_at: string }>(
@@ -573,8 +609,14 @@ test("stop cancels the job, closes the run and releases what it reserved", async
 
 test("stop refuses a run that has already ended, and one nobody started", async () => {
   await insert(harness.db, "runs", {
-    id: "run_done", kind: OPERATIONS.scan, machine_id: MACHINE, job_id: "job_done",
-    started_at: stamp(NOW - HOUR), finished_at: stamp(NOW), closure: "completed", records: 0,
+    id: "run_done",
+    kind: OPERATIONS.scan,
+    machine_id: MACHINE,
+    job_id: "job_done",
+    started_at: stamp(NOW - HOUR),
+    finished_at: stamp(NOW),
+    closure: "completed",
+    records: 0,
     payload: JSON.stringify({ closure: "completed" }),
   });
 
@@ -589,8 +631,13 @@ test("stop refuses a run that has already ended, and one nobody started", async 
 
 test("a machine that refuses to stop leaves the run open rather than lying about it", async () => {
   await insert(harness.db, "runs", {
-    id: "run_live", kind: OPERATIONS.scan, machine_id: MACHINE, job_id: "job_live",
-    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+    id: "run_live",
+    kind: OPERATIONS.scan,
+    machine_id: MACHINE,
+    job_id: "job_live",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null }),
   });
   fleet.refusal = "job_not_cancellable";
 
@@ -602,8 +649,13 @@ test("a machine that refuses to stop leaves the run open rather than lying about
 
 test("a stop authorized at one job and aimed at another reaches nothing", async () => {
   await insert(harness.db, "runs", {
-    id: "run_live", kind: OPERATIONS.scan, machine_id: MACHINE, job_id: "job_live",
-    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+    id: "run_live",
+    kind: OPERATIONS.scan,
+    machine_id: MACHINE,
+    job_id: "job_live",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null }),
   });
   const elsewhere = await halt("run_live", {
     machineId: "m-other",
@@ -617,9 +669,15 @@ test("a stop authorized at one job and aimed at another reaches nothing", async 
 
 test("stopping a Code session cancels it through Code, never through the hub's own jobs verb", async () => {
   await insert(harness.db, "runs", {
-    id: "run_session", kind: OPERATIONS.explore, machine_id: MACHINE, job_id: "job_code_1",
-    container_id: "ctr_workbench", prepare_job_id: "job_code_1_material",
-    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+    id: "run_session",
+    kind: OPERATIONS.explore,
+    machine_id: MACHINE,
+    job_id: "job_code_1",
+    container_id: "ctr_workbench",
+    prepare_job_id: "job_code_1_material",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null }),
   });
 
   const answer = await halt("run_session", {
@@ -628,7 +686,10 @@ test("stopping a Code session cancels it through Code, never through the hub's o
   });
 
   expect(answer).toEqual({
-    runId: "run_session", jobId: "job_code_1", machineId: MACHINE, closure: "stopped",
+    runId: "run_session",
+    jobId: "job_code_1",
+    machineId: MACHINE,
+    closure: "stopped",
   });
   /*
     THE JOB IS `atyrode.omp`'S AND `ctx.jobs.cancel` IS BOUND TO THE CALLING PLUGIN'S ID, so
@@ -652,9 +713,14 @@ test("stopping a run that is still preparing cancels the preparation and closes 
     the row is closed — the row being what `postPrepared` reads.
   */
   await insert(harness.db, "runs", {
-    id: "run_preparing", kind: OPERATIONS.explore, machine_id: MACHINE,
-    container_id: "ctr_workbench", prepare_job_id: "job_x_material",
-    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+    id: "run_preparing",
+    kind: OPERATIONS.explore,
+    machine_id: MACHINE,
+    container_id: "ctr_workbench",
+    prepare_job_id: "job_x_material",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null }),
   });
 
   // The panel asks at the PREPARATION's node, which is the only job this run has yet.
@@ -664,7 +730,10 @@ test("stopping a run that is still preparing cancels the preparation and closes 
   });
 
   expect(answer).toEqual({
-    runId: "run_preparing", jobId: "", machineId: MACHINE, closure: "stopped",
+    runId: "run_preparing",
+    jobId: "",
+    machineId: MACHINE,
+    closure: "stopped",
   });
   expect(fleet.cancelled).toEqual([
     {

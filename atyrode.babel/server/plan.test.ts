@@ -94,7 +94,12 @@ const MANIFEST = manifestWith({
   [OPERATIONS.prepare]: operation(["bun"], 3_600_000),
 });
 
-const POLICY = PolicySchema.parse({ enabled: true, perCycleCost: 0.25, batchSize: 4, dailyCost: 2 });
+const POLICY = PolicySchema.parse({
+  enabled: true,
+  perCycleCost: 0.25,
+  batchSize: 4,
+  dailyCost: 2,
+});
 
 test("a plan carries the operation's own declared limits, and nothing a launcher would need", () => {
   const plan = runPlan({ manifest: MANIFEST, policy: POLICY, operationId: OPERATIONS.prepare });
@@ -177,7 +182,13 @@ test("every verb the boundary serves passes straight through, arrays and all", a
     },
     execute: async (args: unknown) => {
       calls.push(args);
-      return await Promise.resolve({ jobId: "j1", machineId: "m", operationId: "scan", state: "queued", result: null });
+      return await Promise.resolve({
+        jobId: "j1",
+        machineId: "m",
+        operationId: "scan",
+        state: "queued",
+        result: null,
+      });
     },
     cancel: async (node: unknown) => {
       calls.push(node);
@@ -234,11 +245,23 @@ test("every verb the boundary serves passes straight through, arrays and all", a
   await jobs.disableSchedule({ scheduleId: timing.scheduleId, revision: "pol_1" });
 
   // The request the host is handed owns its arrays; the loop's is frozen and stays that way.
-  expect(calls[0]).toEqual({ ...launch, outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }] });
-  expect(calls[1]).toEqual({ kind: "job", machineId: "m", operationId: OPERATIONS.scan, jobId: "j1" });
+  expect(calls[0]).toEqual({
+    ...launch,
+    outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }],
+  });
+  expect(calls[1]).toEqual({
+    kind: "job",
+    machineId: "m",
+    operationId: OPERATIONS.scan,
+    jobId: "j1",
+  });
   // A cadence is one request plus its timing, and the copy is made for it too: a beat this
   // plugin registers for itself is what closed the hole the loop used to record a refusal for.
-  expect(calls[2]).toEqual({ ...launch, ...timing, outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }] });
+  expect(calls[2]).toEqual({
+    ...launch,
+    ...timing,
+    outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }],
+  });
   expect(handed[0]).not.toBe(launch.outputs[0]);
   expect(calls[3]).toEqual({ scheduleId: timing.scheduleId, revision: "pol_1" });
 
@@ -246,13 +269,23 @@ test("every verb the boundary serves passes straight through, arrays and all", a
   // it: more than the loop reads, and read as the loop's own shape without a translation.
   const listed = await jobs.schedules();
   expect(listed).toMatchObject([
-    { scheduleId: "atyrode.babel.conductor", revision: "pol_1", machineId: "m", intervalMs: 900_000 },
+    {
+      scheduleId: "atyrode.babel.conductor",
+      revision: "pol_1",
+      machineId: "m",
+      intervalMs: 900_000,
+    },
   ]);
 });
 
 test("only a dispatch's slice carries follow, and it hands back the snapshot and its close", async () => {
   const host = {} as unknown as GuestHookJobs;
-  const node = { kind: "job" as const, machineId: "m", operationId: OPERATIONS.evaluate, jobId: "j1" };
+  const node = {
+    kind: "job" as const,
+    machineId: "m",
+    operationId: OPERATIONS.evaluate,
+    jobId: "j1",
+  };
   const snapshot = { events: [], firstSeq: null, unavailable: null };
   const asked: unknown[] = [];
   let closes = 0;
@@ -284,7 +317,9 @@ test("only a dispatch's slice carries follow, and it hands back the snapshot and
 
 test("a hook served no job authority refuses every verb with the reason it has none", () => {
   const jobs = unauthorized(ENABLE_WITHOUT_JOBS);
-  expect(() => jobs.describe({ machineId: "m", pluginId: "atyrode.babel" })).toThrow(/no job slice/);
+  expect(() => jobs.describe({ machineId: "m", pluginId: "atyrode.babel" })).toThrow(
+    /no job slice/,
+  );
   expect(() => jobs.schedules()).toThrow(/no job slice/);
   expect(() => jobs.schedule({} as never)).toThrow(/no job slice/);
 });

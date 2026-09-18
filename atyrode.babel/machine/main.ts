@@ -110,7 +110,8 @@ export function parseArgv(argv: readonly string[]): Invocation {
       case "--out":
       case "--material": {
         const value = argv[i + 1];
-        if (value === undefined || value === "") throw new Error(`${argument} needs a path\n${USAGE}`);
+        if (value === undefined || value === "")
+          throw new Error(`${argument} needs a path\n${USAGE}`);
         if (argument === "--input") inputPath = value;
         else if (argument === "--out") outputDir = value;
         else materialDir = value;
@@ -122,7 +123,8 @@ export function parseArgv(argv: readonly string[]): Invocation {
     }
     if (argument.startsWith("-")) throw new Error(`unknown flag ${argument}\n${USAGE}`);
     if (operation !== null) throw new Error(`unexpected argument ${argument}\n${USAGE}`);
-    if (!(argument in MACHINE_OPERATIONS)) throw new Error(`unknown operation ${argument}\n${USAGE}`);
+    if (!(argument in MACHINE_OPERATIONS))
+      throw new Error(`unknown operation ${argument}\n${USAGE}`);
     operation = argument as OperationWord;
   }
   if (operation === null) throw new Error(`no operation named\n${USAGE}`);
@@ -140,7 +142,10 @@ export function parseArgv(argv: readonly string[]): Invocation {
  * operation that opened its own would be a second writer on a descriptor the owner made for one
  * (`machine/progress.ts`). A caller that hands one — a test, a hand-run — keeps it.
  */
-export async function run(invocation: Invocation, progress: ProgressChannel = openProgress()): Promise<Receipt> {
+export async function run(
+  invocation: Invocation,
+  progress: ProgressChannel = openProgress(),
+): Promise<Receipt> {
   const sink = directorySink(invocation.outputDir);
   const material = invocation.materialDir === "" ? null : materialSink(invocation.materialDir);
   const startedAt = new Date().toISOString();

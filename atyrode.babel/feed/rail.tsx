@@ -69,7 +69,8 @@ function TopicLink({
 }): ReactElement {
   const facts = [`${topic.posts.toLocaleString()} posts`];
   if (topic.binding !== null) facts.push(`${topic.binding.kind}: ${topic.binding.identity}`);
-  if (topic.interest.state !== "") facts.push(INTEREST_LABEL[topic.interest.state] ?? topic.interest.state);
+  if (topic.interest.state !== "")
+    facts.push(INTEREST_LABEL[topic.interest.state] ?? topic.interest.state);
   return (
     <li>
       <button
@@ -123,7 +124,12 @@ function Proposed({
         {proposal.operation} · {proposal.name} · {proposal.why}
       </p>
       <Cluster className="babel-topic-acts" gap="var(--babel-space-3)">
-        <button type="button" data-proposal={proposal.proposalId} disabled={working} onClick={() => void rule("accept")}>
+        <button
+          type="button"
+          data-proposal={proposal.proposalId}
+          disabled={working}
+          onClick={() => void rule("accept")}
+        >
           Accept
         </button>
         <button type="button" disabled={working} onClick={() => void rule("reject")}>
@@ -178,7 +184,10 @@ export function TopicRail({
   const shown = flat.slice(0, RAIL_TOPICS);
   const groups = RAIL_GROUPS.map((group) => ({
     label: group.label,
-    rows: shown.filter((topic) => (PARKED.includes(topic.interest.state) ? "" : topic.interest.state) === group.state),
+    rows: shown.filter(
+      (topic) =>
+        (PARKED.includes(topic.interest.state) ? "" : topic.interest.state) === group.state,
+    ),
   })).filter((group) => group.rows.length > 0);
   const proposed = answer.proposed.filter((row) => !(row.proposalId in ruled));
 
@@ -225,7 +234,9 @@ export function TopicRail({
         <section className="babel-topic-group babel-topic-proposed">
           <p className="babel-topic-group-label">
             Babel proposes
-            {proposed.length > 0 && <span className="babel-topic-group-count">{proposed.length.toLocaleString()}</span>}
+            {proposed.length > 0 && (
+              <span className="babel-topic-group-count">{proposed.length.toLocaleString()}</span>
+            )}
           </p>
           <ul className="babel-topic-list">
             {proposed.map((proposal) => (
@@ -265,23 +276,31 @@ export function TopicRail({
  * a projection with a stated freshness would go backwards while he worked.
  */
 export function Pulse({ host }: { host: HostServices }): ReactElement | null {
-  const pulse = usePolledResource<PulseResult | null>(async () => ask(host, ACTIONS.pulse, {}), RAIL_POLL_MS, {
-    key: "atyrode.babel.pulse",
-    initial: null,
-    topics: [BABEL_NODE],
-    events: host.client,
-  });
+  const pulse = usePolledResource<PulseResult | null>(
+    async () => ask(host, ACTIONS.pulse, {}),
+    RAIL_POLL_MS,
+    {
+      key: "atyrode.babel.pulse",
+      initial: null,
+      topics: [BABEL_NODE],
+      events: host.client,
+    },
+  );
   const value = pulse.value;
   if (value === null) return null;
   const today = value.today;
   return (
     <p className="babel-pulse">
-      Today Babel read {today.sessionsRead.toLocaleString()} sessions · wrote {today.records.toLocaleString()} · voted{" "}
-      {today.votes.toLocaleString()} · proposed {today.proposals.toLocaleString()}
-      {today.topicProposals > 0 && <> · {today.topicProposals.toLocaleString()} about topics</>} · you ruled{" "}
-      {today.ruled.toLocaleString()}
+      Today Babel read {today.sessionsRead.toLocaleString()} sessions · wrote{" "}
+      {today.records.toLocaleString()} · voted {today.votes.toLocaleString()} · proposed{" "}
+      {today.proposals.toLocaleString()}
+      {today.topicProposals > 0 && <> · {today.topicProposals.toLocaleString()} about topics</>} ·
+      you ruled {today.ruled.toLocaleString()}
       {value.reviewing.length > 0 && (
-        <span className="babel-pulse-reviewing" title={value.reviewing.map((row) => row.title).join(" · ")}>
+        <span
+          className="babel-pulse-reviewing"
+          title={value.reviewing.map((row) => row.title).join(" · ")}
+        >
           {" "}
           · {value.reviewing.length.toLocaleString()} under review
         </span>

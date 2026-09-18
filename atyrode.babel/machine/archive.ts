@@ -109,7 +109,10 @@ export async function archive(
     startedAt,
     finishedAt: new Date().toISOString(),
     closure: work.closure,
-    counts: work.parented === null ? { ...work.tallies } : { ...work.tallies, snapshotsParented: work.parented },
+    counts:
+      work.parented === null
+        ? { ...work.tallies }
+        : { ...work.tallies, snapshotsParented: work.parented },
     ...(work.reason === "" ? {} : { reason: work.reason.slice(0, MAX_REASON) }),
   };
   await out.receipt(receipt);
@@ -150,7 +153,13 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
     config = await resticConfig({ credentialFile: deps.credentialFile, env: process.env });
   } catch (err) {
     if (err instanceof ResticError) {
-      return { rows: [], tallies: counts, parented: null, closure: "failed", reason: describe(err) };
+      return {
+        rows: [],
+        tallies: counts,
+        parented: null,
+        closure: "failed",
+        reason: describe(err),
+      };
     }
     throw err;
   }
@@ -168,7 +177,13 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
     }
   } catch (err) {
     if (err instanceof ResticError) {
-      return { rows: [], tallies: counts, parented: null, closure: "failed", reason: describe(err) };
+      return {
+        rows: [],
+        tallies: counts,
+        parented: null,
+        closure: "failed",
+        reason: describe(err),
+      };
     }
     throw err;
   }
@@ -226,14 +241,22 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
   // the count unknown rather than zero: the archive is already durable either way.
   let parented: number | null = null;
   try {
-    const parents = new Map((await repo.snapshots()).map((snapshot) => [snapshot.id, snapshot.parentId]));
+    const parents = new Map(
+      (await repo.snapshots()).map((snapshot) => [snapshot.id, snapshot.parentId]),
+    );
     parented = minted.filter((id) => (parents.get(id) ?? null) !== null).length;
   } catch (err) {
     if (!(err instanceof ResticError)) throw err;
   }
 
   if (failures.length > 0) {
-    return { rows: [...rows.values()], tallies: counts, parented, closure: "failed", reason: failures.join("; ") };
+    return {
+      rows: [...rows.values()],
+      tallies: counts,
+      parented,
+      closure: "failed",
+      reason: failures.join("; "),
+    };
   }
   if (incomplete.length > 0) {
     counts.rootsIncomplete = incomplete.length;

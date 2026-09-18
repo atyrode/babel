@@ -97,11 +97,12 @@ describe("the stance", () => {
     const quiet = rows.topic;
     if (quiet === null) throw new Error("the fixture lost its topic");
     const fake = hub({
-      topic: () => topic({ topic: { ...quiet, interest: { state: "", reason: "", at: "", by: "" } } }),
+      topic: () =>
+        topic({ topic: { ...quiet, interest: { state: "", reason: "", at: "", by: "" } } }),
     });
     look({ topic: "ent_0000beef" });
     const view = await mount(<TopicPanel host={fake.host} />);
-    expect(view.one(".babel-note", ).textContent).toBeDefined();
+    expect(view.one(".babel-note").textContent).toBeDefined();
     expect(view.text()).toContain("You have not said where you stand on this.");
     expect(view.all('[data-interest][aria-pressed="true"]')).toHaveLength(0);
     await view.unmount();
@@ -132,7 +133,11 @@ describe("the stance", () => {
     await view.press('[data-interest="excluded"]');
     await view.press(".babel-interest .babel-primary");
     await view.settle();
-    expect(fake.last("interest")).toEqual({ entityId: "ent_0000beef", state: "excluded", reason: "" });
+    expect(fake.last("interest")).toEqual({
+      entityId: "ent_0000beef",
+      state: "excluded",
+      reason: "",
+    });
     await view.unmount();
   });
 });
@@ -144,7 +149,7 @@ describe("asking Babel", () => {
     const view = await mount(<TopicPanel host={fake.host} />);
     await view.press(".babel-asks .disclosure__header");
     await view.press('[data-ask="merge"]');
-    await view.type('.babel-asks input', "manifold");
+    await view.type(".babel-asks input", "manifold");
     await view.type(".babel-asks textarea", "they are one repository now");
     await view.press(".babel-asks .babel-primary");
     await view.settle();

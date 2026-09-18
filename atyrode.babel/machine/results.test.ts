@@ -51,7 +51,9 @@ function properties(schema: unknown): string[] {
 
 /** The fields the SKIP form offers, which is one and its reason. */
 function skipForm(schema: unknown): string[] {
-  const document = schema as { anyOf?: readonly { properties?: Record<string, unknown>; required?: string[] }[] };
+  const document = schema as {
+    anyOf?: readonly { properties?: Record<string, unknown>; required?: string[] }[];
+  };
   const form = (document.anyOf ?? []).find(
     (candidate) => Object.keys(candidate.properties ?? {}).length === 1,
   );
@@ -79,9 +81,17 @@ test("a stage is offered exactly the fields its authority admits", () => {
     "rejected",
   ]);
   // §5.4 gives the challenger no path to a finding and no business developing observations.
-  expect(properties(exploreJsonSchema("challenge"))).toEqual(["candidates", "objections", "questions"]);
+  expect(properties(exploreJsonSchema("challenge"))).toEqual([
+    "candidates",
+    "objections",
+    "questions",
+  ]);
   // The synthesizer gathers no new evidence and objects to nothing.
-  expect(properties(exploreJsonSchema("synthesize"))).toEqual(["candidates", "consolidations", "questions"]);
+  expect(properties(exploreJsonSchema("synthesize"))).toEqual([
+    "candidates",
+    "consolidations",
+    "questions",
+  ]);
 });
 
 test("a developed candidate with a remedy and a consolidation parses whole", () => {
@@ -89,7 +99,11 @@ test("a developed candidate with a remedy and a consolidation parses whole", () 
     candidates: [
       {
         ref: "c1",
-        hypothesis: { statement: "publishes are dropped silently", origin_cues: ["two retries"], priority: 0.6 },
+        hypothesis: {
+          statement: "publishes are dropped silently",
+          origin_cues: ["two retries"],
+          priority: 0.6,
+        },
         observations: [{ ref: "o1", recipe: RECIPE, claim: CLAIM }],
         remedy: {
           ref: "r1",
@@ -107,17 +121,29 @@ test("a developed candidate with a remedy and a consolidation parses whole", () 
       {
         ref: "con1",
         observations: ["o1"],
-        finding: { title: "silent drops", pattern: "retries exhaust and nothing is logged", counter_evidence_absent: true },
+        finding: {
+          title: "silent drops",
+          pattern: "retries exhaust and nothing is logged",
+          counter_evidence_absent: true,
+        },
       },
     ],
     deferred: [{ hypothesis: "c1", reason: "out of budget for this pass" }],
     questions: [
-      { ref: "q1", subjects: ["dev-01"], hypothesis: "c1", prompt: "which host runs the publisher?", why_asked: "two hosts claim it" },
+      {
+        ref: "q1",
+        subjects: ["dev-01"],
+        hypothesis: "c1",
+        prompt: "which host runs the publisher?",
+        why_asked: "two hosts claim it",
+      },
     ],
   });
 
   expect(result.candidates).toHaveLength(1);
-  expect(result.candidates[0]?.observations[0]?.claim.evidence[0]?.locator.digest).toBe("sha256:abc");
+  expect(result.candidates[0]?.observations[0]?.claim.evidence[0]?.locator.digest).toBe(
+    "sha256:abc",
+  );
   expect(result.candidates[0]?.remedy?.ref).toBe("r1");
   expect(result.consolidations[0]?.observations).toEqual(["o1"]);
   expect(result.deferred[0]?.reason).toBe("out of budget for this pass");
@@ -130,8 +156,22 @@ test("a challenger that consolidates is refused, not trimmed", () => {
   const error = refusal(() =>
     parseExploreResult("challenge", {
       candidates: [],
-      objections: [{ ref: "j1", hypothesis: "hyp_00000001", grounds: "evidence", recipe: RECIPE, claim: CLAIM }],
-      consolidations: [{ ref: "con1", observations: ["o1"], finding: { title: "t", pattern: "p", counter_evidence_absent: true } }],
+      objections: [
+        {
+          ref: "j1",
+          hypothesis: "hyp_00000001",
+          grounds: "evidence",
+          recipe: RECIPE,
+          claim: CLAIM,
+        },
+      ],
+      consolidations: [
+        {
+          ref: "con1",
+          observations: ["o1"],
+          finding: { title: "t", pattern: "p", counter_evidence_absent: true },
+        },
+      ],
     }),
   );
   expect(error.refusal).toBe(REFUSALS.schema);
@@ -159,7 +199,11 @@ test("an observation with no evidence, or with both counter-evidence answers, is
           ref: "c1",
           hypothesis: { statement: "s" },
           observations: [
-            { ref: "o1", recipe: RECIPE, claim: { ...CLAIM, counter_evidence: [EVIDENCE], counter_evidence_absent: true } },
+            {
+              ref: "o1",
+              recipe: RECIPE,
+              claim: { ...CLAIM, counter_evidence: [EVIDENCE], counter_evidence_absent: true },
+            },
           ],
         },
       ],
@@ -173,7 +217,11 @@ test("a consolidation resting on a candidate rather than an observation skips th
     parseExploreResult("explore", {
       candidates: [{ ref: "c1", hypothesis: { statement: "s" }, observations: [] }],
       consolidations: [
-        { ref: "con1", observations: ["c1"], finding: { title: "t", pattern: "p", counter_evidence_absent: true } },
+        {
+          ref: "con1",
+          observations: ["c1"],
+          finding: { title: "t", pattern: "p", counter_evidence_absent: true },
+        },
       ],
     }),
   );
@@ -186,7 +234,11 @@ test("a consolidation resting on a name nobody emitted or listed is refused", ()
     parseExploreResult("explore", {
       candidates: [],
       consolidations: [
-        { ref: "con1", observations: ["o-invented"], finding: { title: "t", pattern: "p", counter_evidence_absent: true } },
+        {
+          ref: "con1",
+          observations: ["o-invented"],
+          finding: { title: "t", pattern: "p", counter_evidence_absent: true },
+        },
       ],
     }),
   );
@@ -231,7 +283,13 @@ test("an objection on alternative grounds carries no locator and is accepted", (
         hypothesis: "hyp_0123456789abcdef",
         grounds: "alternative",
         recipe: RECIPE,
-        claim: { claim: "a queue would drop nothing", confidence: "low", impact: "moderate", evidence: [], counter_evidence_absent: true },
+        claim: {
+          claim: "a queue would drop nothing",
+          confidence: "low",
+          impact: "moderate",
+          evidence: [],
+          counter_evidence_absent: true,
+        },
       },
     ],
   });
@@ -261,7 +319,9 @@ test("every role has a generated schema and a result it can submit", () => {
       environment: "dev-01",
       as_of: "2026-09-12T10:00:00Z",
     },
-    challenge: { contributions: [{ kind: "objection", text: "the second observation contradicts the first" }] },
+    challenge: {
+      contributions: [{ kind: "objection", text: "the second observation contradicts the first" }],
+    },
     comparison: {
       contributions: [
         {
@@ -294,7 +354,12 @@ test("every role has a generated schema and a result it can submit", () => {
 });
 
 test("a role is offered exactly the fields its authority admits", () => {
-  expect(properties(reviewJsonSchema("reception"))).toEqual(["contributions", "skip", "uncertainty", "vote"]);
+  expect(properties(reviewJsonSchema("reception"))).toEqual([
+    "contributions",
+    "skip",
+    "uncertainty",
+    "vote",
+  ]);
   // Every role may decline, and declining is its own answer rather than a field beside a vote.
   for (const role of ROLES) expect(skipForm(reviewJsonSchema(role))).toEqual(["skip"]);
   expect(properties(reviewJsonSchema("evidence"))).toEqual([
@@ -327,26 +392,36 @@ test("a role is offered exactly the fields its authority admits", () => {
 
 test("a role may not say what another role says", () => {
   // A comparison that could mint a global vote would turn "B is better here" into an endorsement.
-  expect(refusal(() => parseReviewResult("comparison", { vote: "support" })).refusal).toBe(REFUSALS.schema);
+  expect(refusal(() => parseReviewResult("comparison", { vote: "support" })).refusal).toBe(
+    REFUSALS.schema,
+  );
   // A reception vote does not meet an evidence-check obligation.
-  expect(refusal(() => parseReviewResult("reception", { results: [] })).refusal).toBe(REFUSALS.schema);
+  expect(refusal(() => parseReviewResult("reception", { results: [] })).refusal).toBe(
+    REFUSALS.schema,
+  );
   // Only the outcome role reports what happened.
-  expect(refusal(() => parseReviewResult("evidence", { outcome: "verified" })).refusal).toBe(REFUSALS.schema);
+  expect(refusal(() => parseReviewResult("evidence", { outcome: "verified" })).refusal).toBe(
+    REFUSALS.schema,
+  );
   // A filing pass is not reviewing the record.
   expect(
-    refusal(() => parseReviewResult("filing", { contributions: [{ kind: "comment", text: "and it is weak" }] })).refusal,
+    refusal(() =>
+      parseReviewResult("filing", { contributions: [{ kind: "comment", text: "and it is weak" }] }),
+    ).refusal,
   ).toBe(REFUSALS.schema);
   // And no other role decides what a record is about.
   expect(
-    refusal(() => parseReviewResult("relevance", { filing: { entity: "babel", rationale: "because" } })).refusal,
+    refusal(() =>
+      parseReviewResult("relevance", { filing: { entity: "babel", rationale: "because" } }),
+    ).refusal,
   ).toBe(REFUSALS.schema);
 });
 
 test("a review that judged nothing is refused rather than consuming the assignment", () => {
   expect(refusal(() => parseReviewResult("reception", {})).refusal).toBe(REFUSALS.empty);
-  expect(refusal(() => parseReviewResult("relevance", { uncertainty: "I could not tell" })).refusal).toBe(
-    REFUSALS.empty,
-  );
+  expect(
+    refusal(() => parseReviewResult("relevance", { uncertainty: "I could not tell" })).refusal,
+  ).toBe(REFUSALS.empty);
 });
 
 test("a skip is a recorded gap, and the contract it is submitted under cannot spell one beside a vote", () => {
@@ -355,7 +430,9 @@ test("a skip is a recorded gap, and the contract it is submitted under cannot sp
   expect(skipped.vote).toBe("");
   // REFUSED AT THE SCHEMA BOUNDARY, not by the rule further in: the shape a role is offered is a
   // skip OR an assessment, so a submission carrying both matches neither form (#311).
-  const both = refusal(() => parseReviewResult("reception", { skip: "cannot judge", vote: "oppose" }));
+  const both = refusal(() =>
+    parseReviewResult("reception", { skip: "cannot judge", vote: "oppose" }),
+  );
   expect(both.refusal).toBe(REFUSALS.schema);
   expect(both.message).toContain("does not match its schema");
   // A model that echoes the field empty beside its assessment is submitting an assessment, which
@@ -364,7 +441,8 @@ test("a skip is a recorded gap, and the contract it is submitted under cannot sp
   // The validator is the ENFORCEMENT and not a belt, because the schema above is printed into the
   // prompt rather than constraining the model: a hand-written payload still gets the sentence.
   expect(
-    refusal(() => acceptReviewResult("reception", { skip: "cannot judge", vote: "oppose" })).message,
+    refusal(() => acceptReviewResult("reception", { skip: "cannot judge", vote: "oppose" }))
+      .message,
   ).toContain("skip cannot also state");
 });
 
@@ -372,14 +450,18 @@ test("a refinement names the exact record part and the replacement it proposes",
   expect(
     refusal(() =>
       parseReviewResult("challenge", {
-        contributions: [{ kind: "refinement", text: "the scope is ambiguous", would_change: "name the host" }],
+        contributions: [
+          { kind: "refinement", text: "the scope is ambiguous", would_change: "name the host" },
+        ],
       }),
     ).message,
   ).toContain("names no part");
   expect(
     refusal(() =>
       parseReviewResult("challenge", {
-        contributions: [{ kind: "refinement", text: "the scope is ambiguous", target: { path: "/problem" } }],
+        contributions: [
+          { kind: "refinement", text: "the scope is ambiguous", target: { path: "/problem" } },
+        ],
       }),
     ).message,
   ).toContain("both a reason and the change");
@@ -438,18 +520,29 @@ test("the scope rule is the refusal's own wording", () => {
 
 test("an observed outcome needs evidence, a scope, and an uncertainty when unverifiable", () => {
   const unsupported = refusal(() =>
-    parseReviewResult("outcome", { outcome: "verified", environment: "staging", as_of: "2026-09-12T10:00:00Z" }),
+    parseReviewResult("outcome", {
+      outcome: "verified",
+      environment: "staging",
+      as_of: "2026-09-12T10:00:00Z",
+    }),
   );
   expect(unsupported.refusal).toBe(REFUSALS.support);
   expect(unsupported.message).toContain("needs evidence");
 
   const unscoped = refusal(() =>
-    parseReviewResult("outcome", { outcome: "implemented", contributions: [{ kind: "evidence", evidence: [EVIDENCE] }] }),
+    parseReviewResult("outcome", {
+      outcome: "implemented",
+      contributions: [{ kind: "evidence", evidence: [EVIDENCE] }],
+    }),
   );
   expect(unscoped.message).toContain("environment");
 
   const unverifiable = refusal(() =>
-    parseReviewResult("outcome", { outcome: "unverifiable", environment: "staging", as_of: "2026-09-12T10:00:00Z" }),
+    parseReviewResult("outcome", {
+      outcome: "unverifiable",
+      environment: "staging",
+      as_of: "2026-09-12T10:00:00Z",
+    }),
   );
   expect(unverifiable.message).toContain("could not be checked");
 
@@ -476,7 +569,9 @@ test("a satisfied criterion with no evidence is the manufactured result §4.12 f
 
 test("a review may not promote work its own run authored, but may argue against it", () => {
   const self = { target: true, subjects: { pro_2222222222222222: true as const } };
-  expect(refusal(() => parseReviewResult("reception", { vote: "support" }, self)).refusal).toBe(REFUSALS.selfBoost);
+  expect(refusal(() => parseReviewResult("reception", { vote: "support" }, self)).refusal).toBe(
+    REFUSALS.selfBoost,
+  );
   expect(parseReviewResult("reception", { vote: "oppose" }, self).vote).toBe("oppose");
   expect(
     refusal(() =>
@@ -517,7 +612,12 @@ test("a comparison needs two alternatives and may only prefer one it compared", 
     refusal(() =>
       parseReviewResult("comparison", {
         contributions: [
-          { kind: "comparison", text: "elsewhere", alternatives, preferred: { kind: "proposal", id: "pro_3333333333333333" } },
+          {
+            kind: "comparison",
+            text: "elsewhere",
+            alternatives,
+            preferred: { kind: "proposal", id: "pro_3333333333333333" },
+          },
         ],
       }),
     ).message,
@@ -532,11 +632,16 @@ test("the filing role's four answers parse, and exactly one may be given", () =>
   });
   expect(filed.filing?.entity).toBe("babel");
 
-  const nothing = parseReviewResult("filing", { no_topic: { reason: "this is about the process itself" } });
+  const nothing = parseReviewResult("filing", {
+    no_topic: { reason: "this is about the process itself" },
+  });
   expect(nothing.noTopic?.reason).toContain("process");
 
   const answered = parseReviewResult("filing", {
-    no_change: { ask_id: "str_0001", reason: "the two topics name one thing and splitting them would cut across the records" },
+    no_change: {
+      ask_id: "str_0001",
+      reason: "the two topics name one thing and splitting them would cut across the records",
+    },
   });
   expect(answered.noChange?.ask_id).toBe("str_0001");
 
@@ -599,14 +704,21 @@ test("each of §4.13's four topic operations parses with its own target arithmet
   expect(merge.topic?.operation).toBe("merge");
 
   const retire = parseReviewResult("filing", {
-    topic: { operation: "retire", targets: ["ent_0000000000000003"], reasoning: "the topic was a directory, never a thing" },
+    topic: {
+      operation: "retire",
+      targets: ["ent_0000000000000003"],
+      reasoning: "the topic was a directory, never a thing",
+    },
   });
   expect(retire.topic?.operation).toBe("retire");
 
   // A merge of one topic, or a retirement of two, is not an act the ledger can perform.
   expect(
-    refusal(() => parseReviewResult("filing", { topic: { operation: "merge", targets: ["ent_1"], reasoning: "r" } }))
-      .message,
+    refusal(() =>
+      parseReviewResult("filing", {
+        topic: { operation: "merge", targets: ["ent_1"], reasoning: "r" },
+      }),
+    ).message,
   ).toContain("names 2 existing topics, not 1");
   // A merge creates nothing, so a name on one is a claim it cannot make.
   expect(
@@ -619,32 +731,47 @@ test("each of §4.13's four topic operations parses with its own target arithmet
 });
 
 test("a created topic needs an admitted kind, a dedup identity and a binding to something real", () => {
-  const base = { operation: "create" as const, name: "babel", identity: "babel", reasoning: "nothing names it" };
-  expect(refusal(() => parseReviewResult("filing", { topic: { ...base, kind: "folder" } })).refusal).toBe(
-    REFUSALS.vocabulary,
-  );
+  const base = {
+    operation: "create" as const,
+    name: "babel",
+    identity: "babel",
+    reasoning: "nothing names it",
+  };
   expect(
-    refusal(() => parseReviewResult("filing", { topic: { ...base, kind: "project", identity: "" } })).message,
+    refusal(() => parseReviewResult("filing", { topic: { ...base, kind: "folder" } })).refusal,
+  ).toBe(REFUSALS.vocabulary);
+  expect(
+    refusal(() =>
+      parseReviewResult("filing", { topic: { ...base, kind: "project", identity: "" } }),
+    ).message,
   ).toContain("identity that deduplicates");
-  expect(refusal(() => parseReviewResult("filing", { topic: { ...base, kind: "project" } })).message).toContain(
-    "topic with no binding is a folder",
-  );
+  expect(
+    refusal(() => parseReviewResult("filing", { topic: { ...base, kind: "project" } })).message,
+  ).toContain("topic with no binding is a folder");
 });
 
 test("the backlog role's five answers parse, and exactly one may be given", () => {
   const consolidated = parseReviewResult("backlog", {
     consolidate: {
       hypotheses: ["hyp_0123456789abcdef"],
-      finding: { title: "silent drops", pattern: "retries exhaust", why_it_matters: "publishes are lost" },
+      finding: {
+        title: "silent drops",
+        pattern: "retries exhaust",
+        why_it_matters: "publishes are lost",
+      },
     },
   });
   expect(consolidated.consolidate?.hypotheses).toHaveLength(1);
 
-  expect(parseReviewResult("backlog", { supersede: { by: "hyp_beef", reason: "says it with the counts" } }).supersede?.by).toBe(
-    "hyp_beef",
-  );
   expect(
-    parseReviewResult("backlog", { retire: { reason: "the service it describes was decommissioned" } }).retire?.reason,
+    parseReviewResult("backlog", {
+      supersede: { by: "hyp_beef", reason: "says it with the counts" },
+    }).supersede?.by,
+  ).toBe("hyp_beef");
+  expect(
+    parseReviewResult("backlog", {
+      retire: { reason: "the service it describes was decommissioned" },
+    }).retire?.reason,
   ).toContain("decommissioned");
   const promoted = parseReviewResult("backlog", {
     promote: {
@@ -656,19 +783,26 @@ test("the backlog role's five answers parse, and exactly one may be given", () =
     },
   });
   expect(promoted.promote?.predicate).toBe("service-placement");
-  expect(parseReviewResult("backlog", { keep: { reason: "still worth asking" } }).keep?.reason).toContain("asking");
+  expect(
+    parseReviewResult("backlog", { keep: { reason: "still worth asking" } }).keep?.reason,
+  ).toContain("asking");
 
   expect(
-    refusal(() =>
-      parseReviewResult("backlog", { retire: { reason: "a" }, keep: { reason: "b" } }),
-    ).message,
+    refusal(() => parseReviewResult("backlog", { retire: { reason: "a" }, keep: { reason: "b" } }))
+      .message,
   ).toContain("not 2 of them");
   expect(refusal(() => parseReviewResult("backlog", {})).refusal).toBe(REFUSALS.empty);
   // A predicate outside the ledger's vocabulary is refused by the schema the model was handed.
   expect(
     refusal(() =>
       parseReviewResult("backlog", {
-        promote: { observation: "obs_1", entity: "dev-01", predicate: "vibes", value: "good", reason: "r" },
+        promote: {
+          observation: "obs_1",
+          entity: "dev-01",
+          predicate: "vibes",
+          value: "good",
+          reason: "r",
+        },
       }),
     ).refusal,
   ).toBe(REFUSALS.schema);

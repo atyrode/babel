@@ -346,7 +346,7 @@ fingerprint moves. **Not built** — `docs/parity.md`.
 
 **Recall** is the lake read as memory by an agent that is not Babel's: the operator, mid-
 conversation with any agent, points at a past discussion and the agent asks Babel for it. Babel
-would answer two questions, *where is it* and *what does it say*, with the same retrieval its own
+would answer two questions, _where is it_ and _what does it say_, with the same retrieval its own
 runs use — search returning locators and a bounded excerpt and never a score, then show returning
 a bounded excerpt around a locator with a provenance header — and everything it returned would be
 delimited and labelled as archived data rather than instruction.
@@ -439,7 +439,7 @@ this section specifies is proven synthetically and the corpus's existing votes a
 
 A **topic** is what a record is about, and it is a Reality Ledger entity (§4.8) and nothing else:
 a repository, a project, a machine, a service, a concept — anything with a global ID, aliases, a
-reason for existing and a binding to something real. *A topic is not a folder.* The workspace a
+reason for existing and a binding to something real. _A topic is not a folder._ The workspace a
 session was started in is where work happened, not what it was about; a path under `/tmp` or a
 worktree's generated name is a locator, and a locator is evidence about a topic, never the topic.
 
@@ -454,28 +454,28 @@ the same proposal until materially new evidence exists.
 rationale and its author — produced by the run that wrote the record, by the filing recipe, or by
 the operator, and append-only: a re-filing supersedes, a withdrawal is a row, and the history of
 where a record was filed and why is readable. A record may be filed under several topics and under
-none; *unfiled* is an honest state and the triage backlog, not a bin.
+none; _unfiled_ is an honest state and the triage backlog, not a bin.
 
 **Interest is a fact about the world, not a preference knob.** The operator's stance toward a topic
-is recorded as lifecycle and analysis-policy facts on the entity — *working on it*, *keep an eye*,
-*not now*, *excluded* — each an attributed act with a reason kept verbatim. A versioned focus rule
-maps lifecycle to expenditure, so *not now* moves the draws elsewhere without deleting a record, a
-filing or the topic. *Not interested is a signal, not a deletion.*
+is recorded as lifecycle and analysis-policy facts on the entity — _working on it_, _keep an eye_,
+_not now_, _excluded_ — each an attributed act with a reason kept verbatim. A versioned focus rule
+maps lifecycle to expenditure, so _not now_ moves the draws elsewhere without deleting a record, a
+filing or the topic. _Not interested is a signal, not a deletion._
 
 **Split, merge, retire — with reasons.** A topic that names two things is split, two that name one
 are merged, and one that should never have existed is retired, each through append-only history
 with an attributed reason, reversible because nothing is edited. Retiring re-queues the topic's
 filings for triage.
 
-**Babel files its own output.** A cookbook recipe, *Babel files its output*, runs as its own draw
+**Babel files its own output.** A cookbook recipe, _Babel files its output_, runs as its own draw
 kind: it reads open records that are unfiled or filed only by a heuristic, and for each either
-files it under an existing entity with a rationale, raises a topic question, or records *no topic*
+files it under an existing entity with a rationale, raises a topic question, or records _no topic_
 with a reason, because some outputs are about nothing in particular and saying so is the honest
 result. Until it has run, a deployment may seed filings from repository identity alone — the one
 binding observable without a model — and must label those filings as heuristic.
 
 **Everything about a topic goes through Babel.** A new topic, a split, a merge and a retirement are
-one output kind — a *topic proposal* — produced by a run, carrying Babel's reasoning and the
+one output kind — a _topic proposal_ — produced by a run, carrying Babel's reasoning and the
 records it would file, reviewed like every other record; the operator's ruling on it is the same
 ruling he gives a proposal. No surface offers a button that creates, splits, merges or retires a
 topic directly, because a topic changed by hand is a change Babel did not see and cannot explain.
@@ -492,7 +492,7 @@ findings consolidate them, proposals address findings; an observation has no sta
 and takes its hypothesis's fate. The feed lists what can be ruled on — hypotheses, findings,
 proposals, questions — and an observation is reached at the evidence depth of the record it
 supports (§8.6), never as a row of its own. Nothing is stale by a clock: a record is stale because
-Babel's reviewers found it so, because the topic it is filed under is *not now* or retired, or
+Babel's reviewers found it so, because the topic it is filed under is _not now_ or retired, or
 because a newer record supersedes it.
 
 ## 5. Analysis cookbook
@@ -642,10 +642,10 @@ are recorded. A descendant analysis never overwrites its ancestor, and generated
 as model-produced so it cannot become independent corroboration through repetition. Self-analysis
 has the same containment and no-publication boundaries as every other run.
 
-Five meta recipes ship, none default-enabled: *Babel improves Babel* evaluates output quality and
-acceptance; *Babel tunes itself* examines operator-specific relevance; *Mechanization audit* reads
-receipts for inference that could have been retrieval; *Babel triages the queue* is the
-role-bounded evaluation contract of §4.12; and *Babel consolidates its backlog* works the
+Five meta recipes ship, none default-enabled: _Babel improves Babel_ evaluates output quality and
+acceptance; _Babel tunes itself_ examines operator-specific relevance; _Mechanization audit_ reads
+receipts for inference that could have been retrieval; _Babel triages the queue_ is the
+role-bounded evaluation contract of §4.12; and _Babel consolidates its backlog_ works the
 hypotheses a run deferred and nobody came back to. A meta recipe proposes versioned cookbook
 changes and never edits the active cookbook.
 
@@ -933,7 +933,7 @@ identical rules.
 **The front page is the feed, and there is one list.** Every record Babel has produced —
 hypothesis, finding, proposal, and the questions it asks — is a post: one line of claim, its kind
 as flair, the topics it belongs to, its age, Babel's score, its comment count, and, when it awaits
-the operator, *why it is next* in five words. One sort bar over the whole deployment: **next** —
+the operator, _why it is next_ in five words. One sort bar over the whole deployment: **next** —
 what needs the operator, a proposal before a finding before a candidate at equal urgency — plus
 **hot**, **new**, **top** and **controversial** over an hour, day, week, month, year or all time,
 and **rising**.
@@ -942,12 +942,12 @@ and **rising**.
 run per role on one exact revision, support minus oppose, with the breakdown by role one gesture
 away wherever the number appears. The operator does not vote, because his act on a record is a
 ruling and a vote beside it would be a weaker copy of it. The acts a row offers are the rulings
-themselves — accept, reject, defer, refine — and *ask*, which is a question to Babel about this
+themselves — accept, reject, defer, refine — and _ask_, which is a question to Babel about this
 record, recorded as a comment Babel's next review of the record must answer.
 
 **A topic is an entity.** A post's topics are the ledger entities it is filed under (§4.13); a
 topic page is the feed narrowed to one entity, the rail lists entities with active lifecycle first,
-and a record filed under nothing is in the feed as *unfiled* rather than hidden.
+and a record filed under nothing is in the feed as _unfiled_ rather than hidden.
 
 **Comments are the conversation under a post.** A reviewer's contribution prose, a refinement, the
 operator's reason in his own words, his question, and the answer to a question are all comments,
@@ -959,7 +959,6 @@ comments. A run is the author of what it wrote: its name on a post or a vote rea
 storage concept is a defect under this section. The kinds become filters over one list, which is
 where a kind belongs: a distinction the reader applies when he wants it, not a place he has to go
 first.
-
 
 ## 9. Durable state
 

@@ -219,189 +219,229 @@ export function actDoors(
   jobs: (ctx: GuestCtx) => Pick<BabelJobs, "describe">,
 ): readonly Door[] {
   return [
-    defineDoor(ruleAction, async (ctx, args) =>
-      await acted(async () => {
-        const ruled = await rule(
-          store,
-          { id: args.id, ruling: args.ruling, note: args.note, duplicateOf: args.duplicateOf },
-          ctx.principal.id,
-        );
-        ctx.emit(OWN_NODE, EVENTS.ruled, {
-          id: ruled.id,
-          ruling: args.ruling,
-          standing: ruled.standing,
-          seq: ruled.seq,
-        });
-        // A plan that moved the ledger is its own event: a reader of the feed learns a record was
-        // ruled on, and a reader of the topics page learns an entity now exists.
-        if (ruled.plan?.applied === true) {
-          ctx.emit(OWN_NODE, EVENTS.planApplied, {
+    defineDoor(
+      ruleAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const ruled = await rule(
+            store,
+            { id: args.id, ruling: args.ruling, note: args.note, duplicateOf: args.duplicateOf },
+            ctx.principal.id,
+          );
+          ctx.emit(OWN_NODE, EVENTS.ruled, {
             id: ruled.id,
-            kind: ruled.plan.kind,
-            operation: ruled.plan.operation,
-            entityId: ruled.plan.entityId ?? "",
+            ruling: args.ruling,
+            standing: ruled.standing,
+            seq: ruled.seq,
           });
-        }
-        return ruled;
-      }),
+          // A plan that moved the ledger is its own event: a reader of the feed learns a record was
+          // ruled on, and a reader of the topics page learns an entity now exists.
+          if (ruled.plan?.applied === true) {
+            ctx.emit(OWN_NODE, EVENTS.planApplied, {
+              id: ruled.id,
+              kind: ruled.plan.kind,
+              operation: ruled.plan.operation,
+              entityId: ruled.plan.entityId ?? "",
+            });
+          }
+          return ruled;
+        }),
     ),
 
-    defineDoor(commentAction, async (ctx, args) =>
-      await acted(async () => {
-        const commented = await comment(
-          store,
-          { id: args.id, text: args.text, kind: args.kind, relatedId: args.relatedId },
-          ctx.principal.id,
-        );
-        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
-          id: commented.id,
-          recordId: commented.recordId,
-          question: commented.question,
-        });
-        return commented;
-      }),
+    defineDoor(
+      commentAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const commented = await comment(
+            store,
+            { id: args.id, text: args.text, kind: args.kind, relatedId: args.relatedId },
+            ctx.principal.id,
+          );
+          ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+            id: commented.id,
+            recordId: commented.recordId,
+            question: commented.question,
+          });
+          return commented;
+        }),
     ),
 
-    defineDoor(answerAction, async (ctx, args) =>
-      await acted(async () => {
-        const answered = await answer(store, args, ctx.principal.id);
-        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
-          id: answered.id,
-          questionId: answered.questionId,
-          state: answered.state,
-        });
-        return answered;
-      }),
+    defineDoor(
+      answerAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const answered = await answer(store, args, ctx.principal.id);
+          ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+            id: answered.id,
+            questionId: answered.questionId,
+            state: answered.state,
+          });
+          return answered;
+        }),
     ),
 
-    defineDoor(interestAction, async (ctx, args) =>
-      await acted(async () => {
-        const stated = await interest(
-          store,
-          { entityId: args.entityId, state: args.state, reason: args.reason },
-          ctx.principal.id,
-        );
-        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
-          entityId: stated.entityId,
-          state: stated.state,
-          facts: stated.facts.length,
-        });
-        return stated;
-      }),
+    defineDoor(
+      interestAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const stated = await interest(
+            store,
+            { entityId: args.entityId, state: args.state, reason: args.reason },
+            ctx.principal.id,
+          );
+          ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+            entityId: stated.entityId,
+            state: stated.state,
+            facts: stated.facts.length,
+          });
+          return stated;
+        }),
     ),
 
-    defineDoor(fileAction, async (ctx, args) =>
-      await acted(async () => {
-        const filed = await file(store, args, ctx.principal.id);
-        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
-          id: filed.id,
-          recordId: filed.recordId,
-          entityId: filed.entityId,
-        });
-        return filed;
-      }),
+    defineDoor(
+      fileAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const filed = await file(store, args, ctx.principal.id);
+          ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+            id: filed.id,
+            recordId: filed.recordId,
+            entityId: filed.entityId,
+          });
+          return filed;
+        }),
     ),
 
-    defineDoor(unfileAction, async (ctx, args) =>
-      await acted(async () => {
-        const withdrawn = await unfile(store, args, ctx.principal.id);
-        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
-          id: withdrawn.id,
-          recordId: withdrawn.recordId,
-          entityId: withdrawn.entityId,
-          withdrawn: true,
-        });
-        return withdrawn;
-      }),
+    defineDoor(
+      unfileAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const withdrawn = await unfile(store, args, ctx.principal.id);
+          ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+            id: withdrawn.id,
+            recordId: withdrawn.recordId,
+            entityId: withdrawn.entityId,
+            withdrawn: true,
+          });
+          return withdrawn;
+        }),
     ),
 
-    defineDoor(tellAction, async (ctx, args) =>
-      await acted(async () => {
-        const told = await tell(
-          store,
-          { text: args.text, target: args.target, replyTo: args.replyTo },
-          ctx.principal.id,
-        );
-        ctx.emit(OWN_NODE, EVENTS.recordWritten, { id: told.id, rootId: told.rootId, seq: told.seq });
-        return told;
-      }),
+    defineDoor(
+      tellAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const told = await tell(
+            store,
+            { text: args.text, target: args.target, replyTo: args.replyTo },
+            ctx.principal.id,
+          );
+          ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+            id: told.id,
+            rootId: told.rootId,
+            seq: told.seq,
+          });
+          return told;
+        }),
     ),
 
-    defineDoor(setPolicyAction, async (ctx, args) =>
-      await acted(async () => {
-        const installed = await setPolicy(store, args.policy, args.reason, ctx.principal.id, concurrentJobs);
-        ctx.emit(OWN_NODE, EVENTS.recordWritten, { version: installed.version, seq: installed.seq });
-        return installed;
-      }),
+    defineDoor(
+      setPolicyAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const installed = await setPolicy(
+            store,
+            args.policy,
+            args.reason,
+            ctx.principal.id,
+            concurrentJobs,
+          );
+          ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+            version: installed.version,
+            seq: installed.seq,
+          });
+          return installed;
+        }),
     ),
 
-    defineDoor(setBudgetAction, async (ctx, args) =>
-      await acted(async () => {
-        const overlaid = await setBudget(store, args, ctx.principal.id, concurrentJobs);
-        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
-          budgetId: overlaid.id,
-          expiresAt: overlaid.expiresAt,
-          changes: overlaid.changes.length,
-        });
-        return overlaid;
-      }),
+    defineDoor(
+      setBudgetAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const overlaid = await setBudget(store, args, ctx.principal.id, concurrentJobs);
+          ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+            budgetId: overlaid.id,
+            expiresAt: overlaid.expiresAt,
+            changes: overlaid.changes.length,
+          });
+          return overlaid;
+        }),
     ),
 
-    defineDoor(clearBudgetAction, async (ctx, args) =>
-      await acted(async () => {
-        const cleared = await clearBudget(store, args, ctx.principal.id);
-        ctx.emit(OWN_NODE, EVENTS.recordWritten, { budgetId: cleared.id, cleared: true });
-        return cleared;
-      }),
+    defineDoor(
+      clearBudgetAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const cleared = await clearBudget(store, args, ctx.principal.id);
+          ctx.emit(OWN_NODE, EVENTS.recordWritten, { budgetId: cleared.id, cleared: true });
+          return cleared;
+        }),
     ),
 
-    defineDoor(importLedgerAction, async (ctx, args) =>
-      await acted(async () => {
-        // The crossing rewrites provenance: it inserts rows carrying identifiers the Go tree
-        // minted, under their original timestamps, into tables whose triggers refuse an edit.
-        // Only the owner may do that, and a capability grant is not enough — there is no cap in
-        // the vocabulary that means "the owner", so the principal itself is the check.
-        if (!ctx.auth.isRoot) {
-          return { refused: "the crossing is the owner's act; this principal is not the owner" };
-        }
-        // A MACHINE COLUMN IS CHECKED AGAINST THE HUB BEFORE IT IS WRITTEN. `sessions.host` and
-        // `runs.machine_id` are hub machine ids that everything afterwards hands to `describe`,
-        // `listRuns` and `machines.repository`; a Go host NAME in either is a row no readiness
-        // check, run listing or folder question can ever reach, and 588 of them arrived that way
-        // before anything asked (#310). The hub is the only thing that can tell the difference,
-        // and it is reachable right here.
-        const unknown = await unknownMachines(jobs(ctx), args);
-        if (unknown.length > 0) {
-          return {
-            refused:
-              `${unknown.join(", ")} is not a machine this hub can describe, so a row hosted ` +
-              `there could not be read back: pass the machine id, not a host name`,
-          };
-        }
-        return await importLedger(store, args);
-      }),
+    defineDoor(
+      importLedgerAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          // The crossing rewrites provenance: it inserts rows carrying identifiers the Go tree
+          // minted, under their original timestamps, into tables whose triggers refuse an edit.
+          // Only the owner may do that, and a capability grant is not enough — there is no cap in
+          // the vocabulary that means "the owner", so the principal itself is the check.
+          if (!ctx.auth.isRoot) {
+            return { refused: "the crossing is the owner's act; this principal is not the owner" };
+          }
+          // A MACHINE COLUMN IS CHECKED AGAINST THE HUB BEFORE IT IS WRITTEN. `sessions.host` and
+          // `runs.machine_id` are hub machine ids that everything afterwards hands to `describe`,
+          // `listRuns` and `machines.repository`; a Go host NAME in either is a row no readiness
+          // check, run listing or folder question can ever reach, and 588 of them arrived that way
+          // before anything asked (#310). The hub is the only thing that can tell the difference,
+          // and it is reachable right here.
+          const unknown = await unknownMachines(jobs(ctx), args);
+          if (unknown.length > 0) {
+            return {
+              refused:
+                `${unknown.join(", ")} is not a machine this hub can describe, so a row hosted ` +
+                `there could not be read back: pass the machine id, not a host name`,
+            };
+          }
+          return await importLedger(store, args);
+        }),
     ),
 
-    defineDoor(rehostSessionsAction, async (ctx, args) =>
-      await acted(async () => {
-        if (!ctx.auth.isRoot) {
-          return { refused: "re-hosting the crossing's rows is the owner's act; this principal is not the owner" };
-        }
-        // THE HUB DECIDES WHETHER THE DESTINATION EXISTS, because that is the whole defect being
-        // repaired: a `host` no machine answers to. `describe` is keyed on the machine id and
-        // refuses an identifier that names no enrolled machine, so a name — the very thing in
-        // the rows — cannot be written back in as a second unusable value.
-        try {
-          await jobs(ctx).describe({ machineId: args.to, pluginId: BABEL_PLUGIN_ID });
-        } catch (error) {
-          return {
-            refused:
-              `${args.to} is not a machine this hub can describe, so it is not somewhere ` +
-              `sessions can be catalogued: ${message(error)}`,
-          };
-        }
-        return await rehostSessions(store, { from: args.from, to: args.to });
-      }),
+    defineDoor(
+      rehostSessionsAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          if (!ctx.auth.isRoot) {
+            return {
+              refused:
+                "re-hosting the crossing's rows is the owner's act; this principal is not the owner",
+            };
+          }
+          // THE HUB DECIDES WHETHER THE DESTINATION EXISTS, because that is the whole defect being
+          // repaired: a `host` no machine answers to. `describe` is keyed on the machine id and
+          // refuses an identifier that names no enrolled machine, so a name — the very thing in
+          // the rows — cannot be written back in as a second unusable value.
+          try {
+            await jobs(ctx).describe({ machineId: args.to, pluginId: BABEL_PLUGIN_ID });
+          } catch (error) {
+            return {
+              refused:
+                `${args.to} is not a machine this hub can describe, so it is not somewhere ` +
+                `sessions can be catalogued: ${message(error)}`,
+            };
+          }
+          return await rehostSessions(store, { from: args.from, to: args.to });
+        }),
     ),
   ];
 }

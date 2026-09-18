@@ -34,10 +34,7 @@
         "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64-baseline.zip",
         "sha256": "c678040f14fe0440eb839d37cbd0ce4c051a32da72806ac97de6a6aab6bf728f",
         "format": "zip",
-        "entry": [
-          "bun-linux-x64-baseline",
-          "bun"
-        ],
+        "entry": ["bun-linux-x64-baseline", "bun"],
         "entrySha256": "a83d263767d839e4d2649ca8e35d07159c7afc99afdc96d731ced29e056dda0c",
         "maxBytes": 36646949,
         "maxExpandedBytes": 79500640,
@@ -47,10 +44,7 @@
         "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-aarch64.zip",
         "sha256": "54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7",
         "format": "zip",
-        "entry": [
-          "bun-linux-aarch64",
-          "bun"
-        ],
+        "entry": ["bun-linux-aarch64", "bun"],
         "entrySha256": "616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1",
         "maxBytes": 36602920,
         "maxExpandedBytes": 79420872,

@@ -34,7 +34,7 @@
     "atyrode.babel/tools/seed-recipes.ts",
     "scripts/*.ts",
     "**/*.test.ts",
-    "**/*.test.tsx"
+    "**/*.test.tsx",
   ],
   "project": ["**/*.{ts,tsx}"],
   "ignore": [
@@ -43,7 +43,7 @@
     "atyrode.babel/machine.js",
     // Another repository's source and another family's bundles, prepared by `deps:code` so a
     // required dependency can be composed at verification.
-    ".integration/**"
+    ".integration/**",
   ],
   "ignoreDependencies": [
     // Shared externals: the host provides one copy at runtime and `link-externals.sh` links them
@@ -56,10 +56,10 @@
     // The test runtime's DOM. `happy-dom/global-registrator` is registered by a preload rather
     // than imported by a module, which is exactly the shape a reachability check cannot see.
     "@happy-dom/global-registrator",
-    "happy-dom"
+    "happy-dom",
   ],
   "ignoreBinaries": [
     // Resolved from the SDK checkout `manifold-dir.sh` finds, not from this package.
-    "manifold-dir.sh"
-  ]
+    "manifold-dir.sh",
+  ],
 }

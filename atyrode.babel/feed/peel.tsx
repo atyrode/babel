@@ -2,7 +2,14 @@ import { useState, type ReactElement, type ReactNode } from "react";
 import type { HostServices } from "@manifold/plugin";
 import { Chip, Cluster, Disclosure, Stack } from "@manifold/ui";
 import { since, type RecordPeel } from "./api.ts";
-import { KIND_LABELS, KIND_TONES, POST_ACTS, RowAnswer, RuleActs, type ActedHandler } from "./rows.tsx";
+import {
+  KIND_LABELS,
+  KIND_TONES,
+  POST_ACTS,
+  RowAnswer,
+  RuleActs,
+  type ActedHandler,
+} from "./rows.tsx";
 import { Votes } from "./votes.tsx";
 
 /*
@@ -59,7 +66,9 @@ function Depth({
       header={
         <>
           <span className="babel-peel-title">{title}</span>
-          {count !== undefined && <span className="babel-peel-count">{count.toLocaleString()}</span>}
+          {count !== undefined && (
+            <span className="babel-peel-count">{count.toLocaleString()}</span>
+          )}
         </>
       }
     >
@@ -93,7 +102,9 @@ export function Peel({
         <Cluster gap="var(--babel-space-3)" align="start">
           <Votes post={post} ticked={false} />
           <Stack gap="var(--babel-space-2)">
-            <h1 className="babel-record-claim">{post.title === "" ? peel.claim.statement : post.title}</h1>
+            <h1 className="babel-record-claim">
+              {post.title === "" ? peel.claim.statement : post.title}
+            </h1>
             <Cluster className="babel-facts" gap="var(--babel-space-2)" align="baseline">
               <span className="babel-kind" data-tone={KIND_TONES[post.kind]}>
                 {KIND_LABELS[post.kind]}
@@ -158,10 +169,19 @@ export function Peel({
       )}
 
       {peel.evidence.length > 0 && (
-        <Depth index={2} title="The evidence" count={peel.evidence.length} open={open} onToggle={toggle}>
+        <Depth
+          index={2}
+          title="The evidence"
+          count={peel.evidence.length}
+          open={open}
+          onToggle={toggle}
+        >
           <Stack gap="var(--babel-space-4)">
             {peel.evidence.map((item, index) => (
-              <figure className="babel-evidence" key={`${item.excerpt.slice(0, 24)}-${String(index)}`}>
+              <figure
+                className="babel-evidence"
+                key={`${item.excerpt.slice(0, 24)}-${String(index)}`}
+              >
                 <blockquote className="babel-quote">{item.excerpt}</blockquote>
                 <figcaption className="babel-note">
                   {item.speaker}

@@ -138,10 +138,7 @@ export function readExploreAnswer(
  * selection is on the run row, so verifying costs no read of a 12 GB corpus — which is the whole
  * economy this lane was rebuilt for (post-mortem F1).
  */
-export function unservedLocator(
-  result: ExploreResult,
-  sessions: readonly MaterialEntry[],
-): string {
+export function unservedLocator(result: ExploreResult, sessions: readonly MaterialEntry[]): string {
   const served = new Map<string, string>();
   for (const entry of sessions) {
     served.set(`${MATERIAL_SESSIONS}/${entry.file}`, entry.sourceDigest);
@@ -173,7 +170,8 @@ function citedEvidence(result: ExploreResult): readonly Evidence[] {
       cited.push(...observation.claim.evidence, ...observation.claim.counter_evidence);
     }
     const remedy = candidate.remedy;
-    if (remedy !== undefined) cited.push(...remedy.proposal.supporting, ...remedy.proposal.conflicting);
+    if (remedy !== undefined)
+      cited.push(...remedy.proposal.supporting, ...remedy.proposal.conflicting);
   }
   for (const objection of result.objections) {
     cited.push(...objection.claim.evidence, ...objection.claim.counter_evidence);
@@ -243,7 +241,8 @@ export interface ExplorePromptInput {
   /** What the preparation is called, so a reader of a claim can find what it was served. */
   readonly preparationId: string;
   readonly params: Readonly<Record<string, string>>;
-  readonly related?: { readonly framing: string; readonly records: readonly RelatedRecord[] } | undefined;
+  readonly related?:
+    { readonly framing: string; readonly records: readonly RelatedRecord[] } | undefined;
 }
 
 /** Renders one stage's prompt. */

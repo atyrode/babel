@@ -15,7 +15,7 @@ Two conventions, and they are the reason this file is worth reading rather than 
   named machine, not a claim about the fleet today.
 
 `docs/parity.md` is the companion: it records, per retired capability, whether the plugin has it.
-Where this runbook says *nothing does this*, that document says the same in a row with an issue.
+Where this runbook says _nothing does this_, that document says the same in a row with an issue.
 
 ---
 
@@ -65,7 +65,7 @@ per-operation, so a missing tool disables `archive` alone (`docs/building.md`).
 `snapshots`, and nothing else — no `check`, no `ls`, no `dump`, no `restore`
 (`docs/parity.md`, `.omp/skills/babel-cli/SKILL.md`). Verifying and restoring are therefore
 `restic` commands the operator types, which is also the property the old runbook cared most about:
-*archive recovery does not depend on the catalog — or on Babel.* It never did, and now it cannot.
+_archive recovery does not depend on the catalog — or on Babel._ It never did, and now it cannot.
 
 ### 2.1 Find what to restore
 
@@ -88,7 +88,7 @@ Restores are byte-exact and idempotent: restoring the same snapshot to the same 
 time reproduces the same bytes.
 
 **Exercised 2026-08-31 on `workstation-linux`**, against the real repository: a session belonging
-to a *different* machine (`alex-x86_64-linux-wsl`) — one this host had never held locally — was
+to a _different_ machine (`alex-x86_64-linux-wsl`) — one this host had never held locally — was
 restored from snapshot `3dd67096` with `restic` alone, no catalog consulted, and matched the
 independently restored copy byte for byte:
 
@@ -111,7 +111,7 @@ Reach for `--no-lock` first: it diagnoses without mutating, and it is the only f
 while the repository holds a lock.
 
 **Observed 2026-08-31 on `workstation-linux`:** `restic check` failed with `repository is already
-locked by PID 2841104 on ubuntu-4gb-nbg1-1`; two *shared* locks were stranded in the repository
+locked by PID 2841104 on ubuntu-4gb-nbg1-1`; two _shared_ locks were stranded in the repository
 from processes that no longer existed. A stale shared lock endangers no data and blocks no
 restore — both restores above succeeded while they were present — it blocks `check`, which wants
 the repository quiescent. `restic check --no-lock` then reported 44 snapshots and no errors.
@@ -123,7 +123,7 @@ the repository quiescent. `restic check --no-lock` then reported 44 snapshots an
 > `restic unlock` at all.
 > **Success:** `restic list locks --no-lock` shows the lock gone and `restic check --no-lock`
 > exits 0. Measured against restic 0.19.1, plain `restic unlock` removes a stale lock including an
-> exclusive one; `--remove-all` is what a lock that is *not* stale needs, and it removes every lock
+> exclusive one; `--remove-all` is what a lock that is _not_ stale needs, and it removes every lock
 > in the repository.
 >
 > **Never run `restic forget`, `restic prune` or `restic repair`.** Retention is append-only and no
@@ -146,13 +146,13 @@ a credential. The declared sources below were read at dotfiles revision
 `f2a4749eab77ac859b85354142e42c78ac6d8c80` (2026-09-06). They establish declared behaviour, not
 proof that any machine has applied it:
 
-| Contract | Pinned source |
-| --- | --- |
-| Shared custody; an existing password is prompted, never minted; existing rings survive rotation | [modules/shared/babel-archive.nix:1–31](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L1-L31) |
-| sops placement, owner/group and 0600 mode | [modules/shared/babel-archive.nix:44–75](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L44-L75) |
-| Shared `babel-custody`: secret undeployed inputs, a deployed complete ring, prompt validation | [modules/shared/babel-archive.nix:77–178](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L77-L178) |
-| Per-machine derived configuration and registry identity | [modules/shared/babel-archive.nix:180–243](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L180-L243) |
-| Operator-device generation followed by apply; no vault or provider session on the target | [fleet/provisioning.json:39–44](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/fleet/provisioning.json#L39-L44) |
+| Contract                                                                                        | Pinned source                                                                                                                                                            |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Shared custody; an existing password is prompted, never minted; existing rings survive rotation | [modules/shared/babel-archive.nix:1–31](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L1-L31)       |
+| sops placement, owner/group and 0600 mode                                                       | [modules/shared/babel-archive.nix:44–75](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L44-L75)     |
+| Shared `babel-custody`: secret undeployed inputs, a deployed complete ring, prompt validation   | [modules/shared/babel-archive.nix:77–178](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L77-L178)   |
+| Per-machine derived configuration and registry identity                                         | [modules/shared/babel-archive.nix:180–243](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L180-L243) |
+| Operator-device generation followed by apply; no vault or provider session on the target        | [fleet/provisioning.json:39–44](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/fleet/provisioning.json#L39-L44)                       |
 
 `babel-custody` holds `repository-password`, the provider environment inputs and
 `payload-keys.json` (§8). The password and the object-store credential are the two values the
@@ -304,7 +304,7 @@ is why none exists.
 > **Success:** the beat's schedule is gone and Watch reports the loop as off. Turning Babel off is
 > one recorded operator decision, never a migration and never a file edit.
 
-Stopping a *drain* is §11.5, and it is a different act: the policy is untouched and the jobs in
+Stopping a _drain_ is §11.5, and it is a different act: the policy is untouched and the jobs in
 flight must be cancelled.
 
 ### 7.3 Rollback
@@ -382,15 +382,15 @@ expressed as a value rather than as a migration.
 The policy is one document, written through the `setPolicy` door, and it carries both the
 authorization and the route:
 
-| Field | What it decides |
-| --- | --- |
-| `enabled` | whether the loop exists at all |
-| `cadenceSeconds` | the beat's period (§7.1) |
-| `batchSize`, `concurrentPerMachine`, `leaseSeconds` | how many assignments may be claimed at once, per machine, and for how long |
-| `perCycleCost`, `dailyCost` | the ceilings a cycle and a day may spend |
-| `coverageShare`, `explorationShare`, `discoveryShare`, `filingShare`, `backlogShare` | the protected allocations across lanes |
-| `review.machineId`, `review.profile` | where a drawn review runs and which saved Code profile it is posted on |
-| `review.roleRecipes`, `review.recipes` | which reviewed method each role uses, with the recipe bodies carried in the versioned policy so a later edit cannot change an in-flight assignment |
+| Field                                                                                | What it decides                                                                                                                                    |
+| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                                                                            | whether the loop exists at all                                                                                                                     |
+| `cadenceSeconds`                                                                     | the beat's period (§7.1)                                                                                                                           |
+| `batchSize`, `concurrentPerMachine`, `leaseSeconds`                                  | how many assignments may be claimed at once, per machine, and for how long                                                                         |
+| `perCycleCost`, `dailyCost`                                                          | the ceilings a cycle and a day may spend                                                                                                           |
+| `coverageShare`, `explorationShare`, `discoveryShare`, `filingShare`, `backlogShare` | the protected allocations across lanes                                                                                                             |
+| `review.machineId`, `review.profile`                                                 | where a drawn review runs and which saved Code profile it is posted on                                                                             |
+| `review.roleRecipes`, `review.recipes`                                               | which reviewed method each role uses, with the recipe bodies carried in the versioned policy so a later edit cannot change an in-flight assignment |
 
 A policy that cannot be honoured is refused with the sentence saying why: an unversioned policy
 could never be replayed against, a zero exploration or discovery share removes a protected
@@ -445,7 +445,7 @@ three rules. Weights are over metered cost, never run count. The controller sche
 a preset with no eligible work yields its slot and reports a gap rather than idling. And the
 operator names the allocation when the drain starts, or is asked (rule 8).
 
-On 2026-09-13 the allocation was everything on `review-backlog`, and that was a sound *choice*:
+On 2026-09-13 the allocation was everything on `review-backlog`, and that was a sound _choice_:
 reviews are the mass-produced unit of Babel's self-maintenance, duplicate assessments are reception
 data rather than waste, and a review can be as heavy as its profile makes it. It failed because each
 review re-prepared the whole corpus before its first model call (post-mortem F1, O1). What must hold

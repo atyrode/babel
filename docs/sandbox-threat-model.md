@@ -46,11 +46,11 @@ tmpfs home and the artifacts the operation declares — so it carries no libc un
 names the machine's native closure, and what is not declared does not exist inside. The manifest
 is the whole of what each operation may touch, and it is committed, reviewed code.
 
-| Operation | Reads | Writes | Network | Ceilings |
-| --- | --- | --- | --- | --- |
-| `scan` | `~/.omp`, `~/.codex`, `~/.claude`, read-only | the sealed output lease | **none** | 10 min, 1 GiB, 64 processes, 64 MiB of output |
-| `prepare` | the same three, read-only | the sealed output lease | **none** | 30 min, 1 GiB, 64 processes, 512 MiB of output |
-| `archive` | the same three, read-only | the sealed output lease, and the restic repository | **host** | 10 min, 1 GiB, 64 processes |
+| Operation | Reads                                        | Writes                                             | Network  | Ceilings                                       |
+| --------- | -------------------------------------------- | -------------------------------------------------- | -------- | ---------------------------------------------- |
+| `scan`    | `~/.omp`, `~/.codex`, `~/.claude`, read-only | the sealed output lease                            | **none** | 10 min, 1 GiB, 64 processes, 64 MiB of output  |
+| `prepare` | the same three, read-only                    | the sealed output lease                            | **none** | 30 min, 1 GiB, 64 processes, 512 MiB of output |
+| `archive` | the same three, read-only                    | the sealed output lease, and the restic repository | **host** | 10 min, 1 GiB, 64 processes                    |
 
 Four properties of that table carry the weight:
 

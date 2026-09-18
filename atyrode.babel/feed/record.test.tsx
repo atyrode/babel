@@ -45,7 +45,9 @@ describe("what it is looking at", () => {
     const view = await mount(<RecordPanel host={fake.host} />);
     expect(fake.last("record")).toEqual({ id: "pro_0000000a" });
     expect(fake.last("thread")).toEqual({ id: "pro_0000000a" });
-    expect(view.one(".babel-record-claim").textContent).toBe("Pin the engine profile before a run starts");
+    expect(view.one(".babel-record-claim").textContent).toBe(
+      "Pin the engine profile before a run starts",
+    );
     // It keeps following: a tile a principal placed by hand IS §8.7's peek pane, walked by
     // Home's own `j`/`k`.
     await pointAt({ recordId: "fnd_0000000b" });
@@ -124,7 +126,10 @@ describe("the peel", () => {
     });
     look({ recordId: "pro_0000000a" });
     const view = await mount(<RecordPanel host={fake.host} />);
-    expect(view.all("[data-depth]").map((depth) => depth.getAttribute("data-depth"))).toEqual(["1", "4"]);
+    expect(view.all("[data-depth]").map((depth) => depth.getAttribute("data-depth"))).toEqual([
+      "1",
+      "4",
+    ]);
     expect(view.all(".babel-related")).toHaveLength(0);
     await view.unmount();
   });
@@ -182,7 +187,9 @@ describe("the thread", () => {
     expect(entries[0]?.textContent).toContain("deferred this");
     expect(entries[0]?.textContent).toContain("waiting on the engine report");
     expect(entries[1]?.className).toContain("babel-comment");
-    expect(view.one(".babel-replies").textContent).toContain("Then the launch form says so instead of guessing.");
+    expect(view.one(".babel-replies").textContent).toContain(
+      "Then the launch form says so instead of guessing.",
+    );
     // The operator is "you"; a run is its own name.
     expect(view.one(".babel-replies .babel-comment-author").textContent).toBe("you");
     await view.unmount();

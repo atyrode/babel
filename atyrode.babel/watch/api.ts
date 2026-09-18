@@ -13,7 +13,8 @@ import type {
   RunRowSchema,
   RunsResultSchema,
   TopicRowSchema,
-  TopicsResultSchema} from "../contract.ts";
+  TopicsResultSchema,
+} from "../contract.ts";
 import {
   DRAIN_CONCURRENT_MAX,
   DrainStartRequestSchema,
@@ -44,7 +45,6 @@ export type PolicyResult = z.infer<typeof PolicyResultSchema>;
 export type ProfileRow = z.infer<typeof ProfileRowSchema>;
 export type ProfilesResult = z.infer<typeof ProfilesResultSchema>;
 
-
 /*
   WHAT WATCH ASKS THE HUB, AND IN WHAT WORDS.
 
@@ -60,7 +60,8 @@ export type ProfilesResult = z.infer<typeof ProfilesResultSchema>;
 
 // ---------------------------------------------------------------------------- knocking on a door
 
-export type DoorRead<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string };
+export type DoorRead<T> =
+  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string };
 
 /**
  * Reads a door and parses its answer, raising the host's own sentence.
@@ -82,7 +83,9 @@ export async function read<T>(
   if (parsed.success) return parsed.data;
   const first = parsed.error.issues[0];
   const where = first === undefined ? "(root)" : first.path.map(String).join(".") || "(root)";
-  throw new Error(`${action} answered a shape Watch does not know: ${where} ${first?.message ?? ""}`.trim());
+  throw new Error(
+    `${action} answered a shape Watch does not know: ${where} ${first?.message ?? ""}`.trim(),
+  );
 }
 
 /** The operator's own acts: a refusal is the sentence beside the button, never an exception. */
@@ -152,7 +155,10 @@ export const LAUNCH_CARDS: Record<string, PresetCard> = {
 };
 
 /** The knob's bounds, read off the contract's own schema so a spinner cannot offer a refusal. */
-export const KNOB_BOUNDS: Record<Knob, { readonly min: number; readonly max: number; readonly step: number }> = {
+export const KNOB_BOUNDS: Record<
+  Knob,
+  { readonly min: number; readonly max: number; readonly step: number }
+> = {
   days: { min: 1, max: 365, step: 1 },
   minutes: { min: 5, max: 24 * 60, step: 5 },
   topic: { min: 0, max: 0, step: 0 },
@@ -674,7 +680,10 @@ export function perMinute(value: number): string {
 export function etaClause(drain: DrainStatus, now: number): string {
   if (drain.state !== "running") return "—";
   const deadline = drain.target.deadline === undefined ? null : Date.parse(drain.target.deadline);
-  const left = deadline === null || !Number.isFinite(deadline) ? "" : ` · deadline ${until(drain.target.deadline ?? "", now)}`;
+  const left =
+    deadline === null || !Number.isFinite(deadline)
+      ? ""
+      : ` · deadline ${until(drain.target.deadline ?? "", now)}`;
   if (drain.etaAt === "") {
     const spends = drain.target.costMicros !== undefined || drain.target.outputTokens !== undefined;
     return `${spends ? "no rate yet" : "no spend target"}${left}`;

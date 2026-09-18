@@ -15,16 +15,16 @@ question, and authorizes nothing. Only the operator's disposition does that.
 
 Every table is in `atyrode.babel/store/schema.ts` and every name below is that file's.
 
-| Table | What it holds |
-| --- | --- |
-| `records` | the claims themselves — hypothesis, observation, finding, proposal — immutable by trigger, so a correction is a supersession and never an update |
-| `status_events` | a record's lifecycle, append-only; the newest row is its status |
-| `assessments` | what a reviewer judged: the record, **the exact revision read**, the role, the vote, the reasoning or the filing/backlog result, as JSON. A correction supersedes the earlier statement rather than replacing it |
-| `claims` | who is entitled to review what, under a fence and a lease renewed by the job that holds it; finished rows are the spend ledger |
-| `policies` | the evaluation policy, versioned; the newest row is in force, and only the operator writes one |
-| `feedback` | the operator's scoped reason on a record — and `question = 1` marks what the next review must answer |
-| `dispositions` | the operator's rulings, append-only, the newest per record its standing |
-| `budgets` | a bounded overlay on the policy's spending, with its own TTL |
+| Table           | What it holds                                                                                                                                                                                                    |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `records`       | the claims themselves — hypothesis, observation, finding, proposal — immutable by trigger, so a correction is a supersession and never an update                                                                 |
+| `status_events` | a record's lifecycle, append-only; the newest row is its status                                                                                                                                                  |
+| `assessments`   | what a reviewer judged: the record, **the exact revision read**, the role, the vote, the reasoning or the filing/backlog result, as JSON. A correction supersedes the earlier statement rather than replacing it |
+| `claims`        | who is entitled to review what, under a fence and a lease renewed by the job that holds it; finished rows are the spend ledger                                                                                   |
+| `policies`      | the evaluation policy, versioned; the newest row is in force, and only the operator writes one                                                                                                                   |
+| `feedback`      | the operator's scoped reason on a record — and `question = 1` marks what the next review must answer                                                                                                             |
+| `dispositions`  | the operator's rulings, append-only, the newest per record its standing                                                                                                                                          |
+| `budgets`       | a bounded overlay on the policy's spending, with its own TTL                                                                                                                                                     |
 
 Three properties follow from the shapes rather than from discipline:
 
@@ -44,8 +44,8 @@ topic maintenance, `filing` and `backlog`. A vote is `support`, `oppose` or `uns
 
 **A bare vote is a complete review.** After reading an exact revision, a reviewer may record
 support, opposition or uncertainty with no comment, no new evidence and no original argument.
-Support means *this deserves the operator's consideration*; opposition means *put it lower in the
-reading order*. Neither means the claim is proven or that anything is authorized. A skip is not a
+Support means _this deserves the operator's consideration_; opposition means _put it lower in the
+reading order_. Neither means the claim is proven or that anything is authorized. A skip is not a
 vote, and a failure is not a vote: an assignment that produced neither stays visible as a gap.
 
 ## 3. The policy, and the gate

@@ -49,28 +49,51 @@ async function seed(store: TestStore): Promise<void> {
   const { db } = store;
 
   await insert(db, "entities", {
-    id: REPOSITORY, kind: "repository", name: "tyrode-infra", canonical_id: REPOSITORY,
-    created_by: "operator", created_at: stamp(NOW - 30 * DAY),
+    id: REPOSITORY,
+    kind: "repository",
+    name: "tyrode-infra",
+    canonical_id: REPOSITORY,
+    created_by: "operator",
+    created_at: stamp(NOW - 30 * DAY),
   });
   await insert(db, "entities", {
-    id: PROJECT, kind: "project", name: "babel", canonical_id: PROJECT,
-    created_by: "operator", created_at: stamp(NOW - 30 * DAY),
+    id: PROJECT,
+    kind: "project",
+    name: "babel",
+    canonical_id: PROJECT,
+    created_by: "operator",
+    created_at: stamp(NOW - 30 * DAY),
   });
   // Merged away: the entity that speaks for it is already in the list.
   await insert(db, "entities", {
-    id: MERGED, kind: "repository", name: "tyrode-infra-old", canonical_id: REPOSITORY,
-    created_by: "operator", created_at: stamp(NOW - 30 * DAY),
+    id: MERGED,
+    kind: "repository",
+    name: "tyrode-infra-old",
+    canonical_id: REPOSITORY,
+    created_by: "operator",
+    created_at: stamp(NOW - 30 * DAY),
   });
   // Retired: retiring re-queues its filings, so it is no longer a place records live.
   await insert(db, "entities", {
-    id: RETIRED, kind: "project", name: "an abandoned thing", canonical_id: RETIRED,
-    created_by: "operator", created_at: stamp(NOW - 30 * DAY),
+    id: RETIRED,
+    kind: "project",
+    name: "an abandoned thing",
+    canonical_id: RETIRED,
+    created_by: "operator",
+    created_at: stamp(NOW - 30 * DAY),
   });
   const fact = (id: string, entity: string, predicate: string, value: string, note: string) =>
     insert(db, "facts", {
-      id, entity_id: entity, predicate, value, valid_from: stamp(NOW - 30 * DAY),
-      observed_at: stamp(NOW - 30 * DAY), authority_kind: "operator", authority_id: "operator",
-      note, recorded_at: stamp(NOW - 30 * DAY),
+      id,
+      entity_id: entity,
+      predicate,
+      value,
+      valid_from: stamp(NOW - 30 * DAY),
+      observed_at: stamp(NOW - 30 * DAY),
+      authority_kind: "operator",
+      authority_id: "operator",
+      note,
+      recorded_at: stamp(NOW - 30 * DAY),
     });
   await fact("fct_0001", REPOSITORY, "lifecycle", "active", "this is what I am on");
   await fact("fct_0002", REPOSITORY, "repository-remote", "github.com/tyrode/tyrode-infra", "");
@@ -78,21 +101,40 @@ async function seed(store: TestStore): Promise<void> {
   await fact("fct_0004", RETIRED, "lifecycle", "retired", "finished with it");
 
   const record = (
-    id: string, kind: string, title: string, createdAt: number, runId: string,
-    payload: Record<string, unknown>, parentId: string | null = null,
+    id: string,
+    kind: string,
+    title: string,
+    createdAt: number,
+    runId: string,
+    payload: Record<string, unknown>,
+    parentId: string | null = null,
   ) =>
     insert(db, "records", {
-      id, kind, root_id: id, seq: 1, parent_id: parentId, run_id: runId,
-      recipe_id: "outcome-integrity", recipe_version: 3, actor_kind: "run", actor_id: runId,
-      title, created_at: stamp(createdAt), payload: JSON.stringify(payload),
+      id,
+      kind,
+      root_id: id,
+      seq: 1,
+      parent_id: parentId,
+      run_id: runId,
+      recipe_id: "outcome-integrity",
+      recipe_version: 3,
+      actor_kind: "run",
+      actor_id: runId,
+      title,
+      created_at: stamp(createdAt),
+      payload: JSON.stringify(payload),
     });
 
   await record(CANDIDATE, "hypothesis", "a candidate nobody has ruled on", NOW - 3 * DAY, "run-a", {
-    schema: 1, statement: "the agent adjusts tests to the code rather than the code to the tests",
+    schema: 1,
+    statement: "the agent adjusts tests to the code rather than the code to the tests",
   });
   await record(FINDING, "finding", "a finding whose ruling was lifted", NOW - 2 * DAY, "run-a", {
-    schema: 1, title: "a finding whose ruling was lifted", pattern: "it recurs across checkouts",
-    significance: "it costs a review every time", scope: ["infra", "babel"],
+    schema: 1,
+    title: "a finding whose ruling was lifted",
+    pattern: "it recurs across checkouts",
+    significance: "it costs a review every time",
+    scope: ["infra", "babel"],
   });
   await record(ARGUED, "proposal", "a proposal Babel argued over", NOW - DAY, "run-b", {
     schema: 1,
@@ -107,43 +149,115 @@ async function seed(store: TestStore): Promise<void> {
     open_questions: ["does the queue see forks"],
     prerequisites: ["the queue is enabled"],
     verification_criteria: ["the guard no longer runs on push"],
-    targets: [{ system: "tyrode-infra", confidence: "likely", rationale: "the workflow lives there" }],
-    supporting: [{ locator: { path: CITED_PATH, line: 2073, byte_offset: 7300451, digest: "a2d7" }, note: "the operator says so in his own words" }],
-    conflicting: [{ locator: { path: "/nowhere/unheld.jsonl", line: 4, byte_offset: 9, digest: "ffff" }, note: "one run disagreed" }],
+    targets: [
+      { system: "tyrode-infra", confidence: "likely", rationale: "the workflow lives there" },
+    ],
+    supporting: [
+      {
+        locator: { path: CITED_PATH, line: 2073, byte_offset: 7300451, digest: "a2d7" },
+        note: "the operator says so in his own words",
+      },
+    ],
+    conflicting: [
+      {
+        locator: { path: "/nowhere/unheld.jsonl", line: 4, byte_offset: 9, digest: "ffff" },
+        note: "one run disagreed",
+      },
+    ],
   });
-  await record(AGREED, "proposal", "a proposal two roles answered differently", NOW - 6 * HOUR, "run-b", {
-    schema: 1, title: "a proposal two roles answered differently", problem: "p", outcome: "o",
-  });
-  await record(OBSERVATION, "observation", "an observation, which is evidence", NOW - 5 * HOUR, "run-a", {
-    schema: 1, claim: "an observation, which is evidence", category: "process", confidence: "stated",
-    impact: "medium",
-    evidence: [{ locator: { path: CITED_PATH, line: 2093, byte_offset: 7321776, digest: "5b38" }, note: "what the человек said" }],
-  }, CANDIDATE);
-  await record(UNDER_REVIEW, "hypothesis", "a candidate under review right now", NOW - 4 * HOUR, "run-c", {
-    schema: 1, statement: "a candidate under review right now",
-  });
+  await record(
+    AGREED,
+    "proposal",
+    "a proposal two roles answered differently",
+    NOW - 6 * HOUR,
+    "run-b",
+    {
+      schema: 1,
+      title: "a proposal two roles answered differently",
+      problem: "p",
+      outcome: "o",
+    },
+  );
+  await record(
+    OBSERVATION,
+    "observation",
+    "an observation, which is evidence",
+    NOW - 5 * HOUR,
+    "run-a",
+    {
+      schema: 1,
+      claim: "an observation, which is evidence",
+      category: "process",
+      confidence: "stated",
+      impact: "medium",
+      evidence: [
+        {
+          locator: { path: CITED_PATH, line: 2093, byte_offset: 7321776, digest: "5b38" },
+          note: "what the человек said",
+        },
+      ],
+    },
+    CANDIDATE,
+  );
+  await record(
+    UNDER_REVIEW,
+    "hypothesis",
+    "a candidate under review right now",
+    NOW - 4 * HOUR,
+    "run-c",
+    {
+      schema: 1,
+      statement: "a candidate under review right now",
+    },
+  );
 
   await insert(db, "sessions", {
-    selector: SESSION, host: "dev-01", harness: "omp", source_id: SOURCE,
-    title: "the conversation it came from", seen_at: stamp(NOW - 10 * DAY),
+    selector: SESSION,
+    host: "dev-01",
+    harness: "omp",
+    source_id: SOURCE,
+    title: "the conversation it came from",
+    seen_at: stamp(NOW - 10 * DAY),
   });
   await insert(db, "edges", {
-    id: "edg_0001", kind: "cites", from_kind: "observation", from_id: OBSERVATION,
-    to_kind: "session", to_id: SESSION, position: 0, note: "what the operator said",
-    actor_kind: "run", actor_id: "run-a", created_at: stamp(NOW - 5 * HOUR),
+    id: "edg_0001",
+    kind: "cites",
+    from_kind: "observation",
+    from_id: OBSERVATION,
+    to_kind: "session",
+    to_id: SESSION,
+    position: 0,
+    note: "what the operator said",
+    actor_kind: "run",
+    actor_id: "run-a",
+    created_at: stamp(NOW - 5 * HOUR),
   });
   await insert(db, "edges", {
-    id: "edg_0002", kind: "consolidates", from_kind: "finding", from_id: FINDING,
-    to_kind: "observation", to_id: OBSERVATION, position: 0, note: null,
-    actor_kind: "run", actor_id: "run-a", created_at: stamp(NOW - 2 * DAY),
+    id: "edg_0002",
+    kind: "consolidates",
+    from_kind: "finding",
+    from_id: FINDING,
+    to_kind: "observation",
+    to_id: OBSERVATION,
+    position: 0,
+    note: null,
+    actor_kind: "run",
+    actor_id: "run-a",
+    created_at: stamp(NOW - 2 * DAY),
   });
 
   // Filings: the candidate and the finding are about the repository, the argued proposal about
   // the project, and one filing was withdrawn so the record reads unfiled again.
   const filing = (id: string, recordId: string, entity: string, withdrawn: number, at: number) =>
     insert(db, "filings", {
-      id, record_id: recordId, entity_id: entity, rationale: "it is about this",
-      author_kind: "operator", author_id: "operator", heuristic: 0, withdrawn,
+      id,
+      record_id: recordId,
+      entity_id: entity,
+      rationale: "it is about this",
+      author_kind: "operator",
+      author_id: "operator",
+      heuristic: 0,
+      withdrawn,
       created_at: stamp(at),
     });
   await filing("fil_0001", CANDIDATE, REPOSITORY, 0, NOW - 3 * DAY);
@@ -157,64 +271,130 @@ async function seed(store: TestStore): Promise<void> {
   // Rulings: the finding was accepted and then reopened today; the argued proposal was accepted
   // yesterday and stays decided.
   await insert(db, "dispositions", {
-    id: "dsp_0001", record_id: FINDING, seq: 1, disposition: "accept", note: "worth keeping",
-    actor_id: "operator", recorded_at: stamp(NOW - 2 * DAY),
+    id: "dsp_0001",
+    record_id: FINDING,
+    seq: 1,
+    disposition: "accept",
+    note: "worth keeping",
+    actor_id: "operator",
+    recorded_at: stamp(NOW - 2 * DAY),
   });
   await insert(db, "dispositions", {
-    id: "dsp_0002", record_id: FINDING, seq: 2, disposition: "reopen", note: "on reflection",
-    actor_id: "operator", recorded_at: stamp(MIDNIGHT + 9 * HOUR),
+    id: "dsp_0002",
+    record_id: FINDING,
+    seq: 2,
+    disposition: "reopen",
+    note: "on reflection",
+    actor_id: "operator",
+    recorded_at: stamp(MIDNIGHT + 9 * HOUR),
   });
   await insert(db, "dispositions", {
-    id: "dsp_0003", record_id: ARGUED, seq: 1, disposition: "accept", note: "do it",
-    actor_id: "operator", recorded_at: stamp(NOW - 20 * HOUR),
+    id: "dsp_0003",
+    record_id: ARGUED,
+    seq: 1,
+    disposition: "accept",
+    note: "do it",
+    actor_id: "operator",
+    recorded_at: stamp(NOW - 20 * HOUR),
   });
 
   const assessment = (
-    id: string, recordId: string, runId: string, role: string, vote: string | null,
-    at: number, contributions: { kind: string; text: string }[] = [], supersedes: string | null = null,
+    id: string,
+    recordId: string,
+    runId: string,
+    role: string,
+    vote: string | null,
+    at: number,
+    contributions: { kind: string; text: string }[] = [],
+    supersedes: string | null = null,
   ) =>
     insert(db, "assessments", {
-      id, record_id: recordId, revision_id: recordId, run_id: runId, role, vote,
-      lane: role === "filing" ? "filing" : "coverage", supersedes_id: supersedes,
-      payload: JSON.stringify({ vote, contributions }), recorded_at: stamp(at),
+      id,
+      record_id: recordId,
+      revision_id: recordId,
+      run_id: runId,
+      role,
+      vote,
+      lane: role === "filing" ? "filing" : "coverage",
+      supersedes_id: supersedes,
+      payload: JSON.stringify({ vote, contributions }),
+      recorded_at: stamp(at),
     });
   // Inside one role, both sides: this is the disagreement a listing can render.
-  await assessment("asm_0001", ARGUED, "run-x", "reception", "support", NOW - 20 * HOUR,
-    [{ kind: "note", text: "the queue is the right place" }]);
-  await assessment("asm_0002", ARGUED, "run-y", "reception", "oppose", NOW - 19 * HOUR,
-    [{ kind: "note", text: "the queue does not see forks" }]);
+  await assessment("asm_0001", ARGUED, "run-x", "reception", "support", NOW - 20 * HOUR, [
+    { kind: "note", text: "the queue is the right place" },
+  ]);
+  await assessment("asm_0002", ARGUED, "run-y", "reception", "oppose", NOW - 19 * HOUR, [
+    { kind: "note", text: "the queue does not see forks" },
+  ]);
   await assessment("asm_0003", ARGUED, "run-z", "evidence", "support", NOW - 18 * HOUR);
   // Across two roles, both sides: two reviewers agreeing about different things.
   await assessment("asm_0004", AGREED, "run-x", "reception", "support", MIDNIGHT + 7 * HOUR);
   await assessment("asm_0005", AGREED, "run-y", "evidence", "oppose", MIDNIGHT + 7 * HOUR);
   // A correction supersedes the statement it names and counts once, as the newer vote.
   await assessment("asm_0006", CANDIDATE, "run-x", "reception", "oppose", NOW - 2 * DAY);
-  await assessment("asm_0007", CANDIDATE, "run-x", "reception", "support", NOW - 2 * DAY + HOUR,
-    [], "asm_0006");
+  await assessment(
+    "asm_0007",
+    CANDIDATE,
+    "run-x",
+    "reception",
+    "support",
+    NOW - 2 * DAY + HOUR,
+    [],
+    "asm_0006",
+  );
 
   await insert(db, "feedback", {
-    id: "fbk_0001", record_id: ARGUED, actor_id: "operator", stance: "agree",
-    reason: "this is the one I want", question: 0, recorded_at: stamp(NOW - 17 * HOUR),
+    id: "fbk_0001",
+    record_id: ARGUED,
+    actor_id: "operator",
+    stance: "agree",
+    reason: "this is the one I want",
+    question: 0,
+    recorded_at: stamp(NOW - 17 * HOUR),
   });
   await insert(db, "feedback", {
-    id: "fbk_0002", record_id: ARGUED, actor_id: "operator", stance: null,
-    reason: "does this cover forks?", question: 1, related_id: "fbk_0001",
+    id: "fbk_0002",
+    record_id: ARGUED,
+    actor_id: "operator",
+    stance: null,
+    reason: "does this cover forks?",
+    question: 1,
+    related_id: "fbk_0001",
     recorded_at: stamp(NOW - 16 * HOUR),
   });
   // A bare stance is neither reception nor something said, and folds into nothing.
   await insert(db, "feedback", {
-    id: "fbk_0003", record_id: AGREED, actor_id: "operator", stance: "unsure", reason: "",
-    question: 0, recorded_at: stamp(NOW - 3 * HOUR),
+    id: "fbk_0003",
+    record_id: AGREED,
+    actor_id: "operator",
+    stance: "unsure",
+    reason: "",
+    question: 0,
+    recorded_at: stamp(NOW - 3 * HOUR),
   });
 
   const claim = (
-    id: string, recordId: string, granted: number, expires: number,
-    finished: string | null, cost: number | null,
+    id: string,
+    recordId: string,
+    granted: number,
+    expires: number,
+    finished: string | null,
+    cost: number | null,
   ) =>
     insert(db, "claims", {
-      id, record_id: recordId, role: "reception", lane: "coverage", policy_version: "pol-3",
-      run_id: "run-c", fence: 1, reserved_cost: 0.1, actual_cost: cost,
-      granted_at: stamp(granted), expires_at: stamp(expires), finished_at: finished,
+      id,
+      record_id: recordId,
+      role: "reception",
+      lane: "coverage",
+      policy_version: "pol-3",
+      run_id: "run-c",
+      fence: 1,
+      reserved_cost: 0.1,
+      actual_cost: cost,
+      granted_at: stamp(granted),
+      expires_at: stamp(expires),
+      finished_at: finished,
       outcome: finished === null ? null : "recorded",
     });
   await claim("clm_0001", UNDER_REVIEW, NOW - 3 * HOUR, NOW + HOUR, null, null);
@@ -223,56 +403,112 @@ async function seed(store: TestStore): Promise<void> {
   // A finished claim is work already said rather than work in flight.
   await claim("clm_0003", ARGUED, NOW - 22 * HOUR, NOW - 20 * HOUR, stamp(NOW - 21 * HOUR), 0.42);
   // Settled today, so its cost is what the day has spent against the ceiling.
-  await claim("clm_0005", AGREED, MIDNIGHT + 6 * HOUR, MIDNIGHT + 8 * HOUR, stamp(MIDNIGHT + 7 * HOUR), 0.25);
+  await claim(
+    "clm_0005",
+    AGREED,
+    MIDNIGHT + 6 * HOUR,
+    MIDNIGHT + 8 * HOUR,
+    stamp(MIDNIGHT + 7 * HOUR),
+    0.25,
+  );
 
   await insert(db, "questions", {
-    id: BLOCKING, kind: "clarification", class: "blocking",
-    text: "which checkout is the one you actually work in?", why: "two remotes answer to one name",
-    raised_by_kind: "run", raised_by_id: "run-b", payload: "{}",
+    id: BLOCKING,
+    kind: "clarification",
+    class: "blocking",
+    text: "which checkout is the one you actually work in?",
+    why: "two remotes answer to one name",
+    raised_by_kind: "run",
+    raised_by_id: "run-b",
+    payload: "{}",
     created_at: stamp(NOW - 2 * HOUR),
   });
   await insert(db, "questions", {
-    id: ANSWERED, kind: "clarification", class: "curiosity",
-    text: "is the old mirror still read?", why: "it has not moved in a year",
-    raised_by_kind: "run", raised_by_id: "run-b", payload: "{}",
+    id: ANSWERED,
+    kind: "clarification",
+    class: "curiosity",
+    text: "is the old mirror still read?",
+    why: "it has not moved in a year",
+    raised_by_kind: "run",
+    raised_by_id: "run-b",
+    payload: "{}",
     created_at: stamp(NOW - 8 * DAY),
   });
   await insert(db, "question_events", {
-    id: "qev_0001", question_id: ANSWERED, seq: 1, state: "answered", actor_id: "operator",
+    id: "qev_0001",
+    question_id: ANSWERED,
+    seq: 1,
+    state: "answered",
+    actor_id: "operator",
     recorded_at: stamp(NOW - 7 * DAY),
   });
   await insert(db, "answers", {
-    id: "ans_0001", question_id: ANSWERED, actor_id: "operator", outcome: "answered",
-    text: "no, it has been dead since the migration", recorded_at: stamp(NOW - 7 * DAY),
+    id: "ans_0001",
+    question_id: ANSWERED,
+    actor_id: "operator",
+    outcome: "answered",
+    text: "no, it has been dead since the migration",
+    recorded_at: stamp(NOW - 7 * DAY),
   });
 
   await insert(db, "plans", {
-    id: "pln_0001", kind: "topic", subject_kind: "proposal", subject_id: AGREED,
+    id: "pln_0001",
+    kind: "topic",
+    subject_kind: "proposal",
+    subject_id: AGREED,
     operation: "create",
     payload: JSON.stringify({
-      reasoning: "32 sessions in 3 checkouts cite it", name: "the queue", entityKind: "project",
-      targets: [PROJECT], records: [{ id: ARGUED }, { id: "pro_elsewhere" }],
+      reasoning: "32 sessions in 3 checkouts cite it",
+      name: "the queue",
+      entityKind: "project",
+      targets: [PROJECT],
+      records: [{ id: ARGUED }, { id: "pro_elsewhere" }],
     }),
-    proposed_by_kind: "run", proposed_by_id: "run-b", state: "open",
+    proposed_by_kind: "run",
+    proposed_by_id: "run-b",
+    state: "open",
     created_at: stamp(NOW - 6 * HOUR),
   });
 
   await insert(db, "policies", {
-    version: "pol-3", seq: 3, actor_id: "operator", reason: "raise the ceiling",
+    version: "pol-3",
+    seq: 3,
+    actor_id: "operator",
+    reason: "raise the ceiling",
     payload: JSON.stringify({
-      per_cycle_cost: 1.5, daily_cost: 12, batch_size: 4,
-      coverage_share: 0.5, exploration_share: 0.3, filing_share: 0.2,
-      recipes: [{ id: "outcome-integrity", title: "Outcome integrity", looksFor: "claims that do not match what happened", enabled: true }],
+      per_cycle_cost: 1.5,
+      daily_cost: 12,
+      batch_size: 4,
+      coverage_share: 0.5,
+      exploration_share: 0.3,
+      filing_share: 0.2,
+      recipes: [
+        {
+          id: "outcome-integrity",
+          title: "Outcome integrity",
+          looksFor: "claims that do not match what happened",
+          enabled: true,
+        },
+      ],
     }),
     recorded_at: stamp(NOW - 4 * DAY),
   });
 
   const run = (id: string, started: number, finished: string | null, selection: unknown[]) =>
     insert(db, "runs", {
-      id, kind: "explore", machine_id: "dev-01", job_id: `job-${id}`,
-      recipe_id: "outcome-integrity", preparation: JSON.stringify({ selection }),
-      started_at: stamp(started), finished_at: finished, closure: finished === null ? null : "completed",
-      cost_usd: 0.31, tokens: 40_000, records: 4, payload: JSON.stringify({ runId: id, counts: {} }),
+      id,
+      kind: "explore",
+      machine_id: "dev-01",
+      job_id: `job-${id}`,
+      recipe_id: "outcome-integrity",
+      preparation: JSON.stringify({ selection }),
+      started_at: stamp(started),
+      finished_at: finished,
+      closure: finished === null ? null : "completed",
+      cost_usd: 0.31,
+      tokens: 40_000,
+      records: 4,
+      payload: JSON.stringify({ runId: id, counts: {} }),
     });
   await run("run-a", NOW - 3 * DAY, stamp(NOW - 3 * DAY + HOUR), [
     { host: "dev-01", harness: "omp", sourceId: "yesterday-only" },
@@ -299,7 +535,13 @@ afterEach(() => {
 
 const feed = async (query: Partial<Parameters<TestStore["store"]["feed"]>[0]> = {}) =>
   await harness.store.feed({
-    sort: "next", window: "day", kinds: [], needs: "me", limit: 25, offset: 0, ...query,
+    sort: "next",
+    window: "day",
+    kinds: [],
+    needs: "me",
+    limit: 25,
+    offset: 0,
+    ...query,
   });
 
 describe("the feed", () => {
@@ -375,10 +617,20 @@ describe("the feed", () => {
     const at = stamp(NOW - 10 * 60_000);
     // The identifiers deliberately sort against the write order: ordering on the id would end
     // on the support, which is the earlier of the two.
-    for (const [id, vote] of [["asm_1z01", "support"], ["asm_1a02", "oppose"]] as const) {
+    for (const [id, vote] of [
+      ["asm_1z01", "support"],
+      ["asm_1a02", "oppose"],
+    ] as const) {
       await insert(harness.db, "assessments", {
-        id, record_id: AGREED, revision_id: AGREED, run_id: "run-w", role: "challenge", vote,
-        lane: "coverage", payload: JSON.stringify({ vote, contributions: [] }), recorded_at: at,
+        id,
+        record_id: AGREED,
+        revision_id: AGREED,
+        run_id: "run-w",
+        role: "challenge",
+        vote,
+        lane: "coverage",
+        payload: JSON.stringify({ vote, contributions: [] }),
+        recorded_at: at,
       });
     }
     harness.store.touch();
@@ -411,18 +663,34 @@ describe("the feed", () => {
   // The index is rebuilt on demand and `touch` is the whole of its invalidation: an act the
   // operator has just performed must not wait out a minute of staleness.
   test("touch is what makes a just-recorded claim visible", async () => {
-    expect((await feed({ sort: "new", window: "all", needs: "all", limit: 100 }))
-      .posts.find((post) => post.id === ARGUED)?.reviewing).toBe(false);
+    expect(
+      (await feed({ sort: "new", window: "all", needs: "all", limit: 100 })).posts.find(
+        (post) => post.id === ARGUED,
+      )?.reviewing,
+    ).toBe(false);
     await insert(harness.db, "claims", {
-      id: "clm_0004", record_id: ARGUED, role: "evidence", lane: "coverage",
-      policy_version: "pol-3", run_id: "run-c", fence: 1, reserved_cost: 0.1,
-      granted_at: stamp(NOW), expires_at: stamp(NOW + HOUR),
+      id: "clm_0004",
+      record_id: ARGUED,
+      role: "evidence",
+      lane: "coverage",
+      policy_version: "pol-3",
+      run_id: "run-c",
+      fence: 1,
+      reserved_cost: 0.1,
+      granted_at: stamp(NOW),
+      expires_at: stamp(NOW + HOUR),
     });
-    expect((await feed({ sort: "new", window: "all", needs: "all", limit: 100 }))
-      .posts.find((post) => post.id === ARGUED)?.reviewing).toBe(false);
+    expect(
+      (await feed({ sort: "new", window: "all", needs: "all", limit: 100 })).posts.find(
+        (post) => post.id === ARGUED,
+      )?.reviewing,
+    ).toBe(false);
     harness.store.touch();
-    expect((await feed({ sort: "new", window: "all", needs: "all", limit: 100 }))
-      .posts.find((post) => post.id === ARGUED)?.reviewing).toBe(true);
+    expect(
+      (await feed({ sort: "new", window: "all", needs: "all", limit: 100 })).posts.find(
+        (post) => post.id === ARGUED,
+      )?.reviewing,
+    ).toBe(true);
   });
 
   // The window applies to top and controversial and to nothing else: "hot" over a day and "hot"
@@ -444,8 +712,9 @@ describe("the feed", () => {
     const second = await feed({ sort: "new", window: "all", needs: "all", limit: 2, offset: 2 });
     expect(first.total).toBe(whole.total);
     expect(second.total).toBe(whole.total);
-    expect([...first.posts, ...second.posts].map((post) => post.id))
-      .toEqual(whole.posts.slice(0, 4).map((post) => post.id));
+    expect([...first.posts, ...second.posts].map((post) => post.id)).toEqual(
+      whole.posts.slice(0, 4).map((post) => post.id),
+    );
   });
 
   test("a topic narrows by name and by id, and `unfiled` is the records under nothing", async () => {
@@ -499,10 +768,20 @@ describe("topics", () => {
     const at = stamp(NOW - 30 * 60_000);
     // The identifiers deliberately sort against the write order: ordering on the id would end
     // on the withdrawal, and the record would read unfiled after a re-filing that did happen.
-    for (const [id, withdrawn] of [["fil_1a01", 0], ["fil_1z02", 1], ["fil_1m03", 0]] as const) {
+    for (const [id, withdrawn] of [
+      ["fil_1a01", 0],
+      ["fil_1z02", 1],
+      ["fil_1m03", 0],
+    ] as const) {
       await insert(harness.db, "filings", {
-        id, record_id: AGREED, entity_id: REPOSITORY, rationale: "it is about this",
-        author_kind: "operator", author_id: "operator", heuristic: 0, withdrawn,
+        id,
+        record_id: AGREED,
+        entity_id: REPOSITORY,
+        rationale: "it is about this",
+        author_kind: "operator",
+        author_id: "operator",
+        heuristic: 0,
+        withdrawn,
         created_at: at,
       });
     }
@@ -517,7 +796,10 @@ describe("topics", () => {
     const answer = await harness.store.topics();
     expect(answer.topics[0]?.id).toBe(REPOSITORY);
     expect(answer.topics[0]?.interest).toEqual({
-      state: "working", reason: "this is what I am on", at: stamp(NOW - 30 * DAY), by: "operator",
+      state: "working",
+      reason: "this is what I am on",
+      at: stamp(NOW - 30 * DAY),
+      by: "operator",
     });
     expect(answer.topics[1]?.interest.state).toBe("");
   });
@@ -551,13 +833,27 @@ describe("the peel", () => {
     const peeled = await harness.store.record(ARGUED);
     expect(peeled).not.toBeNull();
     const shallow = JSON.stringify({
-      claim: peeled?.claim, case: peeled?.case, evidence: peeled?.evidence?.map((row) => ({
+      claim: peeled?.claim,
+      case: peeled?.case,
+      evidence: peeled?.evidence?.map((row) => ({
         // The session a citation names is the destination that makes evidence checkable (§4.3)
         // and is the contract's own field; what must not appear is Babel's vocabulary.
-        excerpt: row.excerpt, speaker: row.speaker, note: row.note, line: row.line,
+        excerpt: row.excerpt,
+        speaker: row.speaker,
+        note: row.note,
+        line: row.line,
       })),
     });
-    for (const identifier of [/hyp_/, /obs_/, /fnd_/, /pro_/, /qst_/, /ent_/, /asm_/, /run-[abc]/]) {
+    for (const identifier of [
+      /hyp_/,
+      /obs_/,
+      /fnd_/,
+      /pro_/,
+      /qst_/,
+      /ent_/,
+      /asm_/,
+      /run-[abc]/,
+    ]) {
       expect(shallow).not.toMatch(identifier);
     }
   });
@@ -616,7 +912,10 @@ describe("the peel", () => {
     expect(peeled?.reception.contested).toBe(true);
     expect(peeled?.reception.byRole).toEqual([
       {
-        role: "reception", support: 1, oppose: 1, unsure: 0,
+        role: "reception",
+        support: 1,
+        oppose: 1,
+        unsure: 0,
         opposingRationales: ["the queue does not see forks"],
       },
       { role: "evidence", support: 1, oppose: 0, unsure: 0, opposingRationales: [] },
@@ -641,7 +940,9 @@ describe("the peel", () => {
     const relations = peeled?.related ?? [];
     expect(relations.map((row) => row.id)).not.toContain(FINDING);
     expect(relations).toContainEqual({
-      relation: "consolidates", id: OBSERVATION, kind: "observation",
+      relation: "consolidates",
+      id: OBSERVATION,
+      kind: "observation",
       title: "an observation, which is evidence",
     });
     // The rest of what its run wrote.
@@ -649,8 +950,11 @@ describe("the peel", () => {
   });
 
   test("a proposal carrying a plan says so, and one that carries none says null", async () => {
-    expect(await harness.store.record(AGREED).then((peeled) => peeled?.plan))
-      .toEqual({ kind: "topic", operation: "create", state: "open" });
+    expect(await harness.store.record(AGREED).then((peeled) => peeled?.plan)).toEqual({
+      kind: "topic",
+      operation: "create",
+      state: "open",
+    });
     expect(await harness.store.record(ARGUED).then((peeled) => peeled?.plan)).toBeNull();
   });
 
@@ -721,7 +1025,9 @@ describe("the pulse", () => {
     const answer = await harness.store.pulse();
     expect(answer.reviewing).toEqual([
       {
-        id: UNDER_REVIEW, kind: "hypothesis", title: "a candidate under review right now",
+        id: UNDER_REVIEW,
+        kind: "hypothesis",
+        title: "a candidate under review right now",
         since: stamp(NOW - 3 * HOUR),
       },
     ]);
@@ -733,7 +1039,12 @@ describe("the pulse", () => {
     harness.store.touch();
     const answer = await harness.store.pulse();
     expect(answer.today).toEqual({
-      sessionsRead: 0, records: 0, votes: 0, proposals: 0, topicProposals: 0, ruled: 0,
+      sessionsRead: 0,
+      records: 0,
+      votes: 0,
+      proposals: 0,
+      topicProposals: 0,
+      ruled: 0,
     });
   });
 });
@@ -772,16 +1083,19 @@ describe("runs and the policy", () => {
     // What the conductor writes beside the receipt when the owner metered the job: the whole of
     // `usage.inference`, because the in-flight row is dropped when a run ends and two columns
     // cannot hold five numbers.
-    await harness.db.run(
-      `UPDATE runs SET payload = ? WHERE id = 'run-b'`,
-      [
-        JSON.stringify({
-          runId: "run-b",
-          counts: {},
-          inference: { calls: 7, inputTokens: 20_000, outputTokens: 1_500, cachedInputTokens: 400, costMicros: 410_000 },
-        }),
-      ],
-    );
+    await harness.db.run(`UPDATE runs SET payload = ? WHERE id = 'run-b'`, [
+      JSON.stringify({
+        runId: "run-b",
+        counts: {},
+        inference: {
+          calls: 7,
+          inputTokens: 20_000,
+          outputTokens: 1_500,
+          cachedInputTokens: 400,
+          costMicros: 410_000,
+        },
+      }),
+    ]);
     harness.store.touch();
     const answer = await harness.store.runs({ limit: 25, offset: 0 });
     expect(answer.runs.find((row) => row.id === "run-b")?.calls).toBe(7);
@@ -840,10 +1154,10 @@ describe("runs and the policy", () => {
     });
 
     // A cleared overlay is not in force, and nothing unwinds it: the row simply stops answering.
-    await harness.db.run(`UPDATE budgets SET cleared_at = ?, cleared_reason = ? WHERE id = 'bdg_drain'`, [
-      stamp(NOW),
-      "the window reset early",
-    ]);
+    await harness.db.run(
+      `UPDATE budgets SET cleared_at = ?, cleared_reason = ? WHERE id = 'bdg_drain'`,
+      [stamp(NOW), "the window reset early"],
+    );
     expect((await harness.store.policy()).overlay).toBeNull();
   });
 });

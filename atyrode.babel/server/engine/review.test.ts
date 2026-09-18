@@ -82,7 +82,10 @@ describe("a contribution the contract refuses costs itself and nothing else", ()
       expect.objectContaining({ kind: "comment", text: "the scope should name the harness" }),
     ]);
     expect(verdict.refused).toEqual([
-      { contribution: 1, reason: "schema: contribution 1 is an objection and may not name alternatives" },
+      {
+        contribution: 1,
+        reason: "schema: contribution 1 is an objection and may not name alternatives",
+      },
     ]);
   });
 

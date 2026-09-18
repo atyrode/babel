@@ -17,7 +17,9 @@ import reactHooks from "eslint-plugin-react-hooks";
   import of a module the bundle did not need.
 */
 export default tseslint.config(
-  { ignores: ["**/dist/**", "**/node_modules/**", "**/.integration/**", "atyrode.babel/machine.js"] },
+  {
+    ignores: ["**/dist/**", "**/node_modules/**", "**/.integration/**", "atyrode.babel/machine.js"],
+  },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {

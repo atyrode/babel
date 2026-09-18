@@ -294,14 +294,23 @@ async function cycle(
     profile" from "the batch is full" without reading the store.
   */
   if (report.stop !== null)
-    console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} stopped: ${report.stop.reason}: ${report.stop.detail}`);
+    console.warn(
+      `${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} stopped: ${report.stop.reason}: ${report.stop.detail}`,
+    );
   if (report.parked !== null)
-    console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} parked after ${String(report.parked.barren)} barren: ${report.parked.reason}`);
+    console.warn(
+      `${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} parked after ${String(report.parked.barren)} barren: ${report.parked.reason}`,
+    );
   for (const gap of report.gaps.slice(0, 8))
-    console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} gap ${gap.recordId}/${gap.role || "-"}: ${gap.reason}: ${gap.detail}`);
+    console.warn(
+      `${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} gap ${gap.recordId}/${gap.role || "-"}: ${gap.reason}: ${gap.detail}`,
+    );
   for (const refusal of report.refused)
-    console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} refused ${refusal.recordId}: ${refusal.reason}: ${refusal.detail}`);
-  for (const note of report.notes) console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId}: ${note}`);
+    console.warn(
+      `${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} refused ${refusal.recordId}: ${refusal.reason}: ${refusal.detail}`,
+    );
+  for (const note of report.notes)
+    console.warn(`${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId}: ${note}`);
   /*
     …AND THEN THE SESSIONS WHOSE MATERIAL IS NOW SEALED (#592). A job-inputs binding names a
     SETTLED job's output, so a session cannot be posted while its own `prepare` is still

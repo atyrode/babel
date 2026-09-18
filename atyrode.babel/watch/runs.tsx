@@ -86,7 +86,9 @@ function LiveTable({
               <tr key={run.id} className="plugin-atyrode_babel_watch__live-row">
                 <td>
                   <Cluster gap="var(--babel-space-2)">
-                    {heard ? <span className="plugin-atyrode_babel_watch__dot" aria-hidden="true" /> : null}
+                    {heard ? (
+                      <span className="plugin-atyrode_babel_watch__dot" aria-hidden="true" />
+                    ) : null}
                     <span className="plugin-atyrode_babel_watch__mono">{run.id}</span>
                     <span className="plugin-atyrode_babel_watch__muted">
                       {RUN_KIND_LABELS[run.kind] ?? run.kind}
@@ -175,7 +177,10 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
           {runs.map((run) => {
             const started = Date.parse(run.startedAt);
             const finished = Date.parse(run.finishedAt);
-            const took = Number.isFinite(started) && Number.isFinite(finished) ? (finished - started) / 1000 : null;
+            const took =
+              Number.isFinite(started) && Number.isFinite(finished)
+                ? (finished - started) / 1000
+                : null;
             return (
               <tr key={run.id}>
                 <td>
@@ -186,7 +191,9 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
                     </span>
                   </Cluster>
                 </td>
-                <td className="plugin-atyrode_babel_watch__mono">{run.recipe === "" ? "—" : run.recipe}</td>
+                <td className="plugin-atyrode_babel_watch__mono">
+                  {run.recipe === "" ? "—" : run.recipe}
+                </td>
                 <td className="plugin-atyrode_babel_watch__mono">{since(run.finishedAt, now)}</td>
                 <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
                   {took === null ? "—" : elapsedClock(took)}
@@ -206,7 +213,9 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
                   {run.costUsd === null ? "—" : usd(run.costUsd)}
                 </td>
                 <td>
-                  <span className={`plugin-atyrode_babel_watch__closed is-${run.state}`}>{run.state}</span>
+                  <span className={`plugin-atyrode_babel_watch__closed is-${run.state}`}>
+                    {run.state}
+                  </span>
                 </td>
               </tr>
             );
@@ -227,7 +236,9 @@ function lede(live: readonly RunRow[]): string {
   if (live.length === 0) return "Nothing running. Every row below is a receipt.";
   const atModel = live.filter((run) => run.progress?.stage === RUN_STAGES.atModel).length;
   const stalled = live.filter((run) => run.progress?.stalled === true).length;
-  const heardFrom = live.filter((run) => run.freshness === "fresh" || run.freshness === "recent").length;
+  const heardFrom = live.filter(
+    (run) => run.freshness === "fresh" || run.freshness === "recent",
+  ).length;
   const clauses = [`${live.length} in flight`, `${atModel} at the model`];
   if (stalled > 0) clauses.push(`${stalled} stalled`);
   if (heardFrom !== live.length) clauses.push(`${heardFrom} heard from lately`);
@@ -244,20 +255,25 @@ export function Runs({ runs, total, now, stopping, note, onStop, onMore }: RunsP
         <p className="plugin-atyrode_babel_watch__lede">{lede(live)}</p>
       </Stack>
       {note === "" ? null : <p className="plugin-atyrode_babel_watch__note">{note}</p>}
-      {live.length === 0 ? null : <LiveTable runs={live} now={now} stopping={stopping} onStop={onStop} />}
+      {live.length === 0 ? null : (
+        <LiveTable runs={live} now={now} stopping={stopping} onStop={onStop} />
+      )}
       {ended.length === 0 ? (
         <p className="plugin-atyrode_babel_watch__muted">No run has finished here yet.</p>
       ) : (
         <Stack gap="var(--babel-space-2)">
           {/* Two tables of six columns stack into one wall unless the second one says what it is. */}
-          {live.length === 0 ? null : <span className="plugin-atyrode_babel_watch__stat-label">Receipts</span>}
+          {live.length === 0 ? null : (
+            <span className="plugin-atyrode_babel_watch__stat-label">Receipts</span>
+          )}
           <EndedTable runs={ended} now={now} />
         </Stack>
       )}
       {total > runs.length ? (
         <Cluster gap="var(--babel-space-2)">
           <span className="plugin-atyrode_babel_watch__muted">
-            {figure(total - runs.length)} older {total - runs.length === 1 ? "run" : "runs"} in the store.
+            {figure(total - runs.length)} older {total - runs.length === 1 ? "run" : "runs"} in the
+            store.
           </span>
           <button type="button" className="plugin-atyrode_babel_watch__quiet" onClick={onMore}>
             Read more

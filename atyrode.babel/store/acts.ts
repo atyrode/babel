@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
-import type { INTEREST_STATES} from "../contract.ts";
+import type { INTEREST_STATES } from "../contract.ts";
 import { RoleSchema, type Ruling } from "../contract.ts";
 import {
   acceptReviewResult,
@@ -108,7 +108,10 @@ export interface RowRefusal {
  * A refusal here is the row's, not the run's: the claim is settled from the receipt the machine
  * wrote, which carries the closure and the cost whether the submission stood or not.
  */
-export function refuseRow(table: string, row: Readonly<Record<string, unknown>>): RowRefusal | null {
+export function refuseRow(
+  table: string,
+  row: Readonly<Record<string, unknown>>,
+): RowRefusal | null {
   if (table !== "assessments") return null;
   const role = RoleSchema.safeParse(row["role"]);
   if (!role.success) {
@@ -156,7 +159,8 @@ export function stamp(millis: number): string {
 // ---------------------------------------------------------------------------- rulings
 
 /** §4.5's review status, derived from the rulings and never stored. */
-export type Standing = "new" | "accepted" | "rejected" | "deferred" | "duplicate" | "refine-requested";
+export type Standing =
+  "new" | "accepted" | "rejected" | "deferred" | "duplicate" | "refine-requested";
 
 /**
  * What each ruling makes of a record. `reopen` deriving `new` is the point of the value: the
@@ -217,7 +221,10 @@ function rulingRefusal(standing: Standing, ruling: Ruling): string | null {
  */
 export type InterestState = (typeof INTEREST_STATES)[number];
 
-export const INTEREST_FACTS: Record<InterestState, { readonly lifecycle: string; readonly policy: string }> = {
+export const INTEREST_FACTS: Record<
+  InterestState,
+  { readonly lifecycle: string; readonly policy: string }
+> = {
   working: { lifecycle: "active", policy: "normal" },
   watching: { lifecycle: "maintenance-only", policy: "learn-only" },
   "not-now": { lifecycle: "dormant", policy: "learn-only" },
@@ -423,7 +430,9 @@ export const BudgetSetSchema = z.strictObject({
   expiresAt: z.string(),
   at: z.string(),
   /** What it moves, so the answer says the change rather than the row. */
-  changes: z.array(z.strictObject({ field: z.string(), standing: z.number(), overlaid: z.number() })),
+  changes: z.array(
+    z.strictObject({ field: z.string(), standing: z.number(), overlaid: z.number() }),
+  ),
 });
 export type BudgetSet = z.infer<typeof BudgetSetSchema>;
 
@@ -473,9 +482,11 @@ async function recordKind(store: ActsStore, id: string): Promise<string> {
  * or a spelling one of its aliases holds.
  */
 async function resolveEntity(store: ActsStore, reference: string): Promise<string> {
-  const byId = await first<{ canonical_id: string }>(store, `SELECT canonical_id FROM entities WHERE id = ?`, [
-    reference,
-  ]);
+  const byId = await first<{ canonical_id: string }>(
+    store,
+    `SELECT canonical_id FROM entities WHERE id = ?`,
+    [reference],
+  );
   if (byId !== null) return byId.canonical_id;
   const byAlias = await first<{ canonical_id: string }>(
     store,
@@ -543,7 +554,11 @@ interface FilingRow extends SqlRow {
  * random identifier would make re-filing a withdrawal a coin flip. Time still leads, so an
  * imported history reads in its own order however it arrived.
  */
-async function newestFiling(store: ActsStore, recordId: string, entityId: string): Promise<FilingRow | null> {
+async function newestFiling(
+  store: ActsStore,
+  recordId: string,
+  entityId: string,
+): Promise<FilingRow | null> {
   return await first<FilingRow>(
     store,
     `SELECT id, rationale, heuristic, withdrawn FROM filings
@@ -587,7 +602,19 @@ async function stateFactStatements(
       sql: `INSERT INTO facts(id, entity_id, predicate, value, object_id, valid_from, valid_until,
               observed_at, authority_kind, authority_id, confidence, note, supersedes_id, recorded_at)
             VALUES(?, ?, ?, ?, NULL, ?, NULL, ?, 'operator', ?, ?, ?, ?, ?)`,
-      params: [factId, entityId, predicate, value, at, at, operator, confidence, note, prior?.id ?? null, at],
+      params: [
+        factId,
+        entityId,
+        predicate,
+        value,
+        at,
+        at,
+        operator,
+        confidence,
+        note,
+        prior?.id ?? null,
+        at,
+      ],
     },
     {
       sql: `INSERT INTO fact_status(id, fact_id, seq, status, actor_id, reason, recorded_at)
@@ -758,7 +785,13 @@ async function applyStatements(
   reason: string,
   at: string,
 ): Promise<{ statements: SqlStatement[]; outcome: PlanOutcome }> {
-  const applied: Application = { entityId: "", resolutionId: "", factId: "", filed: [], settled: [] };
+  const applied: Application = {
+    entityId: "",
+    resolutionId: "",
+    factId: "",
+    filed: [],
+    settled: [],
+  };
   const statements: SqlStatement[] =
     plan.kind === "topic"
       ? await topicStatements(store, plan, operator, at, applied)
@@ -779,7 +812,12 @@ async function applyStatements(
  * topic, a split, a merge and a retirement are all "Babel says the naming is wrong and here is
  * what it should be", and the operator's ruling on the proposal is what applies whichever it is.
  */
-const TOPIC_OPERATIONS: Record<string, true> = { create: true, split: true, merge: true, retire: true };
+const TOPIC_OPERATIONS: Record<string, true> = {
+  create: true,
+  split: true,
+  merge: true,
+  retire: true,
+};
 
 async function topicStatements(
   store: ActsStore,
@@ -815,7 +853,9 @@ async function topicStatements(
         [aliasKey(identity)],
       );
       if (bound !== null && !(await entityRetired(store, bound.entity_id))) {
-        throw new ActRefused(`the identity this plan would bind is already bound by entity ${bound.entity_id}`);
+        throw new ActRefused(
+          `the identity this plan would bind is already bound by entity ${bound.entity_id}`,
+        );
       }
     }
     const name = (payload.name ?? "").trim();
@@ -830,7 +870,8 @@ async function topicStatements(
     // rather than documentary: the next plan for the same repository resolves it through this
     // index and is refused as bound.
     const aliases = new Map<string, { kind: string; value: string }>();
-    if (identity !== "") aliases.set(`identifier:${aliasKey(identity)}`, { kind: "identifier", value: identity });
+    if (identity !== "")
+      aliases.set(`identifier:${aliasKey(identity)}`, { kind: "identifier", value: identity });
     aliases.set(`name:${aliasKey(name)}`, { kind: "name", value: name });
     for (const alias of payload.aliases) {
       aliases.set(`${alias.kind}:${aliasKey(alias.value)}`, alias);
@@ -849,7 +890,17 @@ async function topicStatements(
           sql: `INSERT INTO facts(id, entity_id, predicate, value, object_id, valid_from, valid_until,
                   observed_at, authority_kind, authority_id, confidence, note, supersedes_id, recorded_at)
                 VALUES(?, ?, ?, ?, NULL, ?, NULL, ?, 'operator', ?, 'stated', ?, NULL, ?)`,
-          params: [factId, entityId, fact.predicate, fact.value, at, at, operator, fact.note ?? null, at],
+          params: [
+            factId,
+            entityId,
+            fact.predicate,
+            fact.value,
+            at,
+            at,
+            operator,
+            fact.note ?? null,
+            at,
+          ],
         },
         {
           sql: `INSERT INTO fact_status(id, fact_id, seq, status, actor_id, reason, recorded_at)
@@ -974,7 +1025,8 @@ async function backlogStatements(
 ): Promise<SqlStatement[]> {
   const payload = BacklogPlanPayloadSchema.parse(JSON.parse(plan.payload));
   const settles = BACKLOG_SETTLES[plan.operation];
-  if (settles === undefined) throw new ActRefused(`backlog operation ${JSON.stringify(plan.operation)}`);
+  if (settles === undefined)
+    throw new ActRefused(`backlog operation ${JSON.stringify(plan.operation)}`);
   if (payload.hypotheses.length === 0) throw new ActRefused("a backlog plan names no candidate");
   const statements: SqlStatement[] = [];
   // A candidate can have been revived, promoted by another accepted plan or superseded by a
@@ -1066,7 +1118,8 @@ export async function declinePlan(
   reason: string,
 ): Promise<PlanOutcome> {
   if (operator === "") throw new ActRefused("a decline has no operator");
-  if (reason.trim() === "") throw new ActRefused("a declined plan keeps the operator's reason, and this one is empty");
+  if (reason.trim() === "")
+    throw new ActRefused("a declined plan keeps the operator's reason, and this one is empty");
   const plan = await planFor(store, proposalId);
   if (plan === null) throw new ActRefused(`proposal ${proposalId} carries no open plan`);
   const at = stamp(store.now());
@@ -1110,20 +1163,25 @@ export async function rule(store: ActsStore, args: RuleArgs, operator: string): 
     if (args.duplicateOf !== undefined) throw new ActRefused("a reopen names no original");
   }
   if (args.ruling === "duplicate") {
-    if (args.duplicateOf === undefined) throw new ActRefused("a duplicate ruling names no original");
+    if (args.duplicateOf === undefined)
+      throw new ActRefused("a duplicate ruling names no original");
     const original = await recordKind(store, args.duplicateOf);
     if (original !== kind) {
-      throw new ActRefused(`record ${args.id} is a ${kind} and the original it duplicates is a ${original}`);
+      throw new ActRefused(
+        `record ${args.id} is a ${kind} and the original it duplicates is a ${original}`,
+      );
     }
   } else if (args.ruling !== "reopen" && args.duplicateOf !== undefined) {
     throw new ActRefused(`a ${args.ruling} names no original`);
   }
   const standing = standingOf(
-    (await first<{ disposition: string }>(
-      store,
-      `SELECT disposition FROM dispositions WHERE record_id = ? ORDER BY seq DESC LIMIT 1`,
-      [args.id],
-    ))?.disposition ?? null,
+    (
+      await first<{ disposition: string }>(
+        store,
+        `SELECT disposition FROM dispositions WHERE record_id = ? ORDER BY seq DESC LIMIT 1`,
+        [args.id],
+      )
+    )?.disposition ?? null,
   );
   const refusal = rulingRefusal(standing, args.ruling);
   if (refusal !== null) throw new ActRefused(refusal);
@@ -1197,9 +1255,14 @@ export interface CommentArgs {
  * answer. A question is the words it asks — there is no marker without them — so the text is
  * required for both and `question = 1` is what the next review reads as an obligation.
  */
-export async function comment(store: ActsStore, args: CommentArgs, operator: string): Promise<Commented> {
+export async function comment(
+  store: ActsStore,
+  args: CommentArgs,
+  operator: string,
+): Promise<Commented> {
   if (operator === "") throw new ActRefused("a comment has no author");
-  if (args.text.trim() === "") throw new ActRefused("a comment exists to carry words, and this one has none");
+  if (args.text.trim() === "")
+    throw new ActRefused("a comment exists to carry words, and this one has none");
   await recordKind(store, args.id);
   const id = newId("fbk");
   const at = stamp(store.now());
@@ -1251,9 +1314,15 @@ export interface AnswerArgs {
  * answer: §4.8 requires it retained as he wrote it, and refusing an operator's own words would
  * lose the answer entirely.
  */
-export async function answer(store: ActsStore, args: AnswerArgs, operator: string): Promise<Answered> {
+export async function answer(
+  store: ActsStore,
+  args: AnswerArgs,
+  operator: string,
+): Promise<Answered> {
   if (operator === "") throw new ActRefused("an answer has no author");
-  const question = await first<{ id: string }>(store, `SELECT id FROM questions WHERE id = ?`, [args.id]);
+  const question = await first<{ id: string }>(store, `SELECT id FROM questions WHERE id = ?`, [
+    args.id,
+  ]);
   if (question === null) throw new ActRefused(`no question ${args.id}`);
   if (args.outcome === "answered" && args.text.trim() === "") {
     throw new ActRefused("a substantive answer has no text");
@@ -1300,14 +1369,17 @@ export interface InterestArgs {
  * transaction here — the Go tree could not do that and said so — so a stance is never half
  * stated, and restating the same stance supersedes rather than being discarded as redundant.
  */
-export async function interest(store: ActsStore, args: InterestArgs, operator: string): Promise<Interested> {
+export async function interest(
+  store: ActsStore,
+  args: InterestArgs,
+  operator: string,
+): Promise<Interested> {
   if (operator === "") throw new ActRefused("an interest has no operator");
   // Indexed through the contract's own vocabulary: a fifth stance added there fails to compile
   // here until this table says what facts record it, and a stance the store never heard of is
   // still refused at runtime rather than silently writing nothing.
   const mapped = INTEREST_FACTS[args.state as InterestState] as
-    | { readonly lifecycle: string; readonly policy: string }
-    | undefined;
+    { readonly lifecycle: string; readonly policy: string } | undefined;
   if (mapped === undefined) throw new ActRefused(`interest state ${JSON.stringify(args.state)}`);
   const entityId = await resolveEntity(store, args.entityId);
   const at = stamp(store.now());
@@ -1439,13 +1511,16 @@ export interface TellArgs {
  */
 export async function tell(store: ActsStore, args: TellArgs, operator: string): Promise<Told> {
   if (operator === "") throw new ActRefused("steering has no author");
-  if (args.text.trim() === "") throw new ActRefused("steering exists to carry words, and this one has none");
+  if (args.text.trim() === "")
+    throw new ActRefused("steering exists to carry words, and this one has none");
   const id = newId("stg");
   let rootId = id;
   if (args.replyTo !== undefined) {
-    const parent = await first<{ root_id: string }>(store, `SELECT root_id FROM steering WHERE id = ?`, [
-      args.replyTo,
-    ]);
+    const parent = await first<{ root_id: string }>(
+      store,
+      `SELECT root_id FROM steering WHERE id = ?`,
+      [args.replyTo],
+    );
     if (parent === null) throw new ActRefused(`no steering ${args.replyTo} to reply to`);
     rootId = parent.root_id;
   }
@@ -1488,9 +1563,11 @@ export async function setPolicy(
   if (operator === "") throw new ActRefused("a policy has no operator");
   const refusal = validateNewPolicy(policy, concurrentJobs);
   if (refusal !== null) throw new ActRefused(refusal);
-  const held = await first<{ version: string }>(store, `SELECT version FROM policies WHERE version = ?`, [
-    policy.version,
-  ]);
+  const held = await first<{ version: string }>(
+    store,
+    `SELECT version FROM policies WHERE version = ?`,
+    [policy.version],
+  );
   if (held !== null) {
     throw new ActRefused(
       `policy version ${JSON.stringify(policy.version)} is already stored; a change is a new version`,
@@ -1531,12 +1608,13 @@ export async function setBudget(
   if (operator === "") throw new ActRefused("an overlay has no operator");
   const expires = Date.parse(args.expiresAt);
   if (!Number.isFinite(expires)) {
-    throw new ActRefused(`${JSON.stringify(args.expiresAt)} is not an instant an overlay can expire at`);
+    throw new ActRefused(
+      `${JSON.stringify(args.expiresAt)} is not an instant an overlay can expire at`,
+    );
   }
   const created = store.now();
-  const standing = (
-    await coordinator({ db: store.db }, store.now, concurrentJobs).policy(created)
-  ).standing;
+  const standing = (await coordinator({ db: store.db }, store.now, concurrentJobs).policy(created))
+    .standing;
   const overlay: Budget = {
     id: newId("bdg"),
     createdAt: created,
@@ -1702,7 +1780,8 @@ export interface ImportChunk {
  */
 export async function importLedger(store: ActsStore, chunk: ImportChunk): Promise<Imported> {
   const columns = importableTables()[chunk.table];
-  if (columns === undefined) throw new ActRefused(`the store holds no table named ${JSON.stringify(chunk.table)}`);
+  if (columns === undefined)
+    throw new ActRefused(`the store holds no table named ${JSON.stringify(chunk.table)}`);
   const known: Record<string, true> = {};
   for (const column of columns) known[column] = true;
   const statements: SqlStatement[] = [];
@@ -1728,7 +1807,12 @@ export async function importLedger(store: ActsStore, chunk: ImportChunk): Promis
     [newId("imp"), chunk.source, chunk.table, inserted, stamp(store.now())],
   );
   store.touch();
-  return { source: chunk.source, table: chunk.table, inserted, skipped: chunk.rows.length - inserted };
+  return {
+    source: chunk.source,
+    table: chunk.table,
+    inserted,
+    skipped: chunk.rows.length - inserted,
+  };
 }
 
 /**
@@ -1749,7 +1833,9 @@ export async function rehostSessions(
   move: { from: string; to: string },
 ): Promise<SessionsRehosted> {
   if (move.from === move.to) {
-    throw new ActRefused("a re-host needs two different hosts; this one names the same value twice");
+    throw new ActRefused(
+      "a re-host needs two different hosts; this one names the same value twice",
+    );
   }
   const [counted] = await store.db.query<{ sessions: number | bigint }>(
     `SELECT COUNT(*) AS sessions FROM sessions WHERE host = ?`,

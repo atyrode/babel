@@ -118,7 +118,9 @@ export async function scan(input: ScanInput, out: OutputSink): Promise<Receipt> 
   const startedAt = new Date().toISOString();
   const runId = input.runId ?? "run_" + crypto.randomUUID().replaceAll("-", "");
   const wanted = input.harnesses;
-  const adapters = ADAPTERS.filter((adapter) => wanted.length === 0 || wanted.includes(adapter.harness));
+  const adapters = ADAPTERS.filter(
+    (adapter) => wanted.length === 0 || wanted.includes(adapter.harness),
+  );
 
   const refs: SessionRef[] = [];
   const byHarness: Partial<Record<Harness, Adapter>> = {};
