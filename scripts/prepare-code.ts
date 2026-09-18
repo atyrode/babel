@@ -89,8 +89,13 @@ if ((await run(["git", "rev-parse", "HEAD"], source)) !== revision) {
   is not its own, and omp's is checked against Code's there too — so a Babel that verified
   against a Code built on another Manifold would be proving nothing about the hub it installs
   on. The link is what makes Code's `../../manifold` this tree's own checkout.
+
+  THE `plugins/` BELOW IS CODE'S, NOT THIS REPOSITORY'S. Babel's own pin sits at its root
+  because Babel is nothing but its plugin family; Code's sits under `plugins/` because a Go
+  product sits beside it. A rewrite that flattened this path with Babel's own would read a file
+  Code does not have, which is exactly what it did once.
 */
-if ((await readFile(join(source, "MANIFOLD_REV"), "utf8")).trim() !== manifoldRevision) {
+if ((await readFile(join(source, "plugins/MANIFOLD_REV"), "utf8")).trim() !== manifoldRevision) {
   throw new Error(
     `Code at ${revision} builds against another Manifold than MANIFOLD_REV; move one pin`,
   );
