@@ -794,6 +794,25 @@ const MATERIAL_CHANGE_WEIGHT = 2;
  *  would turn evaluation off with an opaque refusal rather than drawing less. */
 const SCAN_PAGE = 2000;
 
+/**
+ * How many times one draw re-selects after finding its pick already claimed. Three, and the
+ * bound is what makes it terminate: each round costs one point query, and the window it covers
+ * is that query's own round trip — long enough under two dozen concurrent workers for another
+ * claim to land, short enough that three rounds are three windows rather than a spin. Past the
+ * third the eligible head is a queue of contended work rather than a race, and the honest answer
+ * is the conflict the claim path already reports.
+ */
+const DRAW_ATTEMPTS = 3;
+
+/**
+ * How long an assignment this process has handed out but not yet claimed withholds itself from
+ * the next draw. The claim follows the draw within one projection read (`dispatchReviews` in
+ * `server/conductor.ts`), so thirty seconds is generous for the honest case; a dispatch that was
+ * refused between the two never claims at all, and its hand-out has to lapse rather than
+ * withhold the record for a whole lease.
+ */
+const HANDOUT_GRACE_MS = 30_000;
+
 interface Head {
   readonly id: string;
   readonly rootId: string;
@@ -1777,6 +1796,7 @@ export function coordinator(
     candidates: readonly Candidate[],
     policy: Policy,
     stream: Stream,
+    contended: (candidate: Candidate) => boolean,
   ): { lane: Lane; chosen: Candidate } | null {
     const roll = stream.float();
     const coverageEdge = policy.coverageShare;
@@ -1805,7 +1825,7 @@ export function coordinator(
       order = ["backlog", "filing", "weighted", "coverage", "discovery", "exploration"];
     }
     for (const lane of order) {
-      const chosen = pick(candidates, lane, stream);
+      const chosen = pick(candidates, lane, stream, contended);
       if (chosen !== null) return { lane, chosen };
     }
     return null;
@@ -1819,25 +1839,38 @@ export function coordinator(
    * Weighted is a cumulative-weight sample, the only lane where a higher weight means a higher
    * probability rather than a guarantee. Every review lane skips a work candidate and each work
    * lane draws nothing else: a record drawn to be named must never arrive at a reviewer.
+   *
+   * `contended` is the one thing a lane's order does not decide: an assignment somebody else is
+   * already holding is not eligible, so every lane walks past it to the next one it would have
+   * ranked. Ranking still says which comes first; it no longer says which is the only one this
+   * draw will consider, which is what had two dozen workers reaching for one deterministic head
+   * and all but one of them losing (#233).
    */
-  function pick(candidates: readonly Candidate[], lane: Lane, stream: Stream): Candidate | null {
+  function pick(
+    candidates: readonly Candidate[],
+    lane: Lane,
+    stream: Stream,
+    contended: (candidate: Candidate) => boolean,
+  ): Candidate | null {
     let best: Candidate | null = null;
     switch (lane) {
       case "coverage":
         for (const candidate of candidates) {
           if (work(candidate) || candidate.revisit || !candidate.initial) continue;
+          if (contended(candidate)) continue;
           if (best === null || candidate.dueAt < best.dueAt) best = candidate;
         }
         return best;
       case "discovery":
         for (const candidate of candidates) {
           if (work(candidate) || candidate.revisit || !candidate.untouched) continue;
+          if (contended(candidate)) continue;
           if (best === null || candidate.dueAt < best.dueAt) best = candidate;
         }
         return best;
       case "filing":
         for (const candidate of candidates) {
-          if (!candidate.filing) continue;
+          if (!candidate.filing || contended(candidate)) continue;
           if (best === null || candidate.dueAt < best.dueAt) best = candidate;
         }
         return best;
@@ -1845,14 +1878,16 @@ export function coordinator(
         // By when each was set down rather than by the record's age: the backlog is cleared in
         // the order it accumulated.
         for (const candidate of candidates) {
-          if (!candidate.backlog) continue;
+          if (!candidate.backlog || contended(candidate)) continue;
           if (best === null || candidate.deferredAt < best.deferredAt) best = candidate;
         }
         return best;
       case "exploration": {
         // The only lane that draws a revisit, and it draws uniformly over everything eligible:
         // an exploration share spent by weight would be the weighted lane under another name.
-        const eligible = candidates.filter((candidate) => !work(candidate));
+        const eligible = candidates.filter(
+          (candidate) => !work(candidate) && !contended(candidate),
+        );
         if (eligible.length === 0) return null;
         return eligible[stream.below(eligible.length)] ?? null;
       }
@@ -1862,7 +1897,9 @@ export function coordinator(
       case "weighted": {
         // Outstanding obligations only. A revisit is not backlog, so admitting it here would let
         // well-reviewed open ideas compete with due work for the paid share.
-        const eligible = candidates.filter((candidate) => !work(candidate) && !candidate.revisit);
+        const eligible = candidates.filter(
+          (candidate) => !work(candidate) && !candidate.revisit && !contended(candidate),
+        );
         let total = 0;
         for (const candidate of eligible) total += candidate.weight;
         if (total <= 0) return null;
@@ -1877,6 +1914,44 @@ export function coordinator(
   }
 
   // -------------------------------------------------------------------------- the draw
+
+  /**
+   * WHAT THIS PROCESS HANDED OUT AND NOBODY HAS CLAIMED YET, by assignment id. A draw decides
+   * what is contended by reading the claims table, and between a draw and its claim there is
+   * nothing in that table to read: every overlapping cycle in this process shares one
+   * coordinator (`server.ts` builds it once), so without this they would all reach for the same
+   * deterministic head and all but one would lose the claim — which is what two dozen review
+   * workers did (#233).
+   *
+   * A hand-out is not a reservation. Nothing is charged, nothing is written, and the draw stays
+   * a pure function of its seed for the run that made it: a re-draw by the same run is handed
+   * its own outstanding assignment back rather than a second one. It lapses after
+   * `HANDOUT_GRACE_MS`, and once the claim lands the ledger is what the next draw reads.
+   */
+  const handedOut = new Map<string, { readonly runId: string; readonly at: number }>();
+
+  /** The assignment id a candidate would be handed out as, named once so the contention check
+   *  and the assignment it hands back cannot disagree about which claim is which. */
+  function assignmentIdOf(candidate: Candidate, version: string): string {
+    return `asg_${digest([candidate.head.id, candidate.role, version, String(candidate.ordinal)])}`;
+  }
+
+  /**
+   * Every assignment a live claim holds at this moment. `buildCandidates` already excluded what
+   * was claimed when its scan began, and that snapshot is the thing that goes stale: a draw over
+   * several thousand records reads for long enough that a claim landing mid-scan is the ordinary
+   * case rather than the unlucky one, and the draw that acts on the stale set is the one whose
+   * claim is refused.
+   */
+  async function claimedNow(moment: number): Promise<ReadonlySet<string>> {
+    // `claims_open` is a partial index over the unfinished rows (`store/schema.ts`), so this
+    // reads the open claims rather than the ledger's whole history of them.
+    const rows = await db.query(
+      `SELECT id FROM claims WHERE finished_at IS NULL AND expires_at > ?`,
+      [iso(moment)],
+    );
+    return new Set(rows.map((row) => text(row["id"])));
+  }
 
   async function draw(request: DrawRequest): Promise<DrawResult> {
     const moment = request.now ?? now();
@@ -1933,11 +2008,65 @@ export function coordinator(
     );
     const seed =
       request.seed ?? BigInt(`0x${digest([request.runId, String(moment), inputDigest])}`);
-    const sampled = sample(candidates, policy, new Stream(seed));
+
+    // THE PICK IS THE FIRST ELIGIBLE ASSIGNMENT NOBODY IS HOLDING rather than the single
+    // top-ranked one (#233). Ranking still decides the order this walks; what changed is that a
+    // head somebody else holds is stepped over instead of contended for. Each round re-reads the
+    // claim set, so the loser of a genuine race pays one point query rather than the whole scan
+    // the candidate set cost it, and the rounds are bounded: past `DRAW_ATTEMPTS` the top pick
+    // is handed out unchanged and the claim refuses it exactly as it always did, because a
+    // conflict the caller already handles is better than a draw that will not terminate.
+    const ids = new Map<Candidate, string>();
+    const identify = (candidate: Candidate): string => {
+      const known = ids.get(candidate);
+      if (known !== undefined) return known;
+      const minted = assignmentIdOf(candidate, standing.version);
+      ids.set(candidate, minted);
+      return minted;
+    };
+    const taken = new Set<string>();
+    for (const [id, held] of handedOut) {
+      if (held.at + HANDOUT_GRACE_MS <= moment) handedOut.delete(id);
+      else if (held.runId !== request.runId) taken.add(id);
+    }
+    const contended = (candidate: Candidate): boolean => taken.has(identify(candidate));
+    let top: { lane: Lane; chosen: Candidate } | null = null;
+    let sampled: { lane: Lane; chosen: Candidate } | null = null;
+    for (let attempt = 1; attempt <= DRAW_ATTEMPTS; attempt += 1) {
+      const picked = sample(candidates, policy, new Stream(seed), contended);
+      if (picked === null) break;
+      top ??= picked;
+      // THE HAND-OUT IS TAKEN IN THE SAME TICK AS THE SELECTION, before the refresh below is
+      // awaited. A draw that selected first and recorded afterwards leaves a window exactly as
+      // wide as one query, and two workers whose draws land in it select the same head — which
+      // is the bug one storey down from #233's.
+      const pickedId = identify(picked.chosen);
+      handedOut.set(pickedId, { runId: request.runId, at: moment });
+      const claimed = await claimedNow(moment);
+      if (!claimed.has(pickedId)) {
+        sampled = picked;
+        break;
+      }
+      handedOut.delete(pickedId);
+      gaps.push({
+        recordId: picked.chosen.head.id,
+        role: picked.chosen.role,
+        reason: "claimed",
+        detail: "claimed by another worker while this draw was reading its candidates",
+      });
+      for (const held of claimed) taken.add(held);
+    }
+    sampled ??= top;
     if (sampled === null) {
       return {
         outcome: "gap",
-        gap: { reason: "no-lane", detail: "no lane could be satisfied from the eligible set" },
+        gap: {
+          reason: "no-lane",
+          detail:
+            taken.size === 0
+              ? "no lane could be satisfied from the eligible set"
+              : `every eligible review is held by another worker; ${String(taken.size)} are claimed or drawn`,
+        },
         gaps,
       };
     }
@@ -1947,11 +2076,13 @@ export function coordinator(
     // deciding what a record is about, and to working through what was deferred.
     const chosen = sampled.chosen;
     const lane: Lane = chosen.lane ?? (chosen.role === "challenge" ? "challenge" : sampled.lane);
+    const id = identify(chosen);
+    handedOut.set(id, { runId: request.runId, at: moment });
 
     return {
       outcome: "assignment",
       assignment: {
-        id: `asg_${digest([chosen.head.id, chosen.role, standing.version, String(chosen.ordinal)])}`,
+        id,
         recordId: chosen.head.id,
         rootId: chosen.head.rootId,
         kind: chosen.head.kind,
@@ -2026,6 +2157,10 @@ export function coordinator(
         },
       };
     }
+    // From here the ledger answers for this assignment, whichever way the claim goes: a grant
+    // withholds it through `claims`, and a refusal means this run is not taking it. Either way
+    // the draw's note about having handed it out has nothing left to say.
+    handedOut.delete(assignment.id);
     const expires = moment + policy.leaseSeconds * 1000;
     const existing = await readClaim(assignment.id);
 
