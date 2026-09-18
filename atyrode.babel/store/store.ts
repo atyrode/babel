@@ -317,6 +317,48 @@ function objectsField(payload: Record<string, unknown>, key: string): Record<str
   return out;
 }
 
+/** A recipe as the policy document declares it, before anything that ran is joined to it. */
+interface DeclaredRecipe {
+  readonly id: string;
+  readonly title: string;
+  readonly looksFor: string;
+  readonly enabled: boolean;
+}
+
+/**
+ * THE RECIPES A POLICY DOCUMENT DECLARES — the one place the list is read.
+ *
+ * Two surfaces need it and they must not disagree: the policy panel's roster and the topic
+ * coverage grid both answer "what is Babel set up to look for", and a second reader would let
+ * one of them fall behind the shape the other handles. The shape is the review route's list,
+ * or the legacy top-level one for a policy written before the route owned it.
+ *
+ * A recipe with no `enabled` key is enabled: the flag was added after the map was, and a policy
+ * that predates it declared its recipes in order to run them.
+ */
+function declaredIn(payload: Record<string, unknown>): readonly DeclaredRecipe[] {
+  const held = payload["review"];
+  const review =
+    typeof held === "object" && held !== null && !Array.isArray(held)
+      ? (held as Record<string, unknown>)
+      : {};
+  const routed = objectsField(review, "recipes");
+  const documents = routed.length > 0 ? routed : objectsField(payload, "recipes");
+  const out: DeclaredRecipe[] = [];
+  for (const entry of documents) {
+    const id = stringField(entry, "id");
+    if (id === "") continue;
+    const enabled = entry["enabled"];
+    out.push({
+      id,
+      title: stringField(entry, "title"),
+      looksFor: stringField(entry, "looksFor"),
+      enabled: typeof enabled === "boolean" ? enabled : true,
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------- the peel
 
 /** The record kinds §6.7 makes reviewable: an observation is evidence, not an artifact. */
@@ -1478,7 +1520,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
 
   /**
    * The evaluation policy in force: the newest row, with the ceilings and lanes read out of its
-   * own document and the review route's recipes joined to what has actually run under them.
+   * own document and the recipes it declares carrying what has run under each.
    */
   const policy = async (): Promise<PolicyResult> => {
     const row = await one(
@@ -1501,32 +1543,40 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         GROUP BY recipe_id ORDER BY recipe_id LIMIT 200`,
       [],
     );
-    const described: Record<string, Record<string, unknown>> = {};
-    const heldReview = payload["review"];
-    const review =
-      typeof heldReview === "object" && heldReview !== null && !Array.isArray(heldReview)
-        ? (heldReview as Record<string, unknown>)
-        : {};
-    const routedRecipes = objectsField(review, "recipes");
-    const recipeDocuments =
-      routedRecipes.length > 0 ? routedRecipes : objectsField(payload, "recipes");
-    for (const entry of recipeDocuments) {
-      described[stringField(entry, "id")] = entry;
-    }
-    const recipes: RecipeRow[] = ran.map((entry) => {
-      const id = text(entry["id"]);
-      const spelled = described[id] ?? {};
-      const enabled = spelled["enabled"];
+    /*
+      THE DECLARED LIST IS THE LEFT SIDE (#344).
+
+      This roster was a `GROUP BY` over `runs`, so a recipe the operator installed and nothing
+      had ever performed was absent from it altogether: seventeen recipes in force, two rows on
+      the screen, and nothing anywhere saying the other fifteen existed. A surface that can only
+      list what happened cannot show what has not, which is the reading worth having — the lens
+      nobody has pointed at anything yet is the one to point.
+
+      So the policy's own list is the axis and the runs are joined onto it. Zero is a number:
+      a recipe with no runs is a row saying zero, never a row left out.
+    */
+    const performed = new Map<string, Record<string, SqlParam>>();
+    for (const entry of ran) performed.set(text(entry["id"]), entry);
+    const joined = (recipe: DeclaredRecipe): RecipeRow => {
+      const entry = performed.get(recipe.id);
       return {
-        id,
-        title: stringField(spelled, "title"),
-        looksFor: stringField(spelled, "looksFor"),
-        enabled: typeof enabled === "boolean" ? enabled : true,
-        lastRanAt: text(entry["last_ran_at"]),
-        lastRunId: text(entry["last_run_id"]),
-        runs: count(entry["runs"]),
+        ...recipe,
+        lastRanAt: entry === undefined ? "" : text(entry["last_ran_at"]),
+        lastRunId: entry === undefined ? "" : text(entry["last_run_id"]),
+        runs: entry === undefined ? 0 : count(entry["runs"]),
       };
-    });
+    };
+    const declared = declaredIn(payload);
+    const recipes: RecipeRow[] = declared.map(joined);
+    // A recipe the corpus ran and the document no longer declares still happened, and dropping
+    // it would hide runs this deployment paid for. It trails the declared ones, nameless unless
+    // the document names it, which is how it reads as history rather than as work on offer.
+    const held = new Set(declared.map((recipe) => recipe.id));
+    for (const entry of ran) {
+      const id = text(entry["id"]);
+      if (held.has(id)) continue;
+      recipes.push(joined({ id, title: "", looksFor: "", enabled: true }));
+    }
     const lanes: PolicyResult["lanes"] = [];
     const shares: Record<string, string> = {
       coverage_share: "reception",
@@ -1595,30 +1645,15 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   /**
-   * THE RECIPES THE POLICY DECLARES, which is not the same list as the ones that have run.
+   * THE RECIPES THE POLICY DECLARES, read off the newest stored document.
    *
-   * `policy()`'s `recipes` is built from `runs`, so a lens the hub holds and has never performed
-   * is absent from it. That is the wrong axis for a coverage grid by construction: the row worth
-   * reading is exactly the lens with no runs behind it. So this reads the stored document, the
-   * way `server.ts`'s own cookbook reader does — the review route's list, or the legacy
-   * top-level one for a policy written before the route owned it.
+   * The coverage grid's axis, and the same list `policy()` joins its runs onto: the row worth
+   * reading on a grid is exactly the lens with no runs behind it, so the corpus is the wrong
+   * side to enumerate from.
    */
-  const declaredRecipes = async (): Promise<readonly { id: string; title: string }[]> => {
+  const declaredRecipes = async (): Promise<readonly DeclaredRecipe[]> => {
     const row = await one(`SELECT payload FROM policies ORDER BY seq DESC LIMIT 1`, []);
-    const payload = document(row?.["payload"]);
-    const held = payload["review"];
-    const review =
-      typeof held === "object" && held !== null && !Array.isArray(held)
-        ? (held as Record<string, unknown>)
-        : {};
-    const routed = objectsField(review, "recipes");
-    const documents = routed.length > 0 ? routed : objectsField(payload, "recipes");
-    const out: { id: string; title: string }[] = [];
-    for (const entry of documents) {
-      const id = stringField(entry, "id");
-      if (id !== "") out.push({ id, title: stringField(entry, "title") });
-    }
-    return out;
+    return declaredIn(document(row?.["payload"]));
   };
 
   /**

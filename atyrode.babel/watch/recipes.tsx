@@ -10,6 +10,12 @@ import { figure, since, type RecipeRow } from "./api.ts";
   cookbook/recipes`. The list states each one's name, the line saying what it looks for, whether
   the policy has it enabled, when it last ran and how many runs it has to its name.
 
+  NEVER RUN IS A STATE, NOT A ZERO (#344). The roster used to be assembled from the runs table,
+  so a recipe in force that nothing had performed was not on the screen at all. Now it is, and a
+  row saying `0` among rows saying `42` reads as a rounding rather than as the thing worth
+  acting on — so it is marked beside the name, with the same badge that marks one switched off,
+  and the lede counts them. The unpointed lens is the one to point.
+
   An empty title is rendered as the id rather than as a blank: the title and the line come from
   the policy payload's recipe map, which a store imported before that map existed does not
   carry, and a nameless row is still a recipe that ran nine times last week.
@@ -24,6 +30,11 @@ export interface RecipesProps {
 
 export function Recipes({ recipes, now, note }: RecipesProps) {
   const enabled = recipes.filter((recipe) => recipe.enabled).length;
+  const never = recipes.filter((recipe) => recipe.runs === 0).length;
+  const tally =
+    never === 0
+      ? `${enabled} of ${recipes.length} enabled`
+      : `${enabled} of ${recipes.length} enabled, ${never} never run`;
   return (
     <Stack gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__section">
       <Stack gap="var(--babel-space-1)">
@@ -31,7 +42,7 @@ export function Recipes({ recipes, now, note }: RecipesProps) {
         <p className="plugin-atyrode_babel_watch__lede">
           {recipes.length === 0
             ? "The policy in force names no recipes."
-            : `${enabled} of ${recipes.length} enabled — what Babel is looking for, and when it last looked.`}
+            : `${tally} — what Babel is looking for, and when it last looked.`}
         </p>
       </Stack>
       {note === "" ? null : <p className="plugin-atyrode_babel_watch__note">{note}</p>}
@@ -47,11 +58,16 @@ export function Recipes({ recipes, now, note }: RecipesProps) {
                   {recipe.enabled ? null : (
                     <span className="plugin-atyrode_babel_watch__off">off</span>
                   )}
+                  {recipe.runs === 0 ? (
+                    <span className="plugin-atyrode_babel_watch__never">never run</span>
+                  ) : null}
                 </Cluster>
-                <span className="plugin-atyrode_babel_watch__mono plugin-atyrode_babel_watch__muted">
-                  {recipe.lastRanAt === "" ? "never run" : `ran ${since(recipe.lastRanAt, now)}`} ·{" "}
-                  {figure(recipe.runs)} {recipe.runs === 1 ? "run" : "runs"}
-                </span>
+                {recipe.runs === 0 ? null : (
+                  <span className="plugin-atyrode_babel_watch__mono plugin-atyrode_babel_watch__muted">
+                    ran {since(recipe.lastRanAt, now)} · {figure(recipe.runs)}{" "}
+                    {recipe.runs === 1 ? "run" : "runs"}
+                  </span>
+                )}
               </Cluster>
               <p className="plugin-atyrode_babel_watch__recipe-looks">
                 {recipe.looksFor === ""

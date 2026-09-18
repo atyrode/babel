@@ -164,6 +164,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Watch lists every recipe in force, not only the ones that have run.** `policy().recipes` was
+  a `GROUP BY` over the runs table, so a recipe the operator installed and nothing had ever
+  performed was absent from the panel altogether — seventeen in force, two on the screen, and
+  nothing anywhere saying the other fifteen existed. The policy's own declared list is the axis
+  now and the runs are joined onto it, so zero is a number rather than an omission; a never-run
+  recipe carries the same badge that marks one switched off, drops the `ran … · N runs` line
+  instead of printing a zero among real counts, and the section lede tallies how many of the
+  cookbook has never been opened. The declared list is read in exactly one place, which the
+  coverage grid already needed and had to build for itself. A recipe the corpus ran and the
+  current document no longer declares still appears, trailing the declared ones: those runs were
+  paid for and dropping them would hide them. The Start form's picker inherits the fix — every
+  declared recipe is now launchable, where before only one that had already run could be chosen.
 - **A refused review keeps what it submitted, so its refusal can be measured rather than
   believed.** A review the contract refused left a reason string and no evidence, so neither "did
   that class of refusal fall after the contract changed?" nor "did the judgement change between
