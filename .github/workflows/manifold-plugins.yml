@@ -38,7 +38,7 @@ jobs:
     with:
       # The repository IS the plugin family: there is no `plugins/` wrapper, so the caller
       # directory the reusable workflow works in is the checkout root.
-      plugins-dir: "."
+      plugins-dir: ""
       # `atyrode.babel` declares `atyrode.code` a REQUIRED dependency, so `verify` cannot
       # compose Babel on the disposable engine until Code — and omp beneath it — are on disk.
       # `deps:code` fetches atyrode/code at plugins/CODE_REV, arranges the sibling layout
