@@ -1152,6 +1152,27 @@ export const ReceiptSchema = z.strictObject({
   refusedContributions: z
     .array(z.strictObject({ contribution: z.number().int().positive(), reason: z.string().min(1) }))
     .optional(),
+  /**
+   * THE SUBMISSION A REFUSED REVIEW ACTUALLY SENT (#311).
+   *
+   * `reason` says why nothing was recorded; this is what was refused, as the model wrote it.
+   * Without it a refused run left a sentence and no evidence, so neither "did that class of
+   * refusal fall after the contract changed?" nor "did the judgement change between attempts?"
+   * was answerable from the store at all — and a measurement taken on faith is how a shape rule
+   * gets loosened for the wrong reason.
+   *
+   * Absent when the review was recorded, and when the session submitted nothing this could
+   * parse — there is no payload for a run that ended with no final message. `withheld` is the
+   * honest answer for a submission too large to keep: the size is still evidence, the bytes are
+   * not worth an unbounded row.
+   */
+  rejectedSubmission: z
+    .strictObject({
+      bytes: z.number().int().nonnegative(),
+      payload: z.unknown().optional(),
+      withheld: z.literal("too-large").optional(),
+    })
+    .optional(),
   costUsd: z.number().optional(),
   tokens: z.number().int().optional(),
   /**

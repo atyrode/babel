@@ -31,6 +31,7 @@ import {
   REVIEW_JOB_VERSION,
   REVIEW_PROMPT_VERSION,
   blinded,
+  rejectedSubmission,
   type RefusedContribution,
   type ReviewPreparation,
   type ReviewProjection,
@@ -1793,6 +1794,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     let reason = "";
     let skippedResult = false;
     let refusedContributions: RefusedContribution[] = [];
+    let submittedPayload: unknown = null;
     let acceptedRows: Readonly<Record<string, readonly Record<string, string | number | null>[]>> = {};
     const projection = await project(preparation.recordId);
     if (session === null) {
@@ -1807,6 +1809,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       const verdict = reviewVerdict(preparation, session.finalMessage, projection.target);
       reason = verdict.reason;
       refusedContributions = [...verdict.refused];
+      submittedPayload = verdict.submitted;
       if (verdict.result !== null) {
         skippedResult = verdict.result.skip !== "";
         acceptedRows = reviewRows(preparation, verdict.result, run.id, new Date(at).toISOString());
@@ -1892,7 +1895,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     };
     // `counts` itself stays the per-file row count the ingest reports; the refused contributions
     // are counted onto the RECEIPT's copy of it, where "how did this review's spend land" is read.
-    const receipt: Receipt =
+    const withRefusals: Receipt =
       refusedContributions.length === 0
         ? base
         : {
@@ -1900,6 +1903,15 @@ export function conductor(deps: ConductorDeps): Conductor {
             refusedContributions,
             counts: { ...counts, contributionsRefused: refusedContributions.length },
           };
+    // A REFUSED REVIEW KEEPS WHAT IT SUBMITTED. The sentence alone made "did this class of
+    // refusal fall?" and "did the judgement change under refusal?" unanswerable from the store
+    // (#311); the payload is the model's own answer, unedited, because an edited one is not
+    // evidence. Too large to keep is reported as its size rather than truncated into something
+    // nobody submitted.
+    const receipt: Receipt =
+      reason === "" || submittedPayload === null
+        ? withRefusals
+        : { ...withRefusals, rejectedSubmission: rejectedSubmission(submittedPayload) };
     const target: IngestTarget = {
       runId: run.id,
       jobId: run.job_id,
