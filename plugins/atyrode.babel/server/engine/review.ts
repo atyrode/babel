@@ -232,16 +232,17 @@ export function composeReviewPrompt(input: {
  * What the sealed answer was: the accepted result, or the refusal AND the shape it was refused
  * in. The shape is there so a caller can ask which contribution the rules refuse — it is null
  * when the refusal is the fence, the JSON or the shape itself, because a submission nobody
- * could parse has no contributions to salvage.
+ * could parse has no contributions to salvage. `submitted` is the document the model sent,
+ * whatever became of it, so a refusal can be recorded beside the answer that earned it (#311).
  */
 type ReviewAnswer =
-  | { readonly result: ReviewResult }
-  | { readonly refusal: ResultRefusal; readonly shaped: ReviewResult | null };
+  | { readonly result: ReviewResult; readonly submitted: unknown }
+  | { readonly refusal: ResultRefusal; readonly shaped: ReviewResult | null; readonly submitted: unknown };
 
 function readReviewAnswer(role: Role, finalMessage: string): ReviewAnswer {
   const answer = answerOf(finalMessage);
   if ("refused" in answer) {
-    return { refusal: new ResultRefusal(REFUSALS.schema, answer.refused), shaped: null };
+    return { refusal: new ResultRefusal(REFUSALS.schema, answer.refused), shaped: null, submitted: null };
   }
   let payload: unknown;
   try {
@@ -253,21 +254,39 @@ function readReviewAnswer(role: Role, finalMessage: string): ReviewAnswer {
         `the ${ANSWER_FENCE} block is not JSON: ${error instanceof Error ? error.message : String(error)}`,
       ),
       shaped: null,
+      submitted: null,
     };
   }
   let shaped: ReviewResult;
   try {
     shaped = shapeReviewResult(role, payload);
   } catch (error) {
-    if (error instanceof ResultRefusal) return { refusal: error, shaped: null };
+    if (error instanceof ResultRefusal) return { refusal: error, shaped: null, submitted: payload };
     throw error;
   }
   try {
-    return { result: acceptReviewResult(role, shaped) };
+    return { result: acceptReviewResult(role, shaped), submitted: payload };
   } catch (error) {
-    if (error instanceof ResultRefusal) return { refusal: error, shaped };
+    if (error instanceof ResultRefusal) return { refusal: error, shaped, submitted: payload };
     throw error;
   }
+}
+
+/**
+ * How much of a refused submission a receipt keeps. A review answer is bounded by what a model
+ * writes and not by a column, so it is kept whole up to this and reported as its size beyond it:
+ * a truncated answer is not the answer anybody submitted, and the size is still evidence (#311).
+ */
+export const MAX_REJECTED_SUBMISSION_BYTES = 32768;
+
+/** What a receipt records of a submission that was refused: the answer, or how big it was. */
+export function rejectedSubmission(payload: unknown): {
+  bytes: number;
+  payload?: unknown;
+  withheld?: "too-large";
+} {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload) ?? "").length;
+  return bytes > MAX_REJECTED_SUBMISSION_BYTES ? { bytes, withheld: "too-large" } : { bytes, payload };
 }
 
 /** One contribution the contract refused, as the receipt records it. */
@@ -286,6 +305,16 @@ export interface ReviewVerdict {
   readonly refused: readonly RefusedContribution[];
   /** `<code>: <sentence>` when nothing is recorded, and "" when something is. */
   readonly reason: string;
+  /**
+   * THE DOCUMENT THE MODEL SUBMITTED, or null when it submitted none this could parse.
+   *
+   * A review refused whole used to leave a reason string and nothing else, so "did the
+   * judgement change under a shape refusal?" and "did that class of refusal actually fall?"
+   * were questions the store could not answer at all (#311). The payload is carried here and
+   * recorded on the run's receipt when the review is refused; it is the model's own answer,
+   * unedited, which is the only form in which it is evidence.
+   */
+  readonly submitted: unknown;
 }
 
 /**
@@ -333,7 +362,7 @@ export function reviewVerdict(
   let shaped: ReviewResult;
   if ("refusal" in answer) {
     if (answer.shaped === null) {
-      return { result: null, refused: [], reason: refusalReason(answer.refusal) };
+      return { result: null, refused: [], reason: refusalReason(answer.refusal), submitted: answer.submitted };
     }
     submitted = answer.refusal;
     shaped = answer.shaped;
@@ -354,9 +383,12 @@ export function reviewVerdict(
   if (refused.length === 0) {
     // Nothing here is one contribution's fault. A refusal the acceptance raised stands exactly
     // as it did before this path existed, which is what keeps the receipts comparable.
-    if (submitted !== null) return { result: null, refused, reason: refusalReason(submitted) };
+    if (submitted !== null)
+      return { result: null, refused, reason: refusalReason(submitted), submitted: answer.submitted };
     const whole = wholeReviewReason(shaped, preparation, served);
-    return whole === "" ? { result: shaped, refused, reason: "" } : { result: null, refused, reason: whole };
+    return whole === ""
+      ? { result: shaped, refused, reason: "", submitted: answer.submitted }
+      : { result: null, refused, reason: whole, submitted: answer.submitted };
   }
 
   let stands: ReviewResult;
@@ -368,14 +400,15 @@ export function reviewVerdict(
     // one — the same sentence today's receipt carries, so a failed review still reports the
     // defect rather than its consequence — and otherwise what the survivors failed on. Which
     // contributions were refused is `refused`, and that is reported either way.
-    return { result: null, refused, reason: refusalReason(submitted ?? error) };
+    return { result: null, refused, reason: refusalReason(submitted ?? error), submitted: answer.submitted };
   }
   const whole = wholeReviewReason(stands, preparation, served);
-  if (whole === "") return { result: stands, refused, reason: "" };
+  if (whole === "") return { result: stands, refused, reason: "", submitted: answer.submitted };
   return {
     result: null,
     refused,
     reason: submitted === null ? whole : refusalReason(submitted),
+    submitted: answer.submitted,
   };
 }
 

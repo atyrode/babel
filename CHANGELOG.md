@@ -39,6 +39,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A refused review keeps what it submitted, so its refusal can be measured rather than
+  believed.** A review the contract refused left a reason string and no evidence, so neither "did
+  that class of refusal fall after the contract changed?" nor "did the judgement change between
+  what was refused and what was recorded?" could be answered from the store at all — and a shape
+  rule loosened on an unmeasured claim is the wrong rule removed for the wrong reason. The run's
+  receipt now carries `rejectedSubmission`: the answer as the model wrote it, unedited, because an
+  edited one is not evidence. A submission too large to keep is reported as its size instead of
+  truncated into something nobody submitted, and a session that answered nothing carries no
+  payload because there is none (#311).
+
 - **The crossing records the machine id it was given, not the Go deployment's host name.**
   `sessions.host` is a hub machine id — `describe`, `listRuns` and `machines.repository` are all
   keyed on it and the hub resolves no names — and `tools/import.ts` documents `--host` as exactly
