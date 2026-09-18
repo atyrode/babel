@@ -49,6 +49,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   truncated into something nobody submitted, and a session that answered nothing carries no
   payload because there is none (#311).
 
+- **A crossing chunk naming a machine the hub cannot describe is refused, and the corpus already
+  written can be re-hosted.** The importer fix stopped new rows carrying the Go deployment's host
+  name, but it could not stop an operator passing a name to `--host`, and it could not repair the
+  588 rows already catalogued. `importLedger` is the one place a chunk enters with hub authority,
+  so it now refuses a chunk whose `sessions.host` or `runs.machine_id` names something `describe`
+  refuses — which also covers `runs.machine_id`, the other half of #309's note, with the same
+  guard instead of a second one. `atyrode.babel.rehostSessions` moves every row under one host
+  value onto a machine id the hub has just described: owner-only like the crossing it repairs, so
+  the repair cannot install a second unreachable value, and idempotent so a second run reports
+  zero. Nothing infers which machine a name meant, because nothing can — the hub resolves no
+  names and no door a plugin is served lists machines, so the operator states the mapping and the
+  hub verifies the destination (#312).
+
 - **The crossing records the machine id it was given, not the Go deployment's host name.**
   `sessions.host` is a hub machine id — `describe`, `listRuns` and `machines.repository` are all
   keyed on it and the hub resolves no names — and `tools/import.ts` documents `--host` as exactly

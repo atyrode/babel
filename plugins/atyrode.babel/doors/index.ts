@@ -37,7 +37,7 @@ export function babelDoors(
   const handlers: Record<string, ServerHandler> = {};
   const doors: readonly Door[] = [
     ...readDoors(store),
-    ...actDoors(store, concurrentJobs),
+    ...actDoors(store, concurrentJobs, deps.jobs),
     ...launchDoors(store, deps),
     ...drainDoors(store, drain),
   ];
