@@ -34,7 +34,12 @@ interface Harness {
   emitted: Emission[];
 }
 
-function openHarness(principal = "alex", isRoot = false): Harness {
+/**
+ * `describable` is the machine ids this hub knows. A re-host writes a `sessions.host` and the
+ * door will not write one the hub cannot describe, so the harness has to be able to answer
+ * that question both ways (#310).
+ */
+function openHarness(principal = "alex", isRoot = false, describable: readonly string[] = []): Harness {
   const dataDir = mkdtempSync(join(tmpdir(), "babel-doors-"));
   cleanup.push(dataDir);
   const db = openPluginDatabase({ dataDir, pluginId: BABEL_PLUGIN_ID });
@@ -49,7 +54,13 @@ function openHarness(principal = "alex", isRoot = false): Harness {
     },
   } as unknown as GuestCtx;
   // The manifest's `limits.concurrentJobs`, as `server.ts` hands it to the act doors.
-  return { store, doors: actDoors(store, 16), ctx, emitted };
+  const jobs = () => ({
+    describe: async ({ machineId }: { machineId: string }) => {
+      if (!describable.includes(machineId)) throw new Error("machine_unknown");
+      return { machineId, connected: true } as never;
+    },
+  });
+  return { store, doors: actDoors(store, 16, jobs as never), ctx, emitted };
 }
 
 afterEach(() => {
@@ -89,7 +100,7 @@ async function seedRecord(store: ActsStore, id: string, kind = "proposal"): Prom
   );
 }
 
-test("the eleven acts are declared, each carrying the write capability except the crossing", () => {
+test("the twelve acts are declared, each carrying the write capability except the crossing's two", () => {
   const harness = openHarness();
   const names = harness.doors.map((door) => door.action.name);
   expect(names).toEqual([
@@ -104,10 +115,18 @@ test("the eleven acts are declared, each carrying the write capability except th
     ACTIONS.setBudget,
     ACTIONS.clearBudget,
     ACTIONS.importLedger,
+    ACTIONS.rehostSessions,
   ]);
+  // The crossing and its repair ask `isRoot` instead: no capability in the vocabulary means
+  // "the owner". The repair also declares the machine read it needs to check its destination.
+  const owners: readonly string[] = [ACTIONS.importLedger, ACTIONS.rehostSessions];
   for (const door of harness.doors) {
-    expect(door.action.caps).toEqual(door.action.name === ACTIONS.importLedger ? [] : ["containers:write"]);
+    expect(door.action.caps).toEqual(owners.includes(door.action.name) ? [] : ["containers:write"]);
     expect(door.action.title.length).toBeGreaterThan(0);
+  }
+  for (const name of owners) {
+    const door = harness.doors.find((candidate) => candidate.action.name === name);
+    expect(door?.action.delegates).toEqual(["machines:read"]);
   }
 });
 
@@ -259,27 +278,32 @@ test("telling Babel something threads, and a policy under the floor is refused a
   expect(installed).toMatchObject({ version: "1", seq: 1 });
 });
 
-test("the crossing is owner-only and idempotent by (table, id)", async () => {
+test("the crossing is owner-only, hub-checked and idempotent by (table, id)", async () => {
   const guest = openHarness("someone-else", false);
   await migrate(guest.store);
-  const chunk = {
-    source: "durable.db",
-    table: "sessions",
-    rows: [
-      {
-        selector: "omp/abc",
-        host: "dev-01",
-        harness: "omp",
-        source_id: "abc",
-        seen_at: "2026-03-01T09:00:00.000000000Z",
-      },
-    ],
+  const row = {
+    selector: "omp/abc",
+    harness: "omp",
+    source_id: "abc",
+    seen_at: "2026-03-01T09:00:00.000000000Z",
   };
+  const machineId = "05df7eaa-efd8-4d9c-bb0c-334706555c77";
+  const chunk = { source: "durable.db", table: "sessions", rows: [{ ...row, host: machineId }] };
   expect(await refusal(guest, ACTIONS.importLedger, chunk)).toMatch(/the owner's act/);
   expect(await guest.store.db.query(`SELECT selector FROM sessions`)).toEqual([]);
 
-  const owner = openHarness("alex", true);
+  const owner = openHarness("alex", true, [machineId]);
   await migrate(owner.store);
+  // A HOST THE HUB CANNOT DESCRIBE IS REFUSED BEFORE IT IS WRITTEN. `sessions.host` is handed to
+  // `describe`, `listRuns` and `machines.repository` afterwards, so a Go host name there is a row
+  // nothing can read back — which is how 588 of them arrived (#310).
+  expect(
+    await refusal(owner, ACTIONS.importLedger, {
+      ...chunk,
+      rows: [{ ...row, host: "dev-01" }],
+    }),
+  ).toMatch(/dev-01 is not a machine this hub can describe/);
+  expect(await owner.store.db.query(`SELECT selector FROM sessions`)).toEqual([]);
   expect(await knock(owner, ACTIONS.importLedger, chunk)).toEqual({
     source: "durable.db",
     table: "sessions",
@@ -292,7 +316,49 @@ test("the crossing is owner-only and idempotent by (table, id)", async () => {
     inserted: 0,
     skipped: 1,
   });
-  expect(await owner.store.db.query<{ host: string }>(`SELECT host FROM sessions`)).toEqual([{ host: "dev-01" }]);
+  expect(await owner.store.db.query<{ host: string }>(`SELECT host FROM sessions`)).toEqual([
+    { host: machineId },
+  ]);
+});
+
+test("a re-host moves a catalogued corpus onto an id the hub knows, and refuses one it does not", async () => {
+  const machineId = "05df7eaa-efd8-4d9c-bb0c-334706555c77";
+  const owner = openHarness("alex", true, [machineId]);
+  await migrate(owner.store);
+  // Seeded as the store already holds them: these rows were written by a crossing that had no
+  // hub check, which is what the act exists to repair. The door itself now refuses to make more.
+  for (const selector of ["omp:one", "omp:two"]) {
+    await owner.store.db.run(
+      `INSERT INTO sessions(selector, host, harness, source_id, seen_at) VALUES(?, 'dev-01', 'omp', ?, ?)`,
+      [selector, selector, "2026-09-12T12:00:00.000Z"],
+    );
+  }
+  // A destination the hub cannot describe is refused: writing it would leave the rows exactly as
+  // unreachable as the name they already carry, which is the defect and not the repair.
+  expect(await refusal(owner, ACTIONS.rehostSessions, { from: "dev-01", to: "dev-02" })).toMatch(
+    /dev-02 is not a machine this hub can describe/,
+  );
+  expect(await owner.store.db.query<{ host: string }>(`SELECT DISTINCT host FROM sessions`)).toEqual([
+    { host: "dev-01" },
+  ]);
+  expect(await knock(owner, ACTIONS.rehostSessions, { from: "dev-01", to: machineId })).toEqual({
+    from: "dev-01",
+    to: machineId,
+    sessions: 2,
+  });
+  expect(await owner.store.db.query<{ host: string }>(`SELECT DISTINCT host FROM sessions`)).toEqual([
+    { host: machineId },
+  ]);
+  // Idempotent: the second run has nothing left under the name and says so rather than refusing.
+  expect(await knock(owner, ACTIONS.rehostSessions, { from: "dev-01", to: machineId })).toMatchObject({
+    sessions: 0,
+  });
+  // The owner's act, like the crossing it repairs.
+  const guest = openHarness("guest", false, [machineId]);
+  await migrate(guest.store);
+  expect(await refusal(guest, ACTIONS.rehostSessions, { from: "dev-01", to: machineId })).toMatch(
+    /the owner's act/,
+  );
 });
 
 test("a door refuses arguments its schema does not admit before any handler runs", () => {

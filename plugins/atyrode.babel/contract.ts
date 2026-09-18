@@ -122,6 +122,16 @@ export const ACTIONS = {
   drainStop: "drainStop",
   // the crossing (owner only)
   importLedger: "importLedger",
+  /**
+   * RE-HOSTING A CATALOGUED CORPUS, which is the crossing's own repair (#310).
+   *
+   * `sessions.host` is a HUB MACHINE ID and the crossing wrote a Go host NAME into it, so every
+   * readiness check, run listing and folder question about those rows asks about a machine that
+   * does not exist. Nothing can look a name up — the hub resolves none, and no door a plugin is
+   * served lists machines — so the operator supplies the mapping and the HUB verifies the
+   * destination: this act rewrites one `host` value to one machine id it has just described.
+   */
+  rehostSessions: "rehostSessions",
 } as const;
 export type ActionName = (typeof ACTIONS)[keyof typeof ACTIONS];
 
@@ -478,6 +488,18 @@ export const ImportChunkSchema = z.strictObject({
   source: bounded(200),
   table: bounded(64),
   rows: z.array(z.record(z.string(), z.union([z.string(), z.number(), z.null()]))).min(1).max(500),
+});
+
+/**
+ * The crossing's repair: one `sessions.host` value, replaced by one machine id (#310).
+ *
+ * `from` is whatever is in the store — a Go host name, which is why the rows are unusable. `to`
+ * is a hub machine id, and the door describes it before it writes: a second unusable value would
+ * be the same defect with a different string in it. Both are required and neither is guessed.
+ */
+export const RehostSessionsInputSchema = z.strictObject({
+  from: bounded(200),
+  to: bounded(200),
 });
 
 // ------------------------------------------------------------------------- the model session
