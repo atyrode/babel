@@ -17,7 +17,7 @@ import {
 /*
   THE PROMPT: the whole of what the model is told, composed here from Babel-owned parts, and the
   reading of what comes back. Ported from #284's `machine/engine/prompts.ts`, which was in turn
-  ported from `internal/explore/{prompt.go,instructions.go}`. Nothing about how to prompt lives
+  ported from `v0.4.0:internal/explore/{prompt.go,instructions.go}`. Nothing about how to prompt lives
   in Code: Code owns the model, the thinking level and the account, and Babel owns the words.
 
   TWO THINGS ARE DIFFERENT FROM #284's VERSION, and both follow from Babel no longer running the

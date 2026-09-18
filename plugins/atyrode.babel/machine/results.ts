@@ -1,6 +1,6 @@
 /*
   THE RESULT CONTRACTS: what a stage of an exploration and what a review role may submit, as one
-  declaration each. Ported from internal/explore/{result.go,schema.go,stages.go,review.go,
+  declaration each. Ported from v0.4.0:internal/explore/{result.go,schema.go,stages.go,review.go,
   reviewfiling.go,reviewbacklog.go}.
 
   The JSON Schema the submit tool is registered with is GENERATED from the zod schema below rather

@@ -1,5 +1,5 @@
 /*
-  The feed's order, held to what a reader observes (ported from `internal/web/feed_test.go`).
+  The feed's order, held to what a reader observes (ported from `v0.4.0:internal/web/feed_test.go`).
 
   The ranks are pure functions over a score, an age and a handful of votes, so they are asserted
   directly: what "hot" means is a claim this deployment makes about its own order, and a test

@@ -1,5 +1,5 @@
 /*
-  The coordinator's own tests: the behaviours internal/evaluation's tests defended, ported onto
+  The coordinator's own tests: the behaviours v0.4.0:internal/evaluation's tests defended, ported onto
   the plugin's tables. Each one is a rule an operator would notice the loss of — the order of the
   refusals, the reservations the lanes actually are, the fence, and the floor under a lease — and
   none of them asserts a sentence or a shape for its own sake.

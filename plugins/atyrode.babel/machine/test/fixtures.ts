@@ -34,7 +34,7 @@ export interface OmpSpec {
   toolErrors?: number;
   /**
    * The Babel run this log is the transcript of, written into the session record as Babel's own
-   * writer writes it (`internal/adapter/babelself/writer.go`: `runId` and `job` beside the id).
+   * writer writes it (`v0.4.0:internal/adapter/babelself/writer.go`: `runId` and `job` beside the id).
    * Absent for a session a person had, which is every other fixture here.
    */
   runId?: string;

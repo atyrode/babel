@@ -14,7 +14,7 @@ import {
 import { readRecords } from "./records.ts";
 
 /*
-  THE OMP ADAPTER, ported from internal/adapter/omp.
+  THE OMP ADAPTER, ported from v0.4.0:internal/adapter/omp.
 
   The layout it reads:
 

@@ -8,30 +8,21 @@ permissions:
   contents: write
 
 jobs:
+  # THE RELEASE ITSELF, WITH NO BINARY IN IT. A `v*` tag used to cross-compile ./cmd/babel for
+  # four platforms and upload the tarballs; there is no Go tree to build. What a tag publishes
+  # now is the plugin bundles the gate below verified, which `deliver` attaches — so this job
+  # exists to create the release those assets hang off, and to carry the version's own notes.
+  # Module versions already published stay resolvable through the proxy; only new publication
+  # of a binary stops.
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Build binaries
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 \
-              go build -trimpath -ldflags "-s -w" -o dist/babel ./cmd/babel
-            tar -czf "dist/babel_${GITHUB_REF_NAME}_${target%/*}_${target#*/}.tar.gz" -C dist babel
-            rm dist/babel
-          done
-          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
-
       - name: Extract changelog section
         run: |
           set -euo pipefail
+          mkdir -p dist
           version="${GITHUB_REF_NAME#v}"
           awk -v ver="$version" '
             $0 ~ "^## \\[" ver "\\]" { grab = 1; next }
@@ -47,11 +38,10 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "Babel $GITHUB_REF_NAME" \
             --notes-file dist/notes.md \
-            --verify-tag \
-            dist/*.tar.gz dist/SHA256SUMS
+            --verify-tag
 
-  # The plugin family is the product (decision 91): the same reusable gate that runs on every
-  # PR - check, test, pack, verify against a real engine - packs the tagged revision and uploads
+  # The plugin family is the product: the same reusable gate that runs on every PR - check,
+  # test, pack, verify against a real engine - packs the tagged revision and uploads
   # dist/ as the `manifold-plugins` artifact. The `uses:` ref and plugins/MANIFOLD_REV are one
   # revision and move together (.github/workflows/manifold-plugins.yml says why). `deps:code`
   # builds the dependency closure first, because verify composes omp, then Code, then Babel.

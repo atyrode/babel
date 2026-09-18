@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { RUNTIME_TOOL_BIN } from "../contract.ts";
 
 /*
-  WHAT THE WORK WAS ABOUT, ported from internal/adapter/repository.go (§4.13).
+  WHAT THE WORK WAS ABOUT, ported from v0.4.0:internal/adapter/repository.go (§4.13).
 
   A workspace path is a locator. Two worktrees of one repository are two paths and one project,
   a path under /tmp names nothing durable, and a generated worktree name ("witty-sage-crab") is

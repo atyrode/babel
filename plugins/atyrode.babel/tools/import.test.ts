@@ -1,9 +1,9 @@
 /*
   THE CROSSING, TESTED AGAINST THE GO SCHEMA IT READS.
 
-  The fixture below is the Go tree's own DDL — the tables `internal/frontier/store.go`,
-  `internal/evaluation/store.go`, `internal/reality/store.go`, `internal/disposition` and
-  `internal/run` migrate into `durable.db`, plus `internal/catalog`'s local `sessions` — copied
+  The fixture below is the Go tree's own DDL — the tables `v0.4.0:internal/frontier/store.go`,
+  `v0.4.0:internal/evaluation/store.go`, `v0.4.0:internal/reality/store.go`, `v0.4.0:internal/disposition` and
+  `v0.4.0:internal/run` migrate into `durable.db`, plus `v0.4.0:internal/catalog`'s local `sessions` — copied
   verbatim so that a column the Go stores drop or rename breaks this test rather than the
   operator's one-off import. Nothing here mocks the target either: the rows go through the real
   `openPluginDatabase` from ADR 0034, with its foreign keys on and its append-only triggers armed,
@@ -435,7 +435,7 @@ const GO_DURABLE_SCHEMA: readonly string[] = [
 )`,
 ];
 
-/** `catalog.db` as `internal/catalog` migrates it (schema_version 4). */
+/** `catalog.db` as `v0.4.0:internal/catalog` migrates it (schema_version 4). */
 const GO_CATALOG_SCHEMA: readonly string[] = [
   `CREATE TABLE sessions(
   selector TEXT PRIMARY KEY,
@@ -474,7 +474,7 @@ const HOST = "dev-fixture";
  */
 const GO_HOST = "dev-01";
 
-/** `internal/sharedcatalog.SessionUID`, which is what a Go `evidence` edge addresses. */
+/** `v0.4.0:internal/sharedcatalog.SessionUID`, which is what a Go `evidence` edge addresses. */
 function sessionUid(harness: string, sourceId: string): string {
   const digest = createHash("sha256");
   for (const part of [DEPLOYMENT, HOST, harness, sourceId]) {
@@ -875,7 +875,7 @@ test("every catalogued session is hosted on the machine id the crossing was give
 test("the Go catalog's fourth harness is Babel's own, and crosses as an agent session", async () => {
   const handle = store as PluginDatabaseAdmin;
   const rows = await handle.query(`SELECT selector, kind, live FROM sessions ORDER BY selector`);
-  // `internal/adapter/babelself` wrote the `babel` harness: those rows are Babel's own analysis
+  // `v0.4.0:internal/adapter/babelself` wrote the `babel` harness: those rows are Babel's own analysis
   // transcripts, so a preparation does not read them by accident (#262). `live` is 0 for every
   // imported row because the import observed no file — it read a catalog.
   expect(rows.map((row) => [row["selector"], row["kind"]])).toEqual([

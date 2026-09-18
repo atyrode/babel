@@ -1,6 +1,6 @@
 /*
   THE FEED INDEX: the whole deployment's posts, projected once and ranked whole (SPEC §8.7,
-  ported from `internal/web/feed.go`).
+  ported from `v0.4.0:internal/web/feed.go`).
 
   Three decisions shape this module, and they are the Go tree's, kept.
 
@@ -132,7 +132,7 @@ export interface FeedIndex {
   readonly reviewing: ReadonlyMap<string, number>;
 }
 
-/** One subject's reception as the feed counts it (`internal/evaluation`'s Tally). */
+/** One subject's reception as the feed counts it (`v0.4.0:internal/evaluation`'s Tally). */
 interface Tally {
   support: number;
   oppose: number;
@@ -489,7 +489,7 @@ async function readStandings(db: PluginDatabase): Promise<Map<string, string>> {
 }
 
 /**
- * The deployment's reception, grouped by record in one pass (`internal/evaluation`'s Tallies).
+ * The deployment's reception, grouped by record in one pass (`v0.4.0:internal/evaluation`'s Tallies).
  *
  * The dedup rule is §4.12's own: one vote per run per role. A correction supersedes the
  * statement it names, so a superseded assessment is dropped entirely; of what remains the newest
