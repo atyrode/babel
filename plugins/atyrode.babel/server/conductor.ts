@@ -21,6 +21,7 @@ import { REFUSALS, refusalCode, refusalReason, type RefusalCode } from "../machi
 import type { BabelStore } from "../store/store.ts";
 import { PROMPT_LIMIT, promptBytes, type CodeEngine, type SessionRead } from "./engine/session.ts";
 import { readExploreAnswer, unservedLocator, type Recipe } from "./engine/prompts.ts";
+import { exploreRows } from "./engine/records.ts";
 import {
   blindedLeak,
   composeReviewPrompt,
@@ -607,6 +608,13 @@ const TALLY_KEY = "conductor:tally";
  * cycle is something a dispatch is waiting behind: 64 probes is a bounded second of it.
  */
 const WORKSPACES_PER_TICK = 64;
+/**
+ * How many statements one settlement's `batch` carries. The engine takes 256 a call, and an
+ * answer that claimed more rows than that has to land as several transactions rather than not
+ * at all; the chunk is under the bound so a caller adding a guard statement cannot breach it.
+ */
+const STATEMENTS_PER_BATCH = 250;
+
 /** One `?` per word of the hub's closed reason vocabulary, for the marker predicate below. */
 const HUB_REASON_HOLES = MACHINE_REPOSITORY_REASONS.map(() => "?").join(", ");
 
@@ -2079,10 +2087,17 @@ export function conductor(deps: ConductorDeps): Conductor {
           };
     const costUsd = usage?.cost ?? 0;
 
-    // WHAT THE ANSWER WAS WORTH. A session that never sealed a transcript submitted nothing,
-    // and the reason says which of the job's own endings that was rather than inventing a
-    // schema refusal about a message that was never written.
+    // WHAT THE ANSWER WAS WORTH, AND THE ROWS IT CLAIMED. A session that never sealed a
+    // transcript submitted nothing, and the reason says which of the job's own endings that was
+    // rather than inventing a schema refusal about a message that was never written.
+    //
+    // A REFUSAL WRITES NOTHING AND STILL COSTS. The rows are built only once the answer parsed,
+    // every locator resolved against the material, and the material itself is readable — and
+    // they are built BEFORE the receipt, because a row the store's own schema refuses is itself
+    // a refusal of the answer and has to reach the receipt's `reason` like any other.
     let reason = "";
+    const produced: SqlStatement[] = [];
+    const counts: Record<string, number> = {};
     if (session === null) {
       reason =
         `${REFUSALS.empty}: the session closed as ${read.job.state} and sealed no transcript, ` +
@@ -2106,8 +2121,45 @@ export function conductor(deps: ConductorDeps): Conductor {
             `${REFUSALS.unknownReference}: the material of prepare job ` +
             `${run.prepare_job_id ?? "(none)"} is not on any settled run of this hub, so this ` +
             `run's citations cannot be checked against what it was served`;
+        } else {
+          const written = exploreRows(answer.result, {
+            runId: run.id,
+            at: new Date(at).toISOString(),
+            sessions: served,
+          });
+          if ("refusal" in written) {
+            reason = refusalReason(written.refusal);
+          } else {
+            // THE SAME INGEST A SEALED OUTPUT GOES THROUGH: one output file per table, each row
+            // in the table's own shape, `INSERT OR IGNORE` keyed by the row's own identifier.
+            // Nothing between the answer and the table reinterprets a row, and a row carrying a
+            // column this build's schema does not have is not written at all.
+            for (const file of INGEST_ORDER) {
+              const ingest = INGEST[file];
+              const rows = written.rows[file] ?? [];
+              if (ingest === undefined || rows.length === 0) continue;
+              for (const row of rows) {
+                const refused = refuseRow(ingest.table, row);
+                const statement = refused === null ? rowStatement(ingest, row) : null;
+                if (refused !== null || statement === null) {
+                  reason =
+                    `${refused?.code ?? REFUSALS.schema}: ` +
+                    `${refused?.message ?? `${file} contains a row outside the store schema`}`;
+                  break;
+                }
+                produced.push(statement);
+                counts[file] = (counts[file] ?? 0) + 1;
+              }
+              if (reason !== "") break;
+            }
+            for (const note of written.notes) notes.push(`run ${run.id}: ${note}`);
+          }
         }
       }
+    }
+    if (reason !== "") {
+      produced.length = 0;
+      for (const key of Object.keys(counts)) delete counts[key];
     }
     const refusedCode = reason === "" ? null : refusalCode(reason);
     if (refusedCode !== null) count(refusals, refusedCode);
@@ -2131,12 +2183,27 @@ export function conductor(deps: ConductorDeps): Conductor {
       costUsd,
       tokens: usage === null ? 0 : usage.input + usage.output,
       ...(session === null ? {} : { models: [session.model] }),
-      counts: {},
+      counts,
     };
-    // The run row is written through the SAME statement an ingested job's is: one shape for
-    // what a finished run looks like, whoever posted the job. `outputs` is empty because the
-    // rows a result becomes are not in a sealed lease here — the transcript is Code's job's
-    // `session` output, read on demand — and `inference` is what the meter said.
+    /*
+      THE ROWS FIRST, THE RUN ROW LAST, and the order is the crash contract.
+
+      A `batch` is the transaction and there is no open handle, so an answer larger than one
+      batch cannot be one: the engine takes 256 statements a call. Chunking is therefore how a
+      large answer lands at all, and the ordering is what makes a crash between two chunks
+      repairable — the run stays unsettled, the reaper reads the same session again, and every
+      identifier is minted from the run and the model's own handle, so the replay's inserts are
+      `INSERT OR IGNORE` no-ops on the rows that already landed. The reverse order would settle
+      the run against records that were never written and nothing would ever go back for them.
+
+      The run row is written through the SAME statement an ingested job's is: one shape for what
+      a finished run looks like, whoever posted the job. `outputs` is empty because the rows a
+      result becomes are not in a sealed lease here — the transcript is Code's job's `session`
+      output, read on demand — and `inference` is what the meter said.
+    */
+    for (let from = 0; from < produced.length; from += STATEMENTS_PER_BATCH) {
+      await store.db.batch(produced.slice(from, from + STATEMENTS_PER_BATCH));
+    }
     await store.db.batch([
       runStatement(
         run.id,
@@ -2150,7 +2217,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           inference,
         },
         receipt,
-        {},
+        counts,
       ),
     ]);
     await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
@@ -2161,7 +2228,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       jobId: run.job_id,
       closure: receipt.closure,
       costUsd,
-      rows: {},
+      rows: counts,
       skipped: 0,
     });
     /*
