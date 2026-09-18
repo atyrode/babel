@@ -143,11 +143,45 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
                 ))}
               </ul>
             )}
+            <Coverage rows={read.value?.coverage ?? []} />
             {row !== null && <AskBabel host={host} topic={row} />}
           </Stack>
         </header>
       }
     />
+  );
+}
+
+/**
+ * WHICH LENSES HAVE LOOKED HERE, AND WHICH NEVER HAVE.
+ *
+ * The never-looked group is the reason this exists, so it is last and it is labelled: a grid
+ * whose zeros were mixed in with its counts would need reading rather than glancing, and the
+ * question it answers — what has nobody examined about this — is the one the surface could not
+ * ask at all. A hub whose policy names no recipe renders nothing, the way an absent section
+ * renders as nothing rather than as an empty heading.
+ */
+function Coverage({
+  rows,
+}: {
+  rows: readonly { recipeId: string; title: string; records: number }[];
+}): ReactElement | null {
+  if (rows.length === 0) return null;
+  const looked = rows.filter((row) => row.records > 0);
+  const never = rows.filter((row) => row.records === 0);
+  return (
+    <section className="babel-coverage">
+      {looked.length > 0 && (
+        <p className="babel-note">
+          {looked.map((row) => `${row.title || row.recipeId} (${String(row.records)})`).join(" · ")}
+        </p>
+      )}
+      {never.length > 0 && (
+        <p className="babel-note">
+          never looked: {never.map((row) => row.title || row.recipeId).join(" · ")}
+        </p>
+      )}
+    </section>
   );
 }
 

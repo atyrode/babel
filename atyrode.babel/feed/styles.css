@@ -756,6 +756,22 @@
   font-size: 0.76rem;
 }
 
+/* The sentence that decides whether the excerpts below are three readings or one restated. It
+   sits above them, in the note's register: it qualifies the evidence rather than being some. */
+.plugin-atyrode_babel_feed .babel-corroboration {
+  margin: 0 0 var(--babel-space-3);
+  color: var(--babel-ink-faint);
+  font-size: 0.78rem;
+}
+
+/* Which lenses have looked at a topic, and which never have. Two lines, not a grid: a reader
+   glances at it while deciding what to run, and a table would ask to be read. */
+.plugin-atyrode_babel_feed .babel-coverage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--babel-space-1);
+}
+
 .plugin-atyrode_babel_feed .babel-related-word {
   color: var(--babel-ink-faint);
   font-family: var(--babel-font-mono);

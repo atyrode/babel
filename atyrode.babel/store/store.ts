@@ -132,6 +132,8 @@ export interface TopicsResult {
 export interface TopicResult {
   topic: TopicRow | null;
   proposed: TopicProposal[];
+  /** One row per recipe the policy holds; the rows at zero are what makes it worth reading. */
+  coverage: { recipeId: string; title: string; records: number }[];
   feed: FeedResult;
 }
 
@@ -220,6 +222,11 @@ export interface PolicyResult {
   recipes: RecipeRow[];
   /** The bounded exception in force over the standing numbers (#260), or null: there is none. */
   overlay: BudgetOverlay | null;
+  /**
+   * WHAT THE OPERATOR TOLD BABEL, newest first. `tell` wrote these rows and nothing read one
+   * back; a box that accepts a sentence and shows it nowhere reads as a sentence that was heard.
+   */
+  steering: { id: string; text: string; about: string; at: string }[];
   /** The stored policy document, so nothing is lost in the projection above. */
   payload: Record<string, unknown>;
 }
@@ -766,11 +773,40 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       claim: { statement: claimOf(kind, payload, text(row["title"])), standing, act },
       case: caseOf(kind, payload),
       evidence: await evidenceOf(kind, payload),
+      corroboration: await corroborationOf(id),
       reception: await receptionOf(id),
       machinery: await machineryOf(row, payload),
       related: await relatedOf(id, text(row["run_id"]), text(row["supersedes_id"])),
       plan: await planOf(id),
     };
+  };
+
+  /**
+   * HOW MANY RUNS THIS RECORD RESTS ON, which is not the same number as how much it rests on.
+   *
+   * A finding consolidating three observations reads as corroborated. If all three came out of
+   * one run, what it has is one model's reading of one corpus slice, restated three times — and
+   * the distinction was invisible: 175 of 207 findings in this deployment's own corpus rest on a
+   * single run, and every one of 116 proposals shares its finding's run, which nothing in the
+   * surface said. A reader cannot weigh evidence whose independence is not shown.
+   *
+   * It is computed at read time and adds no column: `records.run_id` and the typed edges already
+   * carry everything, and the schema is created once by the enable hook — a migration chain
+   * exists for a major bump over data that already exists, so a derived number belongs in the
+   * projection rather than in a table.
+   *
+   * The direction is the one the crossing wrote every edge in (`tools/import.ts`):
+   * `consolidates` runs finding→observation and `addresses` runs proposal→finding, so the
+   * supports of a record are what it points AT.
+   */
+  const corroborationOf = async (id: string): Promise<RecordPeel["corroboration"]> => {
+    const row = await one(
+      `SELECT COUNT(*) AS supports, COUNT(DISTINCT r.run_id) AS runs
+         FROM edges e JOIN records r ON r.id = e.to_id
+        WHERE e.from_id = ? AND e.kind IN ('consolidates','addresses')`,
+      [id],
+    );
+    return { supports: count(row?.["supports"]), distinctRuns: count(row?.["runs"]) };
   };
 
   /** A question opened as a record: the ledger asked it, and answering it is the act. */
@@ -792,6 +828,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       },
       case: why === "" ? {} : { problem: why },
       evidence: [],
+      // A question rests on nothing: it is the corpus failing to settle something, and the
+      // number is zero rather than absent so the shape is one shape for every peel.
+      corroboration: { supports: 0, distinctRuns: 0 },
       reception: { byRole: [], contested: false, operatorHistory: [] },
       machinery: {
         class: text(row["class"]),
@@ -1514,6 +1553,23 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       concurrent:
         numberField(payload, "concurrentPerMachine") || ceiling("batchSize", "batch_size"),
     };
+    /*
+      WHAT HE TOLD IT, BESIDE WHAT IT IS SET TO DO.
+
+      `tell` has written `steering` rows since it shipped and nothing read one back. The
+      operator's own words went into a table no surface opened, which is worse than not offering
+      the act: a box that accepts a sentence and shows it nowhere reads as a sentence that was
+      heard. The `policy` door is the least invented home for it — it already answers "what is
+      Babel set to do", and "what he told it" is the same question in his own words.
+
+      Newest first, bounded. Reading it back is not the same as feeding it into a run's prompt,
+      which is what would make it a memory rather than a log, and that is its own issue.
+    */
+    const told = await db.query(
+      `SELECT id, text, target_kind, target_id, recorded_at FROM steering
+        WHERE actor_kind = 'operator'
+        ORDER BY recorded_at DESC, id DESC LIMIT 20`,
+    );
     return {
       version: text(row?.["version"]),
       seq: count(row?.["seq"]),
@@ -1525,8 +1581,104 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       lanes,
       recipes,
       overlay: await overlayInForce(at, ceilings),
+      steering: told.map((entry) => ({
+        id: text(entry["id"]),
+        text: text(entry["text"]),
+        about:
+          text(entry["target_id"]) === ""
+            ? ""
+            : `${text(entry["target_kind"])}:${text(entry["target_id"])}`,
+        at: text(entry["recorded_at"]),
+      })),
       payload,
     };
+  };
+
+  /**
+   * THE RECIPES THE POLICY DECLARES, which is not the same list as the ones that have run.
+   *
+   * `policy()`'s `recipes` is built from `runs`, so a lens the hub holds and has never performed
+   * is absent from it. That is the wrong axis for a coverage grid by construction: the row worth
+   * reading is exactly the lens with no runs behind it. So this reads the stored document, the
+   * way `server.ts`'s own cookbook reader does — the review route's list, or the legacy
+   * top-level one for a policy written before the route owned it.
+   */
+  const declaredRecipes = async (): Promise<readonly { id: string; title: string }[]> => {
+    const row = await one(`SELECT payload FROM policies ORDER BY seq DESC LIMIT 1`, []);
+    const payload = document(row?.["payload"]);
+    const held = payload["review"];
+    const review =
+      typeof held === "object" && held !== null && !Array.isArray(held)
+        ? (held as Record<string, unknown>)
+        : {};
+    const routed = objectsField(review, "recipes");
+    const documents = routed.length > 0 ? routed : objectsField(payload, "recipes");
+    const out: { id: string; title: string }[] = [];
+    for (const entry of documents) {
+      const id = stringField(entry, "id");
+      if (id !== "") out.push({ id, title: stringField(entry, "title") });
+    }
+    return out;
+  };
+
+  /**
+   * WHICH LENSES HAVE LOOKED AT THIS TOPIC, AND WHICH NEVER HAVE.
+   *
+   * The zeros are the entire feature. Nothing in Babel could say "this method has produced
+   * nothing about this subject", so nothing could propose the pair — and a coverage question
+   * that can only be answered by noticing an absence is one nobody notices.
+   *
+   * A RECORD'S LENS IS REACHED, NOT READ OFF IT. Only an observation carries a recipe: that is
+   * what the answer attributes and what the crossing wrote (`tools/import.ts` sets the recipe
+   * columns for an observation and NULL for everything else). A finding's lens is therefore the
+   * lens of the observations it consolidates, and a proposal's is its finding's — two hops. A
+   * grid that grouped `records.recipe_id` directly would have reported zero for every lens that
+   * had ever produced a finding, which is a false zero and worse than no grid at all.
+   *
+   * So the walk is a bounded closure over the typed edges from each filed record, three deep,
+   * and a filed record counts ONCE for a lens however many ways it reaches it. Session and
+   * entity edges are excluded: a `cites` edge leads to a transcript, which carries no lens.
+   */
+  const coverageOf = async (entityId: string): Promise<TopicResult["coverage"]> => {
+    const recipes = await declaredRecipes();
+    const reached =
+      entityId === ""
+        ? []
+        : await db.query(
+            `WITH filed AS (
+               SELECT f.record_id AS id FROM filings f
+                WHERE f.entity_id = ? AND f.withdrawn = 0
+                  AND NOT EXISTS (SELECT 1 FROM filings later WHERE later.supersedes_id = f.id)
+             ),
+             reach(root, id, depth) AS (
+               SELECT id, id, 0 FROM filed
+               UNION
+               SELECT reach.root, e.to_id, reach.depth + 1
+                 FROM reach JOIN edges e ON e.from_id = reach.id
+                WHERE reach.depth < 3 AND e.to_kind NOT IN ('session', 'entity')
+             )
+             SELECT r.recipe_id AS recipe, COUNT(DISTINCT reach.root) AS records
+               FROM reach JOIN records r ON r.id = reach.id
+              WHERE r.recipe_id IS NOT NULL AND r.recipe_id <> ''
+              GROUP BY r.recipe_id`,
+            [entityId],
+          );
+    const counted = new Map<string, number>();
+    for (const row of reached) counted.set(text(row["recipe"]), count(row["records"]));
+    // THE POLICY'S LIST IS THE AXIS, not the corpus's. A lens the hub holds and has never run
+    // here is the row worth having; a recipe the corpus carries and the policy has dropped is
+    // history, and listing it would read as work still available.
+    const coverage = recipes.map((recipe) => ({
+      recipeId: recipe.id,
+      title: recipe.title,
+      records: counted.get(recipe.id) ?? 0,
+    }));
+    coverage.sort((first, second) =>
+      first.records === second.records
+        ? first.recipeId.localeCompare(second.recipeId)
+        : second.records - first.records,
+    );
+    return coverage;
   };
 
   const topic = async (name: string): Promise<TopicResult> => {
@@ -1548,7 +1700,12 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     };
     const eligible = filterFeed(current.posts, { ...query, topic: name }, current.builtAt);
     sortFeed(eligible, "next", current.builtAt);
-    return { topic: match, proposed, feed: page(eligible, query, current) };
+    return {
+      topic: match,
+      proposed,
+      feed: page(eligible, query, current),
+      coverage: await coverageOf(match?.id ?? ""),
+    };
   };
 
   return {
