@@ -15,7 +15,7 @@ import {
   type Objection,
   type QuestionDraft,
 } from "../../machine/results.ts";
-import { mintId, titleCell, type Row } from "./rows.ts";
+import { mintId, recordRow, type RecordKind, type Row } from "./rows.ts";
 
 /*
   AN ACCEPTED EXPLORATION, TURNED INTO THE ROWS IT CLAIMED.
@@ -303,6 +303,8 @@ class Writer {
   private readonly marked: { id: string; kind: string; text: string }[] = [];
   /** The edge identifiers already emitted, so one relation is one row however it was reached. */
   private readonly minted = new Set<string>();
+  /** Every record id this settlement minted: what a support's run is known from. */
+  private readonly ownRecords = new Set<string>();
   private readonly sessions: Map<string, string>;
 
   constructor(
@@ -317,7 +319,11 @@ class Writer {
   candidate(candidate: Candidate): void {
     const id = this.mint("hyp", candidate.ref);
     this.hypotheses.set(candidate.ref, id);
-    this.record(id, "hypothesis", candidate.hypothesis.statement, candidate.hypothesis);
+    // A candidate rests on nothing yet: its observations hang off it, and the edge that carries
+    // evidence points at a session rather than at a record.
+    this.record(id, "hypothesis", candidate.hypothesis.statement, candidate.hypothesis, {
+      supports: [],
+    });
     // THE LIFECYCLE STARTS AT UNTRIAGED, written with the record rather than inferred from its
     // absence: `status_events` is the history the frontier reads a standing off, and a
     // hypothesis with no event at all is one no listing can rank or defer.
@@ -328,6 +334,7 @@ class Writer {
       this.record(child, "observation", observation.claim.claim, observation.claim, {
         parentId: id,
         recipe: observation.recipe,
+        supports: [],
       });
       this.cites(child, "observation", observation.claim.evidence);
     }
@@ -336,7 +343,9 @@ class Writer {
     // §4.5's candidate proposal: the change this candidate asks for, addressing the claim beside
     // it and no finding. It runs after the hypothesis because it names it.
     const proposal = this.mint("pro", remedy.ref);
-    this.record(proposal, "proposal", remedy.proposal.title, remedy.proposal);
+    this.record(proposal, "proposal", remedy.proposal.title, remedy.proposal, {
+      supports: [id],
+    });
     this.edge("addresses", proposal, "proposal", id, "hypothesis", 0, "");
   }
 
@@ -356,20 +365,29 @@ class Writer {
       this.record(id, "observation", objection.claim.claim, objection.claim, {
         parentId: target,
         recipe: objection.recipe,
+        supports: [],
       });
       this.cites(id, "observation", objection.claim.evidence);
       return;
     }
     const id = this.mint("hyp", objection.ref);
     this.hypotheses.set(objection.ref, id);
-    this.record(id, "hypothesis", objection.claim.claim, {
-      statement: objection.claim.claim,
-      origin_cues: [`challenger objection grounded in ${objection.grounds}`],
-      provisional_labels: ["objection"],
-      novelty: 0,
-      priority: 0,
-      notes: objection.claim.category,
-    });
+    this.record(
+      id,
+      "hypothesis",
+      objection.claim.claim,
+      {
+        statement: objection.claim.claim,
+        origin_cues: [`challenger objection grounded in ${objection.grounds}`],
+        provisional_labels: ["objection"],
+        novelty: 0,
+        priority: 0,
+        notes: objection.claim.category,
+      },
+      // An objection CONTRADICTS the candidate it attacks, which is disagreement rather than
+      // support: the read-time count is over `consolidates` and `addresses` alone.
+      { supports: [] },
+    );
     this.status(id, 0, "untriaged", "");
     this.edge(
       "contradicts",
@@ -386,14 +404,14 @@ class Writer {
   consolidation(consolidation: Consolidation): void {
     const supports = consolidation.observations.map((ref) => this.observation(ref));
     const id = this.mint("fnd", consolidation.ref);
-    this.record(id, "finding", consolidation.finding.title, consolidation.finding);
+    this.record(id, "finding", consolidation.finding.title, consolidation.finding, { supports });
     for (const [position, support] of supports.entries()) {
       this.edge("consolidates", id, "finding", support, "observation", position, "");
     }
     const proposal = consolidation.proposal;
     if (proposal === undefined) return;
     const proposalId = this.mint("pro", `${consolidation.ref}/proposal`);
-    this.record(proposalId, "proposal", proposal.title, proposal);
+    this.record(proposalId, "proposal", proposal.title, proposal, { supports: [id] });
     this.edge("addresses", proposalId, "proposal", id, "finding", 0, "");
   }
 
@@ -582,35 +600,39 @@ class Writer {
 
   // -------------------------------------------------------------------------- rows
 
+  /**
+   * One record, with what it rests on stated rather than inferred: `supports` names the records
+   * its `consolidates` or `addresses` edges will point at, and it is required so that a claim
+   * shape added later has to answer the question ({@link recordRow}).
+   */
   private record(
     id: string,
-    kind: string,
+    kind: RecordKind,
     title: string,
     payload: unknown,
-    of?: { parentId?: string; recipe?: { id: string; version: number } },
+    of: {
+      readonly parentId?: string;
+      readonly recipe?: { readonly id: string; readonly version: number };
+      readonly supports: readonly string[];
+    },
   ): void {
-    this.rows[JOB_OUTPUT_FILES.records]?.push({
-      id,
-      kind,
-      // A NEW RECORD IS ITS OWN ROOT AT SEQUENCE ZERO. A correction is a supersession — the
-      // table refuses an update by trigger — so nothing a run writes ever revises a row.
-      root_id: id,
-      supersedes_id: null,
-      seq: 0,
-      parent_id: of?.parentId ?? null,
-      run_id: this.settlement.runId,
-      // ONLY AN OBSERVATION CARRIES A RECIPE, which is what the answer attributes and what the
-      // crossing wrote (`tools/import.ts`: the recipe columns are an observation's alone). A
-      // hypothesis, a finding and a proposal are reached THROUGH a method and are not products
-      // of one, and naming the run's first recipe on them would be an attribution nobody made.
-      recipe_id: of?.recipe?.id ?? null,
-      recipe_version: of?.recipe?.version ?? null,
-      actor_kind: "run",
-      actor_id: this.settlement.runId,
-      title: titleCell(title),
-      created_at: this.settlement.at,
-      payload: JSON.stringify({ schema: PAYLOAD_SCHEMA, ...(payload as Record<string, unknown>) }),
-    });
+    this.rows[JOB_OUTPUT_FILES.records]?.push(
+      recordRow({
+        id,
+        kind,
+        runId: this.settlement.runId,
+        at: this.settlement.at,
+        title,
+        payload: { schema: PAYLOAD_SCHEMA, ...(payload as Record<string, unknown>) },
+        supports: of.supports,
+        ownRecords: this.ownRecords,
+        parentId: of.parentId ?? null,
+        recipe: of.recipe ?? null,
+      }),
+    );
+    // WHAT THIS SETTLEMENT WROTE ITSELF, which is how a later claim in the same answer knows
+    // that a record it rests on carries this run's `run_id` without asking the store.
+    this.ownRecords.add(id);
     // THE RECORD'S OWN WORDS, kept for the marker pass. `titleCell` bounds the column at 200
     // characters and a marker that fell across that boundary would be read as prose, so what
     // is parsed is the text the model wrote and not the cell the table holds.

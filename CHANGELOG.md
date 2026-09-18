@@ -32,6 +32,28 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   The receipt names **which** remarks were carried and how many the bound left out, so a claim can
   be read against what the run was told and "told one thing" is distinguishable from "told one of
   four". It travels in the preparation document the run already carries: no new column.
+- **A record says at creation whether everything it rests on came out of one run.** Corroboration
+  was computed at read time and nowhere persisted, so nothing could rank, filter or route on it —
+  a finding whose three supports are three readings of one run looked, to every query, like one
+  with three independent ones. The payload now carries `restsOnOneRunAtCreation`, decided from
+  exactly what the settlement can see: a support it minted itself carries this run's id, a support
+  named by a durable identifier came from an earlier one. Where that is not enough to reproduce
+  the store's own count — several earlier records and none of this run's — it declines to answer
+  rather than guess, and `corroborationOf` stays the live authority. Two definitions of "rests on
+  one run" that disagreed would be worse than none.
+
+  **It marks and never refuses**, and the function's own comment says why to the next person
+  tempted to make it a validation: in this deployment's imported corpus 175 of 207 findings rest
+  on a single run and every one of its 116 proposals shares its finding's run, so a rule
+  rejecting the shape would reject most of a corpus that predates the rule. Weak independence is
+  not invalidity.
+
+  The name carries the promise. Records are immutable by trigger and a correction is a
+  supersession, so a support set is fixed at creation and the value cannot go stale — but a field
+  promising a *current* number would be promising something the table forbids keeping, so it
+  promises what it knows. Both creation paths now go through one row builder whose `supports` is
+  required, so a third path cannot compile without stating what its record rests on: absence has
+  exactly one meaning, which is "ask the store".
 - **Three surfaces instead of one list, two axes instead of one label, and a concept holds one
   slot.** Babel produced one ordering of everything, so a record needing the operator's judgement
   competed with a record an agent could execute unattended and with a record worth keeping but not

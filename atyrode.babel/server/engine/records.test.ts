@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { JOB_OUTPUT_FILES, type MaterialEntry } from "../../contract.ts";
+import { JOB_OUTPUT_FILES, RECORD_RESTS_ON_ONE_RUN, type MaterialEntry } from "../../contract.ts";
 import { parseExploreResult, type ExploreResult } from "../../machine/results.ts";
 import { insert, openTestStore } from "../../store/testdb.ts";
 import { correctionMarker, exploreRows, markerReferences } from "./records.ts";
@@ -65,9 +65,9 @@ function edgesOf(rows: Readonly<Record<string, readonly Row[]>>): readonly Row[]
   return rows[JOB_OUTPUT_FILES.edges] ?? [];
 }
 
-function settle(result: ExploreResult, holds: readonly string[] = []) {
+function settle(result: ExploreResult, holds: readonly string[] = [], runId = "run_1") {
   const written = exploreRows(result, {
-    runId: "run_1",
+    runId,
     at: "2026-09-18T00:00:00.000Z",
     sessions: [SESSION],
     holds: new Set(holds),
@@ -267,4 +267,136 @@ test("a marker naming prose, or a handle nobody declared, leaves a note and no e
     expect.stringContaining("opens CORRECTION and names no identifier") as unknown as string,
     expect.stringContaining("against o9, which this result did not declare") as unknown as string,
   ]);
+});
+
+// -------------------------------------------------- what a record rests on, at creation (#329)
+
+/*
+  A FINDING RESTING ON ONE RUN IS MARKED AS RESTING ON ONE RUN, AND IS STILL WRITTEN.
+
+  Three observations under one finding read as corroboration; three from one run are one reading
+  restated. The store could always count it (`store/store.ts`, `corroborationOf`) and nothing
+  could rank or filter on it, because the fact lived nowhere a query reaches. These hold both
+  halves: that the writer states it, and that it states the same thing the store's own count
+  does — two definitions of resting on one run that disagreed would be worse than none.
+*/
+
+/** One locator-backed observation, as the answer schema shapes it. */
+function observed(ref: string, claim: string) {
+  return {
+    ref,
+    recipe: { id: "test-economics", version: 3 },
+    claim: {
+      claim,
+      confidence: "moderate",
+      impact: "moderate",
+      evidence: [{ locator: LOCATOR, note: "the line" }],
+      counter_evidence_absent: true,
+    },
+  };
+}
+
+/** An answer whose finding consolidates exactly the observation handles named. */
+function consolidating(observations: readonly string[]): ExploreResult {
+  return parseExploreResult("explore", {
+    candidates: [
+      {
+        ref: "h1",
+        hypothesis: { statement: "the advisory notices lag by construction" },
+        observations: [observed("o1", "the first reading"), observed("o2", "the second reading")],
+      },
+    ],
+    consolidations: [
+      {
+        ref: "c1",
+        observations,
+        finding: {
+          title: "the lag is structural",
+          pattern: "every notice lands after the window it describes",
+          counter_evidence_absent: true,
+        },
+      },
+    ],
+  });
+}
+
+/** An observation an earlier run wrote, which is the only kind a brief can name. */
+const EARLIER = "obs_1c0d2f5aa3b64e5d9fbb0d1f0e7c4a21";
+
+function recordsOf(rows: Readonly<Record<string, readonly Row[]>>): readonly Row[] {
+  return rows[JOB_OUTPUT_FILES.records] ?? [];
+}
+
+function payloadOf(row: Row | undefined): Record<string, unknown> {
+  return JSON.parse(String(row?.["payload"] ?? "{}")) as Record<string, unknown>;
+}
+
+function findingIn(rows: Readonly<Record<string, readonly Row[]>>): Row | undefined {
+  return recordsOf(rows).find((row) => row["kind"] === "finding");
+}
+
+test("a finding resting on this run's own observations is marked, and is written anyway", () => {
+  const written = settle(consolidating(["o1", "o2"]));
+
+  // IT IS NOT REFUSED, and may never be: 175 of the 207 findings in this deployment's corpus
+  // rest on a single run, so a rule that rejected the shape would reject most of the corpus it
+  // was written for. `settle` throws on a refusal, and all four rows are here.
+  expect(recordsOf(written.rows)).toHaveLength(4);
+  expect(payloadOf(findingIn(written.rows))[RECORD_RESTS_ON_ONE_RUN]).toBe(true);
+
+  // A hypothesis and an observation rest on no RECORD at all — an observation's evidence points
+  // at a session — so they carry no determination rather than a false one.
+  const hypothesis = recordsOf(written.rows).find((row) => row["kind"] === "hypothesis");
+  expect(payloadOf(hypothesis)).not.toHaveProperty(RECORD_RESTS_ON_ONE_RUN);
+});
+
+test("a finding that also rests on an earlier run's observation is not marked", () => {
+  const written = settle(consolidating(["o1", EARLIER]));
+  expect(payloadOf(findingIn(written.rows))[RECORD_RESTS_ON_ONE_RUN]).toBe(false);
+});
+
+test("the mark at creation and the store's own count are one definition", async () => {
+  const single = settle(consolidating(["o1", "o2"]));
+  const spread = settle(consolidating(["o1", EARLIER]), [], "run_2");
+  const store = await openTestStore(Date.parse("2026-09-18T00:00:00.000Z"));
+  try {
+    await insert(store.db, "records", {
+      id: EARLIER,
+      kind: "observation",
+      root_id: EARLIER,
+      seq: 0,
+      run_id: "run_0",
+      actor_kind: "run",
+      actor_id: "run_0",
+      title: "a reading an earlier run wrote",
+      created_at: "2026-09-17T00:00:00.000Z",
+      payload: JSON.stringify({ schema: 1, claim: "it happened" }),
+    });
+    for (const rows of [single.rows, spread.rows]) {
+      for (const row of recordsOf(rows)) await insert(store.db, "records", row);
+      for (const row of edgesOf(rows)) await insert(store.db, "edges", row);
+    }
+
+    const restsOnOne = findingIn(single.rows);
+    const restsOnTwo = findingIn(spread.rows);
+    const one = await store.store.record(String(restsOnOne?.["id"]));
+    const two = await store.store.record(String(restsOnTwo?.["id"]));
+    expect(one?.corroboration).toEqual({ supports: 2, distinctRuns: 1 });
+    expect(two?.corroboration).toEqual({ supports: 2, distinctRuns: 2 });
+    expect(payloadOf(restsOnOne)[RECORD_RESTS_ON_ONE_RUN]).toBe(
+      one?.corroboration.distinctRuns === 1,
+    );
+    expect(payloadOf(restsOnTwo)[RECORD_RESTS_ON_ONE_RUN]).toBe(
+      two?.corroboration.distinctRuns === 1,
+    );
+
+    // The whole point of persisting it: a query can now select on it, which no join at read
+    // time let a listing do.
+    const marked = await store.db.query<{ id: string }>(
+      `SELECT id FROM records WHERE json_extract(payload, '$.${RECORD_RESTS_ON_ONE_RUN}') = 1`,
+    );
+    expect(marked.map((row) => row.id)).toEqual([String(restsOnOne?.["id"])]);
+  } finally {
+    store.close();
+  }
 });

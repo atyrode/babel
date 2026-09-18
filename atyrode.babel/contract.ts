@@ -1413,6 +1413,23 @@ export const CarriedSteeringSchema = z.strictObject({
 });
 export type CarriedSteering = z.infer<typeof CarriedSteeringSchema>;
 
+/**
+ * THE PAYLOAD KEY A SETTLEMENT WRITES ITS CORROBORATION DETERMINATION UNDER.
+ *
+ * A finding that rests on three observations out of one run is one reading restated, and the
+ * number was computable only by joining `edges` to `records` at read time (`store/store.ts`,
+ * `corroborationOf`) — so nothing could rank, filter or route on it. The writer therefore states
+ * the same fact in the record's own payload, where a `json_extract` reaches it: `true` when every
+ * record it rests on came out of one run, `false` when they came out of two or more, and ABSENT
+ * when the settlement could not decide, which is also every imported record and every record that
+ * rests on nothing. Absent means "this payload does not answer; ask `corroborationOf`", and it
+ * means only that.
+ *
+ * AT CREATION is part of the name because `records` is immutable by trigger: the value can never
+ * be corrected in place, so it may not promise a current number. It is the determination made
+ * when the row was written, and the live count stays `corroborationOf`'s.
+ */
+export const RECORD_RESTS_ON_ONE_RUN = "restsOnOneRunAtCreation";
 /** The receipt every run writes last (§7): what it was asked, read, produced and cost. */
 export const ReceiptSchema = z.strictObject({
   runId: z.string(),

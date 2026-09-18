@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { JOB_OUTPUT_FILES, RECORD_RESTS_ON_ONE_RUN } from "../../contract.ts";
 import { ANSWER_FENCE } from "./prompts.ts";
 import {
   MAX_REJECTED_SUBMISSION_BYTES,
   rejectedSubmission,
+  reviewRows,
   reviewVerdict,
   type ReviewPreparation,
+  type ReviewRow,
 } from "./review.ts";
 
 /*
@@ -283,5 +286,60 @@ describe("what is left has to stand on its own", () => {
     expect(verdict.result).toBeNull();
     expect(verdict.reason).toBe("schema: the session ended with no final message at all");
     expect(verdict.refused).toEqual([]);
+  });
+});
+
+describe("what a review's own proposal rests on", () => {
+  /*
+    A REVIEW IS THE SECOND PLACE A RECORD IS CREATED, and it has to mean the same thing by the
+    same key as the first (#329). If one creation path stated the determination and the other
+    did not, an unmarked record would mean either "it rests on more than one run" or "a review
+    made it", and nobody reading could tell which.
+  */
+  /** The rows one accepted review becomes, or the reason it was refused instead. */
+  function rows(over: Partial<ReviewPreparation>, submission: unknown): readonly ReviewRow[] {
+    const verdict = reviewVerdict(preparation(over), sealed(submission), TARGET);
+    if (verdict.result === null) throw new Error(`refused: ${verdict.reason}`);
+    const written = reviewRows(
+      preparation(over),
+      verdict.result,
+      "run_9",
+      "2026-09-18T00:00:00.000Z",
+    );
+    return written[JOB_OUTPUT_FILES.records] ?? [];
+  }
+
+  test("a backlog proposal rests on the record it addresses; a refinement rests on nothing", () => {
+    const retirement = rows(
+      { role: "backlog" },
+      { retire: { reason: "the candidate was answered by the fact it asked about" } },
+    );
+    const proposal = JSON.parse(String(retirement[0]?.["payload"] ?? "{}")) as Record<
+      string,
+      unknown
+    >;
+    // One support is one run, whoever wrote it — and the record a review is drawn on is always
+    // an earlier run's, which is the corpus's every-proposal-shares-its-finding's-run case.
+    expect(proposal[RECORD_RESTS_ON_ONE_RUN]).toBe(true);
+
+    const refined = rows(
+      {},
+      {
+        vote: "support",
+        contributions: [
+          {
+            kind: "refinement",
+            text: "the statement should name the harness",
+            would_change: "the fleet catalog forgets archived omp sessions",
+            target: { path: "/statement" },
+          },
+        ],
+      },
+    );
+    // A refinement REFINES the record it rewrites rather than resting on it, so it carries no
+    // determination at all — which is what an absent key means, and the only thing it means.
+    expect(
+      JSON.parse(String(refined[0]?.["payload"] ?? "{}")) as Record<string, unknown>,
+    ).not.toHaveProperty(RECORD_RESTS_ON_ONE_RUN);
   });
 });
