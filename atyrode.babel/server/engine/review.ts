@@ -13,7 +13,7 @@ import {
 } from "../../machine/results.ts";
 import type { Assignment } from "../../store/coordinator.ts";
 import { ANSWER_FENCE, answerOf, type Recipe } from "./prompts.ts";
-import { mintId, titleCell, type Row } from "./rows.ts";
+import { mintId, recordRow, type Row } from "./rows.ts";
 
 type Role = (typeof ROLES)[number];
 /** The Code-session review contract recorded on every review receipt. */
@@ -535,30 +535,40 @@ function pointerExists(value: unknown, pointer: string): boolean {
 /** The row shape every table here is written in, as {@link Row} spells it. */
 export type ReviewRow = Row;
 
-function recordRow(
+/** A review mints no record its own proposal could rest on, so its settlement holds none. */
+const NO_OWN_RECORDS: ReadonlySet<string> = new Set();
+
+/**
+ * A record this hub minted in this settlement and a review's proposal have to mean the same
+ * thing by the same keys, so both go through {@link recordRow}: it is what folds in whether the
+ * proposal rests on one run, and the determination is as of creation because a record is
+ * immutable by trigger and nothing later adds a support to a row that already exists.
+ *
+ * `supports` is required for the same reason it is required there — a review lane added later
+ * has to say what its proposal rests on rather than silently producing a record whose
+ * corroboration nobody determined. A review mints no record its own proposal could rest on, so
+ * the settlement's own set is empty and every support it names is an earlier run's.
+ */
+function proposalRow(
   id: string,
   title: string,
-  payload: unknown,
+  payload: Record<string, unknown>,
+  supports: readonly string[],
   preparation: ReviewPreparation,
   runId: string,
   at: string,
 ): Row {
-  return {
+  return recordRow({
     id,
     kind: "proposal",
-    root_id: id,
-    supersedes_id: null,
-    seq: 0,
-    parent_id: null,
-    run_id: runId,
-    recipe_id: preparation.recipe.id,
-    recipe_version: preparation.recipe.version,
-    actor_kind: "run",
-    actor_id: runId,
-    title: titleCell(title),
-    created_at: at,
-    payload: JSON.stringify(payload),
-  };
+    runId,
+    at,
+    title,
+    payload,
+    supports,
+    ownRecords: NO_OWN_RECORDS,
+    recipe: preparation.recipe,
+  });
 }
 
 function edgeRow(
@@ -632,7 +642,7 @@ export function reviewRows(
     const title = `Refine ${label} in ${preparation.recordId}`;
     const proposalId = mintId("pro", runId, `refinement|${String(index)}|${path}`);
     rows[JOB_OUTPUT_FILES.records]?.push(
-      recordRow(
+      proposalRow(
         proposalId,
         title,
         {
@@ -651,6 +661,9 @@ export function reviewRows(
             sourceRole: preparation.role,
           },
         },
+        // A refinement REFINES the record it rewrites; it does not rest on it. The count this
+        // marks is over `consolidates` and `addresses` alone, so this proposal supports nothing.
+        [],
         preparation,
         runId,
         at,
@@ -716,7 +729,7 @@ export function reviewRows(
               ? `Merge ${topic.targets[0] ?? ""} into ${topic.targets[1] ?? ""}`
               : `Retire the topic ${topic.targets[0] ?? ""}`;
       rows[JOB_OUTPUT_FILES.records]?.push(
-        recordRow(
+        proposalRow(
           proposalId,
           title,
           {
@@ -727,6 +740,9 @@ export function reviewRows(
             classification: "private",
             topic,
           },
+          // It ADDRESSES the record it was drawn on, which is one support and one run: the
+          // reviewed record is always an earlier run's.
+          [preparation.recordId],
           preparation,
           runId,
           at,
@@ -780,7 +796,7 @@ export function reviewRows(
             : `Promote an observation to a fact about ${result.promote?.entity ?? ""}`;
     const proposalId = mintId("pro", runId, `backlog/${operation}/${preparation.recordId}`);
     rows[JOB_OUTPUT_FILES.records]?.push(
-      recordRow(
+      proposalRow(
         proposalId,
         title,
         {
@@ -791,6 +807,8 @@ export function reviewRows(
           classification: "private",
           backlog: payload,
         },
+        // The same one support: it ADDRESSES the candidate it was drawn on.
+        [preparation.recordId],
         preparation,
         runId,
         at,
