@@ -444,6 +444,18 @@ version, and the one thing inlined into every bundle), `typescript`, React with 
 React, `@manifold/plugin` and `@manifold/ui` are **shared externals**, rewritten by `pack` into
 reads from the shell's own module registry, so a bundle never carries a second copy of them.
 
+**Install and test with the same `MANIFOLD_DIR`, or reinstall after changing it.** `bun install`
+writes `node_modules/react` as a SYMLINK into whichever SDK checkout `manifold-dir.sh` resolved
+at install time, so pointing `MANIFOLD_DIR` somewhere else afterwards leaves this tree resolving
+React through two different checkouts at once. Every web test then fails with "Invalid hook
+call … more than one copy of React in the same app" — 79 of them in one measured case — which
+reads exactly like a broken component change and is not one. The same applies to a checkout that
+moves: if `MANIFOLD_REV` is bumped and the sibling checkout follows it, reinstall. Note that
+`deps:code` and `verify` additionally REQUIRE the SDK checkout to sit at `MANIFOLD_REV` —
+Code's own `prepare:integration` refuses "Code's SDK checkout does not match MANIFOLD_REV" — so
+a checkout parked at another revision (dev-01's is detached at the preview's) needs
+`MANIFOLD_DIR` pointed at one at the pin, exported for the install as well as the run.
+
 ## Code is a second pin, and verification composes three families
 
 `atyrode.babel` declares `atyrode.code` a **required** dependency, because that is the
