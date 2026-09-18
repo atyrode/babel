@@ -62,6 +62,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   names and no door a plugin is served lists machines, so the operator states the mapping and the
   hub verifies the destination (#312).
 
+- **A review's contract offers a skip or an assessment, never both.** Declining is not opposing
+  (`cookbook/recipes/babel-triages-the-queue.md`), and `acceptReviewResult` has always refused a
+  submission that did both — but the schema printed into the review prompt offered `skip` beside
+  `vote`, so five of one day's sixty-six runs were discarded whole for composing a shape the
+  contract they were shown permitted while a paragraph elsewhere forbade it. The generated schema
+  is now the union of the two answers a role may give, so the contract cannot spell the mistake.
+  It is documentation strength rather than a guarantee — the schema is printed, not registered as
+  a provider-constrained output, so a model can still type both, and `acceptReviewResult` is
+  therefore not a belt but the only enforcement there is, which its comment now says. A model
+  echoing `skip: ""` beside its assessment is still submitting a valid assessment. Also fixed
+  while in the file: the refusal that read "is a objection" now agrees with its own article
+  (#311).
+
 - **The crossing records the machine id it was given, not the Go deployment's host name.**
   `sessions.host` is a hub machine id — `describe`, `listRuns` and `machines.repository` are all
   keyed on it and the hub resolves no names — and `tools/import.ts` documents `--host` as exactly

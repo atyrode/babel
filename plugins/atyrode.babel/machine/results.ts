@@ -681,10 +681,30 @@ const ReviewResultSchema = z.object({
 });
 export type ReviewResult = z.infer<typeof ReviewResultSchema>;
 
+/**
+ * THE CONTRACT OFFERS A SKIP OR AN ASSESSMENT, NEVER BOTH (#311).
+ *
+ * `a skip cannot also state an assessment` is a rule the recipe states in prose
+ * (`cookbook/recipes/babel-triages-the-queue.md`: "Declining is not opposing") and
+ * {@link acceptReviewResult} enforces — and five of one day's runs were discarded whole for
+ * breaking it, having already paid for the inference. A flat object offering `skip` beside
+ * `vote` invites exactly that, so what a role is shown is a union of the two answers it may
+ * give: a skip with its reason, or an assessment.
+ *
+ * THE VALIDATOR IS STILL THE ENFORCEMENT, and this is documentation strength rather than a
+ * guarantee: the generated schema is printed into the prompt (`server/engine/review.ts`), not
+ * registered as a provider-constrained tool, so a model can still type both. What changes is
+ * that the contract it reads cannot express the mistake, instead of forbidding it in prose two
+ * files away.
+ *
+ * The assessment form accepts `skip: ""` because that is what a model echoing an empty field
+ * submits today, and it has always been valid. Refusing it here would trade five refusals for a
+ * new class of them.
+ */
 function reviewSchema(role: Role): z.ZodType {
   const authority = ROLE_AUTHORITY[role];
   const work = authority.filing || authority.backlog;
-  return z.strictObject({
+  const assessment = {
     ...(authority.vote ? { vote: reviewShape.vote } : {}),
     // The whole result of a filing or backlog pass is which of its answers it reached. A
     // contribution would invite it to review the record it was drawn to name or to settle.
@@ -694,7 +714,6 @@ function reviewSchema(role: Role): z.ZodType {
       ? { results: reviewShape.results, environment: reviewShape.environment, as_of: reviewShape.as_of }
       : {}),
     uncertainty: reviewShape.uncertainty,
-    skip: reviewShape.skip,
     ...(authority.filing
       ? {
           filing: reviewShape.filing,
@@ -712,7 +731,11 @@ function reviewSchema(role: Role): z.ZodType {
           keep: reviewShape.keep,
         }
       : {}),
-  });
+  };
+  return z.union([
+    z.strictObject({ skip: z.string().trim().min(1) }),
+    z.strictObject({ ...assessment, skip: z.literal("").optional() }),
+  ]);
 }
 
 const reviewSchemas: Record<Role, z.ZodType> = {
@@ -726,7 +749,17 @@ const reviewSchemas: Record<Role, z.ZodType> = {
   backlog: reviewSchema("backlog"),
 };
 
-/** The JSON Schema the submit tool is registered with for one role. */
+/**
+ * ONE ROLE'S ANSWER CONTRACT, PRINTED INTO THE PROMPT — not registered anywhere.
+ *
+ * This said "the JSON Schema the submit tool is registered with", and there is no submit tool:
+ * the only caller interpolates it into the answer fence (`server/engine/review.ts`) and the
+ * answer is read back out of the final message. Two readers reasoned correctly from that
+ * sentence and reached the false conclusion that the shape was enforced where it is generated,
+ * an hour apart, so the sentence is the defect: nothing here constrains a model, and
+ * `acceptReviewResult` is the only enforcement there is. Making the old sentence true — a submit
+ * tool whose parameters are this schema — is #315.
+ */
 export function reviewJsonSchema(role: Role): unknown {
   return z.toJSONSchema(reviewSchemas[role], { io: "input", target: "draft-2020-12" });
 }
@@ -814,6 +847,12 @@ export function shapeReviewResult(role: Role, payload: unknown): ReviewResult {
  * store reaches it with the payload of an `assessments` row a machine half wrote. Both get the
  * same verdict under the same refusal code, which is the whole of F8's remedy: the producer's
  * contract and the store's acceptance cannot drift apart because there is one of them.
+ *
+ * `reviewSchema` OFFERS A SKIP OR AN ASSESSMENT AND THIS STILL CHECKS IT (#311). That is not
+ * redundancy: the generated schema is printed into the prompt, never registered as a
+ * provider-constrained output, so nothing stops a model typing both — the rule below is not a
+ * belt beside a structural guarantee, it is the only enforcement there is. Deleting it because
+ * the schema "already says so" would remove the check and keep the sentence.
  */
 export function acceptReviewResult(role: Role, payload: unknown, self?: ReviewSelf): ReviewResult {
   const authority = ROLE_AUTHORITY[role];
@@ -909,6 +948,11 @@ export function acceptReviewResult(role: Role, payload: unknown, self?: ReviewSe
   return result;
 }
 
+/** The indefinite article a refusal sentence needs for the contribution kind it names. */
+function article(kind: string): string {
+  return /^[aeiou]/u.test(kind) ? "an" : "a";
+}
+
 /**
  * WHAT THE CONTRACT REFUSES ABOUT ONE CONTRIBUTION, or null when it admits it.
  *
@@ -940,7 +984,9 @@ export function contributionRefusal(
   if (!compares && (contribution.alternatives.length > 0 || contribution.preferred !== undefined)) {
     return new ResultRefusal(
       REFUSALS.schema,
-      `contribution ${index + 1} is a ${contribution.kind} and may not name alternatives`,
+      // "is a objection" read as a typo in a sentence whose whole job is to be read back to a
+      // model and to a reviewer, so the article follows the word (#311).
+      `contribution ${index + 1} is ${article(contribution.kind)} ${contribution.kind} and may not name alternatives`,
     );
   }
   if (contribution.kind === "evidence" && contribution.evidence.length === 0) {

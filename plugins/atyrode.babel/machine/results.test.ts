@@ -8,6 +8,7 @@
 import { expect, test } from "bun:test";
 import { ROLES } from "../contract.ts";
 import {
+  acceptReviewResult,
   exploreJsonSchema,
   parseExploreResult,
   parseReviewResult,
@@ -31,9 +32,30 @@ const CLAIM = {
 };
 
 /** The properties a generated schema offers, which is what a model is allowed to fill. */
+/**
+ * The fields the ASSESSMENT form of a role's schema offers. The generated schema is a union of
+ * the two answers a role may give — a skip with its reason, or an assessment — so a reader of
+ * either form has to say which one it is asking about (#311).
+ */
 function properties(schema: unknown): string[] {
-  const document = schema as { properties?: Record<string, unknown> };
-  return Object.keys(document.properties ?? {}).sort();
+  const document = schema as {
+    properties?: Record<string, unknown>;
+    anyOf?: readonly { properties?: Record<string, unknown> }[];
+  };
+  if (document.properties !== undefined) return Object.keys(document.properties).sort();
+  const assessment = (document.anyOf ?? []).find(
+    (form) => Object.keys(form.properties ?? {}).length > 1,
+  );
+  return Object.keys(assessment?.properties ?? {}).sort();
+}
+
+/** The fields the SKIP form offers, which is one and its reason. */
+function skipForm(schema: unknown): string[] {
+  const document = schema as { anyOf?: readonly { properties?: Record<string, unknown>; required?: string[] }[] };
+  const form = (document.anyOf ?? []).find(
+    (candidate) => Object.keys(candidate.properties ?? {}).length === 1,
+  );
+  return Object.keys(form?.properties ?? {}).sort();
 }
 
 function refusal(run: () => unknown): ResultRefusal {
@@ -273,6 +295,8 @@ test("every role has a generated schema and a result it can submit", () => {
 
 test("a role is offered exactly the fields its authority admits", () => {
   expect(properties(reviewJsonSchema("reception"))).toEqual(["contributions", "skip", "uncertainty", "vote"]);
+  // Every role may decline, and declining is its own answer rather than a field beside a vote.
+  for (const role of ROLES) expect(skipForm(reviewJsonSchema(role))).toEqual(["skip"]);
   expect(properties(reviewJsonSchema("evidence"))).toEqual([
     "as_of",
     "contributions",
@@ -325,13 +349,23 @@ test("a review that judged nothing is refused rather than consuming the assignme
   );
 });
 
-test("a skip is a recorded gap and cannot also state an assessment", () => {
+test("a skip is a recorded gap, and the contract it is submitted under cannot spell one beside a vote", () => {
   const skipped = parseReviewResult("reception", { skip: "the evidence is unreachable from here" });
   expect(skipped.skip).toBe("the evidence is unreachable from here");
   expect(skipped.vote).toBe("");
-  expect(refusal(() => parseReviewResult("reception", { skip: "cannot judge", vote: "oppose" })).message).toContain(
-    "skip cannot also state",
-  );
+  // REFUSED AT THE SCHEMA BOUNDARY, not by the rule further in: the shape a role is offered is a
+  // skip OR an assessment, so a submission carrying both matches neither form (#311).
+  const both = refusal(() => parseReviewResult("reception", { skip: "cannot judge", vote: "oppose" }));
+  expect(both.refusal).toBe(REFUSALS.schema);
+  expect(both.message).toContain("does not match its schema");
+  // A model that echoes the field empty beside its assessment is submitting an assessment, which
+  // has always been valid and stays valid — the change must not trade one refusal class for another.
+  expect(parseReviewResult("reception", { skip: "", vote: "support" }).vote).toBe("support");
+  // The validator is the ENFORCEMENT and not a belt, because the schema above is printed into the
+  // prompt rather than constraining the model: a hand-written payload still gets the sentence.
+  expect(
+    refusal(() => acceptReviewResult("reception", { skip: "cannot judge", vote: "oppose" })).message,
+  ).toContain("skip cannot also state");
 });
 
 test("a refinement names the exact record part and the replacement it proposes", () => {

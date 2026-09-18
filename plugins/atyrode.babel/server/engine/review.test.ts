@@ -82,7 +82,7 @@ describe("a contribution the contract refuses costs itself and nothing else", ()
       expect.objectContaining({ kind: "comment", text: "the scope should name the harness" }),
     ]);
     expect(verdict.refused).toEqual([
-      { contribution: 1, reason: "schema: contribution 1 is a objection and may not name alternatives" },
+      { contribution: 1, reason: "schema: contribution 1 is an objection and may not name alternatives" },
     ]);
   });
 
@@ -112,7 +112,7 @@ describe("a contribution the contract refuses costs itself and nothing else", ()
     // The reason is the validator's own sentence and nothing besides it: no expected schema, no
     // example answer, nothing that says what the review should have concluded instead.
     expect(verdict.refused.map((refused) => refused.reason)).toEqual([
-      "schema: contribution 1 is a objection and may not name alternatives",
+      "schema: contribution 1 is an objection and may not name alternatives",
     ]);
   });
 
@@ -227,7 +227,9 @@ describe("what is left has to stand on its own", () => {
 
   test("a rule about the review as a whole is refused as a whole, with nothing kept", () => {
     // A skip that also states an assessment is not one contribution's fault and there is no
-    // subset of it to keep. It fails exactly as it did before any of this existed.
+    // subset of it to keep. It now fails EARLIER — the shape a role is offered is a skip or an
+    // assessment, so a submission carrying both matches neither form and never reaches the rule
+    // that used to catch it (#311). Nothing is kept either way.
     const verdict = reviewVerdict(
       preparation(),
       sealed({
@@ -239,7 +241,7 @@ describe("what is left has to stand on its own", () => {
     );
 
     expect(verdict.result).toBeNull();
-    expect(verdict.reason).toBe("schema: a skip cannot also state an assessment");
+    expect(verdict.reason).toContain("schema: the reception result does not match its schema");
     expect(verdict.refused).toEqual([]);
   });
 
