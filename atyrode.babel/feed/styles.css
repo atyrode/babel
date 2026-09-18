@@ -298,6 +298,27 @@
   list-style: none;
 }
 
+/* A grouped list: the heading says the key and nothing else, so it reads as a label over the
+   rows rather than as a row of its own competing with them. */
+.plugin-atyrode_babel_feed .babel-groups {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-atyrode_babel_feed .babel-group-head {
+  display: flex;
+  gap: var(--babel-space-2);
+  align-items: baseline;
+  margin: var(--babel-space-3) 0 0;
+}
+
+.plugin-atyrode_babel_feed .babel-group-key {
+  color: var(--babel-ink-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
 /* One row: what Babel's reviewers said in a gutter of its own, then the claim. Fourteen
    pixels of air is the one measurement here that is not a step on the scale, and it is
    deliberate — at twelve the titles touch, at sixteen fifteen rows leave the density
@@ -385,6 +406,20 @@
 }
 
 .plugin-atyrode_babel_feed .babel-kind[data-tone="warn"] {
+  color: var(--babel-warn);
+}
+
+/* The second of §8.6's two rationed badges. It wears the kind's shape so the pair reads as one
+   pair, and only the shaky one takes a colour: a status nobody has to act on is a word. */
+.plugin-atyrode_babel_feed .babel-established {
+  color: var(--babel-ink-muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plugin-atyrode_babel_feed .babel-established[data-established="contested"] {
   color: var(--babel-warn);
 }
 

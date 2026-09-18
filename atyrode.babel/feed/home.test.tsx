@@ -71,7 +71,70 @@ describe("the list", () => {
     await view.unmount();
   });
 
-  test("reads the feed once for the panel, and the sentence says what it is ranked by", async () => {
+  // §8.6 caps a listing row at one line of claim and at most three facts, and #354 had to fit
+  // the status axis inside that cap rather than beside it. The maximal row carried eight
+  // elements before — kind, two subject chips, the overflow, the age, the comments, the reason
+  // and the reviewing mark — and carries eight now, with the second chip's slot spent on the
+  // status. Both axes are on the row and the row did not grow.
+  test("a row carries both axes and no more facts than it did", async () => {
+    const crowded = post({
+      reviewing: true,
+      topics: [
+        { id: "ent_0000beef", name: "babel" },
+        { id: "ent_0000cafe", name: "tyrode-infra" },
+        { id: "ent_0000f00d", name: "manifold" },
+      ],
+    });
+    const fake = hub({ feed: () => feed({ posts: [crowded], total: 1, desk: 1 }) });
+    const view = await mount(<HomePanel host={fake.host} />);
+    const facts = view.one('[data-post="pro_0000000a"] .babel-facts');
+    expect(facts.children).toHaveLength(8);
+    // The subject axis: one chip and the overflow, where it used to be two chips and one.
+    expect(
+      view.all('[data-post="pro_0000000a"] .babel-topic').map((chip) => chip.textContent),
+    ).toEqual(["t/babel", "+2"]);
+    // The status axis, which the row had no word for at all.
+    expect(view.one('[data-post="pro_0000000a"] .babel-established').textContent).toBe("shaky");
+    await view.unmount();
+  });
+
+  // The desk arrives grouped: a concept holds one heading with its records beneath it, the
+  // heading says which key holds them together, and a record no key groups is still drawn.
+  test("a grouped desk shows the key once and hides no ungrouped record", async () => {
+    const fake = hub({
+      feed: () =>
+        feed({
+          total: 2,
+          groups: [
+            {
+              key: "ent_0000beef",
+              keyKind: "topic",
+              label: "t/babel",
+              records: 4,
+              posts: ["pro_0000000a", "fnd_0000000b"],
+            },
+            { key: "", keyKind: "none", label: "", records: 1, posts: ["qst_0000000c"] },
+          ],
+        }),
+    });
+    const view = await mount(<HomePanel host={fake.host} />);
+    const heads = view.all(".babel-group-head").map((head) => head.textContent);
+    // One heading for the concept, none for the record that is on its own.
+    expect(heads).toHaveLength(1);
+    expect(heads[0]).toContain("all filed under t/babel");
+    // The group's true size, and the fact that the page is not carrying all of it.
+    expect(heads[0]).toContain("4 records");
+    expect(heads[0]).toContain("2 more under it");
+    // Every post is still on the page, grouped or not.
+    expect(view.all(".babel-row").map((row) => row.getAttribute("data-post"))).toEqual([
+      "pro_0000000a",
+      "fnd_0000000b",
+      "qst_0000000c",
+    ]);
+    await view.unmount();
+  });
+
+  test("opens on the desk, reads it once, and says so", async () => {
     const fake = hub();
     const view = await mount(<HomePanel host={fake.host} />);
     expect(fake.to("feed")).toHaveLength(1);
@@ -79,11 +142,15 @@ describe("the list", () => {
       sort: "next",
       window: "day",
       kinds: [],
-      needs: "me",
+      surface: "desk",
+      established: [],
+      group: "topic",
       limit: 15,
       offset: 0,
     });
-    expect(view.one(".babel-sentence").textContent).toContain("what needs me");
+    // The default surface is the desk, and the desk's own size is beside the list's count.
+    expect(view.one(".babel-sentence").textContent).toContain("your desk");
+    expect(view.one(".babel-desk").textContent).toContain("2 on your desk");
     expect(view.one(".babel-sentence").textContent).toContain("sorted by next");
     expect(view.one(".babel-count").textContent).toContain("3");
     expect(view.one(".babel-pulse").textContent).toContain("Today Babel read 4 sessions");
@@ -153,13 +220,29 @@ describe("the sentence", () => {
     await view.unmount();
   });
 
-  test("`m` turns the filter off, and the order follows it", async () => {
+  test("`m` leaves the desk for everything, and the order follows it", async () => {
     const fake = hub();
     const view = await mount(<HomePanel host={fake.host} />);
     await view.key("m");
     await view.settle();
-    expect(fake.last("feed")).toMatchObject({ needs: "all", sort: "hot" });
+    expect(fake.last("feed")).toMatchObject({ surface: "all", sort: "hot" });
     expect(view.one(".babel-sentence").textContent).toContain("everything");
+    await view.unmount();
+  });
+
+  // The shelf is reachable, which is the other half of "never shown unprompted": a reader who
+  // asks for it gets it, and it arrives hot rather than as a queue to drain.
+  test("the surface segment offers all three and the shelf is one press away", async () => {
+    const fake = hub();
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.press('[data-pick="surface"]');
+    expect(view.all("[data-surface]").map((button) => button.getAttribute("data-surface"))).toEqual(
+      ["desk", "queue", "shelf", "all"],
+    );
+    await view.press('[data-surface="shelf"]');
+    await view.settle();
+    expect(fake.last("feed")).toMatchObject({ surface: "shelf", sort: "hot" });
+    expect(view.one(".babel-sentence").textContent).toContain("the shelf");
     await view.unmount();
   });
 
@@ -454,7 +537,7 @@ describe("the rail", () => {
     const view = await mount(<HomePanel host={fake.host} />);
     await view.press(".babel-topic-unfiled");
     await view.settle();
-    expect(fake.last("feed")).toMatchObject({ topic: "unfiled", needs: "all", sort: "new" });
+    expect(fake.last("feed")).toMatchObject({ topic: "unfiled", surface: "all", sort: "new" });
     await view.unmount();
   });
 

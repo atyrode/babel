@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactElement } from "react";
 import type { HostServices } from "@manifold/plugin";
 import { Cluster, Stack } from "@manifold/ui";
-import { ACTIONS, type PostKind, type Ruling } from "../contract.ts";
+import { ACTIONS, type Established, type PostKind, type Ruling } from "../contract.ts";
 import { ask, refusal, since, type FeedPost } from "./api.ts";
 import { Votes } from "./votes.tsx";
 
@@ -9,8 +9,15 @@ import { Votes } from "./votes.tsx";
   ONE POST, as a row, and the acts it invites.
 
   Two lines and a gutter: the gutter is what Babel's reviewers said (votes.tsx), line one is
-  the claim, line two is what a reader decides with — the kind, where it is filed, how old it
-  is, how much has been said about it, and, when it waits on him, why in five words.
+  the claim, line two is what a reader decides with — the kind, how well established it is,
+  what it is filed under, how old it is, how much has been said about it, and, when it waits
+  on him, why in five words.
+
+  TWO AXES, AND THE ROW DID NOT GROW TO CARRY THEM. What a record is about and how well
+  established it is are different questions, and the row used to answer only the first. It now
+  answers both with the same number of facts: the subject keeps one chip and an overflow where
+  it had two and an overflow, and the freed slot is the status. §8.6 rations badges to standing
+  and kind, which is exactly the pair this line carries.
 
   THE ACTS ARE HIDDEN until the row is under the pointer, holds the keyboard, or is the row
   `j`/`k` put the focus on: five controls on every waiting row is seventy-five buttons on the
@@ -37,6 +44,18 @@ export const KIND_LABELS: Record<PostKind, string> = {
   finding: "Finding",
   hypothesis: "Hypothesis",
   question: "Question",
+};
+
+/**
+ * The status axis, in one word each. They are the reader's words rather than the column's:
+ * "shaky" is what a reader does something about, and `contested` is how the store spells the
+ * disagreement it is read from.
+ */
+export const ESTABLISHED_LABELS: Record<Established, string> = {
+  unsettled: "unjudged",
+  contested: "shaky",
+  reviewed: "reviewed",
+  settled: "settled",
 };
 
 /** An act on a record from a surface that lists it: the rulings, plus the question. */
@@ -563,7 +582,11 @@ export function FeedRow({
   onActed: ActedHandler;
   register: (element: HTMLLIElement | null) => void;
 }): ReactElement {
-  const [first, second, ...rest] = post.topics;
+  // ONE subject chip, not two. The row's fact budget is §8.6's — one line of claim and at most
+  // three facts — so the status axis took the slot the second topic held rather than a slot
+  // beside it: the overflow already says how many more subjects there are, and the two axes
+  // were spelled by replacing a fact, never by adding one.
+  const [first, ...rest] = post.topics;
   const why = post.awaiting ? whyShort(post.why) : "";
   const age = since(post.createdAt, now);
   return (
@@ -590,14 +613,12 @@ export function FeedRow({
           <span className="babel-kind" data-tone={KIND_TONES[post.kind]}>
             {KIND_LABELS[post.kind]}
           </span>
+          <span className="babel-established" data-established={post.established}>
+            {ESTABLISHED_LABELS[post.established]}
+          </span>
           {first !== undefined && (
             <button type="button" className="babel-topic" onClick={() => onTopic(first.id)}>
               t/{first.name}
-            </button>
-          )}
-          {second !== undefined && (
-            <button type="button" className="babel-topic" onClick={() => onTopic(second.id)}>
-              t/{second.name}
             </button>
           )}
           {rest.length > 0 && (

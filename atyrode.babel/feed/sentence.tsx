@@ -1,9 +1,15 @@
 import { useEffect, useRef, type ReactElement, type ReactNode } from "react";
 import {
+  ESTABLISHED,
+  FEED_GROUPINGS,
   FEED_SORTS,
+  FEED_SURFACES,
   FEED_WINDOWS,
   POST_KINDS,
+  type Established,
+  type FeedGrouping,
   type FeedSort,
+  type FeedSurface,
   type FeedWindow,
   type PostKind,
 } from "../contract.ts";
@@ -12,7 +18,7 @@ import { since, type FeedQuery } from "./api.ts";
 /*
   THE CONTROLS, AS ONE SENTENCE THE READER EDITS.
 
-  "Showing what needs me · sorted by next · all kinds · 128 · ranked 2m ago". They were a
+  "Showing your desk · sorted by next · all kinds · 128 · ranked 2m ago". They were a
   segmented control of six orderings, a second of six periods, six chips and a paragraph
   explaining all of it — four rows of chrome above a list of fifteen one-line posts. Each word
   he can change is the control that changes it, and the keys `s`, `c` and `m` are the panel's
@@ -26,7 +32,64 @@ import { since, type FeedQuery } from "./api.ts";
 */
 
 /** Which segment is open. One at a time, held by the panel, because the keys are the panel's. */
-export type PickName = "needs" | "sort" | "kinds";
+export type PickName = "surface" | "sort" | "kinds" | "established" | "group";
+
+/**
+ * How the list is grouped, and what each key means (#352). The words name the KEY and never a
+ * concept: records sharing a topic is a fact the store holds, and "the same idea" is not.
+ */
+const GROUP_WORD: Record<FeedGrouping, string> = {
+  none: "one by one",
+  topic: "grouped by topic",
+  recipe: "grouped by lens",
+};
+
+const GROUP_LABEL: Record<FeedGrouping, string> = {
+  none: "One row per record",
+  topic: "Group by topic",
+  recipe: "Group by lens",
+};
+
+const GROUP_NOTE: Record<FeedGrouping, string> = {
+  none: "every record competes for its own slot",
+  topic: "records filed under one entity share a slot, best first",
+  recipe: "records one recipe produced share a slot, best first",
+};
+
+/** The surface, as the sentence says it and as the menu explains it (#351). */
+const SURFACE_WORD: Record<FeedSurface, string> = {
+  desk: "your desk",
+  queue: "the agent queue",
+  shelf: "the shelf",
+  all: "everything",
+};
+
+const SURFACE_LABEL: Record<FeedSurface, string> = {
+  desk: "Your desk",
+  queue: "The agent queue",
+  shelf: "The shelf",
+  all: "Everything",
+};
+
+/** What each surface is FOR, which is who acts on what is in it. */
+const SURFACE_NOTE: Record<FeedSurface, string> = {
+  desk: "a ruling or an answer is waiting on you",
+  queue: "an agent could do it without you: accepted, or sent back for refinement",
+  shelf:
+    "kept rather than shown — candidates Babel is still developing, and what you have already decided",
+  all: "every post Babel has produced, in one list",
+};
+
+/**
+ * The order each surface arrives under. The desk is a queue to drain, so it arrives by what is
+ * waiting longest; the other three are a corpus to read, so they arrive hot.
+ */
+const SURFACE_SORT: Record<FeedSurface, FeedSort> = {
+  desk: "next",
+  queue: "next",
+  shelf: "hot",
+  all: "hot",
+};
 
 /** What each ordering is computed from, in the reader's terms. The formula is the store's. */
 const SORT_BASIS: Record<FeedSort, string> = {
@@ -79,6 +142,41 @@ const KIND_LABEL: Record<PostKind, string> = {
   hypothesis: "Hypotheses",
   question: "Questions",
 };
+
+/** The status axis in the sentence's own voice, and what each value is read off. */
+const ESTABLISHED_LABEL: Record<Established, string> = {
+  unsettled: "Unjudged",
+  contested: "Shaky",
+  reviewed: "Reviewed",
+  settled: "Settled",
+};
+
+const ESTABLISHED_NOTE: Record<Established, string> = {
+  unsettled: "no ruling and no vote: nothing has judged it",
+  contested: "Babel's reviewers are on both sides inside one role",
+  reviewed: "assessed and not split, and still undecided",
+  settled: "you ruled on it, or the question reached an end",
+};
+
+const ESTABLISHED_WORD: Record<Established, string> = {
+  unsettled: "unjudged",
+  contested: "shaky",
+  reviewed: "reviewed",
+  settled: "settled",
+};
+
+/**
+ * What the status segment says. The subject axis is the topic and is chosen elsewhere; this is
+ * the other one, and naming the chosen values rather than counting them is what makes the
+ * sentence readable at two of four.
+ */
+function establishedWord(chosen: readonly Established[]): string {
+  const [first, second] = chosen;
+  if (first === undefined) return "any standing";
+  if (second === undefined) return ESTABLISHED_WORD[first];
+  if (chosen.length === 2) return `${ESTABLISHED_WORD[first]} and ${ESTABLISHED_WORD[second]}`;
+  return `${String(chosen.length)} standings`;
+}
 
 /** The two orders computed over a period. The other four read no window and are offered none. */
 const WINDOWED: Record<FeedSort, boolean> = {
@@ -190,6 +288,7 @@ export function Sentence({
   pick,
   setPick,
   total,
+  desk,
   builtAt,
   ruledToday,
   counted,
@@ -202,6 +301,8 @@ export function Sentence({
   setPick: (next: PickName | null) => void;
   /** Absent until the first read answers: a count the panel has not been told is not a nought. */
   total: number | null;
+  /** How many posts are on the desk, whatever surface is being read. Absent until answered. */
+  desk: number | null;
   builtAt: string;
   ruledToday: number;
   counted: boolean;
@@ -209,7 +310,6 @@ export function Sentence({
   /** On a topic the sentence sits under a header and is a control again, not the heading. */
   heading?: boolean;
 }): ReactElement {
-  const needsMe = query.needs === "me";
   const ranked = since(builtAt, now);
   return (
     // A div and not a `<p>`: each editable word carries a real menu, and a browser closes a
@@ -218,45 +318,56 @@ export function Sentence({
     <div className="babel-sentence" data-heading={heading === true ? "" : undefined}>
       Showing{" "}
       <Menu
-        name="needs"
-        label={needsMe ? "what needs me" : "everything"}
-        title="Whether the list is only the posts waiting on you (m)"
-        open={pick === "needs"}
+        name="surface"
+        label={SURFACE_WORD[query.surface]}
+        title="Which surface the list is: what needs you, what an agent could do, or what is kept (m)"
+        open={pick === "surface"}
         setOpen={setPick}
       >
-        <button
-          type="button"
-          role="menuitemradio"
-          data-needs="me"
-          aria-checked={needsMe}
-          onClick={() => {
-            setPick(null);
-            onQuery({ ...query, needs: "me", sort: "next", offset: 0 });
-          }}
-        >
-          <span>What needs me</span>
-          <span className="babel-menu-note">a ruling or an answer is waiting</span>
-        </button>
-        <button
-          type="button"
-          role="menuitemradio"
-          data-needs="all"
-          aria-checked={!needsMe}
-          onClick={() => {
-            setPick(null);
-            // Turning the filter off drops the order the filter chose: "everything" arrives
-            // hot, which is the front page of a feed nobody is triaging.
-            onQuery({
-              ...query,
-              needs: "all",
-              sort: query.sort === "next" ? "hot" : query.sort,
-              offset: 0,
-            });
-          }}
-        >
-          <span>Everything</span>
-          <span className="babel-menu-note">every post Babel has produced</span>
-        </button>
+        {FEED_SURFACES.map((name) => (
+          <button
+            type="button"
+            key={name}
+            role="menuitemradio"
+            data-surface={name}
+            aria-checked={query.surface === name}
+            onClick={() => {
+              setPick(null);
+              // Changing surface changes what the list is FOR, so it brings the order that
+              // surface is read under: a queue to drain arrives by what has waited longest, a
+              // corpus to read arrives hot.
+              onQuery({ ...query, surface: name, sort: SURFACE_SORT[name], offset: 0 });
+            }}
+          >
+            <span>{SURFACE_LABEL[name]}</span>
+            <span className="babel-menu-note">{SURFACE_NOTE[name]}</span>
+          </button>
+        ))}
+      </Menu>
+      {" · "}
+      <Menu
+        name="group"
+        label={GROUP_WORD[query.group]}
+        title="Whether one concept occupies one slot, and by which existing key"
+        open={pick === "group"}
+        setOpen={setPick}
+      >
+        {FEED_GROUPINGS.map((name) => (
+          <button
+            type="button"
+            key={name}
+            role="menuitemradio"
+            data-group={name}
+            aria-checked={query.group === name}
+            onClick={() => {
+              setPick(null);
+              onQuery({ ...query, group: name, offset: 0 });
+            }}
+          >
+            <span>{GROUP_LABEL[name]}</span>
+            <span className="babel-menu-note">{GROUP_NOTE[name]}</span>
+          </button>
+        ))}
       </Menu>
       {" · sorted by "}
       <Menu
@@ -361,10 +472,69 @@ export function Sentence({
           </button>
         ))}
       </Menu>
+      {" · "}
+      <Menu
+        name="established"
+        label={establishedWord(query.established)}
+        title="How well established a post is: the other axis, narrowed on its own"
+        open={pick === "established"}
+        setOpen={setPick}
+      >
+        <button
+          type="button"
+          role="menuitemradio"
+          data-established="any"
+          aria-checked={query.established.length === 0}
+          onClick={() => {
+            setPick(null);
+            onQuery({ ...query, established: [], offset: 0 });
+          }}
+        >
+          <span className="babel-menu-tick" aria-hidden="true">
+            {query.established.length === 0 ? "✓" : ""}
+          </span>
+          <span>Any standing</span>
+        </button>
+        {/* A set, like the kinds: "shaky or unjudged" is one question about one axis, and a
+            menu that closed on the first press would make it two. */}
+        {ESTABLISHED.map((value) => (
+          <button
+            type="button"
+            key={value}
+            role="menuitemcheckbox"
+            data-established={value}
+            aria-checked={query.established.includes(value)}
+            title={ESTABLISHED_NOTE[value]}
+            onClick={() =>
+              onQuery({
+                ...query,
+                established: query.established.includes(value)
+                  ? query.established.filter((name) => name !== value)
+                  : [...query.established, value],
+                offset: 0,
+              })
+            }
+          >
+            <span className="babel-menu-tick" aria-hidden="true">
+              {query.established.includes(value) ? "✓" : ""}
+            </span>
+            <span>{ESTABLISHED_LABEL[value]}</span>
+          </button>
+        ))}
+      </Menu>
       {total !== null && (
         <span className="babel-count" data-ticked={counted ? "" : undefined}>
           {" "}
           · {total.toLocaleString()}
+        </span>
+      )}
+      {/* The desk's size, when the count beside it is not already it. "Is this a plausible
+          amount of work" is a question he has while reading the shelf, and a number he has to
+          change surface to see is a number he does not have. */}
+      {desk !== null && total !== desk && (
+        <span className="babel-desk" title="Posts waiting on you, whatever this list is showing">
+          {" "}
+          · {desk.toLocaleString()} on your desk
         </span>
       )}
       {ranked !== "" && <span className="babel-ranked"> · ranked {ranked}</span>}

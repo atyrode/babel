@@ -66,8 +66,11 @@ export function TopicPanel({ host, arg }: PanelProps): ReactElement {
 function TopicView({ host, topic }: { host: HostServices; topic: string }): ReactElement {
   const [query, setQuery] = useState<FeedQuery>({
     ...EMPTY_QUERY,
-    needs: "all",
+    surface: "all",
     sort: "new",
+    // A topic page is already one subject, so grouping it by subject would put every row
+    // under one heading naming the page it is on.
+    group: "none",
     topic,
   });
   const [failure, setFailure] = useState("");

@@ -31,6 +31,8 @@ import {
   RULINGS,
   type BudgetOverlay,
   type Comment,
+  type FeedGroup,
+  type FeedGrouping,
   type FeedPost,
   type FeedQuery,
   type FeedResult,
@@ -622,6 +624,40 @@ const RUN_COLUMNS = `r.id AS id, r.kind AS kind, r.machine_id AS machine_id, r.j
 /** The one join every run read makes; `runs r` alone is what the counts are taken over. */
 const RUN_FROM = `runs r LEFT JOIN run_progress p ON p.run_id = r.id`;
 
+/**
+ * How many of a group's records travel with the page.
+ *
+ * A group's job is to occupy one slot and say how big it is, so the face and a few beneath it
+ * are what a reader needs to decide whether to open the key; carrying all forty would put the
+ * volume back on the page the grouping took it off.
+ */
+const GROUP_SHOWN = 5;
+
+/**
+ * Which group one post belongs to, or "" for a post this key does not group.
+ *
+ * A record filed under several topics belongs to exactly ONE of them — the lowest entity id —
+ * because a record that is the face of two groups makes the page repeat itself, which is the
+ * failure the grouping exists to fix. The choice is stable rather than meaningful: see the
+ * caution on `grouped`.
+ */
+function groupKey(entry: IndexEntry, group: FeedGrouping): string {
+  if (group === "recipe") return entry.recipeId;
+  if (group !== "topic") return "";
+  let lowest = "";
+  for (const filed of entry.topics) {
+    if (lowest === "" || filed.id < lowest) lowest = filed.id;
+  }
+  return lowest;
+}
+
+/** What the group says it is held together by, in the words the rest of the surface uses. */
+function groupLabel(face: IndexEntry, group: FeedGrouping, key: string): string {
+  if (group !== "topic") return key;
+  const named = face.topics.find((filed) => filed.id === key);
+  return named === undefined ? key : `t/${named.name}`;
+}
+
 // ---------------------------------------------------------------------------- the store
 
 export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
@@ -749,8 +785,77 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     return {
       posts,
       total,
+      desk: current.desk,
       builtAt: stamp(current.builtAt),
       notice: "",
+      groups: [],
+    };
+  };
+
+  /**
+   * The same eligible set, paged by GROUP rather than by record (#352).
+   *
+   * A concept observed forty times took forty of the fifteen slots the desk has, so the page
+   * is cut out of the groups and a group occupies one of them however many records it holds.
+   * The order inside a group and the order of the groups are both the sort's own: a group
+   * sits where its best-ranked record would have sat, which is how the grouping changes what
+   * shares a slot without changing what comes first.
+   *
+   * A record no key groups is a group of ONE rather than a heap at the bottom. That is what
+   * keeps the grouping from hiding anything: an ungrouped record still competes for its own
+   * slot at its own rank, and the page cannot silently drop it.
+   *
+   * THE METHOD IS WHAT NEEDS VALIDATING, not only the outcome. The study that asked for this
+   * built the grouping to check it and reported it as qualified — on its corpus 14 records
+   * were the representative of more than one concept, so the page repeated itself, which is
+   * the failure grouping exists to fix. The single assignment below is the answer to that: a
+   * record with several topics is grouped under exactly one of them, the lowest entity id, so
+   * it appears once. That rule is arbitrary in the only way it is allowed to be — it is
+   * stable, and it is not a claim that the chosen topic is the record's most important one.
+   * Before anything is built on top of this grouping, the grouping itself is the thing to
+   * measure.
+   */
+  const grouped = (entries: IndexEntry[], query: FeedQuery, current: FeedIndex): FeedResult => {
+    const order: string[] = [];
+    const held = new Map<string, IndexEntry[]>();
+    for (const entry of entries) {
+      const key = groupKey(entry, query.group);
+      // An ungrouped record is keyed by its own identifier, which no group key can collide
+      // with: the prefix is not a key any entity or recipe has.
+      const at = key === "" ? `\u0000${entry.post.id}` : key;
+      const bucket = held.get(at);
+      if (bucket === undefined) {
+        held.set(at, [entry]);
+        order.push(at);
+      } else {
+        bucket.push(entry);
+      }
+    }
+    const total = order.length;
+    const posts: FeedPost[] = [];
+    const groups: FeedGroup[] = [];
+    for (let at = query.offset; at < Math.min(total, query.offset + query.limit); at++) {
+      const id = order[at] ?? "";
+      const bucket = held.get(id) ?? [];
+      const shown = bucket.slice(0, GROUP_SHOWN);
+      for (const entry of shown) posts.push(entry.post);
+      const face = bucket[0];
+      const alone = id.startsWith("\u0000");
+      groups.push({
+        key: alone ? "" : id,
+        keyKind: alone ? "none" : query.group,
+        label: alone || face === undefined ? "" : groupLabel(face, query.group, id),
+        records: bucket.length,
+        posts: shown.map((entry) => entry.post.id),
+      });
+    }
+    return {
+      posts,
+      total,
+      desk: current.desk,
+      builtAt: stamp(current.builtAt),
+      notice: "",
+      groups,
     };
   };
 
@@ -762,7 +867,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       current.builtAt,
     );
     sortFeed(eligible, query.sort, current.builtAt);
-    return page(eligible, query, current);
+    return query.group === "none"
+      ? page(eligible, query, current)
+      : grouped(eligible, query, current);
   };
 
   /**
@@ -908,8 +1015,15 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     return {
       id,
       kind: postKind(text(row["kind"])),
+      // A wording a later revision replaced is kept and not shown, which is the shelf. It is
+      // stated rather than routed because `surfaceOf` reads a standing, and a superseded row
+      // carries none: the ruling belongs to the revision that replaced it.
+      surface: "shelf",
       title: text(row["title"]),
       standing: "",
+      // Nothing awaits a decision on a wording that was replaced, and no reception of its own
+      // survives it: what was judged is the revision that stands in its place.
+      established: "settled",
       createdAt,
       author: runId === "" ? null : { runId },
       topics: [],
@@ -1728,7 +1842,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       sort: "next",
       window: "all",
       kinds: [],
-      needs: "all",
+      surface: "all",
+      established: [],
+      group: "none",
       topic: name,
       limit: 25,
       offset: 0,

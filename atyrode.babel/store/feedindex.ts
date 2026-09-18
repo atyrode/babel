@@ -39,7 +39,16 @@ import {
   type PostKind,
 } from "../contract.ts";
 import { standingOf } from "./acts.ts";
-import { ageWord, feedWhy, risingRank, URGENCY, WINDOW_MS, type Ranked } from "./rank.ts";
+import {
+  ageWord,
+  establishedOf,
+  feedWhy,
+  risingRank,
+  surfaceOf,
+  URGENCY,
+  WINDOW_MS,
+  type Ranked,
+} from "./rank.ts";
 
 /** The reserved topic naming the posts nothing has said anything about (§4.13). */
 export const TOPIC_UNFILED = "unfiled";
@@ -113,6 +122,12 @@ export interface IndexEntry {
    * either: a reader following a sidebar row has the id, one who typed the name has the name.
    */
   readonly topics: readonly TopicMembership[];
+  /**
+   * The recipe that produced the record, which is one of the two keys a grouping uses (#352).
+   * It is held here rather than on the wire because it is a grouping key and not a fact of the
+   * post: the group states it, once, for every record under it.
+   */
+  readonly recipeId: string;
 }
 
 export interface FeedIndex {
@@ -121,6 +136,12 @@ export interface FeedIndex {
   readonly topics: readonly IndexTopic[];
   /** The posts no live filing names a topic for — §4.13's honest state and the triage backlog. */
   readonly unfiled: number;
+  /**
+   * How many of them are on the desk. It is counted once, at build, because it travels on
+   * every feed answer whatever surface was asked for and a per-request scan of the whole
+   * corpus to produce one integer is the cost this projection exists to avoid.
+   */
+  readonly desk: number;
   /** One record a reviewer is holding right now, by record id, oldest claim first. */
   readonly reviewing: ReadonlyMap<string, number>;
 }
@@ -214,7 +235,7 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
   await scan<SqlRow>(
     db,
     `SELECT r.id AS id, r.kind AS kind, r.run_id AS run_id, r.title AS title,
-            r.created_at AS created_at
+            r.recipe_id AS recipe_id, r.created_at AS created_at
        FROM records r
        JOIN (SELECT root_id, MAX(seq) AS head_seq FROM records GROUP BY root_id) h
          ON h.root_id = r.root_id AND h.head_seq = r.seq
@@ -244,7 +265,11 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
   );
 
   const unfiled = countTopics(posts, topics);
-  return { builtAt: nowMs, posts, topics, unfiled, reviewing };
+  let desk = 0;
+  for (const entry of posts) {
+    if (entry.post.surface === "desk") desk++;
+  }
+  return { builtAt: nowMs, posts, topics, unfiled, desk, reviewing };
 }
 
 /**
@@ -704,11 +729,19 @@ function recordEntry(
   const filed = membership.get(id);
   const tally = tallies.get(id);
 
+  // Two standings await a ruling and they are the record page's own two: `new`, which nobody
+  // has decided, and `reopened`, whose ruling an operator deliberately lifted. Those are exactly
+  // the two the peel offers "Rule on this" against, so the feed and the record cannot disagree
+  // about what needs him. Every other standing is a ruling that was made, and a deferral is a
+  // decision rather than the postponement of one.
+  const awaiting = standing === "new" || standing === STANDING_REOPENED;
   const post: FeedPost = {
     id,
     kind,
+    surface: surfaceOf(kind, standing, awaiting),
     title,
     standing,
+    established: establishedOf(awaiting, tally?.contested ?? false, tally?.votes.length ?? 0),
     createdAt: createdAtText,
     author: runId === "" ? null : { runId },
     topics: filed ?? [],
@@ -720,33 +753,27 @@ function recordEntry(
     contested: tally?.contested ?? false,
     reviewing: reviewing.has(id),
     comments: tally?.comments ?? 0,
-    awaiting: false,
-    why: "",
+    awaiting,
+    why: !awaiting
+      ? ""
+      : standing === "new"
+        ? feedWhy("never ruled on", `waiting ${ageWord(nowMs - createdAt)}`)
+        : feedWhy("reopened", `waiting ${ageWord(nowMs - createdAt)}`),
     lastActivityAt: stamp(Math.max(tally?.lastActivity ?? 0, createdAt)),
   };
-  const entry: IndexEntry = {
+  return {
     post,
     createdAt,
     activity: tally?.activity ?? [],
-    urgency: URGENCY.none,
+    urgency:
+      standing === "new"
+        ? URGENCY.unruled
+        : standing === STANDING_REOPENED
+          ? URGENCY.reopened
+          : URGENCY.none,
     topics: filed ?? [],
+    recipeId: text(row["recipe_id"]),
   };
-
-  // Two standings await a ruling and they are the record page's own two: `new`, which nobody
-  // has decided, and `reopened`, whose ruling an operator deliberately lifted. Those are exactly
-  // the two the peel offers "Rule on this" against, so the feed and the record cannot disagree
-  // about what needs him. Every other standing is a ruling that was made, and a deferral is a
-  // decision rather than the postponement of one.
-  if (standing === "new") {
-    entry.urgency = URGENCY.unruled;
-    post.awaiting = true;
-    post.why = feedWhy("never ruled on", `waiting ${ageWord(nowMs - createdAt)}`);
-  } else if (standing === STANDING_REOPENED) {
-    entry.urgency = URGENCY.reopened;
-    post.awaiting = true;
-    post.why = feedWhy("reopened", `waiting ${ageWord(nowMs - createdAt)}`);
-  }
-  return entry;
 }
 
 /**
@@ -771,11 +798,18 @@ function questionEntry(
   const createdAt = instant(createdAtText);
   const state = text(row["state"]);
   const questionClass = text(row["class"]);
+  const head =
+    state === "open" ? (QUESTION_CLASS_WAITS[questionClass] ?? "curiosity") : QUESTION_WAITS[state];
+  const awaiting = head !== undefined;
   const post: FeedPost = {
     id,
     kind: "question",
+    surface: surfaceOf("question", state, awaiting),
     title,
     standing: state,
+    // A question carries no reception — nothing votes on one — so its axis is its own state:
+    // open is unsettled, and a state that awaits nobody is settled.
+    established: establishedOf(awaiting, false, 0),
     createdAt: createdAtText,
     author: null,
     topics: [],
@@ -787,24 +821,24 @@ function questionEntry(
     contested: false,
     reviewing: reviewing.has(id),
     comments: count(row["answers"]),
-    awaiting: false,
-    why: "",
+    awaiting,
+    why: head === undefined ? "" : feedWhy(head, `asked ${ageWord(nowMs - createdAt)}`),
     lastActivityAt: stamp(createdAt),
   };
-  const entry: IndexEntry = {
+  return {
     post,
     createdAt,
     activity: [],
-    urgency: URGENCY.none,
+    urgency: !awaiting
+      ? URGENCY.none
+      : questionClass === "blocking"
+        ? URGENCY.blocked
+        : URGENCY.asked,
+    // A question is the ledger's, not a run's: no recipe produced it, so it groups with the
+    // records nothing groups.
     topics: [],
+    recipeId: "",
   };
-  const head =
-    state === "open" ? (QUESTION_CLASS_WAITS[questionClass] ?? "curiosity") : QUESTION_WAITS[state];
-  if (head === undefined) return entry;
-  post.awaiting = true;
-  post.why = feedWhy(head, `asked ${ageWord(nowMs - createdAt)}`);
-  entry.urgency = questionClass === "blocking" ? URGENCY.blocked : URGENCY.asked;
-  return entry;
 }
 
 /**
@@ -849,24 +883,33 @@ function countTopics(posts: readonly IndexEntry[], topics: readonly IndexTopic[]
  * sorts that are ABOUT a period: "hot" over a day and "hot" over all time would be the same list
  * with the older half deleted, and a rising post is by definition recent.
  *
- * `needs` is the queue, and it is a filter rather than a second list: a post awaiting the
- * operator is a fact the feed already carries, so asking for only those narrows one order
- * instead of opening another that could disagree with it about what is waiting.
+ * The surface is the route, and it is a narrowing of one index rather than three lists: a
+ * post's surface is a fact the projection already carries, so asking for the desk cuts the
+ * order that exists instead of opening a second one that could disagree with it about what is
+ * waiting. `all` is that one list, kept, because the sorts that are about the whole corpus —
+ * hot, top, controversial — are about the whole corpus.
  */
 export function filterFeed(
   posts: readonly IndexEntry[],
-  query: Pick<FeedQuery, "sort" | "window" | "kinds" | "needs"> & { topic: string },
+  query: Pick<FeedQuery, "sort" | "window" | "kinds" | "surface" | "established"> & {
+    topic: string;
+  },
   nowMs: number,
 ): IndexEntry[] {
   const windowed: FeedSort[] = ["top", "controversial"];
   const width = windowed.includes(query.sort) ? WINDOW_MS[query.window as FeedWindow] : 0;
   const since = width > 0 ? nowMs - width : 0;
-  const needs = query.needs === "me";
   const out: IndexEntry[] = [];
   for (const entry of posts) {
     if (query.kinds.length > 0 && !query.kinds.includes(entry.post.kind)) continue;
-    if (needs && !entry.post.awaiting) continue;
+    if (query.surface !== "all" && entry.post.surface !== query.surface) continue;
     if (query.topic !== "" && !inTopic(entry, query.topic)) continue;
+    // The two axes narrow independently and compose: the topic says what a post is about, the
+    // established says how well it is established, and asking for both is asking for the
+    // intersection rather than for a third vocabulary.
+    if (query.established.length > 0 && !query.established.includes(entry.post.established)) {
+      continue;
+    }
     if (since > 0 && entry.createdAt < since) continue;
     if (query.sort === "rising" && risingRank(entry.activity, entry.createdAt, nowMs) === 0)
       continue;

@@ -196,7 +196,7 @@ describe("the vocabulary", () => {
 
 describe("the answers", () => {
   test("the feed answers inside its own schema", async () => {
-    const answer = await dispatch(ACTIONS.feed, { needs: "all", window: "all" });
+    const answer = await dispatch(ACTIONS.feed, { surface: "all", window: "all" });
     expect(answer).toMatchObject({ total: 1, notice: "" });
   });
 
@@ -225,7 +225,7 @@ describe("the answers", () => {
     const feed = FeedResultSchema.parse(
       await dispatch(ACTIONS.feed, {
         kinds: ["question"],
-        needs: "all",
+        surface: "all",
         window: "all",
       }),
     );

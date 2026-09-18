@@ -13,7 +13,7 @@
   constant nobody can check.
 */
 
-import type { FeedSort, FeedWindow, PostKind } from "../contract.ts";
+import type { Established, FeedSort, FeedWindow, PostKind, PostSurface } from "../contract.ts";
 
 /**
  * The fixed origin the hot rank measures age from. A decay origin that moved — the
@@ -80,6 +80,49 @@ export const KIND_WEIGHT: Record<PostKind, number> = {
   hypothesis: 2,
   question: 3,
 };
+
+/**
+ * WHICH SURFACE A POST IS ON, from its kind and its standing and nothing else (#351).
+ *
+ * The question the route answers is who acts on it next, and both halves of the answer are
+ * already columns:
+ *
+ *   - THE DESK is what he decides. A record awaits him exactly when nobody has ruled on it or
+ *     he lifted the ruling, and a proposal, a finding and a question are each addressed to him
+ *     — a remedy to approve, a pattern to accept, a question he alone can answer.
+ *   - THE AGENT QUEUE is what a run does next unattended, and two standings say so in their own
+ *     words: `accepted` endorses a record for follow-on work, and `refine-requested` asks Babel
+ *     to work it further. Neither is waiting on him.
+ *   - THE SHELF is everything else, and it is kept rather than shown. A candidate is there
+ *     because a hypothesis is a question Babel asked ITSELF — the same reason it sorts last
+ *     under `next` — and a rejected, deferred or duplicate record is there because the decision
+ *     it wanted has been made.
+ *
+ * Nothing is deleted by routing and nothing is hidden by it: the shelf is a surface a reader
+ * asks for, which is the whole of "never shown unprompted".
+ */
+export function surfaceOf(kind: PostKind, standing: string, awaiting: boolean): PostSurface {
+  if (awaiting) return kind === "hypothesis" ? "shelf" : "desk";
+  return standing === "accepted" || standing === "refine-requested" ? "queue" : "shelf";
+}
+
+/**
+ * HOW WELL ESTABLISHED A POST IS, from the same two columns the route reads (#354).
+ *
+ * This is the second axis, and its whole point is that it is not the first: the subject a
+ * record is filed under says what it is about, and this says how much judgement has landed on
+ * it, so "important and shaky" and "trivial and certain" stop reading alike.
+ *
+ * The ruling wins over the disagreement, and that ordering is §8.7's: Babel votes and the
+ * operator rules, so a record he accepted over his reviewers' split is settled rather than
+ * contested. A vote counts only where it survived §4.12's dedup, which is what `votes` carries
+ * — the raw assessment rows would let a corrected vote count twice.
+ */
+export function establishedOf(awaiting: boolean, contested: boolean, votes: number): Established {
+  if (!awaiting) return "settled";
+  if (contested) return "contested";
+  return votes > 0 ? "reviewed" : "unsettled";
+}
 
 /**
  * The few facts of a post every rank and every tie-break reads.
