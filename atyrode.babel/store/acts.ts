@@ -1,7 +1,12 @@
 import { z } from "zod";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import type { INTEREST_STATES } from "../contract.ts";
-import { RoleSchema, type Ruling } from "../contract.ts";
+import {
+  NextActionStandingSchema,
+  RoleSchema,
+  type NextActionDecision,
+  type Ruling,
+} from "../contract.ts";
 import {
   acceptReviewResult,
   REFUSALS,
@@ -348,6 +353,15 @@ export const RuledSchema = z.strictObject({
     .nullable(),
 });
 export type Ruled = z.infer<typeof RuledSchema>;
+
+export const DecidedSchema = z.strictObject({
+  id: z.string(),
+  recordId: z.string(),
+  standing: NextActionStandingSchema,
+  seq: z.number().int(),
+  at: z.string(),
+});
+export type Decided = z.infer<typeof DecidedSchema>;
 
 export const CommentedSchema = z.strictObject({
   id: z.string(),
@@ -1241,6 +1255,89 @@ export async function rule(store: ActsStore, args: RuleArgs, operator: string): 
   const seq = Number(results[0]?.[0]?.["seq"] ?? 0);
   store.touch();
   return { id: args.id, standing: STANDING_OF[args.ruling], seq, plan: outcome };
+}
+
+export interface DecideArgs {
+  nextActionId: string;
+  decision: NextActionDecision;
+  note: string;
+}
+
+/**
+ * THE OPERATOR'S ANSWER TO A NEXT ACTION A RUN PROPOSED (#340), appended.
+ *
+ * It is a separate act from {@link rule} because it answers a separate question. `rule` judges
+ * the CLAIM — is this finding any good — and writes `dispositions`. This judges the ACTION — is
+ * this worth doing — and writes `next_action_rulings`. One act with a wider vocabulary would
+ * make "accepted" mean two things in the same corpus, which is the ambiguity the retired
+ * product split its own packages to avoid, and it is exactly where an acceptance rate is meant
+ * to be evidence about output quality.
+ *
+ * NOTHING IS APPLIED. §4.6 keeps publishing, applying and writing to a source repository
+ * outside Babel, so accepting a `draft-issue` opens no issue and accepting a `store-memory`
+ * writes no memory: the row is the durable, attributable fact that a person accepted it.
+ *
+ * RECONSIDERING IS A LATER ROW. The ledger is append-only by trigger and the standing is its
+ * newest entry, so an operator who accepts and then declines leaves both readable — which is
+ * what makes the ledger evidence rather than a status column. Answering the same way twice is
+ * refused instead: it says nothing new and would put two indistinguishable rows in the history
+ * a later reader has to interpret.
+ *
+ * The note is kept verbatim and is not required. `declinePlan` demands a reason because §4.13's
+ * triage lane reads it before proposing the same plan again; nothing reads this one yet, and a
+ * reason nothing reads is friction on a choice that is meant to be one press.
+ */
+export async function decide(
+  store: ActsStore,
+  args: DecideArgs,
+  operator: string,
+): Promise<Decided> {
+  if (operator === "") throw new ActRefused("a decision has no operator");
+  const proposal = await first<{ record_id: string; kind: string }>(
+    store,
+    `SELECT record_id, kind FROM next_actions WHERE id = ?`,
+    [args.nextActionId],
+  );
+  if (proposal === null) {
+    throw new ActRefused(`no proposed action ${args.nextActionId}`);
+  }
+  const standing = await first<{ decision: string }>(
+    store,
+    `SELECT decision FROM next_action_rulings WHERE next_action_id = ? ORDER BY seq DESC LIMIT 1`,
+    [args.nextActionId],
+  );
+  if (standing?.decision === args.decision) {
+    throw new ActRefused(
+      `this ${proposal.kind} was already ${args.decision}; a decision that says nothing new is not a reconsideration`,
+    );
+  }
+  const at = stamp(store.now());
+  const [appended] = await store.db.batch([
+    {
+      sql: `INSERT INTO next_action_rulings(id, next_action_id, seq, decision, operator_id, note,
+              recorded_at)
+            SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?
+            FROM next_action_rulings WHERE next_action_id = ?
+            RETURNING seq`,
+      params: [
+        newId("nxr"),
+        args.nextActionId,
+        args.decision,
+        operator,
+        args.note,
+        at,
+        args.nextActionId,
+      ],
+    },
+  ]);
+  store.touch();
+  return {
+    id: args.nextActionId,
+    recordId: proposal.record_id,
+    standing: args.decision,
+    seq: Number(appended?.[0]?.["seq"] ?? 0),
+    at,
+  };
 }
 
 export interface CommentArgs {

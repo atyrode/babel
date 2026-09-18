@@ -27,6 +27,8 @@ import type { PulseTodaySchema } from "../contract.ts";
 import {
   FEED_SORTS,
   POST_KINDS,
+  NextActionDecisionSchema,
+  NextActionSchema,
   REPOSITORY_PROVENANCES,
   ROLES,
   RULINGS,
@@ -950,6 +952,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       machinery: await machineryOf(row, payload, repository),
       related: await relatedOf(id, text(row["run_id"]), text(row["supersedes_id"])),
       plan: await planOf(id),
+      nextActions: await nextActionsOf(id),
     };
   };
 
@@ -979,6 +982,71 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       [id],
     );
     return { supports: count(row?.["supports"]), distinctRuns: count(row?.["runs"]) };
+  };
+
+  /**
+   * WHAT A RUN PROPOSED BE DONE ABOUT THIS RECORD, AND WHAT THE OPERATOR ANSWERED (#340).
+   *
+   * Two statements rather than one, because a proposal has many ledger entries and a join would
+   * either lose the proposals nobody has answered or repeat their columns once per entry. The
+   * second is keyed on the RECORD through the join, so it is one parameter and one index walk
+   * however many proposals the record carries.
+   *
+   * `standing` IS DERIVED FROM THE LEDGER and is never stored: a status column could come to
+   * disagree with the entries behind it, and the entries are the evidence. An empty ledger is
+   * `proposed`, which is a different thing from having been declined.
+   */
+  const nextActionsOf = async (id: string): Promise<RecordPeel["nextActions"]> => {
+    const proposed = await db.query(
+      `SELECT id, kind, summary, proposed_by_id,
+              COALESCE(json_extract(payload, '$.rationale'), '') AS rationale, created_at
+         FROM next_actions WHERE record_id = ? ORDER BY created_at, id LIMIT 50`,
+      [id],
+    );
+    if (proposed.length === 0) return [];
+    const ledger = await db.query(
+      `SELECT r.next_action_id AS next_action_id, r.decision AS decision, r.note AS note,
+              r.operator_id AS operator_id, r.recorded_at AS recorded_at
+         FROM next_action_rulings r JOIN next_actions n ON n.id = r.next_action_id
+        WHERE n.record_id = ? ORDER BY r.next_action_id, r.seq DESC`,
+      [id],
+    );
+    type Entry = RecordPeel["nextActions"][number]["history"][number];
+    const history: Record<string, Entry[]> = {};
+    for (const entry of ledger) {
+      const of = text(entry["next_action_id"]);
+      const decision = NextActionDecisionSchema.safeParse(entry["decision"]);
+      if (!decision.success) continue;
+      const entries = history[of] ?? [];
+      entries.push({
+        decision: decision.data,
+        note: text(entry["note"]),
+        by: text(entry["operator_id"]),
+        at: text(entry["recorded_at"]),
+      });
+      history[of] = entries;
+    }
+    const out: RecordPeel["nextActions"] = [];
+    for (const row of proposed) {
+      const kind = NextActionSchema.safeParse(row["kind"]);
+      // A kind outside the vocabulary cannot be rendered as a choice, and the door's strict
+      // result would refuse the whole peel for it. The CHECK makes it unreachable through this
+      // store; a row the crossing wrote under an older word is skipped rather than shown.
+      if (!kind.success) continue;
+      const of = text(row["id"]);
+      const entries = history[of] ?? [];
+      out.push({
+        id: of,
+        kind: kind.data,
+        summary: text(row["summary"]),
+        rationale: text(row["rationale"]),
+        proposedBy: text(row["proposed_by_id"]),
+        at: text(row["created_at"]),
+        standing: entries[0]?.decision ?? "proposed",
+        history: entries,
+      });
+    }
+    return out;
   };
 
   /**
@@ -1105,6 +1173,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       },
       related: [],
       plan: await planOf(id),
+      // A question is Babel failing to settle something, and nothing proposes an action about
+      // one: the action is answering it, which is its own act.
+      nextActions: [],
     };
   };
 

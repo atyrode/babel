@@ -77,10 +77,12 @@ test("a stage is offered exactly the fields its authority admits", () => {
     "candidates",
     "consolidations",
     "deferred",
+    "next_actions",
     "questions",
     "rejected",
   ]);
-  // §5.4 gives the challenger no path to a finding and no business developing observations.
+  // §5.4 gives the challenger no path to a finding and no business developing observations, and
+  // no business directing the operator's work off the back of a criticism either.
   expect(properties(exploreJsonSchema("challenge"))).toEqual([
     "candidates",
     "objections",
@@ -90,6 +92,7 @@ test("a stage is offered exactly the fields its authority admits", () => {
   expect(properties(exploreJsonSchema("synthesize"))).toEqual([
     "candidates",
     "consolidations",
+    "next_actions",
     "questions",
   ]);
 });

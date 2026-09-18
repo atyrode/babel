@@ -203,6 +203,41 @@ describe("the peel", () => {
     await view.unmount();
   });
 
+  test("a proposed next action is read where the record is, and answered there", async () => {
+    const fake = hub({
+      decide: () => ({
+        id: "nxt_0000000a",
+        recordId: "pro_0000000a",
+        standing: "declined",
+        seq: 1,
+        at: "2026-09-12T10:00:00Z",
+      }),
+    });
+    look({ recordId: "pro_0000000a" });
+    const view = await mount(<RecordPanel host={fake.host} />);
+    // The kind reads as what it asks for, not as the wire value a run wrote.
+    expect(view.one(".babel-next-action").textContent).toContain("Draft an issue");
+    expect(view.one(".babel-next-action").textContent).toContain(
+      "Draft an issue for stating a run's profile before the first byte.",
+    );
+    // And it says what an acceptance is, because a press that implied Babel opened an issue
+    // would be the one misreading that costs an operator something outside Babel.
+    expect(view.one(".babel-next-action").textContent).toContain("Babel publishes nothing");
+
+    await view.type('.babel-next-action input[type="text"]', "not this quarter");
+    await view.press('.babel-next-action [data-decision="declined"]');
+    await view.settle();
+    expect(fake.last("decide")).toEqual({
+      nextActionId: "nxt_0000000a",
+      decision: "declined",
+      note: "not this quarter",
+    });
+    // The answer stands where the record is read, and the record is read again behind it.
+    expect(view.one(".babel-next-action").getAttribute("data-standing")).toBe("declined");
+    expect(fake.to("record").length).toBeGreaterThan(1);
+    await view.unmount();
+  });
+
   test("a ruling by key goes through the same confirmation as one by click", async () => {
     const fake = hub();
     look({ recordId: "pro_0000000a" });

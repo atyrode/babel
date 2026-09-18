@@ -53,6 +53,51 @@ export const RULINGS = ["accept", "reject", "defer", "duplicate", "reopen", "ref
 export const RulingSchema = z.enum(RULINGS);
 export type Ruling = z.infer<typeof RulingSchema>;
 
+/**
+ * THE CLOSED VOCABULARY OF NEXT ACTIONS A RUN MAY PROPOSE (#340), and the two answers the
+ * operator may give one.
+ *
+ * A run reads a corpus and can see what should happen next; until now it had nowhere to say so,
+ * and `machine/results.ts` left the field out on purpose because a field nothing could land is
+ * worse than its absence. The vocabulary is CLOSED because an open one turns a proposal into
+ * prose: five known destinations a model chooses between can be routed, counted and acted on,
+ * and a sixth one it invented can only be read.
+ *
+ * The words are the retired product's own (`v0.4.0:internal/disposition`, `Kinds()`), unchanged,
+ * so the rows the crossing left stranded import as themselves rather than through a translation
+ * nobody could check afterwards.
+ *
+ * `RULINGS` above and these are different vocabularies about different things, and conflating
+ * them is exactly the ambiguity the Go package split itself in two to avoid: a ruling is a
+ * verdict on the RECORD — is this claim any good — and a decision here is an answer about the
+ * ACTION — should this be done. "Accepted" would otherwise mean two things in one corpus.
+ */
+export const NEXT_ACTIONS = [
+  /** Render the record as a GitHub issue draft. Babel publishes nothing; the operator does. */
+  "draft-issue",
+  /** Route the record into the ledger's proposed-until-authorized facts (§4.8). */
+  "propose-reality-fact",
+  /** Keep it as an operator-specific memory. */
+  "store-memory",
+  /** Put a question to the operator. */
+  "ask-question",
+  /** Spend another exploration pass on the record. */
+  "develop-further",
+] as const;
+export const NextActionSchema = z.enum(NEXT_ACTIONS);
+export type NextAction = z.infer<typeof NextActionSchema>;
+
+/**
+ * The operator's answer to a proposed action. There are exactly two: every action is a proposal
+ * until a person authorizes it, and a third value would be a way of half-authorizing one.
+ */
+export const NEXT_ACTION_DECISIONS = ["accepted", "declined"] as const;
+export const NextActionDecisionSchema = z.enum(NEXT_ACTION_DECISIONS);
+export type NextActionDecision = z.infer<typeof NextActionDecisionSchema>;
+
+/** What a proposed action is standing at, derived from its ledger and never stored. */
+export const NextActionStandingSchema = z.enum(["proposed", "accepted", "declined"]);
+
 /** A reviewer's vote (§4.12). */
 export const VOTES = ["support", "oppose", "unsure"] as const;
 export const VoteSchema = z.enum(VOTES);
@@ -168,6 +213,13 @@ export const ACTIONS = {
   policy: "policy",
   // the operator's acts
   rule: "rule",
+  /**
+   * ANSWERING A NEXT ACTION A RUN PROPOSED (#340): accepted, or declined, with the operator's
+   * own words. It is a second door beside `rule` rather than a ruling with a wider vocabulary,
+   * because the two answer different questions — `rule` judges the claim, this judges the
+   * action — and one door with a mode is how "accepted" comes to mean two things at once.
+   */
+  decide: "decide",
   comment: "comment",
   answer: "answer",
   interest: "interest",
@@ -474,6 +526,38 @@ export const RecordPeelSchema = z.strictObject({
   plan: z
     .strictObject({ kind: z.enum(["topic", "backlog"]), operation: z.string(), state: z.string() })
     .nullable(),
+  /**
+   * WHAT A RUN PROPOSED BE DONE ABOUT THIS RECORD, and what the operator answered (#340).
+   *
+   * It rides on the peel rather than on the listing row because it is a decision, and §8.6
+   * gives a row one line of claim and at most three facts — a proposed action read off a list
+   * is one accepted without reading the record it is about. `standing` is derived from
+   * `history`, never stored, so a status can never disagree with the entries behind it; an
+   * empty `history` is `proposed`, which is different from having been declined.
+   *
+   * An empty list renders as nothing at all, which is the honest shape for the whole imported
+   * corpus: nothing proposed an action on any of it.
+   */
+  nextActions: z.array(
+    z.strictObject({
+      id: z.string(),
+      kind: NextActionSchema,
+      summary: z.string(),
+      rationale: z.string(),
+      /** The run that proposed it, which is what makes an acceptance rate readable by lens. */
+      proposedBy: z.string(),
+      at: z.string(),
+      standing: NextActionStandingSchema,
+      history: z.array(
+        z.strictObject({
+          decision: NextActionDecisionSchema,
+          note: z.string(),
+          by: z.string(),
+          at: z.string(),
+        }),
+      ),
+    }),
+  ),
 });
 export type RecordPeel = z.infer<typeof RecordPeelSchema>;
 
@@ -621,6 +705,27 @@ export const RuleResultSchema = z.strictObject({
       error: z.string().optional(),
     })
     .nullable(),
+});
+
+/**
+ * THE OPERATOR'S ANSWER TO ONE PROPOSED ACTION (#340). It names the proposal, never the record:
+ * a record may carry several, and "accept the next action on this finding" is ambiguous the
+ * moment a second run proposes a second one.
+ */
+export const DecideInputSchema = z.strictObject({
+  nextActionId: z.string().regex(/^nxt_[0-9a-f]{8,64}$/),
+  decision: NextActionDecisionSchema,
+  note: z.string().max(4000).default(""),
+});
+
+export const DecideResultSchema = z.strictObject({
+  id: z.string(),
+  /** The record it was proposed on, so the surface knows what to re-read. */
+  recordId: RecordIdSchema,
+  standing: NextActionStandingSchema,
+  /** The entry's place in this proposal's ledger; a reconsideration is a higher one. */
+  seq: z.number().int(),
+  at: z.string(),
 });
 
 export const CommentInputSchema = z.strictObject({
@@ -1673,9 +1778,39 @@ export const JOB_OUTPUT_FILES = {
   plans: "plans.json",
   questions: "questions.json",
   steeringReplies: "steering-replies.json",
+  nextActions: "next-actions.json",
   sessions: "sessions.json",
   receipt: "receipt.json",
 } as const;
+
+/**
+ * EVERY TABLE A RUN'S OWN OUTPUT MAY REACH, and the whole of the list.
+ *
+ * A run writes rows; the conductor's `INGEST` map is the only thing that turns them into SQL,
+ * and this is the closed set that map may name (`server/conductor.ts`: `TableIngest.table` is
+ * typed as {@link IngestibleTable}, so an entry pointing anywhere else does not compile).
+ *
+ * IT IS HERE RATHER THAN THERE BECAUSE IT IS THE BOUNDARY OF WHAT A RUN MAY DO, not a detail of
+ * how ingestion works. Two tables are deliberately absent and must stay absent: `dispositions`
+ * is the operator's ruling on a record (§4.7), and `next_action_rulings` is his answer to a
+ * proposed action (#340). A run may propose either subject and may answer neither — a Babel
+ * that could write its own acceptance is an agent that agrees with itself, and the acceptance
+ * rate stops being evidence about anything. Stating the boundary as a type rather than as a
+ * convention is what makes "a run cannot rule" checkable instead of remembered.
+ */
+export const INGESTIBLE_TABLES = [
+  "sessions",
+  "records",
+  "edges",
+  "status_events",
+  "assessments",
+  "filings",
+  "questions",
+  "plans",
+  "steering",
+  "next_actions",
+] as const;
+export type IngestibleTable = (typeof INGESTIBLE_TABLES)[number];
 
 /**
  * WHAT THE OPERATOR'S STANDING MEMORY PUT INTO ONE RUN'S PROMPT (#331).

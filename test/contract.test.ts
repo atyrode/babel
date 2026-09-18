@@ -8,6 +8,7 @@ import {
   BABEL_PLUGIN_ID,
   EVENTS,
   FEED_PLUGIN_ID,
+  INGESTIBLE_TABLES,
   INPUT_FIELD,
   JEV_PLUGIN_ID,
   MATERIAL_EXPORT,
@@ -24,6 +25,7 @@ import {
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { ADAPTERS } from "../atyrode.babel/machine/adapters/index.ts";
 import { STORE_DATA_VERSION } from "../atyrode.babel/store/schema.ts";
+import { importableTables } from "../atyrode.babel/store/acts.ts";
 import { MAX_MATERIAL_BYTES } from "../atyrode.babel/doors/launch.ts";
 import { plugin } from "../atyrode.babel/server.ts";
 import babelManifest from "../atyrode.babel/manifest.json";
@@ -74,6 +76,22 @@ describe("the baseline's manifest spells the contract", () => {
     const names = plugin.actions.map((action) => action.name);
     expect(new Set(names).size).toBe(names.length);
     expect(Object.keys(plugin.handlers).sort()).toEqual([...names].sort());
+  });
+
+  test("a run's output reaches no table that holds a ruling", () => {
+    // #340's load-bearing constraint, as a pin rather than a habit. `INGESTIBLE_TABLES` is the
+    // closed set `server/conductor.ts`'s ingest map may name — its `TableIngest.table` is typed
+    // as `IngestibleTable`, so an entry pointing elsewhere does not compile — and the two
+    // ledgers a run may never write are `dispositions` (a verdict on a record) and
+    // `next_action_rulings` (an answer to something a run proposed). A Babel that could write
+    // its own acceptance is an agent that agrees with itself, and the acceptance rate stops
+    // being evidence about anything.
+    expect(INGESTIBLE_TABLES).not.toContain("dispositions");
+    expect(INGESTIBLE_TABLES).not.toContain("next_action_rulings");
+    // And every name in it is a table the migration actually creates, so the boundary cannot be
+    // widened by a typo into a table nothing would refuse.
+    const tables = Object.keys(importableTables());
+    for (const table of INGESTIBLE_TABLES) expect(tables).toContain(table);
   });
 });
 

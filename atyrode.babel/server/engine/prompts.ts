@@ -525,7 +525,8 @@ export function stageInstructions(stage: Stage): string {
   if (stage === "explore" || stage === "challenge") blocks.push(INSTRUCTIONS_EVIDENCE);
   blocks.push(STAGE_BLOCKS[stage]);
   if (stage === "explore" || stage === "synthesize") blocks.push(INSTRUCTIONS_PROPOSALS);
-  blocks.push(INSTRUCTIONS_QUESTIONS, INSTRUCTIONS_DISPOSITIONS);
+  blocks.push(INSTRUCTIONS_QUESTIONS);
+  if (stage === "explore" || stage === "synthesize") blocks.push(INSTRUCTIONS_NEXT_ACTIONS);
   return blocks.join("");
 }
 
@@ -578,5 +579,13 @@ Babel resolves each subject against the operator's own record of their world. A 
 A question is a request that someone else settle something, so it is the one output here that carries no claim: it asserts nothing, decides nothing, and is answered only by the operator. Never answer one yourself, never treat an answer you imagine as evidence, and never raise one in place of a reading you could have done.
 `;
 
-const INSTRUCTIONS_DISPOSITIONS = `"dispositions" propose what an operator could do next with a record: "draft-issue" (which requires "workspace", the local checkout the issue is about), "propose-reality-fact", "store-memory", "ask-question" or "develop-further". They render as choices, never as actions, and are optional everywhere they appear.
+/*
+  THE INSTRUCTION AND THE SCHEMA ARE ONE SUBJECT, and for a while they were two. This block asked
+  every stage for "dispositions" while `machine/results.ts` offered no such field and its schemas
+  are strict, so a model that did as it was told had its whole answer refused for an unknown
+  field — the stage that obeyed best lost the most. The field is now `next_actions` (#340), the
+  word "disposition" is the operator's ruling and nothing else, and the challenge stage is not
+  offered the field at all, so it is no longer told about it.
+*/
+const INSTRUCTIONS_NEXT_ACTIONS = `"next_actions" propose what the operator could do next with a record: "draft-issue" (which requires "workspace", the local checkout the issue is about, and which no other kind may carry), "propose-reality-fact", "store-memory", "ask-question" or "develop-further". Each names the "record" it is about by its ref or by a durable identifier the brief listed, states its "summary" in one line and its "rationale" where the fit is not obvious. They render as choices for a person to accept or decline, never as actions: nothing you propose here is carried out by Babel, and they are optional everywhere they appear.
 `;

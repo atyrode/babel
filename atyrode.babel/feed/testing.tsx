@@ -427,6 +427,19 @@ export function peel(overrides: Partial<RecordPeel> = {}): RecordPeel {
       },
     ],
     plan: null,
+    // One proposal nobody has answered: the state a panel has to render a choice for.
+    nextActions: [
+      {
+        id: "nxt_0000000a",
+        kind: "draft-issue",
+        summary: "Draft an issue for stating a run's profile before the first byte.",
+        rationale: "The finding names one repository and a bounded change to it.",
+        proposedBy: "run_0000000c",
+        at: "2026-09-12T09:00:00Z",
+        standing: "proposed",
+        history: [],
+      },
+    ],
     ...overrides,
   };
 }

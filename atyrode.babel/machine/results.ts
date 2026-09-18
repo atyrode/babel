@@ -30,7 +30,7 @@
 
 import { z } from "zod";
 import type { ROLES } from "../contract.ts";
-import { VOTES, normalizeRemote } from "../contract.ts";
+import { NextActionSchema, VOTES, normalizeRemote } from "../contract.ts";
 
 // ---------------------------------------------------------------------------- versions
 
@@ -276,14 +276,42 @@ export const ProposalPayloadSchema = z.strictObject({
   classification: z.enum(CLASSIFICATIONS),
 });
 
-/*
-  #87's proposed actions ("dispositions": draft-issue, propose-reality-fact, store-memory,
-  ask-question, develop-further) are deliberately NOT offered here. The rewrite's store has no
-  table for them and `JOB_OUTPUT_FILES` no file, so a field for them would be one a run could fill
-  and nothing could land — and the `dispositions` table in schema.ts is the operator's rulings,
-  which a run may not write at all. Bringing them back is a contract addition (an output file and
-  a table), not a schema field.
+/**
+ * ONE TYPED NEXT ACTION A RUN PROPOSES ON A RECORD (#340).
+ *
+ * This field was left out for a reason that has stopped being true. The store had no table for a
+ * proposed action and `JOB_OUTPUT_FILES` no file, so a field here would have been one a run could
+ * fill and nothing could land — worse than its absence, because the run would have spent tokens
+ * on it. `next_actions` and `next_action_rulings` now exist (`store/schema.ts`) and
+ * `JOB_OUTPUT_FILES.nextActions` carries the rows, so the field lands where it says it does.
+ *
+ * MEANWHILE THE PROMPT WAS ALREADY ASKING FOR IT. `server/engine/prompts.ts` instructed every
+ * stage to propose "dispositions" from this very vocabulary, and these schemas are strict — so a
+ * model that obeyed had its WHOLE answer refused for an unknown field, and the stage that obeyed
+ * best lost the most. The instruction and the contract are one subject and are spelled against
+ * each other here.
+ *
+ * `record` names what the action is about, the same way every other cross-reference in a result
+ * does: a ref this result declared, or a durable identifier the brief listed. `kind` is
+ * `contract.ts`'s closed vocabulary, which is what lets a proposal be rendered as a choice
+ * rather than read as prose.
+ *
+ * `workspace` is the local checkout a `draft-issue` is about, and the two rules around it are the
+ * retired product's (`v0.4.0:internal/disposition`: `ErrAnchorRequired`, and a payload refused for
+ * carrying an anchor on any other kind). An issue draft naming no repository is a change proposed
+ * to nothing, and a workspace on a `store-memory` is a field that kind has no authority for.
  */
+const NextActionDraftSchema = z.strictObject({
+  record: z.string().min(1),
+  kind: NextActionSchema,
+  summary: z.string().min(1),
+  rationale: z.string().default(""),
+  workspace: z.string().default(""),
+});
+export type NextActionDraft = z.infer<typeof NextActionDraftSchema>;
+
+/** A record identifier the ledger already holds, as `RecordIdSchema` spells the four families. */
+const DURABLE_RECORD = /^(hyp|obs|fnd|pro)_[0-9a-f]{8,64}$/u;
 
 // ---------------------------------------------------------------------------- the exploration
 
@@ -369,6 +397,12 @@ interface StageAuthority {
   remedies: boolean;
   objections: boolean;
   schedule: boolean;
+  /**
+   * Whether this stage may propose what to do next about a record. A challenger may not: its
+   * authority is to criticize a claim, and directing the operator's work off the back of a
+   * criticism is a second job nobody asked it to do.
+   */
+  nextActions: boolean;
 }
 
 const STAGE_AUTHORITY: Record<Stage, StageAuthority> = {
@@ -378,6 +412,7 @@ const STAGE_AUTHORITY: Record<Stage, StageAuthority> = {
     remedies: true,
     objections: false,
     schedule: true,
+    nextActions: true,
   },
   challenge: {
     observations: false,
@@ -385,6 +420,7 @@ const STAGE_AUTHORITY: Record<Stage, StageAuthority> = {
     remedies: false,
     objections: true,
     schedule: false,
+    nextActions: false,
   },
   synthesize: {
     observations: false,
@@ -392,6 +428,7 @@ const STAGE_AUTHORITY: Record<Stage, StageAuthority> = {
     remedies: true,
     objections: false,
     schedule: false,
+    nextActions: true,
   },
 };
 
@@ -403,6 +440,7 @@ export interface ExploreResult {
   deferred: Disposal[];
   rejected: Disposal[];
   questions: QuestionDraft[];
+  next_actions: NextActionDraft[];
 }
 
 function exploreSchema(stage: Stage): z.ZodType {
@@ -423,6 +461,7 @@ function exploreSchema(stage: Stage): z.ZodType {
           rejected: z.array(DisposalSchema).default([]),
         }
       : {}),
+    ...(authority.nextActions ? { next_actions: z.array(NextActionDraftSchema).default([]) } : {}),
     questions: z.array(QuestionDraftSchema).default([]),
   });
 }
@@ -458,6 +497,7 @@ export function parseExploreResult(stage: Stage, payload: unknown): ExploreResul
     deferred: shaped.deferred,
     rejected: shaped.rejected,
     questions: shaped.questions,
+    next_actions: shaped.next_actions,
   };
 
   const refs: Record<string, "hypothesis" | "observation" | "finding" | "proposal"> = {};
@@ -564,6 +604,31 @@ export function parseExploreResult(stage: Stage, payload: unknown): ExploreResul
       );
     }
   }
+  // A PROPOSED ACTION NAMES A RECORD THAT WILL EXIST. `next_actions.record_id` references
+  // `records(id)`, so a proposal about a handle this result never declared could not be inserted
+  // at all; refusing it here says so in the model's own vocabulary instead of failing a batch.
+  // An observation is admitted: §4.13 makes it evidence rather than a post, but it is a record,
+  // and "develop this further" about one is a coherent thing to ask for.
+  for (const action of result.next_actions) {
+    if (refs[action.record] === undefined && !DURABLE_RECORD.test(action.record)) {
+      throw new ResultRefusal(
+        REFUSALS.unknownReference,
+        `a ${action.kind} is proposed on ${JSON.stringify(action.record)}, which this result did not emit and no brief listed`,
+      );
+    }
+    if (action.kind === "draft-issue" && action.workspace === "") {
+      throw new ResultRefusal(
+        REFUSALS.support,
+        `the draft-issue proposed on ${JSON.stringify(action.record)} names no workspace, so the issue would be about no repository`,
+      );
+    }
+    if (action.kind !== "draft-issue" && action.workspace !== "") {
+      throw new ResultRefusal(
+        REFUSALS.authority,
+        `a ${action.kind} binds to no repository, and the one on ${JSON.stringify(action.record)} names a workspace`,
+      );
+    }
+  }
   return result;
 }
 
@@ -575,6 +640,7 @@ const ExploreResultShape = z.looseObject({
   deferred: z.array(DisposalSchema).default([]),
   rejected: z.array(DisposalSchema).default([]),
   questions: z.array(QuestionDraftSchema).default([]),
+  next_actions: z.array(NextActionDraftSchema).default([]),
 });
 
 // ---------------------------------------------------------------------------- the review

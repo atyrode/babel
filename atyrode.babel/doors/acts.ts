@@ -5,6 +5,8 @@ import {
   AnswerInputSchema,
   BABEL_PLUGIN_ID,
   CommentInputSchema,
+  DecideInputSchema,
+  DecideResultSchema,
   EVENTS,
   FileInputSchema,
   ImportChunkSchema,
@@ -23,6 +25,7 @@ import {
   BudgetSetSchema,
   ClearBudgetInputSchema,
   CommentedSchema,
+  decide,
   FiledSchema,
   ImportedSchema,
   InterestedSchema,
@@ -55,7 +58,7 @@ import { defineDoor, type Door } from "./door.ts";
 const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;
 
 /*
-  THE DOORS THE OPERATOR ACTS THROUGH. Nine of them, and they are thin on purpose: each parses
+  THE DOORS THE OPERATOR ACTS THROUGH. Ten of them, and they are thin on purpose: each parses
   its arguments against `contract.ts`'s schema, takes the actor from the dispatch's principal,
   calls the one write in `store/acts.ts` that performs the act, and emits the event the reading
   surfaces listen for.
@@ -98,6 +101,21 @@ const ruleAction = defineServerAction({
   caps: ACT_CAPS,
   input: RuleInputSchema,
   result: RuleResultSchema,
+});
+
+/**
+ * A SECOND DOOR RATHER THAN A MODE ON `rule`, which is the whole of #340's structural claim: a
+ * run may propose a next action and may never answer one. The proposal path is a job output the
+ * conductor ingests into `next_actions`; the answering path is this door, and it takes the
+ * operator from `ctx.principal.id` like every act here. They are not one door with a different
+ * actor field, so there is no argument a caller could set to rule as a run.
+ */
+const decideAction = defineServerAction({
+  name: ACTIONS.decide,
+  title: "Accept or decline a next action a run proposed",
+  caps: ACT_CAPS,
+  input: DecideInputSchema,
+  result: DecideResultSchema,
 });
 
 const commentAction = defineServerAction({
@@ -245,6 +263,26 @@ export function actDoors(
             });
           }
           return ruled;
+        }),
+    ),
+
+    defineDoor(
+      decideAction,
+      async (ctx, args) =>
+        await acted(async () => {
+          const decided = await decide(
+            store,
+            { nextActionId: args.nextActionId, decision: args.decision, note: args.note },
+            ctx.principal.id,
+          );
+          // `ruled` is a verdict on a record and this is not one, so the news is the generic
+          // "something was written about this record": the panels answer it with a re-read.
+          ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+            id: decided.id,
+            recordId: decided.recordId,
+            standing: decided.standing,
+          });
+          return decided;
         }),
     ),
 

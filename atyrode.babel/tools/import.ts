@@ -25,7 +25,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import type { PluginDatabase, SqlParam, SqlStatement } from "@manifold/plugin";
 import { openPluginDatabase, pluginDatabasePath } from "@manifold/server/plugin-database";
-import { BABEL_PLUGIN_ID } from "../contract.ts";
+import { BABEL_PLUGIN_ID, NEXT_ACTIONS } from "../contract.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 
 // ---------------------------------------------------------------------------- the bounds we write under
@@ -625,6 +625,80 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
       "recorded_at",
     ],
     rows: dispositionRows,
+  });
+
+  // THE ROWS THAT USED TO HAVE NO HOME (#340). `disposition_proposal` is the retired product's
+  // proposed next actions and `disposition_ledger` the operator's answers to them, and both now
+  // land as themselves: the plugin kept the Go's own words for the five kinds and the two
+  // rulings, so the crossing translates nothing and nobody has to check a mapping later.
+  //
+  // `payload_json` rides across VERBATIM. It already holds `summary`, `rationale` and, for a
+  // draft-issue, the repository anchor — which is the shape the peel reads `$.rationale` out of,
+  // so re-encoding it here would be a second spelling of one document.
+  const nextActionIds = new Set<string>();
+  const nextActionRows: SqlParam[][] = [];
+  let unknownKinds = 0;
+  for (const row of rowsOf(durable, `SELECT * FROM disposition_proposal ORDER BY created_at`)) {
+    const recordId = text(row["record_id"]);
+    if (!recordIds.has(recordId)) continue;
+    const kind = text(row["kind"]);
+    // The CHECK is the closed vocabulary, so a word this build does not render would be a
+    // refused chunk rather than a row nobody can see. It is counted and reported instead.
+    if (!NEXT_ACTIONS.includes(kind as (typeof NEXT_ACTIONS)[number])) {
+      unknownKinds += 1;
+      continue;
+    }
+    const id = text(row["id"]);
+    const proposer = text(row["proposer_kind"]);
+    nextActionIds.add(id);
+    nextActionRows.push([
+      id,
+      recordId,
+      kind,
+      proposer === "run" || proposer === "operator" || proposer === "engine" ? proposer : "run",
+      text(row["proposer_id"]),
+      field(payload(row["payload_json"]), "summary"),
+      text(row["created_at"]),
+      text(row["payload_json"]),
+    ]);
+  }
+  plans.push({
+    table: "next_actions",
+    source: "durable.db:disposition_proposal",
+    columns: [
+      "id",
+      "record_id",
+      "kind",
+      "proposed_by_kind",
+      "proposed_by_id",
+      "summary",
+      "created_at",
+      "payload",
+    ],
+    rows: nextActionRows,
+  });
+
+  const nextActionRulingRows: SqlParam[][] = [];
+  for (const row of rowsOf(durable, `SELECT * FROM disposition_ledger ORDER BY seq`)) {
+    const of = text(row["disposition_id"]);
+    if (!nextActionIds.has(of)) continue;
+    const decision = text(row["ruling"]);
+    if (decision !== "accepted" && decision !== "declined") continue;
+    nextActionRulingRows.push([
+      text(row["id"]),
+      of,
+      count(row["seq"]),
+      decision,
+      text(row["operator_id"]),
+      field(payload(row["payload_json"]), "note"),
+      text(row["recorded_at"]),
+    ]);
+  }
+  plans.push({
+    table: "next_action_rulings",
+    source: "durable.db:disposition_ledger",
+    columns: ["id", "next_action_id", "seq", "decision", "operator_id", "note", "recorded_at"],
+    rows: nextActionRulingRows,
   });
 
   const filingIds = new Set<string>();
@@ -1357,21 +1431,21 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
   });
 
   // -------------------------------------------------------------- what the crossing leaves behind
-  const orphaned = durable
-    .query<{ c: number }, []>(`SELECT count(*) AS c FROM disposition_proposal`)
-    .get();
-  if (orphaned !== null && orphaned.c > 0) {
+  if (unknownKinds > 0) {
     notes.push(
-      `disposition_proposal holds ${String(orphaned.c)} rows with no home: v0.4.0:internal/disposition's ` +
-        "proposed next actions (draft-issue, propose-fact, store-memory, ask-operator, " +
-        "develop-further, keep-going) — Babel's actionable output, which the operator accepts or " +
-        "declines. `plans` is the right shape (subject, operation, payload, state, ruled_by/at/reason, " +
-        "result) but its CHECK forbids the kind. Add `'action'` to plans.kind's CHECK and I will " +
-        "import them as kind=action, subject_kind=the record kind, operation=the disposition kind, " +
-        "state from disposition_ledger. disposition_invitation (#87's instruction-free nudges) and " +
-        "frontier_refinement_request need the same decision.",
+      `${String(unknownKinds)} disposition_proposal rows name a kind outside next_actions.kind's ` +
+        "CHECK and were skipped. The vocabulary is closed because a proposal is rendered as a " +
+        "choice, so a word nothing renders is a row nobody could ever answer; add the word to " +
+        "`NEXT_ACTIONS` in contract.ts and to the CHECK in store/schema.ts to bring them across.",
     );
   }
+  notes.push(
+    "disposition_invitation (#87's instruction-free nudges) and frontier_refinement_request still " +
+      "have no table. They are not proposed ACTIONS: an invitation carries no instruction at all — " +
+      "the operator says a record deserves attention and the model decides what to do — so it is a " +
+      "queue the conductor draws from rather than something anyone accepts or declines, and " +
+      "`next_actions` would be the wrong home for it. Either needs its own table and a reader.",
+  );
   notes.push(
     "reality_focus_ruleset has no table (plan §3 lists `focus_rules`; schema.ts has none). It is " +
       "empty in this store, so nothing is lost today.",

@@ -204,8 +204,16 @@ export interface Acted {
   readonly at: number;
 }
 
+/**
+ * WHAT A SURFACE JUST DID, as the one word its announcement is keyed by. `decide` is the
+ * operator's answer to a proposed next action (#340) and reaches only the peel: a row's fact
+ * budget is one line of claim and at most three facts (§8.6), so a proposal is never offered
+ * where the record it is about has not been read.
+ */
+export type ActedKind = RuleAct | "answer" | "decide";
+
 export interface ActedHandler {
-  (act: RuleAct | "answer", done: string, message: string): void;
+  (act: ActedKind, done: string, message: string): void;
 }
 
 // ---------------------------------------------------------------------------- the acts

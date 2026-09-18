@@ -15,7 +15,7 @@ import {
   type Objection,
   type QuestionDraft,
 } from "../../machine/results.ts";
-import { mintId, recordRow, type RecordKind, type Row } from "./rows.ts";
+import { mintId, recordRow, titleCell, type RecordKind, type Row } from "./rows.ts";
 
 /*
   AN ACCEPTED EXPLORATION, TURNED INTO THE ROWS IT CLAIMED.
@@ -36,9 +36,11 @@ import { mintId, recordRow, type RecordKind, type Row } from "./rows.ts";
   (`tools/import.ts`: `consolidates` finding→observation, `addresses` proposal→finding and
   proposal→hypothesis, `cites` record→session).
 
-  NOTHING HERE IS A RULING. A run may write records, edges, statuses and questions, and may not
-  write a `dispositions` row: a ruling is the operator's alone, and a table a run could reach
-  would make Babel an agent that agrees with itself.
+  NOTHING HERE IS A RULING. A run may write records, edges, statuses, questions and the NEXT
+  ACTIONS it proposes, and may not write a `dispositions` or a `next_action_rulings` row: a
+  ruling is the operator's alone, and a table a run could reach would make Babel an agent that
+  agrees with itself. The boundary is not this comment — `contract.ts`'s `INGESTIBLE_TABLES` is
+  the closed set the ingest may name, and neither ledger is in it.
 
   EVERY IDENTIFIER IS MINTED FROM THE RUN AND THE MODEL'S OWN HANDLE ({@link mintId}), which is
   what the Go tree's resume ledger did with a table: the second settlement of one run mints the
@@ -97,6 +99,7 @@ export function exploreRows(
     [JOB_OUTPUT_FILES.edges]: [],
     [JOB_OUTPUT_FILES.statusEvents]: [],
     [JOB_OUTPUT_FILES.questions]: [],
+    [JOB_OUTPUT_FILES.nextActions]: [],
   };
   const notes: string[] = [];
   const writer = new Writer(rows, notes, settlement);
@@ -107,6 +110,7 @@ export function exploreRows(
     writer.schedule(result);
     for (const question of result.questions) writer.question(question);
     writer.corrections();
+    writer.nextActions(result);
   } catch (error) {
     if (error instanceof ResultRefusal) return { refusal: error };
     throw error;
@@ -514,6 +518,56 @@ class Writer {
           `the record's own text opens ${marker.token}`,
         );
       }
+    }
+  }
+
+  /**
+   * WHAT THIS RUN PROPOSED BE DONE NEXT, as `next_actions` rows (#340).
+   *
+   * It runs last, for the reason {@link corrections} does: a proposal may name a handle the
+   * model declared later in the same result, and resolving as the answer is walked would
+   * resolve by luck of ordering.
+   *
+   * NOTHING HERE IS A RULING, and nothing here is carried out. A row is a rendered choice the
+   * operator accepts or declines through a door of his own, and the acceptance lands in
+   * `next_action_rulings`, which no output file reaches. §4.6 keeps publishing, applying and
+   * writing to a source repository outside Babel entirely, so accepting a `draft-issue` opens
+   * no issue: this plugin holds no credential for one and has no network path to it.
+   *
+   * A PROPOSAL ABOUT A RECORD THIS HUB DOES NOT HOLD IS DROPPED WITH A NOTE rather than
+   * refused. `parseExploreResult` has already refused anything that is neither a handle this
+   * result declared nor a record identifier, so what reaches here is a well-formed reference
+   * to a record that is not in this deployment — and the records the run did produce are
+   * unaffected by a suggestion about one that is not.
+   *
+   * The identifier is a digest of the run, the kind and the subject, so a retry mints the same
+   * row and a model proposing the same action on the same record twice proposes it once.
+   */
+  nextActions(result: ExploreResult): void {
+    for (const action of result.next_actions) {
+      const local = this.declared.get(action.record);
+      const target = local?.id ?? (this.settlement.holds.has(action.record) ? action.record : null);
+      if (target === null) {
+        this.notes.push(
+          `a ${action.kind} was proposed on ${action.record}, which this hub does not hold, so it was dropped`,
+        );
+        continue;
+      }
+      this.rows[JOB_OUTPUT_FILES.nextActions]?.push({
+        id: mintId("nxt", this.settlement.runId, `${action.kind}|${target}`),
+        record_id: target,
+        kind: action.kind,
+        proposed_by_kind: "run",
+        proposed_by_id: this.settlement.runId,
+        summary: titleCell(action.summary),
+        created_at: this.settlement.at,
+        payload: JSON.stringify({
+          schema: PAYLOAD_SCHEMA,
+          summary: action.summary,
+          rationale: action.rationale,
+          ...(action.workspace === "" ? {} : { workspace: action.workspace }),
+        }),
+      });
     }
   }
 

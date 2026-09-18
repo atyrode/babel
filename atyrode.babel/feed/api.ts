@@ -6,6 +6,7 @@ import type { FeedQuerySchema, TopicProposalSchema, TopicRowSchema } from "../co
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
+  DecideResultSchema,
   FEED_PLUGIN_ID,
   FeedResultSchema,
   PANELS,
@@ -54,6 +55,7 @@ const RESULTS = {
   topic: TopicResultSchema,
   pulse: PulseResultSchema,
   rule: RuleResultSchema,
+  decide: DecideResultSchema,
   comment: AcceptedSchema,
   answer: AcceptedSchema,
   interest: AcceptedSchema,

@@ -11,6 +11,31 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A run can propose a typed next action, and only the operator answers it.** The retired product
+  had five typed next actions a run could propose — draft an issue, propose a fact, store a
+  memory, ask the operator, develop further — and an operator ledger of accept and decline over
+  them. The plugin had nowhere to put one, and the crossing said so in its own words: the imported
+  rows had no table to go to, and `machine/results.ts` documented the omission where the fields
+  would be, because a schema field a run could fill and nothing could land would be worse than its
+  absence. Two tables now hold them: the proposal, immutable, and the rulings, append-only, so a
+  reconsideration stays readable rather than overwriting the first answer. The five words are the
+  retired product's own, unchanged, so the stranded rows import as themselves with no mapping
+  anyone has to re-check.
+
+  **`plans`'s `CHECK` was not widened, and that is the finding worth keeping.** SQLite has no
+  statement that widens one; the documented route is build-copy-drop-rename, and this store's
+  additions are one statement each, applied only where the object they name is absent. A store an
+  earlier enable created would keep the narrow constraint for ever while a fresh store got the
+  wide one, and the two creation paths would stop producing the same shape. A new table is the
+  only additive move the hook can make. The reason now lives beside the tables, because the next
+  person to want a new `plans.kind` will reach for the `CHECK` first.
+
+  **A run may propose and may never rule**, and that is structural rather than conventional. The
+  set of tables a run's output can reach is a closed type, so an ingest entry naming a ledger does
+  not compile; there is no output file that reaches one; `next_action_rulings` has **no
+  actor-kind column at all**, so even raw SQL past the door cannot spell a run as the answerer;
+  and the decision is its own door taking the operator from the principal, not a mode on an
+  existing one. Four independent reasons, three of which hold without the fourth.
 - **`atyrode.babel.jev` exists as a part, empty and wired.** Seventeen issues assumed the
   directory was there and nothing created it, so the whole judgement tree was blocked on a
   prerequisite nobody had filed — and every one of them read ready at a glance, because each
