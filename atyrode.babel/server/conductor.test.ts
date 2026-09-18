@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import {
   BABEL_PLUGIN_ID,
+  CONDUCTOR_CYCLE_KEY,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
   MATERIAL_SCHEMA,
@@ -675,6 +676,8 @@ class Draws {
   version = POLICY.version;
   /** Work this coordinator would hand out the moment anything asked it for some. */
   pending: Record<string, unknown>[] = [];
+  /** The candidates a draw declined on its way to whatever it answered. */
+  declined: Record<string, unknown>[] = [];
   review: Policy["review"] = undefined;
   claimFence = 1;
 
@@ -709,8 +712,12 @@ class Draws {
     this.draws += 1;
     const next = this.pending.shift();
     return next === undefined
-      ? { outcome: "gap", gap: { reason: "no-candidates", detail: "nothing due" }, gaps: [] }
-      : { outcome: "assignment", assignment: next, gaps: [] };
+      ? {
+          outcome: "gap",
+          gap: { reason: "no-candidates", detail: "nothing due" },
+          gaps: this.declined,
+        }
+      : { outcome: "assignment", assignment: next, gaps: this.declined };
   }
 
   async open(): Promise<{ total: number; byMachine: Record<string, number> }> {
@@ -3115,6 +3122,89 @@ test("the pulse counts why a cycle did not spend, and the day accumulates across
   expect(off.enabled).toBe(false);
   expect(off.pulse.tick.gaps).toEqual({ disabled: 1 });
   expect(off.pulse.today.gaps).toEqual({ unrouted: 1, disabled: 1 });
+  clock = started;
+});
+
+test("the cycle leaves its stop and its gaps, folded by reason, where the pulse door reads them", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const draws = new Draws(db);
+  draws.review = ROUTE;
+  // Four candidates declined for two reasons, and then a draw with nothing left to offer.
+  // Four hundred would be the same two rows: the fold is what keeps a contended cycle from
+  // answering a panel with a list it cannot render.
+  draws.declined = [
+    { recordId: "hyp_00000001", role: "evidence", reason: "claimed", detail: "held by a worker" },
+    { recordId: "hyp_00000002", role: "evidence", reason: "claimed", detail: "held by a worker" },
+    { recordId: "fnd_00000003", role: "outcome", reason: "cooling", detail: "reviewed 9m ago" },
+    { recordId: "hyp_00000004", role: "evidence", reason: "claimed", detail: "held by a worker" },
+  ];
+  const keys = new Keys();
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys,
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const drew = await loop.tick();
+  expect(drew.stop?.reason).toBe("no-candidates");
+  expect(JSON.parse(keys.held[CONDUCTOR_CYCLE_KEY] ?? "null")).toEqual({
+    at: new Date(clock).toISOString(),
+    stop: { reason: "no-candidates", detail: "nothing due" },
+    // Most declined first, and the first record of each reason with it: the count says how
+    // much and the record says where to look.
+    gaps: [
+      { reason: "claimed", count: 3, recordId: "hyp_00000001", detail: "held by a worker" },
+      { reason: "cooling", count: 1, recordId: "fnd_00000003", detail: "reviewed 9m ago" },
+    ],
+  });
+
+  // A DISABLED POLICY IS THE COMMONEST "why is nothing running", and the coordinator never gets
+  // to say it: the loop stops before it is asked. It is recorded in the coordinator's own word
+  // rather than left as the silence it used to be.
+  draws.enabled = false;
+  clock += 60_000;
+  await loop.tick();
+  expect(JSON.parse(keys.held[CONDUCTOR_CYCLE_KEY] ?? "null")).toEqual({
+    at: new Date(clock).toISOString(),
+    stop: {
+      reason: "disabled",
+      detail: "the policy in force is not enabled, so the loop draws nothing",
+    },
+    gaps: [],
+  });
+  clock = started;
+});
+
+test("a key the host will not keep costs the cycle its explanation and nothing else", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const draws = new Draws(db);
+  const keys = new Keys();
+  keys.refusal = "storage is unavailable";
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys,
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  // The loop's work is done by the time the verdict is written, and losing the explanation
+  // must not lose the tick: the cycle answers, and the note says what could not be kept.
+  const report = await loop.tick();
+  expect(report.stop?.reason).toBe("unrouted");
+  expect(report.notes).toContain("the cycle's own verdict cannot be kept: storage is unavailable");
   clock = started;
 });
 

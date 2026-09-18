@@ -23,7 +23,7 @@
 */
 
 import type { PluginDatabase, SqlParam, SqlRow } from "@manifold/plugin";
-import type { PulseResultSchema } from "../contract.ts";
+import type { PulseTodaySchema } from "../contract.ts";
 import {
   FEED_SORTS,
   POST_KINDS,
@@ -58,8 +58,12 @@ import {
 } from "./feedindex.ts";
 import { FEED_FRESHNESS_MS, sortFeed } from "./rank.ts";
 
-/** The pulse as the contract spells it; that module exports the schema and not the type. */
-export type PulseResult = z.infer<typeof PulseResultSchema>;
+/**
+ * THE STORE'S HALF OF THE PULSE: what today's tables say. The door answers a wider shape — it
+ * adds the last cycle's own verdict, which lives in this plugin's keys rather than in a table
+ * (`doors/read.ts`, `CONDUCTOR_CYCLE_KEY`) — so this is deliberately not the door's result.
+ */
+export type PulseResult = z.infer<typeof PulseTodaySchema>;
 
 type Role = (typeof ROLES)[number];
 

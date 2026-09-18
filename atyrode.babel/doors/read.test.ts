@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, FeedResultSchema, door } from "../contract.ts";
+import { ACTIONS, CONDUCTOR_CYCLE_KEY, FeedResultSchema, door } from "../contract.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import { readDoors } from "./read.ts";
@@ -24,6 +24,8 @@ const TOPIC = "ent_00000001";
 
 let harness: TestStore;
 let doors: readonly Door[];
+/** This plugin's keys, as the host serves them: where the conductor leaves its last verdict. */
+let kept: Record<string, string>;
 
 /** What the kit does on one dispatch, minus the boundary it does it across. */
 async function dispatch(name: string, args: unknown): Promise<unknown> {
@@ -32,9 +34,13 @@ async function dispatch(name: string, args: unknown): Promise<unknown> {
   const parsed = found.action.input.safeParse(args);
   if (!parsed.success)
     return { invalid: parsed.error.issues.map((issue) => issue.message).join("; ") };
-  // The read handlers touch no slice of the host, which is what makes them dispatchable with
-  // nothing but their arguments; a handler that reached for one would fail here by name.
-  const produced = await found.handler(undefined as unknown as GuestCtx, parsed.data as never);
+  // The read handlers touch no slice of the host but this plugin's own keys, which is what
+  // makes them dispatchable with nothing but their arguments and a key store; a handler that
+  // reached for a machine or a job would fail here by name.
+  const ctx = {
+    storage: { get: async (key: string) => kept[key] ?? null },
+  } as unknown as GuestCtx;
+  const produced = await found.handler(ctx, parsed.data as never);
   if (typeof produced === "object" && produced !== null && "refused" in produced) return produced;
   const result = found.action.result.safeParse(produced);
   if (!result.success) {
@@ -45,6 +51,7 @@ async function dispatch(name: string, args: unknown): Promise<unknown> {
 
 beforeEach(async () => {
   harness = await openTestStore(NOW);
+  kept = {};
   const { db } = harness;
   await insert(db, "entities", {
     id: TOPIC,
@@ -261,7 +268,48 @@ describe("the answers", () => {
     expect(await dispatch(ACTIONS.pulse, {})).toMatchObject({
       since: stamp(Date.UTC(2026, 8, 12)),
       reviewing: [],
+      // No cycle has run against this store, which is a state and not a missing field: a
+      // deployment enabled a minute ago has a pulse and no verdict yet.
+      cycle: null,
     });
+  });
+
+  test("the pulse carries the last cycle's stop and its gaps counted by reason", async () => {
+    kept[CONDUCTOR_CYCLE_KEY] = JSON.stringify({
+      at: stamp(NOW - 60_000),
+      stop: { reason: "unrouted", detail: "policy pol_3 names no Code profile" },
+      gaps: [
+        { reason: "claimed", count: 412, recordId: "hyp_00000009", detail: "already claimed" },
+        { reason: "cooling", count: 2, recordId: "fnd_0000000a", detail: "reviewed 9m ago" },
+      ],
+    });
+
+    expect(await dispatch(ACTIONS.pulse, {})).toMatchObject({
+      cycle: {
+        at: stamp(NOW - 60_000),
+        stop: { reason: "unrouted", detail: "policy pol_3 names no Code profile" },
+        // Counted, never listed: four hundred contended draws are one row with a figure on it.
+        gaps: [
+          { reason: "claimed", count: 412, recordId: "hyp_00000009", detail: "already claimed" },
+          { reason: "cooling", count: 2, recordId: "fnd_0000000a", detail: "reviewed 9m ago" },
+        ],
+      },
+    });
+  });
+
+  test("a verdict from a build that spelled its reasons differently is no verdict", async () => {
+    // The door's own vocabulary is the coordinator's, and a word outside it is a value this
+    // build cannot render. Losing the explanation is the right loss; refusing the dispatch
+    // would take today's counts off Home to report that an explanation could not be read.
+    kept[CONDUCTOR_CYCLE_KEY] = JSON.stringify({
+      at: stamp(NOW),
+      stop: { reason: "out-of-cheese", detail: "redo from start" },
+      gaps: [],
+    });
+    expect(await dispatch(ACTIONS.pulse, {})).toMatchObject({ cycle: null });
+
+    kept[CONDUCTOR_CYCLE_KEY] = "{not json";
+    expect(await dispatch(ACTIONS.pulse, {})).toMatchObject({ cycle: null });
   });
 
   test("the runs, one run and the policy answer inside their schemas", async () => {
