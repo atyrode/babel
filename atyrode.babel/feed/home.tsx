@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "
 import type { HostServices, PanelProps } from "@manifold/plugin";
 import { usePolledResource } from "@manifold/plugin/hooks";
 import { Cluster, ScrollRegion, Sidebar, Stack } from "@manifold/ui";
-import { ACTIONS, FEED_PLUGIN_ID } from "../contract.ts";
+import { ACTIONS, FEED_PLUGIN_ID, type FeedGrouping, type FeedSurface } from "../contract.ts";
 import {
   BABEL_NODE,
   NO_SEAT,
@@ -21,11 +21,15 @@ import { FeedRow, RULE_KEYS, type Acted, type RuleAct } from "./rows.tsx";
 import { Sentence, type PickName } from "./sentence.tsx";
 
 /*
-  HOME (§8.7), and there is one list.
+  HOME (§8.7), and there are three surfaces over one order.
 
-  Every record Babel has produced is a post; the queue is a filter and a sort, not a second
-  list. Nothing here computes an ordering — the six sorts are the store's and are tested
-  there — and nothing here votes: Babel votes, the operator rules.
+  Every record Babel has produced is a post, and which of them a reader is shown is a ROUTE
+  rather than a rank: the desk is what needs his judgement, the agent queue is what a run does
+  next unattended, and the shelf is what is kept without being shown. All three narrow the one
+  index the store ranks whole, so they cannot disagree about what is waiting, and none of them
+  deletes anything — the shelf is reached by asking for it. Nothing here computes an ordering
+  or a route; both are the store's and are tested there. And nothing here votes: Babel votes,
+  the operator rules.
 
   THE LIST IS LIVE. It re-reads itself while the reader is on it, because the corpus does not
   stop when he opens the panel: a run publishes, a reviewer votes, a question he answered in
@@ -34,7 +38,7 @@ import { Sentence, type PickName } from "./sentence.tsx";
   and three things hold the read back, each of them a reader mid-gesture: a menu is open, a
   confirmation is on screen, or the browser tab is hidden (the shared feed's own rule).
 
-  WHAT A RULING DOES TO THE LIST. Under "what needs me" the list is what is left to do, so an
+  WHAT A RULING DOES TO THE LIST. On the desk the list is what is left to do, so an
   accepted row folds out of it, the count ticks down, and the way back is offered for six
   seconds — because the act is permanent and append-only, and "reopen" is the ruling that
   undoes it rather than a deletion.
@@ -54,11 +58,43 @@ const TOAST_MS = 6_000;
 /** The fallback cadence when no event has arrived. The rail and the pulse read on the same beat. */
 const LIVE_MS = 15_000;
 
+/** What an empty surface says: a fact about the surface, never about the corpus. */
+const NOTHING_HERE: Record<FeedSurface, string> = {
+  desk: "Nothing is waiting on you",
+  queue: "Nothing is queued for an agent",
+  shelf: "Nothing is on the shelf",
+  all: "Babel has not posted anything yet",
+};
+
+/** Why the two surfaces nobody is blocked on are empty, in their own terms. */
+const SURFACE_MEANS: Record<FeedSurface, string> = {
+  desk: "",
+  queue: "A record reaches the queue when you accept it or send it back for refinement.",
+  shelf:
+    "The shelf is what Babel keeps without showing: candidates it is developing on its own, and records you have already decided.",
+  all: "",
+};
+
+/**
+ * Why the records under a heading are together, said on the heading. It names the KEY rather
+ * than asserting a concept: these records share a topic or a recipe, which is a fact, where
+ * "these are the same idea" would be a claim no existing column supports.
+ */
+const GROUP_WHY: Record<FeedGrouping, string> = {
+  topic: "all filed under",
+  recipe: "all found by the lens",
+  none: "",
+};
+
 export const EMPTY_QUERY: FeedQuery = {
   sort: "next",
   window: "day",
   kinds: [],
-  needs: "me",
+  surface: "desk",
+  established: [],
+  // The desk arrives grouped, because a concept observed forty times occupying forty of its
+  // fifteen slots is the defect; the topic is the key because it is what a record is about.
+  group: "topic",
   limit: PAGE,
   offset: 0,
 };
@@ -141,7 +177,9 @@ export function FeedListing({
     sort: query.sort,
     window: query.window,
     kinds: query.kinds,
-    needs: query.needs,
+    surface: query.surface,
+    established: query.established,
+    group: query.group,
     limit: query.limit,
     offset: query.offset,
     ...(query.topic === undefined || query.topic === "" ? {} : { topic: query.topic }),
@@ -239,7 +277,7 @@ export function FeedListing({
     if (act === "accept" || act === "reject") {
       setRuledToday((count) => count + 1);
       setToast({ said: done, reopens: post.id });
-      if (query.needs === "me") {
+      if (query.surface === "desk") {
         const index = posts.findIndex((row) => row.id === post.id);
         setLeaving([{ post, index: index < 0 ? 0 : index }]);
         window.setTimeout(() => setLeaving([]), FOLD_MS);
@@ -252,6 +290,7 @@ export function FeedListing({
                 ...current,
                 posts: current.posts.filter((row) => row.id !== post.id),
                 total: Math.max(0, current.total - 1),
+                desk: Math.max(0, current.desk - 1),
               },
         );
         return;
@@ -292,14 +331,14 @@ export function FeedListing({
       if (event.key === "m") {
         event.preventDefault();
         onQuery(
-          query.needs === "me"
+          query.surface === "desk"
             ? {
                 ...query,
-                needs: "all",
+                surface: "all",
                 sort: query.sort === "next" ? "hot" : query.sort,
                 offset: 0,
               }
-            : { ...query, needs: "me", sort: "next", offset: 0 },
+            : { ...query, surface: "desk", sort: "next", offset: 0 },
         );
         return;
       }
@@ -351,10 +390,66 @@ export function FeedListing({
     if (shown.some((post) => post.id === gone.post.id)) continue;
     shown.splice(Math.min(gone.index, shown.length), 0, gone.post);
   }
-  const filtered = query.kinds.length > 0 || query.needs === "me" || (query.topic ?? "") !== "";
+  // A narrowing is the reader's own filters, and it is a different emptiness from a surface
+  // with nothing on it: one is a statement about the query, the other about the corpus.
+  const narrowed =
+    query.kinds.length > 0 || query.established.length > 0 || (query.topic ?? "") !== "";
   // ONE toast at the foot of the page, whatever raised it: a ruling this list recorded, or a
   // note the surface around it pushed in. A refusal carries no way back, so it offers none.
   const note = toast ?? (said === undefined || said === "" ? null : { said, reopens: "" });
+
+  // WHAT THE LIST IS MADE OF, once. A row is drawn the same way grouped or not, so the focus
+  // ring, the peek and `j`/`k` walk one order whichever shape the page took: the index is the
+  // post's place in `shown`, and the groups only decide where the rows sit on the screen.
+  const placed: Record<string, number> = {};
+  for (const [at, post] of shown.entries()) placed[post.id] = at;
+  const row = (post: FeedPost): ReactElement => {
+    const index = placed[post.id] ?? -1;
+    return (
+      <FeedRow
+        key={post.id}
+        host={host}
+        post={post}
+        focused={index === focus}
+        selected={selection.recordId === post.id}
+        acted={acted[post.id]}
+        ticked={ticked.includes(post.id)}
+        arrived={arrived.includes(post.id)}
+        leaving={leaving.some((gone) => gone.post.id === post.id)}
+        now={now}
+        onFocus={() => setFocus(index)}
+        onOpen={() => openRecordHere(post.id)}
+        onTopic={openTopicHere}
+        onActed={(act, done, message) => recorded(post, act, done, message)}
+        register={(element) => {
+          if (element === null) rows.current.delete(post.id);
+          else rows.current.set(post.id, element);
+        }}
+      />
+    );
+  };
+
+  // The groups, with every shown post landing in exactly one block: a row the store did not
+  // put in a group — one folding out after a ruling, say — keeps its place in a block of its
+  // own rather than vanishing because the grouping had no slot for it.
+  const groups = answer?.groups ?? [];
+  const blocks: { id: string; group: FeedResult["groups"][number] | null; posts: FeedPost[] }[] =
+    [];
+  if (groups.length > 0) {
+    const claimed: Record<string, true> = {};
+    for (const group of groups) {
+      const held = group.posts
+        .map((id) => shown.find((post) => post.id === id))
+        .filter((post): post is FeedPost => post !== undefined);
+      for (const post of held) claimed[post.id] = true;
+      if (held.length === 0) continue;
+      blocks.push({ id: `${group.keyKind}:${group.key}:${held[0]?.id ?? ""}`, group, posts: held });
+    }
+    const loose = shown.filter((post) => claimed[post.id] !== true);
+    if (loose.length > 0) blocks.push({ id: "loose", group: null, posts: loose });
+  }
+  // What the page is cut out of, in the unit the answer counted: groups when it grouped.
+  const listed = groups.length > 0 ? groups.length : shown.length;
 
   return (
     <Stack className="babel-listing" gap="var(--babel-space-3)">
@@ -369,6 +464,7 @@ export function FeedListing({
         pick={pick}
         setPick={setPick}
         total={total}
+        desk={answer?.desk ?? null}
         builtAt={answer?.builtAt ?? ""}
         ruledToday={ruledToday}
         counted={counted}
@@ -413,69 +509,65 @@ export function FeedListing({
       )}
       {answer !== null && shown.length === 0 && (
         <div className="babel-state">
-          <strong>
-            {query.needs === "me" && !filtered
-              ? "Nothing is waiting on you"
-              : filtered
-                ? "Nothing matches this view"
-                : "Babel has not posted anything yet"}
-          </strong>
+          <strong>{narrowed ? "Nothing matches this view" : NOTHING_HERE[query.surface]}</strong>
           <span>
-            {query.needs === "me" ? (
+            {narrowed ? (
+              "That is a statement about the filters, not about what Babel has produced."
+            ) : query.surface === "desk" ? (
               <>
                 Records arrive here when exploration develops them far enough to be worth a ruling.{" "}
                 <button
                   type="button"
                   className="babel-link"
-                  onClick={() => onQuery({ ...query, needs: "all", sort: "hot", offset: 0 })}
+                  onClick={() => onQuery({ ...query, surface: "all", sort: "hot", offset: 0 })}
                 >
                   Read everything
                 </button>{" "}
                 in the meantime.
               </>
             ) : (
-              "That is a statement about the filters, not about what Babel has produced."
+              SURFACE_MEANS[query.surface]
             )}
           </span>
         </div>
       )}
-      {shown.length > 0 && (
-        <ol className="babel-list">
-          {shown.map((post, index) => (
-            <FeedRow
-              key={post.id}
-              host={host}
-              post={post}
-              focused={index === focus}
-              selected={selection.recordId === post.id}
-              acted={acted[post.id]}
-              ticked={ticked.includes(post.id)}
-              arrived={arrived.includes(post.id)}
-              leaving={leaving.some((row) => row.post.id === post.id)}
-              now={now}
-              onFocus={() => setFocus(index)}
-              onOpen={() => openRecordHere(post.id)}
-              onTopic={openTopicHere}
-              onActed={(act, done, message) => recorded(post, act, done, message)}
-              register={(element) => {
-                if (element === null) rows.current.delete(post.id);
-                else rows.current.set(post.id, element);
-              }}
-            />
+      {shown.length > 0 && blocks.length === 0 && <ol className="babel-list">{shown.map(row)}</ol>}
+      {shown.length > 0 && blocks.length > 0 && (
+        <ol className="babel-groups">
+          {blocks.map((block) => (
+            <li className="babel-group" key={block.id}>
+              {/* The key is STATED, so a reader knows why these records are together rather
+                  than inferring it from the rows. A group of one is a record that nothing
+                  groups, or the only one under its key, and it needs no heading to explain
+                  itself. */}
+              {block.group !== null && block.group.records > 1 && (
+                <p className="babel-group-head">
+                  <span className="babel-group-key">
+                    {GROUP_WHY[block.group.keyKind]} {block.group.label}
+                  </span>
+                  <span className="babel-note">
+                    {block.group.records.toLocaleString()} records
+                    {block.group.records > block.posts.length &&
+                      `, ${(block.group.records - block.posts.length).toLocaleString()} more under it`}
+                  </span>
+                </p>
+              )}
+              <ol className="babel-list">{block.posts.map(row)}</ol>
+            </li>
           ))}
         </ol>
       )}
-      {total !== null && shown.length > 0 && shown.length < total && (
+      {total !== null && listed > 0 && listed < total && (
         <Cluster className="babel-more" gap="var(--babel-space-3)" justify="center">
           <button type="button" onClick={() => onQuery({ ...query, limit: query.limit + PAGE })}>
-            Show {Math.min(PAGE, total - shown.length)} more
+            Show {Math.min(PAGE, total - listed)} more
           </button>
           <span className="babel-note">
-            {shown.length.toLocaleString()} of {total.toLocaleString()}
+            {listed.toLocaleString()} of {total.toLocaleString()}
           </span>
         </Cluster>
       )}
-      {total !== null && shown.length > 0 && shown.length >= total && total > PAGE && (
+      {total !== null && listed > 0 && listed >= total && total > PAGE && (
         <p className="babel-note">That is all {total.toLocaleString()} of them.</p>
       )}
       {note !== null && (
@@ -511,7 +603,7 @@ export function HomePanel({ host }: PanelProps): ReactElement {
               )
             }
             onUnfiled={() =>
-              setQuery({ ...query, topic: "unfiled", needs: "all", sort: "new", offset: 0 })
+              setQuery({ ...query, topic: "unfiled", surface: "all", sort: "new", offset: 0 })
             }
           />
         </Sidebar>

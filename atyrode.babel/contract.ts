@@ -153,14 +153,82 @@ export function door(action: ActionName): `${typeof BABEL_PLUGIN_ID}.${ActionNam
   return `${BABEL_PLUGIN_ID}.${action}`;
 }
 
+/**
+ * THE THREE SURFACES a post is routed to, by who acts on it next (#351).
+ *
+ * Routing precedes ranking: one ordering of everything puts a record that needs the operator's
+ * judgement in the same list as a record an agent could execute unattended and a record worth
+ * keeping but not worth showing, so the first is buried under the volume of the third. The
+ * route is read off the record's kind and its standing, both of which are already columns —
+ * there is no judgement model here and none is wanted.
+ */
+export const POST_SURFACES = ["desk", "queue", "shelf"] as const;
+export const PostSurfaceSchema = z.enum(POST_SURFACES);
+export type PostSurface = z.infer<typeof PostSurfaceSchema>;
+
+/** The surfaces a reader may ask for: the three, plus the one list they were cut out of. */
+export const FEED_SURFACES = [...POST_SURFACES, "all"] as const;
+export const FeedSurfaceSchema = z.enum(FEED_SURFACES);
+export type FeedSurface = z.infer<typeof FeedSurfaceSchema>;
+
+/**
+ * HOW WELL ESTABLISHED a post is (#354) — the second axis, and the one the front page had no
+ * word for.
+ *
+ * What a record is ABOUT and how well established it is are different questions, and until now
+ * only the first was on a row: the topics carried the subject, and the status was spread across
+ * a standing nothing rendered, a score in the gutter and a sentence of prose. So "important and
+ * shaky" and "trivial and certain" read alike, which is the distinction that decides what to do
+ * about either.
+ *
+ * The vocabulary is a fold of two columns this store already keeps and invents no third:
+ *
+ *   - `settled` — a ruling was made (`dispositions`), or the question reached a state that
+ *     awaits nobody. The operator's act decides it, even where his reviewers disagreed: Babel
+ *     votes and the operator rules.
+ *   - `contested` — his reviewers are on both sides inside one role (`assessments`), which is
+ *     the shakiest a record with evidence gets.
+ *   - `reviewed` — assessed and not split, and still undecided.
+ *   - `unsettled` — no ruling and no vote: nothing has judged it at all.
+ */
+export const ESTABLISHED = ["unsettled", "contested", "reviewed", "settled"] as const;
+export const EstablishedSchema = z.enum(ESTABLISHED);
+export type Established = z.infer<typeof EstablishedSchema>;
+
+/**
+ * THE KEY THE DESK IS GROUPED BY (#352), so one concept occupies it once.
+ *
+ * A concept observed forty times took forty slots and spent the operator's attention on the
+ * repetition rather than on the concept. Both keys are existing columns — the topic a record is
+ * filed under, and the recipe that produced it — so this is a grouping over data Babel already
+ * has. Grouping by MEANING is a different thing, needs a judgement model, and is not this.
+ *
+ * The study built this grouping to check it and reported it as QUALIFIED: the grouping method
+ * is itself the thing to validate, not only what it produces. `none` is therefore the door's
+ * default and the grouping is always something a reader turned on.
+ */
+export const FEED_GROUPINGS = ["none", "topic", "recipe"] as const;
+export const FeedGroupingSchema = z.enum(FEED_GROUPINGS);
+export type FeedGrouping = z.infer<typeof FeedGroupingSchema>;
+
 // ---------------------------------------------------------------------------- the feed
 
 export const FeedQuerySchema = z.strictObject({
   sort: FeedSortSchema.default("next"),
   window: FeedWindowSchema.default("day"),
   kinds: z.array(PostKindSchema).max(POST_KINDS.length).default([]),
-  /** `me` narrows to what awaits the operator: a ruling or an answer. */
-  needs: z.enum(["me", "all"]).default("me"),
+  /**
+   * Which surface the list is. The desk is the default because it is the one that awaits him;
+   * the shelf is reached by asking for it, which is the whole of "never shown unprompted".
+   */
+  surface: FeedSurfaceSchema.default("desk"),
+  /**
+   * The status axis, filtered independently of the subject one: `topic` narrows what a post is
+   * about, this narrows how well established it is, and the two compose.
+   */
+  established: z.array(EstablishedSchema).max(ESTABLISHED.length).default([]),
+  /** Which existing key the list is grouped under, or `none` for a row per record. */
+  group: FeedGroupingSchema.default("none"),
   /** A topic by entity id or name; `unfiled` is the records under nothing. */
   topic: z.string().max(200).optional(),
   limit: z.number().int().min(1).max(100).default(25),
@@ -177,8 +245,12 @@ export const FeedVoteSchema = z.strictObject({
 export const FeedPostSchema = z.strictObject({
   id: z.string(),
   kind: PostKindSchema,
+  /** Which of the three surfaces this post is routed to, from its kind and its standing. */
+  surface: PostSurfaceSchema,
   title: z.string(),
   standing: z.string(),
+  /** How well established it is: the fold of its standing and its reception (#354). */
+  established: EstablishedSchema,
   createdAt: z.string(),
   author: z.strictObject({ runId: z.string() }).nullable(),
   topics: z.array(z.strictObject({ id: EntityIdSchema, name: z.string() })),
@@ -196,11 +268,43 @@ export const FeedPostSchema = z.strictObject({
 });
 export type FeedPost = z.infer<typeof FeedPostSchema>;
 
+/**
+ * One group of the list: what holds it together, and which of its records this page carries.
+ *
+ * `keyKind` is on the group rather than implied by the query because a record belonging to no
+ * group is still in the list — as a group of one, keyed `none` — and a reader has to be able
+ * to tell "these forty are one topic" from "this one is by itself". `records` is the group's
+ * true size and `posts` is what came with this page, so a group larger than the page says so
+ * rather than looking complete.
+ */
+export const FeedGroupSchema = z.strictObject({
+  key: z.string(),
+  keyKind: z.enum([...FEED_GROUPINGS]),
+  label: z.string(),
+  records: z.number().int(),
+  posts: z.array(z.string()),
+});
+export type FeedGroup = z.infer<typeof FeedGroupSchema>;
+
 export const FeedResultSchema = z.strictObject({
   posts: z.array(FeedPostSchema),
+  /**
+   * The size of the eligible set in the unit the query asked for: records, or groups when it
+   * asked for a grouping. It is what the page is cut out of, so it has to be counted in the
+   * same unit the page is.
+   */
   total: z.number().int(),
+  /**
+   * How many posts are on the desk, whatever surface this query asked for. It travels on every
+   * answer because "is this a plausible amount of work" is a question a reader has while
+   * looking at the queue or the shelf, and a count he has to change surface to see is a count
+   * he does not have.
+   */
+  desk: z.number().int(),
   builtAt: z.string(),
   notice: z.string(),
+  /** Empty when nothing was grouped; otherwise one entry per group this page carries. */
+  groups: z.array(FeedGroupSchema),
 });
 export type FeedResult = z.infer<typeof FeedResultSchema>;
 

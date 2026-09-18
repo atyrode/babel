@@ -54,7 +54,7 @@ describe("the header", () => {
     // No path is printed: the remote is the identity and the checkouts are a count.
     expect(view.text()).toContain("github.com/atyrode/babel");
     expect(view.text()).not.toContain("/home/alex/babel");
-    expect(fake.last("feed")).toMatchObject({ topic: "ent_0000beef", needs: "all", sort: "new" });
+    expect(fake.last("feed")).toMatchObject({ topic: "ent_0000beef", surface: "all", sort: "new" });
     // It is the same list, so the sentence is over it and the rows are the feed's own.
     expect(view.all(".babel-row")).toHaveLength(1);
     expect(view.one(".babel-sentence").textContent).toContain("sorted by newest");

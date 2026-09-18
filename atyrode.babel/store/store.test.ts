@@ -546,7 +546,9 @@ const feed = async (query: Partial<Parameters<TestStore["store"]["feed"]>[0]> = 
     sort: "next",
     window: "day",
     kinds: [],
-    needs: "me",
+    surface: "desk",
+    established: [],
+    group: "none",
     limit: 25,
     offset: 0,
     ...query,
@@ -554,7 +556,7 @@ const feed = async (query: Partial<Parameters<TestStore["store"]["feed"]>[0]> = 
 
 describe("the feed", () => {
   test("is every kind of record that is a post, and never an observation", async () => {
-    const all = await feed({ sort: "new", window: "all", needs: "all", limit: 100 });
+    const all = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
     const kinds = new Set(all.posts.map((post) => post.kind));
     expect([...kinds].sort()).toEqual(["finding", "hypothesis", "proposal", "question"]);
     expect(all.posts.map((post) => post.id)).not.toContain(OBSERVATION);
@@ -562,34 +564,74 @@ describe("the feed", () => {
     expect(all.total).toBe(7);
   });
 
-  // The queue is the feed narrowed rather than a second list, so a record the operator has
-  // already decided is not in it and a question nobody has answered is.
-  test("needs=me excludes a ruled record and includes an open question", async () => {
-    const queue = await feed({ window: "all", limit: 100 });
-    const ids = queue.posts.map((post) => post.id);
+  // The desk is the default, and it is a narrowing of the one order rather than a second list:
+  // a record the operator has already decided is not on it, an unanswered question is, and a
+  // candidate Babel is still developing on its own is not — it is a question Babel asked itself.
+  test("the desk is what awaits his ruling, and a candidate is not on it", async () => {
+    const desk = await feed({ window: "all", limit: 100 });
+    const ids = desk.posts.map((post) => post.id);
     expect(ids).toContain(BLOCKING);
-    expect(ids).toContain(CANDIDATE);
     // Accepted yesterday: a ruling that was made, and a deferral would be one too.
     expect(ids).not.toContain(ARGUED);
     // Answered: §4.8's finished states await nobody.
     expect(ids).not.toContain(ANSWERED);
     // Reopened is undecided again, and is a different wait from one nobody ever ruled on.
     expect(ids).toContain(FINDING);
-    const reopened = queue.posts.find((post) => post.id === FINDING);
+    // Unruled, and still a candidate: it awaits him in the sense that nobody has ruled, and it
+    // is not addressed to him, which is the whole of the routing.
+    expect(ids).not.toContain(CANDIDATE);
+    const reopened = desk.posts.find((post) => post.id === FINDING);
     expect(reopened?.standing).toBe("reopened");
     expect(reopened?.why).toStartWith("reopened · waiting ");
-    const unruled = queue.posts.find((post) => post.id === CANDIDATE);
+    // The blocking question says what it costs to leave, and its age rather than a wait.
+    expect(desk.posts.find((post) => post.id === BLOCKING)?.why).toBe("blocks a run · asked 2h");
+    for (const post of desk.posts) expect(post.awaiting).toBe(true);
+  });
+
+  // Nothing is deleted by routing: every post the one list held is on exactly one of the three
+  // surfaces, and the shelf is where the volume goes.
+  test("the three surfaces partition the corpus, and the shelf is asked for", async () => {
+    const whole = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
+    const desk = await feed({ sort: "new", window: "all", surface: "desk", limit: 100 });
+    const queue = await feed({ sort: "new", window: "all", surface: "queue", limit: 100 });
+    const shelf = await feed({ sort: "new", window: "all", surface: "shelf", limit: 100 });
+    expect(desk.total + queue.total + shelf.total).toBe(whole.total);
+    // Accepted: what remains is the work, and no ruling is waiting.
+    expect(queue.posts.map((post) => post.id)).toEqual([ARGUED]);
+    // The candidate nobody ruled on and the finished question are kept rather than shown.
+    const shelved = shelf.posts.map((post) => post.id);
+    expect(shelved).toContain(CANDIDATE);
+    expect(shelved).toContain(ANSWERED);
+    const unruled = shelf.posts.find((post) => post.id === CANDIDATE);
     expect(unruled?.standing).toBe("new");
     expect(unruled?.why).toBe("never ruled on · waiting 3d");
-    // The blocking question says what it costs to leave, and its age rather than a wait.
-    expect(queue.posts.find((post) => post.id === BLOCKING)?.why).toBe("blocks a run · asked 2h");
-    for (const post of queue.posts) expect(post.awaiting).toBe(true);
+    // Never unprompted, still reachable: the same narrowings work over the shelf.
+    const byTopic = await feed({
+      sort: "new",
+      window: "all",
+      surface: "shelf",
+      topic: "tyrode-infra",
+      limit: 100,
+    });
+    expect(byTopic.posts.map((post) => post.id)).toEqual([CANDIDATE]);
+  });
+
+  // "Is this a plausible amount of work" is a question he has while reading the shelf, so the
+  // desk's size travels on every answer rather than only on the desk's own.
+  test("the desk's size is reported whatever surface was asked for", async () => {
+    const desk = await feed({ window: "all", limit: 100 });
+    const shelf = await feed({ sort: "new", window: "all", surface: "shelf", limit: 100 });
+    expect(desk.desk).toBe(desk.total);
+    expect(shelf.desk).toBe(desk.total);
+    // A narrowing of the desk narrows the page and not the desk.
+    const narrowed = await feed({ window: "all", kinds: ["question"], limit: 100 });
+    expect(narrowed.total).toBeLessThan(narrowed.desk);
   });
 
   // Next is a complete order over the corpus and not a filter wearing a sort's name: turning the
   // queue off keeps the same rows on top and puts the rest underneath.
   test("next puts the blocking question first and what awaits nothing last", async () => {
-    const all = await feed({ needs: "all", window: "all", limit: 100 });
+    const all = await feed({ surface: "all", window: "all", limit: 100 });
     expect(all.posts[0]?.id).toBe(BLOCKING);
     const awaiting = all.posts.filter((post) => post.awaiting).length;
     for (let at = 0; at < awaiting; at++) expect(all.posts[at]?.awaiting).toBe(true);
@@ -597,7 +639,7 @@ describe("the feed", () => {
   });
 
   test("the score is the reviewers' and the operator's prose is a comment", async () => {
-    const all = await feed({ sort: "new", window: "all", needs: "all", limit: 100 });
+    const all = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
     const argued = all.posts.find((post) => post.id === ARGUED);
     expect(argued?.support).toBe(2);
     expect(argued?.oppose).toBe(1);
@@ -613,7 +655,7 @@ describe("the feed", () => {
 
   // A correction supersedes the statement it names: one vote per run per role, newest wins.
   test("a superseded assessment is dropped rather than counted twice", async () => {
-    const all = await feed({ sort: "new", window: "all", needs: "all", limit: 100 });
+    const all = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
     const candidate = all.posts.find((post) => post.id === CANDIDATE);
     expect(candidate?.support).toBe(1);
     expect(candidate?.oppose).toBe(0);
@@ -642,7 +684,7 @@ describe("the feed", () => {
       });
     }
     harness.store.touch();
-    const all = await feed({ sort: "new", window: "all", needs: "all", limit: 100 });
+    const all = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
     const agreed = all.posts.find((post) => post.id === AGREED);
     expect(agreed?.support).toBe(1);
     expect(agreed?.oppose).toBe(2);
@@ -651,7 +693,7 @@ describe("the feed", () => {
   });
 
   test("contested is disagreement inside one role and never across two", async () => {
-    const all = await feed({ sort: "new", window: "all", needs: "all", limit: 100 });
+    const all = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
     expect(all.posts.find((post) => post.id === ARGUED)?.contested).toBe(true);
     // Support on whether it matters beside opposition on whether the evidence holds is two
     // reviewers agreeing about different things.
@@ -662,7 +704,7 @@ describe("the feed", () => {
   });
 
   test("reviewing flips with an open claim and not with a finished or lapsed one", async () => {
-    const all = await feed({ sort: "new", window: "all", needs: "all", limit: 100 });
+    const all = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
     expect(all.posts.find((post) => post.id === UNDER_REVIEW)?.reviewing).toBe(true);
     expect(all.posts.find((post) => post.id === FINDING)?.reviewing).toBe(false);
     expect(all.posts.find((post) => post.id === ARGUED)?.reviewing).toBe(false);
@@ -672,7 +714,7 @@ describe("the feed", () => {
   // operator has just performed must not wait out a minute of staleness.
   test("touch is what makes a just-recorded claim visible", async () => {
     expect(
-      (await feed({ sort: "new", window: "all", needs: "all", limit: 100 })).posts.find(
+      (await feed({ sort: "new", window: "all", surface: "all", limit: 100 })).posts.find(
         (post) => post.id === ARGUED,
       )?.reviewing,
     ).toBe(false);
@@ -689,13 +731,13 @@ describe("the feed", () => {
       expires_at: stamp(NOW + HOUR),
     });
     expect(
-      (await feed({ sort: "new", window: "all", needs: "all", limit: 100 })).posts.find(
+      (await feed({ sort: "new", window: "all", surface: "all", limit: 100 })).posts.find(
         (post) => post.id === ARGUED,
       )?.reviewing,
     ).toBe(false);
     harness.store.touch();
     expect(
-      (await feed({ sort: "new", window: "all", needs: "all", limit: 100 })).posts.find(
+      (await feed({ sort: "new", window: "all", surface: "all", limit: 100 })).posts.find(
         (post) => post.id === ARGUED,
       )?.reviewing,
     ).toBe(true);
@@ -704,20 +746,20 @@ describe("the feed", () => {
   // The window applies to top and controversial and to nothing else: "hot" over a day and "hot"
   // over all time would be the same list with the older half deleted.
   test("the window narrows top and leaves hot alone", async () => {
-    const topDay = await feed({ sort: "top", window: "day", needs: "all", limit: 100 });
-    const topAll = await feed({ sort: "top", window: "all", needs: "all", limit: 100 });
+    const topDay = await feed({ sort: "top", window: "day", surface: "all", limit: 100 });
+    const topAll = await feed({ sort: "top", window: "all", surface: "all", limit: 100 });
     expect(topDay.posts.map((post) => post.id)).not.toContain(CANDIDATE);
     expect(topAll.posts.map((post) => post.id)).toContain(CANDIDATE);
-    const hotDay = await feed({ sort: "hot", window: "day", needs: "all", limit: 100 });
+    const hotDay = await feed({ sort: "hot", window: "day", surface: "all", limit: 100 });
     expect(hotDay.total).toBe(topAll.total);
   });
 
   // §8.5: the ranking is over the whole deployment, before paging. A page ranked independently
   // would make "new" mean "newest among the rows this request happened to read".
   test("ranks the whole deployment before it pages", async () => {
-    const whole = await feed({ sort: "new", window: "all", needs: "all", limit: 100 });
-    const first = await feed({ sort: "new", window: "all", needs: "all", limit: 2, offset: 0 });
-    const second = await feed({ sort: "new", window: "all", needs: "all", limit: 2, offset: 2 });
+    const whole = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
+    const first = await feed({ sort: "new", window: "all", surface: "all", limit: 2, offset: 0 });
+    const second = await feed({ sort: "new", window: "all", surface: "all", limit: 2, offset: 2 });
     expect(first.total).toBe(whole.total);
     expect(second.total).toBe(whole.total);
     expect([...first.posts, ...second.posts].map((post) => post.id)).toEqual(
@@ -726,17 +768,135 @@ describe("the feed", () => {
   });
 
   test("a topic narrows by name and by id, and `unfiled` is the records under nothing", async () => {
-    const byName = await feed({ needs: "all", window: "all", topic: "tyrode-infra", limit: 100 });
+    const byName = await feed({ surface: "all", window: "all", topic: "tyrode-infra", limit: 100 });
     expect(byName.posts.map((post) => post.id).sort()).toEqual([CANDIDATE, FINDING].sort());
-    const byId = await feed({ needs: "all", window: "all", topic: REPOSITORY, limit: 100 });
+    const byId = await feed({ surface: "all", window: "all", topic: REPOSITORY, limit: 100 });
     expect(byId.posts.map((post) => post.id).sort()).toEqual([CANDIDATE, FINDING].sort());
-    const unfiled = await feed({ needs: "all", window: "all", topic: "unfiled", limit: 100 });
+    const unfiled = await feed({ surface: "all", window: "all", topic: "unfiled", limit: 100 });
     const ids = unfiled.posts.map((post) => post.id);
     // Withdrawn, so it is about nothing again; filed under a retired entity, so likewise.
     expect(ids).toContain(AGREED);
     expect(ids).toContain(UNDER_REVIEW);
     // An observation is never a row here, filed or not.
     expect(ids).not.toContain(OBSERVATION);
+  });
+
+  // The two axes are what a reader separates "important and shaky" from "trivial and certain"
+  // with, so each has to narrow without the other: the subject is the filing, the status is the
+  // fold of the standing and the reception, and asking for both is the intersection.
+  test("the subject and the status narrow independently and compose", async () => {
+    // A reopened finding its reviewers are split on inside one role: undecided and shaky.
+    for (const [id, runId, vote] of [
+      ["asm_0101", "run-p", "support"],
+      ["asm_0102", "run-q", "oppose"],
+    ] as const) {
+      await insert(harness.db, "assessments", {
+        id,
+        record_id: FINDING,
+        revision_id: FINDING,
+        run_id: runId,
+        role: "reception",
+        vote,
+        lane: "coverage",
+        payload: JSON.stringify({ vote, contributions: [] }),
+        recorded_at: stamp(NOW - HOUR),
+      });
+    }
+    harness.store.touch();
+
+    const shaky = await feed({ surface: "all", window: "all", established: ["contested"] });
+    expect(shaky.posts.map((post) => post.id)).toEqual([FINDING]);
+    // Ruled and split is settled, not shaky: Babel votes and the operator rules.
+    const settled = await feed({ surface: "all", window: "all", established: ["settled"] });
+    expect(settled.posts.map((post) => post.id)).toContain(ARGUED);
+    expect(settled.posts.map((post) => post.id)).not.toContain(FINDING);
+
+    // One subject, both statuses; one status, one of the two subjects. Neither axis is the
+    // other, which is the whole of the issue.
+    const subject = await feed({ surface: "all", window: "all", topic: "tyrode-infra" });
+    expect(subject.posts.map((post) => post.id).sort()).toEqual([CANDIDATE, FINDING].sort());
+    const both = await feed({
+      surface: "all",
+      window: "all",
+      topic: "tyrode-infra",
+      established: ["contested"],
+    });
+    expect(both.posts.map((post) => post.id)).toEqual([FINDING]);
+    const elsewhere = await feed({
+      surface: "all",
+      window: "all",
+      topic: "babel",
+      established: ["contested"],
+    });
+    expect(elsewhere.posts).toEqual([]);
+  });
+
+  // A concept observed many times took a slot each time, so the page is cut out of the GROUPS:
+  // the two records filed under one topic share one, and the page's unit is what `total` counts.
+  test("grouping gives a concept one slot and says what holds it together", async () => {
+    const flat = await feed({ sort: "new", surface: "all", window: "all", limit: 100 });
+    const byTopic = await feed({
+      sort: "new",
+      surface: "all",
+      window: "all",
+      group: "topic",
+      limit: 100,
+    });
+    // Same records, fewer slots: seven posts, six groups, because two share a topic.
+    expect(byTopic.posts).toHaveLength(flat.posts.length);
+    expect(byTopic.total).toBe(flat.total - 1);
+
+    const filed = byTopic.groups.find((group) => group.key === REPOSITORY);
+    expect(filed).toEqual({
+      key: REPOSITORY,
+      keyKind: "topic",
+      // The key is stated, so a reader knows why these two are together.
+      label: "t/tyrode-infra",
+      records: 2,
+      posts: expect.arrayContaining([CANDIDATE, FINDING]),
+    });
+
+    // A record no topic files is not hidden by the grouping: it keeps a slot of its own.
+    const alone = byTopic.groups.find((group) => group.posts.includes(AGREED));
+    expect(alone).toEqual({ key: "", keyKind: "none", label: "", records: 1, posts: [AGREED] });
+
+    // Asking for no grouping is the list it always was.
+    expect(flat.groups).toEqual([]);
+  });
+
+  // The recipe is the other existing key, and a group bigger than the page says how much of
+  // itself it is carrying rather than looking complete.
+  test("grouping by lens states the group's true size", async () => {
+    await insert(harness.db, "records", {
+      id: "hyp_00000007",
+      kind: "hypothesis",
+      root_id: "hyp_00000007",
+      seq: 1,
+      run_id: "run-a",
+      recipe_id: "outcome-integrity",
+      recipe_version: 3,
+      actor_kind: "run",
+      actor_id: "run-a",
+      title: "a sixth record under the same lens",
+      created_at: stamp(NOW - HOUR),
+      payload: JSON.stringify({ schema: 1, statement: "one more" }),
+    });
+    harness.store.touch();
+    const byLens = await feed({
+      sort: "new",
+      surface: "all",
+      window: "all",
+      group: "recipe",
+      limit: 100,
+    });
+    const lens = byLens.groups.find((group) => group.key === "outcome-integrity");
+    expect(lens?.keyKind).toBe("recipe");
+    expect(lens?.records).toBe(6);
+    // Five travel with the page; the sixth is counted rather than silently dropped.
+    expect(lens?.posts).toHaveLength(5);
+    // A question no recipe produced is its own slot beside the lens, not inside it.
+    const asked = byLens.groups.find((group) => group.posts.includes(BLOCKING));
+    expect(asked?.keyKind).toBe("none");
   });
 });
 

@@ -11,6 +11,42 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Three surfaces instead of one list, two axes instead of one label, and a concept holds one
+  slot.** Babel produced one ordering of everything, so a record needing the operator's judgement
+  competed with a record an agent could execute unattended and with a record worth keeping but not
+  worth showing — and the first was buried by the volume of the third. The feed now **routes
+  before it ranks**, by properties that were already columns:
+
+  - **the desk**, what awaits his ruling, and the default;
+  - **the agent queue**, the two standings whose own words name work a run does next;
+  - **the shelf**, everything kept without paying attention for it — unruled candidates, records
+    already decided, finished questions, superseded wordings.
+
+  Nothing is deleted and nothing is hidden: a shelf record is one press away and narrows by topic,
+  kind and standing. The desk's size is reported on **every** surface, so "is this a plausible
+  amount of work" is answerable while looking at the queue.
+
+  **What a record is about and how well established it is are two axes now.** The subject was on
+  the row and the status was nowhere, so the page could not tell "important and shaky" from
+  "trivial and certain" — the distinction that decides what to do about either. `established`
+  reads off the columns that already held it: a ruling settles, a split inside one role is
+  contested, a surviving deduped vote is reviewed, and nothing is unsettled. The ruling wins over
+  the split, because Babel votes and the operator rules. **The row did not grow**: the status
+  badge took the slot the second topic chip held, and a maximal row renders the same eight facts
+  it did before.
+
+  **The desk groups by an existing key** — the topic a record is filed under, or the recipe that
+  produced it — so a concept observed forty times occupies one slot rather than forty, with its
+  records beneath it and the key stated on the group. Paging counts groups, so a large concept
+  cannot crowd the page; a group states its true size rather than looking complete; a record no
+  key groups is a group of one **at its own rank**, never a heap at the bottom. A record filed
+  under several topics is grouped under exactly one, so it is never the face of two.
+
+  Two things this deliberately does not do. **The grouping is qualified, not settled** — the study
+  that proposed it built it to check it and reported the grouping *method* as the thing still to
+  validate, and the code says so where the grouping lives. And **the shelf is reachable, not
+  searchable**: text retrieval over the corpus does not exist and its design is an open question,
+  so #351's "findable by search" is not met here and stays with #337.
 - **Babel reads the archive back.** `machine/restic.ts` ran `init`, `backup` and `snapshots`: the
   whole writing half and none of the reading one, so Babel could fill an archive and neither verify
   one nor restore a session from it. An archive whose restore path lives only in an operator's head

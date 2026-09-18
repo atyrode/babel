@@ -17,6 +17,7 @@ import {
   nextBefore,
   risingRank,
   sortFeed,
+  surfaceOf,
   URGENCY,
   WINDOW_MS,
   type Ranked,
@@ -139,6 +140,27 @@ describe("rising", () => {
     expect(risingRank(recent, NOW - 3 * HOUR, NOW)).toBeGreaterThan(
       risingRank(recent, NOW - 72 * HOUR, NOW),
     );
+  });
+});
+
+// The route is read off two columns and decides what the operator is shown at all, so the two
+// standings that mean "an agent does this next" are asserted by name: getting either wrong
+// moves work onto the desk, or off it, with nothing else changing.
+describe("the surface", () => {
+  test("is the desk only for what awaits him and is addressed to him", () => {
+    expect(surfaceOf("proposal", "new", true)).toBe("desk");
+    expect(surfaceOf("finding", "reopened", true)).toBe("desk");
+    expect(surfaceOf("question", "open", true)).toBe("desk");
+    // A candidate is a question Babel asked itself, and it waits on nobody.
+    expect(surfaceOf("hypothesis", "new", true)).toBe("shelf");
+  });
+
+  test("is the agent queue for the two standings that name work a run does next", () => {
+    expect(surfaceOf("proposal", "accepted", false)).toBe("queue");
+    expect(surfaceOf("finding", "refine-requested", false)).toBe("queue");
+    expect(surfaceOf("proposal", "rejected", false)).toBe("shelf");
+    expect(surfaceOf("proposal", "deferred", false)).toBe("shelf");
+    expect(surfaceOf("proposal", "duplicate", false)).toBe("shelf");
   });
 });
 
