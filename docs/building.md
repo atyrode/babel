@@ -11,18 +11,27 @@ independently enable-able **parts**, each a directory, each packed as one
 readable at the tag `v0.4.0` — `git show v0.4.0:internal/<pkg>` — and `docs/parity.md` records,
 per capability, what it did and whether this family does it.
 
-| Plugin                | Directory              | Halves       | What it is                                                                                                                                                                                                      |
-| --------------------- | ---------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `atyrode.babel`       | `atyrode.babel/`       | server + web | The baseline: the store (one SQLite file of its own), the nine read doors, the operator's acts, the three drain doors, the machine operations and the conductor. Contributes the five event kinds and no panel. |
-| `atyrode.babel.feed`  | `atyrode.babel/feed/`  | web          | Home — every record Babel produced, ranked by what needs the operator — the peeled record, and a topic with its filings and his interest. Panels `home`, `record`, `topic`.                                     |
-| `atyrode.babel.watch` | `atyrode.babel/watch/` | web          | What is running, what will run and what a drain is spending: presets instead of flags, the model and the ceiling up front, the live pulse, the receipt afterwards. Panel `watch`.                               |
+| Plugin                | Directory              | Halves       | What it is                                                                                                                                                                                                                                                  |
+| --------------------- | ---------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `atyrode.babel`       | `atyrode.babel/`       | server + web | The baseline: the store (one SQLite file of its own), the nine read doors, the operator's acts, the three drain doors, the machine operations and the conductor. Contributes the five event kinds and no panel.                                             |
+| `atyrode.babel.feed`  | `atyrode.babel/feed/`  | web          | Home — every record Babel produced, ranked by what needs the operator — the peeled record, and a topic with its filings and his interest. Panels `home`, `record`, `topic`.                                                                                 |
+| `atyrode.babel.watch` | `atyrode.babel/watch/` | web          | What is running, what will run and what a drain is spending: presets instead of flags, the model and the ceiling up front, the live pulse, the receipt afterwards. Panel `watch`.                                                                           |
+| `atyrode.babel.jev`   | `atyrode.babel.jev/`   | server       | Typed judgement over the records: the voters, their question bank and the calls that pay for them. Optional by construction — absent, disabled or out of credit, every door, panel and conductor path answers as it does without it. Publishes no door yet. |
 
-A part is a directory inside its parent's and says so with
+A part is its own directory — inside its parent's, or beside it — and says so with
 `dependencies: { "atyrode.babel": { type: "required" } }`; assembly refuses it otherwise. The
-baseline is not a library — a part reaches it only through its doors (`host.client.action`) —
-and every id, door name, event kind, panel id, preset, job output file and receipt field is
-spelled once, in `atyrode.babel/contract.ts`, with the tables in
-`atyrode.babel/store/schema.ts`. `test/contract.test.ts` pins every manifest to those two.
+edge is one-way: no manifest of the baseline's names a part, and `ctx.actions.call` refuses a
+callee the caller's manifest does not declare, so a part is removable by construction rather
+than by care. The baseline is not a library — a part reaches it only through its doors
+(`host.client.action` from a panel, `ctx.actions.call` from a server half), and the linter holds
+both directions to that: the one module of the baseline a part may import is
+`atyrode.babel/contract.ts`, where every id, door name, event kind, panel id, preset, job output
+file and receipt field is spelled once with the tables in `atyrode.babel/store/schema.ts`, and
+nothing of the baseline's may import a part at all — an import would inline the part into the
+baseline's own bundle and survive the part being removed, which is how optional stops being
+optional. `test/contract.test.ts` pins every manifest to those two files, and
+`test/optional-part.test.ts` dispatches every read door against a hub that refuses the part, so
+the fallback is run rather than described.
 
 The web halves are **in-realm React** (`docs/PLUGINS.md` §10): a part's `web.tsx` —
 `atyrode.babel/feed/web.tsx` and `atyrode.babel/watch/web.tsx` — default-exports `{ id, panels }`

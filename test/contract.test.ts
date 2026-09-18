@@ -9,6 +9,7 @@ import {
   EVENTS,
   FEED_PLUGIN_ID,
   INPUT_FIELD,
+  JEV_PLUGIN_ID,
   MATERIAL_EXPORT,
   MATERIAL_OUTPUT,
   OPERATIONS,
@@ -28,6 +29,7 @@ import { plugin } from "../atyrode.babel/server.ts";
 import babelManifest from "../atyrode.babel/manifest.json";
 import feedManifest from "../atyrode.babel/feed/manifest.json";
 import watchManifest from "../atyrode.babel/watch/manifest.json";
+import jevManifest from "../atyrode.babel.jev/manifest.json";
 
 /*
   A manifest is JSON and cannot import `contract.ts`, so every id it repeats is pinned here:
@@ -39,6 +41,7 @@ import watchManifest from "../atyrode.babel/watch/manifest.json";
 const babel = PluginManifestSchema.parse(babelManifest);
 const feed = PluginManifestSchema.parse(feedManifest);
 const watch = PluginManifestSchema.parse(watchManifest);
+const jev = PluginManifestSchema.parse(jevManifest);
 
 describe("the baseline's manifest spells the contract", () => {
   test("its id, the events it originates, and no panel of its own", () => {
@@ -98,8 +101,49 @@ describe("the parts are parts of the baseline", () => {
     expect(watch.capabilities).toEqual([]);
   });
 
-  test("the family is three plugins and every panel of it is declared once", () => {
-    const declared = [babel, feed, watch].flatMap((manifest) =>
+  test("the judgement part: its id, the required edge, and nothing else at all", () => {
+    expect(jev.id).toBe(JEV_PLUGIN_ID);
+    expect(jev.id.startsWith(`${BABEL_PLUGIN_ID}.`)).toBe(true);
+    expect(jev.dependencies?.[BABEL_PLUGIN_ID]?.type).toBe("required");
+    // A server half and no surface: the judgement is work, not a page, and the baseline's own
+    // panels are where its answers would show.
+    expect(jev.entry).toEqual({ server: true });
+    expect(jev.contributes.panels).toEqual([]);
+    expect(jev.contributes.seats).toBeUndefined();
+    expect(jev.contributes.events).toEqual([]);
+    /*
+      NOTHING IT COULD BE ASKED FOR YET. An empty part that already held authority, a store or a
+      machine block would be a part the operator cannot reason about the removal of, and the
+      capability acquired "because a child will need it" is exactly how an optional part stops
+      being optional. Each arrives with the child that spends it.
+    */
+    expect(jev.capabilities).toEqual([]);
+    expect(jev.database).toBeUndefined();
+    expect(jev.machine).toBeUndefined();
+    expect(jev.purges).toBeUndefined();
+  });
+
+  test("the part is removable: nothing of Babel's names it", () => {
+    /*
+      THE EDGE IS ONE-WAY, AND THE HOST IS WHAT ENFORCES IT. `ctx.actions.call` refuses a callee
+      the CALLER's manifest does not declare (`undeclared_dependency`: composition is declared,
+      never discovered), so as long as no manifest of Babel's names the part, no door, cycle or
+      panel of Babel's can reach it — installed or not. That is the whole of the epic's
+      constraint, stated where a future manifest edit has to pass it.
+    */
+    for (const manifest of [babel, feed, watch]) {
+      expect(Object.keys(manifest.dependencies ?? {})).not.toContain(JEV_PLUGIN_ID);
+      expect(manifest.after ?? []).not.toContain(JEV_PLUGIN_ID);
+      for (const cap of manifest.capabilities)
+        expect(cap.startsWith(`${JEV_PLUGIN_ID}:`)).toBe(false);
+    }
+    // And the part's own edge is satisfied by what is left when the part is gone: removing it
+    // removes a plugin, never a dependency.
+    expect(Object.keys(jev.dependencies ?? {})).toEqual([BABEL_PLUGIN_ID]);
+  });
+
+  test("the family is four plugins and every panel of it is declared once", () => {
+    const declared = [babel, feed, watch, jev].flatMap((manifest) =>
       manifest.contributes.panels.map((panel) => `${manifest.id}.${panel.id}`),
     );
     expect(new Set(declared).size).toBe(declared.length);
@@ -115,7 +159,7 @@ describe("the parts are parts of the baseline", () => {
     // The engine composes a fresh workspace from every enabled plugin's seats, in `order`, as
     // one row weighted by `ratio`: the one list the operator rules on is the page, and what is
     // running sits next to it. A panel with no seat (a record, a topic) opens on demand.
-    const seated = [feed, watch]
+    const seated = [feed, watch, jev]
       .flatMap((manifest) =>
         (manifest.contributes.seats ?? []).map((seat) => ({
           ...seat,

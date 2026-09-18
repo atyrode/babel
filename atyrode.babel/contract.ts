@@ -20,6 +20,13 @@ import { z } from "zod";
 export const BABEL_PLUGIN_ID = "atyrode.babel";
 export const FEED_PLUGIN_ID = "atyrode.babel.feed";
 export const WATCH_PLUGIN_ID = "atyrode.babel.watch";
+/**
+ * The optional judgement part. It is named here because every id of the family is, and because
+ * `test/contract.test.ts` pins its manifest to this name — not because anything of the baseline
+ * calls it: no door, no panel and no cycle of Babel's names this plugin, which is what makes the
+ * part removable.
+ */
+export const JEV_PLUGIN_ID = "atyrode.babel.jev";
 
 // ---------------------------------------------------------------------------- shared vocabulary
 
