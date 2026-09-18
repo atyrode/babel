@@ -2697,7 +2697,7 @@ test("a review with one refused contribution records the rest, and its receipt c
   // read off the receipts rather than guessed at.
   expect(receipt["reason"]).toBeUndefined();
   expect(receipt["refusedContributions"]).toEqual([
-    { contribution: 1, reason: "schema: contribution 1 is a objection and may not name alternatives" },
+    { contribution: 1, reason: "schema: contribution 1 is an objection and may not name alternatives" },
   ]);
   expect((receipt["counts"] as Record<string, number>)["contributionsRefused"]).toBe(1);
   expect(settled.pulse.tick.refusals).toEqual({ schema: 1 });
