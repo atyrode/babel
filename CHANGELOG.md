@@ -11,6 +11,33 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Every drain leaves a record of itself.** After the 2026-09-13 drain the questions the operator
+  asked — did we hit a cap, what did it cost in tokens, how much erroring, how much value came out
+  — had to be answered by hand, hours later, from receipts, `/proc`, fan logs and attempt rows.
+  Nothing Babel produced could have told Babel that: the only durable trace was one receipt per
+  job, with nothing relating them to the drain, the machine or the value produced. At every
+  ending — target, deadline, stop, failure — the controller now writes one frontier record with
+  `drain` provenance, keyed by the drain's own id so a second close writes no second record, and
+  Watch shows the last one beside the panel.
+
+  The relation that was missing was there all along: the controller **derives** each run's
+  identity from the drain id, so the whole set is recomputable from durable rows at the end. The
+  payload answers allocation as named and as spent, tokens and cost per duty and per account,
+  jobs launched, at the model, settled, unsettled and refused **by code**, records and assessments
+  per million tokens, the reasons for every gap, and the controller's own notes. It says out loud
+  that per-duty figures **overlap** where one session performed several named methods, rather
+  than leaving a reader to sum them and be wrong.
+
+  **Three questions it cannot answer, named rather than filled with nulls.** The machine's CPU and
+  memory: a plugin's server half reads no `/proc` and the hub reports neither, so what is reported
+  is Babel's own fan — jobs held and jobs at the model, integrated, with peaks — labelled as
+  Babel's own and not the host's. Cache-write tokens: the hub's frame carries cache reads only.
+  And the account's window at the start and the end: Code owns the account and reports no window
+  reading, so the report names the account and never a percentage.
+
+  It is a record rather than a log because a drain is a session of Babel's own, and the report is
+  eligible input to an `explore` run — so the next drain's changes can come from Babel's analysis
+  of the last one rather than from a person reading receipts at midnight.
 - **A run's calls are recoverable, by locator and never by copy.** Babel kept receipts — cost,
   tokens, model, closure — which is spend accounting, not traffic. So a claim about how Babel
   judged something could not be rechecked, only re-run, and a re-run is not the same event: the

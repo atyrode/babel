@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   MAX_SAMPLES,
+  NO_JOURNAL,
   RATE_WINDOW_MS,
   accountName,
   activeDrains,
@@ -134,7 +135,7 @@ test("a drain holding nothing ends at once, and ends only once", async () => {
     spent: { calls: 9, inputTokens: 9, outputTokens: 9, costMicros: 9 },
     closures: {},
     refusals: {},
-    samples: [],
+    journal: NO_JOURNAL,
     settledNow: 1,
   });
   expect((await readDrain(harness.store, "drn_one"))?.live).toEqual([]);
@@ -166,7 +167,7 @@ test("a drain that still holds a job closes onto it: the fold goes on until the 
     spent: { calls: 3, inputTokens: 10, outputTokens: 900, costMicros: 600_000 },
     closures: { completed: 1 },
     refusals: {},
-    samples: [],
+    journal: NO_JOURNAL,
     settledNow: 1,
   });
   expect(await finishDrain(harness.store, "drn_one")).toBe(false);
@@ -179,7 +180,7 @@ test("a drain that still holds a job closes onto it: the fold goes on until the 
     spent: { calls: 6, inputTokens: 20, outputTokens: 1_800, costMicros: 1_500_000 },
     closures: { completed: 2 },
     refusals: {},
-    samples: [],
+    journal: NO_JOURNAL,
     settledNow: 1,
   });
   harness.at(NOW + MINUTE);
@@ -210,12 +211,18 @@ test("a store holding several drains lists the newest first", async () => {
 
 test("the rate is zero until something has been observed twice, then it is the observed rate", async () => {
   expect(burnRate([], NOW)).toEqual({ outputTokensPerMinute: 0, costMicrosPerMinute: 0 });
-  const one: DrainSample = { at: NOW, outputTokens: 500, costMicros: 200_000 };
+  const one: DrainSample = { at: NOW, outputTokens: 500, costMicros: 200_000, held: 1, atModel: 1 };
   // ONE SAMPLE IS NOT A RATE, and zero is the honest answer: the runbook's rule is about a rate
   // that has STOPPED moving, and one that has never been observed twice has not moved or stalled.
   expect(burnRate([one], NOW)).toEqual({ outputTokensPerMinute: 0, costMicrosPerMinute: 0 });
   // Two samples a minute apart: exactly the difference, per minute.
-  const two: DrainSample = { at: NOW + MINUTE, outputTokens: 1_700, costMicros: 500_000 };
+  const two: DrainSample = {
+    at: NOW + MINUTE,
+    outputTokens: 1_700,
+    costMicros: 500_000,
+    held: 1,
+    atModel: 1,
+  };
   expect(burnRate([one, two], NOW + MINUTE)).toEqual({
     outputTokensPerMinute: 1_200,
     costMicrosPerMinute: 300_000,
@@ -263,8 +270,20 @@ test("a rate is read over the anchor, so ticks further apart than the window sti
     the oldest sample INSIDE the window made the newest sample its own left edge in that case and
     answered `0/min` for the whole drain, which is exactly what §11.4 tells an operator to stop on.
   */
-  const first: DrainSample = { at: NOW, outputTokens: 500, costMicros: 200_000 };
-  const second: DrainSample = { at: NOW + 5 * MINUTE, outputTokens: 1_700, costMicros: 500_000 };
+  const first: DrainSample = {
+    at: NOW,
+    outputTokens: 500,
+    costMicros: 200_000,
+    held: 2,
+    atModel: 2,
+  };
+  const second: DrainSample = {
+    at: NOW + 5 * MINUTE,
+    outputTokens: 1_700,
+    costMicros: 500_000,
+    held: 2,
+    atModel: 1,
+  };
   const at = NOW + 5 * MINUTE;
   expect(at - first.at).toBeGreaterThan(RATE_WINDOW_MS);
   expect(burnRate([first, second], at)).toEqual({

@@ -567,6 +567,19 @@ a percentage read by a home-made script is not any of these numbers.
 > on the top-ranked subjects and the last fan could not draw at all. The 2026-09-10 burn notes said
 > the same thing; it was violated five times anyway.
 
+A drain that reaches its ending — a target, a deadline, a stop, or a failure — leaves a **drain
+report**: one record in the frontier, of kind `finding`, written by the controller with
+`actor_kind = 'engine'` and `provenance: "drain"` in its payload. It answers, from itself alone,
+the questions the 2026-09-13 drain was reconstructed by hand to answer: the allocation as the
+operator named it and as the runs carried it; tokens and cost per duty and per account; jobs
+launched, at the model, settled and refused by code; launches that never became jobs, by the hub's
+own code; records and assessments per million tokens; where the wall time went between preparing
+and being in session; the reason for every gap; and the controller's own notes — stalls, admission
+refusals, and jobs it had to take back. It also names what it cannot see: the machine's CPU and
+memory, cache-write tokens, and the account's window reading. The Watch drain panel shows the last
+drain's report beside the drain that left it, and because the report is an ordinary frontier
+record, an `explore` run can be pointed at it to propose what the next drain should change.
+
 ### 11.6 Rules for whoever drives it (human or agent)
 
 Mandatory, and each one was broken on 2026-09-13.

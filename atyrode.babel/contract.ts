@@ -2506,6 +2506,190 @@ export const DrainQuerySchema = z.strictObject({
   limit: z.number().int().min(1).max(50).default(10),
 });
 
+// ------------------------------------------------------------- what a drain leaves behind (#270)
+
+/*
+  A DRAIN LEAVES A RECORD OF ITSELF, AND IT IS A FRONTIER RECORD RATHER THAN A LOG.
+
+  On 2026-09-13 the questions the operator asked afterwards — did we hit a cap, is the pipeline
+  optimised, what did it cost, how much erroring, how much value came out — were answered by hand,
+  hours later, out of `run_receipt.payload`, `/proc`, fan logs and attempt rows. Nothing Babel
+  produced could have told Babel that: per-job stage and spend exist while a drain runs and a
+  panel shows them, but when it stops the only durable trace is one receipt per job with nothing
+  relating them to the drain, to the account, or to the value produced.
+
+  So the controller writes ONE record when a drain reaches its ending, and the whole of this
+  schema is the rule that it must answer those questions FROM ITSELF: a reader holding the payload
+  and nothing else can say what was spent, on whose account, against which duties, with what
+  erroring, for how much output. A field whose number would have to be looked up elsewhere does
+  not belong here, and a question this deployment genuinely cannot observe is named in
+  {@link DrainReportSchema}'s `unobserved` rather than carried as a column of nulls.
+
+  IT IS A RECORD BECAUSE BABEL IMPROVES BABEL BY READING ITS OWN WORK. A drain is a session of
+  Babel's own, and a finding is the kind the frontier reaches: it is a feed post, it is drawable
+  for review, and a proposal ADDRESSES a finding — which is exactly the shape of "what the next
+  drain should change". A log in a column would be none of those.
+*/
+
+/** The payload version a drain report declares inside itself, as every record payload does. */
+export const DRAIN_REPORT_SCHEMA = "babel.drain-report/1";
+/**
+ * THE PROVENANCE, SPELLED IN THE PAYLOAD AND NOT INFERRED. `records.actor_kind` admits `run`,
+ * `operator` and `engine`, and a drain report is the `engine`'s — the controller wrote it, no
+ * model was asked and no person typed it. But `engine` is also what a machine half is, so the
+ * word that says WHICH engine act this was is here, and a reader filtering the corpus for
+ * drains matches on it rather than on the shape of an identifier.
+ */
+export const DRAIN_REPORT_PROVENANCE = "drain";
+/** The record kind a drain report is written as; see the note above for why it is this one. */
+export const DRAIN_REPORT_KIND = "finding";
+
+/**
+ * TOKENS AS A DRAIN COUNTS THEM: the hub's own meter, never the engine's word about itself.
+ *
+ * `cacheReadTokens` is `usage.inference`'s `cachedInputTokens`, which is the whole of what the
+ * meter reports about the cache. There is no cache-WRITE figure: the `inference_call` frame
+ * carries none and the settle path keeps none, so a drain cannot answer that half and says so in
+ * `unobserved` instead of reporting a zero that reads like a measurement.
+ */
+export const DrainTokensSchema = z.strictObject({
+  calls: z.number().int(),
+  inputTokens: z.number().int(),
+  outputTokens: z.number().int(),
+  cacheReadTokens: z.number().int(),
+  costMicros: z.number().int(),
+});
+export type DrainTokens = z.infer<typeof DrainTokensSchema>;
+
+/** One duty or one account, with the runs that carried it and what they metered. */
+export const DrainLaneSchema = z.strictObject({
+  name: z.string(),
+  runs: z.number().int(),
+  tokens: DrainTokensSchema,
+});
+export type DrainLane = z.infer<typeof DrainLaneSchema>;
+
+/** One reason some of this drain's launched work produced nothing, and how many jobs it took. */
+export const DrainGapSchema = z.strictObject({
+  reason: z.string(),
+  jobs: z.number().int(),
+  detail: z.string(),
+});
+
+/**
+ * WHAT THE CONTROLLER SAW AND COULD NOT ACT ON. Each is something a tick reported and nothing
+ * durable would otherwise hold: an admission refusal leaves no run row at all, a stall is read
+ * off `run_progress` which is deleted the instant a run settles, and an adopted job is a write
+ * this controller lost and took back.
+ */
+export const DRAIN_NOTE_KINDS = [
+  "stall",
+  "admission",
+  "orphan",
+  "adopted",
+  "cancel",
+  "error",
+] as const;
+const DrainNoteKindSchema = z.enum(DRAIN_NOTE_KINDS);
+export type DrainNoteKind = (typeof DRAIN_NOTE_KINDS)[number];
+
+export const DrainNoteSchema = z.strictObject({
+  at: z.string(),
+  kind: DrainNoteKindSchema,
+  detail: z.string(),
+});
+
+/** The payload of the one record a drain leaves; every number in it is the drain's own. */
+export const DrainReportSchema = z.strictObject({
+  schema: z.literal(DRAIN_REPORT_SCHEMA),
+  provenance: z.literal(DRAIN_REPORT_PROVENANCE),
+  drainId: z.string(),
+  machineId: z.string(),
+  preset: DrainPresetSchema,
+  ending: z.string(),
+  reason: z.string(),
+  startedBy: z.string(),
+  startedAt: z.string(),
+  finishedAt: z.string(),
+  wallMs: z.number().int(),
+  concurrent: z.number().int(),
+  target: DrainTargetSchema,
+  /** Whose window this spent and what answered, as Code reported both when the drain started. */
+  account: z.string(),
+  model: z.string(),
+  thinking: z.string(),
+  /**
+   * ALLOCATION AS NAMED AND AS SPENT. `named` is the recipe list the operator started the drain
+   * with — the duties, in the operator's own words — and `ran` is what the runs actually carried.
+   * `shared` is true when any one run carried more than one recipe, which is the ordinary case
+   * for an exploration: one session performs every named method, so the per-duty figures OVERLAP
+   * and do not sum to `tokens`. Saying so is the difference between a measurement and a total
+   * that quietly double-counts.
+   */
+  allocation: z.strictObject({
+    named: z.array(z.string()),
+    ran: z.array(DrainLaneSchema),
+    shared: z.boolean(),
+  }),
+  /** Per account, from the account each run RECORDED, falling back to the drain's own ledger. */
+  accounts: z.array(DrainLaneSchema),
+  tokens: DrainTokensSchema,
+  jobs: z.strictObject({
+    launched: z.number().int(),
+    /** Reached a model: the hub metered at least one call against it. */
+    reachedModel: z.number().int(),
+    settled: z.number().int(),
+    /** Still running when the drain ended, so their receipts are not in these figures. */
+    unsettled: z.number().int(),
+    /** Launched with no run row to show for it: the row write did not land. */
+    withoutRunRow: z.number().int(),
+  }),
+  /** How each settled job closed, by closure. */
+  closures: z.record(z.string(), z.number().int()),
+  /** Paid work with no result, by the code `machine/results.ts` names (#265). */
+  refusals: z.record(z.string(), z.number().int()),
+  /** Launches the hub or the launch path refused, by code: work that never became a job. */
+  launchRefusals: z.record(z.string(), z.number().int()),
+  /** What came out, and what a million tokens of this drain bought. */
+  produced: z.strictObject({
+    records: z.number().int(),
+    assessments: z.number().int(),
+    recordsPerMillionTokens: z.number(),
+    assessmentsPerMillionTokens: z.number(),
+  }),
+  /**
+   * THE LOAD BABEL CAN ACTUALLY SEE: its own. `heldMs` and `atModelMs` are the jobs held and the
+   * jobs at the model integrated over the drain's life, one rectangle per tick, so
+   * `atModelFraction` is time-at-the-model as a fraction of the fan's whole capacity. The
+   * machine's CPU and memory are NOT here — see `unobserved`.
+   */
+  load: z.strictObject({
+    heldMs: z.number().int(),
+    atModelMs: z.number().int(),
+    atModelFraction: z.number(),
+    peakHeld: z.number().int(),
+    peakAtModel: z.number().int(),
+  }),
+  /**
+   * WHERE THE WALL TIME WENT, which is the "is the pipeline optimised" question: a drain whose
+   * jobs spend most of their life sealing material rather than at a model is the 2026-09-13
+   * shape, where engines were present for 13 of 134 minutes.
+   */
+  pipeline: z.strictObject({
+    prepareRuns: z.number().int(),
+    prepareWallMs: z.number().int(),
+    sessionRuns: z.number().int(),
+    sessionWallMs: z.number().int(),
+  }),
+  gaps: z.array(DrainGapSchema),
+  notes: z.array(DrainNoteSchema),
+  /** Notes the row's bound dropped, so a short list never reads as a quiet drain. */
+  notesDropped: z.number().int(),
+  /** What this drain could not observe, and why — in place of a field that is always empty. */
+  unobserved: z.array(z.string()),
+});
+export type DrainReportPayload = z.infer<typeof DrainReportSchema>;
+
 /**
  * ONE DRAIN, AS THE PANEL WATCHES IT: the row, and the live fold over its jobs.
  *
@@ -2550,6 +2734,16 @@ export const DrainStatusSchema = z.strictObject({
   refusals: z.record(z.string(), z.number().int()),
   /** How each of this drain's jobs closed, by closure. */
   closures: z.record(z.string(), z.number().int()),
+  /**
+   * THE REPORT THIS DRAIN LEFT (#270), on the newest ended drain and null on every other row.
+   *
+   * It is carried on the status rather than fetched separately because the panel's question is
+   * "what did the last drain do", and a second door would make that two requests that can
+   * disagree about which drain is last. It is one row's worth and not six: the payload is the
+   * whole account of a drain, and six of them on a five-second poll is a listing paying for a
+   * page nobody opened.
+   */
+  report: DrainReportSchema.nullable(),
 });
 export type DrainStatus = z.infer<typeof DrainStatusSchema>;
 
