@@ -1726,8 +1726,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       heard. The `policy` door is the least invented home for it — it already answers "what is
       Babel set to do", and "what he told it" is the same question in his own words.
 
-      Newest first, bounded. Reading it back is not the same as feeding it into a run's prompt,
-      which is what would make it a memory rather than a log, and that is its own issue.
+      Newest first, bounded. TWO THINGS READ THIS PROJECTION and a change to its shape reaches
+      both: Watch renders the remarks beside the ceilings, and an exploration's prompt quotes a
+      bounded selection of them to the run (`carriedSteering`, `server/engine/prompts.ts`),
+      which is what makes the table a memory rather than a log.
     */
     const told = await db.query(
       `SELECT id, text, target_kind, target_id, recorded_at FROM steering

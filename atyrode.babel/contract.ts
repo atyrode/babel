@@ -1360,8 +1360,8 @@ export const PolicyResultSchema = z.strictObject({
    * `tell` has written `steering` rows since it shipped and nothing read one back: his own words
    * went into a table no surface opened. A box that accepts a sentence and shows it nowhere
    * reads as a sentence that was heard. `about` names the record it concerns, or is empty for a
-   * standing remark. Reading it back is not the same as feeding it into a run's prompt, which is
-   * what would make it a memory rather than a log.
+   * standing remark. This same projection is what a run's prompt quotes (`carriedSteering`, in
+   * `server/engine/prompts.ts`), so the panel and the prompt read one answer and not two.
    */
   steering: z.array(
     z.strictObject({
@@ -1393,6 +1393,25 @@ export const JOB_OUTPUT_FILES = {
   sessions: "sessions.json",
   receipt: "receipt.json",
 } as const;
+
+/**
+ * WHAT THE OPERATOR'S STANDING MEMORY PUT INTO ONE RUN'S PROMPT (#331).
+ *
+ * A remark reaches a run as quoted evidence, bounded — so a receipt has to say which remarks,
+ * identifiably enough to find the rows again, and how many the bound left out. "This run was
+ * told three things" is misleading when there were nine and six did not fit, and reading a
+ * claim against what the run was told is exactly the question the distinction answers. The
+ * words are here as well as the identifiers because a remark is short and a receipt that needs
+ * a second query to be legible is read once and never again.
+ */
+export const CarriedSteeringSchema = z.strictObject({
+  id: z.string(),
+  text: z.string(),
+  /** `record:<id>` for a remark about one record, empty for a standing one. */
+  about: z.string(),
+  at: z.string(),
+});
+export type CarriedSteering = z.infer<typeof CarriedSteeringSchema>;
 
 /** The receipt every run writes last (§7): what it was asked, read, produced and cost. */
 export const ReceiptSchema = z.strictObject({
@@ -1465,6 +1484,21 @@ export const ReceiptSchema = z.strictObject({
       bytes: z.number().int().nonnegative(),
       payload: z.unknown().optional(),
       withheld: z.literal("too-large").optional(),
+    })
+    .optional(),
+  /**
+   * WHAT THE OPERATOR'S MEMORY PUT INTO THIS RUN'S PROMPT (#331).
+   *
+   * `carried` is the remarks the run was quoted, in the order the prompt quoted them, and
+   * `omitted` is how many eligible remarks the prompt's bound left out. Absent for a run that
+   * reaches no model and for a review, whose prompt is composed from the record under review;
+   * present and empty on an exploration nobody has told anything, which is a different fact
+   * from "this run was not told what he said".
+   */
+  steering: z
+    .strictObject({
+      carried: z.array(CarriedSteeringSchema),
+      omitted: z.number().int().nonnegative(),
     })
     .optional(),
   costUsd: z.number().optional(),

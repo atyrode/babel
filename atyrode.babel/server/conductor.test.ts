@@ -3316,6 +3316,60 @@ test("a finished Code session whose citations the material served writes its rec
   expect(report.pulse.tick.refusals).toEqual({});
 });
 
+test("the receipt names the remarks this run was quoted, and how many the bound left out", async () => {
+  /*
+    A CLAIM IS READ AGAINST WHAT THE RUN WAS TOLD (#331). The posting wake decided which of the
+    operator's remarks fit the prompt and wrote them onto the run row; the settlement puts them
+    on the receipt, because a reviewer holding a receipt is the reader who needs them.
+
+    THE COUNT IS HALF OF IT. "This run was told one thing" is a different fact from "this run
+    was told one of four things", and only the second explains a claim about a subject he had
+    already asked Babel to leave alone.
+  */
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST),
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+  const quoted = {
+    carried: [
+      {
+        id: "stg_0001",
+        text: "stop proposing work on the staging queue, it is going away",
+        about: "",
+        at: "2026-09-14T09:00:00Z",
+      },
+    ],
+    omitted: 3,
+  };
+  await db.run(`UPDATE runs SET preparation = ? WHERE id = ?`, [
+    JSON.stringify({ preset: "read-whats-new", selected: 1, steering: quoted }),
+    runId,
+  ]);
+
+  await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  const run = (await db.query(`SELECT payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(receipt["steering"]).toEqual(quoted);
+});
+
 test("a citation the material never served is refused, and the refusal is spend with its claim settled", async () => {
   const db = openDatabase();
   await seed(db);

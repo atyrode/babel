@@ -2194,6 +2194,12 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
     const refusedCode = reason === "" ? null : refusalCode(reason);
     if (refusedCode !== null) count(refusals, refusedCode);
+    // WHAT THE PROMPT QUOTED THE OPERATOR AS SAYING (#331), written onto the run row when the
+    // session was posted. It is on the receipt so a claim can be read against what the run was
+    // told — which remarks, and how many the bound left out.
+    const told = ReceiptSchema.shape.steering.safeParse(
+      preparationOf(run.preparation)?.["steering"],
+    );
 
     const receipt: Receipt = {
       runId: run.id,
@@ -2204,6 +2210,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       ...(preparationOf(run.preparation) === undefined
         ? {}
         : { preparation: preparationOf(run.preparation) }),
+      ...(told.success && told.data !== undefined ? { steering: told.data } : {}),
       startedAt: run.started_at,
       finishedAt: new Date(at).toISOString(),
       // A CLOSURE THE JOB REPORTED, not one inferred from the reason: a session an operator
