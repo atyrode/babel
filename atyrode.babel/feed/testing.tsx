@@ -14,7 +14,7 @@ if (!GlobalRegistrator.isRegistered) {
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { HostServices, OpenPanelOutcome, OpenPanelRequest } from "@manifold/plugin";
-import type { ActionOutcome } from "@manifold/protocol";
+import type { ActionOutcome, MachineSummary } from "@manifold/protocol";
 import {
   look,
   type FeedPost,
@@ -62,6 +62,15 @@ export interface Fake {
 export class Denial extends Error {}
 
 /**
+ * The machines the hub knows, for the one control on these panels that posts a run: a coverage
+ * cell's launch picks a machine, and an offline one is offered as unpickable rather than hidden.
+ */
+export const MACHINES: readonly MachineSummary[] = [
+  { id: "m-dev-01", name: "dev-01", online: true },
+  { id: "m-old", name: "retired-box", online: false },
+];
+
+/**
  * @param answers one per door, by its short name.
  * @param opens what the host answers `openPanel` with — a tile by default, so a test that is
  *   not about seats needs to say nothing, and a refusal is one line when it is.
@@ -104,6 +113,7 @@ export function fakeHost(
       listeners.add(handler);
       return () => listeners.delete(handler);
     },
+    machines: (): Promise<readonly MachineSummary[]> => Promise.resolve(MACHINES),
     status: "open" as const,
     on: () => () => undefined,
   };
@@ -142,6 +152,8 @@ export interface Mounted {
   text(): string;
   press(selector: string): Promise<void>;
   type(selector: string, value: string): Promise<void>;
+  /** Picks an option in a `<select>`: what a picker receives is a `change`, not a keystroke. */
+  choose(selector: string, value: string): Promise<void>;
   key(key: string): Promise<void>;
   settle(): Promise<void>;
   /** Lets a real timer fire — the halo, the fold and the toast are all wall-clock. */
@@ -177,6 +189,13 @@ export async function mount(node: ReactElement): Promise<Mounted> {
       await act(async () => {
         Reflect.set(field, "value", value);
         field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    },
+    choose: async (selector, value) => {
+      const field = one(selector);
+      await act(async () => {
+        Reflect.set(field, "value", value);
+        field.dispatchEvent(new Event("change", { bubbles: true }));
       });
     },
     key: async (key) => {
@@ -352,9 +371,16 @@ export function topic(overrides: Partial<TopicResult> = {}): TopicResult {
         recipeId: "outcome-integrity",
         title: "Outcome integrity and unresolved state",
         records: 2,
+        runnable: true,
       },
-      { recipeId: "test-economics", title: "Test economics", records: 0 },
-      { recipeId: "time-and-spend", title: "Time sinks and token spend", records: 0 },
+      { recipeId: "test-economics", title: "Test economics", records: 0, runnable: true },
+      {
+        recipeId: "time-and-spend",
+        title: "Time sinks and token spend",
+        records: 0,
+        // Declared and turned off: a true absence the page names and offers nowhere.
+        runnable: false,
+      },
     ],
     feed: feed({ posts: [post()], total: 1 }),
     ...overrides,

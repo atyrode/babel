@@ -11,6 +11,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A lens that never looked at a topic can be pointed at it.** The `topic` door has answered
+  `coverage` since it shipped — one row per recipe the policy declares, with the records filed
+  under that topic reached through each, and the rows at zero were the point. A topic page read
+  "never looked: Test economics", and reading a blank cell is not acting on one: nothing turned it
+  into a run. Under the grid there is now a fold, **Point a lens that never looked here**, with a
+  machine, a Code profile and one button per zero cell that could actually run.
+
+  **It is the same launch Watch posts, and that is proven rather than asserted.** The request is
+  assembled by one function both surfaces call, and a test builds the coverage cell's document and
+  the Start form's document for the same machine, topic, lens and profile and requires them equal
+  — the ceilings, the selection, the spend and the `machines:run` discharge are the door's, with
+  no second route. `doors/launch.ts` is byte-identical; only its test grew. That comparison has to
+  live in `test/`, because the lint boundary that landed with the Jev scaffold forbids one part
+  importing another, and it refused the first version of the proof.
+
+  A lens the policy has turned off is named in the prose and has no button, because the door would
+  refuse it by name. A topic whose policy declares no recipe renders no control and reads nothing
+  — an affordance for an empty set is worse than none.
 - **A run can propose a typed next action, and only the operator answers it.** The retired product
   had five typed next actions a run could propose — draft an issue, propose a fact, store a
   memory, ask the operator, develop further — and an operator ledger of accept and decline over

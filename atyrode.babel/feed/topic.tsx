@@ -1,15 +1,18 @@
 import { useEffect, useState, type FormEvent, type ReactElement } from "react";
 import type { HostServices, PanelProps } from "@manifold/plugin";
 import { usePolledResource } from "@manifold/plugin/hooks";
+import type { MachineSummary } from "@manifold/protocol";
 import { Cluster, Disclosure, ScrollRegion, Stack } from "@manifold/ui";
-import { ACTIONS, FEED_PLUGIN_ID, INTEREST_STATES } from "../contract.ts";
+import { ACTIONS, FEED_PLUGIN_ID, INTEREST_STATES, asLaunchRequest, door } from "../contract.ts";
 import {
   BABEL_NODE,
   ask,
   refusal,
   since,
   useShown,
+  type CoverageRow,
   type FeedQuery,
+  type ProfilesResult,
   type TopicResult,
   type TopicRow,
 } from "./api.ts";
@@ -146,7 +149,7 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
                 ))}
               </ul>
             )}
-            <Coverage rows={read.value?.coverage ?? []} />
+            <Coverage host={host} topic={row} rows={read.value?.coverage ?? []} />
             {row !== null && <AskBabel host={host} topic={row} />}
           </Stack>
         </header>
@@ -156,22 +159,32 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
 }
 
 /**
- * WHICH LENSES HAVE LOOKED HERE, AND WHICH NEVER HAVE.
+ * WHICH LENSES HAVE LOOKED HERE, WHICH NEVER HAVE — AND A RUN FOR ONE THAT NEVER HAS.
  *
  * The never-looked group is the reason this exists, so it is last and it is labelled: a grid
  * whose zeros were mixed in with its counts would need reading rather than glancing, and the
  * question it answers — what has nobody examined about this — is the one the surface could not
  * ask at all. A hub whose policy names no recipe renders nothing, the way an absent section
  * renders as nothing rather than as an empty heading.
+ *
+ * READING A BLANK CELL IS NOT ACTING ON ONE (#330), so the zeros the launch door would accept
+ * carry the launch. Only those: a lens the operator turned off, or one his policy names without
+ * a body, is named in the sentence above and offered nowhere, and a topic no entity answers to
+ * has nothing to scope a run to.
  */
 function Coverage({
+  host,
+  topic,
   rows,
 }: {
-  rows: readonly { recipeId: string; title: string; records: number }[];
+  host: HostServices;
+  topic: TopicRow | null;
+  rows: readonly CoverageRow[];
 }): ReactElement | null {
   if (rows.length === 0) return null;
   const looked = rows.filter((row) => row.records > 0);
   const never = rows.filter((row) => row.records === 0);
+  const offers = never.filter((row) => row.runnable);
   return (
     <section className="babel-coverage">
       {looked.length > 0 && (
@@ -184,7 +197,202 @@ function Coverage({
           never looked: {never.map((row) => row.title || row.recipeId).join(" · ")}
         </p>
       )}
+      {topic !== null && offers.length > 0 && (
+        <LookHere host={host} topic={topic} lenses={offers} />
+      )}
     </section>
+  );
+}
+
+/** What a launch cannot be posted without, in the order an operator would supply it. */
+const NO_MACHINE = "Pick a machine to run on.";
+const NO_PROFILE =
+  "Pick the Code profile this run is posted on — the model, the thinking level and the account " +
+  "are its.";
+
+/**
+ * THE LAUNCH BEHIND A BLANK CELL, and it is the launch Watch posts (#330).
+ *
+ * A run reaches a model, so it is a Code session and it needs a machine and a Code profile —
+ * and this form asks for both, because a control that posted a run by a shorter route than the
+ * Start form would be a hole in the spend discipline rather than a convenience. What the press
+ * sends is `lensLaunch`'s request, through the same `launch` door, under the same ceilings, with
+ * the profile revision the operator was shown; the only thing this surface knows that Watch's
+ * form does not is WHICH lens and WHICH topic, which is the whole of what a coverage cell adds.
+ *
+ * The machines and the profiles are read when the fold OPENS and after a refusal, never polled:
+ * neither changes while a reader is deciding, and a topic page that polled them would pay for a
+ * control nobody opened. A refused press re-reads them, because the likeliest refusal is Code's
+ * list having moved under the choice — which is what `code_stale_preferences` says and what a
+ * re-read explains.
+ */
+function LookHere({
+  host,
+  topic,
+  lenses,
+}: {
+  host: HostServices;
+  topic: TopicRow;
+  lenses: readonly CoverageRow[];
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  const [machines, setMachines] = useState<readonly MachineSummary[]>([]);
+  /*
+    NOT ASKED YET IS ITS OWN STATE. Code's list has three — refused, empty, and a list — and a
+    fold nobody opened has put no question at all, which must not print "you have saved none"
+    as the answer to it.
+  */
+  const [profiles, setProfiles] = useState<ProfilesResult | null>(null);
+  const [machineId, setMachineId] = useState("");
+  const [containerId, setContainerId] = useState("");
+  const [starting, setStarting] = useState("");
+  const [note, setNote] = useState("");
+  const [failure, setFailure] = useState("");
+
+  async function readWhatALaunchNeeds(): Promise<void> {
+    try {
+      const [held, saved] = await Promise.all([
+        host.client.machines(),
+        ask(host, ACTIONS.profiles, {}),
+      ]);
+      setMachines(held);
+      setProfiles(saved);
+    } catch (failed) {
+      setFailure(refusal(failed));
+    }
+  }
+
+  const saved = profiles?.profiles ?? [];
+  const unavailable = profiles?.unavailable ?? "";
+  const profile = saved.find((row) => row.containerId === containerId) ?? null;
+  const blocked =
+    unavailable !== ""
+      ? unavailable
+      : machineId === ""
+        ? NO_MACHINE
+        : profile === null
+          ? NO_PROFILE
+          : "";
+
+  async function start(lens: CoverageRow): Promise<void> {
+    if (profile === null || machineId === "") return;
+    setStarting(lens.recipeId);
+    setNote("");
+    setFailure("");
+    try {
+      const started = await ask(
+        host,
+        ACTIONS.launch,
+        // The preset that scopes an explore to one entity, that entity, and the one recipe —
+        // and nothing else this surface decides. The node, the ceilings, the selection and the
+        // spend are the same ones Watch's form posts under.
+        asLaunchRequest({
+          machineId,
+          preset: "explore-topic",
+          entityId: topic.id,
+          recipes: [lens.recipeId],
+          profile: { containerId: profile.containerId, expectedRevision: profile.revision },
+        }),
+      );
+      setNote(
+        `Started ${lens.title || lens.recipeId} as ${started.runId} — Code's job is ` +
+          `${started.jobId}. Watch follows it.`,
+      );
+    } catch (failed) {
+      setFailure(refusal(failed));
+      await readWhatALaunchNeeds();
+    } finally {
+      setStarting("");
+    }
+  }
+
+  return (
+    <Disclosure
+      className="babel-coverage-offer"
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) void readWhatALaunchNeeds();
+      }}
+      header="Point a lens that never looked here"
+    >
+      <Stack className="babel-confirm" gap="var(--babel-space-2)">
+        <p className="babel-note">
+          One Code session over this topic&apos;s own sessions, performing that one recipe. It is
+          the launch Watch posts, on the machine and the Code profile you pick here, under the
+          ceilings in force.
+        </p>
+        <label>
+          Machine
+          <select
+            data-field="machine"
+            value={machineId}
+            onChange={(event) => setMachineId(event.currentTarget.value)}
+          >
+            <option value="">Pick a machine…</option>
+            {machines.map((machine) => (
+              <option key={machine.id} value={machine.id} disabled={!machine.online}>
+                {machine.name}
+                {machine.online ? "" : " · offline"}
+              </option>
+            ))}
+          </select>
+        </label>
+        {/*
+          CODE'S LIST AND ITS ABSENCE ARE BOTH ANSWERS, and the third state — Code answered and
+          the operator has saved none — is its own sentence: an empty picker with no word beside
+          it reads as the last when it is the first.
+        */}
+        {profiles === null ? null : unavailable !== "" ? (
+          <p className="babel-note" data-field="profiles-unavailable">
+            {unavailable}
+          </p>
+        ) : saved.length === 0 ? (
+          <p className="babel-note" data-field="profiles-empty">
+            Code holds no saved profile yet. Open a workspace in Code, choose the model, the
+            thinking level and the account there, and it appears here.
+          </p>
+        ) : (
+          <label>
+            Code profile
+            <select
+              data-field="profile"
+              value={containerId}
+              onChange={(event) => setContainerId(event.currentTarget.value)}
+            >
+              <option value="">Pick a Code profile…</option>
+              {saved.map((row) => (
+                <option key={row.containerId} value={row.containerId}>
+                  {row.containerId}
+                  {row.model === "" ? " · no selection Code can review" : ` · ${row.model}`}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <div className="babel-acts-bar" role="group" aria-label="Lenses that never looked here">
+          {lenses.map((lens) => (
+            <button
+              type="button"
+              key={lens.recipeId}
+              data-lens={lens.recipeId}
+              data-action={door(ACTIONS.launch)}
+              disabled={starting !== "" || blocked !== ""}
+              onClick={() => void start(lens)}
+            >
+              {starting === lens.recipeId ? "Starting…" : `Look for ${lens.title || lens.recipeId}`}
+            </button>
+          ))}
+        </div>
+        {blocked !== "" && <p className="babel-note">{blocked}</p>}
+        {note !== "" && <p className="babel-note">{note}</p>}
+        {failure !== "" && (
+          <p className="babel-error" role="alert">
+            {failure}
+          </p>
+        )}
+      </Stack>
+    </Disclosure>
   );
 }
 
