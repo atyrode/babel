@@ -400,3 +400,114 @@ test("the mark at creation and the store's own count are one definition", async 
     store.close();
   }
 });
+
+// ------------------------------------------------------------------------------- next actions
+
+test("a run proposes a typed next action on a record it wrote, and rules on nothing", async () => {
+  const written = settle(
+    answer({
+      statement: "the wrapper tests only its own control flow",
+      claim: "every assertion is about the mock",
+      extra: {
+        next_actions: [
+          {
+            record: "h1",
+            kind: "draft-issue",
+            summary: "Delete the wrapper and test the call it wraps.",
+            rationale: "One repository, one file, a bounded change.",
+            workspace: "/home/alex/babel",
+          },
+        ],
+      },
+    }),
+  );
+  const proposed = written.rows[JOB_OUTPUT_FILES.nextActions] ?? [];
+  const records = written.rows[JOB_OUTPUT_FILES.records] ?? [];
+  const hypothesis = records.find((row) => row["kind"] === "hypothesis");
+  expect(proposed).toHaveLength(1);
+  expect(proposed[0]?.["record_id"]).toBe(hypothesis?.["id"] as Cell);
+  expect(proposed[0]?.["kind"]).toBe("draft-issue");
+  expect(proposed[0]?.["proposed_by_kind"]).toBe("run");
+
+  // EVERYTHING ONE SETTLEMENT CAN WRITE, listed. A run's whole reach is these five files, and a
+  // ruling — on the record (`dispositions`) or on the action it proposed
+  // (`next_action_rulings`) — has no file among them and therefore no path out of a run.
+  expect(Object.keys(written.rows).sort()).toEqual(
+    [
+      JOB_OUTPUT_FILES.records,
+      JOB_OUTPUT_FILES.edges,
+      JOB_OUTPUT_FILES.statusEvents,
+      JOB_OUTPUT_FILES.questions,
+      JOB_OUTPUT_FILES.nextActions,
+    ].sort(),
+  );
+
+  const store = await openTestStore(Date.parse("2026-09-18T00:00:00.000Z"));
+  try {
+    for (const row of records) await insert(store.db, "records", row);
+    for (const row of proposed) await insert(store.db, "next_actions", row);
+    // What the reader is offered: the proposal, and no answer to it. A run that could rule would
+    // have left a standing here, and this is the assertion that says it did not.
+    const peel = await store.store.record(String(hypothesis?.["id"]));
+    expect(peel?.nextActions).toEqual([
+      {
+        id: String(proposed[0]?.["id"]),
+        kind: "draft-issue",
+        summary: "Delete the wrapper and test the call it wraps.",
+        rationale: "One repository, one file, a bounded change.",
+        proposedBy: "run_1",
+        at: "2026-09-18T00:00:00.000Z",
+        standing: "proposed",
+        history: [],
+      },
+    ]);
+    expect(await store.db.query(`SELECT COUNT(*) AS n FROM next_action_rulings`)).toEqual([
+      { n: 0n },
+    ]);
+    expect(await store.db.query(`SELECT COUNT(*) AS n FROM dispositions`)).toEqual([{ n: 0n }]);
+  } finally {
+    store.close();
+  }
+});
+
+test("a proposed action a retry re-proposes is the same row, and one on a record nobody holds is dropped", () => {
+  const twice = [
+    settle(
+      answer({
+        statement: "the wrapper tests only its own control flow",
+        claim: "every assertion is about the mock",
+        extra: {
+          next_actions: [{ record: "h1", kind: "develop-further", summary: "One more pass." }],
+        },
+      }),
+    ),
+    settle(
+      answer({
+        statement: "the wrapper tests only its own control flow",
+        claim: "every assertion is about the mock",
+        extra: {
+          next_actions: [{ record: "h1", kind: "develop-further", summary: "One more pass." }],
+        },
+      }),
+    ),
+  ].map((written) => (written.rows[JOB_OUTPUT_FILES.nextActions] ?? [])[0]?.["id"]);
+  expect(twice[0]).toBe(twice[1]);
+
+  // A well-formed identifier this hub does not hold: the records the run produced stand and the
+  // suggestion about a record that is not here is reported, because a `record_id` referencing
+  // nothing would fail the whole batch.
+  const stranger = settle(
+    answer({
+      statement: "the wrapper tests only its own control flow",
+      claim: "every assertion is about the mock",
+      extra: {
+        next_actions: [{ record: "fnd_abcdef01", kind: "store-memory", summary: "Remember this." }],
+      },
+    }),
+  );
+  expect(stranger.rows[JOB_OUTPUT_FILES.nextActions]).toEqual([]);
+  expect(stranger.rows[JOB_OUTPUT_FILES.records]).toHaveLength(2);
+  expect(stranger.notes).toEqual([
+    "a store-memory was proposed on fnd_abcdef01, which this hub does not hold, so it was dropped",
+  ]);
+});

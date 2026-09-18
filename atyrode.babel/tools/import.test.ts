@@ -440,6 +440,17 @@ const GO_DURABLE_SCHEMA: readonly string[] = [
   created_at     TEXT NOT NULL,
   payload_json   TEXT NOT NULL
 )`,
+  `CREATE TABLE disposition_ledger(
+  id             TEXT PRIMARY KEY,
+  disposition_id TEXT NOT NULL REFERENCES disposition_proposal(id),
+  seq            INTEGER NOT NULL,
+  ruling         TEXT NOT NULL,
+  operator_id    TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  recorded_at    TEXT NOT NULL,
+  payload_json   TEXT NOT NULL,
+  UNIQUE(disposition_id, seq)
+)`,
 ];
 
 /** `catalog.db` as `v0.4.0:internal/catalog` migrates it (schema_version 4). */
@@ -933,6 +944,16 @@ function seedDurable(path: string): void {
     `INSERT INTO disposition_proposal VALUES ('dis_1', 'hypothesis', 'hyp_a', 'develop-further', 'run', 'run-2', 'd1', 1, '2026-09-02T11:00:00Z', ?)`,
     [JSON.stringify({ summary: "extend the observation", rationale: "avoids a sixth copy" })],
   );
+  // One proposal under a word this build does not render, so the skip and its note are exercised
+  // by the crossing rather than only described by it.
+  db.run(
+    `INSERT INTO disposition_proposal VALUES ('dis_2', 'hypothesis', 'hyp_a', 'keep-going', 'run', 'run-2', 'd2', 1, '2026-09-02T12:00:00Z', ?)`,
+    [JSON.stringify({ summary: "carry on" })],
+  );
+  db.run(
+    `INSERT INTO disposition_ledger VALUES ('dln_1', 'dis_1', 1, 'accepted', 'alex', 1, '2026-09-03T09:00:00Z', ?)`,
+    [JSON.stringify({ note: "worth a pass" })],
+  );
   db.close();
 }
 
@@ -1128,6 +1149,31 @@ test("the Go catalog's fourth harness is Babel's own, and crosses as an agent se
   expect(rows.map((row) => Number(row["live"]))).toEqual([0, 0]);
 });
 
+test("a proposed next action crosses with its kind intact, and so does the answer to it", async () => {
+  const handle = store as PluginDatabaseAdmin;
+  // The plugin kept the retired product's own five words, so the kind travels untranslated and
+  // the rationale stays reachable at the `$.rationale` the peel reads.
+  const proposal = await scalar(`SELECT * FROM next_actions WHERE id = 'dis_1'`);
+  expect([
+    proposal["record_id"],
+    proposal["kind"],
+    proposal["proposed_by_kind"],
+    proposal["proposed_by_id"],
+    proposal["summary"],
+  ]).toEqual(["hyp_a", "develop-further", "run", "run-2", "extend the observation"]);
+
+  const ledger = await scalar(`SELECT * FROM next_action_rulings WHERE next_action_id = 'dis_1'`);
+  expect([ledger["decision"], ledger["operator_id"], ledger["note"]]).toEqual([
+    "accepted",
+    "alex",
+    "worth a pass",
+  ]);
+
+  // The `keep-going` row is not in the vocabulary, so it is skipped rather than written under a
+  // word nothing renders; the note above says how many.
+  expect(await handle.query(`SELECT id FROM next_actions ORDER BY id`)).toEqual([{ id: "dis_1" }]);
+});
+
 test("the operator's acts and Babel's votes arrive with their provenance", async () => {
   const ruling = await scalar(`SELECT * FROM dispositions WHERE record_id = 'pro_a'`);
   expect([ruling["disposition"], ruling["actor_id"], ruling["note"]]).toEqual([
@@ -1271,8 +1317,10 @@ test("the Reality Ledger crosses whole, and a plan carries the ruling that settl
 
 test("what the schema has no home for is reported rather than dropped in silence", () => {
   const joined = notes.join("\n");
-  expect(joined).toContain("disposition_proposal holds 1 rows with no home");
-  expect(joined).toContain("Add `'action'` to plans.kind's CHECK");
+  expect(joined).toContain(
+    "1 disposition_proposal rows name a kind outside next_actions.kind's CHECK",
+  );
+  expect(joined).toContain("disposition_invitation");
   expect(joined).toContain("entities.created_by is empty");
   expect(joined).toContain("questions.raised_by_id is empty");
   expect(joined).toContain("policies.record_id");

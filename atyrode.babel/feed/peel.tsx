@@ -1,7 +1,8 @@
 import { useState, type ReactElement, type ReactNode } from "react";
 import type { HostServices } from "@manifold/plugin";
 import { Chip, Cluster, Disclosure, Stack } from "@manifold/ui";
-import { since, type RecordPeel } from "./api.ts";
+import { ACTIONS } from "../contract.ts";
+import { ask, refusal, since, type RecordPeel } from "./api.ts";
 import {
   KIND_LABELS,
   KIND_TONES,
@@ -80,6 +81,121 @@ function repository(of: RecordPeel["repository"][number]): string {
   return of.provenance === "observed"
     ? `observed in ${of.remote}`
     : `named in the evidence, not observed: ${of.remote}`;
+}
+
+type ProposedAction = RecordPeel["nextActions"][number];
+
+/**
+ * THE VOCABULARY AS WHAT IT ASKS FOR. The stored words are wire values a run writes; a reader
+ * deciding whether to accept one reads the request, not the enum.
+ */
+const NEXT_ACTION_ASKS: Record<ProposedAction["kind"], string> = {
+  "draft-issue": "Draft an issue",
+  "propose-reality-fact": "Propose a fact for the ledger",
+  "store-memory": "Keep this as a memory",
+  "ask-question": "Put a question to you",
+  "develop-further": "Explore this further",
+};
+
+/**
+ * ONE PROPOSED NEXT ACTION, AND THE OPERATOR'S ANSWER TO IT (#340).
+ *
+ * It sits at the claim depth beside the rulings, because it is the same kind of decision and
+ * the reader is already there. Two presses and an optional note: every action is a proposal
+ * until a person authorizes it, and there is no third answer that would half-authorize one.
+ *
+ * ACCEPTING ONE DOES NOTHING BUT RECORD THE ACCEPTANCE. Publishing, applying and writing to a
+ * source repository are outside Babel, so the sentence under the buttons says so rather than
+ * letting a press imply an issue was opened.
+ *
+ * The standing shown after a press is the one the door returned; the panel re-reads on the
+ * same event, so this is what the row says for the moment between the two.
+ */
+function ProposedNextAction({
+  host,
+  action,
+  onActed,
+}: {
+  host: HostServices;
+  action: ProposedAction;
+  onActed: ActedHandler;
+}): ReactElement {
+  const [standing, setStanding] = useState(action.standing);
+  const [note, setNote] = useState("");
+  const [working, setWorking] = useState(false);
+  const [failure, setFailure] = useState("");
+
+  async function answer(decision: "accepted" | "declined"): Promise<void> {
+    setWorking(true);
+    setFailure("");
+    try {
+      const result = await ask(host, ACTIONS.decide, {
+        nextActionId: action.id,
+        decision,
+        note: note.trim(),
+      });
+      setStanding(result.standing);
+      setNote("");
+      onActed("decide", decision, `${NEXT_ACTION_ASKS[action.kind]} — ${decision}.`);
+    } catch (reason) {
+      setFailure(refusal(reason));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <section className="babel-next-action" data-standing={standing}>
+      <p className="babel-next-action-ask">
+        <span className="babel-next-action-kind">{NEXT_ACTION_ASKS[action.kind]}</span>{" "}
+        {action.summary}
+      </p>
+      {action.rationale !== "" && <p className="babel-note">{action.rationale}</p>}
+      {action.history.length > 0 && (
+        <ul className="babel-history">
+          {action.history.map((entry) => (
+            <li key={`${entry.at}-${entry.decision}`}>
+              <span className="babel-history-stance">{entry.decision}</span>
+              {entry.note !== "" && <span className="babel-quote"> {entry.note}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="babel-acts-text" role="group" aria-label="Answer this proposed action">
+        <button
+          type="button"
+          data-decision="accepted"
+          disabled={working || standing === "accepted"}
+          onClick={() => void answer("accepted")}
+        >
+          Accept
+        </button>
+        <button
+          type="button"
+          data-decision="declined"
+          disabled={working || standing === "declined"}
+          onClick={() => void answer("declined")}
+        >
+          Decline
+        </button>
+        <input
+          type="text"
+          value={note}
+          aria-label="Why, in your own words"
+          placeholder="why, if it matters"
+          onInput={(event) => setNote(event.currentTarget.value)}
+        />
+      </div>
+      <p className="babel-note">
+        Accepting records that you accepted it. Babel publishes nothing and opens nothing.
+      </p>
+      {failure !== "" && (
+        <p className="babel-refusal" role="alert">
+          {failure}
+        </p>
+      )}
+    </section>
+  );
 }
 
 function Depth({
@@ -185,6 +301,12 @@ export function Peel({
           ) : (
             <RuleActs host={host} id={post.id} acts={POST_ACTS} onActed={onActed} />
           )}
+          {/* WHAT A RUN PROPOSED BE DONE, under the ruling and never above it: the record's
+              standing is the question the reader came with, and what to do about it is the
+              one that follows. An empty list renders as nothing at all. */}
+          {peel.nextActions.map((action) => (
+            <ProposedNextAction key={action.id} host={host} action={action} onActed={onActed} />
+          ))}
         </Stack>
       </Depth>
 

@@ -76,12 +76,12 @@ import manifestJson from "./manifest.json";
 */
 
 /**
- * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column and table
- * `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
- * `2026-09-14-store-v1-drains` — recorded under the same key by the enable before it — is its
- * predecessor.
+ * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column, table, index and
+ * trigger `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
+ * `2026-09-14-store-v1-code-session-silence` — recorded under the same key by the enable before
+ * it — is its predecessor.
  */
-const STORE_MIGRATION = "2026-09-14-store-v1-code-session-silence";
+const STORE_MIGRATION = "2026-09-14-store-v1-next-actions";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -444,7 +444,7 @@ export const plugin: ServerPluginDef = {
         "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
         [SENTINEL_TABLE],
       );
-      // One batch, so a store either exists whole or was never begun; 58 statements against a
+      // One batch, so a store either exists whole or was never begun; 65 statements against a
       // bound of 256, which is the reason the schema may stay one list.
       if (Number(created[0]?.n ?? 0) === 0) {
         await database.batch(SCHEMA_V1.map((sql) => ({ sql })));
@@ -452,19 +452,21 @@ export const plugin: ServerPluginDef = {
         // A store an earlier shape created reaches this one by what it is missing and nothing
         // else. SQLite has no `ADD COLUMN IF NOT EXISTS` and no `CREATE TABLE IF NOT EXISTS`
         // worth trusting here, so each addition is asked for by name first — a column of its
-        // table, or the table itself when it names no column: this runs on every enable and
-        // must do nothing on all but one of them.
+        // table, or the schema object itself when it names no column: this runs on every enable
+        // and must do nothing on all but one of them. The object query carries no `type`
+        // filter, because a table, an index and a trigger share one namespace in SQLite and an
+        // append-only table whose triggers could not be added would append by convention.
         const pending: SqlStatement[] = [];
         for (const addition of SCHEMA_ADDITIONS) {
           const held =
             addition.column === undefined
               ? await database.query<{ n: number }>(
-                  "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
-                  [addition.table],
+                  "SELECT count(*) AS n FROM sqlite_master WHERE name = ?",
+                  [addition.object],
                 )
               : await database.query<{ n: number }>(
                   "SELECT count(*) AS n FROM pragma_table_info(?) WHERE name = ?",
-                  [addition.table, addition.column],
+                  [addition.object, addition.column],
                 );
           if (Number(held[0]?.n ?? 0) === 0) pending.push({ sql: addition.sql });
         }

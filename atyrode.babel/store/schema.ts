@@ -6,8 +6,9 @@
   provenance survives the rewrite; the crossing runs once and the Go stores are then retired.
 
   What changed in the crossing, and why:
-  - ninety-four tables become twenty-three, and the shapes since have added three (`budgets`,
-    #260, `run_progress`, #261, and `drains`, #258). The Go tree kept a table per concept per
+  - ninety-four tables become twenty-three, and the shapes since have added five (`budgets`,
+    #260, `run_progress`, #261, `drains`, #258, and `next_actions` with `next_action_rulings`,
+    #340). The Go tree kept a table per concept per
     package; here a record is a record whatever its kind, an edge is an edge whatever it
     relates, and a revision is a row that supersedes another rather than a parallel table of
     revisions.
@@ -20,7 +21,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 6 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 7 } as const;
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -137,6 +138,85 @@ const DRAINS_TABLE = `CREATE TABLE drains(
      CHECK ((state IN ('running','closing')) = (finished_at IS NULL)),
      CHECK (state != 'closing' OR ending != '')
    ) STRICT`;
+
+/**
+ * WHAT A RUN PROPOSES BE DONE NEXT, AND WHAT THE OPERATOR ANSWERED (#340) — spelled once and
+ * created twice, for the reason `budgets` and `drains` are.
+ *
+ * A NEXT ACTION IS NOT A RULING, and these are two tables rather than one because that
+ * distinction is the product. `dispositions` is a verdict on the RECORD — is this claim any
+ * good — and is the operator's alone. A row in `next_actions` is a proposed action OUTSIDE
+ * Babel — draft an issue, propose a fact, store a memory, ask a question, explore it further —
+ * which a run may raise because raising it authorizes nothing. Folding the two together would
+ * make "accepted" mean two things in one corpus, exactly where an acceptance rate is supposed
+ * to be evidence about the output's quality.
+ *
+ * WHY A TABLE AND NOT A WIDER `plans.kind`. `plans` is the right SHAPE — subject, operation,
+ * payload, state, ruled_by/at/reason — and the importer used to ask for `'action'` in its
+ * CHECK. It cannot be given one. SQLite has no statement that widens a CHECK; the documented
+ * route is to build a new table, copy the rows, drop and rename. `SCHEMA_ADDITIONS` carries
+ * ONE statement per addition, applied only where the object it names is absent, so a store an
+ * earlier enable created would keep the narrow CHECK forever while a fresh one got the wide
+ * one — the two creation paths would stop producing the same shape, which is the failure the
+ * drains index was left out to avoid. A NEW TABLE IS THE ONLY ADDITIVE MOVE THE ENABLE HOOK
+ * CAN MAKE, and it is the move #258 and #261 made. Anyone reaching for a CHECK here should
+ * reach for a table instead.
+ *
+ * Two more things follow from `plans` being the wrong home even where it fits. A plan is ruled
+ * by UPDATE in place and this ledger appends, so a reconsideration stays readable. And
+ * accepting a plan APPLIES something to the store — an entity created, records filed — whereas
+ * accepting a next action applies nothing anywhere: §4.6 puts publishing and writing to a
+ * source repository outside Babel, so an acceptance is a durable record that a person accepted
+ * it and nothing else.
+ *
+ * `next_actions.kind` IS A CLOSED VOCABULARY where `edges.kind` is an open one, and the
+ * difference is who acts on the word. A relation is read; a next action is OFFERED as a choice,
+ * so a sixth kind nothing renders is a proposal that silently never appears.
+ *
+ * THE OPERATOR'S ANSWER IS A SECOND TABLE, not four columns on the first, because a run writes
+ * the first and nothing but a door writes the second. `contract.ts`'s `INGESTIBLE_TABLES` is
+ * the closed set a run's output may reach, `next_action_rulings` is not in it, and that is a
+ * compile error rather than a rule somebody remembers. There is no actor KIND column here
+ * either — `operator_id` is a person, on the same terms `dispositions` carries one — so no row
+ * can spell a run as the answerer. Reconsidering appends a higher `seq` and the standing is the
+ * newest entry, derived at read time so a stored status can never disagree with its ledger.
+ */
+const NEXT_ACTION_SCHEMA: readonly string[] = [
+  `CREATE TABLE next_actions(
+     id TEXT PRIMARY KEY,
+     record_id TEXT NOT NULL REFERENCES records(id),
+     kind TEXT NOT NULL CHECK (kind IN ('draft-issue','propose-reality-fact','store-memory',
+                                       'ask-question','develop-further')),
+     proposed_by_kind TEXT NOT NULL CHECK (proposed_by_kind IN ('run','operator','engine')),
+     proposed_by_id TEXT NOT NULL,
+     summary TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     payload TEXT NOT NULL
+   ) STRICT`,
+  `CREATE INDEX next_actions_by_record ON next_actions(record_id, created_at)`,
+  `CREATE TRIGGER next_actions_immutable BEFORE UPDATE ON next_actions BEGIN
+     SELECT RAISE(ABORT, 'a proposed action is never edited; decline it and propose the corrected one');
+   END`,
+  `CREATE TRIGGER next_actions_kept BEFORE DELETE ON next_actions BEGIN
+     SELECT RAISE(ABORT, 'a proposed action is never deleted; declining one leaves it readable');
+   END`,
+  `CREATE TABLE next_action_rulings(
+     id TEXT PRIMARY KEY,
+     next_action_id TEXT NOT NULL REFERENCES next_actions(id),
+     seq INTEGER NOT NULL,
+     decision TEXT NOT NULL CHECK (decision IN ('accepted','declined')),
+     operator_id TEXT NOT NULL,
+     note TEXT NOT NULL DEFAULT '',
+     recorded_at TEXT NOT NULL,
+     UNIQUE (next_action_id, seq)
+   ) STRICT`,
+  `CREATE TRIGGER next_action_rulings_immutable BEFORE UPDATE ON next_action_rulings BEGIN
+     SELECT RAISE(ABORT, 'a decision is never edited; reconsidering appends another');
+   END`,
+  `CREATE TRIGGER next_action_rulings_kept BEFORE DELETE ON next_action_rulings BEGIN
+     SELECT RAISE(ABORT, 'a decision is never deleted; it is the provenance an acceptance rate reads');
+   END`,
+];
 
 /** Statements of the first migration, in order; each is one `run`. */
 export const SCHEMA_V1: readonly string[] = [
@@ -279,6 +359,8 @@ export const SCHEMA_V1: readonly string[] = [
   `CREATE TRIGGER dispositions_kept BEFORE DELETE ON dispositions BEGIN
      SELECT RAISE(ABORT, 'a ruling is never deleted');
    END`,
+
+  ...NEXT_ACTION_SCHEMA,
 
   // Filings (§4.13): a record under an entity, with the rationale and who filed it; a re-filing
   // supersedes, a withdrawal is a row with `withdrawn = 1`, and `entity_id = ''` with a reason is
@@ -582,11 +664,11 @@ export const SCHEMA_V1: readonly string[] = [
    ) STRICT`,
 
   // ---------------------------------------------------------------- a drain (#258)
-  // No index: a deployment accumulates drains at the rate an operator decides to spend a
-  // window, the running ones are read by `state` over tens of rows, and an index here would be
-  // a statement `SCHEMA_ADDITIONS` cannot carry — an addition is one statement, so a store an
-  // earlier enable created would have the table and not the index, and the two creation paths
-  // would no longer produce the same shape.
+  // No index, and now for one reason rather than two: a deployment accumulates drains at the
+  // rate an operator decides to spend a window, and the running ones are read by `state` over
+  // tens of rows. The second reason — that an addition could only name a table, so a store an
+  // earlier enable created would have had the table and not the index — no longer holds:
+  // `SCHEMA_ADDITIONS` names any schema object (#340).
   DRAINS_TABLE,
   // ---------------------------------------------------------------- the crossing
   // The one-off import's own ledger: where each table's rows came from and how many.
@@ -610,15 +692,23 @@ export const SCHEMA_V1: readonly string[] = [
  * NAME and only where the thing is absent, and that is the pattern the next additive shape
  * follows. A MAJOR bump over data that already exists is the other mechanism, and it is the
  * engine's migration ledger, not this list.
+ *
+ * AN ADDITION NAMES ANY SCHEMA OBJECT, not only a table: SQLite gives every table, index and
+ * trigger in one database a name of its own, so `sqlite_master` answers for all three by name
+ * alone. That is why #340's two tables can arrive with their append-only triggers and their
+ * index — the #258 note above records that a drain's index had to be left out when the hook
+ * could only ask about tables, and a store that reached this shape by addition would otherwise
+ * have the tables and none of the triggers, which is an append-only ledger that appends by
+ * convention.
  */
 export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   {
-    table: "sessions",
+    object: "sessions",
     column: "live",
     sql: `ALTER TABLE sessions ADD COLUMN live INTEGER NOT NULL DEFAULT 0 CHECK (live IN (0, 1))`,
   },
   {
-    table: "sessions",
+    object: "sessions",
     column: "kind",
     sql:
       `ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'operator' ` +
@@ -626,13 +716,13 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   },
   {
     // A whole TABLE and therefore no column: the hook asks `sqlite_master` for it by name.
-    table: "budgets",
+    object: "budgets",
     sql: BUDGETS_TABLE,
   },
   // #261: where a running job is and what it has spent. A whole table rather than a column,
   // and additive in exactly the same sense — a build that does not know it never reads it.
   {
-    table: "run_progress",
+    object: "run_progress",
     sql: `CREATE TABLE run_progress(
      run_id TEXT PRIMARY KEY,
      job_id TEXT NOT NULL,
@@ -655,7 +745,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // #258: a drain. A whole table again, and the same additive sense: a build that does not know
   // it never reads it, and a store this enable creates gets it from `SCHEMA_V1` instead.
   {
-    table: "drains",
+    object: "drains",
     sql: DRAINS_TABLE,
   },
   // #279: a run that reaches a model is a Code session. Two nullable columns with no default,
@@ -663,12 +753,12 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // and NULL is the truth about it: those runs were posted by a launcher of Babel's own and
   // belong to no Code container.
   {
-    table: "runs",
+    object: "runs",
     column: "container_id",
     sql: `ALTER TABLE runs ADD COLUMN container_id TEXT`,
   },
   {
-    table: "runs",
+    object: "runs",
     column: "prepare_job_id",
     sql: `ALTER TABLE runs ADD COLUMN prepare_job_id TEXT`,
   },
@@ -680,7 +770,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // whole predicate is "the cycle before this one" has to be durable, so it is a column on the
   // row it is about; a run whose job answers resets it to zero.
   {
-    table: "runs",
+    object: "runs",
     column: "unreadable",
     sql: `ALTER TABLE runs ADD COLUMN unreadable INTEGER NOT NULL DEFAULT 0`,
   },
@@ -690,18 +780,36 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // an earlier shape wrote reads `{}` and cannot be relaunched, which is the truth about it:
   // nobody can say which Code profile a drain that named none was spending.
   {
-    table: "drains",
+    object: "drains",
     column: "profile",
     sql: `ALTER TABLE drains ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'`,
   },
+  // #340: a run's proposed next actions and the operator's ledger over them, derived from the
+  // one place they are spelled so the two creation paths cannot come to disagree.
+  ...NEXT_ACTION_SCHEMA.map(objectAddition),
 ];
 
 /**
  * One addition a later shape made to the store the first migration created: a column on one of
- * its tables, or — with no `column` — a table of its own.
+ * its tables, or — with no `column` — a schema object of its own, named as `sqlite_master`
+ * names it.
  */
 export interface SchemaAddition {
-  readonly table: string;
+  readonly object: string;
   readonly column?: string | undefined;
   readonly sql: string;
+}
+
+/**
+ * One whole-object `CREATE` statement as an addition, keyed on the name it creates.
+ *
+ * Deriving the name from the statement is what makes a shape spelled once creatable twice: a
+ * name written out beside the SQL is a second copy that a rename would leave behind, and the
+ * addition would then run on every enable and fail on the second.
+ */
+function objectAddition(sql: string): SchemaAddition {
+  const named = /^\s*CREATE\s+(?:TABLE|INDEX|TRIGGER)\s+([a-z_][a-z_0-9]*)/iu.exec(sql);
+  const object = named?.[1];
+  if (object === undefined) throw new Error(`a schema addition creates nothing named: ${sql}`);
+  return { object, sql };
 }

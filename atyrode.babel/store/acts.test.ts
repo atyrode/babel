@@ -20,6 +20,7 @@ import {
   clearBudget,
   setBudget,
   comment,
+  decide,
   declinePlan,
   file,
   importLedger,
@@ -236,6 +237,148 @@ test("standing is derived from the newest ruling, and refine is one row", async 
   expect(rule(store, { id: "pro_00000004", ruling: "accept", note: "" }, OPERATOR)).rejects.toThrow(
     /decided at the descendant/,
   );
+});
+
+// ---------------------------------------------------------------------------- next actions
+
+/** One proposed next action, as a run's settled output writes it (#340). */
+async function seedNextAction(
+  store: ActsStore,
+  args: { id: string; recordId: string; kind: string; by?: string },
+): Promise<string> {
+  await store.db.run(
+    `INSERT INTO next_actions(id, record_id, kind, proposed_by_kind, proposed_by_id, summary,
+       created_at, payload)
+     VALUES(?, ?, ?, 'run', ?, 'draft the issue', ?, '{"rationale":"one bounded change"}')`,
+    [args.id, args.recordId, args.kind, args.by ?? "run_1", stamp(store.now())],
+  );
+  return args.id;
+}
+
+test("answering a proposed action appends, reconsidering appends again, and neither row is rewritable", async () => {
+  const store = openStore();
+  await migrate(store);
+  await seedRecord(store, "fnd_00000070", "finding", "a finding");
+  await seedNextAction(store, {
+    id: "nxt_00000070",
+    recordId: "fnd_00000070",
+    kind: "draft-issue",
+  });
+
+  const declined = await decide(
+    store,
+    { nextActionId: "nxt_00000070", decision: "declined", note: "not this quarter" },
+    OPERATOR,
+  );
+  expect(declined).toMatchObject({
+    id: "nxt_00000070",
+    recordId: "fnd_00000070",
+    standing: "declined",
+    seq: 1,
+  });
+  // The same answer twice says nothing new and would put two indistinguishable rows in the
+  // history a later reader has to interpret.
+  expect(
+    decide(store, { nextActionId: "nxt_00000070", decision: "declined", note: "" }, OPERATOR),
+  ).rejects.toThrow(/already declined/);
+
+  const accepted = await decide(
+    store,
+    { nextActionId: "nxt_00000070", decision: "accepted", note: "the repository moved" },
+    OPERATOR,
+  );
+  expect(accepted.seq).toBe(2);
+  expect(
+    await rows<{ seq: bigint; decision: string; note: string; operator_id: string }>(
+      store,
+      `SELECT seq, decision, note, operator_id FROM next_action_rulings
+        WHERE next_action_id = ? ORDER BY seq`,
+      ["nxt_00000070"],
+    ),
+  ).toEqual([
+    { seq: 1n, decision: "declined", note: "not this quarter", operator_id: OPERATOR },
+    { seq: 2n, decision: "accepted", note: "the repository moved", operator_id: OPERATOR },
+  ]);
+
+  expect(
+    store.db.run(`UPDATE next_action_rulings SET decision = 'declined' WHERE seq = 2`),
+  ).rejects.toThrow(/never edited/);
+  expect(store.db.run(`DELETE FROM next_action_rulings WHERE seq = 1`)).rejects.toThrow(
+    /never deleted/,
+  );
+  // A proposal is a claim about what to do and is corrected by a new proposal, never in place.
+  expect(store.db.run(`UPDATE next_actions SET kind = 'store-memory'`)).rejects.toThrow(
+    /never edited/,
+  );
+
+  // AND THE RECORD IS STILL UNRULED. Accepting "draft an issue about this finding" is not
+  // accepting the finding, which is the distinction the two tables exist for.
+  expect(await rows(store, `SELECT seq FROM dispositions`)).toEqual([]);
+});
+
+test("a decision needs a proposal that exists and an operator who is somebody", async () => {
+  const store = openStore();
+  await migrate(store);
+  await seedRecord(store, "fnd_00000071", "finding", "a finding");
+  await seedNextAction(store, {
+    id: "nxt_00000071",
+    recordId: "fnd_00000071",
+    kind: "develop-further",
+  });
+
+  expect(
+    decide(store, { nextActionId: "nxt_00000072", decision: "accepted", note: "" }, OPERATOR),
+  ).rejects.toThrow(/no proposed action nxt_00000072/);
+  expect(
+    decide(store, { nextActionId: "nxt_00000071", decision: "accepted", note: "" }, ""),
+  ).rejects.toThrow(/has no operator/);
+  expect(await rows(store, `SELECT seq FROM next_action_rulings`)).toEqual([]);
+});
+
+test("a run cannot write an answer to its own proposal, and the store refuses to spell one", async () => {
+  const store = openStore();
+  await migrate(store);
+  await seedRecord(store, "fnd_00000073", "finding", "a finding");
+  await seedNextAction(store, {
+    id: "nxt_00000073",
+    recordId: "fnd_00000073",
+    kind: "draft-issue",
+  });
+
+  // THE LEDGER HAS NO ACTOR KIND, so there is no column a run could be named in as the answerer
+  // — the only writer is `decide`, which takes the operator from the dispatch's principal. The
+  // shape is the guarantee: a caller reaching past the door and writing raw SQL still cannot
+  // record WHO ruled as anything but a person, and the crossing's owner-only import is the one
+  // other path that reaches this table at all.
+  expect(
+    (
+      await rows<{ name: string }>(
+        store,
+        `SELECT name FROM pragma_table_info('next_action_rulings')`,
+      )
+    )
+      .map((row) => row.name)
+      .filter((name) => name.includes("kind")),
+  ).toEqual([]);
+
+  // And the vocabulary is closed at the table: a third answer that would half-authorize an
+  // action is refused by the CHECK rather than stored as a word nothing renders.
+  expect(
+    store.db.run(
+      `INSERT INTO next_action_rulings(id, next_action_id, seq, decision, operator_id, note,
+         recorded_at)
+       VALUES('nxr_x', 'nxt_00000073', 1, 'maybe', 'run_1', '', '2026-09-12T12:00:00.000000000Z')`,
+    ),
+  ).rejects.toThrow(/CHECK/);
+
+  // A proposal on a record nobody holds is refused too, so a run cannot attach one to nothing.
+  expect(
+    seedNextAction(store, {
+      id: "nxt_00000074",
+      recordId: "fnd_99999999",
+      kind: "draft-issue",
+    }),
+  ).rejects.toThrow(/FOREIGN KEY/);
 });
 
 // ---------------------------------------------------------------------------- topic plans
@@ -1336,11 +1479,11 @@ test("an overlay the standing lease cannot cover is refused, and so is one that 
 test("the importable tables are derived from the migration itself", () => {
   const tables = importableTables();
   // Twenty-three from the crossing, plus `budgets` (the overlay table #260 added),
-  // `run_progress` (#261) and `drains` (#258): the list is DERIVED, so a table added to the
-  // migration appears here whether or not the one-off import will ever name it — and one
-  // removed disappears, which is what `service_setup` did with Babel's own inference policy
-  // (#279).
-  expect(Object.keys(tables)).toHaveLength(26);
+  // `run_progress` (#261), `drains` (#258) and #340's `next_actions` with its
+  // `next_action_rulings` ledger: the list is DERIVED, so a table added to the migration appears
+  // here whether or not the one-off import will ever name it — and one removed disappears, which
+  // is what `service_setup` did with Babel's own inference policy (#279).
+  expect(Object.keys(tables)).toHaveLength(28);
   expect(tables["dispositions"]).toEqual([
     "id",
     "record_id",

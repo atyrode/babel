@@ -110,11 +110,12 @@ async function seedRecord(store: ActsStore, id: string, kind = "proposal"): Prom
   );
 }
 
-test("the twelve acts are declared, each carrying the write capability except the crossing's two", () => {
+test("the thirteen acts are declared, each carrying the write capability except the crossing's two", () => {
   const harness = openHarness();
   const names = harness.doors.map((door) => door.action.name);
   expect(names).toEqual([
     ACTIONS.rule,
+    ACTIONS.decide,
     ACTIONS.comment,
     ACTIONS.answer,
     ACTIONS.interest,
@@ -165,6 +166,50 @@ test("a ruling the store refuses comes back as a refusal, not a failure", async 
     /no record pro_ffffffff/,
   );
   expect(harness.emitted).toEqual([]);
+});
+
+test("a decision on a proposed action is attributed to the principal, and never to the run", async () => {
+  const harness = openHarness("alex");
+  await migrate(harness.store);
+  await seedRecord(harness.store, "fnd_00000005", "finding");
+  await harness.store.db.run(
+    `INSERT INTO next_actions(id, record_id, kind, proposed_by_kind, proposed_by_id, summary,
+       created_at, payload)
+     VALUES('nxt_00000005', 'fnd_00000005', 'draft-issue', 'run', 'run_1', 'draft the issue', ?,
+       '{}')`,
+    [stamp(harness.store.now())],
+  );
+
+  // The arguments carry no actor and there is nowhere to put one: the door reads the identity
+  // the host authenticated, so a caller cannot answer its own proposal by claiming to be the
+  // operator. The run that proposed it stays on the proposal, where it is provenance.
+  const decided = await knock(harness, ACTIONS.decide, {
+    nextActionId: "nxt_00000005",
+    decision: "accepted",
+    note: "worth an issue",
+  });
+  expect(decided).toEqual({
+    id: "nxt_00000005",
+    recordId: "fnd_00000005",
+    standing: "accepted",
+    seq: 1,
+    at: stamp(harness.store.now()),
+  });
+  expect(
+    await harness.store.db.query<{ operator_id: string }>(
+      `SELECT operator_id FROM next_action_rulings`,
+    ),
+  ).toEqual([{ operator_id: "alex" }]);
+  // An answer about an ACTION is not a verdict on the record, so it is not `ruled` news.
+  expect(harness.emitted.map((emission) => emission.kind)).toEqual([EVENTS.recordWritten]);
+
+  expect(
+    await refusal(harness, ACTIONS.decide, {
+      nextActionId: "nxt_ffffffff",
+      decision: "accepted",
+      note: "",
+    }),
+  ).toMatch(/no proposed action nxt_ffffffff/);
 });
 
 test("accepting a topic proposal through the door emits the plan event with the entity it created", async () => {

@@ -1,7 +1,7 @@
 import { MACHINE_REPOSITORY_REASONS } from "@manifold/protocol";
 import type { SqlParam, SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
-import type { CycleReportSchema } from "../contract.ts";
+import type { CycleReportSchema, IngestibleTable } from "../contract.ts";
 import {
   BABEL_PLUGIN_ID,
   CONDUCTOR_CYCLE_KEY,
@@ -638,7 +638,12 @@ const HUB_REASON_HOLES = MACHINE_REPOSITORY_REASONS.map(() => "?").join(", ");
 // ---------------------------------------------------------------------------- ingestion tables
 
 interface TableIngest {
-  readonly table: string;
+  /**
+   * The table these rows land in, from `contract.ts`'s closed `INGESTIBLE_TABLES`. The type is
+   * the boundary of what a run may write: `dispositions` and `next_action_rulings` are the
+   * operator's ledgers and are not in that list, so an entry naming one does not compile.
+   */
+  readonly table: IngestibleTable;
   readonly columns: readonly string[];
   /**
    * `ignore` is every table that records an act: a row is written once under its own id and a
@@ -839,6 +844,20 @@ const INGEST: Record<string, TableIngest> = {
     ],
     conflict: "ignore",
   },
+  [JOB_OUTPUT_FILES.nextActions]: {
+    table: "next_actions",
+    columns: [
+      "id",
+      "record_id",
+      "kind",
+      "proposed_by_kind",
+      "proposed_by_id",
+      "summary",
+      "created_at",
+      "payload",
+    ],
+    conflict: "ignore",
+  },
 };
 
 /** Subjects before the rows that reference them; the receipt is read last, as it is written last. */
@@ -852,6 +871,8 @@ const INGEST_ORDER: readonly string[] = [
   JOB_OUTPUT_FILES.questions,
   JOB_OUTPUT_FILES.plans,
   JOB_OUTPUT_FILES.steeringReplies,
+  // After `records`, because a proposed action references the record it is about.
+  JOB_OUTPUT_FILES.nextActions,
 ];
 
 // ---------------------------------------------------------------------------- the tar reader

@@ -17,7 +17,7 @@ import {
   type FeedResult,
 } from "./api.ts";
 import { Pulse, TopicRail } from "./rail.tsx";
-import { FeedRow, RULE_KEYS, type Acted, type RuleAct } from "./rows.tsx";
+import { FeedRow, RULE_KEYS, type Acted, type ActedKind } from "./rows.tsx";
 import { Sentence, type PickName } from "./sentence.tsx";
 
 /*
@@ -260,7 +260,7 @@ export function FeedListing({
   }
 
   /** What a row's act did, and what the list does about it. */
-  function recorded(post: FeedPost, act: RuleAct | "answer", done: string, message: string): void {
+  function recorded(post: FeedPost, act: ActedKind, done: string, message: string): void {
     setAnnouncement(message);
     if (act === "ask") {
       feed.setValue((current) =>
