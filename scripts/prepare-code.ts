@@ -28,23 +28,24 @@
 import { lstat, mkdir, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-const plugins = resolve(import.meta.dir, "..");
+/** This repository root: the plugin family is the repository, so `scripts/` sits beside it. */
+const repo = resolve(import.meta.dir, "..");
 const repository = "https://github.com/atyrode/code.git";
 
-const revision = (await readFile(join(plugins, "CODE_REV"), "utf8")).trim();
+const revision = (await readFile(join(repo, "CODE_REV"), "utf8")).trim();
 if (!/^[a-f0-9]{40}$/.test(revision)) {
   throw new Error("CODE_REV must name one published Git commit of atyrode/code");
 }
-const manifoldRevision = (await readFile(join(plugins, "MANIFOLD_REV"), "utf8")).trim();
+const manifoldRevision = (await readFile(join(repo, "MANIFOLD_REV"), "utf8")).trim();
 
 /** The SDK checkout every script in this tree builds against (`manifold-dir.sh`). */
 const manifold = await realpath(
   (
-    await run([join(plugins, "manifold-dir.sh")], plugins)
+    await run([join(repo, "manifold-dir.sh")], repo)
   ).trim(),
 );
 
-const root = join(plugins, ".integration");
+const root = join(repo, ".integration");
 const snapshot = join(root, revision);
 const source = join(snapshot, "code");
 
@@ -89,9 +90,9 @@ if ((await run(["git", "rev-parse", "HEAD"], source)) !== revision) {
   against a Code built on another Manifold would be proving nothing about the hub it installs
   on. The link is what makes Code's `../../manifold` this tree's own checkout.
 */
-if ((await readFile(join(source, "plugins/MANIFOLD_REV"), "utf8")).trim() !== manifoldRevision) {
+if ((await readFile(join(source, "MANIFOLD_REV"), "utf8")).trim() !== manifoldRevision) {
   throw new Error(
-    `Code at ${revision} builds against another Manifold than plugins/MANIFOLD_REV; move one pin`,
+    `Code at ${revision} builds against another Manifold than MANIFOLD_REV; move one pin`,
   );
 }
 const sdkLink = join(snapshot, "manifold");

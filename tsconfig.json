@@ -23,39 +23,39 @@
     "types": ["bun"],
     "baseUrl": ".",
     // The SDK is a sibling checkout (README.md). TWO candidates per alias, tried in order by
-    // tsc and by Bun: `../../manifold-db` is dev-01's checkout of atyrode/manifold, detached at
+    // tsc and by Bun: `../manifold-db` is dev-01's checkout of atyrode/manifold, detached at
     // MANIFOLD_REV and named for the branch the plugin database (ADR 0034) lived on before it
-    // was `main` — and `../../manifold` is the layout manifold's own reusable `plugins.yml`
+    // was `main` — and `../manifold` is the layout manifold's own reusable `plugins.yml`
     // builds in CI (`caller/` beside `manifold/`, at MANIFOLD_REV) and the one `pack.sh`
     // resolves. Neither machine repoints this file.
     "paths": {
       "@manifold/plugin-kit": [
-        "../../manifold-db/packages/plugin-kit/src/index.ts",
-        "../../manifold/packages/plugin-kit/src/index.ts"
+        "../manifold-db/packages/plugin-kit/src/index.ts",
+        "../manifold/packages/plugin-kit/src/index.ts"
       ],
       "@manifold/plugin-kit/*": [
-        "../../manifold-db/packages/plugin-kit/src/*.ts",
-        "../../manifold/packages/plugin-kit/src/*.ts"
+        "../manifold-db/packages/plugin-kit/src/*.ts",
+        "../manifold/packages/plugin-kit/src/*.ts"
       ],
       "@manifold/protocol": [
-        "../../manifold-db/packages/protocol/src/index.ts",
-        "../../manifold/packages/protocol/src/index.ts"
+        "../manifold-db/packages/protocol/src/index.ts",
+        "../manifold/packages/protocol/src/index.ts"
       ],
       "@manifold/plugin": [
-        "../../manifold-db/packages/plugin/src/index.ts",
-        "../../manifold/packages/plugin/src/index.ts"
+        "../manifold-db/packages/plugin/src/index.ts",
+        "../manifold/packages/plugin/src/index.ts"
       ],
       "@manifold/plugin/*": [
-        "../../manifold-db/packages/plugin/src/*.ts",
-        "../../manifold/packages/plugin/src/*.ts"
+        "../manifold-db/packages/plugin/src/*.ts",
+        "../manifold/packages/plugin/src/*.ts"
       ],
       "@manifold/ui": [
-        "../../manifold-db/packages/ui/src/index.ts",
-        "../../manifold/packages/ui/src/index.ts"
+        "../manifold-db/packages/ui/src/index.ts",
+        "../manifold/packages/ui/src/index.ts"
       ],
       "@manifold/server/*": [
-        "../../manifold-db/packages/server/src/*.ts",
-        "../../manifold/packages/server/src/*.ts"
+        "../manifold-db/packages/server/src/*.ts",
+        "../manifold/packages/server/src/*.ts"
       ]
     }
   },

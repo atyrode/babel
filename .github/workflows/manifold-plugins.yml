@@ -1,18 +1,18 @@
 name: manifold-plugins
 
-# Babel IS a manifold plugin family: plugins/ is the product, and this gate is the one that says
+# Babel IS a manifold plugin family, and this repository is that family: the gate is the one that says
 # the artifact composes. The whole job lives in manifold's reusable workflow, which checks this
 # repository out beside atyrode/manifold at the revision in plugins/MANIFOLD_REV — the sibling
-# layout plugins/tsconfig.json and plugins/pack.sh resolve on a developer's machine — then runs
-# `check`, `test`, `pack` and `verify` from plugins/package.json and uploads dist/ as the
+# layout tsconfig.json and pack.sh resolve on a developer's machine — then runs
+# `check`, `test`, `pack` and `verify` from package.json and uploads dist/ as the
 # `manifold-plugins` artifact.
 #
-# IT RUNS ON EVERY PULL REQUEST, not only on one touching plugins/. This is the repository's only
+# IT RUNS ON EVERY PULL REQUEST, and carries no path filter at all. This is the repository's only
 # gate: the Go binary and its React surface are gone, and so is the ci.yml that built them. A
 # path filter here would mean a PR editing a workflow, a document or the changelog merged with
 # nothing having run at all.
 #
-# The `uses:` ref below and plugins/MANIFOLD_REV are the same revision and are bumped together:
+# The `uses:` ref below and MANIFOLD_REV are the same revision and are bumped together:
 # a ref ahead of the file would run a newer workflow against an older kit. This post-v0.16.2
 # revision includes the native descriptor-handoff repair verified in manifold#654.
 #
@@ -20,7 +20,7 @@ name: manifold-plugins
 # preview-equivalent hub: between releases through `bun run dev -- --deliver` from dev-01, and
 # on a `v*` tag through release.yml, which runs this same gate against the tagged revision and
 # hands the verified bundles to the preview's receiver. Production (manifold.tyrode.dev) is
-# installed by the operator, by hand, from the plugin manager (plugins/README.md, "Where a
+# installed by the operator, by hand, from the plugin manager (docs/building.md, "Where a
 # change is proved").
 
 on:
@@ -36,7 +36,9 @@ jobs:
   bundles:
     uses: atyrode/manifold/.github/workflows/plugins.yml@743ee75a92b64b75b4a97244ebd58297c1287164
     with:
-      plugins-dir: plugins
+      # The repository IS the plugin family: there is no `plugins/` wrapper, so the caller
+      # directory the reusable workflow works in is the checkout root.
+      plugins-dir: "."
       # `atyrode.babel` declares `atyrode.code` a REQUIRED dependency, so `verify` cannot
       # compose Babel on the disposable engine until Code — and omp beneath it — are on disk.
       # `deps:code` fetches atyrode/code at plugins/CODE_REV, arranges the sibling layout

@@ -27,8 +27,8 @@ interface DatabaseHandle extends PluginDatabase {
 
 const CHECKOUTS: readonly (string | undefined)[] = [
   process.env["MANIFOLD_CHECKOUT"],
-  resolve(import.meta.dir, "../../../../manifold-db"),
-  resolve(import.meta.dir, "../../../../manifold"),
+  resolve(import.meta.dir, "../../../manifold-db"),
+  resolve(import.meta.dir, "../../../manifold"),
   join(homedir(), "manifold-db"),
   join(homedir(), "manifold"),
 ];

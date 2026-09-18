@@ -1,6 +1,6 @@
 # Parity: the standalone product against the plugin
 
-Babel is a Manifold plugin family under `plugins/atyrode.babel/`. The standalone Go binary, its
+Babel is a Manifold plugin family under `atyrode.babel/`. The standalone Go binary, its
 React surface and the multi-machine infrastructure behind them are gone. This document is the
 record of what that removal cost: one row per subpackage of the retired `internal/` tree, what
 capability it represented, and whether the plugin has it.
@@ -13,7 +13,7 @@ Three states, and each means something different:
 - **absent** — nothing does this. Every absent row has an open issue; the row names it.
 
 The reference implementation is readable at the tag `v0.4.0`: `git show v0.4.0:internal/<pkg>`.
-Nothing under `plugins/` ever imported it — every `internal/` mention in the plugin tree is a
+Nothing in the plugin tree ever imported it — every `internal/` mention there is a
 provenance comment on a port, which is why the deletion broke no build.
 
 ## The table
@@ -25,11 +25,11 @@ provenance comment on a port, which is why the deletion broke no build.
 | `cli/` | The `babel` command: subcommands, terminal rendering, JSON output. | absent by decision | Babel is reached through its doors and its panels. A hub serves actions, not a terminal; the machine half's only CLI is the one a job's argv invokes. |
 | `complaint/` | The operator's free-text steering, kept as its own record. | present | `steering` (`store/schema.ts`); the `tell` door. |
 | `conductor/` | Decide what deserves a run, under ceilings, and journal the decision. | present | `server/conductor.ts`; `store/coordinator.ts`; `drains` and `budgets` (`store/schema.ts`); the `drainStart`/`drainStatus`/`drainStop` doors. |
-| `config/` | Persistent storage configuration: local or shared mode, credential documents, migration. | absent by decision | There is one store, on the hub, and no mode to choose between. External credentials arrive as a Manifold service binding (`plugins/README.md`, the `atyrode.babel.restic` service) rather than as a document Babel keeps. |
+| `config/` | Persistent storage configuration: local or shared mode, credential documents, migration. | absent by decision | There is one store, on the hub, and no mode to choose between. External credentials arrive as a Manifold service binding (`docs/building.md`, the `atyrode.babel.restic` service) rather than as a document Babel keeps. |
 | `cookbook/` | Load and validate the versioned analysis cookbook. | present | `tools/seed-recipes.ts` reads a cookbook-shaped directory into `store/recipes.seed.json`, whose bodies are what a policy's `review.recipes` carries and what a prompt writes verbatim (`server/engine/prompts.ts`). |
 | `digest/` | Canonical content digests, so a cited blob can be proved unchanged. | present | `MaterialEntry.captureDigest` / `sourceDigest` (`contract.ts`), computed in `machine/prepare.ts`. |
 | `disposition/` | Typed next actions a run proposes — draft an issue, propose a fact, store a memory — and the operator's ledger on them. | absent | `plans` is the right shape and its `CHECK` admits only `topic` and `backlog`; `machine/results.ts` says so where the fields would go. Issue: **"plugin: a run's proposed next action has nowhere to land"**. |
-| `durable/` | Disciplined SQLite: immediate transactions, one writer, sized busy timeout. | absent by decision | The engine owns the handle. A `batch` is the transaction and there is no open connection to discipline (`plugins/README.md`). |
+| `durable/` | Disciplined SQLite: immediate transactions, one writer, sized busy timeout. | absent by decision | The engine owns the handle. A `batch` is the transaction and there is no open connection to discipline (`docs/building.md`). |
 | `envelope/` | Seal sensitive payloads with AES-256-GCM before they leave the machine. | absent by decision | `store/schema.ts`: "a row is plaintext on the operator's own server". Nothing leaves the hub, so nothing is sealed. |
 | `evaluation/` | Votes, comments, outcome assessments, budgeted assignment, operator criteria. | present | `assessments`, `claims`, `feedback` (`store/schema.ts`); `store/coordinator.ts`; the `rule`/`comment`/`answer` doors. |
 | `event/` | Normalize a harness log into the five evidence categories with content-addressed locators. | present | `machine/prepare.ts`; `MaterialEntry` and `RecordPeel.evidence` (`contract.ts`). |

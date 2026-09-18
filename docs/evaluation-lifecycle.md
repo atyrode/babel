@@ -13,7 +13,7 @@ question, and authorizes nothing. Only the operator's disposition does that.
 
 ## 1. The tables
 
-Every table is in `plugins/atyrode.babel/store/schema.ts` and every name below is that file's.
+Every table is in `atyrode.babel/store/schema.ts` and every name below is that file's.
 
 | Table | What it holds |
 | --- | --- |
@@ -38,7 +38,7 @@ Three properties follow from the shapes rather than from discipline:
 
 ## 2. Roles
 
-The roles a review may take are spelled once, in `plugins/atyrode.babel/contract.ts`:
+The roles a review may take are spelled once, in `atyrode.babel/contract.ts`:
 `reception`, `evidence`, `challenge`, `comparison`, `outcome`, `relevance`, and the two lanes of
 topic maintenance, `filing` and `backlog`. A vote is `support`, `oppose` or `unsure`.
 
@@ -50,7 +50,7 @@ vote, and a failure is not a vote: an assignment that produced neither stays vis
 
 ## 3. The policy, and the gate
 
-`PolicySchema` in `plugins/atyrode.babel/store/coordinator.ts` is the whole of what evaluation is
+`PolicySchema` in `atyrode.babel/store/coordinator.ts` is the whole of what evaluation is
 authorized to do. `enabled` defaults to **false**: turning evaluation on is one recorded operator
 decision written through the `setPolicy` door, never a migration and never a config file.
 
@@ -71,7 +71,7 @@ record reads finished; a daily ceiling below one cycle's makes the per-cycle bou
 **The recipe bodies travel with the policy version.** `review.recipes` carries each method's text,
 not just its name, so a later edit to the cookbook cannot change the method an in-flight
 assignment is being carried out under. The bodies are seeded from
-`plugins/atyrode.babel/store/recipes.seed.json`.
+`atyrode.babel/store/recipes.seed.json`.
 
 **A drain is not a policy edit.** `setBudget` records a bounded overlay with a TTL and a required
 reason; the standing policy is untouched. That separation is load-bearing: an assignment id is
@@ -80,7 +80,7 @@ subjects already claimed and leaves the old claims holding their slots.
 
 ## 4. One cycle
 
-`tick()` in `plugins/atyrode.babel/server/conductor.ts` is one cycle, and it is four things in a
+`tick()` in `atyrode.babel/server/conductor.ts` is one cycle, and it is four things in a
 fixed order: the policy decides whether the loop exists at all; the beat's schedule is reconciled;
 finished jobs are ingested; and each receipt settles its claim. Review dispatch happens inside it,
 in `dispatchReviews`:
@@ -116,7 +116,7 @@ not that, and does not park it.
 ## 5. Blinding, and what it is not
 
 An initial review reads the record and not its reception. `blinded()` in
-`plugins/atyrode.babel/server/engine/review.ts` strips the withheld keys — score, priority,
+`atyrode.babel/server/engine/review.ts` strips the withheld keys — score, priority,
 existing assessments, the per-role tallies — from the projection before it is composed into the
 prompt, and `blindedLeak()` asserts afterwards that none survived. The stripping is deliberate
 rather than a check that refuses: an imported record carries the very keys a reviewer is not shown,
@@ -128,7 +128,7 @@ the reviewer the tally, and that claim is checkable against the dispatch.
 
 ## 6. What the operator does
 
-Four doors, and none of them is a vote (`plugins/atyrode.babel/contract.ts`):
+Four doors, and none of them is a vote (`atyrode.babel/contract.ts`):
 
 - `rule` — accept, reject, defer, duplicate, reopen or refine. Append-only; the newest ruling is
   the standing one; nothing else in the system writes a disposition.
@@ -155,8 +155,8 @@ Named here because a reader deciding whether to enable evaluation needs both hal
   the shared claim, the reserved lanes and the budget that the coordinator exists to arbitrate.
   The way to hurry a draw is a wake, not a bypass.
 - **Only the `explore` stage ever runs.** `challenge` and `synthesize` exist as schemas in
-  `plugins/atyrode.babel/machine/results.ts` and as prompts in
-  `plugins/atyrode.babel/server/engine/prompts.ts`, and nothing dispatches them, so nothing
+  `atyrode.babel/machine/results.ts` and as prompts in
+  `atyrode.babel/server/engine/prompts.ts`, and nothing dispatches them, so nothing
   criticizes a claim across runs.
 - **A cycle's stop is not readable by the operator.** The cycle computes its `Stop` and its `Gap`s
   with their reasons, and no door exposes them, so "why did nothing happen this hour" is a
