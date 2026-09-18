@@ -446,12 +446,31 @@ test("a day with nothing to review says so, and says why each candidate was decl
   expect(result.gaps).toContainEqual({
     recordId: id,
     role: "",
-    reason: "replaced",
+    reason: "record-replaced",
     detail: "superseded, so no review of it is outstanding",
   });
   // The two work shares owe the same answer: nothing needed drawing is not nothing was drawn.
   expect(result.gaps.map((gap) => `${gap.role}:${gap.reason}`)).toContain("filing:empty");
   expect(result.gaps.map((gap) => `${gap.role}:${gap.reason}`)).toContain("backlog:empty");
+});
+
+test("the topic's lifecycle and the record's own are declined under different words", async () => {
+  const { db, coord } = await deployment({ enabled: true });
+  const underRetired = await record(db, "hyp_00000001", "hypothesis", 40);
+  const superseded = await record(db, "hyp_00000002", "hypothesis", 40);
+  await filing(db, underRetired, "ent_0000000a");
+  await fact(db, "ent_0000000a", "lifecycle", "retired");
+  await status(db, superseded, "superseded", 2);
+
+  const result = await coord.draw({ runId: "cycle_1", now: NOW, seed: 1n });
+  const wordFor = (id: string): string | undefined =>
+    result.gaps.find((gap) => gap.recordId === id)?.reason;
+  // THE TWO SAY WHOSE LIFECYCLE THEY ARE ABOUT (#382). A panel shows these words counted and
+  // nothing else — "4 × retired, 9 × replaced" reads as one fact tallied twice, when one is
+  // about the topic the work is filed under and never about a record, and the other is about
+  // the record and silently contains the retired ones.
+  expect(wordFor(underRetired)).toBe("topic-retired");
+  expect(wordFor(superseded)).toBe("record-replaced");
 });
 
 // ---------------------------------------------------------------------------- the stance gate
