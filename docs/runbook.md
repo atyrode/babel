@@ -1,1218 +1,497 @@
-# Operations runbook: recovery, custody, and rollback
+# Operations runbook: archive, custody, recovery, drains
 
-This document separates **historical evidence** from **current operator
-procedures**. Captured output is dated; it is not a claim about today's fleet.
-Every new operational procedure is marked **OPERATOR STEP**, with prerequisites
-and observable success. No current secret generation, activation, rotation, or
-restore-to-service was executed for this documentation update.
+Babel is a Manifold plugin family under `plugins/atyrode.babel/`. There is no `babel` binary, no
+local configuration document any Babel program reads, no PostgreSQL catalog and no publication
+step. What an operator still owns is the restic repository the archive lives in, the secrets that
+open it, the machines the jobs run on, and the hub the store lives in. This document is those
+four things.
 
-The 2026-08-31 exercises below supply historical evidence for SPEC.md §14's
-recovery and rollback gate. Current managed-fleet custody follows the pinned
-dotfiles sources in §3; the retired provisioning ceremony is not a recovery path.
+Two conventions, and they are the reason this file is worth reading rather than guessing from:
 
-## Exercise environment
+- **OPERATOR STEP** marks a procedure a person performs. It carries prerequisites and an
+  observable success. Nothing marked so is automated, and several of them have never been run —
+  each says which.
+- Captured output is dated and names its host. It is evidence that something once happened on a
+  named machine, not a claim about the fleet today.
 
-All historical output below was captured on **2026-08-31** on host `workstation-linux`
-(kernel hostname `ubuntu-4gb-nbg1-1`), against the **real production
-deployment** — real Cellar repository, real managed PostgreSQL catalog.
-
-```
-babel 0-unstable-2026-08-30 (64ba5e178386) linux/amd64 go1.26.5
-restic 0.19.1 compiled with go1.26.5 on linux/amd64
-```
-
-**Production commands exercised by the historical drill were read-only with
-respect to durable remote state.** Scratch configuration checks are separately
-identified in §8.1. No snapshot was written, no catalog row was inserted or
-deleted, and no `restic` write verb (`init`, `backup`, `forget`, `prune`,
-`unlock`, `repair`) was run.
-Direct `restic` invocations all carried `--no-lock`; the one Babel command this
-drill ran that reaches the repository through `restic restore` takes restic's
-ordinary transient shared lock and releases it, which was confirmed afterwards
-(see §2.4). `archive push` reaches it the same way today, when it restores a
-`catalog-pending` snapshot to rescan it; that path did not exist on the drill
-date.
-
-### Redaction
-
-Babel is a public repository, so the live infrastructure identifiers are
-replaced by placeholders and nothing else is altered. Counts, digests, exit
-codes, and timings are verbatim.
-
-| Placeholder | What it stands for |
-| --- | --- |
-| `<cellar-host>` | the Cellar S3 endpoint hostname |
-| `<bucket>` | the Cellar bucket holding the repository |
-| `<catalog-host>:<port>/<db>` | the managed PostgreSQL endpoint |
-| `<catalog-user>` | the catalog credential's username |
-| `addon_<uuid>` | a Clever Cloud add-on id |
-
-No credential value appears in this document, and none appears in the output of
-any command it tells you to run — that is a Babel invariant, not a redaction
-applied here.
+`docs/parity.md` is the companion: it records, per retired capability, whether the plugin has it.
+Where this runbook says *nothing does this*, that document says the same in a row with an issue.
 
 ---
 
-## 1. Backup: the hourly timer and a manual push
+## 1. Backing up: the `archive` operation
 
-The archive is published by a systemd user timer on every managed Linux
-machine. Babel itself is not scheduled; `atyrode/dotfiles` schedules it.
+The archive is `atyrode.babel.archive`, one of the three operations the machine half implements
+(`plugins/atyrode.babel/machine/main.ts`; `MACHINE_OPERATIONS` in
+`plugins/atyrode.babel/contract.ts`). It runs `restic backup` over this machine's session roots —
+OMP, Codex, Claude Code, and Babel's own — **one snapshot per root**, tagged `babel`, attributed
+to the machine's own id as restic's `--host` (`plugins/atyrode.babel/machine/archive.ts`). Per-root
+snapshots keep each root's parent chain stable when a machine gains a harness, let one unreadable
+root fail alone, and make restoring one harness a restore of one snapshot.
 
-**Preconditions.** The current clan-var placement and checks in §4 are complete.
-The Linux timer's `ConditionPathExists` names `~/.config/babel/storage.json`;
-Darwin instead relies on the common wrapper's storage-document gate (§7).
-Neither gate proves all inputs or remote services healthy; check §4 diagnostics.
+What it writes back into the store is the one fact a backup learns and nothing else can: which
+snapshot holds each session, and when (`sessions.snapshot_id`, `store/schema.ts`).
 
-The scheduler runs `babel-archive-push`, which calls `babel archive push --json`
-and stamps `~/.local/state/babel/last-success` only for a complete published
-snapshot. Manual publication is the unexecuted **OPERATOR STEP** in §6.
+**It never creates a repository.** A repository is created once, by hand, for the deployment. A
+silent creation turns a mistyped locator into a second empty archive that grows happily while the
+real one appears to stop, and two concurrent creations corrupt a fresh one.
 
-**Verify.** `babel archive status` is the read-only fleet-wide answer:
+**Nothing in Babel schedules it.** The conductor registers exactly one schedule, and it is the
+`scan` beat (§7). No door posts an `archive` job, no preset names one, and the hourly systemd timer
+died with the Go binary it wrapped. Today an archive runs when the hub's owner posts the job for
+that operation on that machine, or registers a cadence for it with the hub's own schedule verbs.
+That gap is real: a deployment that posts nothing archives nothing, and no surface says so.
 
-```
-$ babel archive status
-note: 1 snapshot is archived but not catalogued; `babel archive push` records them
-note: 2 snapshots are recorded without session detail, which only its owning host could write at push time; the snapshots stay durable and restorable, and no command resolves this yet, so the count does not fall
-HOST                   SNAPSHOTS  LATEST                LATEST ID  TAGS
-alex-x86_64-linux-wsl  4          2026-08-31T03:01:23Z  3dd67096   babel
-workstation-linux      40         2026-08-31T03:02:30Z  87dc5f89   babel
-catalog reachable          yes
-uncatalogued snapshots     1
-catalog-pending snapshots  2
+> **OPERATOR STEP — post an archive (prerequisites in §4 and §6).**
+> **Prerequisites:** the machine is enrolled; the `atyrode.babel.restic` service policy is
+> installed on it and its binding fingerprint matches the installed job (§4); the `restic` runtime
+> tool is bound on that machine; the `home` anchor's roots exist; consent is recorded for
+> `services:invoke` at
+> `manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage` and for
+> `network:host` at `manifold://machine/<machine>/operation/atyrode.babel.archive`.
+> **Success:** the job settles `completed` and its receipt carries `kind: "archive"`, a non-zero
+> `roots` count and one snapshot id per root; the `sessions` rows for that machine carry the new
+> `snapshot_id` and `archived_at`. An `archive` that reports zero roots is not a backup — it is a
+> machine whose session directories do not exist (§6).
 
-catalog by host:
-HOST                   SNAPSHOTS  SESSIONS  PENDING  NEWEST ORDER  NEWEST SNAPSHOT
-alex-x86_64-linux-wsl  3          5         0        3             2026-08-31T02:01:24Z
-workstation-linux      40         843       2        40            2026-08-31T03:02:30Z
-
-real  0m4.201s   exit 0
-```
-
-That capture is dated: the second note is the wording of the 2026-08-30 build,
-which told the operator that no command resolved `catalog-pending` and that the
-count would not fall. It does fall now. `babel archive push` adopts any host's
-uncatalogued snapshots and recovers a bounded number of `catalog-pending`
-snapshots per run by restoring and rescanning them, so both counts drain on the
-hourly timer with nothing typed (SPEC.md §9.1). A current `archive status`
-names that work instead, and a push reports `snapshots adopted` and `snapshots
-completed` in its own summary.
-
-`archive status` reports timestamps; it does not answer "did every machine back
-up". That is `archive fleet`, which judges each host against a cadence derived
-from its own history and always names the source of that cadence:
-
-```
-$ babel archive fleet --expect workstation-linux,alex-x86_64-linux-wsl
-fleet: 2 hosts, all current
-
-HOST                   STATE    LAST PUBLISHED        AGE  EXPECTED EVERY  SNAPSHOTS
-alex-x86_64-linux-wsl  current  2026-08-31T03:01:23Z  31m  1h (observed)   4
-workstation-linux      current  2026-08-31T03:02:30Z  30m  1h (observed)   40
-
-real  0m1.653s   exit 0
-```
-
-`archive fleet` exits `0` even for a missing host — it reports a judgement and
-is deliberately not an alerting hook. Script off the `state` field of `--json`.
-
-The most recent timer-driven push, unedited from the journal:
-
-```
-$ systemctl --user status babel-archive.service
-○ babel-archive.service - Archive agent session histories with Babel
-     Loaded: loaded (/home/alex/.config/systemd/user/babel-archive.service; linked; preset: enabled)
-     Active: inactive (dead) since Mon 2026-08-31 03:05:01 UTC; 29min ago
-    Process: 3095093 ExecStart=/nix/store/...-babel-archive-push/bin/babel-archive-push (code=exited, status=0/SUCCESS)
-        CPU: 2min 2.946s
-
-Aug 31 03:02:28 ubuntu-4gb-nbg1-1 systemd[1105]: Starting babel-archive.service...
-Aug 31 03:02:30 ubuntu-4gb-nbg1-1 babel-archive-push[3095103]: backing up 4 roots as host workstation-linux
-Aug 31 03:05:01 ubuntu-4gb-nbg1-1 babel-archive-push[3095093]: babel-archive-push: snapshot 87dc5f89...b56428, 843 session(s) published
-Aug 31 03:05:01 ubuntu-4gb-nbg1-1 systemd[1105]: Finished babel-archive.service.
-
-$ cat ~/.local/state/babel/last-success
-2026-08-31T03:05:01Z
-```
-
-**Exercised 2026-08-31 on `workstation-linux`** (observation only — the push
-itself is the timer's own 03:02:28 run, not an invocation from this drill).
+A machine that binds no `restic` runs `scan` and `prepare` unchanged: requirements are
+per-operation, so a missing tool disables `archive` alone (`plugins/README.md`).
 
 ---
 
-## 2. Repository recovery
+## 2. Recovery: restic, directly
 
-Two independent paths restore archived bytes. The second exists because the
-first must never become load-bearing: *archive recovery does not depend on
-PostgreSQL — or on Babel.*
+**Babel fills the archive and cannot read it back.** `machine/restic.ts` runs `init`, `backup` and
+`snapshots`, and nothing else — no `check`, no `ls`, no `dump`, no `restore`
+(`docs/parity.md`, `.omp/skills/babel-cli/SKILL.md`). Verifying and restoring are therefore
+`restic` commands the operator types, which is also the property the old runbook cared most about:
+*archive recovery does not depend on the catalog — or on Babel.* It never did, and now it cannot.
 
 ### 2.1 Find what to restore
 
-`sessions list --host` reads only the snapshot's file listing; nothing is
-downloaded to enumerate.
-
-```
-$ babel sessions list --host alex-x86_64-linux-wsl
-HARNESS  SOURCE ID                                                           SIZE     MODIFIED  TITLE  TITLE FROM  WORKSPACE  GRADE
-omp      -tmp/2026-07-19T19-06-49-938Z_019f7bc6-...                          329315   -         -      -           -          -
-omp      -tmp/2026-08-20T11-29-15-084Z_01a01eee-...                          45645    -         -      -           -          -
-omp      -tmp/2026-08-20T20-47-52-738Z_01a020ee-...                          13678    -         -      -           -          -
-omp      -tmp/2026-08-25T19-17-51-909Z_01a03a5b-...                          506605   -         -      -           -          -
-omp      -tmp/2026-08-27T10-18-24-291Z_01a042ba-...                          9045630  -         -      -           -          -
-
-exit 0, 3.4s
-```
-
-Note the host: this machine listed and then restored a session belonging to a
-*different* machine, which it never held locally. That is the cross-machine
-recovery case, not the easy one.
-
-### 2.2 Path A — recovery through Babel
-
-```
-$ babel sessions fetch '-tmp/2026-08-20T20-47-52-738Z_01a020ee-23a2-7000-9792-fe3ff53f9009' \
-    --host alex-x86_64-linux-wsl --json
-{
-  "selector": "omp/-tmp/2026-08-20T20-47-52-738Z_01a020ee-...",
-  "snapshot_id": "3dd670960b949c58daec2444df007b56a805ef1cbe616b61f92a6f19a8e85b18",
-  "snapshot_short_id": "3dd67096",
-  "snapshot_time": "2026-08-31T03:01:23Z",
-  "target": "/home/alex/.local/share/babel/sessions/omp--tmp-2026-08-20T.../3dd67096",
-  "files": 2,
-  "bytes": 26333,
-  "already_present": false
-}
-
-real  0m15.041s   exit 0
-```
-
-A selector beginning with `-` is read as a selector, not a flag — every OMP and
-Claude Code source id begins with one, because they encode a workspace path.
-
-Restores are idempotent. Running the identical command again downloads nothing
-and says so:
-
-```
-  "files": 2,
-  "bytes": 26333,
-  "already_present": true
-```
-
-Digests of the restored closure:
-
-```
-368fd244cb26f7e6bfed99d356bec06f8a0651a7f616902e230564a30643c81b  ...01a020ee-....jsonl
-65f0eb680f118f82172979fa6bb7432ff40423867fc9958305911824d693a421  ...01a020ee-.../__advisor.jsonl
-```
-
-### 2.3 Path B — recovery with restic alone
-
-This is the path that must work when PostgreSQL is gone, when Babel will not
-build, and when the only surviving assets are the repository password and the
-object-store credentials. It uses no Babel code.
-
-The credentials live in `storage.json`; move them into the environment without
-printing them:
+`sessions` in the store is the index: a row per session with its harness, selector, host and the
+snapshot that holds it. Read it from Babel's own surfaces, or ask restic directly, which needs
+nothing of Babel's at all:
 
 ```sh
-cfg="$HOME/.config/babel/storage.json"
-export RESTIC_REPOSITORY="$(jq -r .repository        "$cfg")"
-export RESTIC_PASSWORD_FILE="$(jq -r .password_file  "$cfg")"
-export AWS_ACCESS_KEY_ID="$(jq -r .repository_store.access_key_id     "$cfg")"
-export AWS_SECRET_ACCESS_KEY="$(jq -r .repository_store.secret_access_key "$cfg")"
+restic snapshots --tag babel                 # what this deployment has archived, by host
+restic ls <snapshot-id>                      # what one snapshot holds
 ```
 
-If `storage.json` is also gone, recover the existing clan custody and reapply
-placement as in §3–4. The repository password and provider inputs must survive
-independently of this machine; a new password cannot open the old repository.
+### 2.2 Restore
 
-```
-$ restic snapshots --no-lock --host alex-x86_64-linux-wsl
-ID        Time                 Host                   Tags   Paths                           Size
----------------------------------------------------------------------------------------------------
-c78f6a67  2026-08-31 00:57:48  alex-x86_64-linux-wsl  babel  /home/alex/.claude              44.395 MiB
-                                                             /home/alex/.codex
-                                                             /home/alex/.omp/agent/sessions
-21c4db38  2026-08-31 01:01:27  alex-x86_64-linux-wsl  babel  (same three roots)              44.395 MiB
-a3842fd3  2026-08-31 02:01:24  alex-x86_64-linux-wsl  babel  (same three roots)              44.395 MiB
-3dd67096  2026-08-31 03:01:23  alex-x86_64-linux-wsl  babel  (same three roots)              44.395 MiB
----------------------------------------------------------------------------------------------------
-4 snapshots
-
-real  0m1.562s   exit 0
+```sh
+restic restore <snapshot-id> --target /tmp/restore-scratch --include '<path-inside-the-snapshot>'
 ```
 
-Restore the same subtree to a scratch directory:
+Restores are byte-exact and idempotent: restoring the same snapshot to the same target a second
+time reproduces the same bytes.
+
+**Exercised 2026-08-31 on `workstation-linux`**, against the real repository: a session belonging
+to a *different* machine (`alex-x86_64-linux-wsl`) — one this host had never held locally — was
+restored from snapshot `3dd67096` with `restic` alone, no catalog consulted, and matched the
+independently restored copy byte for byte:
 
 ```
-$ restic restore 3dd67096 --no-lock \
-    --include '/home/alex/.omp/agent/sessions/-tmp/2026-08-20T20-47-52-738Z_01a020ee-*' \
-    --target /tmp/babel-restore-drill.lpSTF1
-restoring snapshot 3dd67096 of [/home/alex/.claude /home/alex/.codex /home/alex/.omp/agent/sessions]
-  at 2026-08-31 03:01:23.612665256 +0000 UTC by alex@alex-x86_64-linux-wsl to /tmp/babel-restore-drill.lpSTF1
-Summary: Restored 9 / 3 files/dirs (25.716 KiB / 25.716 KiB) in 0:00
-
-real  0m1.895s   exit 0
-```
-
-**Verify — the two paths agree byte for byte:**
-
-```
-$ diff -r /home/alex/.local/share/babel/sessions/omp--tmp-.../3dd67096 /tmp/babel-restore-drill.lpSTF1
-exit 0
-
-$ sha256sum (restic-restored tree)
 368fd244cb26f7e6bfed99d356bec06f8a0651a7f616902e230564a30643c81b  ...01a020ee-....jsonl
 65f0eb680f118f82172979fa6bb7432ff40423867fc9958305911824d693a421  ...01a020ee-.../__advisor.jsonl
 ```
 
-Identical to §2.2. `restic` plus the repository password reproduced exactly what
-Babel reproduced, with no catalog consulted.
+Repository scale on that date, for restore planning: 44 snapshots, 50,631 blobs, 23.466 GiB
+uncompressed, 5.687 GiB stored, compression 4.13x.
 
-Repository scale, for restore planning:
+### 2.3 Integrity, and the stale lock an operator will actually meet
 
-```
-$ restic stats --no-lock --mode raw-data
-     Snapshots processed:  44
-        Total Blob Count:  50631
- Total Uncompressed Size:  23.466 GiB
-              Total Size:  5.687 GiB
-       Compression Ratio:  4.13x
-
-real  0m2.985s   exit 0
+```sh
+restic check --no-lock          # structural check, mutates nothing, takes no lock
+restic check --read-data        # re-reads and re-hashes every pack; a full download
 ```
 
-**Exercised 2026-08-31 on `workstation-linux`.**
+Reach for `--no-lock` first: it diagnoses without mutating, and it is the only form that works
+while the repository holds a lock.
 
-### 2.4 Integrity check, and a real failure found while drilling
+**Observed 2026-08-31 on `workstation-linux`:** `restic check` failed with `repository is already
+locked by PID 2841104 on ubuntu-4gb-nbg1-1`; two *shared* locks were stranded in the repository
+from processes that no longer existed. A stale shared lock endangers no data and blocks no
+restore — both restores above succeeded while they were present — it blocks `check`, which wants
+the repository quiescent. `restic check --no-lock` then reported 44 snapshots and no errors.
 
-`babel archive verify` wraps `restic check`. Tonight it **failed**, and the
-reason is worth recording because it is the failure an operator will actually
-meet:
-
-```
-$ babel archive verify
-FAILED (structure)
-babel: verify repository: restic check: exit status 11: unable to create lock in backend:
-repository is already locked by PID 2841104 on ubuntu-4gb-nbg1-1 by alex (UID 1000, GID 1000);
-lock was created at 2026-08-31 00:44:10 (2h48m28s ago); storage ID 5f86a86f;
-the `unlock` command can be used to remove stale locks
-
-real  0m1.002s   exit 1
-```
-
-Two shared locks are stranded in the repository, both from processes that no
-longer exist:
-
-```
-$ restic list locks --no-lock
-5f86a86f9dde08f7eabe98f64815594b6f00669026f4c67355d34c6ccfbd1795
-e64f7be2f7f0ee64205e71560c37bab924bef6d6cb4c9f174a50946e17186754
-
-$ restic cat lock 5f86a86f...  ->  {"time":"2026-08-31T00:44:10Z","exclusive":false,"hostname":"ubuntu-4gb-nbg1-1","pid":2841104}
-$ restic cat lock e64f7be2...  ->  {"time":"2026-08-31T00:49:09Z","exclusive":false,"hostname":"ubuntu-4gb-nbg1-1","pid":2858765}
-
-$ ps -p 2841104  ->  dead
-$ ps -p 2858765  ->  dead
-```
-
-A stale *shared* lock does not endanger data and does not block restores —
-§2.2 and §2.3 both succeeded while these were present. It blocks `restic check`,
-which wants the repository quiescent.
-
-The read-only way through, which is what an operator should reach for first
-because it diagnoses without mutating:
-
-```
-$ restic check --no-lock
-using temporary cache in /tmp/restic-check-cache-3282174982
-load indexes
-check all packs
-check snapshots, trees and blobs
-[0:00] 100.00%  44 / 44 snapshots
-no errors were found
-
-real  0m2.235s   exit 0
-```
-
-**The repository is structurally sound: 44 snapshots, no errors.** Add
-`--read-data` to re-read and re-hash every pack; that costs a full download of
-5.687 GiB and is the deep check behind `babel archive verify --deep`.
-
-> **OPERATOR STEP — clear the two stale locks.** `babel archive unlock` is the
-> verb for this, and it is deliberately one you type: no timer, no conductor
-> duty and no other Babel path invokes it. Babel supplies the plumbing this
-> drill originally had to assemble by hand — repository locator, password file
-> and object-store keys, read from `storage.json` exactly as `archive verify`
-> reads them — so clearing a lock needs no environment block at all:
+> **OPERATOR STEP — clear a stale lock (never automated, never an agent's to run).**
+> **Prerequisites:** the lock's holder is confirmed dead, by host as well as PID; a lock naming
+> another host is never judged by local PID liveness. Nothing in Babel takes, inspects or removes
+> a repository lock, and `.omp/skills/babel-cli/SKILL.md` forbids an agent from running
+> `restic unlock` at all.
+> **Success:** `restic list locks --no-lock` shows the lock gone and `restic check --no-lock`
+> exits 0. Measured against restic 0.19.1, plain `restic unlock` removes a stale lock including an
+> exclusive one; `--remove-all` is what a lock that is *not* stale needs, and it removes every lock
+> in the repository.
 >
-> ```sh
-> babel archive unlock   # lists every lock with its staleness reasoning,
->                        # then removes the stale shared ones
-> babel archive verify   # success looks like: ok (structure), exit 0
-> ```
->
-> Both locks above are shared and both holders are dead, which is precisely
-> what the default removes. Every run prints the listing before removing
-> anything, states the judgement it reached on each lock and the reason, and
-> refuses the PID-liveness claim for a lock naming another host — the same
-> check made by hand above, made by the command instead. A run that removes
-> nothing exits 0 and says so.
->
-> A lock that is not both stale and shared is removed only when the run names
-> it: `babel archive unlock --remove LOCKID`, with an id from that listing. An
-> exclusive lock is always in that category, and restic's stale removal takes
-> every stale lock at once and cannot exclude one, so Babel refuses the whole
-> run and names the lock rather than removing it quietly. That granularity is
-> restic's: measured against restic 0.19.1, plain `restic unlock` **does**
-> remove a stale exclusive lock, so the earlier note here — that `--remove-all`
-> is what an exclusive lock needs — was wrong about restic. `--remove-all` is
-> what a lock that is not *stale* needs, and it removes every lock in the
-> repository.
->
-> The four-line `jq` block that opens §2.3 remains the prerequisite for every
-> **direct** `restic` command in this runbook, including a bare `restic unlock`.
-> That is the recovery path which uses no Babel code, and it is the one to reach
-> for when Babel will not build; it is no longer the path for clearing a lock on
-> a working machine.
->
-> Never run `restic forget` or `restic prune`: Babel's retention contract is
-> append-only and it ships no code path that deletes a snapshot. `babel archive
-> unlock` removes coordination state and never archived data, so it leaves that
-> contract exactly where it was.
+> **Never run `restic forget`, `restic prune` or `restic repair`.** Retention is append-only and no
+> code path in the plugin deletes a snapshot. Removing coordination state is not removing data;
+> removing data is not a recovery step.
+
+The lock ids observed in 2026-08-31's drill are historical. Reassess ownership and liveness before
+touching any lock today.
 
 ---
 
-## 3. Restic repository password custody
+## 3. Repository password custody
 
-**No provider can reissue this password.** Losing every copy makes the existing
-repository unreadable. The same rule applies independently to each Phase B
-payload key (§8.1). A working machine is not the only backup of either.
+**No provider can reissue this password.** Losing every copy makes the existing repository
+unreadable for ever. A working machine is not a backup of it, and a new password cannot open the
+old repository.
 
-### Current source contract
-
-The following sources were read at dotfiles revision
-**`f2a4749eab77ac859b85354142e42c78ac6d8c80` (2026-09-06)**. They establish
-declared behavior, not proof that any fleet member has applied it:
+Custody is `atyrode/dotfiles`' and always has been: Babel never creates, prints, stores or rotates
+a credential. The declared sources below were read at dotfiles revision
+`f2a4749eab77ac859b85354142e42c78ac6d8c80` (2026-09-06). They establish declared behaviour, not
+proof that any machine has applied it:
 
 | Contract | Pinned source |
 | --- | --- |
-| Shared custody; existing password is prompted, never minted; existing rings survive rotation | [`modules/shared/babel-archive.nix:1–31`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L1-L31) |
-| sops placement, owner/group and 0600 mode | [`modules/shared/babel-archive.nix:44–75`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L44-L75) |
-| Shared `babel-custody`: three secret, undeployed inputs; deployed complete ring; prompt validation | [`modules/shared/babel-archive.nix:77–178`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L77-L178) |
-| Per-machine schema-2 shared configuration, registry host/instance identity, and Home Manager links | [`modules/shared/babel-archive.nix:180–243`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L180-L243) |
-| Operator-device generation followed by apply; no vault/provider session on target | [`fleet/provisioning.json:39–44`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/fleet/provisioning.json#L39-L44) |
-| Input readiness before success-stamp health | [`pkgs/atyrode/lib/doctor.sh:1262–1313`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/pkgs/atyrode/lib/doctor.sh#L1262-L1313) |
+| Shared custody; an existing password is prompted, never minted; existing rings survive rotation | [modules/shared/babel-archive.nix:1–31](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L1-L31) |
+| sops placement, owner/group and 0600 mode | [modules/shared/babel-archive.nix:44–75](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L44-L75) |
+| Shared `babel-custody`: secret undeployed inputs, a deployed complete ring, prompt validation | [modules/shared/babel-archive.nix:77–178](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L77-L178) |
+| Per-machine derived configuration and registry identity | [modules/shared/babel-archive.nix:180–243](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L180-L243) |
+| Operator-device generation followed by apply; no vault or provider session on the target | [fleet/provisioning.json:39–44](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/fleet/provisioning.json#L39-L44) |
 
-`babel-custody` holds `repository-password`, `cellar-env.json`,
-`catalog-env.json`, and `payload-keys.json`. The first three are generation
-inputs, not separately deployed custody files; their required values feed the
-machine's storage document and password file. The whole ring is deployed.
-Babel does not retrieve provider credentials or generate managed-fleet storage
-configuration. Identity comes from the clan machine registry, not a flag or
-the kernel hostname.
+`babel-custody` holds `repository-password`, the provider environment inputs and
+`payload-keys.json` (§8). The password and the object-store credential are the two values the
+deployment's storage document is built from; the plugin reaches that document through a service
+(§4) and never through a file.
 
 > **OPERATOR STEP — preserve and recover custody (not executed).**
-> **Prerequisites:** an authorized operator device able to decrypt the clan
-> vars, access to the encrypted dotfiles history, and an independent secure
-> backup destination. Preserve the encrypted vars and the means to decrypt them
-> off the fleet; test access from a recovery device without printing secret
-> values. If custody is missing, recover the existing password and complete ring
-> from a surviving authorized copy or backup before generating derived files.
-> Do not replace a password or ring to repair missing placement.
-> **Success:** the recovery device can securely recover the existing custody
-> values, including all historical key ids, without relying on the failed host.
-> Repository recovery remains possible with restic alone (§2); Phase B recovery
-> additionally needs its catalog/object backups and every sealing key (§8).
+> **Prerequisites:** an authorized operator device able to decrypt the clan vars, access to the
+> encrypted dotfiles history, and an independent secure backup destination. Preserve the encrypted
+> vars and the means to decrypt them off the fleet; test access from a recovery device without
+> printing secret values. If custody is missing, recover the existing password and complete ring
+> from a surviving authorized copy before generating anything derived. Never replace a password or
+> a ring to repair missing placement.
+> **Success:** the recovery device recovers the existing custody values, including every historical
+> key id, without relying on the failed host. Repository recovery then needs nothing but restic
+> (§2).
 
-**Historical evidence, 2026-08-31 only:** the old local password file and
-`storage.json` were observed with mode 0600; `storage status` reported the
-password present and secure. The former vault was observed locked. No live
-secret retrieval or custody export was exercised. These observations do not
-establish current clan-var custody or activation.
+**Historical evidence, 2026-08-31 on `workstation-linux`:** the then-current password file and
+storage document were observed with mode 0600 and the password reported present and secure. No
+secret value was retrieved or exported. Those observations describe the retired deployment's
+placement, not today's custody.
 
 ---
 
-## 4. `storage.json` recovery
+## 4. The storage document, and how a job reaches it
 
-> **OPERATOR STEP — generate missing derived configuration (not executed).**
-> **Prerequisites:** a current dotfiles checkout on an authorized operator
-> device, the intended registered host, an existing archive repository, and
-> recoverable shared custody from §3. Inspect the declared/generated var status
-> without displaying contents first. If the existing vars are already complete,
-> skip generation and apply them; a dangling link is not a reason to regenerate.
->
-> For a registered machine needing generated files, on the operator device:
->
-> ```sh
-> clan vars generate <host>
-> ```
->
-> If shared custody prompts appear, supply the existing repository password,
-> whole Cellar and catalog environment JSON documents, and **the entire existing
-> payload ring** through the hidden prompts. Never leave the ring prompt empty
-> for this existing deployment: the generator's empty-input branch mints a new
-> ring and cannot recover old ciphertext. Stop and recover custody if it is
-> unavailable. Review and commit only the encrypted var update in dotfiles,
-> then make that revision available to the target.
-> **Success:** the intended host's derived storage/password vars and shared
-> ring are present in encrypted custody; no secret value enters Git plaintext,
-> argv, shell history, logs, or an ordinary temporary file.
-
-> **OPERATOR STEP — apply existing custody (not executed).**
-> **Prerequisites:** the target is the registered host, has its decryption
-> identity, and can apply the reviewed dotfiles revision containing its vars.
-> Run `atyrode apply` on that machine. Do not hand-edit managed config links or
-> invoke Babel's standalone configuration writer on them.
-> **Success:** sops-nix places these readable, nonempty 0600 files for the archive
-> account, and Home Manager links the two config documents:
->
-> | Babel-facing path | Placed target |
-> | --- | --- |
-> | `~/.config/babel/storage.json` | `/run/secrets/vars/babel-archive/storage.json` |
-> | `~/.config/babel/payload-keys.json` | `/run/secrets/vars/babel-custody/payload-keys.json` |
-> | `password_file` inside storage | `/run/secrets/vars/babel-archive/repository-password` |
->
-> Apply also restores declarative scheduling (§7). Failed generation or
-> activation is not success: do not remove old custody or manually arm a job
-> with partial inputs. Diagnose placement and retain a usable generation (§7.3).
-> This is not a claim that activation is an atomic rollback of all secret files.
-
-> **OPERATOR STEP — read-only readiness checks (not executed on current fleet).**
-> **Prerequisites:** the intended generation has been applied; run as the
-> archive account. These commands diagnose, not generate, activate, or publish:
->
-> ```sh
-> babel storage status
-> babel storage verify
-> atyrode doctor provisioning --json
-> ```
->
-> **Success:** status identifies shared mode and the registry host/instance,
-> with the placed password present and secure; verify reports negotiated TLS,
-> compatible schema and no pending migration. Inspect the `babel-archive`
-> entry in doctor's `surfaces`, not just exit status (this diagnostic can exit
-> zero while degraded). Missing, dangling, unreadable or empty storage/ring/
-> password files produce `archive-input-unavailable`; a storage document without
-> an absolute password path produces `archive-config-invalid`. A recent stamp
-> cannot mask either. With usable inputs, `never-succeeded` is expected before
-> first publication; `archive-stale` means the parsed success time is over
-> 48 hours old; `ok` reports a prior successful archive, not live remote health.
-> Neither doctor nor link existence validates that all historical keys are
-> present: §8.1's cross-host opening check covers that separately.
-
-### Historical read-only verification — 2026-08-31
-
-The paths and identities in this captured output belong to the old deployment,
-not the current sops placement. Both commands were read-only:
+The `archive` operation reads the repository and the secrets that open it from **one Manifold
+service**, `atyrode.babel.restic`, and from nowhere else (`plugins/atyrode.babel/machine/restic.ts`;
+`plugins/README.md` owns the install shape). The document it answers with is
 
 ```
-$ babel storage status
-path                  /home/alex/.config/babel/storage.json
-configured            yes
-mode                  shared
-repository            s3:https://<cellar-host>/<bucket>/babel/v1
-password file         /home/alex/.config/babel/repository-password
-password file exists  yes
-password file secure  yes
-host id               workstation-linux
-deployment id         babel-prod
-instance id           workstation-linux
-catalog endpoint      <catalog-host>:<port>/<db>
-catalog user          <catalog-user>
-catalog tls mode      require
-
-exit 0
+{ "repository": "...", "password": "...", "accessKeyId": "...", "secretAccessKey": "..." }
 ```
 
-```
-$ babel storage verify
-endpoint                  <catalog-host>:<port>/<db>
-tls mode                  require
-tls active                yes
-tls protocol              TLSv1.3
-schema version            1
-schema compatible         yes
-pending migration         no
-credential                <catalog-user>
-privilege observed        ddl
-role separation observed  no
-note: one credential serves this deployment, so no database-level control evicts a single instance;
-      fleet-wide credential rotation and repository-password custody are the controls
+— the object-store pair required for an `s3:` locator and refused in halves, so a half-installed
+policy fails as itself rather than as an unexplained restic exit.
 
-real  0m0.388s   exit 0
-```
+Four properties of that path are the security contract, and each is enforced in code rather than
+by procedure:
 
-TLS is reported as *observed* (`TLSv1.3` actually negotiated), not as
-configured, and the privilege is reported as *observed* rather than assumed.
+- The engine opens a loopback proxy for the job, mints a capability for that job alone and writes
+  the endpoint into the job's own input file. The job never holds the operator's upstream
+  credential; the bearer it carries is the owner's per-job capability.
+- The password reaches restic as `RESTIC_PASSWORD` in the **child's** environment only: never argv,
+  never this process's environment, never a receipt, never a log.
+- Every child gets a minimal environment — the repository coordinates, the object-store credential
+  when there is one, and `HOME`/`PATH`/`TMPDIR`. Ambient `RESTIC_*` variables cannot redirect an
+  archive.
+- The one value the manifest fixes is `BABEL_RESTIC_CACHE_DIR=/home/job/.cache/restic`, inside the
+  managed cache location the operation may write. Without an index cache every backup re-reads
+  every byte it already archived.
 
-**Exercised 2026-08-31 on `workstation-linux`:** `storage status` and
-`storage verify` only. Current generation and apply remain operator steps above.
+> **OPERATOR STEP — install the storage service on a machine (per machine, by the hub's owner).**
+> **Prerequisites:** the deployment's storage document is served by the operator's own store over
+> HTTPS, and that store's token is placed on the machine as a service credential
+> (`serviceCredentials.babel-restic`, sourced from a file the machine holds — the nix shape is in
+> `plugins/README.md`). The store is the operator's; Babel ships none and generates none.
+> **Procedure:** one owner call of `engine.services.configureConfiguration` naming
+> `serviceId: "atyrode.babel.restic"`, `revision: "1"`, the origin, the credential ref and the
+> single `storage` operation, with `expectedRevision` set to what `readConfiguration` last reported
+> (`null` for a machine with no configuration). Then install the job with
+> `resourceBindings.services["atyrode.babel.restic"]` carrying the fingerprint
+> `engine.jobs.describe` reports for that policy.
+> **Success:** `engine.services.readConfiguration` reports the policy at the expected revision, and
+> an `archive` job admits rather than refusing `service_binding_mismatch`. A policy the operator
+> changed is a new installation, never a silent upgrade — the mismatch is the point.
+
+**Nothing on the machine is a Babel configuration file any more.** No path under `~/.config` is
+read by any Babel program; `docs/parity.md` records the retired configuration package as absent by
+decision. What dotfiles places on a managed machine is custody (§3) and the service credential
+above, and the operator reads a value out of custody only when he is about to use `restic` by hand
+(§2) — never by printing it.
 
 ---
 
-## 5. Coordinated PostgreSQL catalog backup
+## 5. Backing up the store itself
 
-**The catalog is not the authority and does not have to be.** The restic
-repository is. Every catalog row for a host is rederivable from the repository's
-snapshot list, which is what makes "coordinated backup" a much smaller problem
-than it first appears: there is no cross-store consistency requirement between
-PostgreSQL and Cellar to preserve, because PostgreSQL never references a
-snapshot restic did not report committed.
+The hub holds Babel's one durable store: a SQLite file at
+`<data>/plugins/atyrode.babel/data.db`, created by the enable hook and deleted by a purge
+(`plugins/README.md`). Records, edges, rulings, assessments, filings, the ledger and every receipt
+live there and nowhere else. There is no second copy, no publication and nothing to reconcile:
+`docs/parity.md` records publication, the shared catalog and the object store as absent by decision.
 
-**Managed backups.** Clever Cloud takes them for the `babel-catalog-prod`
-add-on. Resolve the add-on by name — ids are never recorded — and list:
+Two consequences an operator must hold at once:
 
-```sh
-clever addon list --org Tyrode --format json     # -> addon_<uuid> for babel-catalog-prod
-clever database backups addon_<uuid>
-```
-
-```
-$ clever database backups addon_<uuid>
-BACKUP ID                             CREATION DATE                STATUS
-0af47a2d-178e-46fc-9937-8fc5e2e1f9d4  2026-08-30T01:15:39.896901Z  Done
-f60291ca-bb46-49c2-af94-0743825a5673  2026-08-31T02:39:10.317788Z  Done
-
-exit 0
-```
-
-Two daily provider backups, both `Done`, the most recent 56 minutes before this
-drill. `clever database backups download` retrieves one.
-
-**Recovery without a provider backup.** Restore the catalog from the repository
-instead:
-
-```sh
-babel storage migrate                    # bring an empty database to schema version 1
-# then either: let each host's next `archive push` register and reconcile itself
-# (the ordinary recovery, and the one the acceptance suite exercises), or:
-babel storage rebuild --host HOST --yes  # rebuild one host's rows from the snapshot list
-```
-
-Know what `storage rebuild` costs before reaching for it. It **writes to the
-catalog** — it discards what the catalog held for that host — so it was
-deliberately not run by this read-only drill. What comes back immediately is
-what a listing can support: snapshot identity, ordering rederived from restic's
-recorded times, and restic's counts. Session rows cannot be rebuilt from a
-listing, because their sizes and counts are read from the sessions themselves,
-so rebuilt snapshots arrive `catalog-pending`. They do not stay there: the
-owning host's next push publishes its current session identity, and any host's
-`archive push` recovers each rebuilt snapshot's own session detail — titles,
-workspaces, sizes, continuation grades — by restoring that snapshot and
-rescanning it, a bounded number per run. The repository is never touched and no
-snapshot it still reports is ever dropped.
-
-**Verify.** Catalog reachability and drift are visible in the §1
-`archive status` output: `catalog reachable yes`, and the honest counts
-`uncatalogued snapshots 1` / `catalog-pending snapshots 2`. Those are not
-failures, and neither is a pending action. An uncatalogued snapshot is one
-restic holds that the catalog has not adopted yet; the next `archive push`
-records it, from whichever host runs it. A `catalog-pending` snapshot carries
-restic's counts without the record of which sessions it held, which a listing
-cannot supply; the next pushes restore and rescan those snapshots, a couple per
-run, until the count reaches zero. Both counts therefore drain on the hourly
-timer, and what `archive status` reports is the remaining work rather than
-something for the operator to do (SPEC.md §9.1). A snapshot that cannot be
-restored or described is reported as `snapshots unrecovered` by the push that
-tried, keeps its state, and is retried by the next one.
-
-**Exercised 2026-08-31 on `workstation-linux`** (backup listing and catalog
-health live; `storage rebuild` documented but not run, because it mutates the
-catalog).
+- **The sessions are safe without it.** Every archived session is restorable from restic with the
+  password alone (§2), and the catalog rows that point at snapshots are rederivable by re-running
+  `scan` and `archive` on each machine.
+- **Babel's own analysis is not.** A hypothesis, a finding, a ruling or a receipt exists in
+  `data.db` and nowhere else. **Nothing in Babel backs that file up**, and no procedure here
+  invents one: backing up the hub's data directory is the hub's own operational question, and
+  until it is answered the honest statement is that losing the hub's volume loses every record
+  Babel has produced or imported.
 
 ---
 
-## 6. Manual bootstrap of a new machine
+## 6. Enrolling a machine
 
-**Historical evidence, 2026-08-31:** `alex-x86_64-linux-wsl` joined the fleet
-under the then-current deployment. Its first snapshot and subsequent hourly
-snapshots were observed; this does not exercise today's clan-var bootstrap:
+A machine runs Babel's jobs when four things are true of it. None is a Babel command; all four are
+the hub owner's or the machine's declaration.
 
-```
-$ restic snapshots --no-lock --host alex-x86_64-linux-wsl
-c78f6a67  2026-08-31 00:57:48   <- first publication: the bootstrap
-21c4db38  2026-08-31 01:01:27   <- hourly timer from here on
-a3842fd3  2026-08-31 02:01:24
-3dd67096  2026-08-31 03:01:23
-```
+1. **It is enrolled in the hub** and online.
+2. **It binds the tools each operation names** (`plugins/README.md`): `bun` is pinned by Babel's own
+   bundle and needs no binding; `development` carries `git`; `system` is the reviewed native
+   closure the pinned bun is dynamically linked against; `restic` is the owner's, by name, and only
+   `archive` asks for it.
+3. **Its anchors exist.** The `home` anchor needs `~/.omp/agent/sessions`, `~/.codex` and
+   `~/.claude` to exist — a job whose read location is missing fails to start, and `mkdir -p` is the
+   whole fix — and the `runtime` anchor must be a dedicated bounded tmpfs, since the named-output
+   lease is cut from it.
+4. **Its consents are recorded** at the nodes §1 names, plus `machines:run` at the operation node
+   for anything that launches.
 
-Confirmed from the other side by `archive fleet` in §1: `current`, cadence
-`1h (observed)`, 4 snapshots.
+> **OPERATOR STEP — join a machine (not executed against the current fleet).**
+> **Prerequisites:** items 1–4 above, and §4's service install if this machine is to archive.
+> **Success:** a `scan` job settles and its sessions appear in the store under that machine's id;
+> then an `archive` job settles with a snapshot per root. A successful `scan` with no roots is not
+> proof of anything but an empty machine.
 
-> **OPERATOR STEP — join a registered machine (not executed).**
-> **Prerequisites:** the host is registered in current dotfiles, authorized to
-> read the entire shared corpus, and the repository already exists. Complete
-> §3–4's custody, generation (only if needed), apply, and read-only checks.
-> **Success:** storage uses the registered host/instance, inputs are usable,
-> catalog verification passes, and the platform scheduler is present (§7).
-> Registry identity must remain stable for a machine that has published:
-> changing it creates a different host history, not a rename of old snapshots.
-
-**Do not run `babel archive init` on a new machine.** Repository creation is a
-one-time operator act for the whole deployment. `archive push` refuses to create
-a repository precisely so that a mistyped locator fails loudly instead of
-silently becoming a second, empty archive, and concurrent creation corrupts a
-fresh one.
-
-> **OPERATOR STEP — first publication (not executed).**
-> **Prerequisites:** §4 readiness passes, the correct existing repository is
-> selected, source sessions exist, and publication is authorized. Run the common
-> `babel-archive-push` wrapper on either platform (on Linux, alternatively
-> `systemctl --user start babel-archive.service`). This writes the archive and
-> may reconcile/publish catalog state; it is not a read-only check.
-> **Success:** the wrapper reports a complete snapshot and updates `last-success`.
-> Then read `babel archive status` and
-> `babel archive fleet --expect <comma-separated-registry-hosts>`: the host has a
-> new published snapshot and is `current`. Confirm it from another authorized
-> machine. A successful no-op with no source roots is not proof of backup.
+**A machine id is not a host name.** Every row Babel keys on a machine — `sessions.host`,
+`runs.machine_id` — holds the id `core.machines.list` publishes, and the hub resolves no names. The
+imported Go-era corpus carries the old deployment's host name instead, which is what the
+`rehostSessions` door exists to repair: it rewrites one `host` value to one machine id the hub has
+just described (`plugins/atyrode.babel/contract.ts`).
 
 ---
 
-## 7. Timer enablement and rollback
+## 7. Cadence, stopping and rollback
 
-### 7.1 Enablement
+### 7.1 The one schedule
 
-Current source declares Linux's hourly persistent timer with 10-minute jitter,
-the storage-document start condition, and restarting that timer after activation
-([`checks/atyrode/babel-archive.nix:80–123`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/checks/atyrode/babel-archive.nix#L80-L123)).
-The condition is checked at timer start, not continuously. It gates only document
-existence; do not equate it with full storage health. §4's checks and §6's first
-publication establish readiness and actual archive outcome separately.
+`engine.jobs.schedule` schedules a job on a machine, so the loop's beat is the cheapest useful job
+Babel owns: `scan` (`BEAT_OPERATION`, `plugins/atyrode.babel/server/conductor.ts`). It spends no
+model money, refreshes the catalog every cadence, and its settlement is what wakes the hub — a
+plugin has no clock of its own and may not poll as an alternate scheduler.
 
-**Historical unit and timer observations, 2026-08-31:**
+The beat is registered only while the policy is enabled, at the policy's `cadenceSeconds`, on the
+machine the policy names, for a bounded lifetime the loop renews. A policy change re-registers it,
+because the schedule's revision is the policy version.
 
-```
-$ systemctl --user cat babel-archive.timer
-# /home/alex/.config/systemd/user/babel-archive.timer -> /nix/store/...-babel-archive.timer
-[Install]
-WantedBy=timers.target
+Drawing, launching and spending stay inside the cycle, where the coordinator's lanes and ceilings
+govern every dollar. A fixed `explore` registered at schedule time would spend outside them, which
+is why none exists.
 
-[Timer]
-OnCalendar=hourly
-Persistent=true
-RandomizedDelaySec=10m
+### 7.2 Stopping
 
-[Unit]
-ConditionPathExists=/home/alex/.config/babel/storage.json
-Description=Hourly Babel archive of agent session histories
-```
+> **OPERATOR STEP — stop the loop.** Set the policy's `enabled` to false through the `setPolicy`
+> door. A disabled policy registers nothing, draws nothing, ingests nothing and spends nothing.
+> **Success:** the beat's schedule is gone and Watch reports the loop as off. Turning Babel off is
+> one recorded operator decision, never a migration and never a file edit.
 
-`Persistent=true` so a machine that was asleep at the top of the hour runs the
-missed archive once it is back, instead of silently dropping a window of session
-history. `RandomizedDelaySec=10m` keeps a growing fleet from arriving at the
-object store together.
-
-```
-$ systemctl --user status babel-archive.timer
-● babel-archive.timer - Hourly Babel archive of agent session histories
-     Loaded: loaded (/home/alex/.config/systemd/user/babel-archive.timer; enabled; preset: enabled)
-     Active: active (waiting) since Sun 2026-08-30 22:59:13 UTC; 4h 29min ago
-    Trigger: Mon 2026-08-31 04:06:38 UTC; 37min left
-   Triggers: ● babel-archive.service
-
-exit 0
-
-$ systemctl --user list-timers 'babel*'
-NEXT                        LEFT   LAST                        PASSED    UNIT                 ACTIVATES
-Mon 2026-08-31 04:06:38 UTC 37min  Mon 2026-08-31 03:02:28 UTC 26min ago babel-archive.timer  babel-archive.service
-```
-
-Darwin instead declares enabled `launchd.agents.babel-archive`, the same wrapper,
-`StartInterval = 3600`, and `RunAtLoad = true`
-([`checks/atyrode/babel-archive.nix:197–209`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/checks/atyrode/babel-archive.nix#L197-L209)).
-There is no systemd condition on macOS: the wrapper checks the storage document.
-Do not infer Linux's persistent catch-up or jitter semantics from launchd's
-interval. The wrapper never initializes a repository and earns the success stamp
-from a nonempty snapshot id with no incomplete result
-([same check, lines 58–78](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/checks/atyrode/babel-archive.nix#L58-L78)).
-
-> **OPERATOR STEP — inspect scheduling (read-only; not executed on current fleet).**
-> **Prerequisites:** §4 activation completed in the archive user's session.
-> On Linux, inspect `systemctl --user status babel-archive.timer` and
-> `systemctl --user list-timers 'babel*'`; success is an active waiting timer
-> with a next trigger and the expected service. On Darwin, inspect the installed
-> Home Manager LaunchAgent plist for `babel-archive`, then use `launchctl print`
-> with its actual `gui/<uid>/<Label>` service target. Success is a loaded job
-> with the wrapper, 3600-second interval and RunAtLoad configuration. No Mac
-> runtime observation was made here. On either platform, scheduling alone is
-> insufficient: §6 must show the actual published snapshot.
-
-### 7.2 Stopping the archive
-
-> **OPERATOR STEP — suspend scheduling (not executed).**
-> **Prerequisites:** authorized maintenance and awareness that stopping a
-> scheduler does not cancel an already running archive. On Linux run
-> `systemctl --user stop babel-archive.timer` for this session, or
-> `systemctl --user disable --now babel-archive.timer`. On Darwin use
-> `launchctl bootout` with the actual service target inspected in §7.1.
-> **Success:** the timer is inactive or the launchd job is unloaded; separately
-> inspect the service/job before assuming an in-flight push ended. These are
-> temporary local changes: the next apply restores declarative scheduling.
-> For a durable suspension, change the owning dotfiles scheduler declaration
-> through review and apply it; success is absence of scheduled starts after apply.
+Stopping a *drain* is §11.5, and it is a different act: the policy is untouched and the jobs in
+flight must be cancelled.
 
 ### 7.3 Rollback
 
-**There is no longer a legacy backup to roll back to, and that is a deliberate
-end state rather than an omission.** Babel replaced an rclone-crypt mirror of
-the same trees. That mirror is retired: `rclone` is gone from `PATH`, and
-`babel-archive.timer` is the only backup timer on this machine.
+Rollback is an install, not a switch: the hub installs a bundle by hash
+(`engine.plugins.install`), so going back is installing the previous bundle's hash. A disable
+retains `data.db`, an uninstall refuses while the plugin holds pages, and a **purge deletes
+`data.db`** with its `-wal` and `-shm` — which is the one irreversible act in this document, since
+§5 has no backup to restore from.
 
-```
-$ command -v rclone
-rclone: NOT on PATH (legacy crypt archive retired)
-
-$ systemctl --user list-timers --all | grep -iE 'rclone|backup|archive'
-Mon 2026-08-31 04:06:38 UTC 34min Mon 2026-08-31 03:02:28 UTC 30min ago babel-archive.timer  babel-archive.service
-```
-
-So rollback means reverting the *deployment*, not switching to a parallel
-backup system:
-
-```
-$ home-manager generations
-2026-08-30 23:29 : id 185 -> /nix/store/k4rs3v39n71m9ax389vk7vb9a4yawwda-home-manager-generation (current)
-2026-08-30 23:08 : id 184 -> /nix/store/4nn4mvp4l7l0zxfn6gia0vncyw21xdrl-home-manager-generation
-2026-08-30 22:59 : id 183 -> /nix/store/x7pdq3rjjdps70lxbb28hh76f7k0fj0k-home-manager-generation
-2026-08-29 20:58 : id 182 -> /nix/store/wskj3hxsyxd344sw7zngybv4ypsy8ybn-home-manager-generation
-...
-exit 0
-```
-
-> **OPERATOR STEP — rollback deployment (not executed).**
-> **Prerequisites:** authorized maintenance, independent recoverable custody
-> (§3), and a known-good generation compatible with the current complete ring.
-> Inspect available generations using the owning platform's deployment tools.
-> A Home Manager-only rollback activates the chosen generation's `activate`
-> script; it is not a NixOS/nix-darwin system or sops placement rollback.
-> Choose the matching system rollback when those components changed.
-> **Success:** the selected generation's package, links and scheduler are
-> effective, and §4 checks pass before §6 publication is attempted.
-
-**Rollback boundaries.** Which timer/service/launchd agent and wrapper remain
-depends on the chosen generation; rollback does not inherently remove them.
-Home Manager links or sops runtime files may change or disappear, so do not
-promise that old `~/.config` files survive. Preserve the encrypted custody and
-every historical payload key independently; never roll custody back to an
-incomplete ring. Deployment rollback must not delete the repository, catalog,
-published snapshots or pending local durable state. Already published snapshots
-remain restorable through §2, even without Babel or PostgreSQL. No legacy mirror
-is reintroduced.
-
-> **OPERATOR STEP — roll forward (not executed).**
-> **Prerequisites:** corrected reviewed configuration and complete current
-> custody. Run `atyrode apply`, then §4 and §7.1 checks.
-> **Success:** usable placement and intended scheduling return; §6 publication
-> separately proves the machine archives again.
-
-**Exercised 2026-08-31 on `workstation-linux`** (timer state, unit definition,
-legacy-backup absence, and available rollback generations observed live; no
-generation was activated, since that would mutate this machine's deployment).
-
----
-## 8. Phase B publication: payload keys and `babel sync`
-
-**This section is about the one thing in Babel that exists nowhere else.** A
-snapshot is rederivable from the repository and a Phase A catalog row is
-rederivable from the snapshot list, which is what makes §5 a small problem. A
-hypothesis, a finding, an operator's decision or a run receipt is rederivable
-from nothing: it exists in `durable.db` on the machine that produced it until
-it reaches the shared catalog, and `durable.db` is deliberately not under the
-hourly archive roots. Until it is published, a dead workstation disk loses it.
-
-`babel sync` is what publishes it, and every Phase B write already attempts the
-same publication inline the moment it commits locally.
-
-### 8.1 The payload key document
-
-Phase B payloads are sealed before they leave the process (SPEC.md §9, decision
-55, `internal/envelope`), so publication needs a key. It lives in its own
-mode-0600 document beside `storage.json`:
-
-```
-$XDG_CONFIG_HOME/babel/payload-keys.json
-```
-
-It is a **separate document from `storage.json` on purpose**, for two reasons.
-`config_schema` 2 is frozen (SPEC.md §14) after running against real Cellar and
-real managed PostgreSQL, so a new field in it is a schema change rather than an
-addition. And the lifecycles differ: a repository locator and a database
-credential are current values an operator edits, while a key document is a
-*history* — every sealed object ever written under a retired key still needs
-that key to open.
-
-On managed machines this path is a Home Manager out-of-store link to
-`/run/secrets/vars/babel-custody/payload-keys.json` (§3 sources), not a local
-document to overwrite. The generator validates and copies the supplied whole
-ring. It does **not** union it with extra keys on a target machine; the operator
-must preserve those in shared custody before switching that machine to the
-managed link. A new active key alone cannot open historical objects.
-
-> **OPERATOR STEP — recover/distribute an existing ring (not executed).**
-> **Prerequisites:** an authorized operator device, access to encrypted clan
-> custody and surviving authorized ring copies, and knowledge of the intended
-> deployment. Securely reconcile the complete key history: preserve every key,
-> refuse conflicting material under the same id, and resolve any conflict from
-> authoritative backups before proceeding. Never print the ring or put it in
-> argv, shell history, logs or an ordinary temporary file. Use clan's var
-> get/set workflow for the existing shared `babel-custody/payload-keys.json`
-> value (see §3, module lines 21–31), not regeneration. Commit the encrypted
-> update, make it available to each authorized machine, and run `atyrode apply`.
-> If encrypted custody is already complete and only placement is missing, skip
-> the var edit and apply that existing value.
-> **Success:** §4 reports usable links/inputs and, on a second authorized host,
-> `babel fleet records` can open known committed records sealed under both the
-> active and historical key ids. Compare ids and opening outcomes privately;
-> do not publish record contents or key material as diagnostic evidence.
-
-> **OPERATOR STEP — deliberate append-only rotation (not executed).**
-> **Prerequisites:** an independently recoverable complete ring, authorized
-> rotation, and access to every intended fleet member. The source-prescribed
-> sequence is `clan vars get`, append one securely generated 32-byte
-> standard-base64 key with a unique id, set `active_key_id` to that id, then
-> `clan vars set` for the same shared ring. Use protected secret input/output,
-> not a terminal transcript. Retain every old entry unchanged. Review/commit
-> encrypted custody and apply to every authorized host before relying on
-> cross-host opening of newly sealed records.
-> **Success:** every recipient has the full history and new active id; existing
-> committed records still open and a deliberately authorized new publication
-> can be opened by another host. Missing placement never justifies rotation.
-
-The module can mint a ring when its prompt is empty, but that branch is only
-for a genuinely new deployment that has sealed nothing. It is **not** part of
-this existing deployment's recovery or bootstrap procedure. Losing every copy
-of a key leaves its ciphertext permanently unreadable; a coordinated PostgreSQL
-and Cellar backup without the ring restores ciphertext, not readable records.
-Every fully authorized instance can decrypt the shared corpus, so a machine not
-authorized for that blast radius must not receive this custody.
-
-**Historical scratch evidence, 2026-08-31 only:** the former standalone
-configuration handoff and stubbed vault checks exercised delivery, repeat
-delivery, retaining omitted keys, refusing conflicting material, refusing
-replacement generation, and an upload merge. No live vault ring retrieval or
-upload was executed. Those results describe the retired handoff, not today's
-clan generator, which copies the supplied ring verbatim. No current generation,
-placement, cross-host opening, or rotation was exercised for this update.
-
-### 8.2 What is pending, and why
-
-Every durable Phase B record is born `pending-sync` and stays visibly pending
-until its rows and its objects have both committed remotely. `babel sync`
-reports both halves:
-
-```
-$ babel sync
-committed 3 hypotheses, 1 finding, 1 receipt
-3 runs committed, 5 objects written
-nothing pending
-```
-
-Three states are worth telling apart in that report:
-
-- **pending, in a declared closure** — the records are ready and the backend was
-  unreachable. The next `babel sync` finishes them, and nothing is lost by
-  waiting.
-- **undeclared** — staged records whose producing attempt has not yet declared
-  its publication closure. Cooperative interruption declares a partial closure;
-  process loss needs `babel runs reconcile` first. Resumed work and later
-  receipt amendments use continuation closures, not mutations of an already
-  declared catalog count.
-- **local** — this build has intentionally disabled shared publication or has
-  no shared backend configured. A configured backend with a missing or dangling
-  payload-key document is a custody failure, not local mode.
-
-**Publication never blocks a write.** An unreachable catalog, a refused object
-write, a missing key: all of them leave the record durable and pending, emit one
-diagnostic line, and let the command that produced the record succeed. That is
-SPEC.md §6.5's ordering, and it is the only arrangement under which an outage
-cannot destroy analysis output.
-
-#### 8.2.1 Owner-local recovery
-
-**OPERATOR STEP — not executed against the fleet for this change.** First
-establish that this machine's shared storage and payload-key placement are
-ready; machine activation is tracked in the owning dotfiles rollout issue,
-not performed by Babel's recovery commands. Inspect durable interrupted runs:
-
-```sh
-babel runs interrupted --json
-```
-
-After confirming that the affected locally owned processes are no longer
-running, reconcile stale attempts and recover records missing from the
-publication journal:
-
-```sh
-babel runs reconcile --stale-after 5m --json
-babel sync --restage --json
-```
-
-Reconciliation must leave fresh or live attempts alone and record unknown
-process loss without inventing a quota failure, signal, profile or historical
-launch. Restaging must preserve canonical record identities; another unchanged
-restage reports zero newly staged records. Inspect the sync report's pending
-records and failures, not just its exit status. These commands write durable
-state and can publish to the shared backend.
-
-Only the operator chooses whether an interrupted run should launch inference
-again with `babel runs resume RUN_ID`, or be deliberately ended without
-inference using `babel runs close RUN_ID`. Resume requires the saved preparation,
-profile and cookbook versions; historical runs lacking trusted launch inputs
-are refused rather than silently adopting current defaults. Reconstruct those
-inputs explicitly before using `babel explore --run-id`.
-
-For a controlled future run, `babel explore --stop-file PATH`, `babel runs
-resume RUN_ID --stop-file PATH` and `babel conductor run --stop-file PATH`
-observe a caller-owned stop file at safe points. Create that file to request a
-cooperative stop instead of signalling a process tree. A completed receipt whose
-conductor cycle journal was not finalized is recovered without a second model
-launch, preserving the receipt's outcome and spend.
-
-### 8.3 Reconcile after a push
-
-`babel archive push` runs the Phase B sync as its final step, after the Phase A
-catalog reconcile. It is **non-fatal**: a failure there never changes the push's
-exit code or its reported catalog state, because the snapshot is already durable
-and the Phase B records are already durable locally. On an hourly timer that
-makes the backlog self-draining without a second schedule.
-
-### 8.4 When a record will not publish
-
-`babel sync` names each closure that failed and why. Two causes are
-misconfiguration rather than outage, and neither resolves itself:
-
-- **the instance is not registered.** A Phase B run row references the
-  deployment and the instance, and those rows are written by the first
-  `babel archive push`. A machine that has never pushed cannot publish
-  analysis. Run a push first.
-- **a pending migration.** `babel storage verify` reports it; the catalog needs
-  `migrations/0003`, which is part of schema version 1 and applied by
-  `babel storage migrate`.
-
-An unreachable PostgreSQL or Cellar is neither of those and needs nothing but a
-later `babel sync`.
-
-**Not exercised against the real deployment.** Everything in this section is
-proven against a throwaway PostgreSQL and a local-directory object store, which
-is what the test suite drives. Publication against the real Cellar endpoint and
-the real managed catalog is an operator-gated step; see *What remains
-operator-gated* below.
+There is no legacy backup path to fall back to. Babel replaced an rclone-crypt mirror of the same
+trees and that mirror is retired; the restic repository is the only archive. Rolling a bundle back
+never touches the repository, the snapshots or the custody in §3.
 
 ---
 
-## 9. Reading the fleet's analysis
+## 8. Keys, secrets, and what no longer publishes
 
-Phase B records are globally durable, so every authorized instance can read what every other
-machine committed. Two commands expose it, and they answer different questions.
+**The plugin seals nothing.** Records are plaintext rows on the operator's own hub
+(`store/schema.ts`), nothing is synced and nothing is published, so no key is needed to read
+Babel's analysis and none is held (`docs/parity.md` records sealing, the object store and
+publication as absent by decision).
 
-**Preconditions.** Shared mode configured (`~/.config/babel/storage.json`, §4) and payload keys
-placed (§8.1). Without payload keys the catalog is still readable and every plaintext row still
-renders, but no record's content can be opened, so both commands report that rather than printing
-a wall of unopenable rows.
+The `babel-custody` ring — `payload-keys.json` — is therefore read by nothing Babel runs today. It
+stays in custody for one reason, and it is sufficient: **it is the only thing that opens the
+ciphertext the retired deployment published.** Losing every copy leaves those objects permanently
+unreadable. A new active key cannot open an object sealed under an old one.
 
-### 9.1 What the fleet holds
+> **OPERATOR STEP — preserve the existing ring (not executed).**
+> **Prerequisites:** an authorized operator device and access to encrypted clan custody. Reconcile
+> the complete key history: preserve every key, refuse conflicting material under the same id, and
+> resolve a conflict from authoritative backups. Never print the ring or put it in argv, shell
+> history, logs or an ordinary temporary file; use clan's var get/set workflow rather than
+> regeneration, and commit only the encrypted update.
+> **Success:** custody holds the whole append-only history. There is nothing to verify it against
+> on the machine, because no Babel program opens a sealed object any more.
+>
+> **Rotation is not a repair.** The generator's empty-prompt branch mints a new ring and cannot
+> recover old ciphertext; it is for a genuinely new deployment that has sealed nothing. Missing
+> placement never justifies minting.
 
-```
-$ babel fleet records --limit 5
-```
+**The rule that governs every secret in this document**, and the reason §§3–4 and §8 exist as one
+procedure: a secret reaches a program through a channel that cannot be observed — a service
+capability, a child process's environment, a mode-0600 file read by the thing that needs it — and
+never through argv, a log line, an error string, shell history or an ordinary temporary file. The
+plugin holds this by construction (§4). An operator using `restic` by hand holds it by discipline:
+`RESTIC_PASSWORD_FILE`, never `--password-command` with the value inline, and never `echo`.
 
-One row per committed record, newest commit first. `HOST` is the machine that produced it,
-`SYNC` is whether it is globally reviewable, and `SUMMARY` is the record's own first line,
-decrypted locally.
+---
 
-Three values appear under `SYNC` and they are not interchangeable:
+## 9. Reading what Babel holds
 
-| Value | Meaning |
-| --- | --- |
-| `committed` | The record's rows and objects are both durable remotely. Globally reviewable. |
-| `pending-sync` | Staged but not globally committed. Not reviewable yet; `babel sync` finishes it. |
-| `local` | No remote row and nothing claims it is owed. Either this machine is in local mode, or the record was never staged. |
+There is one hub, so there is one place to read: the panels. `atyrode.babel.feed` serves Home (every
+record, ranked by what needs the operator), the peeled record and a topic with its filings and his
+interest; `atyrode.babel.watch` serves what is running, what will run and what a drain is spending
+(`plugins/README.md`). Behind them are the read doors — `feed`, `record`, `thread`, `topics`,
+`topic`, `pulse`, `runs`, `run`, `policy` — spelled in `plugins/atyrode.babel/contract.ts`.
 
-`local` is deliberately not spelled `pending-sync`. A record marked pending is a promise that
-something will carry it; for a `local` record nothing will, and rendering it as pending would be
-the one lie the visible-staging requirement must not tell.
+Three things that used to be commands are now properties of having one hub:
 
-`HOST` reads `unattributed` when the record's origin instance has no registered host. That is a
-real state, not an error: an instance that last registered before the `instances.host_id` column
-existed has no host to attribute, and the remedy is one push from the owning machine. Babel will
-not guess — a record filed under the wrong machine is invisible, and a gap is not.
-
-`--host alex-x86_64-linux-wsl` narrows to one machine, repeatable. `--kind` narrows to a record
-type. `--pending` additionally shows staged records, which is how an operator answers "why is my
-hypothesis not visible on the other machine".
-
-### 9.2 Making the other hosts' work searchable here
-
-```
-$ babel fleet ingest
-```
-
-This is what stops two conductors on two machines from silently duplicating one another. It
-fetches every host's committed records, decrypts them on this machine, and indexes them into the
-local retrieval cache, so self-retrieval and dedup answer across the fleet instead of across one
-workstation.
-
-**It writes only to the cache.** Nothing it does touches `durable.db`, and that is the whole
-design: a remote record is never copied into the local durable store, so it can never be
-republished by the machine that read it, and losing the index costs a re-index and never data.
-
-`--rebuild` drops every remote partition and rebuilds it from the catalog. It is safe to run at
-any time and it does not touch this machine's own analysis.
-
-The report names, per host, what changed, plus three totals worth reading:
-
-* **unattributed** — committed records skipped because their origin instance has no registered
-  host, so there is no machine to file them under. They remain readable in `fleet records`; they
-  are just not searchable per-host. Expect this to fall to zero as each machine pushes again.
-* **unopened** — records this instance could not read, one line each with the reason: a key this
-  machine does not hold, a payload from a newer build, or an object the store would not return.
-  Each costs one record and never the ingest, so one host publishing something this binary cannot
-  open never makes the rest of the fleet unreadable.
-* **forgotten** — hosts whose rows were dropped because the catalog no longer reports records for
-  them. A cache eviction; the records are still in PostgreSQL and Cellar.
-
-### 9.3 What these commands do not tell you
-
-Neither command judges recency. A host that last committed six days ago renders identically to one
-that committed minutes ago, apart from a timestamp to compare by eye — the same deliberate
-restraint `archive status` has, and for the same reason: publication recency is a per-host
-judgement, and `babel archive fleet` is where that judgement lives.
-
-And an empty result is an answer. A deployment where nothing has been explored yet reports no
-records and exits zero; it is not a malfunction and is not distinguished from one, because there
-is nothing to distinguish.
+- There is no fleet read: every machine's work lands in the same store as it settles.
+- There is no pending state to chase: a record is durable when the job that produced it is ingested,
+  and ingestion is idempotent, so a retried cycle writes the same rows.
+- An empty answer is an answer. A deployment that has explored nothing shows nothing, and that is
+  not distinguished from a malfunction because there is nothing to distinguish.
 
 ---
 
 ## 10. Turning evaluation on
 
-Full-lifecycle evaluation (SPEC §§4.12, 5.8, 8.5) ships in the binary and starts nothing by
-itself. Three switches gate it, and they are deliberately separate: one says the deployment
-authorizes review work at all, one says this machine may perform it, and one says how much of
-this machine's loop it gets.
+Evaluation is off until one operator decision turns it on: `enabled` defaults to false in the
+policy schema (`plugins/atyrode.babel/store/coordinator.ts`), which is the activation gate
+expressed as a value rather than as a migration.
 
-**OPERATOR STEP — not executed against the live deployment.** What has been exercised is the
-path up to the first switch: on 2026-09-11, on a disposable HOME with a synthetic worker, this
-binary refused in turn for missing ceilings, missing authorization and a disabled deployment
-policy, each naming its own remedy. Nothing was drawn, nothing was spent, and the real archive
-and catalog were not touched.
+The policy is one document, written through the `setPolicy` door, and it carries both the
+authorization and the route:
 
-**Preconditions.** A configured analysis profile (`babel analysis profile show`), conductor
-ceilings (§7.1), and — for fleet-wide accounting — shared mode with payload keys (§4, §8.1). A
-local-only machine evaluates its own records under its own allowance and says so.
+| Field | What it decides |
+| --- | --- |
+| `enabled` | whether the loop exists at all |
+| `cadenceSeconds` | the beat's period (§7.1) |
+| `batchSize`, `concurrentPerMachine`, `leaseSeconds` | how many assignments may be claimed at once, per machine, and for how long |
+| `perCycleCost`, `dailyCost` | the ceilings a cycle and a day may spend |
+| `coverageShare`, `explorationShare`, `discoveryShare`, `filingShare`, `backlogShare` | the protected allocations across lanes |
+| `review.machineId`, `review.profile` | where a drawn review runs and which saved Code profile it is posted on |
+| `review.roleRecipes`, `review.recipes` | which reviewed method each role uses, with the recipe bodies carried in the versioned policy so a later edit cannot change an in-flight assignment |
 
-### 10.1 The deployment's policy — once, in the browser
+A policy that cannot be honoured is refused with the sentence saying why: an unversioned policy
+could never be replayed against, a zero exploration or discovery share removes a protected
+allocation, shares over one over-commit a cycle, and a daily ceiling below one cycle's makes the
+per-cycle bound decorative. The recipe bodies come from `plugins/atyrode.babel/store/recipes.seed.json`,
+produced by `plugins/atyrode.babel/tools/seed-recipes.ts`.
 
-```
-$ babel web
-```
+`setBudget` and `clearBudget` are the bounded exception: an overlay with its own TTL and a required
+reason, which never edits the standing policy — because assignment ids are derived from the policy
+version, and editing the standing policy mid-flight mints new ids for subjects already claimed.
 
-Open **Evaluation → Review policy**, enable it, and save. The form states its own budget and
-selection settings; the defaults are conservative rather than measured. Saving publishes an
-operator-authored policy record that every authorized instance reads — it does not start a run
-on any of them, and the page says so.
+> **OPERATOR STEP — enable evaluation (not executed against the live hub).**
+> **Prerequisites:** a saved Code profile exists for the account and model the reviews will spend;
+> `atyrode.code` and `atyrode.omp` are installed and consented at the revisions in force; the
+> machine named by `review.machineId` is enrolled and online. Start with a batch and a per-machine
+> concurrency of one and retain the standing lease bounds.
+> **Success:** the beat registers, the conductor draws on its cadence, and the record's reception
+> shows an assessment carrying the model that answered and what it cost.
+>
+> **What is unproven, and it is verification rather than a defect:** the drawn lane dispatches —
+> `dispatchReviews` in `plugins/atyrode.babel/server/conductor.ts` draws, claims under a fence,
+> blinds the projection, posts the review as a Code session and binds the claim to Code's job id
+> — but no drawn review has ever run against a real hub. The evidence is synthetic: a conductor
+> regression over the real SQLite store with a simulated Code receipt, 2026-09-16. The first live
+> one is owed, and §11.7 lists it in order. The `launch` door's refusal of a direct drawn launch
+> (`draw_managed`) is deliberate and not part of that gap: an operator-picked record must not
+> bypass the shared claim, the reserved lanes and the budget.
 
-### 10.2 This machine's consent and share
-
-```
-$ babel conductor configure --babel-triages-the-queue --evaluate 3
-```
-
-The toggle is consent for Babel to form attributed judgements about records nobody has ruled on.
-`--evaluate N` allocates one cycle in N to review work as a protected share, the same way
-`--consolidate` allocates consolidation. Either without the other is a legitimate state: consent
-with no share schedules nothing, and a share with no consent is refused.
-
-### 10.3 One review, by hand
-
-```
-$ babel evaluate
-```
-
-Draws one claimed review, carries it out under the same blinding and budget the loop uses, and
-records what it found. It reports the coverage inventory either way, and when nothing is drawn
-it names which switch is still off. `--json` emits the same outcome as a document; `--correct
-RECORD_ID` re-reviews one statement this machine recorded, reserving the second pass before it
-runs.
-
-**Observable success.** `babel evaluate` reports the subject, role and allocation it reviewed;
-`babel conductor status` shows an `evaluation` rung with a non-zero depth while work is
-outstanding; the browser's **Evaluation** page lists the record with its reception, and
-**Coverage** shows what remains unreviewed. On a shared deployment the record appears on a
-second authorized instance after `babel sync`.
-
-**To stop it.** `babel conductor configure --evaluate 0` ends the allocation on this machine;
-disabling the policy in the browser ends it deployment-wide. Neither erases anything already
-recorded: evaluations are append-only, and a retired policy version stays readable as the
-contract its assessments were formed under.
+Nothing here erases anything: assessments are append-only and a retired policy version stays
+readable as the contract its assessments were formed under.
 
 ---
 
 ## 11. Draining a usage window
 
-**Nothing in this section has been run on a real hub.** It was written after the 2026-09-13
-drain (`docs/postmortem-2026-09-13-drain.md`), which recorded 50 reviews in two hours and
-fourteen minutes and moved the target account's 7-day window by zero percent. Every procedure
-below is an **OPERATOR STEP** until a rehearsal on a real hub records host, date and observed
-output here. The drain door, its controller and its Watch panel ship in v0.3.0 (2026-09-14,
-§11.7 says what was exercised and what was not); until that rehearsal is recorded, this
-section describes a supported operation nobody has yet performed.
+**Nothing in this section has been run on a real hub.** It was written after the 2026-09-13 drain
+(`docs/postmortem-2026-09-13-drain.md`), which recorded 50 reviews in two hours and fourteen
+minutes and moved the target account's 7-day window by zero percent. Every procedure below is an
+**OPERATOR STEP** until a rehearsal on a real hub records host, date and observed output here.
+§11.7 says exactly what shipped and what was exercised.
 
 ### 11.1 What a drain is
 
-A drain spends a chosen account's remaining usage window, before its reset, on Babel's own work.
-It is measured in the tokens and dollars the hub metered on that account (ADR 0038,
-`usage.inference` on every settled job), never in the provider's percentage, which lags by
+A drain spends a chosen account's remaining usage window, before its reset, on Babel's own work. It
+is measured in the tokens and dollars the hub metered on that account — `usage.inference` on every
+settled job, `inference_call` while one runs — never in the provider's percentage, which lags by
 minutes and moves in whole points.
 
-What the window is spent on is a **weighted list over Babel's activities** - the presets Watch
-already offers (`read-whats-new`, `explore-topic`, `review-backlog`, `file-and-tidy`, and a
-`babel-improves-babel` preset once it exists) - with three rules: weights are over metered
-cost, never run count; the controller schedules by deficit, so a preset with no eligible work
-yields its slot and reports a gap rather than idling; and the loop and the drain share one
-allocation model, the standing weights in the policy and a drain's override for its TTL. The
-operator names the allocation when the drain starts, or is asked (rule 8). On 2026-09-13 it was
-everything on `review-backlog`, and that is a sound allocation: reviews are the mass-produced
-unit of Babel's self-maintenance, duplicate assessments are reception data rather than waste,
-and a review can be as heavy as its profile makes it (thinking, advisor, turns, subagents). The
-2026-09-13 drain failed not because reviews are the wrong thing to spend on but because each
-review re-prepared the whole corpus before its first model call (post-mortem F1, O1); the
-plugin's `evaluate` cannot do that. What must hold for any allocation: a run never re-prepares
-the corpus, and the fan is sized to the measured cost of one run. A drain without a target and a
-deadline is not a drain; it is a loop — so a drain that names no deadline is given one, two
-hours out, and the fan is refused above the manifest's `concurrentJobs` for the operation it
-posts rather than discovered one refused job at a time.
+What the window is spent on is a weighted list over Babel's activities: the presets Watch offers
+(`read-whats-new`, `explore-topic`, `keep-going`; a drawn preset is not fannable, see below), with
+three rules. Weights are over metered cost, never run count. The controller schedules by deficit, so
+a preset with no eligible work yields its slot and reports a gap rather than idling. And the
+operator names the allocation when the drain starts, or is asked (rule 8).
+
+On 2026-09-13 the allocation was everything on `review-backlog`, and that was a sound *choice*:
+reviews are the mass-produced unit of Babel's self-maintenance, duplicate assessments are reception
+data rather than waste, and a review can be as heavy as its profile makes it. It failed because each
+review re-prepared the whole corpus before its first model call (post-mortem F1, O1). What must hold
+for any allocation: a run never re-prepares the corpus, and the fan is sized to the measured cost of
+one run.
+
+Two bounds are structural rather than advisory. **A drawn preset cannot be fanned out**: the
+coordinator arbitrates a draw under a claim and a fence, and fanning it would be a second
+implementation of that arbitration — so `drainStart` takes the directly-launched presets only
+(`plugins/atyrode.babel/server/drain.ts`). And **a drain without a target and a deadline is not a
+drain; it is a loop** — a drain that names no deadline is given one two hours out, and a fan above
+the manifest's `concurrentJobs` for the operation it posts is refused at the door rather than
+discovered one refused job at a time.
+
+A drain is not a governor and sets no overlay: the standing policy and the budgets table are
+untouched, its jobs take no claim, and what one run may spend stays the standing policy's ceiling.
 
 ### 11.2 Pre-flight (T-24h, rehearsal)
 
 > **OPERATOR STEP — pre-flight (not executed).**
-> **Prerequisites:** a reachable hub with the Babel plugin installed, one enrolled machine, and
-> the account to drain named in advance. Each item has an observable success; an item without
-> it is a no-go.
+> **Prerequisites:** a reachable hub with the Babel plugin installed, one enrolled machine, and the
+> account to drain named in advance. Each item has an observable success; an item without it is a
+> no-go.
 >
-> 1. `atyrode context show` reports the OMP auth broker `active`. On 2026-09-13 it was `failed`
->    from 11:07 to 11:24 and every engine launched in that window died before its ready frame.
+> 1. The OMP auth broker is healthy. On 2026-09-13 it was `failed` from 11:07 to 11:24 and every
+>    engine launched in that window died before its ready frame.
 > 2. A **Code profile** exists for the drain's account and model. A profile IS a configured Code
 >    workspace: Code owns the model, the thinking level and the account, and Code's generator is
->    where they are set. Babel neither composes a session nor prices one — it names the
->    container and the revision it was shown. **Success:** Watch's Start section lists that
->    workspace, and the row beside it names the model the drain expects to spend on.
+>    where they are set. Babel neither composes a session nor prices one — it names the container
+>    and the revision it was shown. **Success:** Watch's Start section lists that workspace, and the
+>    row beside it names the model the drain expects to spend on.
 > 3. **Code and omp are installed on the hub and consented at the revisions in force.**
->    `atyrode.babel` declares `atyrode.code` a required dependency, Code declares `atyrode.omp`,
->    and Babel's call travels under the principal of the request it is answering: a hub missing
->    either, or an install whose grant does not reach Code's doors, answers `engine_unavailable`
->    or `engine_forbidden` on the `profiles` door before any button. **Success:** the Start
->    section shows profiles rather than a refusal sentence.
-> 4. **The pinned Code takes Babel's prompt.** `runSession` bounds a prompt at
->    `PROMPT_MAX_BYTES` (44 KiB — the hub's job-input map, counted in encoded bytes) and
->    Babel's composed explore prompt is about 33,700, so it fits with room to spare. A
->    selection far larger than the presets', or a corpus of non-ASCII selectors, is how that
->    stops being true. **Success:** no run in the drain closes `prompt_too_large`; if one
->    does, the row carries both figures and what moves is Code's bound or the analysis
->    contract, never a narrower window.
-> 5. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names
->    a blocker for this machine is a no-go.
-> 6. A five-minute rehearsal: `drain.start` with `concurrent: 2`, the Code profile from item 2,
+>    `atyrode.babel` declares `atyrode.code` a required dependency, Code declares `atyrode.omp`, and
+>    Babel's call travels under the principal of the request it is answering: a hub missing either,
+>    or an install whose grant does not reach Code's doors, answers `engine_unavailable` or
+>    `engine_forbidden` on the `profiles` door before any button. **Success:** the Start section
+>    shows profiles rather than a refusal sentence.
+> 4. **The pinned Code takes Babel's prompt.** `runSession` bounds a prompt at `PROMPT_MAX_BYTES` —
+>    omp's own constant, re-exported by Code, counted in encoded bytes — and Babel's composed explore
+>    prompt is about 33,700, so it fits with room to spare. A selection far larger than the presets',
+>    or a corpus of non-ASCII selectors, is how that stops being true. **Success:** no run in the
+>    drain closes `prompt_too_large`; if one does, the row carries both figures, and what moves is
+>    Code's bound or the analysis contract, never a narrower window.
+> 5. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names a
+>    blocker for this machine is a no-go.
+> 6. A five-minute rehearsal: `drainStart` with `concurrent: 2`, the Code profile from item 2,
 >    `target.costMicros` equal to one exploration's price, `deadline` = now + 5 min.
 >    **Success:** two jobs reach the stage `at the model` within 90 s of launch and settle with
 >    `usage.inference.calls > 0`.
@@ -1220,158 +499,138 @@ posts rather than discovered one refused job at a time.
 ### 11.3 Go / no-go (T-0)
 
 > **OPERATOR STEP — go / no-go (not executed).**
-> Start with the rehearsal's settings scaled to the planned concurrency. If no job reports the
-> stage `at the model` within **90 seconds** of the first launch, stop (`drain.stop`) and touch
-> nothing else until the reason has been read from the job journal. No sleeps, no restarts, no
-> policy edits while jobs are in flight. On 2026-09-13 no engine process existed for 75 minutes
-> and nobody looked until the operator asked.
+> Start with the rehearsal's settings scaled to the planned concurrency. If no job reports the stage
+> `at the model` within **90 seconds** of the first launch, stop (`drainStop`) and touch nothing else
+> until the reason has been read from the job journal. No sleeps, no restarts, no policy edits while
+> jobs are in flight. On 2026-09-13 no engine process existed for 75 minutes and nobody looked until
+> the operator asked.
 
 ### 11.4 Watching
 
-The Watch drain panel shows, for the running drain: jobs live, jobs at the model, tokens per
-minute, cost so far against the target, ETA to the target against the deadline, and refusals by
-reason. Each number has one thing it must do: jobs at the model must be non-zero within 90 s;
-tokens per minute must be non-zero within the first inference call; cost so far must rise
-monotonically toward the target; ETA must stay before the deadline. **Tokens per minute flat for
-three minutes while jobs read "at the model" is a no-go: stop and read the journal.** A process
-count, a socket count, or a percentage read by a home-made script is not any of these numbers.
+The Watch drain panel shows, for the running drain: jobs live, jobs at the model, tokens and cost a
+minute over the last three minutes, spend against the target, ETA against the deadline, refusals by
+reason, and the account. Each number has one thing it must do: jobs at the model must be non-zero
+within 90 s; tokens per minute must be non-zero once a call has been metered; spend must rise toward
+the target; the ETA must stay before the deadline. **Tokens per minute flat for three minutes while
+jobs read "at the model" is a no-go: stop and read the journal.** A process count, a socket count or
+a percentage read by a home-made script is not any of these numbers.
 
 ### 11.5 Stopping
 
 > **OPERATOR STEP — stop (not executed).**
-> `drain.stop` cancels what the drain still holds, in the lane each job is in: a run that
-> reached a model is a CODE SESSION and is cancelled through `code.cancelSession`, because its
-> job belongs to `atyrode.omp` and the hub's own `jobs.cancel` is bound to the caller's plugin
-> id; a run still PREPARING has no session yet, so its `atyrode.babel.prepare` job is cancelled
-> — that one with `jobs.cancel`, it is Babel's — and its row is closed, which is what stops a
-> later wake from posting the session anyway. The door answers how many it cancelled and which
-> it could not; the panel shows those two numbers rather than assuming the cancels landed.
-> A drain that still holds a job is `closing`, not finished: what those jobs metered is part of
-> what this drain spent, so the row keeps them, folds each receipt as it lands, and records its
-> ending when none is left. **The final totals are the ones on the `closing` drain when it
-> finishes**, and pressing stop again on a `closing` drain is how the stragglers a self-stop could
-> not cancel are cancelled — the tick that met the target holds no `jobs:cancel`, an operator's
-> press does.
-> **Never `pkill` a job.** The hub owns the process, and a killed worker's claim holds its batch
-> slot for the whole lease: on 2026-09-13 five rounds of kills under a 5200 s lease left ~70
-> ghost claims on the top-ranked subjects and the last fan could not draw at all. The
-> 2026-09-10 burn notes said the same thing; it was violated five times anyway.
+> `drainStop` cancels what the drain still holds, in the lane each job is in, which the row itself
+> says: a run that reached a model is a Code session and is cancelled through `code.cancelSession`,
+> because its job belongs to `atyrode.omp` and the hub's own cancel is bound to the caller's plugin
+> id; a run still preparing has no session yet, so its `atyrode.babel.prepare` job is cancelled —
+> that one is Babel's — and its row is closed, which is what stops a later wake from posting the
+> session anyway. The door answers how many it cancelled and which it could not, and the panel shows
+> those two numbers rather than assuming the cancels landed.
+> A drain that still holds a job is `closing`, not finished: what those jobs metered is part of what
+> this drain spent, so the row keeps them, folds each receipt as it lands, and records its ending
+> when none is left. **The final totals are the ones on the `closing` drain when it finishes**, and
+> pressing stop again on a `closing` drain is how the stragglers a self-stop could not cancel are
+> cancelled — a tick woken by a settlement holds no cancel capability, an operator's press does.
+> **Never `pkill` a job.** The hub owns the process, and a killed worker's claim holds its batch slot
+> for the whole lease: on 2026-09-13 five rounds of kills under a 5200 s lease left ~70 ghost claims
+> on the top-ranked subjects and the last fan could not draw at all. The 2026-09-10 burn notes said
+> the same thing; it was violated five times anyway.
 
 ### 11.6 Rules for whoever drives it (human or agent)
 
 Mandatory, and each one was broken on 2026-09-13.
 
-1. The asked-for thing is measured directly: tokens the hub metered on the named account. Never
-   an adjacent thing (process counts, TLS sockets, a percentage read by a home-made script).
+1. The asked-for thing is measured directly: tokens the hub metered on the named account. Never an
+   adjacent thing (process counts, TLS sockets, a percentage read by a home-made script).
 2. A claim of progress carries the number and its source.
 3. No command that blocks the driver for more than 15 s during a deadline.
 4. No restart without a stop that releases claims.
 5. No policy, lease or batch edit mid-drain.
 6. No feature work during a drain: route around it or stop.
-7. Every failure met is filed with the `drain` label before the session ends, and the next
-   drain's pre-flight reads them.
-8. The allocation across duties, the profile (model, thinking, advisor, subagents) and the
-   account are named by the operator or asked for before the drain starts. An agent running
-   Babel never chooses them silently; an operator running it by hand is asked by the door.
+7. Every failure met is filed with the `drain` label before the session ends, and the next drain's
+   pre-flight reads them.
+8. The allocation across duties, the profile (model, thinking, advisor, subagents) and the account
+   are named by the operator or asked for before the drain starts. An agent running Babel never
+   chooses them silently; an operator running it by hand is asked by the door.
 
-### 11.7 What shipped, what was exercised, what remains (2026-09-14)
+### 11.7 What shipped, and what was exercised
 
-**Shipped on `main`.** The drain (#285): `drain.start` / `drain.status` / `drain.stop`, the
-controller and the Watch drain section. The release path (#286): a `v*` tag packs, verifies,
-attaches the three bundles and hands them to the integrated preview's receiver.
+**Shipped.** The drain: `drainStart` / `drainStatus` / `drainStop`, the controller
+(`plugins/atyrode.babel/server/drain.ts`) and the Watch drain section
+(`plugins/atyrode.babel/watch/drain.tsx`). The release path: a `v*` tag packs, verifies, attaches
+the bundles and hands them to the integrated preview's receiver.
 
-**AND THE ENGINE IS CODE (#279).** Babel does not launch omp and does not compose a session:
-`atyrode.babel` depends on `atyrode.code`, which depends on `atyrode.omp`. Watch's Start
-section lists the saved Code profiles Babel read through its own `profiles` door, links to
-Code's generator for the workspace chosen, and offers no model, thinking or account field of
-Babel's own. A press selects the sessions, posts Babel's own `prepare` job — whose second
-sealed output is the material the run reads — composes the prompt around `/inputs/material`,
-and asks `atyrode.code.runSession` to post the session. A settled session is reconciled
-through `code.readSession`, because Code's job belongs to `atyrode.omp` and its settlement
-never reaches Babel; a refused submission is still spend, and settles its claim at its cost.
-The drain's fan goes through the same launch path and names the same Code profile.
+**The engine is Code.** Babel does not launch omp and does not compose a session: `atyrode.babel`
+depends on `atyrode.code`, which depends on `atyrode.omp`. Watch's Start section lists the saved
+Code profiles Babel read through its own `profiles` door, links to Code's generator for the
+workspace chosen, and offers no model, thinking or account field of Babel's own. A press selects the
+sessions, posts Babel's own `prepare` job — whose second sealed output is the material the run reads
+— composes the prompt around `/inputs/material`, and asks `atyrode.code.runSession` to post the
+session. A settled session is reconciled through `code.readSession`, because Code's job belongs to
+`atyrode.omp` and its settlement never reaches Babel; a refused submission is still spend, and
+settles its claim at its cost. The drain's fan goes through the same launch path and names the same
+Code profile.
 
-**Exercised, with the evidence.** On this workstation (`workstation-linux`, 2026-09-14): the
-plugin gate — `deps:code`, `check`, `bun test` (**516 tests**), `pack`, `verify` — against a
-real engine at Manifold `476a586c`, with `atyrode/code` pinned at `8b5ba71d` in BOTH
-`plugins/CODE_REV` and `@atyrode/manifold-code`. `verify` composes **ten bundles** on the
-disposable engine in dependency order: `atyrode.omp` and its two parts, `atyrode.code` and its
-three, then `atyrode.babel` and its two — which is what a `required` dependency costs and what
-it proves. Beside the gate: the Code client's refusal translation against the real host
-sentences (`server/engine/session.test.ts`); the material bound into a posted session that
-takes Code's job id, with Code's own input schema parsing the request
-(`server/engine/session.test.ts`, `doors/drain.test.ts`); the settle path — valid,
-refused-and-charged, still running, cancelled-with-no-transcript, and a read Code refuses
-twice — against a fake `readSession` (`server/conductor.test.ts`); the sealed material's
-layout and its digests against a real temporary lease (`machine/prepare.test.ts`); both launch
-wakes, the press that seals and the settle that posts (`doors/launch.test.ts`,
-`doors/drain.test.ts`); Watch's Start and drain sections rendered from a fake `profiles` door
-(`watch/test/`).
+**Exercised, with the evidence.** On `workstation-linux`, 2026-09-14: the plugin gate —
+`deps:code`, `check`, `bun test` (516 tests), `pack`, `verify` — against a real engine at Manifold
+`476a586c`, with `atyrode/code` pinned at `8b5ba71d` in both `plugins/CODE_REV` and
+`@atyrode/manifold-code`. `verify` composed ten bundles on the disposable engine in dependency
+order: `atyrode.omp` and its two parts, `atyrode.code` and its three, then `atyrode.babel` and its
+two — which is what a `required` dependency costs and what it proves. Beside the gate: the Code
+client's refusal translation against the real host sentences and the material bound into a posted
+session that takes Code's job id, with Code's own input schema parsing the request
+(`plugins/atyrode.babel/server/engine/session.test.ts`, `plugins/atyrode.babel/doors/drain.test.ts`);
+the settle path — valid, refused-and-charged, still running, cancelled-with-no-transcript, and a
+read Code refuses twice — against a fake `readSession`
+(`plugins/atyrode.babel/server/conductor.test.ts`); the sealed material's layout and its digests
+against a real temporary lease (`plugins/atyrode.babel/machine/prepare.test.ts`); both launch wakes,
+the press that seals and the settle that posts (`plugins/atyrode.babel/doors/launch.test.ts`); and
+Watch's Start and drain sections rendered from a fake `profiles` door
+(`plugins/atyrode.babel/watch/test/`).
 
-**Not exercised — every item below is an OPERATOR STEP.** Nothing here ran against a real hub,
-a real Code install or a real omp account: no model has answered, no `inference_call` sits on
-a real journal, no provider window has moved. The lane is whole in code and unproven in the
-world. What remains owed, in order:
+Local synthetic evidence, 2026-09-16: the conductor regression uses the real SQLite store and the
+reception read model with a simulated Code receipt. It covers a reclaimed claim's new run, rejects
+the superseded job's assessment while retaining its usage, and preserves the newer claim. It does
+not establish live inference, broker metering or preview admission.
 
-> 1. A Code profile exists on `dev-01` for the account and model the drain will spend; Code
+**Not exercised — every item below is an OPERATOR STEP.** Nothing has run against a real hub, a real
+Code install or a real omp account: no model has answered, no inference call sits on a real journal,
+no provider window has moved. The lane is whole in code and unproven in the world. What remains
+owed, in order:
+
+> 1. A Code profile exists on the target machine for the account and model the drain will spend; Code
 >    and omp are installed and consented at the revisions in force. **Success:** Watch's Start
 >    section lists it, and a launch reaches Code's door.
-> 2. One exploration, by hand, from the Start section. **Success:** the run takes a Code job
->    id, `code.readSession` answers it on a later cycle, and the receipt carries the model,
->    the account and what it spent.
-> 3. §11.2 item 6, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`,
->    target one exploration's price, deadline now + 5 min. **Success:** two rows reach
->    `at the model` within 90 s and settle with calls > 0; record host, date and the drain row
->    here.
-> 4. **OPERATOR STEP — drawn review acceptance.** Install the review-enabled bundle, then use
->    `setPolicy` to record `review.machineId`, the saved Code profile and expected revision,
->    versioned `review.recipes`, and `review.roleRecipes` for every role. Start with batch size
->    and per-machine concurrency one; retain the shared budget and lease bounds. The conductor
->    draws and dispatches on its cadence; `review-backlog` and `file-and-tidy` remain unavailable
->    as direct launches because an operator-selected record must not bypass the draw. **Success:**
->    one Code receipt names the selected model and measured usage, the claim settles, and the
->    record's reception shows the assessment. Only then enable continuing maintenance work.
->
->    Local synthetic evidence (2026-09-16): the conductor regression uses the real SQLite store
->    and reception read model with a simulated Code receipt. It covers a reclaimed claim's new
->    run, rejects the superseded job's assessment while retaining its usage, and preserves the
->    newer claim. This does not establish live inference, broker metering or Preview admission.
-
-The Go product is frozen (babel#250) and its loop scripts (`~/.config/babel/review-*.sh`,
-`usage-window.py`, `evaluate-loop.sh`, `explore-fleet.sh`, `sync-loop.sh`) are retired with
-it. Two things the 2026-09-13 drain left behind on the Go deployment remain owed and are
-**OPERATOR STEPS** before any Go conductor run: the evaluation policy is `eval-policy-10`
-(batch 256, lease 5200 s, per-cycle 100 USD) and must go back to batch 4 / lease 900 s /
-per-cycle 25 through the browser's **Evaluation → Review policy** form; the analysis profile is
-rev 6 (the drain account, opus, xhigh, advisor sonnet) and is the operator's to keep or revert.
+> 2. One exploration, by hand, from the Start section. **Success:** the run takes a Code job id,
+>    `code.readSession` answers it on a later cycle, and the receipt carries the model, the account
+>    and what it spent.
+> 3. §11.2 item 6, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`, target
+>    one exploration's price, deadline now + 5 min. **Success:** two rows reach `at the model` within
+>    90 s and settle with calls > 0; record host, date and the drain row here.
+> 4. **OPERATOR STEP — the first live drawn review.** Install the review-enabled bundle, then use
+>    `setPolicy` to record `review.machineId`, the saved Code profile, versioned `review.recipes`
+>    and `review.roleRecipes` for every role. Start with a batch size and a per-machine
+>    concurrency of one and retain the standing lease bounds. The conductor draws and dispatches
+>    on its cadence; `review-backlog` and `file-and-tidy` stay unavailable as direct launches,
+>    which is deliberate (§10). **Success:** one Code receipt names the selected model and its
+>    measured usage, the claim settles, and the record's reception shows the assessment. Only then
+>    enable continuing maintenance work.
 
 ---
 
 ## What remains operator-gated
 
-The dated historical observations above do not establish current fleet state.
-The following **OPERATOR STEPS remain unexecuted** for the clan-var deployment:
+None of the dated observations above establishes current fleet state. These remain unexecuted:
 
-1. Independent custody backup/recovery (§3), any necessary derived generation,
-   encrypted commit, and per-machine apply (§4). Preserve the existing password
-   and whole append-only ring; missing placement is not rotation.
-2. Read-only current placement/diagnostic/scheduler checks (§4, §7.1), including
-   actual Darwin launchd state, followed by authorized first publication and
-   cross-host archive visibility (§6).
-3. Ring reconciliation/distribution and any deliberately authorized rotation
-   (§8.1), including cross-host opening of historical and new records.
-4. Suspension, rollback and roll-forward (§7), none of which was activated by
-   the historical drill.
-5. **OPERATOR STEP — full restore-to-service on a clean machine (not executed).**
-   **Prerequisites:** an authorized spare registered machine, independently
-   recoverable custody, current dotfiles and access to the existing repository/
-   catalog. Follow §3–4 placement, restore a historical source tree using §2,
-   and complete §6 publication and §7 scheduling checks.
-   **Success:** the restored bytes match the chosen snapshot, the clean machine
-   publishes under its intended registry identity, and another authorized host
-   sees that publication. The 2026-08-31 cross-machine restores and archive
-   observations prove their historical parts, not this current composition.
-
-The stale shared locks in §2.4 were also observed only on 2026-08-31. Reassess
-lock ownership and liveness before the explicit unlock operator step; do not
-assume those lock ids still need removal today.
+1. Independent custody backup and recovery (§3), and any derived generation, encrypted commit and
+   per-machine apply. Preserve the existing password and the whole append-only ring; missing
+   placement is not a reason to rotate.
+2. The `atyrode.babel.restic` service install and its job binding on each machine that archives
+   (§4), followed by a first `archive` whose receipt is read (§1).
+3. An answer to §5: what backs up the hub's `data.db`, which is the only copy of everything Babel
+   knows.
+4. A cadence for `archive`. Babel schedules only the `scan` beat, so today an archive happens when
+   someone posts one.
+5. A full restore-to-service on a clean machine: recover custody, restore a historical source tree
+   with restic (§2), enroll the machine (§6), and confirm the restored bytes match the chosen
+   snapshot. The 2026-08-31 cross-machine restore proves its own part and not this composition.
+6. The drain rehearsal and the four owed steps of §11.7.

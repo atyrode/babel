@@ -3,7 +3,7 @@
   is the schema DSL). One migration per shape change, named and ledgered by the engine; this is
   the first, and it carries every fact the Go stores held that the product still needs — the
   importer (`tools/import.ts`) reads `durable.db` into exactly these tables, ids kept, so
-  provenance survives the rewrite (decision 91: import once, then retire).
+  provenance survives the rewrite; the crossing runs once and the Go stores are then retired.
 
   What changed in the crossing, and why:
   - ninety-four tables become twenty-three, and the shapes since have added three (`budgets`,

@@ -53,7 +53,8 @@ type ServiceEndpoint = z.infer<typeof ServiceEndpointSchema>;
 /**
  * WHAT THE SERVICE ANSWERS WITH: the repository this deployment archives into and the secrets
  * that open it, in ONE document. An object-store credential is refused in halves and required
- * for an `s3:` locator (SPEC decision 50): a half-installed policy that failed at the first
+ * for an `s3:` locator: the storage document carries the object-store credential inline beside
+ * the repository's, and a half-installed policy that failed at the first
  * backup would be found at the worst possible moment, and a locator reviewed apart from its
  * credential is two facts that can disagree.
  */

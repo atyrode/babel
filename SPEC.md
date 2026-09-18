@@ -1,12 +1,19 @@
 # Babel specification
 
-Status: audited development baseline, revised 2026-08-27: archival is delegated to restic (operator decision); the bespoke `babel/v1` object contract is retired. Revised 2026-09-02 on three operator directions of 2026-09-01/02: manifold is Babel's final form and the React shell is transitional (§2.8, §12 Phase M, decisions 60–68); Babel's field is a data lake of subjects of which the archive is one kind (§1, §3.1, §4.9, decisions 69–80); runs are the crux of the interface (§8.3, decisions 81–82). Phase A local coding may proceed against local-path repositories; the first shared deployment remains gated by §14, and the manifold plugin by §14's own group.
+Babel is a Manifold plugin family. `atyrode.babel` is the baseline — the store, the doors, the
+conductor and the machine half — and `atyrode.babel.feed` and `atyrode.babel.watch` are its two
+panels. There is no binary, no command line and no web server of Babel's own.
 
+This document states what Babel is. Where a capability is specified here and not built,
+[`docs/parity.md`](docs/parity.md) says so and names the issue that tracks it.
 
-Module path: `github.com/atyrode/babel`.
 ## 1. Purpose
 
-Babel is an open-ended exploratory instrument over a data lake of subjects: archived conversations between an operator and coding agents, the operator's repositories, Babel's own records, and brokered public sources (operator direction 2026-09-01/02, widening the archive-only framing of 2026-08-27; §3.1, §4.9). The archive was its first subject and remains the record of intent and process; the repositories are the record of outcome; Babel reads the gap between them. It helps ideas emerge about:
+Babel is an open-ended exploratory instrument over a data lake of subjects: archived
+conversations between an operator and coding agents, the operator's repositories, Babel's own
+records, and brokered public sources. The archive was its first subject and remains the record
+of intent and process; the repositories are the record of outcome; Babel reads the gap between
+them. It helps ideas emerge about:
 
 - the operator's systems and repositories;
 - the way the operator communicates and collaborates with agents;
@@ -18,247 +25,190 @@ Babel is an open-ended exploratory instrument over a data lake of subjects: arch
 
 The project closes a creative feedback loop:
 
-> conversations and reality produce hypotheses; exploration connects and challenges them; human review decides what becomes useful; the resulting feedback can improve systems, future interactions, and Babel itself.
+> conversations and reality produce hypotheses; exploration connects and challenges them; human
+> review decides what becomes useful; the resulting feedback can improve systems, future
+> interactions, and Babel itself.
 
-Among everything Babel can be, its axiomatic center is friction (operator decision, 2026-08-31): it strives, ever so slightly and continuously, to reduce the friction between the operator and their agents. Babel exists to understand what an agent didn't understand, how communication failed to produce success, and where error arose only from poor systems, poor communication, missing tools, or missing context. Its posture is a zen advisor, never a magic solution-finder: it helps problems emerge and puts words on them, suggests remedies as separate addressable proposals, and welcomes the operator's open-ended complaints to see whether anything actionable can be made of them. Friction with Babel itself is inside this scope.
+Among everything Babel can be, its axiomatic center is friction: it strives, ever so slightly and
+continuously, to reduce the friction between the operator and their agents. Babel exists to
+understand what an agent didn't understand, how communication failed to produce success, and
+where error arose only from poor systems, poor communication, missing tools, or missing context.
+Its posture is a zen advisor, never a magic solution-finder: it helps problems emerge and puts
+words on them, suggests remedies as separate addressable proposals, and welcomes the operator's
+open-ended complaints to see whether anything actionable can be made of them. Friction with Babel
+itself is inside this scope.
 
-The wider field does not move that center (operator direction 2026-09-02). Conversation analysis and repository analysis are two entry points into one question — what was asked, what the agent understood, and what the code became — so a run may start from the archive with repositories as context or from a repository with the archive as context (§4.9). Babel points at its subjects rather than copying them: the archive is the one kind it holds as immutable copies, and every other kind is observed at a pinned fingerprint at run time and recorded that way in the receipt (§3.1).
+Conversation analysis and repository analysis are two entry points into one question — what was
+asked, what the agent understood, and what the code became — so a run may start from the archive
+with repositories as context or from a repository with the archive as context (§4.9). Babel
+points at its subjects rather than copying them: the archive is the one kind it holds as
+immutable copies, and every other kind is observed at a pinned fingerprint at run time and
+recorded that way in the receipt (§3.1).
 
-The lake serves a second use beside Babel's own analysis (operator direction 2026-09-02, §4.10): it is hot-ready context for the operator's daily work with agents. Any agent, in any harness, on any connected machine, can be told "look at what we discussed about X" and, knowing Babel exists and what it can do, ask Babel for that discussion — search the archive, fetch a bounded excerpt with its provenance — and carry on with it as context. Babel's workers already read the lake that way during a run; recall is the same reading offered to every other agent the operator talks to. The archive stops being a record consulted only when Babel analyzes it and becomes memory the operator's agents can reach for.
-
-Babel does not promise reliable, exhaustive, or objectively correct analytical output. Its hard guarantees concern archive integrity, containment, provenance, reproducibility, and no mutating or publishing external effects. Brokered reads are observable external effects and are recorded. Hypotheses, findings, and proposals remain creative, fallible, incomplete interpretations for human review.
+Babel does not promise reliable, exhaustive, or objectively correct analytical output. Its hard
+guarantees concern archive integrity, containment, provenance, reproducibility, and no mutating
+or publishing external effects. Hypotheses, findings, and proposals remain creative, fallible,
+incomplete interpretations for human review.
 
 ## 2. Product boundary
 
 ### 2.1 Babel owns
 
-- archival orchestration: source roots, snapshot cadence, stable host identity, tags, and the never-delete retention policy;
-- repository configuration and append-only backup/read-only retrieval behavior (repository encryption itself belongs to restic);
-- archive status, integrity verification, and recovery-compatible restore commands;
-- read-only ingestion of materialized chat archives;
-- format adapters for supported agent session formats;
-- normalization, indexing, deduplication, and provenance;
-- deterministic preflight checks such as likely-secret detection;
-- a versioned cookbook of shared investigation policies, optional domain lenses, and meta-analysis recipes;
-- open-ended, incremental exploration with a durable hypothesis frontier and cross-session/repository synthesis;
-- provenance-bearing findings and proposal generation without claiming analytical correctness;
-- its user interface, which under manifold (§2.8, operator decision 2026-09-02) is the plugin's rendered surface — the `babel.<x>` plugin package, its manifest, actions and both halves live in `atyrode/babel` — and until the plugin is proven is the self-hosted loopback web interface as the transitional management and exploration surface; plus a minimal terminal status overview and headless commands for operations;
-- the runs projection: one host-independent contract carrying every fact a surface shows about a run (§8.3);
-- subject kinds and, per kind, their observers, fingerprints and disclosure stories (§3.1, §4.9);
-- the recall interface: the lake as bounded, provenance-bearing, redacted context for any agent the operator works with, through the same retrieval Babel's own workers use (§4.10); and
-- globally committed review/refinement/output state plus rebuildable private local caches and materializations.
+- archival orchestration: source roots, snapshot cadence, stable host identity, tags, and the
+  never-delete retention policy;
+- read-only ingestion of session logs, in place, in the format the harness wrote them;
+- the session catalog: what exists, where, how large, what it cost, and which snapshot holds it;
+- the analysis cookbook: the methods a run performs, versioned, with a claim citing the method it
+  used;
+- the prompt a run is given, and the contract its answer must satisfy;
+- the durable record of everything it has concluded — hypotheses, observations, findings,
+  proposals, questions, topics, assessments, rulings and receipts;
+- the conductor: what deserves a run, under which ceilings, and what it cost; and
+- its own two panels, which are the whole of how Babel is used.
 
 ### 2.2 Babel does not own
 
-- collection of live conversations;
-- machine-specific credential authorities, package installation, or service scheduling;
-- editing repositories or agent configuration;
-- opening or updating GitHub issues;
-- credential rotation or incident response;
-- silently sending transcript content to a hosted model;
-- deciding that a suggestion is correct without human review;
-- fetching into, checking out, or creating worktrees inside the operator's checkouts, or indexing them for code intelligence ahead of measured need (§3.1, §4.9);
-- observing a local subject from a machine that does not have it (§3.1); or
-- under manifold (§2.8, 2026-09-02): principal identity and tokens, machine enrollment and liveness, presence, the UI host, and the trace ledger — manifold owns these once Babel is its plugin, and Babel's loopback session and `internal/presence` stand in only until then.
-
-These exclusions are safety boundaries, not a promise that no future companion automation will act on accepted proposals.
+- the model, the account, the thinking level or the session: a run is a Code session, posted
+  through `atyrode.code.runSession`, and Code owns all four;
+- the sandbox a session runs in, which is omp's;
+- repository encryption, deduplication and snapshot format, which are restic's;
+- the operator's agent configuration: Babel never edits instructions, skills, rules or hooks;
+- credential custody and placement, which belong to `atyrode/dotfiles` and to Manifold's own
+  service bindings; and
+- publication of anything. Babel drafts; the operator acts.
 
 ### 2.3 Integration boundary with `atyrode/dotfiles`
 
-The pre-Babel dotfiles automation was a proven operational prototype, not Babel's compatibility contract. It archived OMP, Codex, and Claude Code trees hourly to a Clever Cloud Cellar bucket through `rclone crypt`, and is retired. It lacked the session-aware catalog, integrity verification, deduplicated growing-session storage, and selective restore Babel requires.
-
-Babel starts a clean restic repository in the same Cellar account, under its own prefix:
-
-```text
-s3:<cellar-endpoint>/<bucket>/babel/restic
-```
-
-It ignores the legacy remote namespace entirely. Legacy objects remain untouched and recoverable with direct rclone, but Babel does not list, import, migrate, or preserve their layout. Source data still present on managed machines is captured by Babel's first restic push. Retirement is a clean dotfiles cutover rather than an in-place migration, and it takes effect per machine as that machine activates the generation without the job: nothing in Babel retires it remotely.
-
-Ownership follows dependency direction:
-
-- **Babel owns orchestration:** provider-neutral configuration, source adapters, snapshot cadence/tagging/host identity, the session catalog, shared coordination, append-only retention policy, selective restore, status/integrity commands, and durable analysis/Reality/review state;
-- **restic owns the archive repository:** encryption, content-defined deduplication, snapshot format, integrity checking, and S3 transport (the operator deployment uses restic's native S3 backend against Cellar);
-- **PostgreSQL owns shared structure and coordination:** deployment/instance/host identity, the session/snapshot catalog, idempotency, leases/fencing, and—beginning in Phase B—client-side-encrypted hypotheses, Reality, questions, outputs, review, lineage, runs, and receipts;
-- **the archive adapter owns transport:** Babel invokes the external `restic` binary through a narrow injected port of eleven verbs—`init`, `cat config`, `backup`, `snapshots`, `check`, `dump`, `ls`, `restore`, `list locks`, `cat lock`, `unlock`—and never runs `forget`, `prune` or `repair`. `cat config` is the cheapest proof that a repository exists and that the password opens it, which is how §11's distinction between a missing repository and an unopenable one is made; `ls` reads a snapshot's tree from metadata alone, which is what §6.2's selective retrieval addresses before it fetches. The three lock verbs serve one operator-typed command, `archive unlock` (§6.1, §8): `list locks` and `cat lock` are read-only and are what lets it state a staleness judgement before acting, and `unlock` removes lock files—the coordination state restic writes while a command runs—and nothing else. All of them go through the same minimal-environment, no-password-in-argv command builder as every other verb. The property that matters is not the count: no verb in the port can delete or rewrite archived data, and the one verb that removes anything reaches only restic's own locks. A local-path repository supports fixtures, offline development, and recovery. Phase B evidence, diffs, large outputs, and exports are separate encrypted S3 objects outside the restic repository;
-- **dotfiles owns machine convergence:** commit-pinned Nix installation, stable host and instance IDs, secret retrieval, piping a versioned storage document into Babel, and an hourly user timer after manual bootstrap acceptance; and
-- **Babel owns interpretation:** cataloging, normalizing, analyzing, and reviewing archived conversations.
-
-The first operator deployment uses the existing Clever Cloud Cellar account and a Clever Cloud managed PostgreSQL database, while the protocol remains portable to compatible S3 and PostgreSQL services. `$XDG_CONFIG_HOME/babel/storage.json` is one mode-0600 provider-neutral document describing `local` or `shared` mode, deployment/instance identity, the restic repository locator, PostgreSQL/TLS settings, and external secret/key references. Babel never accepts credential-bearing URLs on argv, implements repository encryption itself, knows a Bitwarden item name, or invokes Bitwarden. Standalone installations generate stable IDs when dotfiles does not supply them.
-
-Managed setup is a one-way secret handoff, not a Babel-to-Bitwarden integration. During an explicit dotfiles activation/bootstrap, the operator unlocks Bitwarden; dotfiles retrieves common deployment material and the shared restic repository password plus this instance's PostgreSQL catalog credential, combines them with stable host/instance IDs, and pipes the versioned document to `babel storage configure --from-json -`. Babel never receives vault authority or item names.
-
-Secrets never enter Nix derivations or `/nix/store`, argv, shell history, broad process environment, logs, or persistent temporary files. Babel validates endpoints, TLS, identity, schema compatibility, and credentials before atomically replacing `storage.json`; failure preserves the previous valid configuration and prior timer state. A distinct migration credential, where the provider can issue one, is retrieved ephemerally only on the designated bootstrap/migration machine and is never persisted in ordinary instance configuration. After health and bootstrap gates pass, dotfiles enables the hourly timer and relocks the vault. Rotation repeats the same atomic flow. Where a provider issues one database user per instance, revoking a single instance leaves the fleet untouched; where it issues one credential for the whole deployment—as Clever Cloud's managed PostgreSQL does (§9)—revocation is necessarily a fleet-wide re-key. That coarser blast radius is a property of the provider and is stated rather than hidden.
-
-`local` mode uses a local-path restic repository plus SQLite and is explicitly single-instance development/recovery state. The first deployed v1 uses `shared` mode. Recovery must not depend circularly on Babel or PostgreSQL: dotfiles plus the external secret authority can reinstall/reconfigure Babel, the restic binary alone can restore every archived source tree, and the Phase A PostgreSQL catalog is rebuildable from the repository snapshot list plus rescans of live or restored sources. Babel is never the sole copy of credentials, keys, or recovery knowledge. Loss of the repository password is loss of the archive, so password custody and backup are gated operational controls (§14).
+Dotfiles owns machine identity, secret retrieval, storage and payload-key placement, and
+scheduling. Babel is vault-agnostic: it never creates, emits, reads or rotates a credential, and
+the repository password and object-store credential reach it as one storage document delivered
+through Manifold's service binding for the job that needs it. Babel ships no substitute and
+prescribes no vault tool. Dotfiles does not author Babel's contract.
 
 ### 2.4 Primary interaction model
 
-The web interface is Babel's primary interactive surface (operator decision 2026-08-28): `babel web` serves a loopback-only, token-guarded browser application owning session browsing and search, transcript viewing, session detail with artifact/blob closure and completeness reasons, archive status, verify, and fetch, and — in Phase B — relationship graphs, evidence/counter-evidence inspection, Reality Ledger and Question workflows, proposal refinement, diffs, output previews, and clean/chaos comparisons.
+Babel is used through two Manifold panels: **Feed**, the front page and every record, and
+**Watch**, what Babel is doing and what it is set to do (§8). Every capability is reachable by
+moving through them; none lives only in a place the operator has to remember.
 
-Revised 2026-09-02 (operator decision, §2.8): the primary interactive surface is the manifold plugin's rendered UI — sidebar sections, panels, container disciplines and door forms inside manifold's shell — and the loopback React application above is transitional. It stays until the plugin is proven, and nothing new is built for it that does not carry over. What carries over is the Go application services and the projections they expose, which is why every run fact is exposed through one host-independent projection (§8.3) and why no surface computes a fact in view code. The plugin's browser half reaches Babel only through manifold's action door (`POST /api/actions/:name`, exists: `packages/server/src/http.ts:158-432`) and the plugin's server half; the rule that the browser never connects to PostgreSQL, SQLite, Cellar, restic, Code, OMP or providers holds unchanged.
+### 2.5 Cross-machine continuation
 
-The terminal stays deliberately minimal: bare `babel` prints a fast offline status overview (build identity, storage configuration, cached catalog size, and the web pointer), and a richer TUI is deferred until the web surface settles rather than being built in parallel. Headless subcommands remain required for systemd/launchd, scripting, diagnostics, reproducible tests, and recovery.
-
-CLI and web call the same Go application services and storage contracts; the web API is served by the same process over the same command implementations, so business logic, sanitization, and authorization are never reimplemented in view code, and the browser never connects directly to PostgreSQL, SQLite, Cellar, restic, Code, OMP, or providers. The TypeScript/React frontend is compiled and embedded into the static Go binary with no runtime CDN or external asset dependency.
-
-### 2.5 Cross-machine continuation boundary
-
-Babel supplies archived OMP conversations for operator-directed continuation on another machine, but two different promises must remain separate:
-
-1. **Transcript continuation** is feasible: fetch a complete, immutable session snapshot, validate it, create a new local OMP fork with lineage to the source, and continue the conversation in a chosen workspace.
-2. **Exact runtime/workspace resume** is not guaranteed: a transcript does not contain the source process tree, working tree, uncommitted files, credentials, provider sessions, installed tools, or complete machine state.
-
-The product language is **Continue here**, not seamless cloud resume. The safe default creates a new local session identity through OMP's supported fork/import behavior. Babel's fetched cache remains immutable and is never passed to OMP as a file it may append to. Continuing the same mutable identity on two machines is out of scope until a real synchronization protocol provides a canonical writer, leases, versioning, conflict handling, and faster publication than periodic backup.
-
-Responsibility remains layered:
-
-- **Babel** exposes read-only archived-session selection, fetch, integrity, provenance and capture-compatibility information;
-- **Code** owns generic target-workspace and routing-profile selection and invokes OMP without knowing which application supplied the session; and
-- **OMP** parses the session, reconstructs supported conversation/runtime state, and creates the new local fork.
-
-Neither Code nor OMP reads Babel's private database or calls its API. The operator-facing integration composes Babel's immutable fetch with Code's generic launch facility; Babel never chooses a workspace or launches a continuation agent.
-
-Before **Continue here** is offered, the combined archive and generic-launch preflight reports:
-
-- session format/version validity and a complete, digest-verified JSONL snapshot;
-- completeness of the sibling artifact tree and every referenced OMP blob;
-- source host, archive time, session modification time, and whether the snapshot may be stale or from a still-active source;
-- recorded `cwd`, additional directories, and any available repository remote/commit/branch/dirty-state fingerprint;
-- whether a compatible target workspace exists locally or must be selected/re-rooted;
-- whether the installed OMP can read the format; and
-- whether recorded models/providers are available under current-machine configuration, without copying credentials from the source machine.
-
-Preflight results distinguish `ready-to-fork`, `needs-target-workspace`, `incomplete-capture`, `workspace-mismatch`, and `stale-or-possibly-active`. Warnings are evidence, not blockers hidden behind a generic score. Exact process/tool-context compatibility is never claimed.
+An archived session can be resumed in a harness by rehydrating the retained original bytes
+(§6.8). Exact machine and workspace restoration is not promised, and Babel never launches an
+agent: it produces the material and the operator continues the conversation.
 
 ### 2.6 Analysis execution boundary
 
-Babel owns the analysis control plane—recipes, source selection, normalization, discovery, retrieval, batching, sandbox policy, job supervision, output validation, hypothesis lineage, evidence, synthesis, receipts, and review. Code remains the sole owner of provider/model/thinking profiles and launches OMP as the analysis worker.
+A run reads a **material**: an immutable, sealed selection of session logs, prepared by the
+`prepare` job and bound into the session's sandbox read-only. The material's index records, per
+session, the selector Babel filed it under, the file it occupies and the digest it was served at.
+Every citation a run makes is checked against that index: a path the material does not name, or a
+digest that does not match, refuses the whole answer as `unknown-reference`.
 
-OMP is the investigator, not the source-format boundary. It can analyze normalized material from OMP, Codex, and Claude Code and may generate arbitrary hypotheses from any operator-approved corpus or repository scope. Broad discovery has an open hypothesis space but not ambient machine authority: each run fixes the allowed hosts, time range, sessions, repository snapshots, capabilities, and disclosure class before work starts. Resource limits bound each sandbox lease, while the durable frontier lets exploration resume indefinitely without changing what ideas are permitted.
-
-An analysis job separates the model-control process from its disposable execution sandbox. Code resolves the profile and gives the supervised OMP controller only the provider transport and credentials required for inference; it exposes no host files or general-purpose tools. Provider secrets and transport are never forwarded to model-visible tool arguments, the evidence broker, repository processes, or the execution sandbox.
-
-All filesystem and command experimentation occurs inside an ephemeral writable sandbox. It may alter a disposable repository clone, compile code, run bounded commands and tests, and create experiments, but it receives no host home directory, SSH agent, secret store, credential files, Docker socket, provider credential, or writable host mount. Approved inputs are mounted read-only; scratch state is discarded after the receipt is finalized. CPU, memory, process, disk, output, and wall-clock safety limits are mandatory, and cancellation terminates the entire process tree.
-
-The execution sandbox has no direct network access. OMP can reach only Code's scoped model transport and Babel's versioned, capability-gated evidence APIs. Babel brokers corpus search/retrieval, repository snapshot materialization, and public research. After private context is available, the broker makes no arbitrary model-controlled request: URL, query, header, body, and redirect fields are disclosure sinks. Requests use validated templates or opaque result IDs plus explicit declassification/consent; userinfo, fragments, arbitrary headers or bodies, private locators, and encoded secrets are forbidden. The broker may search/fetch public material and materialize a public repository at a pinned commit without authentication; it rejects private/link-local destinations and unsafe redirects, limits response types and sizes, and returns source URL, retrieval time, redirect chain, and content digest. Remote content and repository code remain untrusted evidence. Private remote-repository access is out of scope for v1; an explicitly approved local snapshot may still contain private code. The exact broker protocol is a Phase B acceptance gate.
-
-Repository commands execute only inside the sandbox against a pinned disposable snapshot. A run receipt records its source locator, commit and dirty-state fingerprint where available, every evidence-tool request, command, exit status, bounded output digest, generated diff, research source, and capability decision. No analysis capability can push, publish, mutate a source repository, or write outside the sandbox.
-
-Code is a generic OMP launcher, not a Babel worker implementation (#182, atyrode/code#123; operator clarification 2026-09-06). Babel invokes `code engine` with a saved Code dial-profile reference. Code supplies the existing profile overlay, provider/account isolation and OS containment; stdin and stdout remain OMP's native RPC. Code does not interpret recipes, grants, evidence, stages, result kinds or Babel conformance directives, and no parallel Code task protocol replaces upstream RPC.
-
-The source boundary remains explicit without a second event protocol. Code writes its versioned, non-secret runtime information to a private caller-selected file before forwarding OMP's ready frame. Babel verifies the resolved profile and containment before sending instructions, source context or tool definitions. Native RPC supplies request correlation, host-tool calls/results, cancellation, model/session events and usage; Babel consumes those APIs instead of asking Code to reproduce them. Code's final runtime information adds OS resource measurements when available. A wrapper killed before that report leaves those measurements unknown, not zero. OMP's session lifecycle, retry, fallback and compaction remain upstream-owned.
-
-Babel generates the result schema from its own payload types, restricts it by stage authority, and registers `babel_submit_result` as an ordinary OMP host tool through `set_host_tools`. OMP's native argument validator checks the supplied schema before emitting a host callback. Babel owns the submission handler and domain validation: accepted complete snapshots survive a later invalid submission, empty valid output is permitted, and evidence is checked against what the run actually served before persistence. Recipes, stage instructions and evidence-tool definitions are supplied by Babel, never compiled into Code. Runtime diagnostics are separate from model result fields. The native-integration audit is pinned to OMP `v18.1.11`: `packages/coding-agent/src/modes/rpc/rpc-types.ts`, `host-tools.ts`, and `rpc-mode.ts`; argument validation runs in `packages/agent/src/agent-loop.ts` and `packages/ai/src/utils/validation.ts`. `--no-tools` alone is not ambient-tool confinement, so Code retains its isolated HOME, working directory and mount boundary; the missing native restricted-startup switch is tracked in atyrode/code#124.
-
-Babel stores only the Code profile reference, approved guards, capability grant, and resolved non-secret execution metadata in run receipts. One selected Code profile applies to every recipe in a run. Babel keeps its own interface responsive while owning cancellation, sandbox and process-tree lifetime, tool authorization, output validation, and final exit status; analysis is never detached.
-
-Preparation is automatic; inference is explicit by default. Archive refresh, manifest ingestion, deduplication, normalization, deterministic preflight, and local index maintenance may run unattended. A model run starts only through an explicit operator action unless scheduled inference has been separately enabled. Scheduled inference names a saved Code profile and an approved source/capability/disclosure/cost envelope; only its material-change fingerprint remains scheduled-inference design material until the Phase B handshake gate is resolved.
-
-The dependency points one way: Babel consumes Code's generic execution facilities for analysis, and Code wraps OMP's native APIs. Code neither calls Babel nor carries a Babel-specific integration. Archived-session selection and fetch belong to Babel; continuation orchestration composes those with generic Code launch facilities rather than adding archive-specific code to the engine.
-
-### 2.7 Local web security boundary
-
-`babel web` starts only on explicit request, binds an ephemeral loopback port, and stops on operator action or process exit. V1 has no LAN, remote-browser, or persistent-listener mode. Remote access is a separate future authentication/transport design, never a bind-address flag.
-
-Each launch creates a 256-bit one-time bootstrap nonce. `babel web --open` places it only in the URL fragment of the loopback bootstrap page; fragments are never sent in HTTP requests. Embedded bootstrap code immediately removes the fragment with `history.replaceState`, posts the nonce in a request body under `Referrer-Policy: no-referrer`, and receives a rotated host-only `HttpOnly; SameSite=Strict` session cookie. The nonce is single-use and expires quickly; lock/stop revokes every nonce and session. No bearer credential, transcript content, or sensitive selector appears in a query string, request log, referrer, or retained history entry. **Built 2026-08-31** (issue #72): the nonce is spent by the first exchange and by nothing else, the session is generated independently of it, the cookie is the only credential the server accepts — no header, query parameter or body presents one — and lock/stop kills both, so a launch link the operator never opened is worthless after a stop. Two consequences are recorded rather than discovered. The link is genuinely one-use, so a second paste of it is refused and the answer is a new `babel web` rather than a longer lifetime; and `Secure` is not set, because the origin is `http://` on a loopback address where browser engines disagree about honouring the attribute, there is no network path to downgrade, and a cookie some engines drop is worse than one they all send. Cookies are not isolated by port, so a page on another loopback port can overwrite this cookie in the operator's browser: it cannot forge a valid value, so the consequence is 401s and a relaunch, and no attribute available to an `http://` origin prevents it.
-
-All archive, transcript, repository, model, research, Reality Ledger, and output content is untrusted. React rendering escapes text by default; any Markdown/diff renderer uses an allowlisted AST with raw HTML, active SVG, scriptable URLs, and unsafe schemes disabled. Web responses and browser-visible errors follow the same secrecy/redaction contracts as terminal surfaces. **Lock and stop server** invalidates the launch session and terminates the listener.
-
-Revised 2026-09-02 (§2.8): the loopback listener is transitional. Manifold's authenticated hub replaces it — session, token expiry, origin discipline and trace ledger are manifold's (`packages/server/src/http.ts`; the ADR 0011 evaluator in `packages/server/src/auth.ts`; both exist) — so the per-launch nonce, the loopback bind and the lock/stop control retire with the shell rather than being rebuilt in the plugin. The rendering rules of the previous paragraph carry over verbatim and become the plugin's own obligation: manifold ships no sanitizer (absent; `sanitiz`, `DOMPurify` and `dangerouslySetInnerHTML` match nothing under `packages/`), so the plugin brings its allowlisted Markdown/diff renderer with it, and the terminal-safe renderer of §8 keeps guarding every headless surface.
+A run holds no credential, reaches no network of Babel's, and mutates nothing. It reads the
+material, answers in one fenced block, and the session ends.
 
 ### 2.8 Manifold plugin boundary
 
-Revised 2026-09-12, second time (decision 91, superseding decision 90 of the same morning): **Babel becomes a Manifold plugin entirely, as a rewrite.** The operator's words: *"everything can be migrated. We don't keep back compatibility, we don't need to stay on Go, we don't need to be held back by any now stale spec, ADR, etc. Babel must entirely become a manifold plugin and leverage all aspects of manifold to do so, or otherwise implement what is missing in manifold to make it possible."* Decision 90's pause is withdrawn. What carries over is the product — the one list the operator rules on (§8.7), topics as ledger entities and Babel filing and consolidating its own output through its own chain (§4.13), Babel handling Babel with the operator as the boundary — not the implementation: the Go tree, the standalone web UI, the shared PostgreSQL catalog with its sealed payloads and publication machinery, and every section of this specification that describes them are to be rewritten or retired by the plan in `docs/manifold-plan.md`. The five decisions taken with the direction, all the operator's: the hub owns Babel's state in a plugin-owned durable store (a Manifold primitive to be built), the rewrite is TypeScript throughout with the per-machine half delivered through Manifold's job artifacts, the plugin is in-realm like `atyrode.code`, the existing records are imported once and the old stores retired, and the plugin lives in `atyrode/babel` rewritten in place. Every test of the plugin runs on `preview.manifold.tyrode.dev`; `manifold.tyrode.dev` is not touched. The text below is the record of the earlier mapping and its pin; it is history now, kept so the plan can cite what was known and when.
+Babel is a plugin family and holds exactly what a plugin holds. Its server half answers doors and
+runs the conductor on whatever wake the hub gives it; its machine half is a binary the hub
+installs and runs as a job on a named machine; its panels are React halves the shell renders.
+Babel holds no open database handle, no long-lived process, no port and no credential: a `batch`
+is its transaction, a job is its process, and a service binding is its secret.
 
-Revised 2026-09-12 (decision 90, superseded above the same day): the standalone loopback web UI is Babel's surface, without an asterisk. The Manifold integration below is paused and no longer constrains the surface: the rule that "nothing new is built for the shell that does not carry over" is withdrawn, D4's plugin-rendered runs console is withdrawn, and the run-launch deferral in §8.4 is withdrawn. The sub-decisions stay recorded as the history of what was mapped and why, and `docs/manifold-transition.md` keeps the pin; if the integration resumes it starts from this surface rather than from the shell it replaced.
+A run reaches a model through Code. Babel composes the prompt and nothing else about the session
+— no model, no thinking level, no account — and posts it with `ctx.actions.call` on a declared
+dependency. `atyrode.babel` declares `atyrode.code` required, so a hub that cannot compose Code
+cannot install Babel.
 
-Manifold is Babel's final form (inviolable repository direction, operator decision 2026-09-02). Babel becomes the first non-core plugin of `atyrode/manifold` (`dev` branch; every manifold path in this specification is read at `dev`@68f102e and carries its state there — exists, declared, or absent). The direction has five parts:
-
-- Babel's whole web UI becomes plugin-rendered UI with full UI/UX integration into manifold — no separate web app, nothing PTY-bound;
-- its fleet is manifold's enrolled machines (exists: `core.machines.enroll`, idempotent by name, `packages/plugins/machines/src/server.ts`; liveness from `MachineGateway`'s socket registry, `packages/server/src/machine-ws.ts`). The declared roster that §9 deliberately refused to persist inside Babel therefore exists outside it; how `archive fleet --expect` consumes it is open (`docs/manifold-transition.md`);
-- the plugin requests permissions and exposes, per machine, what it does and aims to do there: back up sessions, observe repositories, run analysis;
-- Babel adapts to manifold, and anything manifold cannot offer is filed as a manifold issue so manifold evolves — never worked around inside Babel; and
-- the move is stepwise: the React shell stays until the plugin is proven, and nothing new is built for the shell that does not carry over.
-
-Ownership under the plugin, where it revises §2.1 and §2.2: manifold owns principal identity and tokens (`Principal {id, kind: "human" | "agent"}`, exists: `packages/server/src/db.ts:71-76`), machine enrollment and liveness, presence, the UI host (`packages/web/src`, floor; the plugin host contract in `packages/plugin/src/host.ts`), the action door with its denial ladder (`packages/server/src/plugin-host.ts`), and the trace ledger (the `events` table's axiom-A6 trace rows). Babel owns everything it owns today except the listener and its session, plus the plugin package, its manifest, its actions and both halves, and the storage document and the durable stores behind it.
-
-Settled sub-decisions (decisions 61–68):
-
-- **D1 — sequencing and packaging.** Manifold builds dynamic/out-of-tree plugin loading first. It is declared and unscheduled: `PluginManifest.entry` is reserved for the dynamic wave (`packages/protocol/src/plugin.ts:554-556`), ADR 0016 stage 1 is unscheduled (`docs/decisions/0016-plugin-isolation.md`: "No code depends on this file until stage 1 is scheduled"), and assembly today is two static import lists (`packages/server/src/assembly.ts`, `packages/web/src/assembly.ts`). The plugin package lives in `atyrode/babel` and is never vendored into manifold as an interim. Reaffirmed 2026-09-02 against the in-tree-first alternative (decision 83): an interim in-tree plugin would push the marketplace wave back, mint debt to be paid at extraction, and contradict the direction that manifold builds exactly what Babel needs to exist. Babel's surface inventory on paper — §8.2's areas, `docs/runs-interface.md` — is what the loader and the isolated component vocabulary are sized against, not a plugin living in the tree.
-- **D2 — principal and processes.** Babel on an enrolled machine is an agent-kind principal with its own scoped token (the kind exists; a program inside a manifold PTY already receives a scoped `MANIFOLD_TOKEN`, `packages/server/src/terminal-broker.ts:495-544`). Its per-machine processes — the hourly archive push, `babel conductor run` — stay OS-supervised exactly as `manifold-agent` itself is (manifold `docs/ENROLL.md` §3: supervision is operator infrastructure). A typed exec/job primitive on the machine channel is a filed prerequisite: absent — the channel is a closed PTY vocabulary of seven verbs each way and `create` carries no command (`packages/protocol/src/machine.ts:35-96`) — and Babel's binary is not driven as keystrokes into a shell as an interim. How the scoped token is minted and reaches the machine is open (`docs/manifold-transition.md`); whatever the mechanism, it obeys §2.3's secrecy rules and the plugin never holds it.
-- **D3 — storage placement.** Placement is a Babel-plugin setting with two values, both runnable today over §9's provider-neutral interfaces (revised 2026-09-02, decision 84): **master** — Babel's local mode (`storage.json` `mode: local`) on the hub's host, a single box, explicitly non-durable, since the hub's own backup is a manual archive of one Docker volume; and **external** — shared mode, the object store and PostgreSQL wherever the operator provisions them, today's Clever Cloud, the default for any fleet. "One enrolled machine hosts it" is not a third placement: a store the operator runs on a fleet machine is external with that machine's endpoint, and a manifold-driven install of such a store waits on the exec primitive (D2). The setting lives in `storage.json` now; manifold's generic settings pane becomes its UI when settings kinds beyond boolean exist (boolean-only today: `SETTING_KINDS=["boolean"]`, `packages/protocol/src/plugin.ts:104-106`), which is a UI prerequisite, not a placement one. Manifold holds no object store and no PostgreSQL (absent; its whole durable store is one SQLite file and a plugin's only storage is `plugin_kv` at 64 KiB per value, `packages/plugin/src/storage.ts`), so the stores stay Babel's under both placements.
-- **D4 — the runs console.** It is fully plugin-rendered. Its live progress needs a plugin-declarable continuous stream channel: absent — session-channel frame bodies are a closed floor-owned union (`packages/protocol/src/session.ts:155,355`) and ADR 0012 keeps continuous data off the event plane by design (`docs/decisions/0012-event-plane.md:13-16`). Milestone events plus polled state (`contributes.events` and `ctx.emit`, `usePolledResource`; all exist) is the labelled interim.
-- **Namespace.** Manifest ids are `babel.<x>`: `core.*` is reserved to the shipped distribution (`SHIPPED_PLUGIN_IDS`, derived from `SERVER_PLUGIN_DEFS` in `packages/server/src/assembly.ts`), `engine.*` to the engine, and a bare `babel` fails the two-segment id pattern; a namespace of Babel's own gets identical dispatch, authority, disable, dormancy and purge treatment (`packages/plugin/src/assemble.ts`).
-- **Secrets** stay outside manifold: the dotfiles Bitwarden ceremony keeps delivering the storage document per machine (§2.3), the plugin holds no credential, and `plugin_kv` never receives one.
-- **No publication.** Babel still never publishes or applies proposals (§2.2, §12); the plugin declares no action that could.
-- **The hub** runs a Babel instance configured like any other machine: a host with a stable identity, its own storage document and its own agent-kind principal, holding no authority another instance lacks.
-
-What is open, and tracked in `docs/manifold-transition.md` rather than settled here: the capability vocabulary (a closed nine-member `Cap` enum shared by manifests, actions and grant rows, `packages/protocol/src/capabilities.ts`, cannot name Babel's authority domains); a machine-scoped grant (absent: no `manifold://machine/<id>` node in the address grammar); a plugin-owned HTTP route or large-payload path (absent; action bodies are capped at 1 MiB, `packages/server/src/http.ts:36`); a supervised long-running or scheduled primitive for a plugin's server half (absent; lifecycle hooks are one-shot and bounded to two seconds, `packages/plugin/src/lifecycle.ts`); and the order in which the shell's areas convert. The prerequisites and their states are gated in §14.
+Babel declares no action that could mutate anything outside itself. The store it writes is its
+own, and the only external effect any door has is posting or stopping a session.
 
 ## 3. Source data and trust model
 
-Babel's core is harness-agnostic. OMP, Codex, and Claude Code implement source adapters over one metadata, normalized-event, provenance, hypothesis, observation, finding, and proposal model, and Babel's own analysis sessions are a fourth harness over that same model (§5.7). The three are the first adapters rather than the boundary: the harness set is open and declared in one place (§6.8).
+Babel's core is harness-agnostic. OMP, Codex and Claude Code implement source adapters over one
+metadata, normalized-event, provenance, hypothesis, observation, finding and proposal model, and
+Babel's own analysis sessions are a fourth harness over that same model (§5.7). The three are the
+first adapters rather than the boundary: the harness set is open and declared in one place
+(§6.8).
 
-The v1 archive covers all three from its first release:
+Each adapter always preserves and selectively retrieves the raw chat logs. OMP is the reference
+and highest-fidelity adapter. Codex and Claude Code metadata extraction is best effort where
+formats are undocumented, unstable or incomplete, but inability to derive a title, workspace,
+lifecycle state or artifact closure never excludes the raw transcript from backup or later
+analysis. Every catalog row records adapter version and metadata-completeness flags instead of
+pretending parity.
 
-- **OMP:** sessions, collaboration data, sibling session artifacts, and the content-addressed `~/.omp/agent/blobs` closure required by persisted blob references;
-- **Codex:** sessions, `history.jsonl`, `session_index.jsonl`, and attachments; and
-- **Claude Code:** project/session trees and their referenced local artifacts where the on-disk format exposes them.
+The catalog separates a portable common shape from versioned adapter metadata. Common fields —
+title, workspace, creation and modification times, lifecycle state, repository fingerprint — are
+nullable. Missing values remain null with an explicit completeness reason; adapters never
+synthesize a value merely to satisfy a shared shape. Historical captures are addressed by restic
+snapshot ID plus the session's source paths.
 
-Each adapter must always preserve and selectively retrieve the raw chat logs. OMP is the reference and highest-fidelity adapter. Codex and Claude Code metadata extraction is best effort where formats are undocumented, unstable, or incomplete, but inability to derive a title, workspace, lifecycle state, or artifact closure never excludes the raw transcript from backup or later analysis. Every catalog row records adapter version and metadata-completeness flags instead of pretending parity.
+All archive content is untrusted data. A transcript can contain malicious instructions copied
+from issues, web pages, repositories, tool output or prior agents. Babel and the sessions it
+posts treat transcript text only as quoted evidence, never as instructions.
 
-The catalog separates a portable common shape from versioned adapter metadata. Required common fields are `harness`, `adapter_schema`, stable host ID and display name, adapter-defined source/session identity, and description time. Historical captures are addressed by restic snapshot ID plus the session's source paths, not by bespoke revision keys. Common catalog fields—title, workspace/project, creation and modification times, lifecycle state, and repository fingerprint—are nullable. Missing values remain `null` and set explicit completeness reasons; adapters never synthesize values merely to satisfy a shared shape.
+The archive can contain secrets, private source code, personal data and attachments. Therefore:
 
-Each row also contains a namespaced `adapter_metadata` object whose schema version is recorded independently. Babel preserves unknown extension fields while reading a compatible catalog row. V1 adapter guarantees are deliberately unequal:
+1. ingestion happens locally, on the machine that holds the sessions;
+2. the material a run reads is a bounded selection recorded on the run row, not the corpus;
+3. a run's model and account are the Code profile the operator chose, and the choice is his;
+4. logs never contain raw transcript bodies or credentials; and
+5. nothing a run produces leaves the hub.
 
-- **OMP:** raw session JSONL, sibling collaboration/artifact data, and the complete set of resolvable referenced blobs; unresolved references are listed and force `continuation_grade=false`; and the per-session usage aggregate summed from the log's own usage blocks - cost, tokens, assistant turns, model and provider sets, tool calls and tool errors - recomputed at describe time rather than read from OMP's `stats.db`, whose rows are garbage collected with OMP's local retention while the transcript is durable, with an absence carrying a completeness reason like any other nullable field;
-- **Codex:** raw session logs, `history.jsonl`, `session_index.jsonl`, and discovered referenced attachments, with title/workspace/lifecycle and attachment closure allowed to be unavailable; and
-- **Claude Code:** raw project/session logs and discovered referenced artifacts, with project, lifecycle, timestamps beyond filesystem observations, and artifact closure allowed to be unavailable.
+The public repository and CI contain only generated synthetic fixtures. Real operator
+transcripts, titles, paths, catalogs, credentials and analysis outputs are never committed.
 
-The catalog records those common fields, adapter extensions, completeness reasons, and available repository fingerprint. Titles, paths, and adapter extensions never enter PostgreSQL in plaintext (§9); repository bytes are encrypted by restic itself.
-
-All archive content is untrusted data. A transcript can contain malicious instructions copied from issues, web pages, repositories, tool output, or prior agents. Babel and its analysis workers treat transcript text only as quoted evidence, never as instructions.
-
-The archive can contain secrets, private source code, personal data, and attachments. Therefore:
-
-1. ingestion and deterministic secret preflight happen locally;
-2. inference discloses the selected Code profile's local/hosted class before material is sent;
-3. hosted inference requires explicit per-run consent or a separately authorized schedule;
-4. likely secrets are redacted before hosted inference, while local evidence retains locators to the original;
-5. exports redact secret values by default; and
-6. logs never contain raw transcript bodies or credentials.
-
-The public repository and CI contain only generated synthetic fixtures. Real operator transcripts, titles, paths, catalogs, credentials, and analysis outputs are never committed.
+**A deterministic secret preflight over material is specified and not built** — see
+`docs/parity.md`, the `preflight/` row. Until it exists, the disclosure boundary is the operator's
+choice of Code profile and nothing else.
 
 ### 3.1 Repository subjects
 
-Repositories are the first pointed subject kind (§4.9; operator direction 2026-09-01/02). The operator's local checkouts and GitHub remotes are observed, never copied into the archive: a run pins a fingerprint — the commit, and the dirty state where a working tree exists — and reads at that pin, and the receipt records the pin.
+Repositories are the first pointed subject kind (§4.9). The operator's local checkouts and GitHub
+remotes are observed, never copied into the archive: a run pins a fingerprint — the commit, and
+the dirty state where a working tree exists — and reads at that pin, and the receipt records the
+pin.
 
-Reading a repository has three modes, and they are run-kind choices rather than one rule (the operator: the modes "all make sense for different kinds of runs"):
+Reading a repository has three modes, and they are run-kind choices rather than one rule:
 
-1. **commit-pinned** is the default: the run reads the pinned commit's tree, and the checkout's dirty state — modified, staged and untracked paths, without their content — is recorded as a fact in the receipt;
-2. **working-tree** content is read only under an explicit per-run grant, recorded beside the other capability grants (§2.6), because the working tree is where unfinished and uncommitted material lives; and
-3. **GitHub remotes** are read through a read-scoped token delivered to Babel's control process like any other secret (§2.3). The worker never holds it (decision 20), and this mode is the authenticated private-remote materialization §12 Phase D and §14 already name; their gate — proven credential non-exposure and no push authority — stands.
+1. **commit-pinned** is the default: the run reads the pinned commit's tree, and the checkout's
+   dirty state — modified, staged and untracked paths, without their content — is recorded as a
+   fact in the receipt;
+2. **working-tree** content is read only under an explicit per-run grant, because the working tree
+   is where unfinished and uncommitted material lives; and
+3. **GitHub remotes** are read through a read-scoped token delivered like any other secret. The
+   session never holds it.
 
-Babel never touches the operator's checkout: no `fetch`, `checkout` or `worktree` inside it, no lock, no hook. Materialization is a disposable `git archive` of the pinned tree into Babel's cache (`$XDG_CACHE_HOME/babel/`, §9), discarded with the run; the sandbox sees only that copy (§2.6).
+Babel never touches the operator's checkout: no `fetch`, `checkout` or `worktree` inside it, no
+lock, no hook. Materialization is a disposable copy of the pinned tree, discarded with the run.
 
-Repository content is untrusted data in exactly the sense archive content is, and more pointedly so: a repository carries agent instructions — `CLAUDE.md`, `AGENTS.md`, skills, rules, hooks, prompts — written to be obeyed. The rule of this section extends verbatim: Babel and its workers treat repository text as quoted evidence, never as instructions, and nothing in a subject is ever loaded as a skill, rule or hook of the run that reads it. Deterministic secret preflight (§6.4) runs over repository content before anything is sent, and a subject's sensitivity is checked against the selected profile's disclosure class exactly as archive material is (items 2–4 above).
+Repository content is untrusted data in exactly the sense archive content is, and more pointedly
+so: a repository carries agent instructions — `CLAUDE.md`, `AGENTS.md`, skills, rules, hooks,
+prompts — written to be obeyed. The rule of this section extends verbatim: Babel and its sessions
+treat repository text as quoted evidence, never as instructions, and nothing in a subject is ever
+loaded as a skill, rule or hook of the run that reads it.
 
-A local subject is observable only from the machine that has it. A preparation whose focus or context names a local checkout is host-pinned — §9's execution-host constraint, applied to subjects — and the fleet must know which machine can observe which subject: manifold's enrolled machines under §2.8, the catalog's host rows until then. A run scheduled where its subject is absent is refused rather than degraded to a guess.
+A local subject is observable only from the machine that has it. A preparation whose focus or
+context names a local checkout is host-pinned, and a run scheduled where its subject is absent is
+refused rather than degraded to a guess.
 
-Other kinds with a locator — services, hosts, documentation sites — are admitted as subject kinds and are facts-only until an observer, a fingerprint and a disclosure story exist for the kind (§14); no run can focus them before that.
+Other kinds with a locator — services, hosts, documentation sites — are admitted as subject kinds
+and are facts-only until an observer, a fingerprint and a disclosure story exist for the kind; no
+run can focus them before that.
 
 ## 4. Conceptual model
 
-Babel distinguishes five layers so that unconstrained ideas can emerge without guesses becoming facts merely through repetition.
+Babel distinguishes five layers so that unconstrained ideas can emerge without guesses becoming
+facts merely through repetition.
 
 ### 4.1 Source record
 
 An immutable, normalized event or artifact with:
 
 - source kind and adapter version;
-- host, workspace, session, and event identifiers where available;
+- host, workspace, session and event identifiers where available;
 - source path and content digest;
 - timestamp and participant/tool role;
 - normalized text or artifact metadata; and
@@ -266,980 +216,846 @@ An immutable, normalized event or artifact with:
 
 ### 4.2 Candidate hypothesis
 
-An idea worth investigating, preserved even when it is speculative, uncategorized, duplicated, or not selected within the current run's budget. It records its origin cues, generating or refinement run, parent hypotheses, provisional labels, novelty/priority signals, and status: `untriaged`, `queued`, `investigating`, `deferred`, `rejected`, or `promoted`.
+An idea worth investigating, preserved even when it is speculative, uncategorized, duplicated or
+not selected within the current run's budget. It records its origin cues, generating run,
+provisional labels, novelty/priority signals, and a status: `untriaged`, `deferred`, `promoted`,
+`rejected`, `superseded` or `retired`. Its status is the newest row of an append-only history, and
+a candidate is written with its first `untriaged` event.
 
-Hypotheses form a durable frontier with typed links such as `derived-from`, `corroborates`, `contradicts`, `supersedes`, and `same-concept`. Sorting never deletes a hypothesis. A candidate may develop only through the path **hypothesis → one or more observations → finding → proposal**; developed hypotheses never skip observations.
+Hypotheses form a durable frontier with typed links such as `derived_from`, `corroborates`,
+`contradicts`, `supersedes` and `duplicates`. Sorting never deletes a hypothesis. A candidate may
+develop only through the path **hypothesis → one or more observations → finding → proposal**;
+developed hypotheses never skip observations.
 
 ### 4.3 Observation
 
-A provenance-bearing claim over session, repository, experiment, or research evidence. An observation includes immutable evidence locators, claim category, confidence, impact, recipe provenance, and explicit counter-evidence or absence thereof. It cannot exist without evidence.
+A provenance-bearing claim over session, repository, experiment or research evidence. An
+observation carries immutable evidence locators, claim category, confidence, impact, recipe
+provenance, and explicit counter-evidence or a statement that there is none. It cannot exist
+without evidence, and it hangs off exactly one hypothesis.
 
 ### 4.4 Finding
 
-One or more related observations consolidated across relevant sessions, repositories, experiments, or research sources. A finding explains the pattern, counter-evidence, recurrence where applicable, affected scope, and why it matters. Findings are deduplicated but retain all supporting observations.
+One or more related observations consolidated across relevant sessions, repositories, experiments
+or research sources. A finding explains the pattern, counter-evidence, recurrence where
+applicable, affected scope, and why it matters. Findings are deduplicated but retain all
+supporting observations.
 
 ### 4.5 Proposal
 
-A proposal is the canonical private review artifact: a human-reviewable possible improvement suggested by one or more findings. It contains:
+A proposal is the canonical private review artifact: a human-reviewable possible improvement
+suggested by one or more findings, or by the candidate beside it. It contains:
 
-- a concise title, problem/opportunity statement, and proposed outcome;
-- linked hypotheses/findings and their private provenance;
+- a concise title, problem statement and proposed outcome;
+- linked hypotheses or findings and their provenance;
 - applicability and temporal status;
-- supporting and conflicting material, uncertainty, impact, and estimated scope;
-- zero or more suggested target repositories/systems with confidence and rationale;
-- risks, unresolved questions, prerequisites, and suggested verification criteria;
-- privacy/publication classification;
-- zero or more suggested output destinations; and
-- review status: `new`, `accepted`, `rejected`, `deferred`, `duplicate`, or `refine-requested`.
+- supporting and conflicting material, uncertainty, impact and estimated scope;
+- risks, unresolved questions, prerequisites and suggested verification criteria; and
+- a privacy classification.
 
-A proposal is not an issue, document, or instruction and has no external side effect.
+A proposal is not an issue, document or instruction and has no external side effect.
 
 ### 4.6 Output projections
 
-After review, Babel can render a proposal as a sanitized GitHub issue draft, cross-system improvement brief, operator note, skill/runbook/instruction draft, investigation brief, effective-pattern note, Babel/cookbook experiment, private security brief, or agent brief (added 2026-09-02, below). A proposal may have several or no destinations; rendering never changes its canonical private record.
+A proposal can be rendered for a destination: a sanitized issue draft, a cross-system improvement
+brief, an operator note, a skill or runbook draft, an investigation brief, an effective-pattern
+note, a private security brief, or an **agent brief** — the problem, the proposed outcome,
+acceptance criteria, and evidence locators an agent can open rather than excerpts it must trust.
+A proposal may have several destinations or none, and rendering never changes its canonical
+record.
 
-GitHub issue draft is the primary projection for a bounded repository change. It contains a public-safe, self-contained rationale, proposed outcome, risks, acceptance criteria, material counter-evidence, and uncertainty suitable for the destination audience. Sensitive session/finding locators and excerpts remain private in Babel. Target repository and publication safety are suggestions for operator review, never automatic facts.
-
-An **agent brief** (operator direction 2026-09-02) renders a proposal as a self-contained task for an agent the operator points at it: the problem, the proposed outcome, acceptance criteria, and evidence locators the agent can open rather than excerpts it must trust. It is still a suggestion. The operator hands it to an agent or does not; Babel neither launches the agent nor watches it work (§2.5's rule that Babel never launches an agent holds), and the brief's locators stay private unless the operator's chosen destination passes through the same redaction as any other projection (§6.7).
+Babel neither publishes a projection nor launches an agent at one. **Rendering is specified and
+not built** — `docs/parity.md`, the `review/` row.
 
 ### 4.7 Persistent review and refinement
 
-In the managed v1 deployment, hypotheses, observations, findings, proposals, review events, operator context, lineage, refinement requests, and their required evidence are durable, browseable PostgreSQL rows plus encrypted Cellar objects; no committed Babel output is authoritative only on its producing machine. Decisions are append-only disposition events: `accept`, `reject`, `defer`, or `duplicate`; rejection never deletes a record. `Reject and refine` is one atomic operation that appends a `reject` event and creates an authorized distinct refinement request in the same PostgreSQL transaction; there is no standalone `refine` disposition event. Operator context is attributed guidance, not independent evidence.
+Every record is an immutable row in the hub's store, append-only by trigger: a record is never
+edited and never deleted, and a correction is a supersession carrying its predecessor. Rulings
+are append-only disposition events — `accept`, `reject`, `defer`, `duplicate`, `reopen`, `refine`
+— and the newest per record is its standing. A rejection never deletes a record. Operator context
+is attributed guidance, not independent evidence.
 
-A refinement run may add sources or context, runs independently of its parent, and creates immutable descendants through `refines`, `responds-to`, `supersedes`, `splits`, or `merges` links; it never overwrites originals. PostgreSQL plus encrypted Cellar objects make its output, evidence, and lineage globally browseable and continuable by any Babel instance, even when host-pinned reruns require a workspace. The headless commands and the web UI expose review history, lineage, context attribution, refinement requests, and separate refinement-run status.
-
-Every refinement worker receives the refusal/refinement event and attributed reviewer context in its prompt and must emit a structured **durable-learning assessment** before producing descendants. The assessment chooses `none`, `alongside`, or `instead`, with a rationale, intended scope, sensitivity, supporting evidence, and proposed destination. `none` means the correction is specific to this output; `alongside` creates both a revised descendant and a separate lasting-context proposal; `instead` creates no replacement of the rejected output and proposes only the lasting context. Destinations are explicit rather than freeform global memory: a Reality fact/policy plan, cookbook or lens change, skill/runbook/instruction draft, effective-pattern note, or operator note.
-
-The refinement agent may propose but never authorize lasting context. The proposed memory artifact follows its destination's normal evidence and review rules; Reality/entity/focus-policy changes require the existing atomic operator-plan acceptance, and other durable-learning proposals remain reviewable outputs until explicitly accepted. Rejection, assessment, any revised output, any memory proposal, and its eventual disposition retain separate immutable IDs and lineage, so accepting a revision never silently accepts the proposed memory or vice versa.
+A refinement is a separately reviewable proposal that names the exact revision and JSON Pointer it
+would change and the replacement it proposes, linked to its target rather than editing it. A
+policy depth bound keeps recursive refinement from becoming an unbounded obligation.
 
 ### 4.8 Reality Ledger, entity identity, and Questions
 
-Babel models non-GitHub reality as a versioned **Reality Ledger**, not freeform model memory. Stable entities represent projects, repositories, machines, services, providers, environments, organizations, and other operator-defined subjects. Each entity has a global ID, typed aliases and relationships, and append-only merge/split history so repository renames, paths, chat terminology, and service moves do not lose identity and mistaken resolutions remain reversible.
+Babel models reality as a versioned **Reality Ledger**, not freeform model memory. Stable entities
+represent projects, repositories, machines, services, providers, environments, organizations and
+other operator-defined subjects. Each entity has a global ID, typed aliases and relationships, and
+append-only merge/split history, so repository renames, paths, chat terminology and service moves
+do not lose identity and mistaken resolutions remain reversible.
 
-A fact is an immutable revision containing subject, predicate, typed value or object entity, `valid_from`/`valid_until`, `observed_at`, provenance locator, authority, confidence, sensitivity, status, and superseded/disputed links. States include `proposed`, `active`, `superseded`, `disputed`, and `stale`. Lifecycle, ownership, and analysis policy remain separate predicates: for example `active|maintenance-only|dormant|retired`, `owned|contributed|external`, and `normal|learn-only|no-code-investigation|excluded`. Lifecycle never silently implies an expenditure policy; explicit versioned focus rules perform that mapping.
+A fact is an immutable revision carrying subject, predicate, typed value or object entity,
+validity window, observation time, provenance locator, authority, confidence, sensitivity, status
+and superseded/disputed links. States are `proposed`, `active`, `superseded`, `disputed` and
+`stale`. Lifecycle, ownership and analysis policy remain separate predicates — `active` versus
+`maintenance-only` versus `dormant` versus `retired`, `owned` versus `external`, `normal` versus
+`learn-only` versus `excluded` — and lifecycle never silently implies an expenditure policy; an
+explicit versioned focus rule performs that mapping.
 
-Only attributed operator actions and configured trusted sources may authorize facts. Initial v1 sources are operator answers/edits plus versioned provider-neutral JSON inventory import, allowing dotfiles to supply facts it owns such as stable machines, environments, intended service placement, and project/service/host relationships. Credentials are forbidden. Each trusted source declares the predicates/entities it may author; Git activity, conversations, repository inspection, and Babel analysis remain observations or proposed revisions rather than authority.
+Only attributed operator acts and configured trusted sources may authorize facts. Git activity,
+conversations, repository inspection and Babel's own analysis remain observations or proposed
+revisions rather than authority.
 
-Facts enter through direct edits, trusted imports, or prioritized **Reality Questions**. Questions acquire missing context, refresh stale facts, resolve source conflicts, resolve entity aliases/merges, set focus policy, clarify ambiguous answers, or fact-check suspected drift. Each durable question records its target entities/predicates, why it was asked, dependent hypotheses/work, existing/conflicting facts, sensitivity, expected authority, and state: `open`, `answered-uninterpreted`, `interpreting`, `plan-ready`, `answered`, `snoozed`, `declined`, `obsolete`, or `superseded`.
+Entities are created by an attributed operator act and nothing else creates one: a fact names a
+subject that must already exist, and a question names targets the ledger resolves rather than
+mints. Raising a question is the one ledger write that needs no author, because a question
+authorizes nothing — it is a request that someone else authorize something, which is why an
+analysis run may raise one and may not answer it.
 
-Entities are created by an attributed operator act and nothing else creates one: a fact names a subject that must already exist, and a question names targets the ledger resolves rather than mints. Seeding a ledger therefore runs entities, then the source registration that declares an authoring scope, then that source's first batch. Raising a question is the one Reality write that needs no author, because a question authorizes nothing — it is a request that someone else authorize something, which is why analysis may raise one and may not answer it. Babel raises the questions its own records already imply: a predicate's refresh expectation lapsing is a stale fact that becomes a maintenance question naming the subject, the predicate and the lapsed fact, deduplicated by target so a claim stale for a month is one question rather than thirty, and suppressed while a declined predecessor stands unless newer evidence arrives.
+A run's answer may carry questions naming their subjects the way the corpus named them, the
+predicates at issue, and the candidate each one holds up. A question a run raises is recorded as
+`acquire-context`, expects the operator's authority, and is classed from the work it blocks rather
+than from how the run graded it: blocking when it names a candidate it holds up, curiosity
+otherwise. A self-graded class would make every question blocking within a week.
 
-An analysis run raises questions the same way, and under the same limit. A stage's structured result may carry questions naming their subjects the way the corpus named them, the predicates at issue, and the candidate each one holds up; Babel resolves every subject through the ledger's aliases and refuses any it does not already hold, because a run that could name a subject into existence would be minting identity. A question is classed from the work it blocks rather than from how the run graded it, expects the operator's authority, and is deduplicated and suppressed exactly as any other. A refused question is recorded against the run and costs it nothing else: the ledger holds whatever entities the operator has declared, so refusal is the normal case on a machine early in its seeding, and a run that asked well must not rank below one that asked nothing.
-
-Every answer is retained verbatim as an attributed immutable event and sent through a versioned Code→OMP **Answer Interpreter** with the question, relevant context snapshot, conflicts, and provenance. The interpreter emits a structured multi-action plan that may propose fact assertion/supersession/dispute, entity merge/split, focus-policy change, hypothesis creation, a request to investigate an issue-shaped output through the normal evidence pipeline, refinement, follow-up question, or no action. It never creates a proposal that bypasses **hypothesis → observation → finding → proposal**, and it can never publish an issue. If interpretation is unavailable or fails, the raw answer remains `answered-uninterpreted` for retry.
-
-Agent interpretation never silently becomes authoritative reality. Non-authoritative descendants such as hypotheses and follow-up questions may be retained immediately; any fact, entity-resolution, or focus-policy mutation requires one explicit operator acceptance of the displayed plan and commits atomically with the question disposition. The original question, answer, plan, acceptance/rejection, and resulting revisions remain linked. Freeform text is preserved as provenance but is never used as an unparsed global memory prompt.
-
-Facts have predicate-specific freshness: operator intent does not expire automatically, while volatile fleet/deployment observations carry refresh expectations or TTLs. Expiry marks a fact stale rather than deleting it; contradictions create disputes. A prioritized **Reality Inbox** ranks blocking, maintenance, and curiosity questions by affected work, avoided investigation cost, dependency count, staleness, and security/disclosure impact, while deduplication and `declined`/`unknown` outcomes suppress repeats until materially new evidence exists.
-
-Discovery persists hypotheses before context-based focus. After emergence, Babel resolves entities and attaches an immutable as-of/current context snapshot; deterministic policy may defer cloning, testing, research, or repository-specific proposals without deleting the hypothesis. Analysis queries the ledger by entity, relationship, predicate, valid time, freshness, and conflict rather than injecting the entire ledger into every prompt. Retrieval/RAG may find candidate context but never establishes authority. Context-blind controls may measure ledger-induced bias, and the challenger checks stale/disputed facts behind focus decisions.
-
-Phase A's catalog host identity - one row per host carrying its current display name and machine facts, and no record of superseded ones - remains the minimal reality substrate. It is deliberately not a history: `migrations/0004` implements "the newest value wins" as an in-place update, and a rebuildable catalog could not honestly keep a trail a rebuild would erase. Full entities, facts, questions, answer interpretation, trusted inventory import, alias merge/split history, and globally durable encrypted Reality Ledger state are Phase B capabilities.
+Every answer is retained verbatim as an attributed immutable event. **Answer interpretation into a
+reviewable multi-action plan is specified and not built**: a raw answer stands as the answer, and
+no fact, entity resolution or focus-policy change is derived from it without an operator act.
 
 ### 4.9 Subjects, focus, and context
 
-Babel's field is a data lake it points at rather than copies (operator direction 2026-09-01/02). A **subject** is anything with a locator that Babel can observe at a pinned state; the archive is one subject kind rather than the field. Four acquisition kinds:
+Babel's field is a data lake it points at rather than copies. A **subject** is anything with a
+locator that Babel can observe at a pinned state; the archive is one subject kind rather than the
+field. Four acquisition kinds:
 
 - **held** — the archive: immutable copies Babel made (§6.1), addressed by snapshot;
-- **pointed** — a locator observed at a pinned fingerprint at run time: the operator's repositories first, local checkouts and GitHub remotes (§3.1), and, per the operator, anything with a locator — services, hosts, documentation sites — admitted as subject kinds once their observers, fingerprints and disclosure stories are defined per kind (§14);
-- **derived** — Babel's own records: receipts, the frontier, dispositions, the specification and the cookbook (§5.7); and
-- **public** — brokered external sources (§2.6; the list in `docs/sources.md`).
+- **pointed** — a locator observed at a pinned fingerprint at run time: the operator's
+  repositories first, and anything else with a locator once its observer, fingerprint and
+  disclosure story are defined;
+- **derived** — Babel's own records: receipts, the frontier, rulings, this specification and the
+  cookbook (§5.7); and
+- **public** — brokered external sources. **Not built**: Babel reaches no network of its own
+  (`docs/parity.md`, the `research/` row).
 
-A **preparation** names a **focus** — the subjects, at pinned states, the run is about — and a **context** — the subjects the worker may consult. Archive-focused with repositories as context is today's run; repository-focused with the archive as context is new. The join between the two is the catalog's repository fingerprint and workspace (§3), with full text over both as the fallback when the fingerprint is missing or does not match. Every focus and context subject is recorded in the receipt with its fingerprint (§7), so a run is reproducible against the same states even when the subjects have moved on.
+A **preparation** names a **focus** — the subjects, at pinned states, the run is about — and a
+**context** — the subjects the run may consult. Every focus and context subject is recorded in the
+receipt with its fingerprint, so a run is reproducible against the same states even when the
+subjects have moved on.
 
-A subject's kind decides what its fingerprint is and what its observer may do: a held subject's fingerprint is its snapshot, a repository's is its commit plus dirty state, a derived record's is its immutable revision, a public source's is the broker's recorded fetch. Non-git subject kinds are facts-only — a Reality Ledger entity carrying a locator (§4.8) — until their observer exists, and no run can focus them before that. There is no code-intelligence index up front: Babel measures what repository-focused runs actually retrieve before building one (operator decision 2026-09-02), as decision 54 measured before choosing a record budget.
+A subject's kind decides what its fingerprint is: a held subject's is its snapshot, a repository's
+is its commit plus dirty state, a derived record's is its immutable revision. Non-git subject
+kinds are facts-only until their observer exists.
 
-A **watch** is a standing operator interest in a subject. The conductor draws it (§7) when the subject's material-change fingerprint moves — a new snapshot, a new commit, a moved dirty state — and what it draws is an ordinary run over a preparation whose focus is the watched subject, carrying the watch as its authority in the receipt, as an invitation or a standing policy would be. Subject sensitivity is checked against the profile's disclosure class before any draw sends anything (§3.1).
+A **watch** is a standing operator interest in a subject, drawn when the subject's material-change
+fingerprint moves. **Not built** — `docs/parity.md`.
 
 ### 4.10 Recall: the lake as context for agents
 
-**Recall** is the lake read as memory by an agent that is not Babel's (operator direction 2026-09-02, §1). The operator, mid-conversation with any agent in any harness on any connected machine, points at a past discussion — a topic, a period, a repository, a machine — and the agent asks Babel for it and continues with what Babel returns. Babel does not join the conversation, choose what is relevant for the agent, or summarize on its behalf; it answers two questions, *where is it* and *what does it say*, with the same retrieval its own workers use.
+**Recall** is the lake read as memory by an agent that is not Babel's: the operator, mid-
+conversation with any agent, points at a past discussion and the agent asks Babel for it. Babel
+would answer two questions, *where is it* and *what does it say*, with the same retrieval its own
+runs use — search returning locators and a bounded excerpt and never a score, then show returning
+a bounded excerpt around a locator with a provenance header — and everything it returned would be
+delimited and labelled as archived data rather than instruction.
 
-One retrieval, two doors. The evidence tool a sandboxed worker drives (`corpus-search`, §5.1, §6.5) and the recall interface an outside agent drives are the same service over the same local index (`internal/index`: §5.4's full-text search, structured filters, session and repository links, temporal filters, per-record locators) and the same selective fetch (§6.2). Nothing recall returns is computed twice, ranked differently, or excerpted by a second rule. What differs is the caller and the door: a worker reaches it through the broker inside a run, an agent reaches it through the CLI (§8) and, under manifold, through a `babel.<x>` action door when the agent is a manifold principal (§2.8).
-
-Recall is two steps so that the agent, not Babel, decides what it spends context on. **Search** returns hits: locators (harness, source host, snapshot, session, record), a bounded excerpt, the record's time, and the session's title and workspace; never a score (§5.4: rank is not evidence strength, and recall inherits the rule by construction). **Show** returns a bounded excerpt around a locator — a record, a turn range, a session at reduced fidelity — with a provenance header naming the source host, snapshot time and session, and a stated bound; the agent widens by asking again, and a whole session arrives only by explicit request with its size stated first. Locators are the archived-session locators of §2.5, so the same identity that continues a conversation also recalls it.
-
-What recall returns is untrusted content in the caller's context (§3, §2.7). Every excerpt is delimited and labelled as archived data rather than instruction, so an agent's harness treats it as material to read, not a message to obey; likely-secret spans are redacted by §6.4's preflight before anything leaves Babel, by default and without a flag to disable it on the recall door; and a subject whose sensitivity exceeds the recall disclosure class is refused by name (§3.1). The disclosure story is the caller's model provider: a recalled excerpt goes wherever the calling agent sends its context, so recall is the operator's act of disclosure, taken by asking, never Babel's. Recall reads the archive as archived, so it is as fresh as the source host's last push (§6.1) and says so: every answer carries the newest snapshot time it could see, and an agent asked about this morning's conversation learns it is looking at last hour's copy rather than being left to assume otherwise. Babel does not collect live conversations (§2.2), and recall does not change that.
-
-Recall is per machine and rebuildable. The index is a private local cache over the sessions that machine has fetched (§2.1, §9); the catalog says what exists across the fleet, and the bytes arrive through selective fetch on demand and are cached. "Any machine" therefore means the catalog is fleet-wide and a miss is a fetch, not a refusal; keeping a machine hot — fetching and indexing what its agents are likely to ask for ahead of the question — is the conductor's job (§7) under the same ceilings as its other draws, and is the first thing to measure rather than assume. The index stays local and unencrypted-at-rest only as a cache on a machine the operator already trusts with the sessions themselves; no full-text index over transcript plaintext is ever placed in the shared catalog, which Phase B encrypts client-side (§9).
-
-Agents learn recall exists from the operator's agent configuration, not from Babel: `atyrode/dotfiles` publishes the capability in the instructions every project inherits and installs the skill that says how to use it, and Babel provides that skill text at a versioned path so it moves with the CLI it describes — Babel does not edit agent configuration (§2.2), and dotfiles does not author Babel's contract (§2.3). Which agents recall, how often, what they search for and what they widen to is itself lake material: recall requests are records of Babel's own kind (§4.9, derived), so a run can later read where the operator's agents reached for memory and did not find it. That is friction (§1), and it is why recall belongs to Babel rather than beside it.
+**Recall is not built, and neither is the retrieval it rests on.** There is no index over the
+corpus; a preparation selects by recency or by topic. `docs/parity.md` records both, under
+`index/` and `research/`. This section is the design recall must satisfy when it is built, not a
+description of a capability Babel has.
 
 ### 4.11 References, not copies
 
-Every artifact Babel stores references its sources rather than copying them (operator direction 2026-09-11). A reference resolves to one of exactly two ends: a real-world source — a commit, a file and a line in it, a repository, anything Babel can name and pin at a state (§3.1, §4.9) — or a located excerpt of a transcript. There is no third end, and nothing that reaches one of those two needs to be duplicated in order to be cited.
+Every artifact Babel stores references its sources rather than copying them. A reference resolves
+to one of exactly two ends: a real-world source — a commit, a file and a line in it, a repository,
+anything Babel can name and pin at a state — or a located excerpt of a transcript. There is no
+third end.
 
-The mechanism already exists and is the reason the property is reachable rather than aspirational. `event.Locator` (`internal/event`) carries a record's path, its 1-based line, its byte offset, and the sha256 digest of the record's own bytes, so a citation is content-addressed against the archive rather than positional against a file that may have grown since; every normalized event carries one, opaque events included, and a record holding several semantic units yields several events sharing its locator (§4.1, §6.3). An excerpt is therefore a view resolved from a locator at the moment it is needed, never a second copy of the bytes.
+A locator carries a record's path, its line, its byte offset, and the digest of the record's own
+bytes, so a citation is content-addressed against the archive rather than positional against a
+file that may have grown since. An excerpt is a view resolved from a locator at the moment it is
+needed, never a second copy of the bytes.
 
-The invariant is one sentence: **derived output carries locators, never copied text.** Everything Babel writes down about the lake — observations, findings, proposals, receipts, retrieval traces, dispositions, output projections — is a statement *about* bytes that exist elsewhere, and it stores the address of those bytes rather than the bytes.
+The invariant is one sentence: **derived output carries locators, never copied text.** A record's
+payload keeps the note and the line that make a claim evidence, and the `cites` edge beside it
+carries the session and nothing about where inside it, so a claim stays readable on a hub that
+cannot open the conversation it names.
 
-§9 already states this rule for the case where breaking it would cost most, and this section is that rule stated once for every artifact instead of one of them: a served retrieval's payload carries the excerpt, because a model that cannot read a record cannot form an observation about it, while the evidence note the receipt keeps holds identifiers only — harness, session, event position — and never the excerpt, because a receipt carrying transcript text would have copied the corpus into a record an operator exports (`internal/explore/retrieval.go`). Two kinds of text remain admissible and neither is a copy of evidence: bounded, provenance-marked metadata that summarizes a record it points at — a title with its `TitleProvenance`, a usage sum recomputed from the log's own blocks (§3, §9) — and the rebuildable local index (`internal/index`, §4.10, §9), which is a per-machine cache over bytes the machine already holds, never published and never cited in place of the locator it was built from.
-
-Two consequences follow, and they are why the operator asked for the rule rather than the mechanism. Babel analysing its own output cannot amplify duplicated material (§5.7): a run over prior runs reads their locators and resolves them to the same records, so the second-order corpus is a graph over the first rather than a fattened copy of it, and a tenth-order one is no larger. And an archive of everything stays proportional to what was actually observed: the held archive grows with the transcripts and repositories Babel saw (§6.1), while records, findings, proposals, receipts and exports grow with the number of statements made about them — so backup has one body of bytes to preserve (§6.8) and everything else is small, rebuildable, or both.
+Two consequences follow. Babel analysing its own output cannot amplify duplicated material
+(§5.7): a run over prior runs reads their locators and resolves them to the same records, so the
+second-order corpus is a graph over the first rather than a fattened copy of it. And an archive of
+everything stays proportional to what was actually observed: the held archive grows with the
+transcripts Babel saw, while records, findings, proposals and receipts grow with the number of
+statements made about them.
 
 ### 4.12 Evaluation, reception, and observed outcomes
 
-**Implemented** (operator direction 2026-09-11, decision 89). Babel develops the quality of its existing hypotheses and proposals instead of treating an ever-growing inbox as the operator's work. Evaluation covers the full lifecycle: open ideas, operator decisions, implementation, observed outcomes, and material reasons to reconsider earlier decisions. The implementation baseline, transition work, and acceptance scenarios are recorded in [`docs/evaluation-lifecycle.md`](docs/evaluation-lifecycle.md). The proposal-only triage advice of §5.7 is its retired predecessor: its records remain readable as advice and are never converted into votes. Evaluation work still runs only where the operator authorized it and only within the spending policy recorded in the browser.
+Babel develops the quality of its existing hypotheses and proposals instead of treating an
+ever-growing inbox as the operator's work. Evaluation covers the full lifecycle: open ideas,
+operator decisions, implementation, observed outcomes, and material reasons to reconsider earlier
+decisions. [`docs/evaluation-lifecycle.md`](docs/evaluation-lifecycle.md) records the
+implementation.
 
-**A vote can be the whole contribution.** After reading an exact revision, a reviewer may record support (`+1`), opposition (`-1`), or uncertainty without a comment, a new source, or an original argument. Support means “this deserves the operator's consideration”; opposition means “put this lower in the reading order.” Neither means the claim is proven, the remedy works, or any action is authorized. A skip means the reviewer did not assess the item; an unavailable or unreadable record is not a downvote. Hypothesis credibility, a proposal's ability to remedy its problem, present relevance, and observed outcomes remain distinct from this reception signal.
+**A vote can be the whole contribution.** After reading an exact revision, a reviewer may record
+support, opposition or uncertainty without a comment, a new source or an original argument.
+Support means "this deserves the operator's consideration"; opposition means "put this lower in
+the reading order." Neither means the claim is proven, the remedy works or any action is
+authorized. A skip means the reviewer did not assess the item; an unreadable record is not a
+downvote.
 
-An evaluation is an attributed, append-only record naming the subject kind and immutable revision, the logical review assignment and run, the model/profile and recipe versions, and the context or evidence actually consulted. A completed assessment is distinct from an assignment, a displayed item, an interrupted read, and a skip. Retries of one assignment do not mint extra votes or exposures. Independently assigned later reviews may legitimately vote again, including with the same model; their provenance remains visible rather than being presented as independent corroboration. A run cannot boost an alternative it has just authored. A changed opinion is a linked correction retaining its predecessor, not an overwrite or an extra active vote for the same assignment.
+An assessment is an attributed, append-only record naming the subject kind and immutable revision,
+the review assignment and run, the model and recipe versions, and what was consulted. Retries of
+one assignment do not mint extra votes. A run cannot boost an alternative it has just authored. A
+changed opinion is a linked correction retaining its predecessor.
 
-**Coverage is a first-class result, not an inference from score.** The inventory includes hypotheses, proposals, and other Babel-produced artifacts with reviewable claims or decisions, including observations and findings. Each supported artifact kind declares what assessment applies to it; lack of an evaluator is an explicit coverage gap, not completion. Distinguish **never reviewed**, **reviewed at this revision/context**, and **needs re-review**, with blocked or not-applicable reasons visible. A vote can satisfy a reception review but cannot stand in for evidence checking or outcome verification. Coverage distinguishes those review roles, and distinguishes an eligible item that has not been assigned from one assigned but not assessed. Old coverage is retained when material changes make another review due. Source records and mechanical links need not each receive popularity votes; any non-applicability follows a named kind policy rather than silently dropping the record. Evaluation artifacts themselves admit bounded, targeted meta-review, not a requirement that every review spawn another review forever.
+**Coverage is a first-class result, not an inference from score.** Distinguish **never reviewed**,
+**reviewed at this revision**, and **needs re-review**, with blocked or not-applicable reasons
+visible. A vote can satisfy a reception review but cannot stand in for evidence checking or
+outcome verification. Lack of an evaluator is an explicit coverage gap, not completion.
 
-Refinement is an optional, separate contribution: supporting or opposing arguments, added prerequisites, proposed verification criteria, or an alternative. A contribution need not contain a vote. A reviewer may address the immutable record as a whole or name any exact portion by JSON Pointer — for example its problem, one question, or one unsolved item — so a useful correction does not collapse into an unactionable comment on the whole output. Factual additions cite their basis under §§3 and 4.11; an unsupported judgment stays labelled as judgment. A refinement states both why that portion should change and the replacement it proposes. Babel persists it as a distinct immutable proposal linked to the exact target revision and pointer rather than editing the reviewed wording. That proposal enters the ordinary review inventory, so independent reviewers may support, oppose, challenge, compare, comment on, or refine it under the same attributed rules; their votes attach to the refinement proposal, not to its parent. Refinement may therefore review Babel's own reviewing, but it is a bounded quorum rather than an infinite obligation: the evaluation policy fixes a maximum refinement generation, and the last generation admits comments and votes but cannot mint another refinement. Earlier votes remain attached to the revision their reviewers actually read and are not inherited as endorsements of a descendant.
+**Reception is not evidence strength.** Show support, opposition, uncertainty and completed-review
+counts together; show skips separately. An unreviewed idea is unknown, not unpopular. Repeated
+agreement is reception, not repeated evidence. No fraction of favorable model votes is labelled as
+a probability of correctness, and using several models is not proof of independence. Operator
+acceptance indicates a choice, not a successful outcome.
 
-**Reception is not evidence strength.** Show support, opposition, uncertainty, and completed-review counts together; show skips separately. An unreviewed idea is unknown, not unpopular. Twenty upvotes from many exposures are not directly comparable to three from three assessments. Repeated agreement is reception, not repeated evidence. Related arguments may be grouped by their cited basis without deleting their provenance or their legitimate votes. No fraction of favorable model votes is labelled as a probability of correctness, and using several models is not proof of independence. Operator acceptance indicates a choice, not a successful outcome.
+The human reading order and the next-review selection are different projections (§5.8). The
+ordering is explainable and versioned: it cannot accept, reject, defer, mark a duplicate, delete
+or shelve a record.
 
-The human reading order and the worker's next-review selection are different projections (§5.8). Babel automatically reorders the recommended reading view to favor useful next decisions: relevance to recorded operator intent, actionability, exposure-aware reception, supporting material, and consequential unresolved objections. Missing or contested inputs are explicit. The ordering is explainable and versioned, never a hidden decision: it cannot accept, reject, defer, mark a duplicate, delete, or automatically shelve a record. Other sorts and every retained record remain accessible (§8.5).
+Learning from operator feedback preserves its meaning and scope. "Not now," "wrong problem," and
+"right problem, wrong remedy" are different reasons, not one negative signal. An opened card, a
+dwell time, an ignored item and an absent answer are not consent, endorsement or refusal.
 
-Recommended means most relevant to this operator now, not most popular in the abstract. Its context includes current work, unresolved pain and blocking problems, affected subjects and dependencies, and the Reality Ledger's applicable facts and focus policies. Operator-stated priorities and restrictions remain distinguishable from Babel's inferred relevance; model assumptions never silently become operator intent. Freshness, conflicts, absent context, and the sources of a relevance judgment are visible. A materially changed priority or reality can change the reading order without any new vote, while a high vote count cannot override an explicit scope restriction. The pre-review presents reasons to act, refuse, wait, or refine and the important uncertainty behind them. Least-relevant items can be put later or filtered by the operator without being deleted, automatically declined, or misrepresented as poor ideas.
+**Acceptance, implementation and success are separate.** For accepted proposals Babel may append
+an implementation or outcome assessment with the exact revision, criterion version, source
+locators, as-of time, environment and uncertainty. That is authority to report what was observed,
+never authority to implement. A merge is not deployment; deployment is not proof that the intended
+outcome occurred. An outcome is verified only within its stated scope.
 
-Learning from operator feedback preserves its meaning and scope. “Not now,” “wrong problem,” and “right problem, wrong remedy” are different reasons, not one negative-interest signal. Feedback remains attributed context attached to the decision and applicable subjects; it does not silently install a global focus rule or asserted preference. An opened card, dwell time, an ignored item, and absence of an answer are not consent, endorsement, or refusal. Later reviews check whether a descendant or changed reality answers the earlier reason instead of using refusal history as a permanent penalty. Recommendation quality is judged by explicit usefulness feedback and observed outcomes, with their limitations, not by maximizing clicks, time in the inbox, votes, or acceptance rate.
+Outcome assessments are append-only and contestable. A material change affecting a deferred,
+rejected or verified proposal creates a linked **Reconsider** item stating what changed; it does
+not reverse the prior decision or silently reopen the proposal.
 
-**Acceptance, implementation, and success are separate.** Operator dispositions retain their authority under §4.7. For accepted proposals, Babel may append an implementation assessment or outcome assessment, with the exact proposal revision, criterion version, source locators, as-of time, relevant environment, and uncertainty. The browser may place a proposal in an implemented or verified view from those assessments without requiring another human confirmation. That is authority to report what was observed, never authority to implement a proposal, run an ungranted experiment, or assert unrelated Reality facts. A merge is not deployment; deployment is not proof that the intended outcome occurred.
-
-An outcome is verified only within its stated scope when the recorded success criteria have been satisfied by admissible observations. Partial implementation, missing criteria, unavailable evidence, and unresolved contradictory observations are shown as such rather than as success. Criteria suggested after acceptance stay identifiable as later suggestions; an evaluator cannot replace the target retrospectively and declare victory. Acceptance without settled criteria remains awaiting verification until the criterion gap is resolved through the operator's review surface. Predictions may be recorded where the event, horizon, and resolution criteria are explicit; predictions are evaluated against observed outcomes, not against votes or acceptance.
-
-Outcome assessments are append-only and contestable. New contradictory evidence is displayed beside the prior verification with its scope and date, not hidden by a last-writer-wins badge. A material change affecting a deferred, rejected, or previously verified proposal creates a linked **Reconsider** item stating what changed. It does not erase or reverse the prior operator decision or silently reopen the proposal. Repeated reports of the same change are grouped. The operator can reopen or retain the decision and record a reason from that item; reopening does not transfer old votes to new wording. Hypotheses retain §4.2's frontier lifecycle and can receive evidence and relevance assessments without being forced into a proposal's implementation workflow.
-
-All evaluations, contributions, outcome assessments, and reconsideration records are deployment data under §§8.4 and 9.1. They publish automatically and remain usable from a second authorized instance with no producing-machine dependency. Votes, arguments, rankings, and content-derived lifecycle assessments remain in encrypted payloads; this feature does not expand the PostgreSQL plaintext allowlist. Derived reading and scheduling projections are rebuildable, carry their input/version and freshness boundaries, and never become the sole durable copy of an assessment.
+**The drawn lane dispatches; no live drawn review has run yet.** The conductor draws an
+assignment, claims it under a fence, blinds the projection it sends and posts the review as a
+Code session. Every rehearsal of that lane so far has been against fixtures, so the reception
+this section specifies is proven synthetically and the corpus's existing votes are the crossing's.
+`docs/parity.md` states the evidence boundary.
 
 ### 4.13 Topics: what a record is about
 
-Operator direction 2026-09-12, approved the same day. A **topic** is what a record is about, and it is a Reality Ledger entity (§4.8) and nothing else: a repository, a project, a machine, a service, a concept — anything with a global ID, aliases, a reason for existing and a binding to something real the operator can think about or act on. *A topic is not a folder.* The workspace a session was started in is where work happened, not what it was about; a path under `/tmp` or a worktree's generated name is a locator, and a locator is evidence about a topic, never the topic. Today's topics are mostly repositories, bound by the repository's own identity — its remote, or the common directory that every worktree of it shares — so that the same project seen from three checkouts on two machines is one topic; nothing in Babel may assume that a topic is a repository or that a repository is the only kind.
+A **topic** is what a record is about, and it is a Reality Ledger entity (§4.8) and nothing else:
+a repository, a project, a machine, a service, a concept — anything with a global ID, aliases, a
+reason for existing and a binding to something real. *A topic is not a folder.* The workspace a
+session was started in is where work happened, not what it was about; a path under `/tmp` or a
+worktree's generated name is a locator, and a locator is evidence about a topic, never the topic.
 
-**Babel proposes identity; only the operator creates it.** §4.8's rule stands unchanged: entities are created by an attributed operator act, a run may name subjects only through aliases the ledger already holds, and a name it cannot resolve is a question rather than a new thing. A **topic question** is that question: raised by a run, it names the records it would file, the entity it proposes — kind, binding, aliases, and why — and the existing entities it considered and rejected; it lands in the Reality Inbox with the other questions, and accepting it creates the entity and files the records in one atomic act, the way every answer plan commits (§4.8). Declining it, with the reason kept verbatim, suppresses the same proposal until materially new evidence exists. Every topic the operator sees is therefore one he accepted.
+**Babel proposes identity; only the operator creates it.** A run may name subjects only through
+aliases the ledger already holds, and a name it cannot resolve is a question rather than a new
+thing. A **topic question** names the records it would file, the entity it proposes — kind,
+binding, aliases, and why — and the entities it considered and rejected. Accepting it creates the
+entity and files the records in one act. Declining it, with the reason kept verbatim, suppresses
+the same proposal until materially new evidence exists.
 
-**Filing is a link.** A record's membership in a topic is an `about` edge in the frontier — record to entity, carrying a rationale and its author — produced by the run that wrote the record, by the triage recipe below, or by the operator, and append-only like every edge: a re-filing supersedes, and the history of where a record was filed and why is readable. A record may be filed under several topics and under none; *unfiled* is an honest state and the triage backlog, not a bin. A run's structured result may name the entities its records are about the way it names question subjects, resolved through aliases and refused when unknown, and the refusal is what makes the run raise a topic question instead.
+**Filing is a link.** A record's membership in a topic is a filing — record to entity, carrying a
+rationale and its author — produced by the run that wrote the record, by the filing recipe, or by
+the operator, and append-only: a re-filing supersedes, a withdrawal is a row, and the history of
+where a record was filed and why is readable. A record may be filed under several topics and under
+none; *unfiled* is an honest state and the triage backlog, not a bin.
 
-**Interest is a fact about the world, not a preference knob.** The operator's stance toward a topic is recorded as §4.8's lifecycle and analysis-policy facts on the entity — *working on it* (`active`, `normal`), *keep an eye* (`maintenance-only`, `learn-only`: Babel keeps filing into it and spends nothing there), *not now* (`dormant`), *excluded* — each an attributed act with a reason kept verbatim, offered on the topic's own page. A versioned focus rule maps lifecycle to expenditure (§4.8, §4.12), so *not now* moves the review lane's draws elsewhere without deleting a record, a filing or the topic. *Not interested is a signal, not a deletion.* Because the same facts are true for Recall (§4.10), watches (§4.9) and the conductor (§7), a paused project is paused everywhere Babel looks, not only in the feed.
+**Interest is a fact about the world, not a preference knob.** The operator's stance toward a topic
+is recorded as lifecycle and analysis-policy facts on the entity — *working on it*, *keep an eye*,
+*not now*, *excluded* — each an attributed act with a reason kept verbatim. A versioned focus rule
+maps lifecycle to expenditure, so *not now* moves the draws elsewhere without deleting a record, a
+filing or the topic. *Not interested is a signal, not a deletion.*
 
-**Split, merge, retire — with reasons.** A topic that names two things is split, two that name one are merged, and one that should never have existed is retired, each through §4.8's append-only merge/split history with an attributed reason, reversible because nothing is edited. Retiring re-queues the topic's filings for triage. The reasons are facts with provenance, and the triage recipe reads them — *why topics were retired, split and declined* — as evidence for its next proposals; that is how Babel gets better at naming topics, structurally and inspectably, and never through an unparsed memory prompt (§4.8). The operator may say any of this from the topic page or through `babel tell`; both route to the same acts.
+**Split, merge, retire — with reasons.** A topic that names two things is split, two that name one
+are merged, and one that should never have existed is retired, each through append-only history
+with an attributed reason, reversible because nothing is edited. Retiring re-queues the topic's
+filings for triage.
 
-**Babel files its own output.** A cookbook recipe, *Babel files its output*, runs under the evaluation policy as its own draw kind beside coverage, exploration and discovery (§4.12): it reads open records that are unfiled or filed only by a heuristic, and for each either files it under an existing entity with a rationale, raises a topic question, or records *no topic* with a reason, because some outputs are about nothing in particular and saying so is the honest result. Its receipts are ordinary receipts. Until it has run, a deployment may seed filings from repository identity alone — the one binding that is observable without a model — and must label those filings as heuristic so the recipe knows to revisit them.
+**Babel files its own output.** A cookbook recipe, *Babel files its output*, runs as its own draw
+kind: it reads open records that are unfiled or filed only by a heuristic, and for each either
+files it under an existing entity with a rationale, raises a topic question, or records *no topic*
+with a reason, because some outputs are about nothing in particular and saying so is the honest
+result. Until it has run, a deployment may seed filings from repository identity alone — the one
+binding observable without a model — and must label those filings as heuristic.
 
-**Everything about a topic goes through Babel** (operator direction 2026-09-12, second reading). A new topic, a split, a merge and a retirement are one output kind — a *topic proposal* — produced by a run, carrying Babel's reasoning and the records it would file, published and reviewed like every other record and listed in the feed with what needs the operator; the operator's ruling on it is the same ruling he gives a proposal, and accepting it is what applies it. A shortcut that accepts a proposed topic from the rail is a shortcut to that ruling on that output and nothing else. No surface offers the operator a button that creates, splits, merges or retires a topic directly, because a topic changed by hand is a change Babel did not see, cannot explain and cannot learn from. The operator asks instead — *this is not a topic*, *split this*, *merge these*, *I want a topic for X* — from the topic page or through `babel tell`, and the ask is steering the next filing run must answer with a proposal. The repository identities a scan observes are evidence handed to that run, never proposals minted without it. Interest is the one direct act a topic page offers, because it is a fact about the operator rather than about the world Babel reads.
+**Everything about a topic goes through Babel.** A new topic, a split, a merge and a retirement are
+one output kind — a *topic proposal* — produced by a run, carrying Babel's reasoning and the
+records it would file, reviewed like every other record; the operator's ruling on it is the same
+ruling he gives a proposal. No surface offers a button that creates, splits, merges or retires a
+topic directly, because a topic changed by hand is a change Babel did not see and cannot explain.
 
-**Babel handles Babel** (operator direction 2026-09-12, third reading; this paragraph binds every section after it). Babel is built to improve itself recursively, and the boundary of that recursion is the operator: every change to what Babel knows, files, ranks or does is an output that went through its own pipeline — hypothesis, observation, finding, proposal — was reviewed by its own reviewers, and was accepted or rejected by the operator from the front page. The reviewers' votes are therefore not decoration: they are the signal Babel improves its own reviewing by, and *Babel improving Babel* means, first, improving how it reviews, from its own findings. The least magic wins: a constant a person picked, a heuristic a program runs without a run behind it, a state a button flips — each is a place Babel cannot see, cannot explain and cannot learn from, and each is to be replaced, as it is reached, by something Babel produced in its own format and the operator ruled on. Where a constant must exist today — a sort's decay, a lease floor, a queue's tiering — it is stated in one place with the measurement that chose it, so that the proposal that replaces it has something to argue with.
+**Babel handles Babel.** Babel is built to improve itself recursively, and the boundary of that
+recursion is the operator: every change to what Babel knows, files, ranks or does is an output that
+went through its own pipeline — hypothesis, observation, finding, proposal — was reviewed by its
+own reviewers, and was accepted or rejected by the operator from the front page. The least magic
+wins: a constant a person picked beats a heuristic, and a heuristic beats a model, until the
+evidence says otherwise.
 
-**Observations are evidence, not posts.** Every observation hangs off exactly one hypothesis (§4.3), findings consolidate them (§4.4), proposals address findings (§4.5); an observation has no standing of its own and takes its hypothesis's fate. The feed lists what can be ruled on — hypotheses, findings, proposals, questions — and an observation is reached at depth 3 of the record it supports (§8.6), never as a row of its own. Nothing is stale by a clock: a record is stale because Babel's reviewers found it so in the relevance role, because the topic it is filed under is *not now* or retired, or because a newer record supersedes it. The backlog this leaves — hypotheses deferred and never revisited — is worked by Babel through the chain: a recipe, *Babel consolidates its backlog*, running under the evaluation policy as its own draw kind, reads deferred hypotheses with their observations and proposes, as ordinary proposals, to consolidate them into a finding, to supersede one with another, to retire one with the reason, or to promote an observation to a Reality Ledger fact on a named entity — the one path by which anything Babel observed becomes memory, because §4.8 makes the operator's acceptance the only authority over a fact. A hypothesis therefore has the two states it lacked, `superseded` and `retired`, each reachable only through an accepted proposal, and nothing is deleted.
+**Observations are evidence, not posts.** Every observation hangs off exactly one hypothesis,
+findings consolidate them, proposals address findings; an observation has no standing of its own
+and takes its hypothesis's fate. The feed lists what can be ruled on — hypotheses, findings,
+proposals, questions — and an observation is reached at the evidence depth of the record it
+supports (§8.6), never as a row of its own. Nothing is stale by a clock: a record is stale because
+Babel's reviewers found it so, because the topic it is filed under is *not now* or retired, or
+because a newer record supersedes it.
 
 ## 5. Analysis cookbook
 
-The cookbook is executable exploratory policy, not a fixed taxonomy or one opaque prompt. It gives analysis productive starting structures while preserving arbitrary emergence. It is versioned in the public repository and has three asset kinds:
+The cookbook is executable exploratory policy, not a fixed taxonomy or one opaque prompt. It gives
+analysis productive starting structures while preserving arbitrary emergence. It has three asset
+kinds:
 
-- **investigation policies** define shared retrieval, experimentation, challenge, temporal, and synthesis techniques;
-- **domain lenses** define useful questions, evidence rubrics, exclusions, and classifications without limiting what discovery may propose; and
-- **meta recipes** explore Babel's cookbook, analysis process, prior outputs, and reviewer feedback.
+- **investigation policies** define shared retrieval, experimentation, challenge, temporal and
+  synthesis techniques;
+- **domain lenses** define useful questions, evidence rubrics, exclusions and classifications
+  without limiting what discovery may propose; and
+- **meta recipes** explore Babel's cookbook, analysis process, prior outputs and reviewer
+  feedback.
 
 ### 5.1 Recipe contract
 
-Each recipe is a reviewable Markdown document with machine-readable front matter:
+A recipe is a reviewable Markdown document with machine-readable front matter:
 
 ```yaml
 id: outcome-integrity
 version: 1
 kind: lens
 scope: [session, corpus, repository]
-focus: [archive, repository]
 stages: [investigate, challenge, synthesize]
 capabilities: [corpus-search, repo-read, sandbox-exec]
 default: true
 ```
 
-The body defines the question and why it may be fruitful; inclusion, exclusion, and ambiguity guidance; cues useful when sorting emergent hypotheses; evidence and counter-evidence to seek; temporal and present-reality checks; suggested classifications and stopping conditions; cross-session synthesis keys; capability needs; known failure modes; and examples. These are guidance, not proof that the lens is exhaustive or that complying with it makes an answer correct.
+The body defines the question and why it may be fruitful; inclusion, exclusion and ambiguity
+guidance; cues useful when sorting emergent hypotheses; evidence and counter-evidence to seek;
+temporal checks; suggested classifications and stopping conditions; cross-session synthesis keys;
+known failure modes; and examples. These are guidance, not proof that the lens is exhaustive or
+that complying with it makes an answer correct.
 
-`focus` (added 2026-09-02) names the focus kinds the recipe applies to (§4.9): a preparation whose focus kind the recipe does not name never runs it, and a recipe that names none is archive-focused, which is what every recipe written before that date is. `scope` remains the retrieval granularity within a focus.
+A recipe never selects a provider or model. Semantic behaviour changes require a version
+increment, because a claim cites the method it used as `id@version`.
 
-A recipe never selects a provider or model. Babel combines the versioned recipe with a fixed containment/provenance envelope and structured output contracts; transcript, repository, and web content are always delimited as untrusted evidence. Semantic behavior changes require a recipe-version increment.
+**Where a recipe lives.** A hub reads its recipes from the policy document the operator installed,
+in its `review.recipes` block: each entry is an id, a version, a title, the one line its question
+asks, whether it runs by default, and its whole body, which the prompt writes verbatim. The
+repository's copy is [`plugins/atyrode.babel/store/recipes.seed.json`](plugins/atyrode.babel/store/recipes.seed.json),
+produced by [`plugins/atyrode.babel/tools/seed-recipes.ts`](plugins/atyrode.babel/tools/seed-recipes.ts)
+from a cookbook-shaped directory. A hub whose policy names no recipe with a body can start no
+exploration, and says so.
 
 ### 5.2 Open discovery and the hypothesis frontier
 
-Discovery is deliberately divergent. Within the approved evidence and capability boundary, it may emit any candidate hypothesis without first fitting a known lens, category, expected proposal type, evidence threshold, or likelihood score. Every candidate and its origin is persisted. Classification, clustering, deduplication, and priority sorting happen afterward; an uncategorized candidate remains valid, and recurring valuable uncategorized candidates may justify a new lens.
+Discovery is deliberately divergent. Within the approved evidence boundary it may emit any
+candidate hypothesis without first fitting a known lens, category, expected proposal type,
+evidence threshold or likelihood score. Every candidate and its origin is persisted.
+Classification, clustering, deduplication and priority sorting happen afterward; an uncategorized
+candidate remains valid, and recurring valuable uncategorized candidates may justify a new lens.
 
-Investigating a hypothesis may emit further hypotheses. Babel adds them to the durable frontier and records their relationships rather than forcing the current job to finish every branch. Finite runs defer the unexplored frontier; they do not erase it. In the unlimited-inference limit, exploration continues until further rounds yield no materially novel candidates, evidence, experiments, or contradictions.
+Investigating a hypothesis may emit further hypotheses. Babel adds them to the durable frontier
+and records their relationships rather than forcing the current job to finish every branch. Finite
+runs defer the unexplored frontier; they do not erase it.
 
-Sorting optimizes operator attention rather than sanitizing ideas. It may estimate novelty, potential value, uncertainty, evidence availability, investigation cost, and similarity to prior reviewed work. Those estimates affect ordering only. Candidates remain browseable with the model's original wording, provenance, and later review outcome.
+Sorting optimizes operator attention rather than sanitizing ideas. Novelty, potential value,
+uncertainty and similarity estimates affect ordering only. Candidates remain browseable with the
+model's original wording, provenance and later review outcome.
 
 ### 5.3 Experimental chaos runs
 
-Exploration defaults to a `clean` run. An explicitly selected `chaos` run injects unrelated perturbation material during divergent discovery to test whether forced association yields ideas the linked clean control misses. Chaos has its own frontier branch, run receipt, random seed, atom-selection algorithm, and optional reusable chaos pack.
-
-A **chaos atom** is a bounded stimulus with provenance and a declared type. Any immutable revision of any durable Babel output or entity may be selected: hypotheses, observations, findings, proposals, review events and rejection context, refinement requests and outputs, receipts, projections/exports, generated diffs, notes/briefs, cookbook experiments, and prior chaos outputs, as well as archived discussions, public research, or bounded public-repository material. The atom records its exact immutable revision and lineage. Public atoms pass through the research broker. Selection as an atom never authorizes executing its code.
-
-Within a chaos run, `marked` presentation tells the investigator which material is non-evidence stimulus. `blind` presentation withholds why it appeared, but Babel still records every boundary and quarantines the whole branch. Ordinary clean exploration never hides injected context.
-
-A separate Code job may create **synthetic perturbation atoms** from external random seeds or atom combinations. They are recorded as model-generated descendants with their own profile and receipt, not described as true randomness. Model-produced material and any ancestor or descendant reached through recursive reuse remain stimulus only and can never become independent corroboration.
-
-An atom cannot support the hypothesis it induced. Before promotion, a chaos-origin candidate must survive a targeted clean reinvestigation that omits every atom. Evaluation compares novel useful yield, clean-survival rate, false associations, prompt-injection behavior, operator attention, and cost. Chaos defaults off.
+Exploration defaults to a `clean` run. An explicitly selected `chaos` run injects unrelated
+perturbation material during divergent discovery to test whether forced association yields ideas
+the linked clean control misses. A **chaos atom** is a bounded stimulus with provenance and a
+declared type; selection as an atom never authorizes executing its code. An atom cannot support
+the hypothesis it induced: before promotion, a chaos-origin candidate must survive a targeted
+clean reinvestigation that omits every atom. Chaos defaults off. **Not built** —
+`docs/parity.md`.
 
 ### 5.4 Shared investigation techniques
 
 After emergence, an investigator may:
 
-1. search other discussions, prior hypotheses/findings, repository snapshots, Git history, tests, and authorized public research for related concepts;
+1. search other discussions, prior hypotheses and findings, repository snapshots, history, tests
+   and authorized public research for related concepts;
 2. seek corroboration, contradictions, alternative explanations, and older or newer states;
-3. distinguish what a conversation claimed from what was observable then and now, using `historical`, `still-applicable`, `resolved`, `regressed`, `contradicted`, or `unverifiable` where useful;
+3. distinguish what a conversation claimed from what was observable then and now;
 4. modify a disposable clone and run bounded experiments to test an idea;
 5. ask a logically separate challenger to falsify or reframe the hypothesis; and
-6. synthesize evidence, dissent, uncertainty, and descendant ideas without implying certification.
+6. synthesize evidence, dissent, uncertainty and descendant ideas without implying certification.
 
-The challenger is a logically separate job with an intentionally skeptical brief: attack assumptions, search for disconfirming evidence and counterexamples, test whether either the operator or agent made a weak decision, identify opportunity cost, and propose stronger alternatives. It must ground criticism in evidence, consequences, missing checks, or concrete alternatives and must not infer character, ability, emotion, or intent.
+The challenger is a logically separate job with an intentionally skeptical brief: attack
+assumptions, search for disconfirming evidence, test whether either the operator or the agent made
+a weak decision, identify opportunity cost, and propose stronger alternatives. It must ground
+criticism in evidence, consequences, missing checks or concrete alternatives, and must not infer
+character, ability, emotion or intent. It emits objections, counter-evidence or new hypotheses; it
+cannot create or promote a finding. A separate synthesizer then judges the exploration and the
+critique together, preserves unresolved objections, and is instructed to agree with neither side
+by default.
 
-The challenger emits objections, counter-evidence, or new hypotheses; it cannot directly create or promote a finding. Before ordinary promotion, a standard challenger pass examines the developed observations. A separate synthesizer then judges the exploration and critique together, preserves unresolved objections, and is instructed to agree with neither side by default. Exploratory candidates may remain unchallenged, but their status makes them ineligible for promotion.
+Retrieval rank never becomes evidence strength.
 
-Retrieval is hybrid rather than “vector RAG” by definition. V1 provides provenance-preserving full-text search, structured filters, entity/repository/session links, and temporal filters. Semantic retrieval may be added as another idea/evidence generator after evaluating its privacy, cost, retrieval diversity, and contradiction behavior. Retrieval rank never becomes evidence strength.
+Repository and test observations apply only to the pinned snapshot and command environment
+recorded in the receipt. They can establish behaviour in that environment but not infer operator
+intent. Unavailable reality evidence remains visible as uncertainty rather than being filled from
+conversational confidence.
 
-Repository and test observations apply only to the pinned snapshot and command environment recorded in the receipt. They can establish behavior in that environment but not infer operator intent. Unavailable reality evidence remains visible as uncertainty rather than being filled from conversational confidence.
+**Only the explore stage runs today.** The three stages are declared with separate authorities and
+the prompt writes each one's instructions, but every launch posts `explore`, so nothing criticizes
+a claim and nothing consolidates across runs. `docs/parity.md` names the issue.
 
 ### 5.5 Baseline domain lenses
 
-The initial cookbook contains eight useful but non-exhaustive lenses:
+The cookbook contains eight useful but non-exhaustive lenses:
 
-1. **Outcome integrity and unresolved state** — compare requested outcomes, agent claims, observed changes, and verification; explore incomplete, falsely closed, regressed, or genuinely resolved work.
-2. **Security, privacy, and trust boundaries** — explore concrete exposure, unsafe authority, credential handling, destructive behavior, and missing containment.
-3. **Code health, maintainability, documentation, and comprehensibility** — explore dead code, complexity, missing tests/docs, misleading abstractions, absent human comprehension layers, and other improvements against snapshots and history.
-4. **Engineering decision quality and operational risk** — revisit assumptions, alternatives, constraints, reversibility, recovery, and measured consequences without treating hindsight as certainty.
-5. **Human–agent coordination and avoidable rework** — look for observable ambiguity, ignored constraints, repeated corrections, weak handoffs, comprehension friction, and operator struggle without diagnosing emotion, ability, or mental state.
-6. **Durable operator model** — explore preferences, constraints, and standing conventions while distinguishing recurring evidence from one-off instructions and retaining contradictions.
-7. **Reusable practice and capability leverage** — explore successful procedures, skill candidates, missing tooling, automation opportunities, and their prerequisites or recurring costs.
-8. **Effective patterns and enabling conditions** — preserve strategies that produced strong outcomes, their enabling context, counterexamples, and limits.
+1. **Outcome integrity and unresolved state** — compare requested outcomes, agent claims, observed
+   changes and verification; explore incomplete, falsely closed, regressed or genuinely resolved
+   work.
+2. **Security, privacy and trust boundaries** — explore concrete exposure, unsafe authority,
+   credential handling, destructive behaviour and missing containment.
+3. **Code health, maintainability, documentation and comprehensibility** — explore dead code,
+   complexity, missing tests and docs, misleading abstractions and absent comprehension layers.
+4. **Engineering decision quality and operational risk** — revisit assumptions, alternatives,
+   constraints, reversibility, recovery and measured consequences without treating hindsight as
+   certainty.
+5. **Human–agent coordination and avoidable rework** — look for observable ambiguity, ignored
+   constraints, repeated corrections, weak handoffs and operator struggle, without diagnosing
+   emotion, ability or mental state.
+6. **Durable operator model** — explore preferences, constraints and standing conventions while
+   distinguishing recurring evidence from one-off instructions.
+7. **Reusable practice and capability leverage** — explore successful procedures, skill candidates,
+   missing tooling, automation opportunities and their prerequisites.
+8. **Effective patterns and enabling conditions** — preserve strategies that produced strong
+   outcomes, their enabling context, counterexamples and limits.
 
-Cross-session recurrence is a property available to every lens, not a ninth topic. The lenses organize and inspire what emerges; they do not constrain discovery.
-
-Phase B fully authors and default-enables five initial lens recipes: outcome integrity, security/privacy, code health/comprehensibility, human–agent coordination, and effective patterns. Decision quality, durable operator model, and capability leverage ship as reviewable drafts until corpus evaluation sharpens their overlap and guidance. Open discovery remains enabled independently and may emit hypotheses in any of these areas or none.
+Cross-session recurrence is a property available to every lens, not a ninth topic. Five are
+enabled by default; the rest run when asked for by name. The lenses organize and inspire what
+emerges; they do not constrain discovery.
 
 ### 5.6 Developed hypotheses and findings
 
-A developed hypothesis can record a lens or ad hoc framing, recipe/policy versions, origin and lineage, supporting and conflicting locators, source authority and timestamps, retrieval trace, sandbox/research checks, temporal interpretation, uncertainty, potential value, and the next evidence that could change it. None of those fields turns it into objective truth or substitutes for observations. A finding is created only from one or more observations developed while investigating the hypothesis; “developed enough for focused human review” does not mean “verified correct.”
+A developed hypothesis can record a lens or ad hoc framing, recipe versions, origin and lineage,
+supporting and conflicting locators, source authority and timestamps, temporal interpretation,
+uncertainty, potential value, and the next evidence that could change it. None of those fields
+turns it into objective truth or substitutes for observations. A finding is created only from one
+or more observations developed while investigating the hypothesis; "developed enough for focused
+human review" does not mean "verified correct."
 
 ### 5.7 Babel analyzing Babel
 
-A self-analysis run may explicitly include Babel's pinned repository snapshot, specification, cookbook versions, prior hypothesis frontier, run receipts, resource/tool traces, reviewer outcomes, and evaluation corpora. It may inspect or experimentally modify a disposable Babel clone, run Babel in the sandbox, analyze prior analyses, and propose changes to code, UI, recipes, retrieval, evaluation, or the analysis architecture itself.
+A self-analysis run may include Babel's pinned repository, this specification, cookbook versions,
+the prior frontier, receipts, reviewer outcomes and evaluation corpora. Recursive lineage and depth
+are recorded. A descendant analysis never overwrites its ancestor, and generated material is marked
+as model-produced so it cannot become independent corroboration through repetition. Self-analysis
+has the same containment and no-publication boundaries as every other run.
 
-Recursive lineage and depth are recorded. A descendant analysis never overwrites its ancestor, and generated material is marked as model-produced so it cannot become independent corroboration through repetition. Self-analysis has the same containment and no-publication boundaries as every other run.
+Five meta recipes ship, none default-enabled: *Babel improves Babel* evaluates output quality and
+acceptance; *Babel tunes itself* examines operator-specific relevance; *Mechanization audit* reads
+receipts for inference that could have been retrieval; *Babel triages the queue* is the
+role-bounded evaluation contract of §4.12; and *Babel consolidates its backlog* works the
+hypotheses a run deferred and nobody came back to. A meta recipe proposes versioned cookbook
+changes and never edits the active cookbook.
 
-The `cookbook-quality` meta recipe may propose versioned changes or entirely new lenses/policies based on useful uncategorized candidates, reviewer outcomes, misses, duplicates, unsupported claims, retrieval failures, evidence coverage, creativity, cost, and latency. The analyzer never edits or promotes its active cookbook. A human reviews proposed diffs; experiments compare versions on held-out material while preserving previous recipes, hypotheses, and receipts. Optimization favors useful emergence per unit of operator attention, not a false promise of universally reliable answers.
-
-Three self-improvement duty recipes currently ship as meta recipes, none of them default-enabled: `babel-improves-babel` evaluates output quality and acceptance; `babel-tunes-itself` examines operator-specific relevance and memory amendments; and `mechanization-audit` reads receipts for inference that could have been retrieval. Version 1 of `babel-triages-the-queue` — a cohort rank with a required counterargument over unruled proposals — is retired as a standing duty; version 2 of that recipe is the role-bounded evaluation contract of §4.12, drawn through the evaluation share rather than rung two, and the `--babel-triages-the-queue` toggle authorizes it.
-
-Sections 4.12 and 5.8 supersede the old product restrictions that every evaluation supply a counterargument, that advice concern only unruled proposals, and that Babel not automatically reorder the reading view. They do not grant automatic acceptance or rejection. Historical version-1 advice and recipes remain readable as historical contracts; their ranks cannot be converted into votes, exposures, or predictions. The recipe/API cutover shipped with the evaluation services that enforce the new contract rather than as a prompt-only change against an incompatible writer. Its recipe version and semantic digest changed together (§5.1).
-
-Each self-improvement finding remains classified into exactly one audience dimension — anyone, or this operator — because those reach different dispositions. Mechanization pressure applies to substrate, not to making cheaper thoughts or suppressing content diversity. Existing duties run only when their toggle is authorized, at most once per duty per day, and record standing-policy authority. The backlog-first allocation is specified in §5.8 and is enabled per machine by an authorized toggle and a configured share, never by the specification.
+Each self-improvement finding is classified into exactly one audience dimension — anyone, or this
+operator — because those reach different dispositions. Mechanization pressure applies to substrate,
+not to making cheaper thoughts or suppressing content diversity.
 
 ### 5.8 Backlog-first evaluation within a budget
 
-The approved evaluation policy favors improving the existing backlog over producing more ideas, within the scope and spending the operator has authorized. It preserves explicit operator invitations, focus/disclosure restrictions, and a protected discovery share so neglected subjects and new evidence can still enter. It does not enable a duty, start a run, raise a budget, or install anything merely because an inbox exists. Existing conductor allocation and cadence (§7) must be migrated explicitly at implementation, not bypassed by a second unaccounted loop.
+The evaluation policy favors improving the existing backlog over producing more ideas, within the
+scope and spending the operator has authorized. It preserves explicit operator invitations, focus
+restrictions, and a protected discovery share so neglected subjects and new evidence can still
+enter. It does not enable a duty, start a run, raise a budget or install anything merely because an
+inbox exists.
 
-**Weighted randomness, not a popularity loop.** The worker draws eligible assignments with a versioned weighted-random policy. Unreviewed and lightly reviewed revisions receive a fair initial hearing independent of their current score. Stable favorable reception reduces the need for another generic vote while increasing the idea's usefulness in the operator's reading queue. Stable unfavorable reception also reduces repetitive voting without rejecting or hiding the idea. A small positive exploration share keeps eligible, well-reviewed open ideas sampleable; a material revision, new evidence, or relevant changed state restores attention. Unsupported score changes alone are not material evidence.
+**Weighted randomness, not a popularity loop.** The conductor draws eligible assignments with a
+versioned weighted-random policy. Unreviewed and lightly reviewed revisions receive a fair initial
+hearing independent of their current score. Stable favorable reception reduces the need for another
+generic vote; stable unfavorable reception also reduces repetitive voting without rejecting or
+hiding the idea. A small positive exploration share keeps well-reviewed open ideas sampleable.
 
-Exposure and uncertainty decide where more sampling could be useful; unanimity is not a stopping requirement. A few mixed votes may justify more sampling. Persistent disagreement redirects effort to a bounded challenge or comparison task that seeks the reason for disagreement instead of asking for votes until one side wins. A tally alone does not establish a substantive dispute. If no argument or evidence resolves the difference, the useful output may be uncertainty or a tradeoff for the operator. A reviewer is never required to invent an objection or new prose in order to vote.
+Exposure and uncertainty decide where more sampling could be useful; unanimity is not a stopping
+requirement. Persistent disagreement redirects effort to a bounded challenge or comparison task
+that seeks the reason for disagreement instead of asking for votes until one side wins. A reviewer
+is never required to invent an objection in order to vote.
 
-Initial voting is blinded to the current tally, rank, and earlier evaluators' conclusions, while retaining the subject's original content and needed evidence. Previous evaluations may be revealed after the initial vote for comparison or refinement. The brokered review view must not leak the withheld fields through an alternate review endpoint or prompt metadata; this is procedural blinding, not a claim to erase a model's prior knowledge. What was shown and whether a review was blinded are recorded.
+Initial voting is blinded to the current tally, rank and earlier evaluators' conclusions, while
+retaining the subject's content and needed evidence. The review projection must not leak the
+withheld fields; this is procedural blinding, not a claim to erase a model's prior knowledge. What
+was shown and whether a review was blinded are recorded.
 
-Review roles include lightweight reception voting, evidence checking, challenge, refinement, comparison of alternatives, outcome checking, and relevance checking. Open ideas are eligible for reception voting. Accepted proposals leave generic “should we consider it?” voting and receive prerequisite, implementation, and outcome attention instead. Material challenges to decided work enter Reconsider (§4.12). The same budget funds these roles; no role can create an unbounded recursive review obligation.
+Review roles are reception, evidence checking, challenge, comparison, outcome checking, relevance
+checking, filing and backlog. Open ideas are eligible for reception voting. Accepted proposals
+leave generic voting and receive prerequisite, implementation and outcome attention instead. The
+same budget funds every role; no role can create an unbounded recursive obligation.
 
-The run's budget is the hard stopping condition. Policy also supplies bounded per-item spending, cooldowns, and a response to repeated skips or unavailable sources, so unreachable items and persistent disagreement cannot consume the whole allowance. Allocation across concurrent workers uses shared claims and reservations, not a per-process copy of the budget. A claimed-but-interrupted assignment does not count as a review, its reservation is reconciled, and a retried submission stays idempotent. Deliberately assigned independent reviews are distinct from accidental duplicate execution of one assignment.
+The run's budget is the hard stopping condition. Policy supplies bounded per-item spending,
+cooldowns, and a response to repeated skips, so unreachable items and persistent disagreement
+cannot consume the whole allowance. Allocation across concurrent runs uses shared claims and
+reservations with a fence, not a per-process copy of the budget. A claimed-but-interrupted
+assignment does not count as a review and its reservation is reconciled.
 
-Periodic coverage checks complement random selection: a positive sampling probability alone does not ensure overlooked work is revisited. Within authorized evaluation spending, reserve initial-review attention for the oldest due, eligible unreviewed artifacts across the covered kinds, independently of their popularity. The remaining review allocation uses the weighted policy above. Coverage cadence, overdue thresholds, and the reserved share are versioned policy settings; the coverage inventory and last completed check are durable and shared. Check for newly committed artifacts, interrupted assignments, material revisions, and review gaps on a recurring schedule, not only when someone opens the inbox. A finite, eligible backlog with sufficient authorized execution must progress through its overdue initial reviews; an expanding backlog, unavailable source, or insufficient budget leaves visible overdue or blocked work, never a false claim that all output was checked. Periodic coverage does not grant compute permission or exceed the common ceiling.
-
-Exact weights, initial-review targets, cooldowns, exploration/discovery shares, and per-item ceilings are configurable values of a documented policy version, not universal constants asserted here without evidence. Before activation, that version must define its eligibility, weighting, spend reservation, and stopping rules completely and be measured against a representative backlog. Record the policy version, seed, eligible-input identities/freshness, assignment and role, cost and stop reason so selection can be replayed against its captured inputs. Random selection is reproducible for those inputs; it is not a guarantee that concurrent live readers see the same snapshot.
-
+Periodic coverage checks complement random selection: reserve initial-review attention for the
+oldest due, eligible unreviewed artifacts, independently of their popularity. Exact weights,
+targets, cooldowns, shares and ceilings are configurable values of a documented policy version,
+recorded with each assignment so a selection can be replayed against its captured inputs.
 
 ## 6. Processing pipeline
 
 ### 6.1 Archive publication
 
-`babel archive push` discovers OMP, Codex, and Claude Code source roots through versioned adapters and backs them up with restic into one shared repository under the machine's stable host identity, tagged `babel`. It requires the repository to exist and never creates it: `babel archive init` is a one-time bootstrap for the whole deployment, and every other machine's first push finds the repository already there. Two reasons, and the second is the worse one. restic generates a master key per `init` and writes it before the config, so two inits racing on an empty repository both succeed and leave two valid keys with one config, after which restic can select the wrong key and refuse the repository as damaged (measured against restic 0.19.1: 10 of 10 races left two keys, 7 of 10 subsequent backups failed). And silent creation would turn a mistyped locator into a second, empty archive that keeps accepting hourly pushes while the real one appears to stop growing, which is a failure that reports success. A push therefore backs up whole source roots—raw session logs, sibling artifacts, and OMP's content-addressed blob store—and reports restic's summary (snapshot ID, files new/changed, bytes added) as the push result. Hourly publication and permanent storage cost scale with the change rate: restic deduplicates content-defined chunks, so a grown session uploads only its new chunks and an unchanged corpus uploads almost nothing.
+The `archive` job backs this machine's session roots up with restic into one repository under the
+machine's stable host identity, tagged `babel`, and writes back the one fact the catalog cannot
+learn otherwise: which snapshot holds each session, and when.
 
-Captures are crash-consistent per file, not transactional across files (recorded decision). Session logs are append-mostly, so a capture taken mid-write yields a prefix plus at most a torn final line; adapters and normalization tolerate torn or malformed lines by counting and skipping them, and the next hourly snapshot supersedes the capture. OMP's blob store is content-addressed and never rewritten, so closure races cannot corrupt stored blobs. A snapshot's existence never implies a stable continuation-grade capture; continuation-grade claims (§2.5) require adapter-verified closure at read time.
+One snapshot per root, not one for all of them: restic picks a parent by matching host and path
+set, so a machine that gains a harness would, with one combined snapshot, find no parent and
+re-read every byte. Per-root snapshots keep each root's parent chain stable, let one unreadable
+root fail without taking the others with it, and make restoring one harness's sessions a restore of
+one snapshot.
 
-The first successful push is an explicit bootstrap/backfill, not an incremental continuation of the old backup: starting from empty state it backs up every configured local source root in full, including sessions older than Babel's installation. Data that exists only in the ignored legacy remote namespace is not backfilled. The push result reports which adapter roots existed and were captured.
+The repository and the secrets that open it come from the job's own service binding and nowhere
+else. The job never creates a repository: a repository is created once, by hand, for the
+deployment, because silent creation turns a mistyped locator into a second empty archive that grows
+while the real one appears to stop, and two concurrent creations corrupt.
 
-Retention is append-only. Babel never invokes `restic forget` or `restic prune`, never deletes a snapshot or legacy object, and no remote prune command exists in v1. Concurrent pushes from multiple machines are safe: restic serializes writers with repository locks, and snapshots are per-host by construction. An interrupted backup never publishes a partial snapshot—restic writes the snapshot record last—and a re-run uploads only chunks the repository does not already contain. Distinct from interruption, a backup that completes with unreadable files publishes a visibly incomplete snapshot: restic exits with its incomplete status, push fails loudly while still reporting the summary, per-file diagnostics name the unreadable paths, and the snapshot remains usable for everything it holds.
+Captures are crash-consistent per file, not transactional across files. Session logs are
+append-mostly, so a capture taken mid-write yields a prefix plus at most a torn final line; readers
+tolerate that and the next snapshot supersedes it.
 
-Repository locks are the one thing Babel removes, and the boundary is exactly there. An interrupted command leaves its lock file behind, which blocks `restic check` while leaving restores and repository data unaffected; `babel archive unlock` (§8) is the operator-typed command that clears one. It lists every lock with the staleness judgement it reached before removing anything, removes only locks that are both stale and shared unless the invocation names a lock id, and touches no snapshot, index or pack. No timer, conductor duty or other autonomous path invokes it.
+Retention is append-only. Nothing in Babel invokes `restic forget`, `prune`, `repair` or `unlock`,
+and no path deletes a snapshot.
 
-### 6.2 Catalog and selective fetch
+**Babel writes the archive and does not read it back.** Verifying and restoring are `restic check`
+and `restic restore` run directly against the repository; `.omp/skills/babel-cli/SKILL.md` states
+the procedure and `docs/parity.md` names the issue.
 
-The session catalog is built from live local source trees, not decoded from remote objects: adapters discover and describe sessions—title, workspace, timestamps, repository fingerprint, completeness reasons, artifact/blob closure—on each machine, and shared mode publishes catalog rows to PostgreSQL (within its plaintext allowlist, §9) so every instance can browse the fleet. Historical states are addressed by restic snapshot: a session selector plus an optional snapshot ID (default: the latest snapshot) identifies one immutable capture reproducibly.
+### 6.2 Catalog
 
-`babel sessions fetch SELECTOR [--snapshot ID]` restores the selected session's file closure—primary log, sibling artifacts, resolved blobs—from the chosen snapshot into the private local data store. Today the closure is resolved from live local sources, so fetch covers sessions this machine has (or had at capture time under the same paths). Cross-host fetch works, and `--host` selects it: source-file paths never enter PostgreSQL, so a second instance resolves another host's selector by listing the snapshot's own encrypted file tree (`restic ls`) and deriving session identity from those paths with the same deterministic adapter rules used at discovery. `babel sessions list --host HOST` is the listing counterpart, without which a selector could not be discovered to fetch; it reads the same file tree, so it reports identity and size and leaves title, workspace, timestamps, and grade absent. The two-instance acceptance in §10 exercises that path against a local-path repository; the real-provider leg remains §14's. Fetched sessions persist until explicit prune, are never modified, and local prune never touches the repository.
-
-`babel sessions fetch-all (--host HOST | --all-hosts)` is the corpus-shaped form of the same recovery, because analysis takes a corpus rather than a session: it identifies every session a host's snapshot holds and restores them concurrently, since the cost of a small session is restic's startup and not its bytes. It is resumable by construction — the target directory of one session in one snapshot is derived from the selector and the snapshot's short id, so an already materialized session is reported and left untouched — and one session's failure is recorded against its selector while the batch continues, so a transient repository lock costs one session rather than the operator's place in a corpus of hundreds. Each fetched tree records the machine whose snapshot it came out of, taken from restic's own recorded snapshot host, and `babel sessions list --fetched` and `babel sessions inspect --fetched` then discover that corpus as sessions — under the identity the origin machine assigns them and attributed to that machine, never to the machine that fetched them. That attribution is what makes fleet-wide analysis honest: a preparation is a per-session record of host, harness and identity (§6.5), and stamping another machine's session with the scanning machine's identity would be a false claim in an immutable record. A tree fetched by a build that kept no such record is left out of discovery and named, rather than attributed by guess; fetching again writes the record without downloading anything.
-
-The legacy pre-Babel namespace is ignored. There is no range-read probing or best-effort legacy import in the product path.
+The `scan` job discovers and describes this machine's sessions in place — title, workspace,
+timestamps, repository fingerprint, completeness reasons, size, cost, turns, tool errors — and
+writes one row per session. It reads the live files and never writes into them. The catalog is
+rebuildable convenience state, never archive truth.
 
 ### 6.3 Ingest and normalize
 
-Adapters parse fetched raw logs into a common event model while preserving opaque unsupported records and exact source locators. The common layer distinguishes user reports, agent claims, tool observations, repository changes, and verification evidence. Unknown or partial Codex/Claude structures degrade explicitly rather than being discarded.
+The `prepare` job parses the selected sessions into one canonical record per line — object keys
+ordered, insignificant whitespace gone — with an explicit opaque marker for a line that is not a
+record, so nothing is ever dropped. It seals the result as the run's material, with an index naming
+each session's selector, its file, and the digest it was served at. Unknown or partial Codex and
+Claude structures degrade explicitly rather than being discarded.
 
 ### 6.4 Deterministic preflight
 
-Before inference, Babel checks likely secrets and high-risk data, malformed/truncated sessions, transcript and attachment size, artifact/blob closure, duplicate/changed inputs, and the selected Code profile's disclosure class. Since 2026-09-02 the same secret preflight runs over repository content whenever a preparation's focus or context names a repository (§3.1), and each subject's sensitivity is checked against that disclosure class. These results use the same evidence model as AI observations.
+Before material reaches a model, likely secrets and high-risk data, malformed or truncated
+sessions, transcript size, and duplicate or changed inputs are checked, and the result uses the
+same evidence model as an observation. **Not built** (§3, `docs/parity.md`). Nothing scans a
+preparation today, so the disclosure boundary is the operator's choice of Code profile.
 
 ### 6.5 Explore through Code
 
-The operator names a preparation — its focus and context subjects at pinned states (§4.9) — or explicitly starts broad discovery, chooses one Code profile, and grants capabilities for the run, a repository read mode among them where a repository is named (§3.1). Babel creates versioned jobs and launches Code's sandboxed OMP worker. The worker may explore approved sources and iteratively request corpus, repository, command/test, and brokered-public-research evidence; Babel authorizes every request and streams structured results with immutable locators.
+The operator names a preset — what the run is about — and picks a saved Code profile. Babel
+composes the prompt from the recipes the policy holds, the answering protocol, the stage's schema
+and instructions, and the material's own index, in that order, because a provider serves a
+byte-identical prefix from its cache and the recipes are the largest invariant block. Code's
+`runSession` door posts the session; Babel holds nothing.
 
-Discovery persists every candidate before sorting. Babel clusters and links candidates, maps them to known lenses when useful, and maintains a resumable frontier. Resource limits choose what is explored now, not what ideas are permitted to exist. Investigations can recursively add candidates; finite runs checkpoint the remainder.
+The answer is the session's final message: the last fenced JSON block, validated against the
+stage's schema. Every locator it cites must name a file the material's index served, at the digest
+the index recorded. A retyped digest, an edited path, or a citation of a session this run was never
+given refuses the whole answer.
 
-Babel validates structured events and provenance before storing them, but it does not certify analytical correctness. The receipt records policies/lenses, hypothesis lineage, adapters, Code/profile revision, resolved provider/model/thinking metadata, sandbox and research grants, disclosure mode, source and repository digests, retrieval/tool traces, deferred/rejected candidates, failures, resource use, and timing. A run is durably committed only when its required PostgreSQL rows and encrypted Cellar objects have remotely committed; an outage leaves staged output visibly `pending-sync`, not globally committed, and idempotent sync may later complete it. A failed independent exploration does not erase successful work.
+**A refused submission is spend.** The model answered and the deployment paid; the receipt is
+written with the cost and the refusal's own code, the claim is finished rather than abandoned, and
+the tally counts the refusal by code — a drain that read a refusal as a free failure would relaunch
+against a burn rate that never happened.
 
-Configured execution intent and observed native assistant accounting are distinct receipt facts. Record the provider/model that actually answered, reported fallback events, timing and usage when supplied by the native runtime; absence remains unknown. Accounting is content-free and does not substitute for durable transcript custody.
-
-A cooperative interruption preserves a partial receipt and declares its partial publication closure. Reconciliation records unknown process loss only while fencing the exact stale, locally owned attempt; it never changes a newly resumed or live attempt using obsolete process evidence. Resume retains the run identity, preparation and trusted launch provenance, with later records published through continuation closures rather than rewriting an immutable catalog count. Closed runs are not reopened. Historical runs without trusted launch inputs require explicit operator-supplied inputs, not current defaults. A conductor recovers an already completed receipt into its unfinished cycle journal without another inference launch or loss of recorded spend.
-
-Every fact about a run that any surface shows — its state, current step, the evidence being read with its locators, tool requests and broker decisions, sandbox commands, spend, cancellation, outputs and receipt — is exposed through one host-independent projection (§8.3; operator direction 2026-09-02), read identically by the headless commands, the transitional shell and the manifold plugin. The receipt is the durable end of that projection and presence (`internal/presence`, advisory by its own contract) its live end today; what lies between them is what `docs/runs-interface.md` specifies. A conductor cycle is such a run, with its authority.
+An accepted answer becomes records: a candidate is a hypothesis with its first status event, an
+observation hangs off it carrying its locators, a finding consolidates observations, a proposal
+addresses what it answers, and a question the corpus could not settle enters the ledger. Nothing is
+written when the answer is refused, and a run never writes a ruling. Identifiers are minted from
+the run and the model's own handle, so settling the same run twice writes the rows once.
 
 ### 6.6 Synthesize
 
-Recipes operating over an explicit preparation scope may consolidate observations across sessions, repositories, experiments, and research evidence, identify recurrence where applicable, deduplicate through links, expose contradictions and counter-evidence, and create immutable findings and proposals without losing provenance.
+Consolidation is part of the same answer: a run may consolidate the observations it developed
+into a finding, name the observations it rests on, and address that finding with a proposal.
+Consolidating across runs is the synthesize stage's job, and **only the explore stage runs**
+(§5.4), so today a finding consolidates observations one run made.
 
 ### 6.7 Review and project
 
-The operator records append-only `accept`, `reject`, `defer`, or `duplicate` events for any reviewable hypothesis, finding, or proposal, with optional attributed context. `Reject and refine` atomically records a `reject` event and creates a distinct authorized refinement request in the same PostgreSQL transaction; it never edits or deletes the rejected entity. Babel preserves the complete private evidence view independently of any output projection.
-
-Phase B exports raw private run, hypothesis, observation, finding, and proposal JSON or Markdown. Phase C rendering creates sanitized destination-specific Markdown or JSON projections. GitHub issue drafts pass through secret/path/private-evidence redaction while retaining public-safe material counter-evidence and uncertainty; security briefs default private-only. Babel may suggest destinations and target repositories, but publishing, copying into an external system, or applying a proposed change occurs outside Babel.
+The operator records append-only rulings on any reviewable hypothesis, finding or proposal, with
+an optional attributed reason. Babel preserves the complete evidence view independently of any
+projection. Publishing, copying into an external system, or applying a proposed change happens
+outside Babel.
 
 ### 6.8 Harness transformation in both directions
 
-The pipeline is harness-agnostic end to end: original log → forward transformer → canonical model → reverse transformer → harness (operator direction 2026-09-11). Babel interfaces with the canonical model rather than with either end. §6.3's adapters are the forward transformers; the canonical model is §4.1's source record — one normalized event per semantic unit, each carrying its locator (§4.11) — and every later stage reads only that, so retrieval, preflight, exploration, synthesis, review and recall (§4.10) are written once rather than once per harness.
+The pipeline is harness-agnostic end to end: original log → forward transformer → canonical model
+→ reverse transformer → harness. Babel interfaces with the canonical model rather than with either
+end. The adapters are the forward transformers; the canonical model is §4.1's source record, and
+every later stage reads only that, so preparation, exploration, synthesis and review are written
+once rather than once per harness.
 
-OMP, Codex and Claude Code are the first implementations and not the closed set; Babel's own analysis log is the fourth, and it writes OMP records because an envelope of Babel's design would assert a schema over content Babel does not own. The set is one declaration (`internal/harness`): a harness is a name and the record language its primary log is written in, and a harness whose language Babel already reads joins by registering that pair, with no other edit. Which harnesses exist was previously stated in five unrelated places — the event scanner's classifier, the transcript view's parser, the preparation validator, the CLI's adapter list, and the adapter port's documentation — and a missed one failed at run time rather than at build time: that is how `unknown harness "babel"` reached a running conductor cycle and ended it. One declaration makes a forgotten wiring a failing test or a compile error, which is the only form of that mistake worth having.
+OMP, Codex and Claude Code are the first implementations and not the closed set; Babel's own
+analysis log is the fourth, and it writes OMP records because an envelope of Babel's design would
+assert a schema over content Babel does not own. A harness is a name and the record language its
+primary log is written in, declared in one place, and a harness whose language Babel already reads
+joins by registering that pair.
 
-The original bytes are retained verbatim, and they are what backup preserves. The forward transformation is neither destructive nor authoritative: adapters read live files in place, restic snapshots them as the harness wrote them (§6.1), and the canonical model is recomputable by rescanning the same bytes. That is why the parse is versioned (`adapter_schema`, §3) — a better reading of an undocumented format is a re-scan, not a migration of stored derivatives — and why a capture is never superseded by Babel's reading of it.
+The original bytes are retained verbatim, and they are what backup preserves. The forward
+transformation is neither destructive nor authoritative: adapters read live files in place, restic
+snapshots them as the harness wrote them, and the canonical model is recomputable by rescanning the
+same bytes. That is why the parse is versioned — a better reading of an undocumented format is a
+rescan, not a migration of stored derivatives.
 
-The reverse direction exists so a conversation can be resumed in a harness: a canonical session, or a range of one, rendered back into a harness's own on-disk format so the operator can continue it where agents actually run. It is the archive's half of §2.5's continuation promise, made concrete, and the two directions need not name the same harness — an archived Codex session resumed in OMP is the reason a canonical model sits between them rather than a per-pair converter.
-
-Rehydration reads the retained original bytes and uses the canonical model only to locate records within them. It never synthesizes a harness log from the canonical model alone, and that is a requirement rather than a preference. The canonical model deliberately drops what it cannot carry in one shape: harness-specific record fields, envelope metadata, the identifiers a harness threads its own records with, and everything `KindOpaque` preserves as bytes but not as structure (§6.3). A log synthesized from it would be unfaithful exactly where a resumed conversation depends on fidelity — parent links, tool-call identity, attachment references, the fields the harness re-reads when it reopens a session — and it would be unfaithful silently, because the result still parses. A 95%-faithful resume is worse than none: no resume sends the operator to the archive with a locator, while a plausible one hands a harness a conversation that quietly diverges from the one that happened. The capture supplies the bytes; the index says where they are.
-
-Reverse transformers are specified here and unimplemented: nothing in v1 resumes a chat, and §14 gates what each harness must settle before one does.
+Rehydration reads the retained original bytes and uses the canonical model only to locate records
+within them. It never synthesizes a harness log from the canonical model alone, and that is a
+requirement rather than a preference: the canonical model deliberately drops harness-specific
+fields, envelope metadata and the identifiers a harness threads its own records with, so a
+synthesized log would be unfaithful exactly where a resumed conversation depends on fidelity, and
+silently. **Reverse transformers are specified and not built.**
 
 ## 7. Incremental behavior
 
-Normal preparation indexes new or changed material. Exploration may start from newly indexed material, an explicit selection, the existing deferred frontier, or a broad-discovery scope. Re-running an unchanged scope is allowed because creative output may differ; Babel never presents cache reuse as semantic equivalence.
+When nobody pressed anything, the conductor decides what deserves a run. It wakes on the hub's
+cadence, and every cycle is an ordinary run carrying an authority the receipt records.
 
-When nobody typed a command, the conductor (`babel conductor run`, a foreground loop the OS supervises) decides what deserves a run, and every cycle is an ordinary run carrying an authority the receipt records. Its ladder is ordered — the operator's invitations first, then watches, then standing duties — with the serendipity floor as a protected fraction rather than a last resort. The watches rung (operator direction 2026-09-02) sits between invitations and duties: it draws a standing operator interest in a subject (§4.9) when that subject's material-change fingerprint has moved since the watch last ran, and the floor draws across every subject kind rather than the archive alone. Watch storms are bounded twice: by a per-subject cadence — one draw per subject per cadence, however many changes arrived within it — and by the per-cycle and per-day ceilings the conductor already refuses to run without. A cycle's journal row, presence and receipt are the same run facts the runs interface renders (§8.3).
+A cycle draws against ceilings rather than a wish: a per-cycle cost, a daily cost, and a bound on
+how many jobs one machine may hold at once. The bound is per machine, because a deployment-wide
+number raised to admit a second machine's draws raises it for the first machine too. A claim is
+serialized and reserves the cycle's ceiling before the run starts, so the day's limit binds on what
+is committed rather than on what has already been spent.
 
-Three properties keep an unattended loop from being merely a fast producer. **A consolidation share** (`--consolidate N`, one cycle in N) draws the frontier's unexplored candidates instead of a fresh corpus slice, so a loop left running turns what it has already found into findings and proposals rather than only accumulating more hypotheses; it is reported after the ladder and drawn as a protected share, because below the invitations a busy operator would starve it and above them it would outrank a person asking for something. **Concurrent cycles** (`--concurrent N`) draw against one budget rather than a copy each: the claim is serialized and reserves the cycle's ceiling before the run starts, so the day's limit binds on what is committed rather than on what completed runs have already reported. **Publication happens at the cycle boundary** rather than when the loop stops, because a loop is supposed to run for days and records that only a stopped machine publishes are records the fleet cannot see.
+A **budget** is a bounded, expiring exception to the standing policy, carrying what it moves, until
+when, and why. A **drain** is a bounded burst the operator starts and stops, reported as it runs.
 
-The corpus a cycle draws from is the fleet's, not the machine's: the serendipity floor slices every session this host can reach, which is its own sources plus whatever the fleet's snapshots have been fetched into Babel's own area (§6.2), and a drawn session resolves out of that same corpus when the cycle runs. There is no flag to withhold the fetched half. The machine that happened to type the command is not a meaningful boundary on where an idea can come from, and a loop that could only read one host's sessions would rediscover that host's habits nightly while the rest of the archive sat unread.
+A cycle that does not spend says why: disabled, unrouted, nothing eligible, a ceiling reached, a
+machine unavailable. Those reasons are counted and readable, because a loop that produced nothing
+and said nothing is indistinguishable from one that is broken.
 
 Every run records:
 
-- normalized source and capture digests;
-- focus and context subjects with their pinned fingerprints, and the repository read mode granted (§3.1, §4.9);
-- source-adapter identity/version and metadata completeness;
-- cookbook policy/lens identities and versions;
-- selected frontier roots and prior-hypothesis identities;
-- Code version and profile ID/revision;
-- resolved provider/model/thinking metadata returned by Code;
-- sandbox, tool, repository, and public-research capability versions;
-- analysis job/prompt/schema version; and
-- redaction/disclosure policy version.
+- the material it was served and the digest of each session in it;
+- the focus and context subjects with their pinned fingerprints;
+- the recipes and their versions;
+- the Code profile and the model that answered;
+- the prompt and schema versions;
+- what it cost, in the hub's own meter and in the session's receipt; and
+- its closure, and the refusal code where there was one.
 
-Those inputs make a run reproducible enough to inspect, not deterministic enough to promise identical ideas. Review decisions survive re-exploration; descendants and new evidence link to rather than silently replace prior hypotheses or findings. Managed durability is remote: PostgreSQL and encrypted Cellar jointly preserve every committed run, receipt, evidence object, output, and lineage for browsing and continuation by any Babel instance.
+Those inputs make a run reproducible enough to inspect, not deterministic enough to promise
+identical ideas. Review decisions survive re-exploration; descendants and new evidence link to
+rather than silently replace prior hypotheses or findings.
 
-Archive publication, catalog ingestion, and pending-output sync are independently incremental and idempotent. Snapshots are immutable, catalog merges are idempotent, deduplicated chunks are not re-uploaded, and local caches record the exact observed snapshot and sync state.
+## 8. The surface
 
-## 8. Proposed CLI
+Babel is used through two panels. **Feed** is the front page and every record; **Watch** is what
+Babel is doing, what it cost, and what it is set to do. There is no third surface, and no
+capability lives only in a place the operator has to remember.
 
-Names are provisional; behavioral boundaries are not.
+### 8.1 Doors, and what replaced the command line
 
-```text
-babel version --json
-babel [--repo LOCATOR] [--password-file FILE]
-babel web [--port N] [--open]
-babel storage configure --from-json FILE|-
-babel storage status [--json]
-babel storage migrate [--from-json FILE|-]
-babel storage verify [--json]
-babel storage rebuild --host HOST --yes [--json]
-babel archive init [--json]
-babel archive push [--json]
-babel archive status [--json]
-babel archive fleet [--expect HOST[,HOST...]] [--every DURATION] [--json]
-babel archive verify [--deep] [--json]
-babel archive unlock [--remove LOCKID[,LOCKID...]] [--json]
-babel sessions list [--harness omp|codex|claude] [--host HOST [--snapshot ID]] [--fetched] [--json]
-babel sessions inspect SESSION [--fetched] [--json]
-babel sessions fetch SESSION [--host HOST] [--snapshot ID] [--json]
-babel sessions fetch-all (--host HOST | --all-hosts) [--snapshot ID] [--concurrency N] [--json]
-babel sessions prune --local [selection flags] [--yes]
-babel recall search QUERY [--harness omp|codex|claude] [--host HOST] [--workspace PATH|--repo LOCATOR] [--since TIME] [--until TIME] [--limit N] [--json]
-babel recall show LOCATOR [--around N|--turns A-B|--session] [--max-bytes N] [--json]
-babel recall skill
-babel prepare [--focus SUBJECT...] [--context SUBJECT...] [selection flags]
-babel explore --preparation PREPARATION_ID [--new | --all | --resume ID] [--mode clean|chaos] [--chaos-pack ID] [--presentation marked|blind] [--lens ID] [--repo PATH] [--public-research] [--code-profile PROFILE_ID]
-babel runs list [--host HOST] [--state STATE] [--json]
-babel runs show RUN_ID [--json]
-babel runs cancel RUN_ID
-babel watches list [--json]
-babel watches add SUBJECT
-babel watches remove WATCH_ID
-babel analysis profile configure
-babel analysis profile edit PROFILE_ID
-babel cookbook list [--dir DIR] [--json]
-babel cookbook check [--dir DIR] [--json]
-babel conformance WORKER [--worker-arg ARG]... [--unsandboxed] [--json]
-babel hypotheses list [--status STATUS] [--lens ID] [--json]
-babel hypotheses inspect HYPOTHESIS_ID [--json]
-babel findings [--leaves] [--json]
-babel finding show FINDING_ID [--json]
-babel review [--status STATUS] [--lens ID]
-babel review decide ENTITY_ID --accept|--reject|--defer|--duplicate|--reject-and-refine [--context CONTEXT_ID]
-babel review history ENTITY_ID [--json]
-babel refine REQUEST_ID [--preparation PREPARATION_ID] [--source SOURCE] [--context CONTEXT_ID]
-babel export raw ENTITY_ID [--format markdown|json] OUTPUT
-babel export projection PROPOSAL_ID --destination issue|brief|operator-note|skill|investigation|pattern|cookbook|security|agent-brief [--format markdown|json] OUTPUT
-babel reality entities list [--type TYPE] [--json]
-babel reality inspect ENTITY_ID [--as-of TIME] [--json]
-babel reality entity create --kind KIND --name NAME [--note TEXT] [--alias KIND=VALUE]... [--json]
-babel reality source register --from-json FILE|- [--json]
-babel reality refresh [--as-of TIME] [--json]
-babel reality import --source SOURCE_ID --from-json FILE|-
-babel reality focus [VERSION] [--json]
-babel reality focus install [--json]
-babel reality questions list [--state STATE] [--json]
-babel reality questions answer QUESTION_ID --from-file FILE|-
-babel reality plans decide PLAN_ID --accept|--reject
-```
+Every act and every read is a door, named once in the plugin's contract. Reading: `feed`,
+`record`, `thread`, `topics`, `topic`, `pulse`, `runs`, `run`, `policy`. The operator's acts:
+`rule`, `comment`, `answer`, `interest`, `file`, `unfile`, `tell`, `setPolicy`, `setBudget`,
+`clearBudget`. Running: `launch`, `stop`, `profiles`, `drainStart`, `drainStatus`, `drainStop`.
+The crossing, owner only: `importLedger`, `rehostSessions`.
 
-Behavioral rules:
+A door's result shape is spelled once, and a field a door does not spell is refused rather than
+passed through. That is what keeps a panel from rendering something no contract promised.
 
-- bare `babel` is a fast offline status overview; `babel web` serves the transitional browser surface (§2.4, revised 2026-09-02) on 127.0.0.1 only, guarded by a per-launch random token, with archive actions limited to the same read/verify/fetch surface the CLI exposes;
-- `--repo LOCATOR --password-file FILE` provides an ad-hoc single-instance development/recovery workflow; persistent local/shared deployment configuration is otherwise read from `storage.json`;
-- `archive init` creates the repository once for the deployment and no other command ever creates it, so a mistyped locator fails instead of growing a second empty archive, and two machines' timers cannot race two `restic init` runs into one repository; `archive push` is then the only normal archive command that writes it; in shared mode it also publishes catalog rows to PostgreSQL after the backup. Phase B exploration/review/Reality commands use the separate object-first/PostgreSQL-last state protocol. Neither path deletes remote objects, and Babel never invokes `restic forget` or `prune`;
-- status/verify/inspect/fetch are read-only with respect to the repository;
-- `archive verify` is tiered: the default runs restic's structural repository check; `--deep` additionally reads and verifies every repository byte;
-- `archive unlock` is the only command that removes anything from the repository, and what it removes is a restic lock file rather than archived data (§6.1). It lists every lock with the staleness judgement it reached and the reason for it before removing anything, applies restic's own staleness rule and refuses the PID-liveness claim for a lock naming another host, removes only locks that are both stale and shared, and removes a held or exclusive lock only when the invocation names its id. A run that removes nothing exits 0 and says so. It is typed by an operator: no timer, conductor duty or other autonomous path invokes it, and restic's `forget`, `prune` and `repair` remain outside Babel permanently;
-- `prepare` emits an immutable preparation/selection ID; `explore --preparation ID` makes corpus scope explicit;
-- local prune requires an explicit command and never affects Cellar;
-- archive/catalog/retrieval and the Phase A web shell do not require Code or OMP;
-- exploration and answer interpretation require a compatible Code capability and never fall back to choosing a model themselves;
-- `analysis profile` commands launch Code's configuration-only capability and store only the returned profile ID/revision plus non-secret metadata;
-- exploration/review/refinement/Reality commands never publish issues, mutate source repositories, or apply remediation;
-- every untrusted dynamic CLI, log, diagnostic, and preview value passes through one terminal-safe renderer that escapes C0/C1, ESC/CSI/OSC/DCS, bidi, and invisible controls; raw bytes require an explicit private reveal/export;
-- machine-readable output goes to stdout and diagnostics to stderr;
-- interrupted preparation, exploration, refinement, answer interpretation, and synchronization resume without losing or duplicating committed state;
-- `babel web` starts the local listener on loopback only, the page it serves carries the operator's lock and stop control, and no surface exposes a remote-bind option;
-- the web UI uses the same application-service authorization and safe-rendering contracts as the headless commands;
-- raw Reality answers are durable inputs, while authoritative interpreted facts require explicit plan acceptance;
-- trusted inventory imports may mutate only their configured predicate/entity authority;
-- every run fact a headless command prints comes from the runs projection (§8.3), the contract the web surfaces render, so a fact that reaches one surface reaches all of them;
-- `prepare` names a focus and a context (§4.9); a repository named in either is observed at a pinned fingerprint and never fetched into, checked out, or given a worktree (§3.1); and
-- `watches` records standing operator interests the conductor draws (§7); a watch never bypasses the ceilings, the profile, or the disclosure class a run would otherwise carry.
+### 8.3 Watch: runs, spend, and what Babel is set to do
 
-### 8.1 Terminal information architecture
-
-The terminal surface is intentionally small: bare `babel` is an instant, offline status overview (build identity, storage configuration state, cached catalog count, web pointer) that never opens the repository. Operational depth lives in the GUI, and the headless subcommands are its scriptable, pre-UI, recovery and diagnostic path rather than a second place a capability may live (§8.4, revised 2026-09-11). A richer keyboard-driven TUI (jobs, leases, cancellation) is deferred work, reconsidered after Phase B lands its job model; it must never grow a transcript viewer.
-
-### 8.2 Local web information architecture
-
-The React web UI ships in Phase A with **Sessions** (searchable, sortable, filterable OMP/Codex/Claude inventory with metadata detail, artifact/blob closure, completeness reasons, and a paginated best-effort transcript viewer over local files with explicit raw degradation for unknown records) and **Archive** (per-host snapshot coverage, standard and deep verification, snapshot-scoped fetch). The mature Phase B UI adds **Explore**, **Hypotheses**, **Reality**, **Cookbook**, and **Review** areas. Reality contains entity/relationship inspection, alias merge/split history, temporal fact history, conflicts/staleness, trusted-source sync, the prioritized Question inbox, freeform answers, interpreter plans, and atomic accept/reject previews. Review contains hypotheses, findings, proposals, append-only decisions, refinement lineage, and destination previews.
-
-Phase A proves the secure on-demand loopback server (per-launch token, no non-loopback binding) and implements Sessions, session detail with transcript viewing, archive health, verification, and explicit fetch. The explicit lock/stop control is implemented: a same-origin POST revokes the launch token before the listener is closed, so a winding-down process cannot still honour it, and the page replaces itself with a terminal state rather than appearing to work. Phase B adds every analysis, Reality, question, refinement, and proposal surface. Terminal and web may link to the same durable entity but never maintain independent review state.
-
-Revised 2026-09-02 (§2.8): every area above becomes plugin-rendered, and the shell's areas are built further only as far as they carry over. The manifold idiom each maps to exists today (`docs/PLUGINS.md`): Sessions is a sidebar section (`contributes.sections`) with the transcript viewer as a container discipline (`contributes.disciplines`, plugin-declared data since manifold PR #110/#132) reached by `manifold://` address; Archive is a status row; Explore and Runs are a discipline or panel carrying the runs interface (§8.3); Hypotheses and Review are sections whose accept, reject, defer and duplicate decisions are action doors (`POST /api/actions/babel.<x>`); Reality is a discipline with a React Flow renderer; Cookbook a discipline or section; Help a `contributes.routes` page. What manifold lacks for these is filed rather than worked around (§2.8): no virtualized list (absent under `packages/`), no plugin-owned HTTP route for a large transcript (absent; action bodies are capped at 1 MiB, so the viewer stays windowed as it is today), door forms living only in `core.debug` (`packages/plugins/debug/src/door-form.tsx`, not importable by a sibling plugin), and a flat sidebar with no nested areas.
-
-Withdrawn 2026-09-12 (decision 90, §2.8): the areas are not plugin-rendered and no idiom mapping constrains them. §8.6 governs the surface.
-
-What stays CLI-only is what must run before or without a UI host, and it stays so under manifold: `storage configure` (the stdin-only secret handoff), `archive init`, `storage migrate`, `storage rebuild`, `archive unlock` (operator-typed by §6.1), `conformance`, and the recovery commands of `docs/runbook.md`. Each exists so that nothing else depends on a surface being up. Everything else — and every run — is reachable from the UI (§8.3).
-
-Revised 2026-09-12 (§8.6): the areas this section enumerates are storage concepts, and a navigation built by giving each one a destination is what §8.6 replaces. The areas survive as filters, sections and search scopes; what does not survive is the assumption that a reader arrives knowing which kind of record holds the thing he wants.
-
-### 8.3 Runs interface
-
-Runs are the crux of the interface (operator direction 2026-09-02): Babel must be entirely runnable from its UI. A dedicated runs interface creates runs — a preparation's focus and context, recipes, profile, grants and disclosure class — and tracks them live: state, current step, the evidence being read with its locators, tool requests and the broker's decisions, sandbox commands, spend, and cancellation. It shows outputs and receipts, and it gives complete traceability in both directions: run ↔ preparation ↔ receipt ↔ records ↔ dispositions ↔ manifold's trace ledger and the acting principal. Conductor cycles appear as runs with their authority — invitation, watch, standing policy, or serendipity — and the view is fleet-wide: a run on any machine is visible from any surface. The detailed requirements live in `docs/runs-interface.md`.
-
-The projection principle (decision 82): every run fact Babel shows is exposed through one host-independent projection, so the transitional shell (§2.4) and the plugin (§2.8) render the same contract, and a fact that reaches one reaches the other. Today the projection's ends are the receipt and the presence row; the live middle — the current step, the evidence locators, the tool ledger, the spend — is what `docs/runs-interface.md` specifies, and none of it is computed in view code. Under manifold the projection is read through the action door and its changes announced as milestone events until a continuous stream channel exists (§2.8, D4); the interim is labelled as such in the UI rather than presented as live. The 2026-08-30 refusal to start exploration from a browser (§14) is revised by this section: a run outlives a request, so the surface creates it and then tracks it through the projection instead of blocking on it or pretending it finished.
+Watch is the observatory: what is running now with its progress, what finished and what it cost,
+the day's cycles and the reasons they did not spend, the machines and what they can run, the
+standing policy with its ceilings and any budget overlay, the recipes the hub holds, and the
+drains. It is where a run is started and stopped.
 
 ### 8.4 Stored data, stateless workers, and one interaction surface
 
-Storage is the product (operator direction 2026-09-11). Everything Babel knows lives in the shared catalog, the encrypted objects it references, and the Reality Ledger those stores hold (§4.8, §9); a surface reads and writes that storage, and a run is a stateless worker over it — it reads what is stored, writes back what it concluded, and holds no authority and no durable state the storage does not already hold. The consequence is what makes this worth specifying rather than assuming: a worker can be run on any machine, interrupted, restarted, or replaced, because nothing is lost that was not already written down, and which machine happened to run a cycle is a fact its receipt records (§7) rather than a place where knowledge accumulated. The conductor is already that shape — a foreground loop the OS supervises, whose every cycle is an ordinary run of preparation, recipe, receipt, frontier and dispositions and whose supervision is deliberately not its own (`internal/cli/conductorcmd.go:30-44`) — and §9.1 is the same property stated for records rather than for processes: a record that reached storage outlives the process that produced it, and one that did not is a debt reconciliation enumerates from the staged records themselves.
+Storage is the product. Everything Babel knows lives in the store (§9); a surface reads and
+writes it, and a run is a stateless worker over it. **A capability that exists only as a
+remembered command is unfinished.** Every stored thing is reachable and actionable in the panels:
+reachable means reached by moving through the surface rather than by knowing a destination
+exists, and actionable means the decisions a record admits are offered where that record is read
+— a proposal's ruling beside the proposal, a question's answer beside the question. Both
+requirements are load-bearing. A record only a URL reaches is not in the product, and a record
+shown without the decision it invites sends the operator somewhere else to act on what he has
+just finished reading.
 
-Every stored thing is reachable and actionable in the GUI. Hypotheses, proposals, findings, questions, the ledger's facts and entities, dispositions, sessions, complaints and focus rules each appear in the interface, and reachable means reached by moving through the navigation rather than by typing a URL the operator had to already know. Actionable means the decisions a record admits are offered where that record is read: a proposal's ruling beside the proposal, a question's answer beside the question, a disposition's invitation or revival beside the record it concerns. The two requirements are separate and both are load-bearing. A record only a URL reaches is not in the product, and a record shown without the decision it invites sends the operator to a command line to act on what he is already looking at.
+### 8.5 Reading order and lifecycle views
 
-A capability that exists only as a remembered command is unfinished. The CLI is not deprecated and does not shrink: it is how automation and the hourly timer drive Babel, how a machine is configured before any UI host exists (§8.2), how recovery proceeds when nothing else will start (§11, `docs/runbook.md`), and how a defect is diagnosed. It is not where a capability lives. §9.1 states this rule for publication — publication is the product's responsibility rather than the operator's memory — and this section states it for interaction, which is the same principle on the other surface: the operator is to be guided and offered what Babel can do rather than made to hold Babel's command surface in his head in order to reach it. A capability that ships as a command alone is a gap recorded with what it waits on (§14), never a capability counted as delivered.
+The default order serves the operator's next useful decision: what needs him, by urgency, then by
+kind — a proposal before a finding before a candidate at equal urgency — then by the longest
+wait. The order is over the whole deployment before paging; a page ranked independently of the
+set it came from is not an order. Every ordering names its basis, and missing evaluation data is
+never rendered as zero opposition or unanimous support: a nought over nothing reads as a record
+nobody objected to, which is the one defect this section exists to prevent.
 
-The present state is short of this, and the shortfall is recorded rather than implied. The direction is one the code has already started: the transitional shell carries a real write surface — `/api/review/decide`, `/api/reality/answer`, `/api/reality/plan/accept`, `/api/record/disposition/decide`, `/api/record/invite`, `/api/record/revive` and `/api/complaint/tell` (`internal/web/server.go:448-545` at `d2c5ef9`) — each calling the same service method the terminal calls, attributed to the acting operator (§14). What is missing is named by that surface's own package documentation, which admits that "No route here asserts a fact, supersedes one, merges an entity, or installs a focus rule" (`internal/web/reality.go:10-12` at `d2c5ef9`). Part of that admission is by design and stays: asserting a fact, superseding one and merging an entity are reachable only through a plan the ledger recorded and an operator accepted, which is §4.8's rule against model-authorized reality rather than a gap here. The rest is gap, and it has company elsewhere — creating an entity is `babel reality entity create` (§8), an attributed operator act that authorizes nothing a plan would not and that every fact and every question depends on, since the ledger mints no subject a person has not named (§4.8), and it exists today as a command and nowhere else. Each such gap is gated in §14 and closed by giving the record's own surface the act, not by documenting the command better.
+Alternative orders are **new**, **top**, **controversial** and **rising** (§8.7), and filters over
+the one list carry the rest: the record kinds, the topics, and the lifecycle states — open,
+accepted, implemented, verified, deferred or rejected, with **reconsider** as a linked attention
+view over earlier decisions. An **unreviewed** filter and a coverage summary expose
+never-reviewed records, overdue initial reviews and reassessment due after changed context, by
+review role, so the operator can see what has not been checked even when it has no votes.
 
-Starting a run from the GUI is deferred to the manifold plugin migration, and the deferral is a dependency rather than a preference. §8.3 requires the runs interface to create runs, and creating a run from a surface is asking a named machine to execute work; manifold has no way to ask that today — the machine channel is a closed PTY vocabulary of seven verbs each way and `create` carries no command (`packages/protocol/src/machine.ts:35-96`, `dev`@68f102e) — which is the typed exec/job primitive filed as a prerequisite in §2.8's D2, gated in §14, and tracked as atyrode/manifold#156 in `docs/manifold-transition.md`. Babel does not own that primitive and does not work around it: D2 refuses driving Babel's binary as keystrokes into a shell as an interim, and §2.2 already places service scheduling outside Babel. Until the primitive exists, compute is launched on a machine by hand — `babel explore`, `babel conductor run`, and the hourly timer dotfiles enables (§2.3) — while the GUI reads, decides and records over what those runs leave in storage. Nothing else in this section waits on manifold: every other obligation here is owed against storage Babel already holds. A created run's live progress carries its own separate dependency on a continuous stream channel, with milestone events plus polled state as the labelled interim (§2.8, D4).
+A record shows its current revision, reception and assessment counts, evidence and unresolved
+objections, and why it occupies this position. Bare votes stay bare rather than acquiring
+generated rationales. Model reception and the operator's own choices are visibly different.
 
-Withdrawn 2026-09-12 (decision 90). The deferral above depended on Manifold owning the machine channel, and Manifold no longer owns anything Babel's surface needs: `babel web` runs on the machine whose binary does the work, on loopback, under the operator's own session, so asking that machine to start a run is a local call rather than a request across a fleet protocol. Starting, pausing and stopping runs from the surface is therefore in scope — exploration, evaluation and the conductor, each under exactly the ceilings, profile, grants and disclosure class the CLI enforces, through the same service methods, attributed to the acting operator (§14). The surface is a control room and not a report (operator direction 2026-09-12): a ceiling saved in the browser still starts nothing by itself, and a run started from the browser is receipted like any other, so what the operator can do from the page and what he can do from the terminal are one set. Remote launch on another machine remains out of scope until a fleet primitive exists, and is not worked around by driving that machine's binary over a shell.
+### 8.6 One record, peeled
 
-### 8.5 Evaluation inbox and lifecycle views
+A record is one page. It opens at its claim and expands in place, and nothing navigates away to
+show more of the same object:
 
-The full-lifecycle evaluation surface (§4.12) is implemented in the standalone browser UI and does not wait for Manifold integration. Evaluation storage, ranking, and reading are separate from the deferred remote run-launching capability of §8.4. The GUI exposes review policy and budget configuration and states whether authorized evaluation work is running, awaiting its next scheduled draw, paused, or unavailable; saving a policy is not permission to launch compute.
+- **the claim** — one sentence, its standing, and the single act it invites;
+- **the case** — the problem, the proposed outcome, how the operator would know it worked, what
+  could go wrong, what is still unanswered. Prose, no identifiers;
+- **the evidence** — quoted excerpts, each reaching its transcript at the cited line;
+- **the reception** — who judged it, what they said, where they disagree; and
+- **the machinery** — identifiers, digests, revisions, links, receipts, policy versions.
 
-The default **Recommended** order serves the operator's next useful decision. Additional sorts are **New**, **Recently strengthened**, **Contested**, and **Under-reviewed**. Recently strengthened requires a substantive contribution or new supporting material, not merely another bare vote; Contested surfaces unresolved disagreement, distinguishing mixed reception from an evidenced objection. Under-reviewed uses exposure, not low popularity. Every ordering names its basis and freshness; missing evaluation data is not rendered as zero opposition or unanimous support.
+The first three depths carry no identifier at all, and the fifth is collapsed by default and never
+mixed into them: a reader deciding whether a proposal is worth his time is doing a different job
+from a reader debugging Babel.
 
-An **Unreviewed** view and coverage summary expose never-reviewed artifacts, overdue initial reviews, and reassessment due after changed context, by applicable review role. The operator can see what has not been checked even when it has no votes, why an item is blocked, when the last coverage check completed, and whether the authorized budget can keep up. Under-reviewed is a broader sort and does not replace this exact inventory. Coverage spans the reviewable output kinds of §4.12, with navigation back to each artifact rather than only the proposal inbox.
+**The operator's voice sits where he reads.** Three acts, none requiring a page change: an
+attributed stance — agree, disagree, unsure — that decides nothing and says so; the append-only
+ruling authority; and a reason in his own words, kept verbatim, attachable to either. The stance is
+an operator-authored feedback record with explicit polarity, never an assessment, because an
+assessment arriving through the operator surface would let a person mint what reads as a model's
+observation. Babel's reception renders beside the operator's and is never summed with it.
 
-Proposal views separate **Open**, **Accepted — awaiting implementation**, **Implemented — awaiting verification**, **Verified outcomes**, and **Deferred / rejected**, with **Reconsider** as a linked attention view over earlier decisions. Existing duplicate and refine-requested dispositions remain reachable with their relationships; these lanes do not silently replace the disposition vocabulary. Hypotheses have evaluation views alongside their own frontier states, with navigation to resulting proposals. A verification badge names the criterion and observation scope and shows later disputes rather than declaring timeless success.
-
-Competing proposals addressing the same pain can be read as one comparison: the shared problem, distinct remedies, prerequisites, evidence, costs and unresolved tradeoffs. Grouping is a reversible reading projection over separately addressable records, not a duplicate ruling, merge, or suppression of alternatives. A contextual preference between alternatives records what was compared and why; it is not converted into invented global votes or a claim that one remedy dominates in every context.
-
-Recommendations explain **why now**, **what still argues against acting**, and **what change would alter the recommendation**, when those are known. An unknown remains unknown, and a bare vote acquires no synthetic rationale. Explanations expose their contributing records and freshness so the operator can correct a mistaken context assumption, refine the remedy, or retain/refuse the proposal through the existing decision surface. One problem with many near-identical proposals must not occupy the entire recommended view solely through repetition.
-
-An item shows its current revision, reception and assessment counts, evidence and unresolved objections, optional contributions, and why it occupies this position. The record opens into its evaluation history, earlier revisions, source locators, operator decisions, and outcome history. Bare votes stay bare rather than acquiring generated rationales. Model reception and the operator's own choices are visibly different. Accept/reject/refine, resolve criteria, and reconsideration decisions are offered where their subject is read. No machine filter, guessed URL, or remembered CLI command is required to follow that lifecycle.
-
-Lists and their totals read bounded, fresh-enough projections rather than fetching and decrypting the whole evaluation corpus on every page request. Ordering uses the complete eligible set represented by the projection before paging; it does not rank each page independently. Readers expose unavailable or stale projections and their coverage, do not present a producer-local subset as the deployment's tally, and retain an ordinary browseable order when a ranking is unavailable. Projection rebuilds preserve §9's encryption, integrity, and compatibility guarantees.
-
-### 8.6 The reading surface: one record, peeled
-
-Operator direction 2026-09-12, after reading the surface his own deployment had produced: *"there is an information overload, and not enough sense put into what to show, what to click, where to look, it feels all flattened into one big layer of features instead of being coherently assembled together to leverage the richness of Babel"*, and the sentence this section is built on: *"the complexity of the data is for Babel itself, the user really only needs the surface, and to be able to dig when needed"*. The measured diagnosis is issue #234 and the approved design is #235; this section is the contract both answer to, and it binds the browser surface the way §8.5 binds the evaluation views it now renders through.
-
-What went wrong is worth stating exactly, because it was a faithful implementation of a rule this specification already carried. §8.4 requires every stored thing to be reachable and actionable, and the surface satisfied that literally: every record kind acquired a destination, every storage concept acquired a page, and the operator was left to assemble a proposal from four of them in three different vocabularies for the same standing. One page per kind is not an information architecture. It is a table of contents for the database, and it makes reading Babel require knowing Babel's schema — the exact knowledge §8.4's first sentence says belongs to Babel rather than to the person it serves.
-
-**One record, five depths.** A record is one page. It opens at its claim and expands in place, and nothing navigates away to show more of the same object: the claim (one sentence, its standing, and the single act it invites), the case (the problem, the proposed outcome, how the operator would know it worked, what could go wrong, what is still unanswered — prose, no identifiers), the evidence (quoted excerpts, each reaching its transcript at the cited line), the reception (who judged it, what they said, where they disagree), and the machinery (identifiers, digests, revisions, links, receipts, policy versions). The first three depths carry no identifier at all, and the fifth is collapsed by default and never mixed into them: a reader deciding whether a proposal is right does not need a digest to decide, and a reader debugging Babel must not have to leave the record to find one. A section with nothing in it is absent rather than empty, and never rendered as a zero — §8.5's rule that missing evaluation data is not unanimous support is the same rule, applied to every depth.
-
-**Navigation names decisions, not record kinds.** The surface offers what the operator might want to do — what needs him, what Babel has found, what it is doing and what it cost, and what it knows and needs from him — and a destination named after a record kind or a storage concept is a defect under this section. The kinds do not disappear; they become filters over one list, which is where a kind belongs: a distinction the reader applies when he wants it, not a place he has to go first. Sessions is a search scope reached from a citation rather than a destination, because nobody opens Babel to browse transcripts; he arrives at one because a record cited it. Configuration, archive health and ceilings are settings, and settings are not navigation.
-
-**The operator's voice sits where he reads.** Three acts, offered on the record itself and none of them requiring a page change: an attributed operator stance — agree, disagree, unsure — that decides nothing and says so in four words; the existing append-only ruling authority, unchanged and still confirmed; and a reason in his own words, kept verbatim, attachable to either. The stance is recorded as an operator-authored feedback record with explicit polarity, never as an assessment: §4.12's authority boundary does not move, because an assessment arriving through the operator surface would let a person mint what reads as a model's observation. Babel's own reception renders beside the operator's and is never summed with it, and the separation is preserved by attribution rather than by distance — the two are readable together precisely because they are labelled apart.
-
-**Density is a contract rather than a preference,** because the failure it prevents is measurable and was measured. A listing row is one line of claim and at most three facts; a page states one thing in one sentence; no page runs past roughly three screens without pagination; badges are rationed to standing and kind, with coverage, lane, role and reconsideration rendered as text or filter state; and one container vocabulary serves the whole surface, so that a different meaning gets a different shape rather than another class name with identical rules. The numbers that produced these limits are in #234 and are cited rather than recalled: the sessions listing rendered 15,311 pixels tall, the evaluation view carried 1,693 words across 27 cards, one record's standing appeared under three different headings, and roughly thirty-seven card classes resolved to near-identical boxes.
-
-No capability is removed by this section, and that is a requirement rather than a reassurance. Every filter, sort, lifecycle view and decision surface §8.5 specifies survives; the CLI neither shrinks nor is deprecated (§8.4); and any control that loses the page it used to live on keeps that control somewhere the reader reaches by moving through the surface rather than by knowing it exists. The redesign removes pages, not features. A capability that survives only as a URL the operator had to already know is not in the product — §8.4 says so, and the navigation this section replaces is how that rule came to be satisfied on paper and broken in practice.
+**Density is a contract rather than a preference.** A listing row is one line of claim and at most
+three facts; a page states one thing in one sentence; no page runs past roughly three screens
+without pagination; badges are rationed to standing and kind, with coverage, lane, role and
+reconsideration rendered as text or filter state; and one container vocabulary serves the whole
+surface, so a different meaning gets a different shape rather than another class name with
+identical rules.
 
 ### 8.7 The surface is a feed
 
-Operator direction 2026-09-12, after using §8.6's surface: *"where can I simply see the upvotes/downvotes/comment, reddit-style, with the ability to sort by hot/new/top (then period of time)/controversial/rising?"* — and, on being offered the choice, *all in: the feed is Babel*. This section supersedes §8.6's navigation paragraph. Everything else in §8.6 — one record at five depths, the operator's voice on the record, density as a contract, no capability removed — stands and is the shape of a post.
+**The front page is the feed, and there is one list.** Every record Babel has produced —
+hypothesis, finding, proposal, and the questions it asks — is a post: one line of claim, its kind
+as flair, the topics it belongs to, its age, Babel's score, its comment count, and, when it awaits
+the operator, *why it is next* in five words. One sort bar over the whole deployment: **next** —
+what needs the operator, a proposal before a finding before a candidate at equal urgency — plus
+**hot**, **new**, **top** and **controversial** over an hour, day, week, month, year or all time,
+and **rising**.
 
-**The front page is the feed, and there is one list.** Every record Babel has produced — hypothesis, observation, finding, proposal, and the questions it asks — is a post: one line of claim, its kind as flair, the topics it belongs to, its age, Babel's score, its comment count, and, when it awaits the operator, *why it is next* in five words. One sort bar over the whole deployment: **next** (§8.5's order — what needs the operator, a proposal before a finding before a candidate at equal urgency), **hot**, **new**, **top** over an hour, day, week, month, year or all time, **controversial** over the same windows, and **rising**. The formulas are Reddit's, stated in `internal/web/feed.go` and tested there: hot is the signed log of the score plus age at a fixed decay; controversial needs both support and opposition and rewards their balance times their magnitude; rising is activity in the last twelve hours against age. Two filters sit over the list and nowhere else: kind, and **needs me** — the records awaiting a ruling or an answer — which is on when the operator arrives and off in one gesture. Revised 2026-09-12 after the operator read the first cut: a separate queue page and the feed were the same list twice, so the queue is this filter and the arrows are gone.
+**Babel votes; the operator rules.** The score is Babel's reception and only Babel's: one vote per
+run per role on one exact revision, support minus oppose, with the breakdown by role one gesture
+away wherever the number appears. The operator does not vote, because his act on a record is a
+ruling and a vote beside it would be a weaker copy of it. The acts a row offers are the rulings
+themselves — accept, reject, defer, refine — and *ask*, which is a question to Babel about this
+record, recorded as a comment Babel's next review of the record must answer.
 
-**Babel votes; the operator rules.** The score is Babel's reception and only Babel's: §4.12's assessments — one vote per run per role on one exact revision, support, oppose or unsure — summed as support minus oppose, with the breakdown by role one gesture away wherever the number appears. The operator does not vote, because his act on a record is a ruling and a vote beside it would be a weaker copy of it (operator direction 2026-09-12: *"me voting is a subpar concept, since I would rather just triage the idea at this point"*). The acts a row offers are the rulings themselves — accept, reject, defer, refine — and ask, which is a question to Babel about this record, recorded as a comment Babel's next review of the record must answer; duplicate and reopen stay on the record's own rule bar. Every ruling is confirmed in one sentence before it is recorded, as §8.6 requires. The score is what steers the operator toward what Babel's reviewers most agree on; his rulings are what steer Babel. Votes that were refused at write-back are not votes: a review run renews its claim while it works, and a policy whose lease cannot cover a batch is refused when installed (§4.12).
+**A topic is an entity.** A post's topics are the ledger entities it is filed under (§4.13); a
+topic page is the feed narrowed to one entity, the rail lists entities with active lifecycle first,
+and a record filed under nothing is in the feed as *unfiled* rather than hidden.
 
-**A topic is an entity.** A post's topics are the Reality Ledger entities it is filed under (§4.13); a topic page is the feed narrowed to one entity, the rail lists entities with active lifecycle first and dormant ones folded, and a record filed under nothing is in the feed as *unfiled* rather than hidden, because unfiled is the triage backlog and not a bin. Nothing in the surface may assume a topic is a directory: it is a name bound to something real, with a reason.
+**Comments are the conversation under a post.** A reviewer's contribution prose, a refinement, the
+operator's reason in his own words, his question, and the answer to a question are all comments,
+threaded by what they relate to and shown newest-first under the record's depths. Rulings are the
+moderator's log and render in the thread as the acts they are, attributed and dated, never as
+comments. A run is the author of what it wrote: its name on a post or a vote reaches its run page.
 
-**Comments are the conversation under a post.** A reviewer's contribution prose, a refinement, the operator's reason in his own words, his question, the answer to a question and the reason on a reconsideration are all comments, threaded by what they relate to and shown newest-first under the record's five depths, paged so the post stays within §8.6's ceiling, with a box the operator writes into that records a feedback record carrying a reason and no polarity. Rulings — accept, reject, defer, duplicate, reopen — are the moderator's log and render in the thread as the acts they are, attributed and dated, never as comments. A run is the author of what it wrote: its name on a post or a vote reaches its run page.
+**Navigation names decisions, not record kinds.** A destination named after a record kind or a
+storage concept is a defect under this section. The kinds become filters over one list, which is
+where a kind belongs: a distinction the reader applies when he wants it, not a place he has to go
+first.
 
-**Navigation, revised.** Home is the feed; Watch and Settings are as §8.6 left them; search is the palette and its results page, which is where reading by filter went. Three destinations, and the rail of topics on wide viewports is a fourth that is not a page.
 
-## 9. Durable and local state
+## 9. Durable state
 
-The first deployed v1 uses **shared mode**: one PostgreSQL database plus one shared restic repository on S3-compatible storage form a single logical Babel backend for every authorized instance. The operator deployment uses Clever Cloud managed PostgreSQL and a Cellar-hosted repository in the same organization/region where practical. The interfaces remain provider-neutral. There is no hosted Babel API or web service; each machine runs the binary and loopback UI locally.
+**One store, on the hub.** Everything Babel knows is rows in one SQLite database the engine owns:
+sessions, records, edges, statuses, rulings, filings, feedback, assessments, claims, entities,
+facts, questions, answers, plans, steering, runs, progress, policies, budgets, drains and the
+crossing's own ledger. Nothing is sealed and nothing is synced; a row is plaintext on the
+operator's own server, and "published" is a word this schema does not need.
 
-Revised 2026-09-02 (§2.8, D3; decision 84 the same day narrowing decision 63): where the backend lives is a plugin-level setting with two placements — **master**, this section's local mode on the hub's host, and **external**, shared mode against stores the operator provisions, which is today's Clever Cloud and the default for any fleet — chosen over the interfaces this section already keeps provider-neutral; the restic locator, the PostgreSQL endpoint and the object-store credential are placement inputs, not placement logic. A store on an enrolled machine is external with that machine's endpoint, not a placement of its own. Master is named non-durable in the setting itself: an archive placed on the hub has the durability of the hub it is meant to help recover, and the hub's own backup is a hand-run archive of one volume. Manifold itself offers a plugin one flat `plugin_kv` table of 64 KiB string values (`packages/plugin/src/storage.ts`) and holds no object store and no PostgreSQL (absent), so the stores stay Babel's under both placements and manifold receives at most pointers to them, never a credential (decision 66). The setting is `storage.json`'s `mode` today; settings kinds beyond boolean are the prerequisite for rendering it in manifold's settings pane, not for the setting (§14). The sentence above that there is no hosted Babel service is revised the same day: manifold's hub hosts the UI, and the hub runs a Babel instance configured like any other machine — a host with a stable identity, a storage document and an agent-kind principal — rather than a coordinator with authority the other instances lack (decision 68).
+The shape is made by the enable hook, not by a migration: a fresh install runs the schema as one
+batch when the file has no tables and records the shape's name for the next one to read. A
+migration chain exists for a major bump over data that already exists.
 
-Phase A stores the encrypted archive in the Cellar restic repository and a minimal global catalog/coordination schema in PostgreSQL: deployments, instances, hosts, snapshot IDs/times/order, session identity rows, reconciliation state, idempotency keys, migrations, and server-time fenced leases. Transcript bodies never enter PostgreSQL: they live in the encrypted repository, in live local sources, and in decrypted local SQLite indexes. The Phase A allowlist began as schema/version identifiers, opaque IDs/locators, ordering, sizes/counts, commit state, lease/fencing data, and timestamps, and the operator widened it on 2026-08-30 (`migrations/0004`) after being shown the tradeoff: a session's title, its workspace path and its continuation grade, and a host's display name, operating system and architecture, are now plaintext there, so that an instance holding only the DSN can browse the fleet and read something rather than a list of opaque digests. He chose full richness deliberately. That permission is exactly this column set and does not generalize - transcript bodies, plaintext full-text indexes, deterministic ciphertext, session selectors and adapter source ids, and infrastructure identity such as a machine's system hostname all remain outside it, and `internal/sharedcatalog`'s allowlist drift test is what keeps the distinction checkable rather than aspirational. The cost is recorded rather than implied: these values are readable by the managed provider and by anyone holding the catalog credential, over a connection that is encrypted but not authenticated.
+**A batch is the transaction.** There is no open handle: read, decide, then a batch whose first
+statements are its own guards, under the engine's bounds. A purge is the engine deleting the file.
 
-`migrations/0006` widens it once more, and by a smaller step: each session's recorded usage summary - what it cost in US dollars, how many tokens it consumed, how many assistant turns it holds, and how many of its tool results came back as errors. These are not new observations about a session's content but sums over usage blocks the harness itself wrote into the transcript, recomputed by the adapter at describe time; producing them invokes no model, reads no network, and is reproducible from the same bytes. They are admitted because a cross-host reader browsing 838 opaque digests cannot otherwise ask which sessions were expensive, which were long, and which fought their tools, and the alternative - reading the transcripts - is exactly what §9 keeps encrypted. They are scalar measures of consumption and cannot be inverted into a word of what a session said, so the exclusions above survive unchanged: this is not a keyword set, a plaintext full-text index, or a digest over transcript bytes. What is new in kind is the money, and `internal/sharedcatalog`'s allowlist classes it separately for that reason, so the contract's own listing shows a spend measure as a spend measure rather than hiding it among sizes and counts. A NULL there means unmeasured and never zero: a session that ran for free and a session nobody measured are different facts, and the harness that records no usage at all keeps NULL after every push.
+**Every table that records an act is append-only by trigger.** A ruling, a vote, a filing, a
+status, a record and a fact are written once and superseded by a later row, never edited or
+deleted. The triggers are the whole of that guarantee. `actor_kind` is `operator`, `run` or
+`engine` on every row that something wrote, so "who did this" is a column and never an inference.
 
-Babel's PostgreSQL objects live in a schema Babel creates and owns, named `babel`, and every connection pins its `search_path` to it. Babel does not own the database: a managed provider may pre-install extensions, and Clever Cloud's PostgreSQL ships PostGIS, `pg_stat_statements` and dozens more whose own tables and views occupy `public` (observed, 2026-08-29). Sharing a schema with them would make the plaintext allowlist unenforceable - it could no longer distinguish a relation Babel created from one that was always present, so it would have to either reject the provider's extensions or stop reporting unexpected tables at all. An owned schema keeps that check exact, and the migration credential therefore needs the right to create a schema rather than only to create objects in one.
-
-An archive publication commits to the repository first: restic writes its snapshot record only after every chunk is durable, and that committed snapshot is archive truth. Babel then idempotently upserts the host's snapshot and session rows into the shared PostgreSQL catalog. If the database step fails, the snapshot remains valid but is not catalogued at all; the next `archive push` from **any** authorized instance then adopts it from the repository snapshot list, which restores its visibility, ordering, and restic's own counts. Adoption is fleet-wide rather than per host, and that is the §9.1 requirement rather than a convenience: a pass restricted to the pushing host's own snapshots would leave a snapshot stranded by a machine that has since been retired, has died, or is merely idle waiting for a push that never comes. Each adopted row names the host restic recorded, never the adopting one, and takes its number from that host's own `publication_order` sequence, which the adopting instance may write only while holding that host's publication lease - so two instances pushing at once cannot number one host's snapshots twice. A snapshot that names no host is refused rather than adopted, because its identity is unknown rather than merely absent. The adopted row arrives `catalog-pending`: its own record of which sessions it held is not derivable from the snapshot list, so something has to read the snapshot. Two things do, both unattended. The owning host's next push publishes current session identity, so the catalog stops being behind on what exists locally; and any host's push completes the adopted row itself by restoring the snapshot to a private disposable area, rescanning it with the adapters that own its trees, and publishing the session rows it actually held (§12 Phase A, `internal/cli/archiverescan.go`). The rescan is bounded per run so the hourly timer stays bounded, isolates one unrestorable snapshot from the rest, removes its restore area on success and on failure alike, and writes nothing to the repository. Nothing is wrong with the archive at any point in this - the snapshot stays durable and byte-exactly restorable, and what is missing is catalog detail about it. Loss of the Phase A database is recoverable from the repository plus source rescans.
-
-Phase B extends the existing shared schema with globally durable hypotheses, observations, findings, proposals, Reality entities/facts/questions/answers/plans, review/refinement events, runs, receipts, and evidence references. Large or byte-oriented data remains encrypted in Cellar. Phase B multi-store output commits are object-first and PostgreSQL-last; the PostgreSQL transaction is their visibility boundary.
-
-Configuration and local state use private XDG paths:
-
-- shared/local storage configuration: `$XDG_CONFIG_HOME/babel/storage.json`;
-- local state: `$XDG_STATE_HOME/babel/babel.db`, a rebuildable SQLite catalog/cache, decrypted local full-text and Reality query index, and the idempotent Phase B `pending-sync` journal;
-- retained data: `$XDG_DATA_HOME/babel/` for rebuildable fetched sessions and local materializations of encrypted Cellar evidence/exports; and
-- cache: `$XDG_CACHE_HOME/babel/` for the restic cache, disposable staging, repository worktrees, sandbox roots, and model-ready redacted inputs.
-
-Phase A keeps no local journal of `catalog-pending`, and derives it instead. The repository is authoritative for which snapshots exist and the catalog for which of them it has recorded, so the difference between the two is the answer, and `babel archive status` reports it on demand. It reports two conditions separately, because they mean different things and call for different responses. A snapshot the repository holds with no catalog row at all is what an outage leaves behind, and the next push from any host records it; a push that could not reach PostgreSQL, or met a publication lease another instance already held, reports exactly that word for its own snapshot. A snapshot the catalog holds as `catalog-pending` carries real counts from restic but no record of which sessions it held, which is not derivable from the snapshot listing - so a push restores that snapshot and rescans it, publishing what it actually held and marking it committed. Both counts therefore fall as pushes happen, without an operator action and without a command anyone has to remember, which is what §9.1 requires of every record Babel produces. What `status` reports is the remaining work rather than a pending action: the numbers move on the schedule the machines already keep. Nothing is wrong with the archive in either case - the snapshots stay durable and restorable, and only catalog detail about them is missing. An unreachable catalog leaves both counts unknown rather than zero. A third local copy of a fact two authorities already determine could be lost with the rebuildable local database, or go stale the moment another instance reconciles, and would then disagree with both. Phase B output is the case that genuinely needs a journal: newly staged analysis exists only locally until it commits, so nothing external can reconstruct `pending-sync`.
-
-The same command is how a second instance browses the shared catalog, so `archive status` reports what the catalog holds as well as what it lacks: per publishing host, its catalog snapshot rows, its distinct session identities, its `catalog-pending` rows, and the newest publication order with that row's snapshot time. It stays a separate view from the repository listing rather than merged columns, because the whole reason `publication_order` and the commit state exist is that the repository and the catalog can disagree. Since `migrations/0004`, what Phase A exposes fleet-wide also includes each session's title, workspace and continuation grade and each host's display name and machine facts, which is what makes a cross-host listing readable; since `migrations/0006` it also includes each session's recorded usage summary - priced spend, token total, assistant turns, tool errors - which is what makes that listing answerable about cost. A NULL there means no host has supplied the value, never that the value is empty, that a grade is negative, or that a session was free, and a reader that collapses the two states reports a verdict nobody reached. Rows a host published before those migrations carry none of it until that host pushes again. Transcript bodies and everything else sealed into encrypted objects still arrive with Phase B.
-
-`babel archive fleet` answers the separate question of whether every machine is still publishing, which `archive status` supplies the raw material for and deliberately does not conclude: a host six days stale renders there identically to one that published minutes ago, apart from a timestamp the operator has to compare by eye. It reads the repository snapshot listing alone - which carries every host that has published and every one of their snapshot times, so both the age and the normal interval are derivable from it - and therefore needs no catalog credential and answers identically in local and shared mode. Publication recency is a per-host judgement against a cadence derived from that host's own recent snapshot gaps, or from the fleet's when the host has too little history of its own, never from an assumed schedule: Babel does not own the archive timer and its configuration does not record that timer's cadence, so the report names the source of every cadence it used and offers no verdict at all for a host whose cadence could not be established. A cadence observed faster than hourly is treated as hourly, because §12 fixes hourly as the Phase A schedule and a faster observed rate is bootstrap pushes rather than a schedule; the floor can only delay a late verdict, never bring one forward.
-
-A machine that has never published is structurally invisible to both authorities, and no column can fix it: the catalog learns of a host by way of its first publication - `hosts` rows are only ever written alongside a snapshot restic already committed - so a table derived from what was archived can never name a machine that archived nothing. Absence therefore has to be asserted from outside the archive, and it is asserted by the operator at the moment he asks, with `--expect HOST[,HOST...]`, rather than by a roster Babel persists. That is deliberate: a stored roster is state that goes stale silently and then answers confidently, and a fleet list that has quietly stopped matching the fleet is worse than no list, because it converts "I do not know" into a wrong answer. An expectation supplied in the invocation cannot rot between invocations. The command exits 0 whatever it finds, including a late or missing host: "late" is a judgement derived from a cadence Babel inferred rather than a fault it observed, and an exit code is a contract schedules come to depend on, which is the alerting system this is deliberately not.
-
-`babel storage configure --from-json FILE|-` validates a versioned document supplied by a private file or stdin; the managed dotfiles flow uses stdin. It checks deployment/instance identity, repository access, PostgreSQL TLS certificate/hostname, credential privileges, schema compatibility, and external key references before atomically replacing the mode-0600 file; it never logs the document. Each instance uses the least-privileged catalog credential its provider can issue. Clever Cloud's managed PostgreSQL cannot create database users (provider confirmation, 2026-08-28), so the first deployment runs one credential for the whole deployment; a provider that permits additional users gets a distinct revocable application credential per instance plus a separate migration credential supplied ephemerally to `storage migrate`. Detecting the privilege level a credential actually carries and recording it in storage health, rather than assuming the stronger arrangement, is a Phase A requirement (§11); until it lands, the deployment's privilege level is an operator-known fact and not a Babel-verified one. Where one credential carries both roles, normal instances are restrained from changing schema by operator procedure rather than by privilege. An unattended archive timer uses the already validated private configuration and never requires Bitwarden to remain unlocked.
-
-Catalog transport security is what the provider actually offers, reported rather than assumed. Clever Cloud's managed PostgreSQL presents a self-signed certificate carrying no subject-alternative name, whose common name identifies a different instance than the one it serves (observed, 2026-08-29), so `verify-full` is not merely unconfigured there but impossible, and pinning the certificate would not supply the missing name. The connection negotiates TLS 1.3 and is therefore encrypted but not authenticated: an attacker positioned on the network path could impersonate the database and capture the catalog credential. Babel records this rather than implying verification it cannot perform - `storage verify` reports the negotiated protocol from `pg_stat_ssl` rather than echoing the requested mode, and refuses a certificate that fails a mode the operator did ask for. What bounds the exposure is what Phase A sends, and since `migrations/0004` that bound is wider than it was: opaque identifiers, ordering, counts, commit state, timestamps, and the metadata the operator admitted on 2026-08-30 - session titles and workspace paths, continuation grades, host display names and machine facts - plus, since `migrations/0006`, each session's recorded usage summary: priced spend in US dollars, token totals, assistant turn counts and tool-error counts. Transcript bodies are still never sent. The operator accepted that widening knowing this connection is unauthenticated; a provider that authenticates its server removes the impersonation half of the risk and not the plaintext half. `verify-full` remains supported and is proven against a trusted chain; providers that authenticate their servers get it.
-
-Beginning in Phase B, structured identifiers, entity kind/schema version, encrypted-object references, key ID, ciphertext size, commit/sync state, and relationship IDs form the minimal PostgreSQL plaintext allowlist for Phase B rows. Phase B record payloads - claims, operator context, findings, proposals, review notes, receipts, and the titles those records carry - use randomized versioned AEAD envelopes with associated identity/schema data and key IDs before leaving Babel. The Phase A session titles `migrations/0004` admits are a separate and narrower decision that does not reach these records: a session title summarizes a transcript the archive already holds, while a finding is a claim that exists nowhere but Babel. PostgreSQL never receives plaintext full-text indexes or deterministic ciphertext for search; authorized instances decrypt committed payloads into rebuildable local SQLite indexes.
-
-Immutable entities/events use globally unique client-generated IDs and idempotency constraints. Coordination uses PostgreSQL server time, expiring leases, and monotonically increasing fencing tokens. Each source machine archives only locally available chats under its stable host identity; another instance can browse/fetch committed data but cannot claim that host's publication lease while a valid owner exists. Repository-dependent work records an execution-host constraint.
-
-During a PostgreSQL or Cellar outage, last-synchronized content remains browseable from local cache in read-only mode. Archive objects committed to S3 while PostgreSQL is unavailable remain `catalog-pending`; Phase B outputs remain `pending-sync` and are not globally reviewable or eligible as committed chaos atoms. Reconnection reconciles both idempotently.
-
-Database URLs, encryption keys, and storage credentials remain in Babel's trusted control process and are never exposed to Code, OMP, sandboxes, recipes, browser state, tool arguments, query/bind logs, traces, or diagnostics. Every fully authorized instance can necessarily decrypt the shared corpus; compromise of one has that blast radius. Credential rotation and coordinated PostgreSQL/Cellar/key backups are real operational controls. Per-instance database credentials and their individual revocation are real controls only where the provider issues them: where one credential serves the whole deployment, no database-level control can revoke a single instance, and the honest remaining controls are fleet-wide rotation and repository-password custody. Migration authority is separable by privilege on the same condition; otherwise it rests on operator procedure. Babel offers no application-level substitute for eviction, and the reason is recorded rather than left implicit: any such control would be ordinary DML on `instances`, a table an instance must already write to register itself and refresh its last-seen time, so the least-privileged credential Babel can issue would be able to evict any instance and clear its own eviction. That follows from the grants the mechanism needs rather than from the provider, so it holds under per-instance credentials too. A control whose authority cannot be authenticated would read as containment without being it, so a machine that must stop writing is stopped by rotating the credential, and a retired machine's host slot frees when its lease expires. Whether per-instance eviction should exist at all, enforced by column-level grants rather than convention, is a §14 decision and §12 Phase C work.
+**A run is a stateless worker over that storage.** It reads what is stored, writes back what it
+concluded, and holds no authority and no durable state the storage does not already hold — which is
+what lets a run be posted to any machine, interrupted, restarted or replaced without losing
+anything that was not already written down. Which machine ran a cycle is a fact its receipt
+records, not a place where knowledge accumulated.
 
 Invariants:
 
-- local source sessions and fetched session materializations are never modified;
-- remote archive/evidence objects are never deleted by normal processing;
-- every object, row, and derived result carries a schema version and provenance;
-- Phase A archive truth is the restic repository's committed snapshots, and the PostgreSQL catalog is rebuildable;
-- Phase B output visibility follows object-first/PostgreSQL-last commits and never claims cross-service atomicity;
-- every record Babel produces reaches the shared catalog with no operator action, and the only lawful deferral is a run's own undeclared closure, bounded by proven liveness (§9.1);
-- PostgreSQL leases use server time and fencing; stale owners cannot commit;
-- one process holds each local state-writer lock; read-only views remain available where safe;
-- local SQLite migrations are forward and transactional; PostgreSQL migrations are transactional, serialized, and compatibility-checked; and
-- logs and errors never contain credentials, DSNs, SQL/bind values, payload ciphertext/plaintext, or raw transcript bodies.
+- local source sessions are never modified;
+- archived snapshots are never deleted by any path;
+- every row carries a schema version and provenance;
+- a record is never edited; a correction supersedes;
+- a run may write records, edges, statuses and questions, and may not write a ruling;
+- an assignment's claim is fenced, and a stale holder cannot settle it; and
+- logs and errors never contain credentials, payloads or raw transcript bodies.
 
-All terminal-facing values—including stdout/stderr, logs, diagnostics, previews, titles, paths, and model text—use the same terminal-safe renderer. Malicious fixtures cover C0/C1 controls, ESC/CSI/OSC/DCS sequences, bidi and invisible controls; only an explicit private reveal/export can emit raw bytes.
+## 10. Quality and acceptance
 
-### 9.1 Automatic publication
+Babel evaluates process quality and usefulness without claiming analytical reliability. A strong
+developed hypothesis is interesting, inspectable, provenance-bearing, candid about uncertainty, and
+economical of operator attention. A promoted finding should be specific, connected to supporting
+and conflicting evidence, and clear about temporal limits; confidence never substitutes for
+evidence.
 
-Every record Babel produces reaches the shared catalog without an operator action (operator direction 2026-09-11, decision 87). Publication is the product's responsibility, never the operator's memory: the hourly `archive push` every source machine runs (§10, §12) publishes that host's staged Phase B output as its last step, and the conductor's cycles publish theirs, so a workstation drains itself on the schedule it already keeps rather than when someone remembers it. A command that publishes does exist — `babel sync` — and it exists for diagnosis and for forcing an attempt rather than as the path output travels: no record may depend on someone running it, and a record only the operator's memory would have rescued is a defect in this section rather than a task for him.
+Adapter fixtures are generated and synthetic, and deliberately exceed production: a fixture smaller
+than production is a fixture that lets production break the reader. Generation is deterministic
+from a seed and validated by having the real adapters read it. No real session data enters the
+public repository or CI.
 
-One deferral is lawful, and it is the only one. A run's frontier output waits for that run to declare its closure, because `migrations/0003` fixes a published run's `record_count` at declaration and never lets it move (§14), so a closure declared early would publish a run that afterwards grows past its own declared count, permanently, there being nothing that may amend it. The deferral is bounded by the run rather than open-ended: the wait ends when the run ends, and a run ends either by finishing or by dying. Nothing else defers a record. An outage is not a deferral but a retry — staged output stays visibly `pending-sync` and reconnection reconciles idempotently — and a missing receipt, a released lease, or an expired presence row are not reasons for records to wait. The `catalog-pending` state described above is neither a counterexample nor a second deferral: the records themselves are published — restic holds the snapshot, which is archive truth — and what is missing there is catalog detail about it. That detail is not owed to the operator's memory either, and the archive half of this section is what says so: any host's `archive push` adopts a snapshot no catalog row names, whichever machine produced it, and restores and rescans a `catalog-pending` snapshot to recover the session detail its own push never wrote. Both drains ride the work already scheduled, so the counts fall on the hourly schedule the machines already keep, and no state in the archive waits for a command somebody has to remember.
+The plugin's own gate is the acceptance boundary: types, the test suite, a real pack of every
+manifest, and a `verify` that composes the family on a disposable engine and asserts the store
+exists after the doors have answered and is gone after a purge. It runs on every pull request and
+every push to `main`.
 
-A run's death is proven, never assumed. A run is live while a held lease's process still exists, and live while its latest receipt stands at running or resumed, because a resumed run continues under the same identity and grows; it is dead only where the evidence says so, and each cause is recorded distinguishably rather than collapsed into one sentence with a condition in it. The asymmetry is what makes sealing safe, and it dictates which way to err: a run wrongly believed live costs a delay until the next publication attempt, while a run wrongly believed dead is sealed short of its own output, which `migrations/0003` cannot undo. That is why the absence of a liveness oracle seals nothing — an instance that cannot prove a run over leaves it staged, because no proof is not proof of death.
-
-Abandonment is a recorded event carrying its cause, not a silent cleanup. A sealed closure records why it was sealed — the owning process gone before any receipt was written, a receipt that reached its final state without declaring one, a run whose only surviving trace is the records it staged — and every surface that reports a publication reports the seals and their causes beside it. The operator's reason for requiring that is measurement rather than diagnostics: Babel should never have to abandon work, so every time it does is a measurement of Babel, and the rate of abandonment and the distribution of its causes are readable as data and are legitimate subjects of Babel's own improvement duties (§5.7).
-
-Recovery may not depend on ephemeral evidence, and that rule is written here because breaking it produced the same defect twice. A lease is deleted, a receipt may never be written at all, and a presence row expires by its own advisory contract (§6.5), so a mechanism keyed on any of the three is blind in exactly the case it exists for: the badly-killed process that left none of them behind. The staged records are the durable evidence of the debt — they were committed locally before anything else happened, and they outlive every process that touched them — so reconciliation enumerates what is owed from those records and seals against that.
-
-Automatic means no process is special, and the mechanisms above are not enough on their own to make it true. Publication is the responsibility of whichever Babel process happens to be alive: a long-lived process drains the machine's journal on a bounded interval — the conductor at each cycle boundary, `babel web` while it serves — and every run attempts one bounded drain as it exits, so a run killed before declaring its closure is sealed and published by the next run that finishes rather than by a person who noticed. The hourly `archive push` remains one of those drains and no longer carries the guarantee alone: a machine whose scheduled timer was never installed still publishes everything it produces, because output that depends on a timer somebody had to install is the same defect as output that depends on a command somebody had to remember (§8.4). Measured on 2026-09-12, a workstation running exploration and evaluation lanes with no conductor stranded 300 staged records behind 379 finished runs that had declared no closure, and they published only when the operator ran `babel sync` by hand; that command remains the diagnostic and the way to force an attempt, and it is once again not a path any record travels.
-
-## 10. Quality and acceptance requirements
-
-Babel evaluates process quality and usefulness without claiming analytical reliability. A strong developed hypothesis is interesting, inspectable, provenance-bearing, candid about uncertainty, and economical of operator attention. A promoted finding should be specific, connected to supporting and conflicting evidence, and clear about temporal/reality limits; confidence never substitutes for evidence.
-
-Adapter fixtures are generated and synthetic. Each harness has contracts for discovery, catalog metadata, description behavior, raw-log round trip, selective retrieval, malformed inputs including torn lines, and explicit metadata-completeness degradation. Synthetic transcript and credential sentinels cover every captured stdout, stderr, log, and journal surface; this proves no leakage of known sentinels, not unknown secrets. No real session data enters the public repository or CI.
-
-Archive integration tests start with populated source trees and no Babel state to prove full bootstrap/backfill rather than change-only ingestion. Against the real restic binary and a local-path repository they prove: push captures every adapter backup root, including OMP's blob store; an appended session deduplicates, with added bytes bounded by the change; old and new captures are independently restorable byte-exactly by snapshot ID; the default and `--deep` verify tiers distinguish structural health from full data verification against injected pack corruption; an interrupted backup never yields a partial snapshot, while a backup completing with unreadable files yields a visibly incomplete snapshot and a failing exit; and fetch materializes a session's primary log, artifacts, and resolved blobs byte-exactly and idempotently, while local prune never touches the repository.
-
-Phase A is not complete with fixtures alone. Before real deployment it configures the Cellar restic repository and Clever Cloud PostgreSQL through the unified shared storage document, creates the repository once with `babel archive init`, migrates with whatever credential the provider grants for schema change, and completes manual bootstrap from the primary Linux workstation: real pushes covering all three harnesses against Cellar, catalog rows committed and reconciled, all three harnesses visible to the headless commands and the web shell, one session per harness selectively fetched and byte-verified from a snapshot, and no known transcript or credential sentinel emitted. A second independently configured Babel instance must browse the shared catalog, fetch a session archived by the first host, lose and rebuild its local SQLite cache, and recover cleanly.
-
-That two-instance requirement is satisfied as a test against a local-path repository and a throwaway TLS PostgreSQL (2026-08-29): two instances with separate HOME, XDG configuration/data/cache, host identity, and instance id, sharing one repository and one catalog, prove independent configuration with a single migration, catalog browse by an instance that has never published, cross-host listing and byte-exact fetch in both directions, local-cache loss and field-for-field rebuild with the shared view and retained materializations unaffected, a contended publication lease deferring rather than failing or stealing, and adoption of the stranded snapshot by the next push with monotonic publication order. What that does not cover is the provider: the same scenario against the real Cellar repository and the real managed PostgreSQL remains outstanding, and the gate is the deployment's, not the test's.
-
-The terminal surface is verified as an actual terminal. Bare `babel`'s offline status overview and every headless command are checked against malicious terminal-control fixtures, long titles and paths, missing best-effort metadata, empty and error states, the stdout/stderr split, and the real expected session count. A Bubble Tea TUI is deferred by decision 12, so this specification claims no terminal layout, focus-visibility, or keyboard-navigation contract; reviving the TUI reinstates one.
-
-The Phase A web shell is browser-driven against the actual server. Acceptance covers Home/Sessions/fetch/lock-stop behavior, narrow and wide layouts, keyboard navigation, malicious HTML/Markdown/URL/control fixtures, `Host`/`Origin`/CSRF/DNS-rebinding rejection, fragment-only delivery of the bootstrap nonce and its absence from every URL path, query string, and cookie, the §2.7 exchange itself — one real browser bootstraps and a second browser is refused the same launch link, and the credential it holds is read out of the browser's cookie store rather than out of the page, because `document.cookie` cannot see it — `no-store` responses, CSP/no-remote-assets/no-service-worker enforcement, and proof that no known transcript or credential sentinel reaches URLs, browser history, server logs, or cached responses.
-
-Shared-infrastructure acceptance is a pre-deployment gate, and it is partially satisfied. Proven against the real Clever Cloud add-on (2026-08-29): the credential privilege level the provider actually grants, detected and reported rather than assumed, and TLS behavior including a provider whose certificate cannot be verified, where `verify-full` is refused rather than silently downgraded. Proven against a local-path repository plus a throwaway TLS PostgreSQL: provider-neutral local mode, server-time fenced host leases, snapshot-committed/`catalog-pending` database outage recovery, two-instance catalog browse, cross-host fetch, and cache rebuild, and both archive drains of §9.1 through the shipped `archive push` — a snapshot stranded by another host adopted under that host's own publication order, and a `catalog-pending` snapshot restored and rescanned back to the same session identities its owning host had published, with the restore area gone afterwards. Proven against the real Cellar repository (2026-08-29, synthetic fixtures): Babel could not reach any object store before that day, because the restic child environment is a strict allowlist that carried no access key and the storage document had nowhere to put one. With `repository_store` in the document, `archive init` created the repository, a push committed a snapshot and published its session rows to the real managed PostgreSQL, `verify` passed over S3, a second independently configured instance browsed the catalog and listed and fetched the first host's session, and restic alone restored every file byte-identically with no Babel and no PostgreSQL involved. The remaining Cellar work is the real three-harness bootstrap with actual sessions, which waits on the freeze. Not satisfied at all: database-enforced application-role isolation and migration-role separation, which the first provider cannot express and which are therefore documented as absent rather than proven; genuinely concurrent writers, as opposed to the idempotency and lease-contention paths that are tested; complete PostgreSQL catalog rebuild from the repository snapshot list plus source rescans, as opposed to the per-snapshot adoption and restore-and-rescan that are proven; coordinated PostgreSQL/repository/config-key backup documentation, including restic repository password custody; and an hourly user timer on each enabled source host after manual bootstrap.
-
-Managed-provisioning acceptance is a pre-deployment gate. Babel's boundary is the provider-neutral, stdin-only storage handoff: atomic configuration replacement, previous-config preservation on invalid input or interrupted activation, and no credential disclosure. The fleet substrate owns credential custody and placement, migration-credential ephemerality wherever a separate credential exists, secrecy across build artifacts, argv, environment captures, temporary files and logs, credential rotation, and scheduling only after shared-storage/bootstrap health passes. Its implementation and operational acceptance belong to `atyrode/dotfiles`; Babel does not prescribe or invoke a vault tool.
-
-Phase A rollout acceptance records the exact Babel source revision, locked Nix derivation/output path, `babel version --json` result, storage-schema version, dotfiles revision, and activation time. That record is the operator's, kept outside this repository: it names a specific deployment's buckets, databases, hosts, and snapshots, none of which are product surface. The Linux user units are exactly `babel-archive.service` and `babel-archive.timer`; the timer uses `OnCalendar=hourly` and `Persistent=true`, and the oneshot service executes Babel through its absolute pinned Nix-store path rather than `PATH`. Acceptance proves a missed run executes after login, overlapping activation is fenced, and the first timer run cannot precede bootstrap health.
-
-Phase B uses generated fixtures plus private operator-reviewed corpora spanning all three harnesses. Evaluation records useful novel-candidate yield, reviewer attention cost, unsupported claims, duplicates, evidence diversity, temporal-status mistakes, retrieval/tool value, sandbox containment, and adapter coverage. It defines machine-checkable minimum evidence contracts for observations and findings, model-supplied classifications, and Babel versus human evaluator responsibilities. It does not treat disagreement with a creative hypothesis as a product failure by itself. Code integration tests use a fake executable and structured events; sandbox and broker tests require no real provider or credentials.
-
-Phase B is not complete with fakes alone. It must pass the Code capability/version handshake, exact broker protocol, shared-state security/commit, and challenger/synthesizer gates; run at least one real configured-profile exploration and live containment/escape scenario in every enabled sandbox backend, with analysis disabled on any platform whose backend has not passed; execute a harmless repository experiment; retrieve brokered public evidence; preserve uncategorized and descendant hypotheses; demonstrate a critical challenger changing or preserving a conclusion with unresolved objections intact; demonstrate append-only review across hypotheses/findings/proposals and an atomic reject-and-refine operation with lineage; prove refinement prompts and structured results cover `none`, `alongside`, and `instead` durable-learning assessments without silently authorizing memory; commit and browse the required client-side-encrypted PostgreSQL rows and encrypted Cellar objects from a second Babel instance; show outage-staged output as `pending-sync` and idempotently synchronize it; restore a coordinated PostgreSQL/Cellar/key fixture; export raw run/hypothesis/observation/finding/proposal JSON and Markdown; cancel a live investigation without orphan processes; and verify that sandbox commands cannot read host files, database/provider credentials, encryption keys, agent sockets, or direct network destinations. Dependency-aware pruning applies to local materializations while authoritative remote evidence remains retained; richer retention UX remains Phase C.
-
-Phase B Reality acceptance proves stable entity identity across repository rename/path/chat aliases; reversible merge/split; as-of and current fact queries; trusted-source predicate limits; TTL staleness and conflict handling; raw-answer durability; answer-interpreter retry; one-plan atomic acceptance/rejection; no model-authorized fact mutation; prioritized/deduplicated questions; context snapshots in receipts; and preservation of hypotheses when focus policy defers expensive investigation. It includes one operator-answer flow and one versioned dotfiles inventory import covering project lifecycle plus service-to-host reality.
+A change to a surface is proved on the preview hub, by using it. Production is installed by the
+operator, by hand.
 
 ## 11. Failure behavior
 
-- A source changing during capture yields a crash-consistent file, never a claimed stable one; parsers tolerate torn lines and the next snapshot supersedes it.
-- An interrupted backup publishes no partial snapshot; a re-run uploads only chunks the repository does not already hold, and the repository remains valid throughout.
-- A push against a missing repository fails and names `babel archive init` rather than creating one, and leaves nothing behind; a repository that exists but does not open reports that instead, because initializing over it would answer a credential problem destructively.
-- An unavailable archive leaves the last complete local catalog browsable and marked stale.
-- A failed or cancelled fetch leaves no claimed session materialization and preserves prior data.
-- Repository damage is detected by `verify` (structural) or `verify --deep` (every byte); never-pruned history plus restic's repair tooling bound the loss, and Babel never masks a failed check.
-- Unsupported or changed Codex/Claude formats preserve raw logs and mark metadata/normalization incomplete.
-- Missing or incompatible Code disables inference only; archive and deterministic preparation continue.
-- A missing saved profile or material policy change pauses scheduled inference until reauthorized.
-- Worker or refinement failure records the exact failed run and preserves independent successes and originals; an unavailable durable store leaves newly staged output visibly `pending-sync` rather than globally committed.
-- A PostgreSQL outage after a backup leaves the snapshot uncatalogued; the next `archive push` from any host adopts it from the repository snapshot list, restoring visibility, ordering, and restic's counts without republishing bytes, and attributing the row to the host restic recorded under that host's own publication order and lease. The adopted row arrives `catalog-pending`, because its record of which sessions the snapshot held was never written and is not derivable from the list; the same push restores and rescans a bounded number of such snapshots to recover exactly that, so the state resolves itself on the hourly schedule rather than waiting for the machine that took the snapshot or for a command the operator has to remember (§9.1). A snapshot that cannot be restored or described keeps the state, is reported per push, and is retried by the next one; one such snapshot never blocks the others. Two residues are real and are reported rather than papered over: a snapshot holding only a harness this binary does not read completes with no session rows, exactly as an ordinary push of that machine would, because the harness set is one declaration and an unread tree is invisible to it; and a snapshot holding a session whose harness `sessions.harness` does not admit is refused rather than completed short of it, since a `session_count` including a row the schema cannot store would be a number no reader could reconcile — widening that enum is a migration against a frozen schema (§14), not a behaviour the drain may assume.
-- A Cellar outage prevents new snapshots; PostgreSQL never references a snapshot restic did not report committed.
-- A failed credential handoff, validation, or configuration rotation preserves the previous valid `storage.json`, emits no secret, and does not enable or restart the archive timer with partial state.
-- Hosted inference is refused if disclosure preview or redaction cannot complete.
-- A hypothesis with missing or invalid provenance remains a visibly degraded candidate and cannot be promoted to a provenance-bearing finding.
-- Partial session, repository, experiment, or research coverage is prominent; Babel never presents it as universal analysis.
-- A local subject absent on the machine a run is scheduled on is refused rather than guessed (§3.1), and a repository read leaves no trace inside the operator's checkout whatever the failure: no fetch, no checkout, no worktree, no lock.
-- A watched subject whose fingerprint has not moved draws nothing (§7); a subject that moves many times within its cadence draws once, and the conductor's ceilings park the loop, with a reason, before a watch storm can exceed them.
-- No failure path falls back to remote deletion, whole-corpus download, unapproved provider selection, host mutation, direct network access, or issue publication.
+- A source changing during capture yields a crash-consistent file, never a claimed stable one;
+  readers tolerate torn lines and the next snapshot supersedes it.
+- An interrupted backup publishes no partial snapshot; a re-run uploads only chunks the repository
+  does not already hold.
+- A backup against a missing repository fails and says so rather than creating one; a repository
+  that exists but does not open reports that instead, because initializing over it would answer a
+  credential problem destructively.
+- Unsupported or changed Codex and Claude formats preserve raw logs and mark metadata incomplete.
+- A session that sealed no transcript submitted nothing: it settles at zero with the closure the
+  job itself reported, and is counted as skipped rather than failed, because a streak of operator
+  stops is not a broken lane.
+- A refused answer is spend: the receipt carries the cost and the refusal's code, and nothing is
+  written.
+- A run Babel cannot read is retried once and then closed with that sentence and its claim
+  released, rather than asked about on every wake for ever.
+- A run whose material is no longer readable is refused rather than admitted: a result checked
+  against nothing is an unverifiable claim recorded as a verified one.
+- A hypothesis with missing or invalid provenance remains a visibly degraded candidate and cannot
+  be promoted.
+- Partial coverage is prominent; Babel never presents it as universal analysis.
+- A local subject absent on the machine a run is scheduled on is refused rather than guessed, and a
+  repository read leaves no trace inside the operator's checkout whatever the failure.
+- No failure path falls back to deletion, whole-corpus download, unapproved provider selection,
+  host mutation, or publication.
 
-## 12. Delivery sequence
+## 12. What is not built
 
-### Phase A: prove the archive-backed public product shell
+This specification states what Babel is and, where a capability is designed and absent, says so at
+the point it is described. [`docs/parity.md`](docs/parity.md) is the single list: one row per
+capability the standalone product had, each present, absent by decision with the reason, or absent
+with the issue that tracks it. A capability that is absent is absent in writing.
 
-- add the MIT-licensed Go module `github.com/atyrode/babel`, its headless command surface, synthetic fixtures, and static release builds matching Code's Linux/Darwin amd64/arm64 platforms;
-- adopt restic as the archival engine behind a narrow injected wrapper of eleven verbs (`init`, `cat config`, `backup`, `snapshots`, `check`, `dump`, `ls`, `restore`, `list locks`, `cat lock`, `unlock` — `cat config` distinguishes a missing repository from an unopenable one, `ls` enumerates a snapshot for selective retrieval, the three lock verbs serve the operator-typed `archive unlock` and reach only restic's own coordination state, and no verb in the set can delete or rewrite archived data), pin its version range in dotfiles, and record the never-forget/never-prune retention policy plus the crash-consistent capture model;
-- implement staging-free Discover/Describe adapters for OMP, Codex, and Claude Code, including raw logs, best-effort metadata, artifact closure, and per-adapter backup roots;
-- capture OMP sibling artifacts and the content-addressed blob store as backup roots;
-- provision the Cellar restic repository plus Clever Cloud PostgreSQL through one provider-neutral shared storage document supplied by dotfiles;
-- implement the Phase A PostgreSQL schema, migrations, credential-privilege detection, server-time fenced host leases, idempotent shared catalog, fleet-wide snapshot-to-catalog reconciliation, restore-and-rescan completion of `catalog-pending` snapshots, and catalog rebuild;
-- build the rebuildable local SQLite catalog/cache and private session materialization store;
-- implement bare `babel`'s offline status overview plus the all-harness catalog, metadata detail, explicit selective fetch, selection-scoped local prune, crash/outage recovery, and local-web lifecycle controls;
-- implement the embedded TypeScript/React thin web shell with Home, Sessions, shared storage health, metadata detail, fetch, and lock/stop;
-- implement headless storage/push/status/verify/list/inspect/fetch/web commands with local development/recovery selection;
-- prove local-path repositories first, manually bootstrap the primary Linux workstation, pass the real Cellar/PostgreSQL and two-instance acceptance, then enable the hourly user timer on each approved source machine;
-- package Babel as a commit-pinned Nix dependency in dotfiles; and
-- retire the old backup job once all three adapters, shared reconciliation, and the replacement timer are proven.
+Two gates remain, and they are the operator's:
 
-The Phase A Linux rollout contract is declarative and reversible. Dotfiles locks the Babel source revision and Nix derivation hash, renders `babel-archive.service` and `babel-archive.timer`, and records the realized executable path in bootstrap evidence. Activation configures and verifies storage first, creates the repository once per deployment with `babel archive init` — no other command creates one, so an activation that skips this step fails its first push with `no repository at <locator>` — performs the manual bootstrap/backfill and two-instance checks, then enables the timer. Rollback disables/stops the Babel timer, reactivates the immediately preceding successful dotfiles/Home Manager generation, and never deletes Babel snapshots or rewinds the shared catalog. Once the pre-Babel job is retired there is no second automated copy behind Babel, so a disabled timer means no automated archive until it is re-enabled; existing snapshots stay restorable with the restic binary alone and the sources stay on disk. A generation from before that retirement still carries the old job, so reactivating one reinstates an archiver Babel does not coordinate with. A replacement version must pass the same manual gate before its timer is re-enabled.
-
-This phase contains no model inference or transcript viewer. Local coding and synthetic fixture work precede the shared-deployment gates (§14); publication to the shared Cellar repository begins only after they pass.
-
-### Phase B: prove open-ended contained exploration
-
-- normalize OMP, Codex, and Claude Code logs into the common event/provenance model, preserving opaque unsupported records;
-- build provenance-preserving full-text/structured retrieval, relationship links, the durable hypothesis frontier, and the mandatory hypothesis→observation→finding→proposal path;
-- implement stable Reality entities/aliases/relationships, immutable temporal facts, explicit source authority, trusted versioned inventory import, context snapshots, deterministic focus rules, and the prioritized Reality Inbox;
-- implement durable freeform question/answer records and the Code→OMP Answer Interpreter, with reviewable multi-action plans and operator acceptance required for authoritative fact/entity/policy changes;
-- implement automatic deterministic preparation, sensitive-data preflight, immutable preparation IDs, and machine-checkable evidence minima/classifications with Babel and human evaluator roles;
-- pass Code's versioned runtime-report and native OMP RPC compatibility gates, using Code's generic profile configuration and contained engine modes;
-- implement ephemeral repository snapshots, bounded command/test execution, resource controls, cancellation, and complete tool receipts;
-- pass the exact declassification-aware broker protocol gate for public research and pinned public-repository materialization;
-- ship open discovery, all eight non-exhaustive lens definitions, five default-enabled baseline lens recipes, three draft lenses, three operator-authorized self-improvement duty recipes, and off-by-default chaos runs with marked/blind atom presentation;
-- run broad discovery through a supervised Code→OMP worker, persist every candidate before sorting, require a separate critical challenger before promotion, synthesize exploration and critique without default agreement, and allow investigations and distinct refinement runs to emit immutable descendants;
-- extend the existing shared PostgreSQL/Cellar foundation with client-side-encrypted analysis, Reality, question, output, review, refinement, run, receipt, and evidence records through the Phase B object-first/PostgreSQL-last protocol;
-- expose globally browseable committed state and visibly pending-sync, idempotently recoverable outage staging; surface scope/capability grants, preparation/refinement/answer-interpretation status, exploration progress, frontier lineage, receipts, hypotheses, observations, findings, review history, Reality context, questions/plans, evidence, remote commitment, and pending-sync state through the headless commands;
-- implement the rich React web areas for Explore, Hypotheses, Reality, Cookbook, and Review over the shared application services — since 2026-09-02 only as far as they carry over to the plugin, their plugin form being Phase M's;
-- implement the host-independent runs projection and the runs interface over it (§8.3, `docs/runs-interface.md`): every run creatable, trackable live, cancellable and traceable from the UI, conductor cycles included, fleet-wide;
-- implement repository subjects and focus/context preparations (§3.1, §4.9): the three read modes as run-kind choices, disposable `git archive` materialization that never touches the checkout, secret preflight over repository content, host-scoping, recipe focus kinds, and the conductor's watches rung with its per-subject cadence;
-- implement private review across hypotheses/findings/proposals, append-only decisions, attributed operator context, Reality Questions/plans, and raw run/hypothesis/observation/finding/proposal JSON and Markdown export;
-- run a self-analysis over Babel's own pinned repository, specification, cookbook, and prior analysis artifacts; and
-- keep inference explicit by default.
-
-### Phase C: operationalize and integrate
-
-- expand the approved source-host rollout and verify hourly archive, shared-catalog, and reconciliation health across the managed fleet;
-- add richer local retention/prune UX and operational health review;
-- decide whether per-instance eviction should exist, and where a provider permits creating database users add per-instance database-role revocation with column-level grants that reserve an eviction column to an operator role, so the control is database-enforced rather than an unauthenticated convention (§9); plus payload-key rotation, coordinated PostgreSQL/Cellar/key backup and restore drills, and monitoring;
-- expose continuation capture/preflight APIs and integrate Code's Cloud Sessions **Continue here** flow for OMP;
-- add sanitized destination projections such as issue-draft export and the agent brief (§4.6);
-- add the recall interface (§4.10): `babel recall search` and `babel recall show` over the worker's own retrieval and selective fetch, the shipped skill text, the recall request record, and the dotfiles exposure — gated in §14; and
-- add opt-in scheduled analysis using a named Code profile with policy guards.
-
-### Phase M: become manifold's plugin
-
-Placed here by availability rather than by dependency (operator decision 2026-09-02, §2.8): its Babel-side prerequisites — the runs projection and the subject model — are Phase B work, its fleet rollout is Phase C work, and the conversion itself begins when manifold's dynamic plugin loading exists (declared, unscheduled), whichever phase Babel is in at that moment. It is tracked in `docs/manifold-transition.md`.
-
-- file the manifold prerequisites as manifold issues carrying their state, and keep them filed rather than worked around: dynamic/out-of-tree loading (declared), a typed exec/job primitive on the machine channel (absent), settings kinds beyond boolean (boolean-only), a plugin-declarable continuous stream channel (absent), a capability vocabulary that can name Babel's authority domains (closed), machine-scoped grants (absent), and a supervised long-running primitive for a plugin's server half (absent) — states and citations in §14;
-- publish the `babel.<x>` plugin package from `atyrode/babel` once loading exists: the server half a client of the hub's Babel instance, the web half rendering §8.2's areas over the same projections the shell renders, and no code vendored into manifold;
-- enroll: Babel on each machine is an agent-kind principal whose scoped token reaches the machine under §2.3's secrecy rules by a mechanism `docs/manifold-transition.md` settles; the hourly archive push and `babel conductor run` stay OS-supervised; per-machine work moves onto the machine channel only when the exec primitive exists;
-- request permissions per machine and expose, per machine, what Babel does and aims to do there — back up sessions, observe repositories, run analysis — as declared actions and settings;
-- add the storage placement setting once settings kinds allow it, over §9's interfaces, with Clever Cloud outbound as the placement that runs today;
-- render the runs console (§8.3) fully in the plugin, with milestone events plus polled state as the labelled interim until the stream channel exists; and
-- retire `babel web` when the plugin is proven: the loopback listener, the nonce exchange and the lock/stop control go with it, and manifold's authenticated hub is the only UI host.
-
-Two bullets move under this phase from earlier ones: Phase B's rich web areas continue in the shell only as far as they carry over and are finished here as plugin surfaces; Phase C's rollout across the managed fleet becomes rollout across manifold's enrolled machines. Nothing else in Phases B–D changes place, and no bullet here grants Babel permission to publish or apply proposals.
-
-### Phase D: deepen the feedback system
-
-- tune frontier scheduling, clustering, contradiction exploration, optional semantic retrieval, and controlled chaos-atom experiments;
-- improve Babel-on-Babel meta recipes and analyze the analysis process longitudinally;
-- implement the approved full-lifecycle evaluation system (§§4.12, 5.8, 8.5), replacing proposal-only triage as an active policy without fabricating votes from its historical advice; specification and acceptance plan: `docs/evaluation-lifecycle.md`;
-- turn selected review outcomes into curated evaluation material without converting model output into independent evidence;
-- compare interaction quality before and after accepted improvements;
-- explore authenticated private-remote materialization only with a credential-isolating broker — since 2026-09-02 the GitHub-remote read mode of §3.1 is its first concrete demand, under the same gate; and
-- explore Codex/Claude continuation only if their formats and target launchers support it.
-
-No phase grants Babel permission to publish or apply its proposals.
-
-## 13. Decisions recorded by this audit
-
-1. Babel is a public MIT-licensed Go application at module path `github.com/atyrode/babel`; the embedded TypeScript/React web application is the primary surface and the terminal dependency stays minimal (Bubble Tea and `atyrode/cli-kit` enter only if the deferred TUI is revived). Revised 2026-09-02 by decision 60: the embedded web application is the transitional surface, and the primary surface is the manifold plugin's rendered UI.
-2. Babel is harness-agnostic across OMP, Codex, and Claude Code for backup, cataloging, selective retrieval, normalization, and analysis.
-3. OMP is the highest-fidelity adapter; Codex/Claude preserve raw logs and report best-effort metadata completeness rather than being omitted.
-4. Babel uses a clean restic repository under its own prefix and ignores the legacy remote archive: the legacy data was never listed, imported, migrated, or preserved by Babel. Whether a deployment keeps or deletes its legacy data afterwards is the operator's call, not Babel's: no Babel command reads, writes, or removes it.
-5. Babel exposes one logical storage backend composed of PostgreSQL for shared structure/coordination and a shared restic repository for immutable archive bytes; the external `restic` binary provides encryption/deduplication/transport, and a local-path repository plus SQLite supports development and recovery.
-6. Archival is delegated to restic (operator decision 2026-08-27), replacing the audited bespoke `babel/v1` object contract; local development needs no gate, and shared deployment is gated by §14.
-7. Source machines snapshot their local source roots hourly under stable host identities; snapshots are per-host, append-only, and never rewritten.
-8. Push results report per-adapter backup-root coverage; host display names are catalog rows where the newest value wins. Implemented 2026-08-30 in `migrations/0004`: `babel.hosts` carries `display_name` alongside the machine's operating system and architecture, every push asserts them, and each field is coalesced so an empty assertion is silence rather than an erasure. Newest-wins is an update and not an append - one row per host, holding only the current name, with `identity_updated_at` recording when it was last asserted and `created_at` serving as the host's first-seen time. No superseded name is retained anywhere.
-9. Session identity is host/harness/adapter-defined source identity; historical captures are addressed by restic snapshot ID, and bare selectors choose the latest snapshot.
-10. Dotfiles commit-pins Babel through Nix, provides stable host/instance identity, retrieves secrets, pipes one storage document into Babel, and enables an hourly user timer only after manual bootstrap acceptance.
-11. V1 never deletes remote data — Babel never runs `restic forget` or `prune`. Explicitly fetched session materializations persist locally until explicit prune.
-12. The web interface is the primary interactive surface and bare `babel` is a minimal offline status overview (operator decision 2026-08-28, revising the earlier TUI-first record); Phase A catalogs all three harnesses and remains metadata-only despite its shared infrastructure. Revised again 2026-09-02 (decision 60): the primary interactive surface is the manifold plugin's UI and the web interface named here is the transitional shell; bare `babel` and the headless commands are unchanged.
-13. The first deployed Phase A uses Clever Cloud PostgreSQL plus a Cellar restic repository, proves two-instance catalog/fetch/rebuild behavior, and requires a gated real three-harness round trip.
-14. Babel is an exploratory instrument, not a reliable automated auditor; it guarantees containment, provenance, reproducibility metadata, and no mutating/publishing external effects rather than correctness of ideas.
-15. Discovery has an open hypothesis space. Every candidate is preserved before post-hoc sorting, and finite runs checkpoint a durable recursive frontier.
-16. Observations are provenance-bearing claims over session, repository, experiment, or research evidence; candidates develop only through hypothesis→observation→finding→proposal.
-17. AI exploration of normalized material from every source harness requires compatible Code→OMP; Babel has no direct-OMP fallback, provider clients, or generic analyzer plugin system in v1.
-18. Code owns saved analysis profiles and provider/model/thinking policy; Babel owns the ephemeral sandbox, capability grants, evidence brokers, hypothesis lineage, receipts, and review.
-19. The sandbox may mutate disposable clones and run tests but cannot access credentials, mutate source repositories, push, publish, or use direct network access.
-20. Phase B includes brokered unauthenticated public research and pinned public repositories; private remote credentials never enter the worker.
-21. Babel ships shared investigation policies and non-exhaustive lenses, supports arbitrary uncategorized hypotheses, and can analyze Babel and prior analyses themselves.
-22. One Code profile applies to a run. Preparation is automatic; inference is explicit unless an operator enables a guarded schedule.
-23. Cross-machine **Continue here** creates a new local OMP fork from an immutable verified snapshot; exact machine/workspace restoration is not promised.
-24. Analysis/review/refinement never publishes issues, mutates source repositories, or applies remediation.
-25. Chaos is an explicit off-by-default run type linked to a clean control. Any durable entity revision can be an atom with exact lineage, but it is stimulus only; recursive model/ancestor/descendant reuse never becomes corroboration.
-26. The canonical output is a private proposal with suggested destinations; Phase B exports raw private artifacts, while Phase C adds sanitized projections such as self-contained GitHub issue drafts.
-27. Review and refinement are durable, browseable, append-only, and lineage-preserving: reject never deletes, operator context is guidance rather than evidence, and reject-and-refine atomically records rejection plus an authorized independent descendant run.
-28. Shared infrastructure begins in Phase A: the restic repository's committed snapshots are recoverable archive truth and PostgreSQL is the rebuildable global catalog/coordination plane. Phase B extends PostgreSQL plus encrypted Cellar into the visibility boundary for globally browseable analysis, Reality, question, review, refinement, and lineage state.
-29. A hypothesis can be promoted to a finding only after a deliberately skeptical, logically separate challenger pass; the final synthesizer evaluates both exploration and criticism without defaulting to agreement and preserves unresolved objections.
-30. Babel models non-GitHub context through stable entities and an append-only temporal Reality Ledger, not freeform global memory; only operator actions and predicate-scoped trusted imports authorize facts.
-31. Discovery persists ideas before context affects focus. Immutable context snapshots and explicit rules may defer expensive investigation or targeting without deleting hypotheses; lifecycle and ownership never silently imply policy.
-32. Reality Questions are first-class outputs. Every freeform answer is retained and interpreted by a versioned Code→OMP agent into a reviewable multi-action plan; authoritative fact/entity/policy changes require operator acceptance and issue publication remains impossible.
-33. The TypeScript/React local web UI is both the operational and the rich exploration/review surface, and the terminal stays headless. Decision 12 revised this: the original split made a TUI the operational surface. Phase A ships a thin on-demand loopback-only web shell; Phase B adds Reality and analysis workflows. Revised 2026-09-02 (decision 60): both roles pass to the plugin-rendered UI inside manifold, and the local web UI stays only until the plugin is proven.
-34. The web server has no v1 remote/LAN/persistent mode and enforces `Host`/origin/CSRF checks, no-store, restrictive CSP, no external assets/service worker, universal untrusted rendering, and explicit lock/stop. Its session bootstrap is the §2.7 exchange (built 2026-08-31, issue #72): each launch mints one 256-bit nonce, delivers it in the launch URL's fragment so it never reaches a request line, and the page posts it once in a request body and receives a rotated host-only `HttpOnly; SameSite=Strict` session cookie. The nonce dies on first use and expires two minutes after the launch; the session is the only credential the API accepts, and it is accepted from its cookie alone — a bearer header, a query parameter, or a differently-named cookie is refused, which is what keeps the guarantee checkable rather than conventional. The consequence is the reason the exchange exists: the live credential is unreachable from JavaScript, so a future cross-site-scripting hole or a compromised frontend dependency can act as the session while the page is open but cannot read it out and use it elsewhere, which is the difference between a bug in the page and a stolen credential. Two residuals are stated rather than buried. `Secure` is absent because the origin is `http://` on loopback, where engines disagree about honouring the attribute and no network path exists to downgrade, which also rules out the `__Host-` prefix; and cookies are not isolated by port, so another local server can overwrite the cookie and cost the operator a relaunch without ever forging a valid one. The controls around it are unchanged: `default-src 'self'` with no remote assets and no service worker, no HTML-injection sink in the frontend, revocation on lock/stop, and a listener that dies with the process. This revises the record it replaces, which described a single per-launch bearer token held in `sessionStorage` for the process's lifetime.
-35. The first deployment is multi-machine shared mode, not a hosted Babel service: each authorized machine runs its own binary and loopback web UI, archives only local chats, and connects directly to the common storage backend. Revised 2026-09-02 (decisions 60 and 68): each machine still runs its own binary and connects to the common backend; the UI host becomes manifold's hub, and the hub runs a Babel instance like any other machine.
-36. The operator deployment uses Clever Cloud Cellar and managed PostgreSQL; provider compatibility remains S3 plus PostgreSQL rather than Clever Cloud-specific APIs.
-37. Development and rollout are staged: local fixtures first, manual primary-Linux bootstrap second, two-instance shared acceptance third, then hourly timers on approved source machines; Phase B capabilities build on the Phase A shared foundation.
-38. Managed fleet provisioning is dotfiles-specific: an explicit Bitwarden unlock/retrieve/relock flow pipes common storage/key material plus each instance's catalog credential to Babel over stdin, atomically configures it, and gates the hourly timer; Babel remains vault-agnostic.
-39. Every refinement agent must assess whether reviewer feedback is output-specific, should produce a separate durable-learning proposal alongside a revision, or should produce durable context instead of a replacement output; no proposed memory becomes authoritative without destination-appropriate operator review.
-40. Archival is restic's: encryption, content-defined deduplication, snapshot format, and integrity checking. Babel wraps eleven verbs behind an injected port — `init`, `cat config`, `backup`, `snapshots`, `check`, `dump`, `ls`, `restore`, `list locks`, `cat lock`, `unlock` — and never invokes `forget`, `prune` or `repair`. The set has grown twice, and each addition is recorded rather than absorbed: `cat config` probes every `Require` and `Init` path because §11 requires a missing repository to be distinguishable from one that exists but will not open; `ls` reads snapshot tree metadata for §6.2's selective retrieval; and the three lock verbs (2026-09-01, issue #108) serve `archive unlock`, the operator-typed command that clears the lock an interrupted command strands — the papercut being that bare `restic unlock` reads nothing from Babel's `storage.json`, so an operator with a blocked `archive verify` had no Babel-plumbed way through. All of them go through the same minimal-environment, no-password-in-argv command builder as every other verb. The invariant to check against the code is not the count: no verb in the port can delete or rewrite archived data, the one verb that removes anything reaches only restic's own lock files, and nothing autonomous invokes it.
-41. Captures are crash-consistent per file, not transactional across files; parsers tolerate torn lines, the next hourly snapshot supersedes, and continuation-grade claims require adapter-verified closure at read time.
-42. `archive verify` is tiered: the default runs restic's structural check; `--deep` reads and verifies every repository byte.
-43. The session catalog is built from live local sources by adapters and shared via PostgreSQL; it is rebuildable convenience state, never archive truth.
-44. Adapters declare backup roots separately from discovery roots; OMP's backup roots include the content-addressed blob store so every snapshot holds a continuation-grade closure superset.
-45. Privacy masking is not a Phase A deliverable. It is a screen-visibility convenience rather than a security control, and workspace names leak through readable session selectors regardless of masking. The explicit lock/stop control remains required.
-46. Clever Cloud's managed PostgreSQL cannot create database users (provider confirmation, 2026-08-28), so shared mode's supported default is one credential for the whole deployment. Babel never creates database roles on the operator's provider. Consequences are recorded rather than softened: schema change is restrained by operator procedure instead of by privilege; a single instance cannot be revoked at the database level, and credential revocation is a fleet-wide re-key. Babel ships no application-level substitute, because any control built on the grants an instance already needs could be exercised and undone by every instance that holds them (§9, operator decision 2026-08-29); whether to build a database-enforced one is a §14 decision. Database-enforced role separation remains supported where a provider permits creating users, and granting least privilege to a provider-created user is untested on Clever Cloud and may not be relied on until proven against the real add-on.
-47. Babel owns a PostgreSQL schema rather than sharing one (operator decision 2026-08-29). Every catalog object lives in `babel` and connections pin `search_path` to it, because Clever Cloud's managed PostgreSQL pre-installs extensions whose relations occupy `public` and would otherwise make the plaintext allowlist unenforceable. The migration credential must therefore be able to create a schema, which the first deployment's credential is observed to permit.
-48. Catalog transport is encrypted but unauthenticated on the first deployment (observed 2026-08-29, accepted by the operator). Clever Cloud's certificate is self-signed and carries no subject-alternative name, so `verify-full` cannot succeed there and `require` is the honest setting; the exposure is recorded in §9 rather than papered over, and it is bounded by Phase A sending only opaque identifiers, ordering, counts, commit state, and timestamps. `verify-full` stays supported and proven for providers that authenticate their servers.
-49. Creating the restic repository is an explicit one-time act, not a side effect of backing up (2026-08-29). `babel archive init` creates it and no other command does. Two reasons, and the second is the wider one. restic generates a master key per `init` and writes the key before the config, so two inits racing on an empty repository both succeed and leave two valid keys with one config; restic then selects a key by iteration and refuses the repository as damaged when it picks the wrong one (measured against restic 0.19.1: 10 of 10 races left two keys, 7 of 10 subsequent backups failed). Unattended hourly timers on two machines are exactly that race. Separately, silent creation would turn a mistyped repository locator into a second, empty archive that keeps accepting pushes while the real one appears to stop growing - a failure that reports success. A push against a missing repository therefore fails and names `init`, and a repository that exists but does not open is reported as that rather than as needing initialization, because initializing over it would answer a credential problem destructively.
-50. Object-store credentials live inline in the storage document, beside the catalog's (operator decision 2026-08-29). Babel could not reach an S3 repository at all before this: the restic child process gets a strict environment allowlist and the document had no field for an access key, so every archive test ran against a local path that needs no credential. `repository_store.access_key_id` and `repository_store.secret_access_key` are required for an `s3:` locator and refused in halves, and they reach restic as AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY because restic offers no file reference for them the way it does for the repository password. One document keeps the stdin-only handoff whole rather than adding a second secret file for dotfiles to place, back up, and rotate.
-51. Babel never creates or emits a credential, and stays vault-agnostic (operator decision 2026-08-29, reaffirming decision 38). The repository password is generated by the dotfiles Bitwarden ceremony, which creates the vault item when it is absent, and handed to Babel like any other secret. Babel gaining vault knowledge would put the credential path inside the tool whose logs must never contain credentials, need a mocked vault to test configuration at all, and strand a machine whose operator uses a different manager.
-52. Retiring the pre-Babel backup job is a per-machine dotfiles cutover, not a Babel operation (2026-08-29). Babel never migrated, imported, or deleted the legacy archive, and it cannot retire the old job: that job stops on a machine when that machine activates a generation without it. Two consequences belong to §12's rollback contract rather than to any Babel command. A deployment that removes its legacy job has no second automated copy behind Babel, so a disabled timer means no automated archive until it is re-enabled. And because the two archivers coordinate through nothing, running both writes the same sources to two unrelated places, which is why the cutover replaces the job rather than adding Babel beside it.
-53. Babel does not implement an execution sandbox (2026-08-29). Code owns the disposable sandbox and credential isolation because Code owns the profile, the provider credential, and the OMP controller; a second sandbox in Babel would duplicate the boundary while splitting responsibility for it. Babel's half is what it can enforce from outside the process: it authorizes every tool request against the run's grant, denies a capability the grant never included even when policy would allow it, and owns process-tree lifetime so cancellation reaps grandchildren rather than orphaning them. The consequence is recorded deliberately rather than discovered later: Babel's containment is only as good as Code's sandbox, which is why the obligations are executable conformance tests instead of prose, and why a worker that cannot demonstrate them is not authorized to run. The refusal point itself is measured rather than assumed (2026-08-30): the complete job document, including the source selectors, the grant, and the run-scoped broker token, is written to the worker's stdin immediately after the handshake, and the containment declaration is checked at the worker's first event. A refused worker therefore executes no analysis, but its process already holds the run's broker credential and knows what corpus the run selected. The window is bounded — the token is scoped to that one run and the run is refused at the first event — and bounded is not closed, which is why staging the job behind the declaration is a §14 gate rather than a footnote.
-54. The source record is the unit of retrieval, context, and evidence (2026-08-29, measured). Real harness logs are extremely skewed — a typical record is about a kilobyte while single records reach the tens of megabytes, and a small fraction of sessions hold most of the bytes — so the reader's record budget is an explicit documented constant above the largest observed record rather than a library default, which would degrade roughly one record in a hundred. Records above the budget are preserved as opaque with a digest covering every byte, so an oversized record stays addressable evidence even though it is never parsed. Sub-record chunking was rejected: a chunk is not something a locator can address, and evidence that cannot be recovered byte-for-byte is not evidence.
-55. Phase B payload encryption is randomized AES-256-GCM with location-binding additional data (2026-08-29, implemented and tested). The algorithm comes from the standard library, so neither a dependency nor a nonce counter enters the trust base; the per-key message ceiling that random 96-bit nonces imply is documented and pinned by a test, with key rotation as the mitigation. Additional data binds each ciphertext to its record type, identity, and field through an injective encoding, so relocating a ciphertext to another row, type, or column fails authentication instead of silently decrypting into the wrong place. A missing key is a distinguishable error from a forgery, because the operator response differs: fetch the key versus treat the data as tampered.
-56. Synthetic fixtures deliberately exceed production (2026-08-29). The corpus generator's extremes are larger than the largest real artifacts observed — a primary log past 320 MiB and a single record at the reader's budget ceiling — because a fixture smaller than production is a fixture that lets production break the reader. Generation is deterministic from a seed and validated by having the real Phase A adapters read it, so it substitutes for real data rather than idealizing it. This is what keeps development independent of the archive: every analysis test runs from a generated corpus, and no test requires real transcripts, credentials, or network access.
-57. The Linux analysis sandbox is `bwrap --unshare-all --die-with-parent` executing inside a `systemd-run --user --scope` (operator decision 2026-08-30; threat model in `docs/sandbox-threat-model.md`). Two mechanisms rather than one because neither covers both halves: bubblewrap establishes the mount and network namespaces and no resource accounting at all, while a transient user scope establishes cgroup v2 ceilings and no isolation at all, so either alone would force a declaration with a false boolean in it. Every property the wire contract requires is mapped to the mechanism that establishes it — filesystem isolation to a filesystem constructed mount by mount rather than the host tree with paths denied, network default-deny to the absence of any interface but loopback, resource ceilings to `MemoryMax`/`CPUQuota`/`TasksMax` on the scope plus an explicit size on every writable tmpfs, disposability to tmpfs state that ceases to exist with the mount namespace plus `--die-with-parent`'s uncatchable teardown — and each mechanism is measured on the operator's own host rather than read off its flag documentation (2026-08-30). A container runtime was rejected as a heavier trust base around the same kernel namespaces, and a VM was rejected for Linux because it makes an operational prerequisite of what the kernel already provides. Three consequences are recorded deliberately. `resource_ceilings` is coarser than its mechanism, but the gap is narrower than the controller set suggests: disk *space* is bounded twice, by the tmpfs size and again by `MemoryMax` since tmpfs pages are charged to the cgroup that touches them, so the boolean covers memory, CPU share, task count and space, and excludes only disk *bandwidth* — `io` is not among the controllers delegated below `user.slice` on the operator's host, which is a denial-of-service surface against the operator's own machine rather than a containment hole. Second, a requested ceiling is not an installed ceiling: `systemd-run --user` accepts `IOReadBandwidthMax` with exit status 0 and silently drops it when `io` is undelegated, while `cpu` is absent from a bare scope's controllers and appears once `CPUQuota` is actually requested, so neither exit status nor a prior controller listing is evidence and the limits must be read back out of the created scope's cgroup files. Third, the backend rests on three host prerequisites — unprivileged user namespaces, delegated cgroup v2 controllers, and a user D-Bus session for the transient scope — of which only the middle one fails quietly, which is the same reason the read-back is mandatory rather than defensive.
-58. The analysis sandbox has no network at all, and its egress is host-side sockets bind-mounted into it rather than any interface: an HTTP `CONNECT` proxy owned by Code that allowlists only the resolved provider endpoint, and — where the run's auth broker is a service on the same host — a second relay for it (operator decision 2026-08-30). A unix socket is not governed by the network namespace, so egress exists without the sandbox holding an interface, and an in-sandbox forwarder on the sandbox's private loopback carries OMP's documented process-wide `PI_PROXY` hook — the process-wide form, because the provider-scoped one does not cover OAuth refresh, and a run whose token refresh has no route dies mid-stream rather than at startup — so nothing in OMP is patched. The broker relay was discovered while implementing the backend rather than while designing it, and it is not optional: OMP never sends a loopback target through a proxy, and the sandbox's loopback is its own, so a local broker is unreachable by both halves of the design and a networkless run would authenticate against nothing. A filtered interface was rejected: a rule set can be misordered or widened, whereas a sandbox with no interface, no route and no resolver denies arbitrary egress by absence, and public research reaches the network through Babel's host-side broker rather than from inside the sandbox. `network_default_deny: true` is therefore honest about arbitrary egress, and three residuals are recorded rather than softened. TLS inside a `CONNECT` tunnel is end-to-end, so the proxy governs where bytes go and has no view of what goes: exfiltration to the one allowlisted endpoint remains possible, and narrowing the destination set is the only lever the design has. Because OMP authenticates, the provider credential sits inside the sandbox where the worker's own `bash` can read it. And the relay makes a local broker reachable for the life of the run, so a compromised worker can ask it for more credentials rather than merely spend the one it holds. All three close together: the hardening is a credential-injecting reverse proxy holding the credential and the broker conversation host-side and configuring OMP's provider with its documented `auth: none` mode, deferred because it would put Code on the provider protocol path — OAuth refresh and streaming passthrough for every supported provider API shape — which is a larger and more mobile commitment than the residuals it removes.
-59. Darwin gets no qualified sandbox backend, so exploration is refused there while every other capability continues (operator decision 2026-08-30). An unprivileged process on macOS has one mechanism, `sandbox-exec`, which its own manual page marks DEPRECATED in favor of app-bundle App Sandbox and which has no cgroup or mount-namespace equivalent, so two of the four required properties could not be declared without lying: aggregate resource ceilings over a process tree do not exist, and a path-predicate filter over the live filesystem leaves no constructed state to discard, which makes teardown a kill rather than disposability. Declaring the two truthful properties and relaxing the rest was rejected as a default, because a platform whose every receipt is permanently relaxed normalizes the flag that exists to be exceptional. The consequence is recorded deliberately and it is narrower than "Darwin is unsupported": archival, verification, fetch, the catalog and search, the local web surface, transcript viewing, and append-only review all run in Babel's own process and are unaffected, so a Darwin machine remains a full archival and review instance and simply is not an analysis host. Two paths could qualify it later at stated cost — a Linux VM guest reusing the Linux backend, which is a stronger boundary but makes the VM an operator prerequisite and obliges the declaration to name the guest, or a `sandbox-exec` backend whose runs are permanently recorded as relaxed.
-60. Manifold is Babel's final form (inviolable repository direction, operator decision 2026-09-02). Babel becomes the first non-core plugin of `atyrode/manifold` (`dev` branch): its whole web UI becomes plugin-rendered UI with full UI/UX integration into manifold — no separate web app, nothing PTY-bound — its fleet is manifold's enrolled machines, the plugin requests permissions and exposes what it does and aims to do on each machine (back up sessions, observe repositories, run analysis), and Babel adapts to manifold, filing what manifold cannot offer as manifold issues so manifold evolves. The move is stepwise: the React shell stays until the plugin is proven, and nothing new is built for the shell that does not carry over. This revises decisions 1, 12, 33 and 35 where they name the embedded web application as the primary surface; their text stands as the record of the transitional shell, and decision 34's session exchange belongs to that shell and retires with it (§2.7, §2.8).
-61. Manifold builds dynamic/out-of-tree plugin loading first, and the plugin package lives in `atyrode/babel` (operator decision 2026-09-02, D1). Loading is declared and unscheduled in manifold: `PluginManifest.entry` is reserved for the dynamic wave (`packages/protocol/src/plugin.ts:554-556`), ADR 0016 stage 1 is unscheduled (`docs/decisions/0016-plugin-isolation.md`), and assembly today is two static import lists (`packages/server/src/assembly.ts`, `packages/web/src/assembly.ts`). Babel is never vendored into manifold as an interim: a vendored plugin would be `core.*` by construction and would make manifold's release the plugin's, which is the opposite of the direction.
-62. Babel on an enrolled machine is an agent-kind principal with its own scoped token, its per-machine processes stay OS-supervised as `manifold-agent` itself is, and a typed exec/job primitive on the machine channel is a filed prerequisite (operator decision 2026-09-02, D2). The principal kind exists (`Principal.kind: "agent"`, `packages/server/src/db.ts:71-76`), supervision is operator infrastructure by manifold's own contract (manifold `docs/ENROLL.md` §3), and the channel is PTY-only today (`packages/protocol/src/machine.ts:35-96`: seven verbs each way, `create` carrying no command), so Babel's binary is not driven as keystrokes into a shell as an interim. How the token is minted and delivered is open (`docs/manifold-transition.md`) and obeys §2.3 whatever the answer.
-63. Storage placement is a plugin-level setting (operator decision 2026-09-02, D3): the master node hosts it, one enrolled machine hosts it, or it goes outbound to an external provider — today's Clever Cloud, the only option runnable now — over §9's provider-neutral interfaces, which already separate the restic locator, the PostgreSQL endpoint and the object-store credential from any provider. Manifold holds no object store and no PostgreSQL (absent), so the stores stay Babel's wherever they are placed. Narrowed to two placements by decision 84 the same day.
-64. The runs console is fully plugin-rendered (operator decision 2026-09-02, D4). Its live progress needs a plugin-declarable continuous stream channel, which is absent — session-channel frame bodies are a closed floor-owned union (`packages/protocol/src/session.ts:155,355`) and ADR 0012 keeps continuous data off the event plane by design (`docs/decisions/0012-event-plane.md:13-16`) — so milestone events plus polled state (`contributes.events`, `ctx.emit`, `usePolledResource`) is the interim, labelled as an interim in the UI and never presented as live.
-65. The manifest id namespace is `babel.<x>` (operator decision 2026-09-02). `core.*` is reserved to manifold's shipped distribution (`SHIPPED_PLUGIN_IDS`, derived from `SERVER_PLUGIN_DEFS` in `packages/server/src/assembly.ts`), `engine.*` to the engine, and a bare `babel` fails the two-segment id pattern; a namespace of Babel's own gets identical dispatch, authority, disable, dormancy and purge treatment (`packages/plugin/src/assemble.ts`).
-66. Secrets stay outside manifold (operator decision 2026-09-02, reaffirming decisions 38 and 51). The dotfiles Bitwarden ceremony keeps delivering the storage document per machine; the plugin holds no credential; `plugin_kv` never receives one; and the agent-kind principal's token, however delivered, is the only manifold credential Babel's binary holds.
-67. Babel still never publishes or applies proposals under manifold (operator decision 2026-09-02, reaffirming decision 24). Manifold's action door gives a plugin a mutation path into manifold; it gives Babel none into repositories, issues or agent configuration, and the plugin declares no action that could.
-68. The hub runs a Babel instance configured like any other machine (operator decision 2026-09-02): a host with a stable identity, its own storage document and its own agent-kind principal, holding no authority another instance lacks. The plugin's server half is a client of that instance, not a replacement for it.
-69. Babel's field is a data lake of subjects it points at rather than copies, and the archive is one subject kind, not the field (operator direction 2026-09-01/02). Four acquisition kinds: held (the archive, immutable copies), pointed (a locator observed at a pinned fingerprint at run time), derived (Babel's own records, §5.7), and public (brokered external sources, §2.6; `docs/sources.md`).
-70. Anything with a locator is admissible as a subject kind — services, hosts, documentation sites, beyond repositories — and a kind's observer, fingerprint and disclosure story are defined per kind before any run can target it (operator decision 2026-09-02); non-git kinds are facts-only until their observer exists.
-71. A preparation names a focus and a context (operator decision 2026-09-02). Archive-focused with repositories as context is today's run; repository-focused with the archive as context is new; the join is the catalog's repository fingerprint and workspace, with full text as the fallback.
-72. The conductor gains a watches rung between invitations and duties, and the serendipity floor draws across subjects (operator decision 2026-09-02). A watch is a standing operator interest in a subject, drawn when its material-change fingerprint moves; watch storms are bounded by a per-subject cadence and the ceilings the conductor already refuses to run without.
-73. Repository read modes are run-kind choices, not one rule (operator decision 2026-09-02; the operator: they "all make sense for different kinds of runs"): commit-pinned reads by default with dirty state recorded as a fact, working-tree content by explicit per-run grant, GitHub remotes through a read-scoped token delivered like any other secret. The remote mode is the authenticated private-remote materialization Phase D and §14 already gate, and that gate stands.
-74. Babel never touches the operator's checkout (operator decision 2026-09-02): no fetch, checkout or worktree inside it; materialization is a disposable `git archive` into Babel's cache, discarded with the run.
-75. Repository content is untrusted and contains agent instructions — `CLAUDE.md`, skills, hooks — which are quoted evidence, never instructions (operator decision 2026-09-02); §3's rule extends verbatim, secret preflight (§6.4) runs over repository content, and a subject's sensitivity is checked against the profile's disclosure class.
-76. A local subject is observable only from the machine that has it, and the fleet must know which machine that is (operator decision 2026-09-02): host-scoping is a fact the preparation carries and the scheduler honours — manifold's enrolled machines once §2.8 lands, the catalog's host rows until then — and a run whose subject is absent on its machine is refused rather than guessed.
-77. No code-intelligence index up front (operator decision 2026-09-02): Babel measures what repository-focused runs retrieve before building one, as decision 54 measured before choosing a record budget.
-78. The agent brief is a new output projection (operator decision 2026-09-02): a proposal rendered as a self-contained task with evidence locators for an agent the operator points at it. It is still a suggestion; Babel neither launches the agent nor watches it.
-79. Recipes declare which focus kinds they apply to in front matter (operator decision 2026-09-02); a preparation whose focus kind a recipe does not name never runs it, and a recipe naming none is archive-focused.
-80. Friction remains the axiomatic center (operator decision 2026-09-02, reaffirming the 2026-08-31 decision in §1): the archive is the record of intent and process, the repositories the record of outcome, and Babel reads the gap between them; conversation analysis and repository analysis are two entry points into one question.
-81. Runs are the crux of the interface (operator decision 2026-09-02): Babel is entirely runnable from its UI through a dedicated runs interface that creates runs, tracks them live — state, current step, evidence being read with locators, tool requests and broker decisions, sandbox commands, spend, cancellation — shows outputs and receipts, and gives complete traceability from run to preparation, receipt, records, dispositions, manifold's trace ledger and the acting principal; conductor cycles appear as runs with their authority; the view is fleet-wide. Requirements in `docs/runs-interface.md`. This revises the 2026-08-30 refusal to start exploration from a browser (§14).
-82. Every run fact Babel shows is exposed through one host-independent projection (operator decision 2026-09-02), so the transitional shell and the plugin render the same contract and nothing a surface shows about a run is computed in view code.
-83. Babel does not enter manifold's in-tree plugin roster as an interim, reaffirming decision 61 against the in-tree-first alternative the manifold review proposed (operator decision 2026-09-02). Three reasons, the operator's: an in-tree plugin would push the marketplace and dynamic-distribution wave back, it would mint debt to be paid at extraction, and it would contradict the direction that manifold builds exactly what Babel needs to exist. The consequence is accepted: nothing of Babel renders inside manifold before out-of-tree loading exists (atyrode/manifold#151, #152), and Babel's host-independent work proceeds meanwhile. The loader and the isolated component vocabulary (atyrode/manifold#160) are sized against Babel's written surface inventory — §8.2, §8.3, `docs/runs-interface.md` — rather than against a plugin in the tree.
-84. Storage placement has two values, both runnable today (operator decision 2026-09-02, narrowing decision 63): master — §9's local mode on the hub's host, single-box and named non-durable — and external — shared mode against operator-provisioned stores, the fleet default. A store on an enrolled fleet machine is external with that endpoint, not a third placement; installing one through manifold waits on the exec primitive (decision 62). The setting is `storage.json`'s `mode` now, and manifold's settings pane renders it once non-boolean settings kinds exist (atyrode/manifold#158) — a UI prerequisite, not a placement one.
-85. The lake is hot-ready context for the operator's agents, not only Babel's (operator direction 2026-09-02, §1, §4.10): any agent in any harness on any connected machine can ask Babel for a past discussion and continue with it. Recall is the worker's own retrieval and selective fetch offered through a second door — the CLI now, a `babel.<x>` action door under manifold — in two steps, search then show, bounded, provenance-bearing, redacted, labelled as archived data, and as fresh as the last push. Agents learn it exists from the dotfiles-published instructions and a skill whose text Babel ships; recall requests are lake material of Babel's own kind. Gated in §14 before any instruction names it. Babel is to be built around and with this interface in mind, so the retrieval, excerpting and disclosure rules are written once for both doors. Work item: #156; exposure: atyrode/dotfiles#505.
-86. Everything Babel stores references its sources rather than copying them, and the harness pipeline runs in both directions over one canonical model (operator direction 2026-09-11, §4.11, §6.8). A reference resolves either to a real-world source — a commit, a file and line, a repository — or to a located excerpt of a transcript, and `event.Locator`'s record digest is what makes it content-addressed rather than positional; derived output carries locators, never copied text, which is §9's payload/evidence split stated once for every artifact instead of one of them. The pipeline is original log → forward transformer → canonical model → reverse transformer → harness, Babel interfaces with the canonical model rather than either end, and the harness set is open: omp, codex and claude are the first adapters, declared once (`internal/harness`) rather than in five places, after a missed fifth place shipped `unknown harness "babel"` into a running cycle. The reverse direction exists to resume a conversation in a harness and must rehydrate from the retained original bytes plus the canonical index, never synthesize a log from the canonical model alone: the canonical model drops harness-specific structure by design, so a synthesized log would be unfaithful precisely where a resume depends on fidelity, and a 95%-faithful resume is worse than none. Specified and unimplemented; gated in §14.
-87. Publication is automatic and is the product's responsibility rather than the operator's (operator direction 2026-09-11, §9.1, §14). Every record Babel produces reaches the shared catalog without anyone typing anything; `babel sync` remains a diagnostic and a way to force an attempt, and no record may depend on it being run. The one lawful deferral is a run's own undeclared closure, because `migrations/0003` fixes a published run's `record_count` at declaration, and it is bounded by the run's end whether the run ended by finishing or by dying. Liveness is proven rather than assumed, on an asymmetry: a run wrongly believed live only waits for the next attempt, while a run wrongly believed dead is sealed permanently short of its output, so an instance that can prove nothing seals nothing. Every abandonment is recorded with its cause, because Babel should never have to abandon work and each time it does is a measurement of Babel (§5.7). Recovery is keyed on the staged records rather than on a lease, a receipt or a presence row, each of which is absent in exactly the case reconciliation exists for. The direction was the operator's long before it was written down, and it was specified only after the omission cost the same records twice: the 2026-09-06 fix covered runs whose receipt was written, and on 2026-09-11 two runs that left no receipt, no lease and no preparation stranded 1,022 records for five days.
-88. Storage is the product and the GUI is how Babel is used (operator direction 2026-09-11, §8.4, §14). Everything Babel knows lives in the shared catalog, the objects it references and the Reality Ledger; a run is a stateless worker over that storage, holding no authority and no durable state the storage does not already hold, which is what lets a worker be run on any machine, restarted or replaced without losing anything that was not already written down. Every stored thing — hypotheses, proposals, findings, questions, facts, entities, dispositions, sessions, complaints, focus rules — is reachable from the navigation and actionable where it is read, and a capability that exists only as a command the operator must remember is unfinished rather than shipped; the CLI stays for automation, pre-UI configuration, recovery and diagnosis, and stops being a place a capability may live (§8.1, revised the same day). This is decision 87's principle on the second surface: publication must not depend on the operator's memory, and neither may interaction. The shell's existing write routes are where the direction started and `internal/web/reality.go`'s own package doc names what it still lacks. Starting runs from the GUI is deferred to the plugin migration on a dependency rather than a preference — manifold's machine channel carries no exec verb (decision 62, §2.8 D2, §14) — so compute is launched on a machine by hand until that primitive exists, and nothing else in §8.4 waits on it.
-89. Babel works on the quality of its backlog before generating more work for the operator (operator direction 2026-09-11, §§4.12, 5.8, 8.5). A review may be only an upvote, downvote, or uncertainty; prose and refinement are optional. Exposure-aware reception automatically reorders the human reading queue for useful next decisions, while weighted-random selection directs a bounded review budget toward under-reviewed ideas, away from repetitive settled opinions, and toward investigating persistent disagreement, with protected exploration. Votes never become independent evidence or operator dispositions. Full lifecycle is in scope: Babel can record evidence-backed implementation and outcome assessments, while changed evidence about decided work creates Reconsider items rather than silently reversing decisions. This is approved design, not a claim that the feature is implemented or enabled.
-90. The standalone web UI is the product surface and a control room (operator direction 2026-09-12, §§2.8, 8.2, 8.4, 8.6). The Manifold plugin framing no longer constrains the surface: the shell's areas are not plugin-rendered, nothing is built to carry over to a host that is paused, and the run-launch deferral is withdrawn — starting, pausing and stopping runs on this machine from the loopback UI is in scope under the ceilings and authorization the CLI enforces. The surface's register follows the peel of §8.6: editorial where a record is read (claim, case, evidence — large type, generous measure, quoted evidence as the hero), and observatory where Babel is watched and its output weighed (reception, machinery, live runs, spend, coverage — dense figures, sparklines, live state, keyboard triage). Identifiers, digests and the rest of Babel's bookkeeping live at the deepest layer only.
-
-## 14. Deferred decision gates
-
-The following gates apply before the named deployment or capability ships; they do not block earlier local fixture-driven coding.
-
-### Before the first shared Phase A deployment
-
-- Freeze the unified `storage.json` schema, deployment/instance/host IDs, provider-neutral local/shared modes, restic repository locator, PostgreSQL TLS fields, the credential fields for the single-credential default, an optional separate migration credential, and the object-store access key an S3 repository needs, redaction, external-secret references, compatibility rules, and atomic stdin-only configuration replacement. **Frozen 2026-08-29** at `config_schema` 2, after the document ran against real Cellar and real managed PostgreSQL. `internal/config`'s frozen tests pin the exact JSON names at every level, the schema number, and the load of a pre-freeze schema-1 document; loading ignores unknown names by design, so nothing else could catch an accidental addition. A new optional name stays compatible and is recorded in that test; a rename or removal is not, and the failure is the point.
-- Freeze and migrate the minimal Phase A PostgreSQL schema in Babel's own schema, plaintext allowlist, snapshot/session-to-catalog mapping, idempotency, server-time fenced host leases, `catalog-pending` state, reconciliation, and complete catalog rebuild from the repository snapshot list plus source rescans. **Frozen 2026-08-29** at `SchemaVersion` 1 with migrations `0001_init` and `0002_unknown_counts`, both applied to the real add-on. `internal/sharedcatalog`'s frozen tests pin the migration ledger's identity and order, every applied migration's body digest, the schema version, and the allowlist's table set with a non-vacuity check. The schema changes by adding a migration, never by editing one that has run: an applied migration is history, and rewriting it would leave every deployment that ran it holding a shape nothing describes. Phase A's rows are rebuildable, which is why this was the cheap moment to fix the shape - Phase B's are not. Two migrations have been added under that rule and applied to the real add-on on 2026-08-30: `0003_phase_b_records` for Phase B's durable output, and `0004_fleet_metadata` for the session and host metadata §9 records. `SchemaVersion` stays 1 for both, deliberately: every column they add is nullable with no default and no constraint, so a writer that predates them keeps publishing, and raising the version would instead order every un-updated instance to stop. A migration that could not make that claim would need the bump and the fleet update that goes with it.
-- Prove local-path-repository/SQLite development mode, real Clever Cloud Cellar/PostgreSQL mode, detected credential privilege reported rather than assumed, migration/application role separation wherever a provider permits creating database users, TLS failure behavior including a provider whose certificate cannot be verified, concurrent writers, database/repository outages, two-instance cache rebuild/browse/fetch, and no PostgreSQL dependency in direct archive recovery: the restic binary plus the repository password alone restore every source tree. The local-path/SQLite mode, two-instance behavior, outage recovery, and direct restic-only recovery are proven; the credential-privilege and unverifiable-certificate legs are proven against the real add-on; the Cellar leg, concurrent writers, and role separation are not (§10).
-- Decide whether per-instance eviction must exist, and record the answer either way. It is absent today because it would be `instances` DML, so any credential that can publish could evict any instance and clear its own eviction (§9). Column-level grants — reserving an eviction column to an operator role — would make it database-enforced, but they need per-instance roles the first provider cannot create, so the first deployment either accepts that a machine which must stop writing is stopped by credential rotation, or defers deployment until a provider can separate the roles.
-- Document and exercise coordinated PostgreSQL catalog backup, repository recovery, restic repository password custody and backup, storage configuration recovery, one-time repository creation, manual primary-host bootstrap, hourly timer enablement, and rollback once no legacy backup remains behind Babel. **Documented and exercised 2026-08-31** in `docs/runbook.md`, against the real Cellar repository and the real managed catalog, read-only throughout. Repository recovery is proven twice over and byte-identically: `babel sessions fetch` of another host's session and a `restic restore` of the same subtree produced identical digests, the second with no catalog consulted and no Babel code involved, which is the form the "recovery does not depend on PostgreSQL — or on Babel" claim has to take to be worth anything. Catalog backup is the provider's, and the drill records why that is sufficient rather than lucky: the catalog is rederivable from the snapshot list, so there is no cross-store consistency requirement to preserve. Two drills remain operator-gated because neither can be supplied unattended — the Bitwarden unlock/retrieve/relock ceremony needs the master password interactively, and full restore-to-service needs a clean spare machine — and both are written out with their exact commands and success criteria rather than deferred as prose. The drill also found a live defect it declined to fix, two stale shared locks that make `archive verify` exit 1 while leaving restores and integrity unaffected; `restic unlock` is a write verb, and a read-only drill that mutates the repository to make its own check pass is not a read-only drill.
-- Prove the fleet substrate's credential handoff, common versus per-instance secret split, build/argv/environment/temp/log secrecy, invalid-rotation rollback, migration-credential ephemerality wherever a separate credential exists, and scheduling gates. Track that implementation and its operational evidence in `atyrode/dotfiles`, without adding provider-specific custody mechanisms to Babel.
-- Exchange the launch nonce for a session cookie the page cannot read: POST the bootstrap nonce once, receive a rotated host-only `HttpOnly; SameSite=Strict` session cookie, and expire the nonce on first use (§2.7, decision 34). **Built and proven 2026-08-31** (issue #72). The exchange is `POST /api/bootstrap`, behind the same origin guard as every other route and exempt from the credential check only because it is that check's source. Consuming the nonce and issuing the session is one step under one mutex, so two requests replaying one launch URL cannot both be served; a wrong nonce consumes nothing, because a local process that could kill a live launch by posting rubbish at it would be a denial of service the 256-bit nonce does not otherwise permit. The `sessionStorage` copy is gone: nothing about authentication survives in storage the page can read, and a reload re-authenticates with a credential that was never reachable from script. Proven at three levels rather than asserted: internal/web drives single use, expiry, revocation, every cookie flag, and each channel the session must not be accepted from; a real browser bootstraps one launch and is refused the second use of the same link, reading the cookie out of Chromium's own store to prove `document.cookie` cannot; and the built binary was launched, exchanged, and replayed by hand. What the closure did not remove is the frontend's import-order coupling, which an earlier record predicted it would: the fragment is still route state, so the bootstrap must still read it before the router mounts — removing that would need code the CSP does not admit, an inline script in the served shell — and the coupling is now documented where it lives rather than expected to disappear.
-
-### Before Phase B exploration is accepted
-
-- Select and threat-model the Linux and Darwin sandbox backends, including filesystem isolation, process/resource controls, teardown, and escape assumptions. **Selection, threat model, and the Linux backend settled and implemented 2026-08-30**; threat model in `docs/sandbox-threat-model.md` (decisions 57–59), over the ownership settled 2026-08-29 (decision 53): Code provides the disposable execution sandbox and credential isolation, Babel authorizes capabilities and owns process-tree lifetime. The worker protocol makes the boundary declared rather than assumed — a worker's resolved-configuration event must name its backend, its filesystem, network, resource, and teardown properties, and its own escape assumption, and Babel refuses a declaration short of the run's requirement at that first event, before the worker executes any analysis. The strict requirement is the default so a forgotten field fails closed, relaxing it is per-run and visible, and even a relaxed run must still name a backend, because a receipt that names no boundary cannot tell a reviewer what the evidence was produced behind. What is settled is written down rather than intended: the Linux backend is `bwrap --unshare-all --die-with-parent` inside a `systemd-run --user --scope`, with every declared property mapped to the mechanism that establishes it, its three host prerequisites and their absence behavior stated, and the one boolean coarser than its mechanism — resource ceilings, which cover memory, CPU share, task count and disk space but not disk bandwidth — recorded as such; egress is a sandbox with no interface, route or resolver reaching one allowlisted provider endpoint through a host-side `CONNECT` proxy on a bind-mounted unix socket, plus a second relay where the auth broker is local, so arbitrary egress is denied by absence and public research travels Babel's host-side broker instead; Darwin has no qualified backend, because its only unprivileged mechanism could not carry resource ceilings or disposability without a false boolean, so exploration is refused there per §10 while archival, browsing, review, and fetch continue, and Babel refuses on an unqualified platform whatever a worker declares rather than trusting a declaration §10 declines to take on faith; and the escape assumptions are a ranked written list of what this does not contain, headed by exfiltration to the reachable provider endpoint, the provider credential living inside the sandbox because OMP authenticates, and the local broker being reachable for the life of the run. The backend also declares only what it establishes: a probe reads the boundary back before the declaration is made, a scope whose cgroup lacks the requested ceilings degrades the declaration instead of inflating it, and a run whose ceilings vanish after a declaration claiming them is torn down, because the claim has already gone out on the wire. §10's live containment/escape scenario is exercised for the one enabled backend: six scenarios drive Code's real launch path and attempt the violation each property forbids — a host write outside the grant, a non-allowlisted `CONNECT` and a direct connect with no route, a fork bomb, a memory hog, survival past teardown, and an unreaped tree — each proven non-vacuous by relaxing the control it tests, with a prerequisite guard that fails loudly rather than letting the scenarios skip into a green suite. What remains is the rest of §10, tracked by issue #75: a real configured-profile exploration against a live provider, a harmless repository experiment, brokered public-research retrieval, and a critical challenger changing or preserving a conclusion with unresolved objections intact. Babel's own refusal now lands before the run's material and credential are written, which the next gate records as implemented.
-- Stage the job document so the containment declaration precedes the run's credentials: a preamble sufficient for the worker to resolve and declare its configuration, then the recipes, the grant, the sources, and the broker token written only after that declaration satisfies the run's requirement. **Implemented 2026-08-31** as protocol version 2 in both repositories (issue #71). The preamble carries the run's identity, the profile reference and the run's parameters — what a worker needs to resolve itself and to know which kind of run this is — and nothing a worker could read, retrieve or authenticate with. The worker answers with its resolved configuration, containment declaration included; Babel validates that answer and writes the second stage only if it satisfies the run's requirement, and answers a declaration that does not with the handshake's refusal message instead, so the worker learns which properties fell short and exits rather than blocking on a read. A worker that under-declares therefore holds a profile reference and nothing else: not the broker token, not the corpus selection, not the capability grant. The property is measured on the worker's own stdin rather than on Babel's intentions — the fake-worker fixture records every byte written to it, and the assertion is that a refused run's capture contains the preamble, the refusal, and neither the credential nor a source selector. Two conformance obligations moved with the wire, taking the suite from sixteen to eighteen: `run/declares-from-the-preamble`, which fails a worker that will not declare until it has the material and says so in those words rather than as a timeout, and `run/refused-before-credentials`, which drives the new `under-declare` directive — the second directive that asks a worker to misbehave deliberately, because a worker that always declares enough is never refused and the refusal path would be graded by nothing. Both are proven discriminating by fixtures that fail them. The cutover is clean rather than compatible: version 1 and version 2 disagree about who writes next, so a mismatched pair is refused in both directions with an error naming both version sets, which was verified by running each repository's build against the other's previous one.
-
-The two implementation accounts above describe the historical worker protocol. **Superseded 2026-09-06 by §2.6** (#182, atyrode/code#123): Code now declares containment in its private runtime-report file before forwarding native OMP readiness; Babel admits the launch before sending any prompt or registering tools. There is no Babel preamble/refusal protocol in Code, no broker credential in its stdin, and no production conformance directive asking Code to misbehave. Adversarial engines belong only to Babel's test fixtures; live model-backed conformance requires explicit inference authorization.
-
-- Define and enforce the exact evidence-tool and public-research broker protocols: disclosure-sink handling for URL/query/header/body/redirects, validated templates or opaque IDs, declassification/consent, SSRF/redirect/content limits, provenance fields, pinned public-repository materialization, and isolation of Code/OMP provider transport and credentials from tool processes.
-- Define frontier identity, recursive and refinement lineage, checkpoint/resume, novelty, clustering, generated-evidence rules, and append-only review semantics. **Implemented 2026-08-30.** Identity, lineage and append-only semantics are structural rather than validated: a hypothesis has no status column, only append-only status events, so no code path can overwrite a lifecycle; the package holds no delete statement; a revision links to its ancestor and never overwrites it; and a refinement request carries a unique reference to the rejection that authorized it. Checkpoint and resume are proven by cancelling a run and re-running it against a ledger that binds each worker-emitted reference to the durable record it produced, so nothing is lost and nothing duplicates. What remains is novelty and clustering, which are scheduling estimates over already-durable records and must stay ordering-only per §5.4.
-- Define machine-checkable observation/finding evidence minima, model-supplied classifications, and Babel versus human evaluator responsibilities. **Partly implemented 2026-08-30.** The minima are enforced where they can be checked mechanically: an observation with no evidence locator is refused, a finding with no observations and a proposal with no findings are refused, counter-evidence must be listed or its absence explicitly declared, and a proposal must carry an impact and a publication classification — there is no default for either, because a proposal with no stated privacy posture is the one shared by accident. Model-supplied confidence and impact are stored as the model's own gradings and are never read as evidence strength. What remains is the sampling and evaluation split between Babel and a human evaluator, which needs review outcomes to calibrate against and so cannot be settled before runs exist.
-- Define chunking and context strategy from measured OMP/Codex/Claude corpus sizes without making retrieval limits constrain hypothesis categories. **Settled 2026-08-29 by measurement** (decision 54): the source record is the retrieval, context, and evidence unit; the reader's record budget is a documented constant above the largest records real harness logs carry; a record above it degrades to opaque with a digest covering every byte rather than being split into fragments no locator can address. What remains is prompt assembly for a selection whose records exceed one context, which is scheduling rather than a retrieval limit and must not constrain which hypothesis categories may emerge.
-- Decide how much verbatim evidence normal views show versus reveal through private locators.
-- Define the operator-approved scope/capability UX and how current local repositories are snapshotted without exposing ambient machine state. **Settled 2026-09-02** for the snapshotting half (§3.1, decisions 73–74): three read modes as run-kind choices, a disposable `git archive` into Babel's cache, and no fetch, checkout or worktree inside the operator's checkout. The scope/capability UX half is the runs interface (§8.3, `docs/runs-interface.md`).
-- Define evaluation and review sampling for useful emergence, operator attention, unsafe behavior, provenance loss, and retrieval diversity.
-- Decide whether one profile per run is sufficient or measured workloads justify Code-owned profile mappings.
-- Define clean-control matching, chaos atom schemas/sources, immutable revision/lineage recording, reusable packs, marked/blind presentation, synthetic-atom lineage, randomization, quarantine, clean-reinvestigation, and reviewer-blinding rules before enabling chaos outside development.
-- Extend the Phase A PostgreSQL/Cellar protocol for Phase B object-first/database-last commits, required object/row closure, global entity IDs/idempotency, host-pinned analysis work, second-instance review/continuation, and `pending-sync` behavior. **Implemented 2026-08-30** as migration `0003_phase_b_records`, with `0001` and `0002` byte-identical and `SchemaVersion` deliberately left at 1: `EnsureCompatible` refuses a database migrated past the binary, so raising it would stop every live Phase A writer against production. Neither new table has a payload column — content is sealed and lives in the object store, PostgreSQL holds the reference, and the stored digest is over the sealed bytes rather than the plaintext, since a plaintext digest would be the search oracle §9 forbids. An object is written and read back before any row names it, and a database failure after a successful object write leaves the run visibly `pending-sync` for an idempotent later completion.
-- Freeze client-side randomized AEAD payload envelopes, key IDs/rotation compatibility, sensitive payload schemas, local-only decrypted search indexing, and the compromised-authorized-instance blast-radius statement. **Envelope frozen 2026-08-29** at `Version` 1 (decision 55), implemented and adversarially tested; local-only indexing settled with it, since the retrieval index is a rebuildable local cache whose loss costs a re-index and never data. **Plaintext eligibility settled 2026-08-31** and enforced rather than documented: a Phase B plaintext column may belong only to the six classes SPEC.md 9's Phase B vocabulary names - schema/version identifier, opaque ID or locator, ordering or fencing data, size or count, commit state, timestamp - which is `sharedcatalog.AssertPhaseBPlaintext`, called by `Verify` and therefore by every `Migrate`. The four classes the operator's 2026-08-30 widening admitted for archive metadata (session label, workspace path, session grade, host identity, spend measure) are deliberately *not* carried over to analysis output: that permission was granted for facts a harness had already written about a session, and a claim Babel produced about the corpus is not one of them. So a future migration putting a title-shaped, path-shaped, grade-shaped or money-shaped column on `analysis_runs` or `analysis_records` passes the general allowlist and fails the Phase B gate. Host and actor attribution is admitted and is what `migrations/0007` adds: `instances.host_id`, the pairing `Register` already knew, without which a committed record could only be attributed by reading `execution_host_id` - a rerun pin, null for most runs - as authorship. What remains is the written blast radius of one compromised authorized instance.
-- Prove a coordinated Phase B PostgreSQL ciphertext/Cellar object/external-key backup and restore fixture; recurring rotation/restore drills and monitoring ship in Phase C.
-- Define challenger and synthesizer input/output schemas, their logical separation from the explorer and each other, evidence-authority limits, objection-preservation representation, promotion eligibility and ownership, and evaluation of whether criticism improves conclusions without rewarding performative negativity. The synthesizer may consolidate only locator-backed observations and recorded challenger objections/counter-evidence; unsupported additions remain hypotheses, and only Babel's control plane may apply the promotion transition after validating the structured result. **Schemas and separation implemented 2026-08-30**: the challenger runs as its own worker job with its own receipt and cannot create a finding, and the control plane applies promotion after validating the result. What remains is the evaluation question — whether criticism improves conclusions — which needs review outcomes to measure and cannot be answered before runs exist.
-- Freeze Reality entity/alias/relationship schemas, reversible merge/split, fact revision/authority/freshness/conflict semantics, trusted-source predicate scopes, context snapshots, focus-rule evaluation, question/answer/plan states, Answer Interpreter schema, retry/idempotency, and atomic operator acceptance before Reality context may control Phase B expenditure. **Implemented 2026-08-30, not yet frozen.** Merge and split are genuinely reversible: an undo carries a unique reverse reference, so a resolution reverses exactly once and concurrent undos cannot both win. Facts are immutable revisions whose status lives in append-only events. Lifecycle, ownership and analysis policy are separate predicates, and a versioned focus rule must be evaluated to reach an expenditure decision — the same lifecycle under two rule versions yields two decisions, which is what makes §4.8's separation real rather than stated. A plan's fact mutations wait for one explicit operator acceptance and commit atomically with the question's disposition. The freeze itself waits on the Phase B payload-schema question above, since these are the records it would seal.
-- Define the React application/API contract and prove that Reality/review mutations share the Go service authorization path rather than becoming browser-owned state. **Implemented and proven 2026-08-30.** The contract is fifteen routes behind the same per-launch session, `Host`/`Origin`, `no-store` and sanitizing path Phase A already had — the session is the §2.7 cookie since 2026-08-31, and the routes were unchanged by that cutover because the credential is checked in one place. Every mutation calls the same service method the terminal calls, attributed to the session's operator, and a session that cannot name an operator is refused rather than defaulted; a test drives one through and asserts the durable effect and its attribution rather than asserting the arrangement in prose. Exploration is deliberately not startable from a browser, because a run outlives a request and a surface that pretended otherwise would either block or lie.
-- **Revised 2026-09-02** for the last sentence of the previous gate (decision 81): runs become startable from the UI through the runs interface, and the objection is answered by the projection rather than by refusal — a run outlives a request, so the surface creates it and then tracks it live through the host-independent projection (§8.3) instead of blocking on it or pretending it finished. The authorization path is unchanged: creating a run from a surface calls the same service method the terminal calls, attributed to the acting principal.
-
-### Before scheduled inference
-
-- Define the exact material-change fingerprint. Since 2026-09-02 the watches rung (§7) draws on the same fingerprint per subject kind (§4.9), so the definition is per kind: a snapshot for held subjects, the commit plus dirty state for repositories, and whatever a later kind's observer defines before that kind can be focused.
-- Define allowed disclosure classes, cost guards, retry ceilings, and schedule cadence.
-- Define how profile reauthorization is recorded and how a paused schedule is surfaced.
-
-### Before OMP Cloud Sessions continuation
-
-- Define the minimum repository fingerprint that distinguishes a compatible checkout from a misleading same-path checkout.
-- Define stable/inactive snapshot criteria under periodic host-scoped publication. **Host-level criteria settled and implemented 2026-08-30** in `babel archive fleet`, which was needed before the session-level half because an operator could not previously tell a machine that had stopped publishing from one that had published minutes ago. A host is inactive once its newest snapshot is older than three times the cadence it is judged against, and the cadence is derived from that host's own recent snapshot gaps (median, so the outages being detected do not inflate it), or from the fleet's when the host has too little history, floored at the hourly schedule §12 fixes. Three cadences rather than one or two because the timer is `Persistent=true`: one missed run is the mechanism working, and only two consecutive misses distinguish a broken machine from a machine that was asleep. A host with no derivable cadence gets no verdict rather than a default, and a machine that has never published cannot be derived at all - the catalog learns of a host through its first publication - so absence is asserted by the operator per invocation with `--expect` rather than by a roster Babel stores and lets go stale. What remains is the per-session half: which snapshot of a session is the stable one to continue from when several hosts publish the same session periodically.
-- Verify complete OMP artifact/blob closure and the local fork/import path against current OMP.
-
-### Before the manifold plugin ships
-
-Manifold prerequisites, each carrying its state at `dev`@68f102e and the manifold path that establishes it; all are filed as manifold issues and tracked in `docs/manifold-transition.md`:
-
-- dynamic/out-of-tree plugin loading — **declared, unscheduled**: `PluginManifest.entry` is reserved for the dynamic wave (`packages/protocol/src/plugin.ts:554-556`), ADR 0016 stage 1 is unscheduled (`docs/decisions/0016-plugin-isolation.md`: "No code depends on this file until stage 1 is scheduled"), and assembly is two static import lists (`packages/server/src/assembly.ts`, `packages/web/src/assembly.ts`);
-- a typed exec/job primitive on the machine channel — **absent**: the channel is a closed PTY vocabulary of seven verbs each way and `create` carries no command (`packages/protocol/src/machine.ts:35-96`);
-- settings kinds beyond boolean — **boolean-only** (`SETTING_KINDS=["boolean"]`, `packages/protocol/src/plugin.ts:104-106`, eight per plugin);
-- a plugin-declarable continuous stream channel — **absent**: session-channel frame bodies are a closed floor-owned union (`packages/protocol/src/session.ts:155,355`) and the event plane is discrete by design (`docs/decisions/0012-event-plane.md:13-16`);
-- a capability vocabulary that can name Babel's authority domains — **closed**: nine members (`packages/protocol/src/capabilities.ts`), shared by manifests, actions and grant rows; whether Babel maps onto them as a stopgap is open in `docs/manifold-transition.md`;
-- a machine-scoped grant — **absent**: no `manifold://machine/<id>` node exists in the address grammar (`packages/protocol/src/events.ts:104-125`; ADR 0011), so a grant cannot name a machine;
-- a supervised long-running or scheduled primitive for a plugin's server half — **absent**: lifecycle hooks are one-shot and bounded to two seconds (`packages/plugin/src/lifecycle.ts`). Babel's processes stay OS-supervised regardless (decision 62), so this is filed for manifold's sake rather than gated on.
-
-Babel-side, before the shell is retired:
-
-- the runs projection exists and the shell renders runs from it alone (§8.3), so the plugin inherits a contract rather than a port;
-- every §8.2 area is converted or knowingly left behind, recorded in `docs/manifold-transition.md`;
-- the agent-kind principal ceremony is settled: the token reaches the machine under §2.3's rules, and the plugin holds no credential — proven with the same sentinels §10 uses;
-- the interim progress path is labelled as an interim in the UI, and its replacement by the stream channel is a recorded change rather than a silent one; and
-- the plugin brings its own allowlisted Markdown/diff renderer, since manifold ships no sanitizer (§2.7).
-
-### Before a subject kind can be focused
-
-For pointed subjects (§3.1, §4.9), per kind, before any run may name it as focus:
-
-- an observer, a fingerprint and a disclosure story are defined and recorded for the kind; repositories are the first, with the commit plus dirty state as the fingerprint; non-git kinds remain facts-only until theirs exist;
-- the read-mode grant vocabulary — commit-pinned, working-tree, remote — is recorded in the receipt beside the other capability grants, and the operator's checkout is proven untouched by test: no fetch, checkout or worktree inside it, and a disposable `git archive` as the only materialization;
-- secret preflight runs over the kind's content and the subject's sensitivity is checked against the profile's disclosure class before anything is sent;
-- host-scoping is known to the fleet, and a run whose subject is absent on its machine is refused rather than guessed;
-- for GitHub remotes, the later-question gate below on authenticated private-remote materialization — proven credential non-exposure and no push authority — is passed first;
-- a watch on the kind carries a per-subject cadence, and the conductor's ceilings bound its draws;
-- the recipes that may run over the kind name it in their `focus` front matter (§5.1); and
-- no code-intelligence index precedes measurement of what repository-focused runs actually retrieve.
-
-### Before recall serves an agent
-
-For the recall interface (§4.10), before the dotfiles instructions tell any agent it exists:
-
-- the recall output format is frozen: every excerpt delimited and labelled as archived data, carrying source host, snapshot time, session, locator and the bound applied, and a whole session only by explicit request with its size stated first;
-- §6.4's likely-secret redaction is proven to run on every recall path with no disabling flag, by test, and the recall disclosure class is defined against §3.1's subject sensitivity so a refused subject is refused by name;
-- freshness is stated on every answer as the newest snapshot time seen, and a machine's miss is a fetch, not a refusal, with the fetch's cost visible;
-- the recall request is recorded as a derived record (§4.9) with what was searched, what was shown and what was widened, and a first measurement of that record decides whether the conductor warms anything ahead of the question;
-- the worker's evidence tool and the recall door are shown to be one implementation, so a change to one changes the other; and
-- the skill text Babel ships is what dotfiles installs, and the instructions every project inherits name the capability in one sentence and defer the how to the skill.
-
-### Before a canonical record is rehydrated into a harness
-
-For the reverse direction (§6.8), per harness, before any command writes a log a harness could resume:
-
-- the rehydration unit and its identity are defined: whether a resume yields a whole session, a turn range, or a new session seeded with an excerpt, and what the new session records about where it came from — it references its source (§4.11) rather than claiming to be it;
-- the harness's writable format contract is proven per harness: which files a resumable session consists of, which of their fields that harness re-reads on resume, and what it does with a record written differently than it writes its own. §3's unequal adapter guarantees apply in this direction too, and an unproven contract yields no reverse transformer rather than a best-effort one;
-- rehydration reads the retained capture and uses the canonical model only to locate records within it, proven by test against a synthesized-from-canonical control that the test rejects (§6.8); and
-- where a rehydrated log is written is decided, and two paths are closed: never into the operator's live harness tree by Babel's own hand (§2.2), and never into a path a later `archive push` would capture as an original, which would place a copy of the archive inside the archive and amplify exactly what §4.11 forbids.
-
-### Before a new record-producing path ships
-
-- Prove the path publishes with no operator action: every record it produces reaches the shared catalog through a schedule or an event Babel already runs, and any deferral names both the liveness proof that licenses it and the termination condition that ends it (§9.1). A path whose output waits for a typed command has not passed this gate.
-
-### Before a capability ships
-
-- Prove the stored data the capability concerns is reachable from the GUI's navigation and that every decision it permits is offered where that data is read (§8.4) — or record the gap with what it waits on, as §8.4 records run creation against manifold's exec primitive. A capability reachable only through a command the operator must remember has not passed this gate, and neither has one whose records a URL reaches but the navigation does not.
-
-### Before full-lifecycle evaluation is activated
-
-**Status: the runtime is delivered and these proofs are exercised by its suites** (§§4.12, 5.8, 8.5). What remains is not code: the policy's numbers are conservative defaults rather than measured settings, and activation is still per machine — an authorized toggle, a configured share, and an enabled policy the operator saves. Two items below therefore stay open until a deployment has run under them: measured policy settings, and the migration/rollback record for stored version-1 advice, which remains readable as advice and is converted into nothing.
-
-- Prove bare support, opposition, and uncertainty survive publication and are readable on a second instance without invented prose; skips, failures, retries, and duplicate delivery do not become votes or completed reviews (§4.12).
-- Prove revision binding and attribution, prior-score blinding, same-run self-boost refusal, and historical advice compatibility. A revised proposal must not inherit endorsements of the old wording.
-- Prove versioned weighting, exposure accounting, positive exploration, stable-reception cooldowns, disagreement routing, and shared budget/claim recovery on deterministic synthetic fixtures. No outcome of the sampler may authorize an operator disposition (§5.8).
-- Prove operator acceptance, implementation observations, and verified outcomes remain distinct, including partial, missing-criteria, contradictory, and changed-environment cases. Reconsider preserves the prior decision and makes reopening an explicit operator action.
-- Exercise browser navigation, sorts, optional contributions, criteria resolution, and lifecycle decisions across independent authorized readers. Prove globally ordered pagination and bounded page-read work, with honest stale/unavailable projection states (§8.5).
-- Prove periodic coverage finds never-reviewed artifacts beyond proposals and advances oldest-due eligible initial reviews independently of popularity. Exhausted budget, interrupted assignments, missing evaluators, and blocked sources remain visible as coverage gaps; a bare vote cannot satisfy evidence or outcome verification.
-- Prove unchanged reception can yield a different Recommended order when recorded current work or pain changes. Show the relevant Reality/context provenance, uncertainty, and reasons to refuse or refine; never turn a suggested decision or inferred preference into an operator ruling or fact.
-- Prove contextual alternative comparisons preserve each record and its decisions without inventing votes. Explain why-now and decision-changing uncertainties, distinguish explicit feedback reasons from engagement, and allow a revised remedy that answers an earlier refusal to be evaluated on its new merits.
-- Publish the runnable recipe/API/schema cutover and measured policy settings together, with migration and rollback support for stored version-1 advice. Keep unimplemented pieces recorded in `docs/evaluation-lifecycle.md`; a spec-only PR does not satisfy this activation gate.
-
-### Later product questions
-
-- Decide whether selected review outcomes become evaluation material automatically or only through explicit curation.
-- Evaluate semantic retrieval as a diversity mechanism rather than assuming vector similarity is necessary.
-- Explore authenticated private-remote materialization only after a broker can prove credential non-exposure and no push authority. The GitHub-remote read mode of §3.1 (2026-09-02) is this question's first concrete demand and waits on the same proof.
-- Explore Codex/Claude continuation only after archive and analysis adapters expose reliable semantics.
+- **Before a capability that spends reaches a new machine**, its ceilings, its Code profile and its
+  authorization are recorded policy on that hub. Saving a policy is not permission to launch
+  compute.
+- **Before anything runs on production**, it has been proved on the preview hub by using it.
+  Production is installed by the operator, by hand, and nothing in this repository installs it.

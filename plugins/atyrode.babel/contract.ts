@@ -6,11 +6,11 @@ import { z } from "zod";
   repeats its own id as data, and `test/contract.test.ts` pins each manifest to these constants
   so the two can never disagree. The kit inlines this module into every bundle that imports it.
 
-  The family, per `docs/manifold-plan.md` §2:
+  The family:
   - `atyrode.babel` is the baseline: the store (ADR 0034's plugin database), every door, the
     machine half's declared operations and their schedules, the feed index. It serves no panel.
-  - `atyrode.babel.feed` is the reading surface: Home, a record, a topic — SPEC §8.7 and §4.13.
-  - `atyrode.babel.watch` is the control room: runs in flight, presets, recipes, ceilings — §8.3.
+  - `atyrode.babel.feed` is the reading surface: Home, a record, a topic — SPEC §8.3 and §4.13.
+  - `atyrode.babel.watch` is the control room: runs in flight, presets, recipes, ceilings — §8.4.
   A sub-plugin depends on the baseline (`dependencies` in its manifest) and reads only through
   the baseline's doors; it holds no storage of its own.
  */
@@ -1261,8 +1261,8 @@ export const INPUT_FIELD = "input";
  * service the operator installs, under this id: the engine materializes that binding's loopback
  * endpoint and a capability minted for this job alone into `RESTIC_CREDENTIAL_FILE`, and the
  * operation asks the service for the storage document. The locator and the object-store
- * credential an `s3:` locator needs therefore arrive together, never in halves (SPEC decision
- * 50), and no secret reaches argv, the environment, the job request or the hub's journal.
+ * credential an `s3:` locator needs therefore arrive together, never in halves, and no secret
+ * reaches argv, the environment, the job request or the hub's journal.
  *
  * `operationId` is the policy key the binding names and `path` is the route that policy
  * declares; the manifest spells both and so does machine/restic.ts, which is why they are

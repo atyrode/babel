@@ -1,8 +1,11 @@
 # Repository instructions
 
-Babel is a public Go application (`cmd/babel`, `internal/`) with an embedded React web
-surface (`web/`), versioned analysis cookbook (`cookbook/`) and Manifold plugins (`plugins/`).
-`SPEC.md` owns product behavior; operational and transition guidance is routed below.
+Babel **is** a Manifold plugin family under `plugins/`: the baseline `atyrode.babel`, which owns
+the store, the doors, the machine half and the conductor, plus the two panel plugins
+`atyrode.babel.feed` and `atyrode.babel.watch`. There is no binary, no separate web application
+and no standalone cookbook directory. `SPEC.md` owns product behaviour, `plugins/README.md` owns
+how the family is built, packed, verified and delivered, and `docs/parity.md` records what the
+retired product did and whether the plugin does it.
 
 The marked block is generated from
 [`dotfiles/modules/home/agents/engineering.md`](https://github.com/atyrode/dotfiles/blob/main/modules/home/agents/engineering.md).
@@ -98,125 +101,132 @@ maintenance PRs with required CI and maintainer holds. Details are in dotfiles'
 
 ## Commands
 
-Run the rows applicable to the changed surface, not every row for every task. Use Go from
-`go.mod`, restic **0.19.1** for archive/browser work, and Bun for web/plugins. Commands run
-from the repository root unless a working directory is shown.
+Run the rows applicable to the changed surface, not every row for every task. Bun is the whole
+toolchain; commands run from `plugins/` unless a working directory is shown.
 
 | Surface | Commands | Prerequisites and meaning |
 | --- | --- | --- |
-| Go formatting/static/build | `gofmt -l .`; `go vet ./...`; `go build ./...` | The formatting listing must be empty. |
-| Go suites | `go test -count=1 ./...` | Archive tests skip without restic. PostgreSQL requirements are below. |
-| Go race | `go test -race -count=1 -timeout 45m ./internal/...` | Requires a C toolchain and cgo; CI sets `CGO_ENABLED=1` and supplies restic/PostgreSQL. |
-| Web setup | `cd web && bun install --frozen-lockfile` | Use the committed lockfile. |
-| Web typecheck/build | `cd web && bunx tsc --noEmit && bun run build` | Commit rebuilt `web/dist` with a web change. |
-| Browser acceptance | `cd web && bun run test:browser` | Requires Chrome or Chromium, Go and restic; optional `BABEL_TEST_BINARY` selects a prebuilt Babel binary. |
-| Cookbook | `go run ./cmd/babel cookbook check --dir cookbook` | Checks the working tree's versions and semantic content digests; drift exits 1. |
-| Plugin gate | `cd plugins && bun install --frozen-lockfile && bun run deps:code && bun run check && bun test && bun run pack && bun run verify` | Requires the pinned `../manifold` sibling and its dependencies; `deps:code` fetches atyrode/code at `plugins/CODE_REV` and builds its bundles and omp's, which `verify` composes Babel on top of. Read `plugins/README.md` first. |
+| The gate | `cd plugins && bun install --frozen-lockfile && bun run deps:code && bun run check && bun test && bun run pack && bun run verify` | The whole of it, and what CI runs on every pull request. Read `plugins/README.md` first. |
+| Dependency closure | `bun run deps:code` | Fetches atyrode/code at `plugins/CODE_REV`, arranges the sibling layout Code's own `prepare:integration` expects and runs Code's packers, which build omp's bundles beneath it. `verify` composes Babel on top of them. |
+| Typecheck | `bun run check` | `tsc --noEmit` over both halves, the store, the panels and the tests. |
+| Suites | `bun test` | The manifests against `plugins/atyrode.babel/contract.ts` and `plugins/atyrode.babel/store/schema.ts`, the doors against a real temporary database, the panels in a document, and `pack` itself. |
+| Pack | `bun run pack` | Builds the machine half into one bundled file, stamps its digest into both platform artifacts of the manifest and writes one `dist/<id>.manifold-plugin.json` per manifest, parents first, plus `dist/SHA256SUMS`. A machine-half change shows up as a moved digest in the manifest diff. |
+| Verify | `bun run verify` | Installs every bundle on a disposable engine spawned from the `../manifold` sibling, dispatches every door it publishes, asserts the plugin's database file exists and then that a purge removed it. Needs `deps:code` and `pack` first. |
+| Reachability | `bun run lint:reachability` | knip over the entry points the manifests declare plus the dev-time tools: unused files, unused exports, unused dependencies, unlisted and unresolved imports. |
+| Documentation paths | `bun run lint:doc-paths` | Every backticked repository path and every `bun run <script>` named in a tracked `.md` must exist. |
+| Format and lint | `bun run lint`; `bun run format:check` | The formatter and linter the Manifold sibling already uses, so three repositories in lockstep keep one convention rather than three. |
+| Test rules | `bun run check-test-rules` | A test may not read a `.md` file — prose wording is not a contract — and may not skip itself on an environment variable: a lane that cannot run is zero tests, never silently-skipped ones. |
+| Inner loop | `bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifold-1` | Packs every manifest, installs the baseline before its parts on the named hub and reinstalls the bundles whose digest moved on every save. A preview hub only. |
 
-The shared-catalog suite uses `BABEL_TEST_POSTGRES=<url>` or provisions a temporary cluster
-with `initdb` and `pg_ctl`; without either it skips locally. Any supplied URL must be a
-verified disposable fixture, never the shared catalog. `test/e2e` provisions its own TLS
-cluster and needs both server binaries even with a URL. `BABEL_REQUIRE_POSTGRES=1` makes
-missing prerequisites fail; CI sets it and supplies PostgreSQL 18 and the server binaries.
+**The last four rows land with the gates PR** and are not in `plugins/package.json` yet; the
+script names above are the contract that PR implements.
 
-Browser discovery is owned by `web/browser/chrome.ts` (`BABEL_TEST_CHROME`, PATH, then
-Puppeteer's cache). Missing Chrome/Chromium is an explicitly unverified local skip, but a
-hard failure with `CI` set; `ci.yml` also requires Chrome during setup. Archive tests skip
-without restic. Report skipped checks and their unverified guarantees; completed CI evidence
-may supply missing capability proof, but a local skip is not a pass.
+Every row needs the SDK: a checkout of atyrode/manifold **beside this repository**, at the
+revision in `plugins/MANIFOLD_REV`, with its own `bun install` run. `deps:code` and `verify`
+additionally require that checkout to sit exactly at the pin, and Code's own
+`prepare:integration` refuses a mismatch by name. Install and run under the same `MANIFOLD_DIR`:
+`bun install` writes React as a symlink into whichever checkout was resolved at install time, so
+pointing it elsewhere afterwards fails every web test with "Invalid hook call" for a reason that
+is not the component under test (`plugins/README.md`, "The SDK is a sibling checkout").
+
+The `archive` machine operation is the one part no local command proves: it needs an enrolled
+machine binding a `restic` runtime tool and the `atyrode.babel.restic` service the operator
+installs, so it is exercised on a hub and never in the suites. Report skipped checks and the
+guarantees they leave unverified; completed CI evidence may supply missing capability proof, but
+a local skip is not a pass.
 
 ## Boundaries
 
 - **Destructive and irreversible archive, custody and fleet operations need case-by-case
-  authorization** (operator direction 2026-09-12). `restic forget`, `prune`, `unlock`,
-  `repair` and `init`, rewriting or deleting shared catalog rows, moving or deleting a
-  published tag, and fleet or deployment apply can each destroy history nothing else
-  holds. Name the operation and get approval for that occasion; an approval covers what
-  it named and not the class. Production plugin installation is by the operator, by hand.
-- **Running Babel is ordinary operation, not a mutation to be asked about.** Analysis
-  runs, the conductor loop, `babel prepare`/`explore`, `babel evaluate`, coverage sweeps,
-  additive `restic backup`, and the shared-catalog migrations a publication needs are
-  normal work inside whatever the operator asked for. They append; they destroy nothing.
-  Refusing them because something downstream writes is the failure mode this bullet
-  exists to stop.
-- **`babel sync` is ordinary record publication, not archive mutation, and is permitted**
-  within the authorized scope of the analysis work that produced the records. It appends
-  this host's already-durable Phase B records to the shared backend; it deletes nothing,
-  rewrites nothing and touches no snapshot. Leaving analysis unsynced is the riskier
-  default, because the restic archive holds session transcripts and not Babel's own
-  hypotheses, findings and receipts, so unpublished records exist on exactly one disk.
-  `--generate-key` mints custody and stays operator-only; report what published and what
-  remains owed.
-- Disposable synthetic temporary fixtures may be created, mutated and cleaned up for tests.
-  Isolate HOME, XDG configuration/state and repository selection; never inherit production
-  endpoints, credentials or storage documents from the environment or real home.
-  A variable named `BABEL_TEST_POSTGRES` does not establish that its destination is disposable.
-- Managed storage/password/payload-ring placement belongs to dotfiles/clan. Do not overwrite
-  managed links with Babel's standalone configuration writer or mint replacement custody to
-  repair missing placement. Preserve the existing repository password and every historical
-  payload key through migration, rotation and rollback; `docs/runbook.md` §§3–4 and §8 own
-  the procedures.
+  authorization.** `restic forget`, `prune`, `unlock` and `repair`, pointing a deployment at a
+  different repository or rewriting the document that opens one, moving or deleting a published
+  tag, and fleet or deployment apply can each destroy history nothing else holds. Name the
+  operation and get approval for that occasion; an approval covers what it named and not the
+  class. Production plugin installation (`manifold.tyrode.dev`) is the operator's, by hand.
+- **Running Babel is ordinary operation, not a mutation to be asked about.** Launching an
+  explore, the conductor's cycle, the `scan`, `prepare` and `archive` machine operations —
+  including the `init`, `backup` and `snapshots` that `archive` runs against the deployment's own
+  configured repository — and a drain inside its declared target are normal work inside whatever
+  the operator asked for. They append; they destroy nothing. Refusing them because something
+  downstream writes is the failure mode this bullet exists to stop.
+- **There is no publication step, because there is nowhere to publish to.** The standalone
+  product's `babel sync` retired with the product. The hub's own SQLite file is where a record
+  lives, and `plugins/atyrode.babel/store/schema.ts` says so — "nothing is sealed and nothing is
+  synced. The hub is the one place" — while `docs/parity.md` records the retired `sync/` package
+  as absent by decision. A settled run's records are durable the instant the settlement writes
+  them, so nothing is ever owed downstream and no publication has to be asked about. The restic
+  archive holds session transcripts, not Babel's records; keeping the hub's store safe is the
+  deployment's backup concern and not an act of Babel's.
+- Disposable synthetic temporary fixtures may be created, mutated and cleaned up for tests. The
+  suites open a temporary store of their own and must keep doing so. Isolate HOME, XDG
+  configuration/state and repository selection; never inherit production endpoints, credentials
+  or storage documents from the environment or real home.
+- Managed storage/password/payload-ring placement belongs to dotfiles/clan. The storage
+  document — repository locator, password and object-store pair — reaches a job only through the
+  `atyrode.babel.restic` service the operator installs, and nothing here mints replacement
+  custody to repair missing placement. Preserve the existing repository password and every
+  historical payload key through migration, rotation and rollback; `docs/runbook.md` owns the
+  procedures.
 - Babel-the-product makes ideas inspectable: it does not open issues, edit repositories,
   rotate credentials or apply suggestions. It remains vault-agnostic, without credential
   retrieval authority. This does not prohibit a coding agent's explicitly requested repository PR.
 
 ## Task-specific guidance
 
-- **Go:** require formatting/static/build and Go suites above; concurrency changes also
-  require the race row.
-- **Drains and harvests:** read `docs/runbook.md` §11 and the open atyrode/babel issues labelled
-  `drain` before starting one; the pre-flight, the 90-second go/no-go and the reporting rules
-  there are mandatory, for an agent as for a person.
-- **Web:** require web setup/typecheck/build and actual rendered interaction. Run browser
-  acceptance for affected browser behavior, especially bootstrap nonce, address-bar and
-  history handling. Commit rebuilt `web/dist` with source changes: `web/embed.go` embeds
-  that output, so source-only edits do not ship the changed surface.
-- **Cookbook:** require the cookbook check. `cookbook/versions.json` records each recipe
-  and the preamble's declared version and semantic digest. Change the document's version
-  and matching record together when semantics change; never edit the record alone to hide
-  drift. The cookbook is embedded too.
-- **Storage, custody or runbook work:** read `SPEC.md` §9 and `docs/runbook.md`, especially
-  §§3–4 and §8. Standalone configuration takes one document via
-  `babel storage configure --from-json -`; storage, password and payload-key files retain
-  mode 0600. Credentials must not enter argv, logs, error text, shell history or persistent
-  temporary files. Record a procedure as exercised only after execution, with host, date
-  and observed output; otherwise mark it **OPERATOR STEP** with prerequisites and observable
-  success. Historical output or pinned source is not current activation proof.
-- **Plugins are the product under construction; the Go binary is frozen (#250).** Babel
-  becomes a Manifold plugin family (decision 91, `docs/manifold-plan.md`; trackers #240
-  #245 #246 #247, epic #268): behaviour changes land in `plugins/atyrode.babel`, and the
-  Go tree takes fixes only until the plugin reaches parity. The plugin gate
-  (`.github/workflows/manifold-plugins.yml`, one call of Manifold's reusable
-  `plugins.yml`) runs on every PR touching `plugins/`; the Plugin gate row above is its
-  local equivalent. `plugins/MANIFOLD_REV` pins the Manifold revision the plugin builds
-  against and follows Manifold `main`: moving it to a newer `main` revision is ordinary
-  work (operator direction 2026-09-13) done in its own PR, with the `uses:` ref moved to
-  the same revision, the sibling checkout (`plugins/README.md`, "The SDK is a sibling
-  checkout") moved with it and the gate green against it; pinning a branch and installing
-  on production remain the operator's calls (`plugins/README.md`, "Where a change is
-  proved").
-- **Release or deployment work:** read `.github/workflows/release.yml`: a `v*` tag publishes
-  the Go binary, runs the plugin gate against the tagged revision, attaches the verified
-  bundles to the release and hands them to the integrated preview's receiver, baseline
-  before parts (operator direction 2026-09-14: the preview is where a change is proved).
-  Production (`manifold.tyrode.dev`) is installed by the operator, by hand. Read the
-  runbook/transition record for current deployment ownership. Managed-machine packaging,
-  scheduling and storage/key placement belong to dotfiles; source publication does not
-  prove fleet activation. Only tag deployable revisions; never move or delete a published
-  tag, since proxied Go modules are immutable. A bad tag stays and the next patch follows it.
-- **Resuming the dated batch:** read `docs/handoff-2026-09-06.md` and its owning trackers
-  only when resuming that work. Keep work/evidence/operator actions in their owning
-  repository; external issues are actual Babel dependencies, not a cross-project backlog.
-  Coordinate ownership and continue independent work; a recorded dependency or activation
-  reminder grants no operational permission.
+- **Any plugin change:** every id, door name, event kind, panel id, preset, job output file and
+  receipt field is spelled once in `plugins/atyrode.babel/contract.ts`, with the tables in
+  `plugins/atyrode.babel/store/schema.ts`, and `plugins/test/contract.test.ts` pins every
+  manifest to both. A field that is not spelled there is refused by the door it was added for.
+  A part reaches the baseline only through its doors, never as a library.
+- **Recipes:** the recipe bodies are plugin data. They live in
+  `plugins/atyrode.babel/store/recipes.seed.json`, are generated from a cookbook-shaped directory
+  by `plugins/atyrode.babel/tools/seed-recipes.ts`, and a hub reads them from its policy's
+  `review.recipes` block, which is what a prompt writes verbatim. A claim cites a recipe as
+  `id@version`, so a changed body and its version move together and the seed is regenerated
+  rather than hand-edited. The tool prints a policy block and installs nothing.
+- **Drains and harvests:** read the drain procedure in `docs/runbook.md` and the open
+  atyrode/babel issues labelled `drain` before starting one; the pre-flight, the 90-second
+  go/no-go and the reporting rules there are mandatory, for an agent as for a person.
+- **Panels:** a change under `plugins/atyrode.babel/feed/` or `plugins/atyrode.babel/watch/` is
+  proved by actual rendered interaction on a preview hub through `bun run dev`, not by the panel
+  tests alone. Every CSS selector a part ships stays rooted at that plugin's own class, and
+  React, `@manifold/plugin` and `@manifold/ui` are shared externals: a bundle may never carry a
+  second copy of them.
+- **Storage, custody or runbook work:** read `SPEC.md` and `docs/runbook.md`. Credentials must
+  not enter argv, logs, error text, shell history or persistent temporary files — the repository
+  password reaches restic as `RESTIC_PASSWORD` in the child's environment and nowhere else.
+  Record a procedure as exercised only after execution, with host, date and observed output;
+  otherwise mark it **OPERATOR STEP** with prerequisites and observable success. Historical
+  output or pinned source is not current activation proof.
+- **The Manifold pin:** `plugins/MANIFOLD_REV` follows Manifold `main`, and moving it to a newer
+  `main` revision is ordinary work in its own PR, with both workflow `uses:` refs — the gate's in
+  `.github/workflows/manifold-plugins.yml` and the release gate's in
+  `.github/workflows/release.yml` — moved to the same revision, the sibling checkout moved with
+  it and the gate green against it. The pin moves in dependency order across three repositories,
+  omp then Code then here, which `plugins/README.md` ("Code is a second pin") spells out.
+  Pinning a branch and installing on production remain the operator's calls.
+- **What the retired product did:** `docs/parity.md` is the per-capability record of the
+  standalone product's packages and whether the plugin has each one. Read it before claiming a
+  capability is missing and before porting one. The reference implementation is readable at the
+  tag `v0.4.0` — `git show v0.4.0:internal/<pkg>` — and is not in the working tree.
+- **Release or deployment work:** read `.github/workflows/release.yml`. A `v*` tag creates the
+  release, runs the same plugin gate against the tagged revision, builds the dependency closure,
+  attaches the verified bundles and their checksums to the GitHub Release and hands each asset
+  URL and digest to the integrated preview's receiver, dependencies and parents first. It
+  publishes no binary. Production (`manifold.tyrode.dev`) is installed by the operator, by hand.
+  Only tag deployable revisions; never move or delete a published tag. A bad tag stays and the
+  next patch follows it.
 
 ## Delivery
 
 - Use PRs into `main` with conventional-commit titles. Applicable local checks and current
-  required CI remain readiness/merge prerequisites. `.github/workflows/ci.yml` runs `test`,
-  `race`, `web` and `browser` on every PR and main push and supports manual main-CI dispatch.
-  The plugin gate `manifold-plugins.yml` runs on every PR touching `plugins/`.
+  required CI remain readiness/merge prerequisites. `.github/workflows/manifold-plugins.yml`
+  runs the plugin gate on **every** pull request and every push to `main`; it carries no path
+  filter, because a PR editing a workflow, a document or the changelog would otherwise merge
+  with nothing having run. It is the repository's only gate — the Go-era `ci.yml` is deleted —
+  and `.github/workflows/agent-policy.yml` and `.github/workflows/release.yml` are the other two
+  workflows.
 - Add one `## [Unreleased]` bullet in `CHANGELOG.md` per user-visible change, in the existing
   voice: what changed, why and what proves it.
-- Cite cross-repository facts with source `path:line` at a named revision, not from memory;
-  for Manifold pinning, read `docs/manifold-transition.md` §1.
+- Cite cross-repository facts with source `path:line` at a named revision, not from memory; for
+  Manifold pinning, read `plugins/README.md`, "The SDK is a sibling checkout".

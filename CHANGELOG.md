@@ -56,6 +56,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **Every document describes only what Babel is, in the present tense.** `SPEC.md` keeps its name
+  and its section numbers — so the `SPEC.md §N` citations in code and issues still resolve — and
+  loses the standalone product, the phase plan, and §13's log of ninety numbered decisions: each
+  surviving rule moved into the section that owns its subject, stated as behaviour with no number
+  and no date, and the rest went with the code it described. Where a capability is designed and
+  absent the section says so and points at `docs/parity.md`. `docs/` drops four superseded
+  designs — the Manifold transition, the runs-interface design that shipped as Watch, a dated
+  batch handoff, and the plan whose phases are issues — and rewrites the four that remain;
+  `docs/postmortem-2026-09-13-drain.md` stays a postmortem, with only its two dangling paths
+  repaired. `AGENTS.md`, `README.md` and `plugins/README.md` describe the plugin family, its
+  gate, and where a change is proved.
+- **A correction worth naming: the drawn-review lane works.** Three documents said it answered
+  `draw_pending` and it has not since the conductor learned to dispatch a fenced review. What is
+  actually owed there is evidence, not code: every rehearsal of that lane has been synthetic, so
+  the documents now state that boundary instead of a defect.
 - **The plugin gate now runs on every pull request and every push to `main`.** `ci.yml` built
   the Go binary and the React bundle and was the only check an ordinary PR had; with those
   trees gone it had nothing left to run. `manifold-plugins.yml` drops its `plugins/**` path

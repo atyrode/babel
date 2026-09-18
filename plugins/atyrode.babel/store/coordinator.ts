@@ -1,5 +1,5 @@
 /*
-  THE EVALUATION COORDINATOR (§4.12, docs/evaluation-lifecycle.md §E4): which review of which
+  THE EVALUATION COORDINATOR (SPEC §4.12, §5.8): which review of which
   record in which role is worth spending authorized attention on next, who is entitled to do
   it, and what it cost. It is the port of v0.4.0:internal/evaluation's `policy.go`, `selection.go` and
   `coordination.go` onto the plugin's own tables, and it is one file because those three
