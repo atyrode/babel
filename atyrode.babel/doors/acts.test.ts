@@ -349,6 +349,31 @@ test("the crossing is owner-only, hub-checked and idempotent by (table, id)", as
   expect(await owner.store.db.query<{ host: string }>(`SELECT host FROM sessions`)).toEqual([
     { host: machineId },
   ]);
+  // The run log's machine column is guarded by the same check, and needs its own case: with only
+  // the sessions column asserted, dropping `runs.machine_id` from the guard breaks no test.
+  // `machine_id` is handed to `describe` and `listRuns` exactly as a session's host is, so a run
+  // crossed under a name is a run nothing can locate afterwards (#309's other half).
+  const run = {
+    id: "run_1",
+    kind: "explore",
+    started_at: "2026-03-01T09:00:00.000Z",
+    payload: "{}",
+  };
+  expect(
+    await refusal(owner, ACTIONS.importLedger, {
+      source: "durable.db",
+      table: "runs",
+      rows: [{ ...run, machine_id: "dev-01" }],
+    }),
+  ).toMatch(/dev-01 is not a machine this hub can describe/);
+  expect(await owner.store.db.query(`SELECT id FROM runs`)).toEqual([]);
+  expect(
+    await knock(owner, ACTIONS.importLedger, {
+      source: "durable.db",
+      table: "runs",
+      rows: [{ ...run, machine_id: machineId }],
+    }),
+  ).toMatchObject({ table: "runs", inserted: 1 });
 });
 
 test("a re-host moves a catalogued corpus onto an id the hub knows, and refuses one it does not", async () => {

@@ -1713,11 +1713,19 @@ export function importableTables(): Record<string, readonly string[]> {
   return tables;
 }
 
-/** The column names of one `CREATE TABLE` body: the leading identifier of each top-level part. */
+/**
+ * The column names of one `CREATE TABLE` body: the leading identifier of each top-level part.
+ *
+ * A COMMENT IS SKIPPED RATHER THAN SCANNED, because a comment is prose and prose carries
+ * apostrophes. The note inside `runs` — "where this run's job is" — opened a string literal that
+ * nothing closed, so the remainder of that table, `unreadable` and `payload`, was read as one
+ * quoted run and never became a column. The crossing then refused every `runs` chunk for having
+ * no column "payload", which is the column every receipt carries, and the run log could not
+ * cross at all.
+ */
 function columnNames(body: string): readonly string[] {
   const columns: string[] = [];
   let depth = 0;
-  let quoted = false;
   let part = "";
   const take = (): void => {
     const leading = /^\s*([a-z_][a-z_0-9]*)/i.exec(part);
@@ -1725,15 +1733,27 @@ function columnNames(body: string): readonly string[] {
     if (word !== undefined && !CONSTRAINT_WORDS[word.toUpperCase()]) columns.push(word);
     part = "";
   };
-  for (const character of body) {
-    if (quoted) {
-      quoted = character !== "'";
-      part += character;
+  for (let at = 0; at < body.length; at += 1) {
+    const character = body[at];
+    if (character === "-" && body[at + 1] === "-") {
+      const end = body.indexOf("\n", at + 2);
+      if (end === -1) break;
+      at = end;
+      continue;
+    }
+    if (character === "/" && body[at + 1] === "*") {
+      const end = body.indexOf("*/", at + 2);
+      if (end === -1) break;
+      at = end + 1;
       continue;
     }
     if (character === "'") {
-      quoted = true;
-      part += character;
+      // A literal — a CHECK's allowed values, a DEFAULT — is data, not structure: it rides into
+      // the part whole so a comma or a bracket inside it cannot end a column.
+      const close = body.indexOf("'", at + 1);
+      const end = close === -1 ? body.length - 1 : close;
+      part += body.slice(at, end + 1);
+      at = end;
       continue;
     }
     if (character === "(") depth += 1;

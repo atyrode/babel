@@ -1353,6 +1353,31 @@ test("the importable tables are derived from the migration itself", () => {
     "recorded_at",
   ]);
   expect(tables["resolution_members"]).toEqual(["resolution_id", "role", "position", "entity_id"]);
+  // `runs` is the table whose body carries a prose comment, and prose carries apostrophes: the
+  // note about "where this run's job is" opened a quote nothing closed, and the two columns
+  // after it were read as part of the literal. Deriving them wrong is silent until the crossing
+  // refuses a run receipt for having no `payload`, so the whole list is pinned here.
+  expect(tables["runs"]).toEqual([
+    "id",
+    "kind",
+    "machine_id",
+    "job_id",
+    "container_id",
+    "prepare_job_id",
+    "recipe_id",
+    "profile",
+    "authority_kind",
+    "authority_id",
+    "preparation",
+    "started_at",
+    "finished_at",
+    "closure",
+    "cost_usd",
+    "tokens",
+    "records",
+    "unreadable",
+    "payload",
+  ]);
   expect(tables["sqlite_master"]).toBeUndefined();
 });
 

@@ -252,6 +252,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The run log can cross at all.** `importLedger` refused every `runs` chunk with
+  `runs has no column "payload"` — the column every receipt carries. The crossing derives each
+  table's columns by reading its `CREATE TABLE` body, and the derivation treated the apostrophe in
+  `runs`'s own inline note — "where this run's job is" — as the start of a string literal. Nothing
+  closed it, so the rest of that table was read as one quoted run and its last two columns,
+  `unreadable` and `payload`, never became columns. `runs` was the only table of twenty-six
+  affected, which is why it survived: every other table's comments happen to be apostrophe-free.
+  A comment is now skipped rather than scanned, because a comment is prose and prose carries
+  apostrophes, and a literal rides into the part whole so a comma inside it cannot end a column.
+  The full `runs` column list is pinned, so the next comment with an apostrophe in it fails a test
+  rather than silently truncating a table.
+
+  It also means the machine-identity guard was only half reachable: the `runs.machine_id` arm
+  could never fire through the door, because no `runs` chunk got that far. That arm had no test
+  either — removing it left every suite green — and now it has one.
 - **Three tool usage lines named a path that does not work.** `import.ts`, `seed-recipes.ts` and
   the new sweep printed `bun tools/…`, which has been wrong since the layout flattening moved the
   tree under `atyrode.babel/`. They print the invocation that runs.
