@@ -5,7 +5,7 @@
     "": {
       "name": "babel-manifold-plugins",
       "dependencies": {
-        "@atyrode/manifold-code": "github:atyrode/code#cc46a046fd59576c75114972424f0d6ccb5af84f",
+        "@atyrode/manifold-code": "github:atyrode/code#c6a9c264bfcb37934b5814b0943989fa78f7dd05",
         "zod": "4.4.3",
       },
       "devDependencies": {
@@ -17,9 +17,9 @@
     },
   },
   "packages": {
-    "@atyrode/manifold-code": ["@atyrode/manifold-code@github:atyrode/code#cc46a04", { "dependencies": { "@atyrode/manifold-omp": "github:atyrode/manifold-omp#da54df29353cc14c101a9037ade852daad9ddcb6", "zod": "4.4.3" } }, "atyrode-code-cc46a04", "sha512-k+S3yJ2iFAiLvbHWVB/unev7Nji9rTWZsdiBs0L90iqJP/RmvrqoeuCFFKp+xch7jXS+UhxcMZf6w7q1CJZt4w=="],
+    "@atyrode/manifold-code": ["@atyrode/manifold-code@github:atyrode/code#c6a9c26", { "dependencies": { "@atyrode/manifold-omp": "github:atyrode/manifold-omp#fcf76cf9d7d708464ecca754535d5262b70beb75", "zod": "4.4.3" } }, "atyrode-code-c6a9c26", "sha512-9xvnREB8fnWTeXPPOukCWrzDFLGOmpK0y2D/YNiDyFwLwyhug0IEwkRoNgZ2l1JvRbHnQaSiLOuPGbvtvbypmQ=="],
 
-    "@atyrode/manifold-omp": ["@atyrode/manifold-omp@github:atyrode/manifold-omp#da54df2", { "dependencies": { "zod": "4.4.3" } }, "atyrode-manifold-omp-da54df2", "sha512-4K83ZHIuQXgfy09mgmKRQIbXOeiVun7sXZpI3h4JOs36wfXPfC5qo0XfbYzOu+KispCaOIJCWgC5GSsHpZxa5A=="],
+    "@atyrode/manifold-omp": ["@atyrode/manifold-omp@github:atyrode/manifold-omp#fcf76cf", { "dependencies": { "zod": "4.4.3" } }, "atyrode-manifold-omp-fcf76cf", "sha512-W8r7sf8hrux8XzK3SMSGaop3Be4dQ3YvYzGiayWYy4QicCi/XJG8XRLXKQ0s2kKJ3Qdn7KducsrSJW0ouOR7gw=="],
 
     "@happy-dom/global-registrator": ["@happy-dom/global-registrator@20.14.5", "", { "dependencies": { "@types/node": ">=20.0.0", "happy-dom": "^20.14.5" } }, "sha512-B05ID9DhSwLs6mlm1fzlkAtTIvB3duCvjJjfr19LBrlTK7VZtRjDqoTRIVv13GuYuNdhByu8LSZgThwV3Rkj7g=="],
 
