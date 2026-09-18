@@ -191,24 +191,37 @@ function context(
 }
 
 /**
+ * What the bridge asks of one job verb before it is served, as `job-service.ts` asks it: the
+ * reads a cycle ingests with, and the machine read a cadence is registered from.
+ */
+const VERB_CAPS: Record<string, string> = {
+  status: "jobs:read",
+  follow: "jobs:read",
+  listRuns: "jobs:read",
+  describe: "machines:read",
+};
+
+/**
  * `ctx.jobs` AS THE HOST SERVES IT TO ONE DOOR'S DISPATCH: attenuated to what that action
  * declared (`plugin-host.ts` intersects the door's caps and delegates with the native set, and
- * `authorizedJob` refuses every job read without `jobs:read` in them). It is derived from the
- * plugin's OWN declaration, so a door added to `WAKES` without the delegate is served a slice
- * that cannot read a job — which is a cycle that settles nothing and folds nothing, and is the
- * whole reason the delegate is on the door rather than assumed.
+ * `job-service.ts` refuses every verb whose capability is outside it by name). It is derived
+ * from the plugin's OWN declaration, so a door added to `WAKES` without the delegates is served
+ * a slice that cannot read a job or describe a machine — which is a cycle that settles nothing,
+ * folds nothing and keeps no cadence, and is the whole reason the delegates are on the door
+ * rather than assumed.
  */
 function served(slice: Jobs, name: string): Jobs {
   const action = plugin.actions.find((entry) => entry.name === name);
   if (action === undefined) throw new Error(`no action ${name}`);
-  const reach = [...(action.caps ?? []), ...(action.delegates ?? [])];
-  if (reach.includes("jobs:read")) return slice;
-  const refuse = (): never => {
-    throw new Error("jobs:read capability required");
-  };
+  const reach: readonly string[] = [...(action.caps ?? []), ...(action.delegates ?? [])];
   return new Proxy(slice, {
     get(target, key, receiver) {
-      if (key === "status" || key === "follow" || key === "listRuns") return refuse;
+      const cap = typeof key === "string" ? VERB_CAPS[key] : undefined;
+      if (cap !== undefined && !reach.includes(cap)) {
+        return (): never => {
+          throw new Error(`job_capability_absent:${cap}`);
+        };
+      }
       return Reflect.get(target, key, receiver);
     },
   });
@@ -391,6 +404,53 @@ test("every door a cycle follows can read a job, and the drain's own read folds 
   expect(Number(progress[0]?.calls)).toBe(1);
   expect(Number(progress[0]?.output_tokens)).toBe(120);
   expect(progress[0]?.cost_usd).toBeCloseTo(0.09, 6);
+});
+
+test("the cycle behind a read describes a machine, so the loop keeps its own cadence", async () => {
+  /*
+    THE BEAT THAT WAS NEVER REGISTERED (atyrode/manifold#739, #740). The loop has no clock: its
+    cadence is one `engine.jobs.schedule` of the beat, on the machine the policy routes its work
+    to, and it is registered only once that machine has said it can run it — one
+    `engine.jobs.describe`, a read that moved off `machines:run` and onto `machines:read`
+    (atyrode/manifold#736). The bridge a dispatch is served is the door's own caps plus its
+    delegates, and `machines:read` could not be delegated at all until #740, so every describe
+    behind a read was refused `job_capability_absent:machines:read` however privileged the
+    caller: `reconcileSchedule` noted that the beat could not be registered and registered
+    nothing, and Babel beat for exactly as long as somebody kept pressing something.
+  */
+  await pending();
+  const ctx = context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.pulse));
+
+  await plugin.handlers[ACTIONS.pulse]?.(ctx, {} as never);
+
+  expect(jobs.described).toBeGreaterThan(0);
+  expect(jobs.scheduled).toMatchObject([
+    { scheduleId: `${BABEL_PLUGIN_ID}.conductor`, machineId: MACHINE },
+  ]);
+});
+
+test("the doors that ask a machine what it can run are lent that read, and no others are", () => {
+  /*
+    WHO ASKS, AND THEREFORE WHO IS LENT IT. Every door a cycle follows asks: the conductor
+    describes a machine to register the beat on it. `drainStart` asks on its own account too — it
+    posts the fan's first slot through `launchMachinery`, and `ready` describes before it posts.
+    Nothing else in the roster asks a machine anything, and a delegate nobody spends is authority
+    nobody asked for: reading a feed, ruling on a record and stopping a run all stay inside this
+    plugin's own tables and its own job nodes.
+  */
+  const asks: Record<string, true> = { ...WAKES, [ACTIONS.drainStart]: true };
+  for (const action of plugin.actions) {
+    const reach = [...(action.caps ?? []), ...(action.delegates ?? [])];
+    expect({ door: action.name, describes: reach.includes("machines:read") }).toEqual({
+      door: action.name,
+      describes: Object.hasOwn(asks, action.name),
+    });
+  }
+  // And it is a DELEGATE everywhere it appears: a caller is never asked to hold a machine
+  // capability to be told whether the machine Babel was deployed to is ready.
+  for (const action of plugin.actions) {
+    expect(action.caps).not.toContain("machines:read");
+  }
 });
 
 test("a second dispatch inside the floor is the same wake, not another cycle", async () => {

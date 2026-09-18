@@ -44,7 +44,7 @@ import { defineServerAction } from "@manifold/plugin-kit/server";
 const READ_CAPS = ["containers:read"] as const;
 
 /*
-  THE TWO READS THAT WAKE THE LOOP CARRY ONE NATIVE CEILING, AND IT IS NOT A SECOND PERMISSION.
+  THE TWO READS THAT WAKE THE LOOP CARRY TWO NATIVE CEILINGS, AND NEITHER IS A SECOND PERMISSION.
 
   `pulse` and `runs` are the doors a cycle follows (server.ts's `WAKES`), and the half of a cycle
   that matters when no settlement arrived — a hook that overran, a hub restarted mid-run — is
@@ -53,30 +53,41 @@ const READ_CAPS = ["containers:read"] as const;
   declared, so without it here the safety net could not read a single job and every cycle behind
   a read was a list of refusals.
 
-  It is a DELEGATE, not a cap: a delegate is the native ceiling this door's job authority may
+  AND A CYCLE ASKS ONE THING OF A MACHINE BEFORE IT CAN KEEP A CADENCE AT ALL, which is what
+  `machines:read` is here for. The loop's beat is registered on the machine the policy routes its
+  work to, and it is registered only once that machine has said it can run it: `reconcileSchedule`
+  asks `describeHost`, which is one `engine.jobs.describe` (`server/conductor.ts`). That read
+  moved off `machines:run` and onto the narrower word (atyrode/manifold#736), and the same
+  attenuation rule governs it: a door's native bridge is its own caps plus its delegates, so a
+  `describe` this door never declared is refused `job_capability_absent:machines:read` however
+  privileged the CALLER is — the cycle notes that the beat cannot be registered, nothing is
+  registered, and Babel beats only for as long as somebody keeps pressing something.
+
+  IT COULD NOT BE DELEGATED AT ALL UNTIL atyrode/manifold#740 (#739). `NATIVE_DELEGATE_CAPS`
+  (protocol/src/plugin.ts) — the closed set `ActionDelegatesSchema` admits — held the job,
+  location, operation, service and network capabilities and `machines:run`, and an action naming
+  this one was refused at assembly as an unsupported delegated capability. The set's own rule is
+  "only native job/resource/service APIs can discharge these at concrete targets", `describe` and
+  `engine.machines.repository` are both native reads at `manifold://machine/<id>`, and the set
+  already lent the strictly greater authority to make a machine RUN something — so the omission
+  was the accident and the delegate is now where this belongs. The bundle's MANIFEST still
+  declares it, because that is the ceiling an operator consents to at install and what the folder
+  question a cycle asks through `ctx.machines` (#535) is served against; a delegate is the
+  per-door ceiling underneath that grant, never a replacement for it.
+
+  BOTH ARE DELEGATES, NOT CAPS: a delegate is the native ceiling this door's job authority may
   reach, while a cap is what the caller must hold. The caller is unchanged — it still needs only
-  `containers:read` — and nothing is widened, because the ceiling is intersected with the
-  CALLER's own capabilities before any job verb runs, and the engine still requires the
-  operator's version-bound consent for `jobs:read` at each operation node before it answers.
+  `containers:read`, and a reader asking for his own pulse is not asking a machine anything — and
+  nothing is widened, because the ceiling is intersected with the CALLER's own capabilities and
+  with the plugin's install grant before any job verb runs, and the engine still requires the
+  operator's version-bound consent at each operation node before it answers.
 
   STARTING work is deliberately not reachable from here. `machines:run` is absent from this
-  ceiling, so a cycle behind a five-second poll cannot dispatch: only `launch`, which declares it
-  at the node its arguments name, and `onJobSettled`, which carries the credential the job ran
-  under, can ask a machine to run anything.
-
-  AND THE ONE MACHINE QUESTION A CYCLE ASKS OUTSIDE A JOB IS NOT IN THIS LIST EITHER — not
-  because it is unwanted, but because `machines:read` cannot be delegated. A cycle behind these
-  doors asks `engine.machines.repository` what a folder a scan catalogued is (#535), and
-  `NATIVE_DELEGATE_CAPS` (protocol/src/plugin.ts) — the closed set `ActionDelegatesSchema`
-  admits — holds the job, location, operation, service and network capabilities and not that
-  one: an action naming it is refused at assembly as "invalid delegated capabilities". Nor is it
-  a cap, because the caller reading his pulse is not the one asking a machine anything. So it is
-  declared where it is true, in the MANIFEST's capabilities, which is the ceiling an operator
-  consents to at install; the host serves `ctx.machines` to a dispatch unattenuated
-  (`plugin-host.ts` hands the admission through, `serveCtxCall` forwards `machines.repository`),
-  and a hook is served none at all.
+  ceiling, so a cycle behind a five-second poll cannot dispatch: only `launch`, which discharges
+  it at the effect for the one operation this manifest declares, and `onJobSettled`, which
+  carries the credential the job ran under, can ask a machine to run anything.
 */
-const WAKING_DELEGATES = ["jobs:read"] as const;
+const WAKING_DELEGATES = ["jobs:read", "machines:read"] as const;
 
 /** `pulse` and `topics` are asked without arguments; a strict empty object says so on the wire. */
 const NoQuerySchema = z.strictObject({});

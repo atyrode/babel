@@ -309,12 +309,18 @@ test("the roster is profiles, launch and stop, and none of them is governed at a
   expect(profiles?.action.requirements).toBeUndefined();
 
   // A launch posts Babel's OWN `prepare` job and asks Code to post the session, so it keeps
-  // the delegates that posting needs — reading the job back, and the locations the sealed
-  // leases are cut from — and names no governed node, because the operations a requirement
-  // would name (`explore`, `evaluate`) are declared by nobody.
+  // the delegates that posting needs — reading the job back, the locations the sealed leases are
+  // cut from, and the machine read `ready` describes with before anything is posted — and names
+  // no governed node, because the operations a requirement would name (`explore`, `evaluate`)
+  // are declared by nobody.
   expect(launch?.action.caps).toEqual(["containers:read"]);
   expect(launch?.action.requirements).toBeUndefined();
-  expect(launch?.action.delegates).toEqual(["jobs:read", "locations:read", "locations:write"]);
+  expect(launch?.action.delegates).toEqual([
+    "jobs:read",
+    "locations:read",
+    "locations:write",
+    "machines:read",
+  ]);
 
   // A stop closes this plugin's own rows and reaches a job through its OWN ceiling: a delegate
   // rather than a cap the caller must hold at a node no installation declares any more.

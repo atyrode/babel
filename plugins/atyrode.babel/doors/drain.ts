@@ -48,12 +48,14 @@ import { defineDoor, type Door } from "./door.ts";
   self-stop. `drain.start` is that decision stated once: the account, the preset, the fan, and
   where it stops.
 
-  WHY `drain.start` IS GOVERNED AT THE OPERATION NODE, like `launch`. It posts jobs, so it
-  declares `machines:run` and pairs it with a requirement whose target is the `operation` field
-  of its own arguments: the host walks that path through the RAW arguments, discharges the
-  capability there, and admits the dispatch against the operator's version-bound consent at that
-  node (ADR 0035). The delegates are `launch`'s, for the same reason — they are the native
-  ceiling the posted job inherits and what `onJobSettled` later reads its outputs back with.
+  WHAT `drain.start` IS LENT, AND WHY IT IS ONE READ AND NOT THE FAN'S WHOLE AUTHORITY. It names
+  no node today (#279, below), but it does post the first fan through `launchMachinery`'s own
+  `startExplore`/`startBeat` — and the first thing either of those does is ask the machine
+  whether it can run the operation at all, `engine.jobs.describe` behind `ready`. That read is
+  `machines:read` since atyrode/manifold#736 and delegable since atyrode/manifold#740, and the
+  dispatcher attenuates `ctx.jobs` to the door's own caps plus delegates — so a start that did
+  not name it would be refused `job_capability_absent:machines:read` at the first slot and report
+  "launched nothing" about a machine nobody ever asked. `doors/read.ts` carries the reasoning.
 
   WHY `drain.stop` IS GOVERNED AT THE OPERATION NODE AND NOT AT A JOB. A drain holds several jobs
   and a declared requirement resolves to exactly ONE node (`plugin-host.ts` parses one
@@ -63,7 +65,7 @@ import { defineDoor, type Door } from "./door.ts";
   cancelling every job of this drain needs — and asking for it by name is honest about the
   breadth instead of borrowing it one job at a time.
 
-  WHY `drain.status` IS A DRY READ THAT STILL DELEGATES `jobs:read`. It answers what is draining,
+  WHY `drain.status` IS A DRY READ THAT STILL CARRIES DELEGATES. It answers what is draining,
   under `containers:read`, asking no machine anything: the panel polls it every five seconds while
   the operator watches, and requiring version-bound consent at a node merely to READ a burn rate
   is the interface unable to say what it is doing. Everything it reports comes from this plugin's
@@ -75,9 +77,10 @@ import { defineDoor, type Door } from "./door.ts";
   behind a door with no `jobs:read` cannot read back a single job — every `jobs.status` in
   `reconcileRuns` refuses, nothing settles, and the `run_progress` fold this wake EXISTS for
   never happens. `pulse` and `runs` carry the same delegate for the same reason
-  (`doors/read.ts`). It widens nothing: a delegate is the native ceiling the door's own job
-  authority may reach, intersected with the caller's capabilities, and the caller still needs
-  only `containers:read`.
+  (`doors/read.ts`), and the same cycle's `machines:read`: it is the cycle, not this door, that
+  describes a machine to keep the loop's beat registered. It widens nothing: a delegate is the
+  native ceiling the door's own job authority may reach, intersected with the caller's
+  capabilities and the plugin's install grant, and the caller still needs only `containers:read`.
 */
 
 /**
@@ -89,7 +92,8 @@ import { defineDoor, type Door } from "./door.ts";
  * consent required" and the operator never hears `engine_pending` — nor, on a drain v0.3.0
  * left running, can he stop it at all. `doors/launch.ts` says the whole of it.
  *
- * So a start asks `containers:read` (it starts nothing), and a stop asks `containers:write`
+ * So a start asks `containers:read` and carries `machines:read` as a DELEGATE — the one read
+ * the launch path makes before it posts anything — and a stop asks `containers:write`
  * — closing the row is a write of this plugin's own rows — and carries `jobs:cancel` as a
  * DELEGATE, the native ceiling its own job authority may reach. The hub still checks consent
  * at the effect: a cancel it will not admit is reported by name rather than assumed. The
@@ -97,14 +101,16 @@ import { defineDoor, type Door } from "./door.ts";
  * operation, once its door posts the job.
  */
 const START_CAPS = ["containers:read"] as const;
+const START_DELEGATES = ["machines:read"] as const;
 
 const STOP_CAPS = ["containers:write"] as const;
 const STOP_DELEGATES = ["jobs:cancel"] as const;
 
 /** A dry read of this plugin's own tables; it asks no machine anything. */
 const STATUS_CAPS = ["containers:read"] as const;
-/** …but a cycle follows it, and a cycle that cannot read a job folds nothing; see above. */
-const STATUS_DELEGATES = ["jobs:read"] as const;
+/** …but a cycle follows it, and a cycle that cannot read a job or describe a machine folds
+ *  nothing and keeps no cadence; see above. */
+const STATUS_DELEGATES = ["jobs:read", "machines:read"] as const;
 
 /** Every act of a drain is news on this plugin's own node, as `doors/acts.ts` explains. */
 const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;
@@ -126,6 +132,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       name: ACTIONS.drainStart,
       title: "Drain a usage window on purpose",
       caps: START_CAPS,
+      delegates: START_DELEGATES,
       input: DrainStartRequestSchema,
       result: DrainStartResultSchema,
     }),
