@@ -1458,7 +1458,7 @@ export function resolveTarget(into: string): { dataDir: string; path: string } {
   return { dataDir: absolute, path: pluginDatabasePath(absolute, BABEL_PLUGIN_ID) };
 }
 
-const USAGE = `bun tools/import.ts --from <durable.db> [--catalog <catalog.db>] --into <data.db> [options]
+const USAGE = `bun atyrode.babel/tools/import.ts --from <durable.db> [--catalog <catalog.db>] --into <data.db> [options]
 
   --from <path>        the Go per-machine store (read-only)
   --catalog <path>     the Go local session catalog (read-only); needs --host

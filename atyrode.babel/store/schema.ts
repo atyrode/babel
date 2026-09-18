@@ -212,6 +212,14 @@ export const SCHEMA_V1: readonly string[] = [
   // (derived_from, consolidates, addresses), supersession, refinement, duplication, and
   // `about` — a record filed under an entity (§4.13). `to_kind` names the namespace of the
   // target: a record kind, `session`, or `entity`.
+  //
+  // `kind` IS AN OPEN VOCABULARY — no CHECK — and deliberately so: a relation is a word this
+  // family agrees on, not a column, and the crossing carried in whatever the Go tree had
+  // spelled. What a writer may spell today is `cites`, `consolidates`, `addresses`,
+  // `contradicts` (an evidence-free challenger objection, and a record whose own text opens
+  // CONTRADICTS), `corrects` (a record whose own text opens CORRECTION or CORRECTS),
+  // `supersedes`, `refines` and `about`. A new word costs nothing at the table and everything
+  // at the reader, so it is added here in prose before it is written anywhere.
   `CREATE TABLE edges(
      id TEXT PRIMARY KEY,
      kind TEXT NOT NULL,

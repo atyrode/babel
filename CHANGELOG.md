@@ -11,6 +11,28 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A record's own words about another record become an edge.** Records in the corpus open with
+  explicit self-correction markers — `CONTRADICTS hyp_…`, `CITATION CORRECTION for o2 …` — and
+  nothing turned one into a link, so a record that announced what it superseded was, to every
+  reader and every query, unrelated to it. `exploreRows` now parses the marker a record's text
+  opens with and writes a `contradicts` or `corrects` edge at creation, and
+  `atyrode.babel/tools/link-corrections.ts` sweeps a store for the markers already in it. The
+  grammar is deliberately narrow, because a false edge asserts a relationship nobody stated and
+  nothing downstream records that an edge was inferred: the token must open the text, a target is
+  letters-then-digits and never a bare word, a possessive is not a target (`CORRECTION of o12's
+  citation handles` means o12; `CORRECTION of observation o1's sibling` does not mean o1, and the
+  two are the same shape), and the target list must be contiguous. A marker naming a record
+  nobody holds is dropped with a note; nothing refuses, because a claim about the corpus is not a
+  claim about the answer's integrity.
+
+  **What the corpus actually holds, counted rather than assumed:** of 6,038 imported records,
+  eleven carry a marker. Two name durable record identifiers. The other nine name a run-local
+  handle (`o2`, `o12`) or only prose, so the issue's premise — that a correction marker names the
+  record it corrects — is false for nine of eleven. The sweep recovers three edges from two
+  records and reports the rest as unrecoverable, with the reason printed by the tool itself:
+  a handle resolves only while the settlement that coined it exists, and those runs settled long
+  ago. That is why creation and sweep are two capabilities rather than one — every correction
+  written from here on becomes an edge; the ones written before mostly cannot.
 - **The tracker has a lifecycle, and six rules a script proves.** Babel's labels were leftovers
   of a product that no longer exists — `phase-b`, `spec-drift`, `audit-2026-08-30`, and
   `manifold-transition` bulk-applied to twenty-three issues most of which are not about it —
@@ -164,6 +186,9 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Three tool usage lines named a path that does not work.** `import.ts`, `seed-recipes.ts` and
+  the new sweep printed `bun tools/…`, which has been wrong since the layout flattening moved the
+  tree under `atyrode.babel/`. They print the invocation that runs.
 - **Concurrent draws no longer converge on one assignment.** Observed live with twenty-three
   review workers: most draws returned `conflicting claim: assignment eval-a-… is held by another
   worker`. The reserved lanes pick the oldest due, which is one deterministic head, and with the

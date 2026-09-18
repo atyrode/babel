@@ -32,6 +32,7 @@
     "atyrode.babel/machine/main.ts",
     "atyrode.babel/tools/import.ts",
     "atyrode.babel/tools/seed-recipes.ts",
+    "atyrode.babel/tools/link-corrections.ts",
     "scripts/*.ts",
     "**/*.test.ts",
     "**/*.test.tsx",

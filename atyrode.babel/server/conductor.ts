@@ -21,7 +21,7 @@ import { REFUSALS, refusalCode, refusalReason, type RefusalCode } from "../machi
 import type { BabelStore } from "../store/store.ts";
 import { PROMPT_LIMIT, promptBytes, type CodeEngine, type SessionRead } from "./engine/session.ts";
 import { readExploreAnswer, unservedLocator, type Recipe } from "./engine/prompts.ts";
-import { exploreRows } from "./engine/records.ts";
+import { exploreRows, markerReferences } from "./engine/records.ts";
 import {
   blindedLeak,
   composeReviewPrompt,
@@ -523,6 +523,8 @@ const OUTPUT_CHUNK_BYTES = 65536;
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 /** `MAX_SQL_BATCH_STATEMENTS`: a batch holds the write lock, so ingestion writes it in pieces. */
 const MAX_BATCH_STATEMENTS = 256;
+/** `MAX_SQL_PARAMS`: one statement binds at most this many, so a long `IN` list is asked in pieces. */
+const MAX_SQL_PARAMS = 999;
 /** The states a job is done in; anything else is still in flight. */
 const TERMINAL_STATES: Record<string, true> = {
   exited: true,
@@ -2135,10 +2137,26 @@ export function conductor(deps: ConductorDeps): Conductor {
             `${run.prepare_job_id ?? "(none)"} is not on any settled run of this hub, so this ` +
             `run's citations cannot be checked against what it was served`;
         } else {
+          // WHICH OF THE RECORDS THIS ANSWER'S MARKERS NAME THIS HUB ACTUALLY HOLDS (#347). A
+          // record whose text opens `CONTRADICTS hyp_…` gets the edge, and a marker naming
+          // something nobody holds is dropped with a note rather than pointing an edge at
+          // nothing. The rows are built synchronously and the store is not, so the answer is
+          // asked for once, here, instead of the writer reaching for a database.
+          const named = markerReferences(answer.result);
+          const holds = new Set<string>();
+          for (let from = 0; from < named.length; from += MAX_SQL_PARAMS) {
+            const asked = named.slice(from, from + MAX_SQL_PARAMS);
+            const held = await store.db.query<{ id: string }>(
+              `SELECT id FROM records WHERE id IN (${asked.map(() => "?").join(", ")})`,
+              asked,
+            );
+            for (const row of held) holds.add(row.id);
+          }
           const written = exploreRows(answer.result, {
             runId: run.id,
             at: new Date(at).toISOString(),
             sessions: served,
+            holds,
           });
           if ("refusal" in written) {
             reason = refusalReason(written.refusal);

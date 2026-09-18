@@ -3132,12 +3132,12 @@ const SERVED_DIGEST = "a".repeat(64);
  * and one question the corpus could not settle — because the settlement's job is to turn all of
  * it into rows and a fixture with only a candidate would prove nothing about the edges.
  */
-function answered(path: string, digest: string): string {
+function answered(path: string, digest: string, statement?: string): string {
   const result = {
     candidates: [
       {
         ref: "h1",
-        hypothesis: { statement: "the catalog forgets archived sessions" },
+        hypothesis: { statement: statement ?? "the catalog forgets archived sessions" },
         observations: [
           {
             ref: "o1",
@@ -3626,6 +3626,41 @@ test("an accepted answer becomes the records, edges, statuses and questions it c
   // …and no ruling. A disposition is the operator's alone, and a run that could write one would
   // make Babel an agent that agrees with itself.
   expect(await db.query(`SELECT COUNT(*) AS n FROM dispositions`, [])).toEqual([{ n: 0n }]);
+});
+
+test("a record whose own text names what it contradicts gets the edge, and a miss gets a note", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  // `seed` already holds `hyp_00000001`. The answer contradicts it and one identifier nobody
+  // has: the first is the repair, the second is the run "referring to something since removed",
+  // which must cost the answer nothing.
+  const missing = `hyp_${"f".repeat(32)}`;
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(
+        `sessions/${SERVED_FILE}`,
+        SERVED_DIGEST,
+        `CONTRADICTS hyp_00000001 and ${missing} in their strongest form: the catalog keeps them`,
+      ),
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  const report = await wakeOn(store, draws, code).tick();
+  expect(report.pulse.tick.refusals).toEqual({});
+  expect(
+    await db.query(`SELECT to_id FROM edges WHERE kind = 'contradicts' AND actor_id = ?`, [runId]),
+  ).toEqual([{ to_id: "hyp_00000001" }]);
+  expect(report.notes.join("\n")).toContain(`${missing}, which this hub does not hold`);
+  // THE ANSWER STILL STANDS. A marker is a claim about the corpus, not about this answer's
+  // integrity, so all four records landed beside the one dropped reference.
+  expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId])).toEqual([
+    { n: 4n },
+  ]);
 });
 
 test("a refused answer writes no record at all, and the receipt is still written at cost", async () => {
