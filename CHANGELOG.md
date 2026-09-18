@@ -108,6 +108,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The Feed part's list panel is called Home, not Babel.** The plugin manager nests the parts
+  under their parent, so the tree read `babel` → `Babel` → the one list, which says the part is
+  the product rather than a view of it. The part itself has been titled `Feed` since the layout
+  flattening; the panel had not caught up. It is `Home` now, which is what the part's own
+  description has always called it, and the scroll region's accessible name matches. Feed goes to
+  0.3.2; Watch is untouched, so it does not advance — a version that moves without a change in
+  the bundle is a lie about the bundle.
 - **The repository is the plugin family, and its layout now says so.** `plugins/atyrode.babel/`
   was two levels deep for a reason that stopped being true: the wrapper separated the plugin
   family from the Go product beside it, and that product is gone, so it separated the plugins

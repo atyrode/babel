@@ -497,7 +497,7 @@ export function HomePanel({ host }: PanelProps): ReactElement {
   const [railNote, setRailNote] = useNote();
   const selection = useSelection();
   return (
-    <ScrollRegion className={`plugin-${FEED_PLUGIN_ID.replaceAll(".", "_")}`} aria-label="Babel">
+    <ScrollRegion className={`plugin-${FEED_PLUGIN_ID.replaceAll(".", "_")}`} aria-label="Home">
       <Stack className="babel-panel" gap="var(--babel-space-4)">
         <Pulse host={host} />
         <Sidebar side="end" sideWidth="15rem" contentMin="60%" gap="var(--babel-space-6)">
