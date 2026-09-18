@@ -1,3 +1,4 @@
+import { HostCallError } from "@manifold/plugin-kit/errors";
 import { defineServerAction, type GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
@@ -269,14 +270,34 @@ export interface LaunchIdentity {
   readonly authorityId: string;
 }
 
-/** What a start answered: the two ids, or the sentence naming why nothing was started. */
-export type Started = { runId: string; jobId: string } | { refused: string };
+/**
+ * WHY NOTHING WAS STARTED: the sentence an operator reads, and — when the HUB is who said no —
+ * its own word for the refusal beside it.
+ *
+ * The pair exists because a caller that must BEHAVE differently for one refusal cannot get
+ * there from prose. The drain adopts a job the hub already holds under a derived id
+ * (`job_digest_conflict`) and ends the round for everything else, and a substring match on the
+ * sentence made the operator's wording load-bearing. It is the same split `machine/results.ts`
+ * draws for a submission — {@link refusalCode} beside the message the model reads — and the
+ * same one `EngineAnswer` carries for Code's refusals.
+ *
+ * `code` IS PRESENT EXACTLY WHEN THE HUB REFUSED, whatever it said; it is absent when the
+ * sentence is Babel's own — an unready machine, a document over the input ceiling, a window
+ * offering nothing. So its absence means one thing and never "the hub refused in a way this
+ * file did not recognise", which a vocabulary check here would have made it mean.
+ */
+export interface Refused {
+  readonly refused: string;
+  readonly code?: string;
+}
+
+/** What a start answered: the two ids, or why nothing was started. */
+export type Started = { runId: string; jobId: string } | Refused;
 
 /** What a verification answered: its run, its job, and the snapshot it will restore from —
  *  empty when it only checks the repository. */
 export type Verified =
-  | { readonly runId: string; readonly jobId: string; readonly snapshotId: string }
-  | { refused: string };
+  { readonly runId: string; readonly jobId: string; readonly snapshotId: string } | Refused;
 
 /**
  * THE LAUNCH PATH, EXPOSED SO THERE IS EXACTLY ONE OF IT.
@@ -467,6 +488,10 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * One job request, posted and recorded. The run row is written AFTER the engine accepted the
    * job and never before: a row for a job that was refused is a run an operator would wait for
    * and the loop would poll for ever.
+   *
+   * A refusal here is the HUB's, so it carries the hub's word as well as the sentence: this is
+   * the one place a posting's two accounts of itself are still together, and a caller reading
+   * the word back out of the sentence would be reading a line written for a person.
    */
   async function post(
     jobs: JobsSlice,
@@ -478,11 +503,14 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       readonly authorityId: string;
       readonly preparation: Record<string, unknown>;
     },
-  ): Promise<{ refused: string } | null> {
+  ): Promise<Refused | null> {
     try {
       await jobs.execute(launch);
     } catch (error) {
-      return { refused: `${launch.machineId} refused the job: ${message(error)}` };
+      return {
+        refused: `${launch.machineId} refused the job: ${message(error)}`,
+        code: hubRefusal(error),
+      };
     }
     const at = new Date(deps.now()).toISOString();
     await store.db.run(
@@ -1177,7 +1205,9 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         preset.start === "beat"
           ? await machinery.startBeat(identity, jobs, input, plan)
           : await machinery.startExplore(identity, jobs, deps.engine(ctx.actions), input, plan);
-      if ("refused" in started) return started;
+      // THE DOOR REPORTS THE SENTENCE AND NOTHING ELSE. The hub's word is for a caller inside
+      // this half that must act on one refusal differently; an operator acts on the sentence.
+      if ("refused" in started) return { refused: started.refused };
       return { ...started, machineId: input.machineId, kind: preset.kind };
     },
   );
@@ -1349,7 +1379,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         input,
         deps.plan(inForce.policy, MACHINE_OPERATIONS.verify),
       );
-      if ("refused" in started) return started;
+      if ("refused" in started) return { refused: started.refused };
       return { ...started, machineId: input.machineId };
     },
   );
@@ -1359,4 +1389,30 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * THE HUB'S OWN WORD FOR A POSTING IT REFUSED, taken off the thing it threw.
+ *
+ * The hub raises its vocabulary bare — `throw new Error("job_digest_conflict")` in
+ * `packages/server/src/job-store.ts` — and across the isolate boundary the kit re-raises it as
+ * a {@link HostCallError} whose `detail` is that word VERBATIM and whose `message` has the host
+ * method glued in front of it. So the word is read off the error's own fields, never off a
+ * sentence: `post`'s sentence is written for the operator and names the machine first, and a
+ * caller matching on it would have made the wording a contract.
+ *
+ * A TYPED REFUSAL IS READ FIRST, so the day the SDK grows one this function reads it and no
+ * other file changes. `refusal` is the name the hub already uses for the word it refuses a
+ * posting with — `authority.decision.refusal` on the job it answers when the refusal is
+ * returned rather than raised (`JobRunState`) — and a raised one would arrive spelled the same.
+ *
+ * It is exported for one reader: the launch DOUBLE the drain controller's own tests run
+ * against. A fake that derived the word differently would keep those tests green over a
+ * `post` that had stopped carrying it.
+ */
+export function hubRefusal(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const typed: unknown = Reflect.get(error, "refusal");
+  if (typeof typed === "string" && typed !== "") return typed;
+  return error instanceof HostCallError ? error.detail : error.message;
 }

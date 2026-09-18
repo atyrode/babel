@@ -402,6 +402,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
   Exhaustiveness was proven rather than asserted: adding a twentieth reason makes `tsc` fail on
   the label table.
+- **A posting's refusal carries the hub's own word beside the operator's sentence.** The drain
+  controller recovered a job the hub already held by matching refusal **text** —
+  `started.refused.includes("job_digest_conflict")` — because nothing else was available: the hub
+  throws a bare word, and the launch wraps it into a sentence for the operator, so no code
+  survived to the caller. Every refusal a launch can hear arrived as one prose field, and a caller
+  that must behave differently for one of them had to read prose. `Started`'s refusal now carries
+  an optional `code`, present exactly when the hub refused and absent when the sentence is
+  Babel's own, so its absence means one thing. The drain branches on the word; changing the hub's
+  wording does not change the behaviour, which a test proves with a fleet that refuses with the
+  code in a message that does not contain it.
+
+  The code is read from a **field of the error the hub threw**, never from a sentence anybody
+  composed — the two composed sentences on that path are excluded on purpose, including the kit's
+  own message, which glues a prefix in front of the host's word, so matching on it would already
+  be matching a composition. The typed rung is first in the ladder and is the only thing that
+  changes when the SDK grows a typed job refusal. This is the shape `machine/results.ts` already
+  uses for submissions, where the drain has tallied refusals by code rather than by wording since
+  it shipped.
 - **The run log can cross at all.** `importLedger` refused every `runs` chunk with
   `runs has no column "payload"` — the column every receipt carries. The crossing derives each
   table's columns by reading its `CREATE TABLE` body, and the derivation treated the apostrophe in

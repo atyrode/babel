@@ -39,7 +39,7 @@ import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
 import { drainDoors } from "./drain.ts";
-import { launchMachinery, type LaunchIdentity, type Started } from "./launch.ts";
+import { hubRefusal, launchMachinery, type LaunchIdentity, type Started } from "./launch.ts";
 import {
   PROMPT_LIMIT,
   materialInput,
@@ -153,6 +153,12 @@ class Fleet implements BabelJobs {
   readonly executed: JobLaunch[] = [];
   readonly cancelled: JobRef[] = [];
   refusal = "";
+  /**
+   * THE HUB'S OWN WORD FOR THE REFUSAL, when it is not the whole of what the hub said. It is
+   * raised as a field on the error rather than inside the message because that is the only
+   * way a test can hold the plugin to reading the word and not the wording (#288).
+   */
+  refusalWord = "";
   /** Set to refuse cancellation the way a credential without `jobs:cancel` does. */
   cancelRefusal = "";
   /**
@@ -166,7 +172,11 @@ class Fleet implements BabelJobs {
   }
 
   async execute(args: JobLaunch): Promise<JobRunState> {
-    if (this.refusal !== "") throw new Error(this.refusal);
+    if (this.refusal !== "") {
+      throw this.refusalWord === ""
+        ? new Error(this.refusal)
+        : Object.assign(new Error(this.refusal), { refusal: this.refusalWord });
+    }
     this.executed.push(args);
     if (this.duringExecute !== null) await this.duringExecute(args);
     return {
@@ -389,7 +399,12 @@ function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch 
         outputs: [],
       });
     } catch (error) {
-      return { refused: error instanceof Error ? error.message : String(error) };
+      // THE PAIR THE REAL `post` ANSWERS, through the real extraction: the sentence the fleet
+      // said, and the hub's own word for what it refused.
+      return {
+        refused: error instanceof Error ? error.message : String(error),
+        code: hubRefusal(error),
+      };
     }
     const prepareJobId = `${identity.jobId}_material`;
     await store.db.run(
@@ -1049,6 +1064,75 @@ test("a job the hub already holds under this id is taken back rather than re-pos
   await settleJob(`run_${drainId}_1`, { costMicros: 320_000 });
   await drainTick(deps);
   expect((await readDrain(harness.store, drainId))?.spent.costMicros).toBe(420_000);
+});
+
+test("the job the hub already holds is taken back by the hub's word, not by its wording", async () => {
+  /*
+    THE SAME RECOVERY, OVER THE REAL LAUNCH PATH AND A HUB THAT WORDS ITS REFUSAL ITS OWN WAY
+    (#288). The sentence a posting is refused with is written for the operator and names the
+    machine first; the word is the hub's contract. Matching the sentence made the hub's prose
+    load-bearing, so this fleet says nothing about a digest in it and carries the code on the
+    error — and the adoption must still happen.
+  */
+  const machinery = launchMachinery(harness.store, {
+    coordinator: deps.coordinator,
+    jobs: () => fleet,
+    engine: () => deps.engine,
+    cookbook: async () =>
+      await Promise.resolve({
+        "code-health": { id: "code-health", version: 3, body: "look for what keeps breaking" },
+      }),
+    plan: () => PLAN,
+    now: () => harness.store.now(),
+  });
+  deps = { ...deps, launch: machinery };
+  const drainId = String((await start({ concurrent: 1, profile: PROFILE }))["drainId"]);
+  expect(fleet.executed).toHaveLength(1);
+
+  // THE WRITE THAT DID NOT LAND: the preparation is posted and running, and the row forgot
+  // both it and the ordinal, so the next tick re-derives the id the hub is already holding.
+  await harness.db.run(`UPDATE drains SET live = '[]', jobs_launched = 0 WHERE id = ?`, [drainId]);
+  fleet.refusal = "this machine is already running something under that identifier";
+  fleet.refusalWord = "job_digest_conflict";
+
+  const [report] = await drainTick(deps);
+  expect(report?.notes.join(" ")).toMatch(
+    /was already posted by an earlier tick, and is taken back/,
+  );
+  expect(report?.launched).toBe(1);
+  expect((await readDrain(harness.store, drainId))?.live.map((job) => job.jobId)).toEqual([
+    `job_${drainId}_0_material`,
+  ]);
+  // Nothing was posted a second time, and the refusal never reached the operator's sentence.
+  expect(fleet.executed).toHaveLength(1);
+});
+
+test("a refusal Babel wrote itself ends the round, whatever words it happens to contain", async () => {
+  /*
+    THE OTHER HALF OF READING THE CODE (#288): a sentence this plugin composed carries no code
+    at all, so it cannot be mistaken for the hub's. `ready`'s refusal quotes the machine's own
+    unready reason verbatim, and a machine may say anything in it — including the word for a
+    conflict nobody is reporting.
+  */
+  const drainId = String((await start({ concurrent: 2 }))["drainId"]);
+  await settleJob(`run_${drainId}_0`, { costMicros: 100_000 });
+  const unready = async (): Promise<Started> =>
+    await Promise.resolve({
+      refused:
+        `${OPERATIONS.explore} is not ready on ${MACHINE}: the last job here exited ` +
+        `job_digest_conflict and the machine has not re-registered`,
+    });
+  deps = { ...deps, launch: { startExplore: unready, startBeat: unready } };
+
+  const [report] = await drainTick(deps);
+  expect(report?.notes.join(" ")).toMatch(/no further job was launched/);
+  expect(report?.notes.join(" ")).not.toMatch(/taken back/);
+  expect(report?.launched).toBe(0);
+  // The round ended and the drain did not: the one job still in flight settles into it.
+  expect(report?.state).toBe("running");
+  expect((await readDrain(harness.store, drainId))?.live.map((job) => job.jobId)).toEqual([
+    `job_${drainId}_1_material`,
+  ]);
 });
 
 test("disabling the policy mid-drain ends it as an operator's act rather than as a failure", async () => {
