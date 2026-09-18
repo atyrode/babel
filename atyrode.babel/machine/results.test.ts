@@ -152,6 +152,70 @@ test("a developed candidate with a remedy and a consolidation parses whole", () 
   expect(result.objections).toEqual([]);
 });
 
+test("an observation states the repository its evidence recorded, in one spelling", () => {
+  /*
+    The point of canonicalizing here rather than at the reader: the observed-versus-named
+    decision downstream compares this remote against the catalog's, which the machine half
+    already wrote canonically, and `git@github.com:atyrode/babel.git` compared as a string
+    against `github.com/atyrode/babel` would report a repository Babel probed as one a
+    transcript merely mentioned.
+  */
+  const result = parseExploreResult("explore", {
+    candidates: [
+      {
+        ref: "c1",
+        hypothesis: { statement: "the drain over-commits a cycle" },
+        observations: [
+          {
+            ref: "o1",
+            recipe: RECIPE,
+            claim: {
+              ...CLAIM,
+              repository: {
+                remote: "git@github.com:atyrode/babel.git",
+                commit: "9C44AAF1AB3C4D5E6F7089ABCDEF0123456789AB",
+                reference: "https://github.com/atyrode/babel/pull/377",
+              },
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.candidates[0]?.observations[0]?.claim.repository).toEqual({
+    remote: "github.com/atyrode/babel",
+    commit: "9c44aaf1ab3c4d5e6f7089abcdef0123456789ab",
+    reference: "https://github.com/atyrode/babel/pull/377",
+  });
+});
+
+test("a repository claim naming a directory, or a commit that is not one, is not a repository", () => {
+  const stated = (repository: unknown): unknown =>
+    parseExploreResult("explore", {
+      candidates: [
+        {
+          ref: "c1",
+          hypothesis: { statement: "the drain over-commits a cycle" },
+          observations: [{ ref: "o1", recipe: RECIPE, claim: { ...CLAIM, repository } }],
+        },
+      ],
+    }).candidates[0]?.observations[0]?.claim.repository;
+
+  // A path remote names a directory on one machine, which is a locator and not a project; it
+  // empties rather than refusing the answer, and the reader reads an empty remote as absent.
+  expect(stated({ remote: "/srv/git/thing" })).toEqual({ remote: "", commit: "", reference: "" });
+  // A commit is checkable on its face, so a value that cannot be one is refused rather than
+  // stored: an unreadable sha would be shown to a reader as the position the run read.
+  expect(
+    refusal(() => stated({ remote: "github.com/atyrode/babel", commit: "HEAD~2" })).refusal,
+  ).toBe(REFUSALS.schema);
+  // And a bare issue number names a number in whatever project the reader assumes.
+  expect(
+    refusal(() => stated({ remote: "github.com/atyrode/babel", reference: "#312" })).refusal,
+  ).toBe(REFUSALS.schema);
+});
+
 test("a challenger that consolidates is refused, not trimmed", () => {
   const error = refusal(() =>
     parseExploreResult("challenge", {

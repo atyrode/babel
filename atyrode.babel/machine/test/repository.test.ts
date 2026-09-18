@@ -4,7 +4,8 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { REPOSITORY_REASONS, normalizeRemote, repositoryObserver } from "../repository.ts";
+import { normalizeRemote } from "../../contract.ts";
+import { REPOSITORY_REASONS, repositoryObserver } from "../repository.ts";
 
 /*
   The repository observation against real git checkouts, because the only claim worth testing

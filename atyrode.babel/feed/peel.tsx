@@ -63,6 +63,25 @@ function corroboration(of: { supports: number; distinctRuns: number }): string {
   return `${supports}, from ${runs}`;
 }
 
+/**
+ * WHICH CODEBASE, AND ON WHOSE WORD, AS A SENTENCE.
+ *
+ * 42.7% of this deployment's records cannot say which codebase they concern, and the ones that
+ * can were saying it nowhere. The two provenances read as different sentences on purpose: a
+ * repository Babel probed in the cited session's own workspace is something this deployment
+ * saw, and a repository a transcript mentioned is something a conversation said. One phrasing
+ * for both would let the weaker claim borrow the stronger one's authority.
+ *
+ * The name only. The commit and the issue link are identifiers and live at depth five (§8.6),
+ * where a reader debugging Babel is; a reader deciding whether this is worth his time needs
+ * the project, not forty characters of it.
+ */
+function repository(of: RecordPeel["repository"][number]): string {
+  return of.provenance === "observed"
+    ? `observed in ${of.remote}`
+    : `named in the evidence, not observed: ${of.remote}`;
+}
+
 function Depth({
   index,
   title,
@@ -87,7 +106,10 @@ function Depth({
       header={
         <>
           <span className="babel-peel-title">{title}</span>
-          {count !== undefined && (
+          {/* A nought is not a count. The evidence depth opens for a repository alone when a
+              hypothesis has no excerpt of its own, and "The evidence 0" reads as a claim about
+              the record rather than as a section with nothing tallied in it. */}
+          {count !== undefined && count > 0 && (
             <span className="babel-peel-count">{count.toLocaleString()}</span>
           )}
         </>
@@ -189,7 +211,7 @@ export function Peel({
         </Depth>
       )}
 
-      {peel.evidence.length > 0 && (
+      {(peel.evidence.length > 0 || peel.repository.length > 0) && (
         <Depth
           index={2}
           title="The evidence"
@@ -203,6 +225,14 @@ export function Peel({
           {peel.corroboration.supports > 0 && (
             <p className="babel-corroboration">{corroboration(peel.corroboration)}</p>
           )}
+          {/* AND WHICH CODEBASE, which a hypothesis has no excerpt of its own to carry: its
+              observations hold the citations, so the depth opens for the repository alone and
+              counts nothing, because a count of no excerpts is a nought rather than a fact. */}
+          {peel.repository.map((of) => (
+            <p className="babel-repository" key={of.remote} data-provenance={of.provenance}>
+              {repository(of)}
+            </p>
+          ))}
           <Stack gap="var(--babel-space-4)">
             {peel.evidence.map((item, index) => (
               <figure

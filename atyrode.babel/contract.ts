@@ -71,6 +71,78 @@ export const InterestStateSchema = z.enum(INTEREST_STATES);
 export const RecordIdSchema = z.string().regex(/^(hyp|obs|fnd|pro|qst)_[0-9a-f]{8,64}$/);
 export const EntityIdSchema = z.string().regex(/^ent_[0-9a-f]{8,64}$/);
 
+/**
+ * HOW A RECORD CAME TO NAME A REPOSITORY, which is two claims rather than one (#183).
+ *
+ * `observed` is Babel's own: the scan probed the workspace a cited session worked in and git
+ * answered, so the repository is a fact this deployment established (`machine/repository.ts`,
+ * `sessions.repository_remote`). `named` is the evidence's: a run read a repository in a
+ * transcript and nothing of Babel's ever stood in that checkout. Folding the two together would
+ * let a repository a conversation merely mentioned read as one Babel saw, which is the quiet
+ * kind of error 42.7% of the corpus not naming its codebase at all is the loud kind of.
+ */
+export const REPOSITORY_PROVENANCES = ["observed", "named"] as const;
+export const RepositoryProvenanceSchema = z.enum(REPOSITORY_PROVENANCES);
+
+/**
+ * States a git remote URL as host/owner/repo, and returns "" for a URL it cannot read that
+ * way.
+ *
+ * The normalization is what makes one repository one topic. git's own URL grammar writes the
+ * same GitHub repository as git@github.com:atyrode/manifold.git,
+ * https://github.com/atyrode/manifold, https://token@github.com/atyrode/manifold.git/ and
+ * ssh://git@github.com/atyrode/manifold — four strings, one project — so the scheme, the
+ * credentials, the ".git" suffix and the trailing slash are removed and the ssh short form's
+ * colon becomes the separator it means.
+ *
+ * A local path remote ("/srv/git/thing", "../other") normalizes to nothing: it names a
+ * directory on one machine, which is a locator and not an identity, and the common directory
+ * is already the better answer for it.
+ *
+ * It is spelled here, beside the names, rather than beside the git probe that first needed it:
+ * three consumers share it now — the probe, the answer contract a run states a repository in,
+ * and the reader that decides whether those two agree — and a remote canonicalized two ways is
+ * one repository read as two.
+ */
+export function normalizeRemote(url: string): string {
+  let remote = url.trim();
+  if (remote === "") return "";
+  const scheme = remote.indexOf("://");
+  if (scheme >= 0) {
+    remote = remote.slice(scheme + 3);
+  } else {
+    const colon = remote.indexOf(":");
+    // The scp-like short form, [user@]host:owner/repo. Its colon is a separator rather than a
+    // port, which is why it is rewritten here and not for a URL that carried a scheme.
+    if (colon >= 0 && !remote.slice(0, colon).includes("/")) {
+      remote = remote.slice(0, colon) + "/" + remote.slice(colon + 1);
+    }
+  }
+  // Credentials in a URL that had a scheme: user[:password]@host.
+  const at = remote.indexOf("@");
+  if (at >= 0) remote = remote.slice(at + 1);
+  remote = remote.replace(/^\/+|\/+$/gu, "");
+  if (remote === "" || remote.startsWith(".")) return "";
+  const parts: string[] = [];
+  for (const part of remote.split("/")) {
+    if (part === "" || part === ".") continue;
+    parts.push(part);
+  }
+  if (parts.length < 2) return "";
+  const last = parts.length - 1;
+  const tail = parts[last];
+  if (tail === undefined) return "";
+  parts[last] = tail.endsWith(".git") ? tail.slice(0, -".git".length) : tail;
+  if (parts[last] === "") return "";
+  // A host element carries a dot or is localhost; anything else is a path, and a path remote
+  // is a locator rather than a repository identity.
+  const first = parts[0] ?? "";
+  const host = first.includes(":") ? first.slice(0, first.indexOf(":")) : first;
+  if (!host.includes(".") && host !== "localhost") return "";
+  parts[0] = host;
+  return parts.join("/");
+}
+
 const bounded = (max: number) => z.string().trim().min(1).max(max);
 
 // ---------------------------------------------------------------------------- doors (baseline)
@@ -342,6 +414,32 @@ export const RecordPeelSchema = z.strictObject({
     supports: z.number().int().min(0),
     distinctRuns: z.number().int().min(0),
   }),
+  /**
+   * WHICH CODEBASE THIS RECORD CONCERNS, and on whose word (#183).
+   *
+   * 42.7% of this deployment's records cannot say which codebase they are about, measured over
+   * 974 sampled of 6,038 and replicated within four points on a disjoint sample — the largest
+   * single defect the corpus has, and one no ranking, routing or retrieval change touches. The
+   * join was always there and nothing walked it: a record rests on observations, an observation
+   * cites a session, and the catalog holds the repository that session's workspace was in.
+   *
+   * `remote` is `host/owner/repo` and is never empty: a checkout that declares no origin names
+   * no repository a reader of another machine can act on, and a directory on one host is a
+   * locator rather than an identity, so it is absent instead of guessed. `commit` and
+   * `reference` are what the EVIDENCE recorded, never a probe of a checkout as it stands now —
+   * the commit a run read a repository at is a fact about the past, and the working tree's
+   * current HEAD is not evidence of it. Both are empty when the evidence recorded neither.
+   *
+   * An empty list is a record with no repository, which renders as nothing at all.
+   */
+  repository: z.array(
+    z.strictObject({
+      remote: z.string().min(1),
+      commit: z.string(),
+      reference: z.string(),
+      provenance: RepositoryProvenanceSchema,
+    }),
+  ),
   reception: z.strictObject({
     byRole: z.array(
       z.strictObject({

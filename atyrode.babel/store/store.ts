@@ -27,8 +27,10 @@ import type { PulseTodaySchema } from "../contract.ts";
 import {
   FEED_SORTS,
   POST_KINDS,
+  REPOSITORY_PROVENANCES,
   ROLES,
   RULINGS,
+  normalizeRemote,
   type BudgetOverlay,
   type Comment,
   type FeedGroup,
@@ -426,6 +428,21 @@ function citations(kind: string, payload: Record<string, unknown>): Citation[] {
   }
   return out;
 }
+
+/**
+ * An issue or pull request URL a record's repository claim may carry. The capture is the URL's
+ * own host, owner and repository, and a claim keeps its reference only where that capture is
+ * the repository the claim names.
+ *
+ * That match is the whole safety of the feature. A reference is the one part of a repository
+ * claim nothing can check against the catalog, so the check that remains is internal: a URL
+ * naming another project is dropped rather than rendered, because a reader who follows a link
+ * to the wrong repository's issue #4 has been told something false by a page that looked
+ * precise. The shape is re-read here rather than trusted from the payload, since an imported
+ * Go-era record's payload was never validated by this contract.
+ */
+const REFERENCE_URL =
+  /^https:\/\/([a-z0-9][a-z0-9.-]*\/[^\s/]{1,80}\/[^\s/]{1,80})\/(?:issues|pull)\/[0-9]{1,9}$/u;
 
 /**
  * The record's own sentence at depth one, by kind.
@@ -921,14 +938,16 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     const act =
       reviewable && (standing === "new" || standing === STANDING_REOPENED) ? "Rule on this" : "";
 
+    const repository = await repositoryOf(id);
     return {
       post,
       claim: { statement: claimOf(kind, payload, text(row["title"])), standing, act },
       case: caseOf(kind, payload),
       evidence: await evidenceOf(kind, payload),
       corroboration: await corroborationOf(id),
+      repository,
       reception: await receptionOf(id),
-      machinery: await machineryOf(row, payload),
+      machinery: await machineryOf(row, payload, repository),
       related: await relatedOf(id, text(row["run_id"]), text(row["supersedes_id"])),
       plan: await planOf(id),
     };
@@ -962,6 +981,97 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     return { supports: count(row?.["supports"]), distinctRuns: count(row?.["runs"]) };
   };
 
+  /**
+   * WHICH CODEBASE A RECORD CONCERNS, and whether Babel saw it or was merely told about it.
+   *
+   * 42.7% of this deployment's records cannot say which codebase they are about — 416 of 974
+   * sampled, replicated within four points on a disjoint sample — and it is the corpus's
+   * largest measured defect: no ranking, routing or retrieval change touches a record that
+   * never said what it was about. The join existed the whole time and nothing walked it. A
+   * record rests on observations, an observation cites a session, and the catalog holds the
+   * repository the machine half probed in that session's own workspace
+   * (`machine/repository.ts` → `sessions.repository_remote`).
+   *
+   * SO THE WALK IS THE WORK. `rests` is the record and everything under it: an observation
+   * hangs off its hypothesis by `parent_id`, and `consolidates` and `addresses` run from the
+   * claim to its support (`tools/import.ts` wrote every existing edge that way), so a finding
+   * reaches its observations in one step and a proposal its finding's in two. The depth bound
+   * is not decoration — `edges.kind` is an open vocabulary with no CHECK, so a chain that
+   * doubled back would otherwise be walked by a reader rather than refused by the schema.
+   *
+   * TWO PROVENANCES, NEVER MIXED. A remote the catalog holds for a cited session is `observed`:
+   * git answered in that directory and Babel wrote down what it said. A remote only a payload
+   * carries is `named`: the run read it in a transcript, which is a claim about a conversation
+   * and not a repository Babel ever stood in. A remote that is both is observed, and keeps the
+   * commit the evidence recorded — the catalog has no commit to offer, because the scan probes
+   * a repository's identity and never its position, and the current HEAD of a working tree is
+   * not evidence about the past.
+   *
+   * Nothing is stored. `records` is immutable by trigger and the schema is created once by the
+   * enable hook, so a projection is where a derived fact belongs — and this one derives over
+   * the imported corpus too, which is the only reason the 42.7% can move before a drain.
+   */
+  const repositoryOf = async (id: string): Promise<RecordPeel["repository"]> => {
+    const rows = await db.query(
+      `WITH RECURSIVE rests(id, depth) AS (
+             SELECT ?, 0
+           UNION
+             SELECT under.id, rests.depth + 1
+               FROM rests
+               JOIN (SELECT id, parent_id AS of_id FROM records WHERE parent_id IS NOT NULL
+                     UNION ALL
+                     SELECT to_id, from_id FROM edges
+                      WHERE kind IN ('consolidates','addresses') AND to_kind <> 'session') under
+                 ON under.of_id = rests.id
+              WHERE rests.depth < 3
+         )
+         SELECT 'observed' AS provenance, s.repository_remote AS remote,
+                '' AS sha, '' AS reference
+           FROM edges c JOIN sessions s ON s.selector = c.to_id
+          WHERE c.kind = 'cites' AND c.to_kind = 'session'
+            AND c.from_id IN (SELECT id FROM rests)
+            AND COALESCE(s.repository_remote, '') <> ''
+          UNION
+         SELECT 'named', json_extract(r.payload, '$.repository.remote'),
+                COALESCE(json_extract(r.payload, '$.repository.commit'), ''),
+                COALESCE(json_extract(r.payload, '$.repository.reference'), '')
+           FROM records r
+          WHERE r.id IN (SELECT id FROM rests) AND json_valid(r.payload)
+            AND COALESCE(json_extract(r.payload, '$.repository.remote'), '') <> ''`,
+      [id],
+    );
+    const held = new Map<string, { commit: string; reference: string; observed: boolean }>();
+    for (const row of rows) {
+      // A payload written before this contract, or crossed over from the Go tree, carries
+      // whatever spelling its run used, so the canonical form is taken here as well as at the
+      // answer: `git@github.com:atyrode/babel.git` and the catalog's `github.com/atyrode/babel`
+      // are one repository, and comparing the two as strings would report the observed one as
+      // merely named.
+      const remote = normalizeRemote(text(row["remote"]));
+      if (remote === "") continue;
+      const entry = held.get(remote) ?? { commit: "", reference: "", observed: false };
+      if (text(row["provenance"]) === "observed") entry.observed = true;
+      if (entry.commit === "") entry.commit = text(row["sha"]);
+      if (entry.reference === "") {
+        const url = text(row["reference"]);
+        entry.reference = REFERENCE_URL.exec(url)?.[1] === remote ? url : "";
+      }
+      held.set(remote, entry);
+    }
+    const byRemote = [...held].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const out: RecordPeel["repository"] = [];
+    // What Babel saw before what it was told, which is the order a reader weighs them in: the
+    // vocabulary is declared in that order and the loop takes it from there rather than
+    // restating it.
+    for (const provenance of REPOSITORY_PROVENANCES) {
+      for (const [remote, entry] of byRemote) {
+        if (entry.observed !== (provenance === "observed")) continue;
+        out.push({ remote, commit: entry.commit, reference: entry.reference, provenance });
+      }
+    }
+    return out;
+  };
+
   /** A question opened as a record: the ledger asked it, and answering it is the act. */
   const questionPeel = async (id: string): Promise<RecordPeel | null> => {
     const current = await index();
@@ -984,6 +1094,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       // A question rests on nothing: it is the corpus failing to settle something, and the
       // number is zero rather than absent so the shape is one shape for every peel.
       corroboration: { supports: 0, distinctRuns: 0 },
+      // And it concerns no codebase: a question is a gap in what Babel knows, so there is no
+      // evidence under it to have read a repository in.
+      repository: [],
       reception: { byRole: [], contested: false, operatorHistory: [] },
       machinery: {
         class: text(row["class"]),
@@ -1212,6 +1325,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   const machineryOf = async (
     row: SqlRow,
     payload: Record<string, unknown>,
+    repository: RecordPeel["repository"],
   ): Promise<Record<string, string>> => {
     const id = text(row["id"]);
     const head = await one(
@@ -1249,6 +1363,19 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         out["runCostUsd"] = String(run["cost_usd"]);
         out["runTokens"] = String(count(run["tokens"]));
       }
+    }
+    // THE COMMIT AND THE LINK LIVE HERE, and the repository's name lives at depth three with
+    // the evidence. §8.6 keeps the first three depths free of identifiers, and a commit is a
+    // digest and an issue is a link: a reader deciding whether a proposal is worth his time
+    // needs to know which codebase it is about, and only a reader debugging Babel needs to
+    // know which forty characters of it.
+    const at = repository.filter((of) => of.commit !== "");
+    if (at.length > 0) {
+      out["repositoryCommit"] = at.map((of) => `${of.remote}@${of.commit}`).join(" · ");
+    }
+    const references = repository.filter((of) => of.reference !== "");
+    if (references.length > 0) {
+      out["repositoryReference"] = references.map((of) => of.reference).join(" · ");
     }
     return out;
   };

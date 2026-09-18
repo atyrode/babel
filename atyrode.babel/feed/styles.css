@@ -799,6 +799,20 @@
   font-size: 0.78rem;
 }
 
+/* Which codebase the record concerns, in the same register as the corroboration above it: both
+   qualify the evidence rather than being some. A repository only a transcript named is dimmer
+   than one Babel probed, because the page should not make the weaker claim look like the
+   stronger one — the words say which it is, and the weight agrees with the words. */
+.plugin-atyrode_babel_feed .babel-repository {
+  margin: 0 0 var(--babel-space-3);
+  color: var(--babel-ink-faint);
+  font-size: 0.78rem;
+}
+
+.plugin-atyrode_babel_feed .babel-repository[data-provenance="observed"] {
+  color: var(--babel-ink-muted);
+}
+
 /* Which lenses have looked at a topic, and which never have. Two lines, not a grid: a reader
    glances at it while deciding what to run, and a table would ask to be read. */
 .plugin-atyrode_babel_feed .babel-coverage {

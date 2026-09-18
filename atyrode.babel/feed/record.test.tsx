@@ -122,7 +122,7 @@ describe("the peel", () => {
 
   test("a section the record does not hold is absent rather than an empty heading", async () => {
     const fake = hub({
-      record: () => peel({ case: {}, evidence: [], machinery: {}, related: [] }),
+      record: () => peel({ case: {}, evidence: [], repository: [], machinery: {}, related: [] }),
     });
     look({ recordId: "pro_0000000a" });
     const view = await mount(<RecordPanel host={fake.host} />);
@@ -131,6 +131,46 @@ describe("the peel", () => {
       "4",
     ]);
     expect(view.all(".babel-related")).toHaveLength(0);
+    await view.unmount();
+  });
+
+  test("which codebase it is about is read where the evidence is, and says on whose word", async () => {
+    const fake = hub();
+    look({ recordId: "pro_0000000a" });
+    const view = await mount(<RecordPanel host={fake.host} />);
+    // A repository Babel probed in the cited session's own workspace.
+    expect(view.one(".babel-repository").textContent).toBe("observed in github.com/atyrode/babel");
+    // The commit is an identifier and belongs at depth 5, so the sentence carries none of it.
+    expect(view.one('[data-depth="3"]').textContent).not.toContain("9c44aaf");
+    await view.unmount();
+  });
+
+  test("a repository a transcript only named does not read as one Babel saw", async () => {
+    const fake = hub({
+      record: () =>
+        peel({
+          // A hypothesis carries no citation of its own — its observations hold those — so the
+          // depth has to open for the repository alone, or the one thing the page knows about
+          // which project the claim is about would be unreachable.
+          evidence: [],
+          repository: [
+            {
+              remote: "github.com/tyrode/tyrode-infra",
+              commit: "",
+              reference: "",
+              provenance: "named",
+            },
+          ],
+        }),
+    });
+    look({ recordId: "pro_0000000a" });
+    const view = await mount(<RecordPanel host={fake.host} />);
+    const line = view.one(".babel-repository");
+    expect(line.textContent).toBe(
+      "named in the evidence, not observed: github.com/tyrode/tyrode-infra",
+    );
+    expect(line.getAttribute("data-provenance")).toBe("named");
+    expect(view.all('[data-depth="3"] .babel-peel-count')).toHaveLength(0);
     await view.unmount();
   });
 

@@ -392,6 +392,17 @@ export function peel(overrides: Partial<RecordPeel> = {}): RecordPeel {
     ],
     // Three supports from one run: the 84.5% case, and the one the prose has to read correctly.
     corroboration: { supports: 3, distinctRuns: 1 },
+    // One repository Babel probed in the cited session's own workspace, at the commit the
+    // evidence recorded; the fixture carries no merely-named one, so a panel test that wants
+    // the other provenance overrides this.
+    repository: [
+      {
+        remote: "github.com/atyrode/babel",
+        commit: "9c44aaf1ab3c4d5e6f70",
+        reference: "",
+        provenance: "observed",
+      },
+    ],
     reception: {
       byRole: [
         { role: "reception", support: 1, oppose: 0, unsure: 0, opposingRationales: [] },

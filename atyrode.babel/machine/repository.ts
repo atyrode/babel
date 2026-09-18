@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { RUNTIME_TOOL_BIN } from "../contract.ts";
+import { RUNTIME_TOOL_BIN, normalizeRemote } from "../contract.ts";
 
 /*
   WHAT THE WORK WAS ABOUT, ported from v0.4.0:internal/adapter/repository.go (§4.13).
@@ -148,58 +148,4 @@ async function runGit(git: string, workspace: string, args: readonly string[]): 
   const line = out.trim();
   const end = line.search(/[\r\n]/u);
   return end < 0 ? line : line.slice(0, end).trim();
-}
-
-/**
- * States a git remote URL as host/owner/repo, and returns "" for a URL it cannot read that
- * way.
- *
- * The normalization is what makes one repository one topic. git's own URL grammar writes the
- * same GitHub repository as git@github.com:atyrode/manifold.git,
- * https://github.com/atyrode/manifold, https://token@github.com/atyrode/manifold.git/ and
- * ssh://git@github.com/atyrode/manifold — four strings, one project — so the scheme, the
- * credentials, the ".git" suffix and the trailing slash are removed and the ssh short form's
- * colon becomes the separator it means.
- *
- * A local path remote ("/srv/git/thing", "../other") normalizes to nothing: it names a
- * directory on one machine, which is a locator and not an identity, and the common directory
- * is already the better answer for it.
- */
-export function normalizeRemote(url: string): string {
-  let remote = url.trim();
-  if (remote === "") return "";
-  const scheme = remote.indexOf("://");
-  if (scheme >= 0) {
-    remote = remote.slice(scheme + 3);
-  } else {
-    const colon = remote.indexOf(":");
-    // The scp-like short form, [user@]host:owner/repo. Its colon is a separator rather than a
-    // port, which is why it is rewritten here and not for a URL that carried a scheme.
-    if (colon >= 0 && !remote.slice(0, colon).includes("/")) {
-      remote = remote.slice(0, colon) + "/" + remote.slice(colon + 1);
-    }
-  }
-  // Credentials in a URL that had a scheme: user[:password]@host.
-  const at = remote.indexOf("@");
-  if (at >= 0) remote = remote.slice(at + 1);
-  remote = remote.replace(/^\/+|\/+$/gu, "");
-  if (remote === "" || remote.startsWith(".")) return "";
-  const parts: string[] = [];
-  for (const part of remote.split("/")) {
-    if (part === "" || part === ".") continue;
-    parts.push(part);
-  }
-  if (parts.length < 2) return "";
-  const last = parts.length - 1;
-  const tail = parts[last];
-  if (tail === undefined) return "";
-  parts[last] = tail.endsWith(".git") ? tail.slice(0, -".git".length) : tail;
-  if (parts[last] === "") return "";
-  // A host element carries a dot or is localhost; anything else is a path, and a path remote
-  // is a locator rather than a repository identity.
-  const first = parts[0] ?? "";
-  const host = first.includes(":") ? first.slice(0, first.indexOf(":")) : first;
-  if (!host.includes(".") && host !== "localhost") return "";
-  parts[0] = host;
-  return parts.join("/");
 }
