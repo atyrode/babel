@@ -749,7 +749,17 @@ const reviewSchemas: Record<Role, z.ZodType> = {
   backlog: reviewSchema("backlog"),
 };
 
-/** The JSON Schema the submit tool is registered with for one role. */
+/**
+ * ONE ROLE'S ANSWER CONTRACT, PRINTED INTO THE PROMPT — not registered anywhere.
+ *
+ * This said "the JSON Schema the submit tool is registered with", and there is no submit tool:
+ * the only caller interpolates it into the answer fence (`server/engine/review.ts`) and the
+ * answer is read back out of the final message. Two readers reasoned correctly from that
+ * sentence and reached the false conclusion that the shape was enforced where it is generated,
+ * an hour apart, so the sentence is the defect: nothing here constrains a model, and
+ * `acceptReviewResult` is the only enforcement there is. Making the old sentence true — a submit
+ * tool whose parameters are this schema — is #315.
+ */
 export function reviewJsonSchema(role: Role): unknown {
   return z.toJSONSchema(reviewSchemas[role], { io: "input", target: "draft-2020-12" });
 }
