@@ -17,6 +17,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
+  DrainReportSchema,
   MATERIAL_SCHEMA,
   OPERATIONS,
   PRESET_OPERATIONS,
@@ -34,7 +35,7 @@ import type {
 import { drainTick, type DrainDeps, type DrainLaunch } from "../server/drain.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
-import { readDrain } from "../store/drains.ts";
+import { drainReportId, readDrain, readDrainReport } from "../store/drains.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
@@ -385,8 +386,13 @@ function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch 
     ..._rest: unknown[]
   ): Promise<Started> => {
     const input = _rest.find(
-      (entry): entry is { machineId: string; preset: keyof typeof PRESET_OPERATIONS } =>
-        typeof entry === "object" && entry !== null && "preset" in entry,
+      (
+        entry,
+      ): entry is {
+        machineId: string;
+        preset: keyof typeof PRESET_OPERATIONS;
+        recipes: readonly string[];
+      } => typeof entry === "object" && entry !== null && "preset" in entry,
     )!;
     const operationId = PRESET_OPERATIONS[input.preset];
     const beat = operationId === PRESET_OPERATIONS["keep-going"];
@@ -411,7 +417,7 @@ function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch 
       `INSERT INTO runs(id, kind, machine_id, job_id, container_id, prepare_job_id, recipe_id,
                         profile, authority_kind, authority_id, preparation, started_at, records,
                         payload)
-       VALUES (?, ?, ?, ?, ?, ?, '', '{}', 'operator', ?, '{}', ?, 0, ?)
+       VALUES (?, ?, ?, ?, ?, ?, '', ?, 'operator', ?, ?, ?, 0, ?)
        ON CONFLICT(id) DO NOTHING`,
       [
         identity.runId,
@@ -420,7 +426,17 @@ function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch 
         beat ? identity.jobId : reachesCode ? codeJobOf(identity) : null,
         beat ? null : "ctr_workbench",
         beat ? null : prepareJobId,
+        // BABEL'S OWN LAUNCH REPORT, the two columns the real path writes and the drain's own
+        // report reads back (#270): which methods this run was asked to perform, and the
+        // container it was posted through. There is no `account` here and the real path writes
+        // none either — `drainInput` carries no session — so a report's per-account figures come
+        // from the drain's recorded ledger, which is the thing under test.
+        JSON.stringify({ containerId: "ctr_workbench", expectedRevision: 7 }),
         identity.authorityId,
+        JSON.stringify({
+          preset: input.preset,
+          recipes: input.recipes.map((id) => ({ id, version: 1 })),
+        }),
         new Date(store.now()).toISOString(),
         JSON.stringify({ closure: null, requestedAt: store.now() }),
       ],
@@ -1333,4 +1349,229 @@ test("the session a wake posts quotes what the operator told Babel, and the run 
   expect(asked.preset).toBe("read-whats-new");
   expect(asked.steering.carried.map((remark) => remark.id)).toEqual(["stg_0001", "stg_0002"]);
   expect(asked.steering.omitted).toBe(0);
+});
+
+/*
+  WHAT A DRAIN LEAVES BEHIND (#270).
+
+  The 2026-09-13 drain was reconstructed by hand, hours later, out of `run_receipt.payload`,
+  `/proc`, fan logs and attempt rows: 25.3M tokens for 70 runs, load 42 on 12 cores, 20 runs
+  paid and refused, engines present for 13 of 134 minutes. Nothing Babel produced could have
+  told Babel that. These two tests are the whole of the fix: a drain driven to its stop leaves
+  ONE record, its payload answers the operator's questions from itself, and the corpus reaches
+  it like any other frontier record.
+*/
+
+test("a drain driven to its stop leaves one record that answers what it cost, on whose account, against which duties, how much erroring and how much came out", async () => {
+  const drainId = String(
+    (await start({ concurrent: 2, recipes: ["code-health", "time-and-spend"] }))["drainId"],
+  );
+
+  /*
+    ONE TICK WHILE IT RUNS, so the drain has a life to report rather than only two endpoints.
+    Both jobs are at the model and one of them has said nothing for ninety seconds, which is
+    the reading `run_progress` holds and DROPS the instant a run settles — a stall nothing else
+    in the store will remember.
+  */
+  for (const ordinal of [0, 1]) {
+    await harness.db.run(
+      `INSERT INTO run_progress(run_id, job_id, stage, since, calls, input_tokens, output_tokens,
+                                cache_tokens, cost_usd, last_model, stalled, updated_at)
+       VALUES (?, ?, 'at the model', ?, 1, 5000, 100, 0, 0.1, 'claude-sonnet-4-5', ?, ?)`,
+      [
+        `run_${drainId}_${String(ordinal)}`,
+        `job_${drainId}_${String(ordinal)}`,
+        stamp(NOW),
+        ordinal,
+        stamp(NOW),
+      ],
+    );
+  }
+  harness.at(NOW + 60_000);
+  await drainTick(deps);
+
+  /*
+    AND THE PREPARATION EACH LAUNCH REALLY POSTS. `startExplore` posts an
+    `atyrode.babel.prepare` job at `<runId>_material` before the session exists, and that is
+    where the 2026-09-13 drain's wall time actually went — engines present for 13 of 134
+    minutes. A report that counted those rows as sessions would report the fan as busy and
+    every preparation as a job that answered nothing.
+  */
+  for (const ordinal of [0, 1]) {
+    await harness.db.run(
+      `INSERT INTO runs(id, kind, machine_id, authority_kind, authority_id, started_at,
+                        finished_at, closure, records, payload)
+       VALUES (?, ?, ?, 'operator', 'operator', ?, ?, 'completed', 0, '{"closure":"completed"}')`,
+      [
+        `run_${drainId}_${String(ordinal)}_material`,
+        OPERATIONS.prepare,
+        MACHINE,
+        stamp(NOW),
+        stamp(NOW + 90_000),
+      ],
+    );
+  }
+
+  // One job settles with a result; the other is PAID WORK WITH NO RESULT, which is the
+  // distinction the operator's "how much erroring" is actually about (#265).
+  await settleJob(`run_${drainId}_0`, { costMicros: 400_000, outputTokens: 1_000 });
+  await settleJob(`run_${drainId}_1`, {
+    costMicros: 300_000,
+    outputTokens: 200,
+    reason: "unknown-reference: the claim cites a session the material never served",
+  });
+  // What the first job put in the corpus: the value half of "how much value came out".
+  await harness.db.run(
+    `INSERT INTO records(id, kind, root_id, seq, run_id, actor_kind, actor_id, title, created_at,
+                         payload)
+     VALUES ('fnd_0000000a', 'finding', 'fnd_0000000a', 0, ?, 'run', ?, 'a finding', ?, '{}')`,
+    [`run_${drainId}_0`, `run_${drainId}_0`, stamp(NOW + 60_000)],
+  );
+
+  harness.at(NOW + 120_000);
+  const stopped = await halt(drainId, "the window resets");
+  expect(stopped["state"]).toBe("stopped");
+
+  const rows = await harness.db.query<{
+    id: string;
+    kind: string;
+    actor_kind: string;
+    actor_id: string;
+    run_id: string | null;
+    payload: string;
+  }>(`SELECT id, kind, actor_kind, actor_id, run_id, payload FROM records WHERE actor_id = ?`, [
+    drainId,
+  ]);
+  expect(rows).toHaveLength(1);
+  const record = rows[0]!;
+  // A FRONTIER RECORD WITH AN EXPLICIT DRAIN PROVENANCE. `engine` is the actor because the
+  // controller wrote it — no model was asked — and `run_id` is null because the report belongs
+  // to the drain rather than to whichever of its jobs happened to settle last.
+  expect(record.kind).toBe("finding");
+  expect(record.actor_kind).toBe("engine");
+  expect(record.run_id).toBeNull();
+  const report = DrainReportSchema.parse(JSON.parse(record.payload));
+  expect(report.provenance).toBe("drain");
+
+  // WHAT IT COST, from the hub's own meter and not from the engine's word about itself.
+  expect(report.tokens).toEqual({
+    calls: 6,
+    inputTokens: 40_000,
+    outputTokens: 1_200,
+    cacheReadTokens: 0,
+    costMicros: 700_000,
+  });
+
+  // ON WHOSE ACCOUNT, as Code reported it when the drain started — the question nothing on the
+  // machine could answer on 2026-09-13.
+  expect(report.account).toBe("ctr_workbench: the-drain-account (as Code reported at start)");
+  expect(report.accounts).toEqual([{ name: report.account, runs: 2, tokens: report.tokens }]);
+
+  // AGAINST WHICH DUTIES, as named and as spent. Both runs carried both recipes, so the
+  // per-duty figures overlap and the report says so rather than letting them read as a split.
+  expect(report.allocation.named).toEqual(["code-health", "time-and-spend"]);
+  expect(report.allocation.shared).toBe(true);
+  expect(report.allocation.ran.map((lane) => [lane.name, lane.runs])).toEqual([
+    ["code-health", 2],
+    ["time-and-spend", 2],
+  ]);
+
+  // HOW MUCH ERRORING, by code and by reason, with the launch's own lane kept separate from
+  // the submission's: a job that was never posted is not paid work with no result.
+  expect(report.jobs).toEqual({
+    launched: 2,
+    reachedModel: 2,
+    settled: 2,
+    unsettled: 0,
+    withoutRunRow: 0,
+  });
+  expect(report.refusals).toEqual({ "unknown-reference": 1 });
+  expect(report.closures).toEqual({ completed: 2 });
+  // The gap is the refused job and only that one: the other completed AND put a record in the
+  // store, so it is not a gap at all. A report that counted every job it could not praise
+  // would be the "errors: 20" nobody can act on.
+  expect(report.gaps).toEqual([
+    {
+      reason: "refused:unknown-reference",
+      jobs: 1,
+      detail: "unknown-reference: the claim cites a session the material never served",
+    },
+  ]);
+
+  // HOW MUCH VALUE CAME OUT, per million tokens, which is the figure that compares one drain
+  // with the next.
+  expect(report.produced.records).toBe(1);
+  expect(report.produced.assessments).toBe(0);
+  expect(report.produced.recordsPerMillionTokens).toBeCloseTo(1_000_000 / 41_200, 6);
+
+  // THE LOAD BABEL CAN SEE, integrated over the drain's life, and the stall it would otherwise
+  // have forgotten.
+  expect(report.load.peakAtModel).toBe(2);
+  expect(report.load.atModelMs).toBeGreaterThan(0);
+  expect(report.load.atModelFraction).toBeGreaterThan(0);
+  expect(report.notes.map((note) => note.kind)).toContain("stall");
+
+  // WHERE THE WALL TIME WENT: the preparations are their own lane, never sessions that
+  // answered nothing. This is the 13-of-134-minutes reading, from the store.
+  expect(report.pipeline).toEqual({
+    prepareRuns: 2,
+    prepareWallMs: 180_000,
+    sessionRuns: 2,
+    sessionWallMs: 120_000,
+  });
+
+  // AND WHAT IT CANNOT ANSWER, said in the record rather than carried as a column of nulls.
+  expect(report.unobserved.join(" ")).toContain("CPU load and memory");
+  expect(report.unobserved.join(" ")).toContain("cache-write");
+
+  // Written once: a second close of the same drain finds the record already there.
+  await halt(drainId, "again");
+  expect(
+    await harness.db.query(`SELECT id FROM records WHERE actor_id = ?`, [drainId]),
+  ).toHaveLength(1);
+
+  // AND THE PANEL SHOWS IT beside the drain that left it (#270).
+  const status = await statusOf(drainId);
+  expect((status["report"] as { drainId: string } | null)?.drainId).toBe(drainId);
+});
+
+test("the report a drain leaves is a record the corpus reaches, so an explore can be given it", async () => {
+  /*
+    ELIGIBLE INPUT, SPELLED AS WHAT THIS DEPLOYMENT ACTUALLY DOES WITH A RECORD. A run is given
+    a record through the projection every reader uses — the peel `store.record` builds, which is
+    what the feed opens, what a review is composed from, and what a "Babel improves Babel"
+    exploration is pointed at. A finding is one of the POST kinds (`store/feedindex.ts`), so the
+    report is rankable, drawable and answerable by a proposal that ADDRESSES it, which is the
+    shape of "what the next drain should change". A log in a column would be none of that.
+  */
+  const drainId = String((await start({ concurrent: 1 }))["drainId"]);
+  await settleJob(`run_${drainId}_0`);
+  harness.at(NOW + 60_000);
+  await halt(drainId, "that is enough");
+
+  const id = drainReportId(drainId);
+  const peel = await harness.store.record(id);
+  expect(peel).not.toBeNull();
+  expect(peel?.post.kind).toBe("finding");
+  expect(peel?.post.id).toBe(id);
+  // The one line a listing shows: what the drain was and what it came to.
+  expect(peel?.claim.statement).toContain(drainId);
+
+  // …and this drain's one job completed and put nothing in the store, which the report names
+  // as its own reason rather than folding into the failures: a run that answered and produced
+  // nothing is a different thing to look at from one that was refused.
+  const report = await readDrainReport(harness.store, drainId);
+  expect(report?.gaps).toEqual([
+    {
+      reason: "completed-empty",
+      jobs: 1,
+      detail: "the run completed and put no record and no assessment in the store",
+    },
+  ]);
+
+  // A run may not edit it and may not delete it, which is what makes it evidence rather than a
+  // log entry: the table's own triggers, the same ones every record is under.
+  await expect(
+    harness.db.run(`UPDATE records SET title = 'rewritten' WHERE id = ?`, [id]),
+  ).rejects.toThrow(/never edited/u);
 });

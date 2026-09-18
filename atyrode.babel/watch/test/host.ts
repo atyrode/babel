@@ -286,6 +286,7 @@ export function drainStatus(over: Partial<DrainStatus> = {}): DrainStatus {
     etaAt: "",
     refusals: {},
     closures: {},
+    report: null,
     ...over,
   };
 }

@@ -322,3 +322,150 @@ test("an ended drain says how it ended and is not offered a stop", async () => {
   // A drain that has ended has no ETA: what it spent is what it spent.
   expect(stat(root, "ETA")).toBe("—");
 });
+
+test("the last drain's report is on the screen beside the drain that left it", async () => {
+  /*
+    WHAT THE PANEL COULD NOT SAY ON 2026-09-13 (#270). While a drain ran the screen answered the
+    go/no-go rule; the moment it stopped it answered nothing, and the operator's questions —
+    what did it cost, on whose account, against which duties, how much erroring, how much came
+    out — were reconstructed by hand from receipts and `/proc` hours later. The door carries the
+    record the drain left on the newest ended drain; this is that record, rendered.
+  */
+  const { root } = await open({
+    runs: () => runsResult([]),
+    drainStatus: () => ({
+      drains: [
+        drainStatus({
+          drainId: "drn_done",
+          state: "target",
+          reason: "the target of 5000000 micro-dollars is met at 5100000",
+          finishedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          etaAt: "",
+          report: {
+            schema: "babel.drain-report/1",
+            provenance: "drain",
+            drainId: "drn_done",
+            machineId: "m-dev-01",
+            preset: "read-whats-new",
+            ending: "target",
+            reason: "the target of 5000000 micro-dollars is met at 5100000",
+            startedBy: "operator",
+            startedAt: new Date(Date.now() - 134 * 60_000).toISOString(),
+            finishedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+            wallMs: 129 * 60_000,
+            concurrent: 12,
+            target: { costMicros: 5_000_000 },
+            account: "ctr_workbench: the-drain-account (as Code reported at start)",
+            model: "anthropic/claude-sonnet-4-5",
+            thinking: "high",
+            allocation: {
+              named: ["code-health", "time-and-spend"],
+              ran: [
+                {
+                  name: "code-health",
+                  runs: 70,
+                  tokens: {
+                    calls: 210,
+                    inputTokens: 5_700_000,
+                    outputTokens: 402_000,
+                    cacheReadTokens: 19_200_000,
+                    costMicros: 5_100_000,
+                  },
+                },
+              ],
+              shared: false,
+            },
+            accounts: [
+              {
+                name: "ctr_workbench: the-drain-account (as Code reported at start)",
+                runs: 70,
+                tokens: {
+                  calls: 210,
+                  inputTokens: 5_700_000,
+                  outputTokens: 402_000,
+                  cacheReadTokens: 19_200_000,
+                  costMicros: 5_100_000,
+                },
+              },
+            ],
+            tokens: {
+              calls: 210,
+              inputTokens: 5_700_000,
+              outputTokens: 402_000,
+              cacheReadTokens: 19_200_000,
+              costMicros: 5_100_000,
+            },
+            jobs: {
+              launched: 70,
+              reachedModel: 70,
+              settled: 68,
+              unsettled: 2,
+              withoutRunRow: 0,
+            },
+            closures: { completed: 48, failed: 20 },
+            refusals: { "unknown-reference": 20 },
+            launchRefusals: { concurrency_limit: 6 },
+            produced: {
+              records: 50,
+              assessments: 50,
+              recordsPerMillionTokens: 8.2,
+              assessmentsPerMillionTokens: 8.2,
+            },
+            load: {
+              heldMs: 90 * 60_000,
+              atModelMs: 13 * 60_000,
+              atModelFraction: 0.097,
+              peakHeld: 12,
+              peakAtModel: 6,
+            },
+            pipeline: {
+              prepareRuns: 70,
+              prepareWallMs: 118 * 60_000,
+              sessionRuns: 70,
+              sessionWallMs: 13 * 60_000,
+            },
+            gaps: [
+              {
+                reason: "refused:unknown-reference",
+                jobs: 20,
+                detail: "unknown-reference: a citation the material never served",
+              },
+            ],
+            notes: [
+              {
+                at: new Date(Date.now() - 60 * 60_000).toISOString(),
+                kind: "stall",
+                detail: "6 of 12 job(s) are at the model with nothing metered for 90s",
+              },
+            ],
+            notesDropped: 3,
+            unobserved: ["the machine's CPU load and memory over the drain's life: not readable"],
+          },
+        }),
+      ],
+    }),
+  });
+  const strip = root.querySelector(DRAIN);
+  if (strip === null) throw new Error("the ended drain is not on the screen");
+  const text = strip.textContent ?? "";
+
+  // What it cost, and on whose account.
+  expect(text).toContain("402,000 out");
+  expect(text).toContain("19,200,000 cache read");
+  expect(text).toContain("$5.1000 on ctr_workbench: the-drain-account");
+  // How much erroring, in the two lanes that are different questions: paid work with no result,
+  // and work that never became a job at all.
+  expect(text).toContain("refused:unknown-reference");
+  expect(text).toContain("never launched concurrency_limit");
+  // How much value came out, per million tokens.
+  expect(text).toContain("50 records and 50 assessments");
+  expect(text).toContain("8.2 records");
+  // Where the wall time went: the 13-of-134-minutes reading, from the panel rather than /proc.
+  expect(text).toContain("at the model 9.7%");
+  expect(text).toContain("preparing 1h 58m against 13m 00s in session");
+  // A duty the operator named and no run carried: the allocation gap, said as one.
+  expect(text).toContain("never ran");
+  // The controller's own notes, and what it could not see at all.
+  expect(text).toContain("1 note(s) the controller made, 3 dropped");
+  expect(text).toContain("what this report cannot answer");
+});

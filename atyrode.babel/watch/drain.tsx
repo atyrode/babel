@@ -1,6 +1,12 @@
 import type { MachineSummary } from "@manifold/protocol";
 import { Cluster, Stack, Switcher } from "@manifold/ui";
-import { ACTIONS, DRAIN_PRESETS, door, type DrainPreset } from "../contract.ts";
+import {
+  ACTIONS,
+  DRAIN_PRESETS,
+  door,
+  type DrainPreset,
+  type DrainReportPayload,
+} from "../contract.ts";
 import {
   DRAIN_BOUNDS,
   DRAIN_CARDS,
@@ -8,6 +14,7 @@ import {
   accountsClause,
   chosenProfile,
   drainUnready,
+  elapsedClock,
   etaClause,
   figure,
   micros,
@@ -207,6 +214,141 @@ function Field({
 }
 
 /**
+ * THE REPORT THE LAST DRAIN LEFT (#270), beside the drain it belongs to.
+ *
+ * On 2026-09-13 every one of these numbers was recovered by hand, hours later, out of receipts
+ * and `/proc`. They are here because the operator's questions afterwards were always the same
+ * five — what did it cost, on whose account, against which duties, how much erroring, how much
+ * came out — and a panel that showed a drain while it ran and nothing once it stopped answered
+ * none of them.
+ *
+ * It says what it CANNOT see as plainly as what it can. `unobserved` is the record's own list,
+ * rendered rather than summarised, because a reader who does not know the machine's load is
+ * missing will read its absence as "the load was fine".
+ */
+function Report({ report }: { readonly report: DrainReportPayload }) {
+  const spent = report.tokens;
+  const duties = report.allocation.ran;
+  const unnamed = report.allocation.named.filter(
+    (name) => !duties.some((lane) => lane.name === name),
+  );
+  const admissions = Object.entries(report.launchRefusals).sort(
+    (left, right) => right[1] - left[1],
+  );
+  return (
+    <Stack gap="var(--babel-space-1)" className="plugin-atyrode_babel_watch__drain-report">
+      <Cluster gap="var(--babel-space-3)">
+        <span className="plugin-atyrode_babel_watch__stat-label">what this drain came to</span>
+        <span className="plugin-atyrode_babel_watch__muted">
+          {elapsedClock(report.wallMs / 1000)} at {figure(report.concurrent)} jobs · a record the
+          frontier can read
+        </span>
+      </Cluster>
+      <p className="plugin-atyrode_babel_watch__muted">
+        {figure(spent.inputTokens)} in / {figure(spent.outputTokens)} out /{" "}
+        {figure(spent.cacheReadTokens)} cache read over {figure(spent.calls)} calls ·{" "}
+        {micros(spent.costMicros)} on {report.account}
+      </p>
+      <p className="plugin-atyrode_babel_watch__muted">
+        {figure(report.jobs.launched)} launched · {figure(report.jobs.reachedModel)} reached a model
+        · {figure(report.jobs.settled)} settled
+        {report.jobs.unsettled === 0 ? "" : ` · ${figure(report.jobs.unsettled)} never settled`}
+        {report.jobs.withoutRunRow === 0
+          ? ""
+          : ` · ${figure(report.jobs.withoutRunRow)} left no run row`}
+      </p>
+      <p className="plugin-atyrode_babel_watch__muted">
+        {figure(report.produced.records)} records and {figure(report.produced.assessments)}{" "}
+        assessments · {report.produced.recordsPerMillionTokens.toFixed(1)} records and{" "}
+        {report.produced.assessmentsPerMillionTokens.toFixed(1)} assessments a million tokens
+      </p>
+      <p className="plugin-atyrode_babel_watch__muted">
+        at the model {(report.load.atModelFraction * 100).toFixed(1)}% of the fan's time, peak{" "}
+        {figure(report.load.peakAtModel)} of {figure(report.concurrent)} · preparing{" "}
+        {elapsedClock(report.pipeline.prepareWallMs / 1000)} against{" "}
+        {elapsedClock(report.pipeline.sessionWallMs / 1000)} in session
+      </p>
+      {duties.length === 0 ? null : (
+        <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
+          {duties.map((lane) => (
+            <span key={`duty:${lane.name}`} className="plugin-atyrode_babel_watch__lane">
+              {lane.name}{" "}
+              <span className="plugin-atyrode_babel_watch__mono">
+                {figure(lane.runs)} runs · {micros(lane.tokens.costMicros)}
+              </span>
+            </span>
+          ))}
+          {/*
+            A DUTY THE OPERATOR NAMED AND NO RUN CARRIED is the allocation question answered in
+            the direction that matters: "as named" and "as spent" are two lists, and the gap
+            between them is the finding.
+          */}
+          {unnamed.map((name) => (
+            <span key={`unrun:${name}`} className="plugin-atyrode_babel_watch__stalled">
+              {name} <span className="plugin-atyrode_babel_watch__mono">never ran</span>
+            </span>
+          ))}
+        </Cluster>
+      )}
+      {report.gaps.length === 0 ? null : (
+        <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
+          {report.gaps.map((gap) => (
+            <span
+              key={`gap:${gap.reason}`}
+              className="plugin-atyrode_babel_watch__stalled"
+              title={gap.detail}
+            >
+              {gap.reason}{" "}
+              <span className="plugin-atyrode_babel_watch__mono">{figure(gap.jobs)}</span>
+            </span>
+          ))}
+        </Cluster>
+      )}
+      {admissions.length === 0 ? null : (
+        <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
+          {admissions.map(([code, n]) => (
+            <span key={`admission:${code}`} className="plugin-atyrode_babel_watch__stalled">
+              never launched {code}{" "}
+              <span className="plugin-atyrode_babel_watch__mono">{figure(n)}</span>
+            </span>
+          ))}
+        </Cluster>
+      )}
+      {report.notes.length === 0 ? null : (
+        <details className="plugin-atyrode_babel_watch__drain-notes">
+          <summary className="plugin-atyrode_babel_watch__muted">
+            {figure(report.notes.length)} note(s) the controller made
+            {report.notesDropped === 0 ? "" : `, ${figure(report.notesDropped)} dropped`}
+          </summary>
+          <Stack gap="var(--babel-space-1)">
+            {report.notes.map((note) => (
+              <span
+                key={`${note.at}:${note.kind}:${note.detail}`}
+                className="plugin-atyrode_babel_watch__muted"
+              >
+                {note.kind} · {note.detail}
+              </span>
+            ))}
+          </Stack>
+        </details>
+      )}
+      <details className="plugin-atyrode_babel_watch__drain-unobserved">
+        <summary className="plugin-atyrode_babel_watch__muted">
+          what this report cannot answer
+        </summary>
+        <Stack gap="var(--babel-space-1)">
+          {report.unobserved.map((missing) => (
+            <span key={missing} className="plugin-atyrode_babel_watch__muted">
+              {missing}
+            </span>
+          ))}
+        </Stack>
+      </details>
+    </Stack>
+  );
+}
+
+/**
  * ONE RUNNING DRAIN, IN THE SIX NUMBERS §11.4 NAMES, and the account it is spending.
  *
  * The spend is shown against the target rather than alone, because "$1.83" answers nothing and
@@ -352,6 +494,12 @@ function Running({
           {drain.finishedAt === "" ? "at an instant nobody recorded" : since(drain.finishedAt, now)}
         </span>
       )}
+      {/*
+        THE REPORT IS SHOWN WHERE THE DRAIN IS (#270), under the ended row it belongs to. The
+        door carries it on the newest ended drain and nowhere else, so this is the last drain's
+        report and there is never a second one to mistake it for.
+      */}
+      {drain.report === null ? null : <Report report={drain.report} />}
     </Stack>
   );
 }

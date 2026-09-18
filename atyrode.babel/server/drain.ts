@@ -16,11 +16,15 @@ import {
   closeDrain,
   deadlineOf,
   finishDrain,
+  foldJournal,
+  noteDrain,
   reconcileLive,
+  readDrain,
   recordLaunch,
-  sample,
   saveFold,
   targetMet,
+  writeDrainReport,
+  type DrainNote,
   type DrainRow,
   type DrainsStore,
   type LiveJob,
@@ -206,10 +210,28 @@ export async function foldDrain(
   at: number,
 ): Promise<Folded> {
   const notes: string[] = [];
+  const journaled: DrainNote[] = [];
   for (const gone of seen.missing) {
-    notes.push(
-      `${gone.jobId} was launched with no run row to show for it, so its slot is released`,
-    );
+    const note = `${gone.jobId} was launched with no run row to show for it, so its slot is released`;
+    notes.push(note);
+    journaled.push({ at, kind: "orphan", detail: note });
+  }
+  /*
+    A STALL IS JOURNALED WHERE IT IS SEEN, because nowhere else keeps it (#270). `run_progress`
+    is what says a job has been at the model with nothing metered for ninety seconds, and that
+    row is deleted the instant the job settles — so a drain that recorded only totals could
+    never afterwards say it had spent an hour stalled. The note is the tick's count rather than
+    one per job: the same two jobs stalling across six ticks is one fact observed six times, and
+    naming them each time would be the bound's whole budget spent on one stall.
+  */
+  if (seen.stalled > 0) {
+    journaled.push({
+      at,
+      kind: "stall",
+      detail:
+        `${String(seen.stalled)} of ${String(seen.holding.length)} job(s) are at the model with ` +
+        `nothing metered for 90s`,
+    });
   }
   const settledSpend = seen.settled.reduce((total, run) => addSpend(total, run.spend), row.spent);
   const spent = addSpend(settledSpend, seen.inFlight);
@@ -227,7 +249,13 @@ export async function foldDrain(
     spent: settledSpend,
     closures,
     refusals,
-    samples: sample(row.samples, at, spent),
+    journal: foldJournal(
+      row.journal,
+      at,
+      spent,
+      { held: seen.holding.length, atModel: seen.atModel },
+      journaled,
+    ),
     settledNow: seen.settled.length,
   });
   return { spent, notes };
@@ -326,6 +354,8 @@ export async function endDrain(
   live: readonly LiveJob[],
 ): Promise<Ended> {
   const notes: string[] = [];
+  const journaled: DrainNote[] = [];
+  const at = deps.now();
   const operationId = drainOperation(row.preset);
   let cancelled = 0;
   for (const job of live) {
@@ -373,12 +403,14 @@ export async function endDrain(
         });
         if (!answered.ok) {
           notes.push(`${lane.jobId} was not cancelled: ${answered.refused}`);
+          journaled.push({ at, kind: "cancel", detail: `${lane.jobId}: ${answered.refused}` });
           continue;
         }
       }
       cancelled += 1;
     } catch (error) {
       notes.push(`${job.jobId} was not cancelled: ${message(error)}`);
+      journaled.push({ at, kind: "cancel", detail: `${job.jobId}: ${message(error)}` });
     }
   }
   const closed = await closeDrain(deps.store, row.id, ending, reason, live);
@@ -391,8 +423,36 @@ export async function endDrain(
         `their receipts have landed`,
     );
   }
+  await noteDrain(deps.store, row.id, journaled);
+  // The report is written from the row AFTER the close, so the ending, the reason and the
+  // finishing instant it carries are the ones the store holds rather than the ones this call
+  // intended. A drain that went to `closing` is not finished and leaves none yet.
+  const left = closed === "ended" ? await leaveReport(deps, row.id) : [];
   deps.store.touch();
-  return { state: closed === "closing" ? "closing" : ending, cancelled, notes };
+  return {
+    state: closed === "closing" ? "closing" : ending,
+    cancelled,
+    notes: [...notes, ...left],
+  };
+}
+
+/**
+ * THE RECORD A FINISHED DRAIN LEAVES (#270), written once, from the row as it now stands.
+ *
+ * A REPORT THAT COULD NOT BE WRITTEN IS A NOTE AND NEVER A FAILURE OF THE ENDING. The drain has
+ * stopped — the jobs are cancelled, the row is closed, the window is safe — and throwing here
+ * would make a reporting bug look like a controller that could not stop spending. It is
+ * idempotent on a derived identifier, so a later close of the same drain writes no second.
+ */
+async function leaveReport(deps: DrainDeps, id: string): Promise<readonly string[]> {
+  try {
+    const row = await readDrain(deps.store, id);
+    if (row === null || row.state === "running" || row.state === "closing") return [];
+    await writeDrainReport(deps.store, row);
+    return [];
+  } catch (error) {
+    return [`this drain ended and its report was not written: ${message(error)}`];
+  }
 }
 
 /**
@@ -427,6 +487,10 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       };
     }
     const finished = await finishDrain(deps.store, row.id);
+    // The last receipt of a closing drain has landed, so this tick is where its account becomes
+    // final and where its report is written (#270) — never at the close, which happened while
+    // up to (N−1) of its jobs were still at a model.
+    const left = finished ? await leaveReport(deps, row.id) : [];
     if (finished) deps.store.touch();
     return {
       drainId: row.id,
@@ -435,7 +499,7 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       live: 0,
       state: ending,
       reason: row.reason,
-      notes,
+      notes: [...notes, ...left],
     };
   }
 
@@ -491,6 +555,10 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   const plan = deps.plan(inForce.policy, operationId, row.profile);
   const input = drainInput(row);
   const holding = [...seen.holding];
+  // What this round could not do. It is journaled AFTER the round rather than folded with it,
+  // because a fold advances the drain's own load integrals and this write must not advance them
+  // a second time in the same instant.
+  const journaled: DrainNote[] = [];
   let launched = 0;
   let refused = "";
   for (let slot = holding.length; slot < row.concurrent; slot += 1) {
@@ -529,7 +597,9 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
         sentence of Babel's own can never reach here.
       */
       if (started.code === "job_digest_conflict") {
-        notes.push(`${identity.jobId} was already posted by an earlier tick, and is taken back`);
+        const adopted = `${identity.jobId} was already posted by an earlier tick, and is taken back`;
+        notes.push(adopted);
+        journaled.push({ at, kind: "adopted", detail: adopted });
         await recordLaunch(deps.store, row.id, job, holding);
         holding.push(job);
         launched += 1;
@@ -541,6 +611,21 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       // may be a machine reconnecting or a concurrency ceiling that frees up on the next settle.
       refused = started.refused;
       notes.push(`no further job was launched: ${started.refused}`);
+      /*
+        AN ADMISSION REFUSAL IS DURABLE NOWHERE ELSE (#270). `startExplore` writes its run row
+        only after the hub has taken the job, so a refused launch leaves no row, no receipt and
+        no closure — it is work that never became a job, and on 2026-09-13 the only trace of
+        twenty of them was a shell's scrollback. The code the hub carried out of its own error
+        leads the sentence, which is what makes the report's `launchRefusals` countable.
+      */
+      journaled.push({
+        at,
+        kind: "admission",
+        detail:
+          started.code === undefined || started.code === ""
+            ? started.refused
+            : `${started.code}: ${started.refused}`,
+      });
       break;
     }
     // The row is written before the array grows, so what it stores is what this tick actually
@@ -549,6 +634,7 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
     holding.push(job);
     launched += 1;
   }
+  await noteDrain(deps.store, row.id, journaled);
 
   // A DRAIN THAT HOLDS NOTHING AND CANNOT LAUNCH HAS FAILED, and says so rather than sitting at
   // "running" for the rest of its deadline reporting zero of everything. Holding nothing is the
@@ -609,6 +695,17 @@ export async function drainTick(deps: DrainDeps): Promise<readonly DrainReport[]
     try {
       reports.push(await tickDrain(deps, row));
     } catch (error) {
+      const detail = `this drain could not be moved on: ${message(error)}`;
+      /*
+        A TICK THAT THREW IS THE ONE EVENT NOTHING ELSE RECORDS. The report goes to the caller
+        and the caller is a wake; the row is untouched, so a drain that failed every tick for
+        two hours would end looking like a drain that simply produced nothing. The note is
+        written on its own and a failure to write it is swallowed, because this handler exists
+        so that one unreadable drain does not stop the others (#270).
+      */
+      await noteDrain(deps.store, row.id, [{ at: deps.now(), kind: "error", detail }]).catch(
+        () => undefined,
+      );
       reports.push({
         drainId: row.id,
         launched: 0,
@@ -616,7 +713,7 @@ export async function drainTick(deps: DrainDeps): Promise<readonly DrainReport[]
         live: row.live.length,
         state: row.state,
         reason: "",
-        notes: [`this drain could not be moved on: ${message(error)}`],
+        notes: [detail],
       });
     }
   }

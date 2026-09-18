@@ -13,6 +13,7 @@ import {
   EVENTS,
   PRESET_OPERATIONS,
   type DrainProfile,
+  type DrainReportPayload,
   type DrainTarget,
 } from "../contract.ts";
 import { newId } from "../store/acts.ts";
@@ -22,10 +23,12 @@ import {
   drainStatus,
   insertDrain,
   readDrain,
+  readDrainReport,
   recentDrains,
   reconcileLive,
   recordLaunch,
   type DrainKnobs,
+  type DrainRow,
 } from "../store/drains.ts";
 import {
   drainIdentity,
@@ -127,6 +130,12 @@ export interface DrainDoorDeps {
 }
 
 export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly Door[] {
+  /** A drain's own report, or null while it is still running: there is nothing final to report. */
+  const reportOf = async (row: DrainRow): Promise<DrainReportPayload | null> =>
+    row.state === "running" || row.state === "closing"
+      ? null
+      : await readDrainReport(store, row.id);
+
   const start = defineDoor(
     defineServerAction({
       name: ACTIONS.drainStart,
@@ -375,14 +384,27 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       result: DrainStatusResultSchema,
     }),
     async (_ctx, query) => {
+      /*
+        THE REPORT TRAVELS WITH THE DRAIN THAT LEFT IT (#270), and only with the NEWEST ended
+        one. A drain asked for by name gets its own — that read is a reader opening one drain —
+        and a listing gets exactly one, because the panel's question is "what did the last drain
+        do" and six payloads on a five-second poll is a listing paying for pages nobody opened.
+        Every other row carries null, which is the honest answer for a drain still running and
+        for one that ended before this record existed.
+      */
       if (query.drainId !== undefined) {
         const row = await readDrain(store, query.drainId);
         if (row === null) return { refused: `no drain ${query.drainId}` };
-        return { drains: [await drainStatus(store, row)] };
+        return { drains: [await drainStatus(store, row, await reportOf(row))] };
       }
       const rows = await recentDrains(store, query.limit);
       const drains = [];
-      for (const row of rows) drains.push(await drainStatus(store, row));
+      let reported = false;
+      for (const row of rows) {
+        const report = reported ? null : await reportOf(row);
+        if (report !== null) reported = true;
+        drains.push(await drainStatus(store, row, report));
+      }
       return { drains };
     },
   );

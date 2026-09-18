@@ -572,3 +572,20 @@
   padding-bottom: var(--babel-space-2);
   border-bottom: 1px solid var(--babel-rule);
 }
+
+/* The report a drain left, set under the row it belongs to by the same rule that sets the
+   account strip above it: it is the same drain, read afterwards rather than while it ran. */
+.plugin-atyrode_babel_watch__drain-report {
+  margin-top: var(--babel-space-2);
+  padding-top: var(--babel-space-2);
+  border-top: 1px solid var(--babel-rule);
+}
+
+.plugin-atyrode_babel_watch__drain-report p {
+  margin: 0;
+}
+
+.plugin-atyrode_babel_watch__drain-notes summary,
+.plugin-atyrode_babel_watch__drain-unobserved summary {
+  cursor: pointer;
+}
