@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { MACHINE_REPOSITORY_REASONS } from "@manifold/protocol";
-import type { SqlParam, SqlStatement } from "@manifold/plugin";
+import type { PluginDatabase, SqlParam, SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
 import type { CycleReportSchema, IngestibleTable } from "../contract.ts";
 import {
@@ -17,12 +18,20 @@ import {
   type MaterialEntry,
   type MaterialIndex,
   type Receipt,
+  type RunCall,
+  type RunTrace,
 } from "../contract.ts";
 import type { Assignment, Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
 import { refuseRow, type RowRefusal } from "../store/acts.ts";
 import { REFUSALS, refusalCode, refusalReason, type RefusalCode } from "../machine/results.ts";
 import type { BabelStore } from "../store/store.ts";
-import { PROMPT_LIMIT, promptBytes, type CodeEngine, type SessionRead } from "./engine/session.ts";
+import {
+  PROMPT_LIMIT,
+  promptBytes,
+  type CodeEngine,
+  type SessionReceipt,
+  type SessionRead,
+} from "./engine/session.ts";
 import { readExploreAnswer, unservedLocator, type Recipe } from "./engine/prompts.ts";
 import { exploreRows, markerReferences } from "./engine/records.ts";
 import {
@@ -1088,6 +1097,236 @@ function runStatement(
   };
 }
 
+// ------------------------------------------------------------- a run's replayable trace (#349)
+
+/** Every column of a call row, in the one order the statement below writes them. */
+const CALL_COLUMNS = [
+  "run_id",
+  "seq",
+  "recorded_at",
+  "model",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+  "cost_micros",
+  "exit_code",
+  "closure",
+  "refusal",
+  "response_digest",
+  "response_bytes",
+  "transcript_host",
+  "transcript_session",
+  "transcript_path",
+] as const;
+
+/**
+ * WHAT A REFUSED ANSWER'S CALL ROW SAYS WHEN THE REASON CARRIES NO CODE THIS BUILD KNOWS.
+ *
+ * Every reason either settlement writes is `<code>: <sentence>` built out of {@link REFUSALS},
+ * so this is unreachable today. It exists because the alternative — an empty `refusal` — reads
+ * as "the answer stood", which is the one thing it certainly did not do. The word is
+ * deliberately outside the refusal vocabulary so a tally cannot count it as one of them.
+ */
+const UNCLASSIFIED_REFUSAL = "refused";
+
+/**
+ * ONE SETTLED SESSION AS A CALL ROW: what it cost, how it ended, and where its bytes are.
+ *
+ * Both settlement lanes reach this, because "a run's calls can be rechecked" cannot be true of
+ * explorations and false of reviews.
+ *
+ * THE DIGEST IS TAKEN OVER THE FINAL MESSAGE EXACTLY AS CODE'S RECEIPT CARRIED IT, empty string
+ * included: a session that sealed a transcript and said nothing is a different event from one
+ * that sealed none, and only the second leaves the digest empty. Nothing else about the message
+ * is kept — the message itself, and the request that drew it, are records in the transcript the
+ * three `transcript_*` columns locate, on the machine that ran the session.
+ */
+function sessionCall(input: {
+  readonly runId: string;
+  readonly at: number;
+  readonly machineId: string;
+  readonly session: SessionReceipt | null;
+  readonly closure: Receipt["closure"];
+  readonly reason: string;
+}): RunCall {
+  const session = input.session;
+  const usage = session?.usage ?? null;
+  const message = session?.finalMessage ?? "";
+  return {
+    runId: input.runId,
+    // ONE CALL PER SETTLEMENT, for the reason `settleSession` states about `inference`: a posted
+    // session is omp's one-shot and the turns inside it are summed before Babel is told of any.
+    seq: 1,
+    recordedAt: new Date(input.at).toISOString(),
+    model: session?.model ?? "",
+    inputTokens: usage?.input ?? 0,
+    outputTokens: usage?.output ?? 0,
+    cacheReadTokens: usage?.cacheRead ?? 0,
+    cacheWriteTokens: usage?.cacheWrite ?? 0,
+    costMicros: Math.round((usage?.cost ?? 0) * 1_000_000),
+    exitCode: session?.exitCode ?? null,
+    closure: input.closure,
+    refusal: input.reason === "" ? "" : (refusalCode(input.reason) ?? UNCLASSIFIED_REFUSAL),
+    response:
+      session === null
+        ? { digest: "", bytes: 0 }
+        : {
+            digest: createHash("sha256").update(message).digest("hex"),
+            bytes: new TextEncoder().encode(message).byteLength,
+          },
+    transcript:
+      session === null
+        ? { host: "", sessionId: "", path: "" }
+        : { host: input.machineId, sessionId: session.sessionId, path: session.sessionPath },
+  };
+}
+
+/**
+ * The call row, written once. `OR IGNORE` on `(run_id, seq)` is what makes a settlement replayed
+ * after a crash a no-op here, the way every other row a settlement writes is one.
+ */
+function callStatement(call: RunCall, condition?: SqlCondition): SqlStatement {
+  const values: readonly SqlParam[] = [
+    call.runId,
+    call.seq,
+    call.recordedAt,
+    call.model,
+    call.inputTokens,
+    call.outputTokens,
+    call.cacheReadTokens,
+    call.cacheWriteTokens,
+    call.costMicros,
+    call.exitCode,
+    call.closure,
+    call.refusal,
+    call.response.digest,
+    call.response.bytes,
+    call.transcript.host,
+    call.transcript.sessionId,
+    call.transcript.path,
+  ];
+  const holes = CALL_COLUMNS.map(() => "?").join(", ");
+  return {
+    sql:
+      `INSERT OR IGNORE INTO run_calls(${CALL_COLUMNS.join(", ")}) ` +
+      (condition === undefined ? `VALUES (${holes})` : `SELECT ${holes} WHERE ${condition.sql}`),
+    params: [...values, ...(condition === undefined ? [] : condition.params)],
+  };
+}
+
+/** A run row as a trace's request half is read off it. */
+type TraceRow = {
+  readonly kind: string;
+  readonly machine_id: string | null;
+  readonly recipe_id: string | null;
+  readonly prepare_job_id: string | null;
+  readonly payload: string;
+};
+
+/** A call row as SQLite answers it: every INTEGER column arrives as a BIGINT. */
+type CallRow = {
+  readonly run_id: string;
+  readonly seq: number | bigint;
+  readonly recorded_at: string;
+  readonly model: string;
+  readonly input_tokens: number | bigint;
+  readonly output_tokens: number | bigint;
+  readonly cache_read_tokens: number | bigint;
+  readonly cache_write_tokens: number | bigint;
+  readonly cost_micros: number | bigint;
+  readonly exit_code: number | bigint | null;
+  readonly closure: RunCall["closure"];
+  readonly refusal: string;
+  readonly response_digest: string;
+  readonly response_bytes: number | bigint;
+  readonly transcript_host: string;
+  readonly transcript_session: string;
+  readonly transcript_path: string;
+};
+
+/**
+ * THE FOUR THINGS A TRACE READS OUT OF A RUN'S PAYLOAD, and why they are not read with
+ * {@link ReceiptSchema}.
+ *
+ * `runs.payload` is the receipt AND the hub's own meter beside it ({@link runStatement} writes
+ * `inference` into the same document), so a strict parse of it fails by construction — and
+ * failing would blank the request half of every metered run's trace. A reader that wants four
+ * fields asks for four fields; the receipt itself stays the strict shape a producer writes.
+ */
+const TracedRequestSchema = z.object({
+  recipeId: z.string().optional(),
+  model: z.string().optional(),
+  account: z.object({ provider: z.string(), identityKey: z.string() }).optional(),
+  steering: z.object({ carried: z.array(z.object({ id: z.string() })) }).optional(),
+});
+
+/**
+ * ONE RUN'S TRACE: what it was asked, and the calls it made answering. Null for a run this hub
+ * has no row for.
+ *
+ * The request half is READ off the run row and its receipt rather than copied into `run_calls`,
+ * for the same reason the calls keep no bodies — a second copy of a fact is a thing that can
+ * come to disagree with the first. A receipt this build cannot parse (`'{}'` on a run the hub
+ * has not settled) leaves the request half empty, which is the truth about it: nobody recorded
+ * what that run was asked.
+ */
+export async function readRunTrace(
+  db: Pick<PluginDatabase, "query">,
+  runId: string,
+): Promise<RunTrace | null> {
+  const row = (
+    await db.query<TraceRow>(
+      `SELECT kind, machine_id, recipe_id, prepare_job_id, payload FROM runs WHERE id = ?`,
+      [runId],
+    )
+  )[0];
+  if (row === undefined) return null;
+  let held: unknown;
+  try {
+    held = JSON.parse(row.payload);
+  } catch {
+    held = null;
+  }
+  const parsed = TracedRequestSchema.safeParse(held);
+  const receipt = parsed.success ? parsed.data : null;
+  const account = receipt?.account;
+  const calls = await db.query<CallRow>(
+    `SELECT ${CALL_COLUMNS.join(", ")} FROM run_calls WHERE run_id = ? ORDER BY seq`,
+    [runId],
+  );
+  return {
+    runId,
+    kind: row.kind,
+    machineId: row.machine_id ?? "",
+    recipeId: row.recipe_id ?? receipt?.recipeId ?? "",
+    material: row.prepare_job_id ?? "",
+    account: account === undefined ? "" : `${account.provider}/${account.identityKey}`,
+    model: receipt?.model ?? "",
+    steering: (receipt?.steering?.carried ?? []).map((remark) => remark.id),
+    calls: calls.map((call) => ({
+      runId: call.run_id,
+      seq: Number(call.seq),
+      recordedAt: call.recorded_at,
+      model: call.model,
+      inputTokens: Number(call.input_tokens),
+      outputTokens: Number(call.output_tokens),
+      cacheReadTokens: Number(call.cache_read_tokens),
+      cacheWriteTokens: Number(call.cache_write_tokens),
+      costMicros: Number(call.cost_micros),
+      exitCode: call.exit_code === null ? null : Number(call.exit_code),
+      closure: call.closure,
+      refusal: call.refusal,
+      response: { digest: call.response_digest, bytes: Number(call.response_bytes) },
+      transcript: {
+        host: call.transcript_host,
+        sessionId: call.transcript_session,
+        path: call.transcript_path,
+      },
+    })),
+  };
+}
+
 // ---------------------------------------------------------------------------- ingestion
 
 export interface IngestResult {
@@ -1990,9 +2229,26 @@ export function conductor(deps: ConductorDeps): Conductor {
       reason: staleReason,
       counts: {},
     };
+    const callBase = {
+      runId: run.id,
+      at,
+      machineId: run.machine_id,
+      session,
+      closure: receipt.closure,
+      reason,
+    } as const;
     statements.push(
       runStatement(run.id, target, receipt, counts, liveAuthority),
       runStatement(run.id, { ...target, closure: "failed" }, staleReceipt, {}, staleAuthority),
+      // THE CALL IS RECORDED UNDER WHICHEVER EPOCH WON, on the same two guards and after the
+      // run row so the reference has something to point at. A takeover suppressed the
+      // SUBMISSION, never the call: the model answered and the deployment paid, and a trace
+      // that dropped the row would make a spent review look like one that never happened.
+      callStatement(sessionCall(callBase), liveAuthority),
+      callStatement(
+        sessionCall({ ...callBase, closure: "failed", reason: staleReason }),
+        staleAuthority,
+      ),
     );
     const results = await store.db.batch(statements);
     const claimRunId = results[0]?.[0]?.["run_id"];
@@ -2297,6 +2553,20 @@ export function conductor(deps: ConductorDeps): Conductor {
         },
         receipt,
         counts,
+      ),
+      // IN THE RUN ROW'S OWN TRANSACTION, and after it, so the call cannot reference a run that
+      // is not there and cannot survive a settlement that rolled back. It is written whether or
+      // not the answer stood: a refused submission is paid work, and its refusal code is on the
+      // row beside what it cost.
+      callStatement(
+        sessionCall({
+          runId: run.id,
+          at,
+          machineId: run.machine_id,
+          session,
+          closure: receipt.closure,
+          reason,
+        }),
       ),
     ]);
     await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);

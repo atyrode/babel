@@ -626,3 +626,45 @@ test("enabling a store made before the catalog's two columns adds them and keeps
     ["omp/run-7/explore", "agent"],
   ]);
 });
+
+test("enabling a store made before the trace adds run_calls, triggers and all", async () => {
+  const { db } = harness;
+  /*
+    A store exactly as the shape before #349 left it. A WHOLE-OBJECT ADDITION is the only
+    additive move the enable hook can make, and its name is DERIVED from the statement — so two
+    things can go wrong and neither shows up in a fresh install: a name derived wrong runs the
+    addition on every enable and fails on the second, and an addition naming only the table
+    leaves an append-only ledger that appends by convention, which is the mistake `drains`
+    documents having made with its index.
+  */
+  await db.run(`DROP TABLE run_calls`);
+
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+
+  await insert(db, "runs", {
+    id: "run_traced",
+    kind: "atyrode.babel.explore",
+    machine_id: MACHINE,
+    started_at: stamp(NOW - HOUR),
+    payload: "{}",
+  });
+  await insert(db, "run_calls", {
+    run_id: "run_traced",
+    seq: 1,
+    recorded_at: stamp(NOW),
+    closure: "completed",
+  });
+  expect(
+    db.run(`UPDATE run_calls SET cost_micros = 1 WHERE run_id = 'run_traced'`),
+  ).rejects.toThrow(/never edited/);
+  expect(db.run(`DELETE FROM run_calls WHERE run_id = 'run_traced'`)).rejects.toThrow(
+    /never deleted/,
+  );
+
+  // A second enable is the ordinary case — it runs on every one — and must leave the row alone
+  // rather than fail on a table it has already made.
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+  expect(await db.query(`SELECT seq FROM run_calls WHERE run_id = 'run_traced'`)).toEqual([
+    { seq: 1n },
+  ]);
+});

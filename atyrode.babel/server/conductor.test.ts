@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
@@ -14,7 +15,9 @@ import {
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   RUN_STAGES,
+  diffRunTraces,
   type MaterialIndex,
+  type RunTrace,
 } from "../contract.ts";
 import type {
   CodeEngine,
@@ -24,6 +27,8 @@ import type {
   SessionRequest,
   SessionUsage,
 } from "./engine/session.ts";
+import { omp } from "../machine/adapters/omp.ts";
+import { resolveRedaction } from "../machine/prepare.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import { openStore as openReadStore, type BabelStore } from "../store/store.ts";
 import type { Assignment, Coordinator, Fence, Policy } from "../store/coordinator.ts";
@@ -48,6 +53,7 @@ import {
   type RepositoryFact,
   type RepositoryOutcome,
   type RunPlan,
+  readRunTrace,
   type ScheduleRow,
   type ScheduleTiming,
 } from "./conductor.ts";
@@ -140,6 +146,7 @@ const TABLES = [
   "steering",
   "runs",
   "claims",
+  "run_calls",
 ] as const;
 
 async function snapshot(db: PluginDatabase): Promise<string> {
@@ -1143,6 +1150,9 @@ function sessionRead(over: {
   readonly exitCode?: number;
   readonly usage?: SessionUsage | null;
   readonly model?: string;
+  /** The transcript this session sealed, which is the locator a call row keeps (#349). */
+  readonly sessionId?: string;
+  readonly sessionPath?: string;
 }): SessionRead {
   return {
     job: {
@@ -1156,8 +1166,8 @@ function sessionRead(over: {
       over.sealed === false
         ? null
         : {
-            sessionId: "ses_1",
-            sessionPath: "/home/job/.omp/agent/sessions/ses_1.jsonl",
+            sessionId: over.sessionId ?? "ses_1",
+            sessionPath: over.sessionPath ?? "/home/job/.omp/agent/sessions/ses_1.jsonl",
             model: over.model ?? "anthropic/claude-opus-4-1",
             finalMessage: over.finalMessage ?? "",
             usage:
@@ -4004,4 +4014,340 @@ test("settling the same run twice writes the rows once: the identifiers are the 
   expect(
     await db.query(`SELECT COUNT(*) AS n FROM questions WHERE raised_by_id = ?`, [runId]),
   ).toEqual([{ n: 1n }]);
+  // AND THE CALL IS ONE CALL. `(run_id, seq)` is the trace's idempotency key, so a replayed
+  // settlement leaves the account of what the model answered exactly as it found it — a second
+  // row here would double a run's spend in every trace that ever reads it (#349).
+  expect(await db.query(`SELECT COUNT(*) AS n FROM run_calls WHERE run_id = ?`, [runId])).toEqual([
+    { n: 1n },
+  ]);
+});
+
+// ------------------------------------------------------------- a run's replayable trace (#349)
+
+/*
+  WHAT THESE PROVE, AND WHAT NO TEST HERE COULD.
+
+  THE HUB HANDS A PLUGIN NO PER-CALL TRAFFIC. Its `inference_call` frame is metering by its own
+  protocol — the model, the tokens, the price, never a prompt or a byte of the answer — and a
+  Code session's job belongs to `atyrode.omp`, which `ctx.jobs` may neither follow nor journal,
+  so Babel is served not even that. What a settlement is given is omp's receipt: a session id, a
+  PATH, the model, the agent's last message, one usage total, an exit code.
+
+  So the subject below is the LOCATOR discipline rather than a transcript Babel keeps. The
+  second test reaches into `machine/` on purpose: the claim under test is precisely that the
+  string the server half wrote resolves with the reader the machine half already has, and a test
+  that resolved it with a second implementation would prove only that the second one agreed
+  with itself.
+*/
+
+/** A Code that answers each read with the session the asked job's id names. */
+function codeReplying(
+  replies: Readonly<Record<string, SessionRead>>,
+): CodeEngine & { readonly asked: { containerId: string; jobId: string }[] } {
+  const asked: { containerId: string; jobId: string }[] = [];
+  return {
+    asked,
+    profiles: async () =>
+      await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
+    runSession: async () =>
+      await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
+    readSession: async (args) => {
+      asked.push(args);
+      const reply = replies[args.jobId];
+      return await Promise.resolve(
+        reply === undefined
+          ? refusedByCode<SessionRead>("engine_unavailable", `no session for ${args.jobId}`)
+          : { ok: true, value: reply },
+      );
+    },
+    cancelSession: async () =>
+      await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
+  };
+}
+
+/**
+ * One more Code session in flight beside the one {@link sessionInFlight} seeded, reading the
+ * same preparation. No claim: what these runs are for is the trace they leave, and a claim
+ * would only add a settlement the assertions never read.
+ */
+async function anotherSession(
+  db: PluginDatabase,
+  suffix: string,
+  identityKey = "victorballu@gmail.com",
+): Promise<{ runId: string; jobId: string }> {
+  const runId = `run_session_${suffix}`;
+  const jobId = `job_code_${suffix}`;
+  await db.run(
+    `INSERT INTO runs(id, kind, machine_id, job_id, container_id, prepare_job_id, profile,
+                      preparation, started_at, records, payload)
+     VALUES (?, ?, 'dev-01', ?, 'ctr_workbench', 'job_prep_1', ?, ?, ?, 0, '{}')`,
+    [
+      runId,
+      OPERATIONS.explore,
+      jobId,
+      JSON.stringify({
+        containerId: "ctr_workbench",
+        expectedRevision: 7,
+        account: { provider: "anthropic", identityKey },
+      }),
+      JSON.stringify({ preset: "read-whats-new", selected: 1 }),
+      new Date(clock).toISOString(),
+    ],
+  );
+  return { runId, jobId };
+}
+
+/** One run's trace, refusing the null a run this hub never recorded would answer with. */
+async function traceOf(db: PluginDatabase, runId: string): Promise<RunTrace> {
+  const read = await readRunTrace(db, runId);
+  if (read === null) throw new Error(`no trace for run ${runId}`);
+  return read;
+}
+
+test("a settled session leaves a call row: what it cost, how it ended, and where the bytes are", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const finalMessage = answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({ state: "exited", finalMessage }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  await wakeOn(store, draws, code).tick();
+
+  const call = (await db.query(`SELECT * FROM run_calls WHERE run_id = ?`, [runId]))[0]!;
+  expect(call["seq"]).toBe(1n);
+  expect(call["model"]).toBe("anthropic/claude-opus-4-1");
+  expect(call["closure"]).toBe("completed");
+  expect(call["refusal"]).toBe("");
+  expect(call["exit_code"]).toBe(0n);
+  // THE METER'S FIVE NUMBERS, KEPT APART. The receipt folds input and output into one `tokens`
+  // and drops both cache buckets, so a spend read off a run row cannot be decomposed into what
+  // was fresh, what was cached and what that cost — which is the arithmetic an audit redoes.
+  expect([
+    call["input_tokens"],
+    call["output_tokens"],
+    call["cache_read_tokens"],
+    call["cache_write_tokens"],
+    call["cost_micros"],
+  ]).toEqual([12_000n, 900n, 400n, 0n, 310_000n]);
+  // THE LOCATOR, AND NOT ONE BYTE OF WHAT IT POINTS AT.
+  expect(call["transcript_host"]).toBe("dev-01");
+  expect(call["transcript_session"]).toBe("ses_1");
+  expect(call["transcript_path"]).toBe("/home/job/.omp/agent/sessions/ses_1.jsonl");
+  expect(call["response_digest"]).toBe(createHash("sha256").update(finalMessage).digest("hex"));
+  expect(call["response_bytes"]).toBe(BigInt(new TextEncoder().encode(finalMessage).byteLength));
+  // NO BODY ANYWHERE ON THE ROW, asserted over the whole row rather than column by column: a
+  // column added later that quietly kept the message would be caught by the message's own words.
+  const rendered = JSON.stringify(call, (_key: string, value: unknown) =>
+    typeof value === "bigint" ? String(value) : value,
+  );
+  expect(rendered).not.toContain("the catalog forgets archived sessions");
+  expect(rendered).not.toContain("```");
+});
+
+test("the locator on a call row resolves to the transcript that holds the answer", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const finalMessage = answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST);
+  /*
+    ONE REAL omp TRANSCRIPT ON DISK, in the layout the adapter claims: the session record, the
+    request Babel posted, and the turn that answered it. Its keys are written in the order the
+    normalizer sorts them into, so each record's canonical form IS the line — which is what
+    lets the offsets below address it without a second implementation of the numbering, the
+    hazard `machine/prepare.ts` names about `digests` and `resolveRedaction`.
+  */
+  const directory = mkdtempSync(join(tmpdir(), "babel-transcript-"));
+  temporaries.push(directory);
+  const project = join(directory, "sessions", "babel");
+  mkdirSync(project, { recursive: true });
+  const transcript = join(project, "01K_ses_replay.jsonl");
+  const turn = JSON.stringify({
+    message: { content: [{ text: finalMessage, type: "text" }], role: "assistant" },
+    type: "message",
+  });
+  writeFileSync(
+    transcript,
+    [
+      JSON.stringify({ id: "ses_replay", type: "session" }),
+      JSON.stringify({
+        message: { content: [{ text: "read the material", type: "text" }], role: "user" },
+        type: "message",
+      }),
+      turn,
+      "",
+    ].join("\n"),
+  );
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage,
+      sessionId: "ses_replay",
+      sessionPath: transcript,
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  await wakeOn(store, draws, code).tick();
+
+  const call = (
+    await db.query(`SELECT transcript_path, response_digest FROM run_calls WHERE run_id = ?`, [
+      runId,
+    ])
+  )[0]!;
+
+  // THE LOCATOR NAMES A SESSION BABEL'S OWN CATALOGUE KEYS ON. The adapter that claims a log is
+  // the one thing that turns a path into a selector, so a row whose path it refuses would be a
+  // row pointing at a session nothing can find.
+  const ref = omp.claim(String(call["transcript_path"]));
+  expect(ref?.selector).toBe("omp/babel/01K_ses_replay");
+
+  // AND THE BYTES COME BACK, through the resolver the secret preflight already uses, on the
+  // machine that holds the log. The row did none of this: the row only said where.
+  const resolved =
+    ref === null ? null : await resolveRedaction(ref, { line: 3, offset: 0, length: turn.length });
+  expect(resolved?.value).toBe(turn);
+  expect(String(call["response_digest"])).toBe(
+    createHash("sha256").update(finalMessage).digest("hex"),
+  );
+});
+
+test("a refused answer leaves a call row carrying the refusal and what it cost", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    // A locator the material never served: the answer parses and is refused on its citation.
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered("sessions/never.jsonl", "b".repeat(64)),
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  await wakeOn(store, draws, code).tick();
+
+  // A REFUSED SUBMISSION IS SPEND, and the trace is where that stops being a sentence in a
+  // receipt and becomes a countable row: the call happened, it cost 310,000 micro-dollars, and
+  // the code beside it says the corpus kept none of what it bought.
+  const call = (
+    await db.query(
+      `SELECT closure, refusal, cost_micros, response_digest FROM run_calls WHERE run_id = ?`,
+      [runId],
+    )
+  )[0]!;
+  expect(call["closure"]).toBe("failed");
+  expect(call["refusal"]).toBe("unknown-reference");
+  expect(call["cost_micros"]).toBe(310_000n);
+  expect(call["response_digest"]).not.toBe("");
+  expect(await db.query(`SELECT id FROM records WHERE run_id = ?`, [runId])).toEqual([]);
+});
+
+test("two runs are diffed on what actually differed between them", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  /*
+    FOUR RUNS OF ONE PREPARATION, SETTLED IN ONE WAKE. A and B are the same request answered
+    with the same bytes — the comparison the Jev bench made sixteen times to find one match. C
+    is the same request answered differently, and its statement is the same length as A's so the
+    only field that can move is the digest. D asked with a different account, which disqualifies
+    any comparison of the answers whatever they were.
+  */
+  const same = answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST);
+  const other = answered(
+    `sessions/${SERVED_FILE}`,
+    SERVED_DIGEST,
+    "the catalog forgets restored sessions",
+  );
+  const a = await sessionInFlight(db);
+  const b = await anotherSession(db, "2");
+  const c = await anotherSession(db, "3");
+  const d = await anotherSession(db, "4", "someone.else@example.invalid");
+  const code = codeReplying({
+    [a.jobId]: sessionRead({ state: "exited", finalMessage: same, sessionId: "ses_a" }),
+    [b.jobId]: sessionRead({ state: "exited", finalMessage: same, sessionId: "ses_b" }),
+    [c.jobId]: sessionRead({ state: "exited", finalMessage: other, sessionId: "ses_c" }),
+    [d.jobId]: sessionRead({ state: "exited", finalMessage: same, sessionId: "ses_d" }),
+  });
+
+  await wakeOn(store, draws, code).tick();
+
+  const traceA = await traceOf(db, a.runId);
+  const traceB = await traceOf(db, b.runId);
+  const traceC = await traceOf(db, c.runId);
+  const traceD = await traceOf(db, d.runId);
+
+  // THE SAME REQUEST, THE SAME ANSWER: nothing differed, and the verdict says which of the two
+  // reasons that could be — they agreed, rather than neither of them having answered.
+  const agreed = diffRunTraces(traceA, traceB);
+  expect(agreed.verdict).toBe("same-answer");
+  expect(agreed.differed).toEqual([]);
+  expect(agreed.same).toContain("response");
+
+  // THE SAME REQUEST, A DIFFERENT ANSWER, and the diff names the one field that moved with both
+  // values in it — which is the whole of what "check the conclusion against the traffic" needs
+  // from a pair, without either answer being kept.
+  const disagreed = diffRunTraces(traceA, traceC);
+  expect(disagreed.verdict).toBe("different-answer");
+  expect(disagreed.differed.map((entry) => entry.field)).toEqual(["response"]);
+  expect(disagreed.differed[0]?.a).toBe(traceA.calls[0]?.response.digest);
+  expect(disagreed.differed[0]?.b).toBe(traceC.calls[0]?.response.digest);
+  expect(disagreed.same).toContain("costMicros");
+
+  // A DIFFERENT REQUEST IS NOT A DIFFERENT ANSWER. The two spent different windows, so the
+  // verdict refuses to comment on agreement it has no grounds for, and names why.
+  const incomparable = diffRunTraces(traceA, traceD);
+  expect(incomparable.verdict).toBe("different-request");
+  expect(incomparable.differed).toEqual([
+    {
+      field: "account",
+      side: "request",
+      a: "anthropic/victorballu@gmail.com",
+      b: "anthropic/someone.else@example.invalid",
+    },
+  ]);
+});
+
+test("two runs that sealed no transcript agreed about nothing, and the verdict says so", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const a = await sessionInFlight(db);
+  const b = await anotherSession(db, "2");
+  const code = codeReplying({
+    [a.jobId]: sessionRead({ state: "cancelled", sealed: false }),
+    [b.jobId]: sessionRead({ state: "cancelled", sealed: false }),
+  });
+
+  await wakeOn(store, draws, code).tick();
+
+  // A CANCELLED SESSION STILL LEAVES ITS CALL: the run reached Code, Code reported an ending,
+  // and a trace that skipped the row would make a stopped run indistinguishable from one that
+  // was never posted. It carries no locator, because there is no log to point at.
+  const call = (
+    await db.query(
+      `SELECT closure, model, cost_micros, exit_code, response_digest, transcript_path
+         FROM run_calls WHERE run_id = ?`,
+      [a.runId],
+    )
+  )[0]!;
+  expect(call["closure"]).toBe("stopped");
+  expect([call["model"], call["response_digest"], call["transcript_path"]]).toEqual(["", "", ""]);
+  expect([call["cost_micros"], call["exit_code"]]).toEqual([0n, null]);
+
+  const diff = diffRunTraces(await traceOf(db, a.runId), await traceOf(db, b.runId));
+  // NOT `same-answer`: neither run answered, and two silences are not an agreement.
+  expect(diff.verdict).toBe("unanswered");
+  expect(diff.differed).toEqual([]);
 });

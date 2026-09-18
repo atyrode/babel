@@ -6,9 +6,9 @@
   provenance survives the rewrite; the crossing runs once and the Go stores are then retired.
 
   What changed in the crossing, and why:
-  - ninety-four tables become twenty-three, and the shapes since have added five (`budgets`,
-    #260, `run_progress`, #261, `drains`, #258, and `next_actions` with `next_action_rulings`,
-    #340). The Go tree kept a table per concept per
+  - ninety-four tables become twenty-three, and the shapes since have added six (`budgets`,
+    #260, `run_progress`, #261, `drains`, #258, `next_actions` with `next_action_rulings`,
+    #340, and `run_calls`, #349). The Go tree kept a table per concept per
     package; here a record is a record whatever its kind, an edge is an edge whatever it
     relates, and a revision is a row that supersedes another rather than a parallel table of
     revisions.
@@ -21,7 +21,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 7 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 8 } as const;
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -215,6 +215,78 @@ const NEXT_ACTION_SCHEMA: readonly string[] = [
    END`,
   `CREATE TRIGGER next_action_rulings_kept BEFORE DELETE ON next_action_rulings BEGIN
      SELECT RAISE(ABORT, 'a decision is never deleted; it is the provenance an acceptance rate reads');
+   END`,
+];
+
+/**
+ * WHAT A RUN'S CALLS WERE, SO A JUDGEMENT CAN BE RECHECKED RATHER THAN RE-RUN (#349) — spelled
+ * once and created twice, for the reason `budgets`, `drains` and `next_actions` are.
+ *
+ * `runs.payload` is the receipt, and a receipt is SPEND ACCOUNTING: the model, the tokens, the
+ * cost, the closure, in one total per run. A claim about how Babel judged something cannot be
+ * checked against that; it can only be re-run, and a re-run is not the same event — the Jev
+ * study measured repeated identical requests answering byte-identically 1 time in 16
+ * (`docs/jev-case-study-audit.md`).
+ *
+ * WHAT THE HUB GIVES AND WHAT IT DOES NOT, because the columns below are shaped by the answer.
+ * The hub's own per-call frame is METERING and says so in its protocol — "the model, the
+ * tokens, the price applied, never a prompt or a byte of the answer" — and Babel is served none
+ * of it regardless: no operation this bundle declares binds a model service (`server/plan.ts`),
+ * and the run that reaches a model is a Code session whose job belongs to `atyrode.omp`, which
+ * `ctx.jobs` may neither follow nor journal. What a settlement is handed is omp's receipt
+ * through `atyrode.code.readSession`: a session id, the transcript's PATH, the model, the
+ * agent's last message, ONE usage total summed over every turn, and an exit code.
+ *
+ * SO THE BYTES ARE NOT HERE AND ARE NOT MEANT TO BE. They are in the session's own transcript,
+ * one JSONL record per message — the request it was posted with among them — on the machine
+ * that ran it. `transcript_host`, `transcript_session` and `transcript_path` are the LOCATOR of
+ * that log, on the discipline the secret preflight established (#339): the locator travels, the
+ * bytes stay where they were, and resolving one needs the machine holding the session
+ * (`machine/adapters/omp.ts` is what names the log, `machine/prepare.ts` what numbers its
+ * records). A row here therefore carries no prompt, no answer, and nothing a credential could
+ * be hiding inside.
+ *
+ * `response_digest` IS WHAT MAKES TWO RUNS COMPARABLE WITHOUT COPYING EITHER: sha256 of the
+ * final message exactly as the receipt carried it. Two runs that answered identically share one
+ * digest and two that did not are told apart without reading either, which is the whole of what
+ * the 1-in-16 measurement needs and the reason for the index. Empty means no transcript was
+ * sealed, which is a different fact from an answer that was empty.
+ *
+ * ONE ROW PER CALL, AND A RUN MAKES ONE TODAY. `runSession` is omp's one-shot and its per-turn
+ * calls are summed before Babel sees them, so `seq` is 1 on every row this build writes. It is
+ * a column rather than an assumption because `(run_id, seq)` is also the idempotency key: a
+ * settlement replayed after a crash offers the same pair and `OR IGNORE` makes it a no-op.
+ *
+ * Append-only by trigger, like every other table here that records something that happened: a
+ * corrected account of a call would be the only copy of the thing it corrects.
+ */
+const RUN_CALL_SCHEMA: readonly string[] = [
+  `CREATE TABLE run_calls(
+     run_id TEXT NOT NULL REFERENCES runs(id),
+     seq INTEGER NOT NULL CHECK (seq >= 1),
+     recorded_at TEXT NOT NULL,
+     model TEXT NOT NULL DEFAULT '',
+     input_tokens INTEGER NOT NULL DEFAULT 0,
+     output_tokens INTEGER NOT NULL DEFAULT 0,
+     cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+     cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+     cost_micros INTEGER NOT NULL DEFAULT 0,
+     exit_code INTEGER,
+     closure TEXT NOT NULL CHECK (closure IN ('completed','failed','stopped','skipped')),
+     refusal TEXT NOT NULL DEFAULT '',
+     response_digest TEXT NOT NULL DEFAULT '',
+     response_bytes INTEGER NOT NULL DEFAULT 0,
+     transcript_host TEXT NOT NULL DEFAULT '',
+     transcript_session TEXT NOT NULL DEFAULT '',
+     transcript_path TEXT NOT NULL DEFAULT '',
+     PRIMARY KEY (run_id, seq)
+   ) STRICT`,
+  `CREATE INDEX run_calls_by_answer ON run_calls(response_digest)`,
+  `CREATE TRIGGER run_calls_immutable BEFORE UPDATE ON run_calls BEGIN
+     SELECT RAISE(ABORT, 'a call is never edited; it is an account of something that happened');
+   END`,
+  `CREATE TRIGGER run_calls_kept BEFORE DELETE ON run_calls BEGIN
+     SELECT RAISE(ABORT, 'a call is never deleted; it is what a judgement is rechecked against');
    END`,
 ];
 
@@ -663,6 +735,9 @@ export const SCHEMA_V1: readonly string[] = [
      updated_at TEXT NOT NULL
    ) STRICT`,
 
+  // ---------------------------------------------------------------- a run's own traffic (#349)
+  ...RUN_CALL_SCHEMA,
+
   // ---------------------------------------------------------------- a drain (#258)
   // No index, and now for one reason rather than two: a deployment accumulates drains at the
   // rate an operator decides to spend a window, and the running ones are read by `state` over
@@ -787,6 +862,9 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // #340: a run's proposed next actions and the operator's ledger over them, derived from the
   // one place they are spelled so the two creation paths cannot come to disagree.
   ...NEXT_ACTION_SCHEMA.map(objectAddition),
+  // #349: one row per call of a run, its locator, and no byte of its traffic — derived from the
+  // same list `SCHEMA_V1` spreads, for the reason above.
+  ...RUN_CALL_SCHEMA.map(objectAddition),
 ];
 
 /**
