@@ -194,9 +194,10 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
   const deployment = options.deployment ?? "";
 
   // -------------------------------------------------------------- the corpus the runs read
-  // A preparation's selection is the only place the per-machine store records which machine a
-  // session lived on and what its bytes digested to; the local catalog records neither.
-  const sessionHost = new Map<string, string>();
+  // A preparation's selection is the only place the per-machine store records what a session's
+  // bytes digested to; the local catalog records neither that nor the machine. It records a
+  // `host` too, and that one is deliberately NOT read: it is the Go deployment's host name, and
+  // `sessions.host` is a hub machine id (#310).
   const sessionDigest = new Map<string, string>();
   const preparations = new Map<string, string>();
   for (const row of rowsOf(durable, `SELECT id, payload FROM run_preparation`)) {
@@ -208,8 +209,6 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
       if (typeof entry !== "object" || entry === null) continue;
       const source = entry as Record<string, unknown>;
       const key = `${field(source, "harness")}\u0000${field(source, "source_id")}`;
-      const machine = field(source, "host");
-      if (machine !== "" && !sessionHost.has(key)) sessionHost.set(key, machine);
       const digest = field(source, "source_digest").replace(/^sha256:/u, "");
       if (digest !== "" && !sessionDigest.has(key)) sessionDigest.set(key, digest);
     }
@@ -242,7 +241,14 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
       const key = `${harness}\u0000${sourceId}`;
       if (deployment !== "") uidToSelector.set(sessionUid(deployment, host, harness, sourceId), selector);
       rows.push([
-        selector, sessionHost.get(key) ?? host, harness, sourceId,
+        // `host` IS THE OPERATOR'S `--host`, ALWAYS. It used to prefer the host recorded in the
+        // Go `run_preparation` selection a session appears in, and that field is the GO
+        // deployment's host name — `dev-01` — not a hub machine id. Every catalogued session
+        // appears in some preparation, so the override silently replaced the id this option
+        // documents itself as with a name the hub resolves to nothing, and a whole corpus
+        // arrived unreachable by every readiness check, run listing and folder question
+        // (#310). The Go name is not this column's business and is not recorded here.
+        selector, host, harness, sourceId,
         blank(row["title"]), blank(row["title_provenance"]), blank(row["workspace"]),
         null, null, null,
         blank(row["modified_at"]), real(row["primary_size"]),
