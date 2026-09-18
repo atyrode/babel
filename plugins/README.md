@@ -412,10 +412,16 @@ git -C ../../manifold checkout "$(cat MANIFOLD_REV)"
 bun install --cwd ../../manifold --frozen-lockfile   # the kit resolves zod and the protocol from its workspace
 ```
 
-`MANIFOLD_REV` follows Manifold `main` and currently names `518ebf6d` (`0.17.0+5.g518ebf6`),
+`MANIFOLD_REV` follows Manifold `main` and currently names `743ee75a` (`0.17.0+22.g743ee75a`),
 the revision the integrated preview's own hub runs, whose kit stamps `hardenedContract: 2` into
 repacked bundles (`packages/plugin-kit/src/pack.ts:300`, `HARDENED_CONTRACT_VERSION` at that
-revision; atyrode/manifold#606). It also carries the plugin
+revision; atyrode/manifold#606). It is the first revision that both lends a door
+`machines:read` (atyrode/manifold#740) — which four of Babel's doors declare, and without which
+the gate refuses the bundle with `invalid delegated capabilities` — and answers a plugin holding
+no installation the pre-deployment projection instead of refusing `job_installation_absent`
+(atyrode/manifold#744), which is the state `atyrode.omp.describeDestination` exists to report.
+A non-owner caller of a door that observes a machine must hold `machines:read` under it
+(atyrode/manifold#749). It also carries the plugin
 database (ADR 0034) with its failure-atomic lifecycle (atyrode/manifold#536) — the primitive
 Babel cannot start without — per-operation `concurrentJobs` admission (#551), the `job_progress`
 event (#552), metered brokered inference (ADR 0038, #554) and the `pi-native-usage` meter kind
