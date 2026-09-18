@@ -164,6 +164,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Concurrent draws no longer converge on one assignment.** Observed live with twenty-three
+  review workers: most draws returned `conflicting claim: assignment eval-a-… is held by another
+  worker`. The reserved lanes pick the oldest due, which is one deterministic head, and with the
+  default `coverage_share` half of every cycle reached for it — so all but one worker lost, and
+  the loser paid the whole candidate build again, seven paged scans over the frontier, before
+  failing. Ranking still fixes the order a draw walks; it no longer names the only candidate the
+  draw will consider. A head another worker holds is stepped over, and "holds" means both a live
+  claim read fresh from the ledger and an assignment this process handed out in the last thirty
+  seconds and nobody has claimed yet — because at the instant several workers draw there is
+  nothing in the claims table to skip, the claim lands after the draw returns. A draw still
+  writes nothing and charges nothing. Re-selection is bounded at three rounds, each costing one
+  indexed point query rather than a rebuild; past the bound the top pick is handed out unchanged
+  and the claim refuses it exactly as before, because a conflict the caller already handles beats
+  a draw that will not terminate.
 - **Watch lists every recipe in force, not only the ones that have run.** `policy().recipes` was
   a `GROUP BY` over the runs table, so a recipe the operator installed and nothing had ever
   performed was absent from the panel altogether — seventeen in force, two on the screen, and

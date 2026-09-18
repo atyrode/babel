@@ -1050,12 +1050,15 @@ test("the per-cycle ceiling bounds one cycle's whole day and the daily ceiling b
 });
 
 test("the assignment id is the work, not the worker, so two conductors contend for one claim", async () => {
-  const { coord, assignment } = await oneAssignment();
-  const again = drawn(await coord.draw({ runId: "cycle_2", now: NOW, seed: 3n }));
+  const { db, coord, assignment } = await oneAssignment();
+  // Two conductors are two processes: they share the ledger and nothing else, so neither can see
+  // what the other has drawn and not yet claimed. One store, two coordinators, one seed.
+  const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
+  const again = drawn(await other.draw({ runId: "cycle_2", now: NOW, seed: 3n }));
   expect(again.id).toBe(assignment.id);
 
   const first = await coord.claim({ assignment, runId: "cycle_1", now: NOW });
-  const second = await coord.claim({ assignment: again, runId: "cycle_2", now: NOW });
+  const second = await other.claim({ assignment: again, runId: "cycle_2", now: NOW });
   expect(first.outcome).toBe("granted");
   expect(second.outcome).toBe("refused");
 });
@@ -1070,6 +1073,90 @@ test("a draw is a pure function of its seed and reserves nothing", async () => {
   const rows = await db.query(`SELECT COUNT(*) AS claims FROM claims`);
   expect(rows[0]?.["claims"]).toBe(0n);
   expect((await coord.spend(NOW)).total).toBe(0);
+});
+
+test("concurrent draws over a stocked frontier hand out distinct assignments and no conflicts", async () => {
+  const { db, coord } = await deployment({ enabled: true });
+  // Twelve records, four review roles each: far more eligible work than there are workers. The
+  // coverage share reserves half of every cycle for the oldest due, which is ONE deterministic
+  // head, and that is what every worker drawing in the same window used to reach for (#233).
+  for (let n = 1; n <= 12; n += 1) {
+    const id = await record(db, `hyp_${n.toString(16).padStart(8, "0")}`, "hypothesis", 40 - n);
+    await filing(db, id, "ent_0000000a");
+  }
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+
+  const workers = 6;
+  const drawn6 = await Promise.all(
+    Array.from({ length: workers }, async (_slot, index) => {
+      const runId = `cycle_${String(index + 1)}`;
+      const assignment = drawn(await coord.draw({ runId, now: NOW }));
+      return { assignment, claimed: await coord.claim({ assignment, runId, now: NOW }) };
+    }),
+  );
+
+  expect(new Set(drawn6.map((worker) => worker.assignment.id)).size).toBe(workers);
+  expect(
+    drawn6
+      .filter((worker) => worker.claimed.outcome === "refused")
+      .map((worker) => worker.assignment.id),
+  ).toEqual([]);
+});
+
+test("an assignment the ledger already holds is stepped over rather than handed out again", async () => {
+  const { db, coord } = await deployment({ enabled: true });
+  for (let n = 1; n <= 3; n += 1) {
+    const id = await record(db, `hyp_${n.toString(16).padStart(8, "0")}`, "hypothesis", 40 - n);
+    await filing(db, id, "ent_0000000a");
+  }
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+  const head = drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 4n }));
+
+  // The ledger holds that assignment and the candidate scan does not account for it: the state
+  // every draw is in when a claim lands after its own scan of the claims table, which over
+  // several thousand records is most of the draw. A second process, so nothing but the ledger
+  // tells it the head is taken.
+  await claimRow(db, head.id, "run_other", 0.01, null);
+  const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
+  const next = await other.draw({ runId: "cycle_2", now: NOW, seed: 4n });
+  const stepped = drawn(next);
+  expect(stepped.id).not.toBe(head.id);
+  expect(next.gaps).toContainEqual({
+    recordId: head.recordId,
+    role: head.role,
+    reason: "claimed",
+    detail: "claimed by another worker while this draw was reading its candidates",
+  });
+  expect((await other.claim({ assignment: stepped, runId: "cycle_2", now: NOW })).outcome).toBe(
+    "granted",
+  );
+});
+
+test("two processes reaching for the last eligible review get one winner and one conflict", async () => {
+  const { db, coord } = await deployment({ enabled: true });
+  const id = await record(db, "hyp_00000001", "hypothesis", 40);
+  await filing(db, id, "ent_0000000a");
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+  await reviewedOnce(db, id);
+  // Only the reception role is left to draw, so re-selection has nowhere to go: the refusal has
+  // to reach the caller, because a draw that quietly retried until something was free would
+  // leave a cycle unable to say it found nothing.
+  const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
+  const [mine, theirs] = await Promise.all([
+    coord.draw({ runId: "cycle_1", now: NOW, seed: 9n }),
+    other.draw({ runId: "cycle_2", now: NOW, seed: 9n }),
+  ]);
+  const first = drawn(mine);
+  const second = drawn(theirs);
+  expect(second.id).toBe(first.id);
+
+  const claims = await Promise.all([
+    coord.claim({ assignment: first, runId: "cycle_1", now: NOW }),
+    other.claim({ assignment: second, runId: "cycle_2", now: NOW }),
+  ]);
+  expect(claims.map((result) => result.outcome).sort()).toEqual(["granted", "refused"]);
+  const loser = claims.find((result) => result.outcome === "refused");
+  expect(loser?.outcome === "refused" ? loser.refusal.reason : null).toBe("conflict");
 });
 
 test("a corpus larger than one page is read whole: the first page and the last both draw", async () => {
