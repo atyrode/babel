@@ -1,0 +1,55 @@
+# The tracker's invariants, checked hourly and on every issue event. `docs/TRIAGE.md` §Label model
+# owns their meaning; `scripts/triage-policy.ts` owns the rules. The only writes are the
+# `needs-triage` default on an issue with no state and the `aging` signal when nobody has said
+# anything for 14 days. Nothing here closes, assigns, comments on or reprioritizes an issue: the
+# workflow keeps the tracker well-formed, and a person or an agent running the triage runbook
+# decides what each issue means. The label check that follows never writes.
+name: Triage policy
+
+on:
+  issues:
+    types: [opened, reopened, labeled, unlabeled, edited]
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# One run at a time, and never cancelled: a cancelled --fix leaves half the tracker relabelled.
+concurrency:
+  group: triage-policy
+  cancel-in-progress: false
+
+jobs:
+  triage-policy:
+    name: triage-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # No `bun install`: both scripts import only bun built-ins and shell out to `gh`.
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Apply the tracker invariants
+        run: bun scripts/triage-policy.ts --fix --summary "$GITHUB_STEP_SUMMARY"
+
+      # `always()`, because the policy step exits nonzero on any violation it cannot fix itself —
+      # the normal state of a tracker with work in it. Without this the noisier check silently
+      # hides the quieter one, and label drift could sit there for weeks unlooked-at. The two read
+      # different things; neither is a precondition for the other, and the job still fails if
+      # either does.
+      - name: Check the label inventory
+        if: always()
+        run: bun scripts/labels.ts --check

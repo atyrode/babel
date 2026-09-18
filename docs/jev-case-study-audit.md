@@ -1,22 +1,45 @@
 # The Jev case study, audited
 
 An outside evaluation put TypeSafe's Jev — a judgement layer that scores and routes records — over
-Babel's real corpus of 6,038 records across sixteen chapters and eleven tested ideas. This document
-is what the measurements mean for Babel: which numbers hold, which mechanism each one indicts, what
-shipped, and what is now an issue.
+6,038 records, across sixteen chapters and eleven tested ideas. This document is what the
+measurements mean for Babel: which numbers hold, which mechanism each one indicts, what shipped,
+and what is now an issue.
+
+## 0. What was measured, and what it is not
+
+**Those 6,038 records are not Babel.** They are the output of **one deployment** — one operator's
+instance, over his own agent conversations, at one date, under one set of recipes and one set of
+models. Three things follow, and every number below has to be read through them.
+
+**Every one of them was written by the retired Go implementation.** The plugin had never produced
+a record until the settlement learned to write one: `settleSession` read an answer, checked its
+citations and wrote a receipt, and the claims went nowhere. So the corpus measures what the
+_previous_ implementation produced under the recipes it ran. The plugin's own intake path is new
+and has never been measured at all.
+
+**A share is a property of that output, not of the product.** "42.7% cannot name their codebase"
+describes what those runs wrote about that operator's conversations. It is not a law of Babel, and
+a different corpus, a different recipe set or a different model could move it. Where a proposal's
+justification rests on such a share, the honest instruction is to **re-measure it against what the
+plugin produces** before acting on the number — and every issue filed from one says so.
+
+**A structural finding is different and carries no such caveat.** Nothing retrieves over the
+corpus; `tell` wrote to a table nothing read; only the explore stage is ever dispatched. Those are
+true of the code, whatever any deployment happens to hold.
+
+**And every percentage is a range.** Option ordering moves an aggregate share by ten to twenty
+points while per-record answers stay 72–79% stable (§5). Quote the range or quote nothing.
 
 **Jev is optional by construction.** Nothing in Babel may ever depend on it. Where this document
 names Jev work it names an enable-able part, `atyrode.babel.jev`, that reaches the baseline only
-through its doors, and with the part absent every door, panel and conductor path behaves exactly as
-it does now.
+through its doors, and with the part absent every door, panel and conductor path behaves exactly
+as it does now.
 
-**Every percentage here is a range, not a point.** Option ordering moves an aggregate share by ten
-to twenty points while per-record answers stay 72–79% stable (§5). Quote the range or quote nothing.
-
-## 1. What was measured
+## 1. The numbers
 
 Numbers are from `case_studies/jev-system-one/data/*.json` — the JSON, not the prose — with the key
-path given. Three exist only as prose or as a reported query result and are marked.
+path given. Three exist only as prose or as a reported query result and are marked. Every share in
+this table is one deployment's Go-era output, per §0, and is a range per §5.
 
 | finding                                             | number                                 | source                                                                                                                   |
 | --------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -42,17 +65,17 @@ scoring layer does improves that: it is a retrieval problem, and Babel has no re
 
 Each row names the state of the mechanism the finding indicts, with a path.
 
-| finding                                            | mechanism                                                  | state                                                                                                                                                                                                                      |
-| -------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 42.7% cannot name their codebase                   | a record carrying its repository                           | **not built.** `records.payload` has no repository binding, and `filings`/`entities` bind a topic rather than a commit. Tracked by #183, re-scoped onto the plugin.                                                        |
-| 22–24% too vague, ~50% no action named             | a specificity gate at intake                               | **not built** (#334), and now reachable: until this week the plugin created no records at all, so there was no intake to gate.                                                                                             |
-| 84.5% of findings rest on one run                  | showing how many runs a record rests on                    | **built.** `corroboration` on the `record` door, computed from `records.run_id` and the typed edges; the peel reads "three supports, from one run" at the evidence depth.                                                  |
-| 84.5%, enforced rather than displayed              | marking a finding whose supports share one run at creation | **not built** (#329). It may not refuse the record, because 84.5% of the existing corpus would fail it.                                                                                                                    |
-| nothing proposes an unexamined lens-and-topic pair | the coverage grid                                          | **built.** `coverage` on the `topic` door, one row per recipe the policy declares, zeros included. Acting on a blank cell is #330.                                                                                         |
-| 37.5% settleable by Babel's own data               | classifying what would settle a claim                      | **not built** (#335). The study's most robust number.                                                                                                                                                                      |
-| retrieval at 0.606 against a 2.043 ceiling         | an index over the corpus                                   | **not built.** `docs/parity.md`, the `index/` row: a preparation selects by recency or by topic, and nothing retrieves. This is the binding constraint (#337).                                                             |
-| 1 rejection in 4,850 events; 0 revisions           | the operator's disposition path                            | **built and working.** `feed/rows.tsx` → `ask()` → `ruleAction` → `rule()` → an append-only `dispositions` row, read back as `MAX(seq)` standing. Nothing needed building; the corpus is unruled because nobody has ruled. |
-| the operator's steering went unread                | reading `steering` back                                    | **built.** The `policy` door answers his recent remarks and Watch renders them. Feeding a remark into a run's prompt — which makes it a memory rather than a log — is #331.                                                |
+| finding                                            | mechanism                                                  | state                                                                                                                                                                                                                                           |
+| -------------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 42.7% cannot name their codebase                   | a record carrying its repository                           | **not built.** `records.payload` has no repository binding, and `filings`/`entities` bind a topic rather than a commit. Tracked by #183, re-scoped onto the plugin.                                                                             |
+| 22–24% too vague, ~50% no action named             | a specificity gate at intake                               | **not built** (#334), and now reachable: until this week the plugin created no records at all, so there was no intake to gate.                                                                                                                  |
+| 84.5% of findings rest on one run                  | showing how many runs a record rests on                    | **built.** `corroboration` on the `record` door, computed from `records.run_id` and the typed edges; the peel reads "three supports, from one run" at the evidence depth. It reports whatever a record rests on, so it needs no re-measurement. |
+| 84.5%, enforced rather than displayed              | marking a finding whose supports share one run at creation | **not built** (#329). It may not refuse the record, because 84.5% of the imported corpus would fail it.                                                                                                                                         |
+| nothing proposes an unexamined lens-and-topic pair | the coverage grid                                          | **built.** `coverage` on the `topic` door, one row per recipe the policy declares, zeros included. Acting on a blank cell is #330.                                                                                                              |
+| 37.5% settleable by Babel's own data               | classifying what would settle a claim                      | **not built** (#335). The study's most robust number.                                                                                                                                                                                           |
+| retrieval at 0.606 against a 2.043 ceiling         | an index over the corpus                                   | **not built.** `docs/parity.md`, the `index/` row: a preparation selects by recency or by topic, and nothing retrieves. This is the binding constraint (#337).                                                                                  |
+| 1 rejection in 4,850 events; 0 revisions           | the operator's disposition path                            | **built and working.** `feed/rows.tsx` → `ask()` → `ruleAction` → `rule()` → an append-only `dispositions` row, read back as `MAX(seq)` standing. Nothing needed building; that deployment's records are unruled because nobody ruled on them.  |
+| the operator's steering went unread                | reading `steering` back                                    | **built.** The `policy` door answers his recent remarks and Watch renders them. Feeding a remark into a run's prompt — which makes it a memory rather than a log — is #331.                                                                     |
 
 ## 3. Three corrections a reader must not miss
 
