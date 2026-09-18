@@ -20,6 +20,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   from becoming an unbounded obligation. The routed conductor lifecycle, claim binding,
   granular validation and bounded refinement persistence are covered by the plugin tests.
 
+### Changed
+
+- **The pinned Manifold and Code now carry the delegable machine read Babel's doors declare.**
+  `plugins/MANIFOLD_REV` and both workflow `uses:` refs — the gate's and the release gate's, the
+  second of which a previous move had left behind (#306) — name Manifold `743ee75a`
+  (`0.17.0+22.g743ee75a`), and `plugins/CODE_REV` with `@atyrode/manifold-code` name Code
+  `c6a9c264`. Four of Babel's doors declare `machines:read`, which only became delegable in
+  atyrode/manifold#740; against the old pin the gate refused the bundle outright with
+  `invalid delegated capabilities`, so nothing here could be verified. The new revision also
+  answers a plugin holding no installation the pre-deployment projection instead of refusing
+  `job_installation_absent` (atyrode/manifold#744), which is what
+  `atyrode.omp.describeDestination` reports, and the Code revision brings the OMP family that
+  declares the same read (atyrode/manifold-omp#45). One consequence reaches operators: a
+  non-owner token that reads a machine through any of these doors must now hold `machines:read`
+  as well as `machines:run`, because the native bridge intersects the caller's capabilities with
+  the door's (atyrode/manifold#749). An owner key is unaffected.
+
 ### Fixed
 
 - **The conductor's cadence is registered on a machine ID, and a host it cannot use says so.**
