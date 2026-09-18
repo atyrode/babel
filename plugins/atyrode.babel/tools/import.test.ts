@@ -749,6 +749,13 @@ async function scalar(sql: string, params: readonly string[] = []): Promise<Reco
   return first as Record<string, unknown>;
 }
 
+// Seeding two SQLite corpora, planning the import and applying it takes ~0.5s here and crossed
+// Bun's 5s DEFAULT hook timeout on a loaded CI runner — 5083ms, observed on #310's
+// `bundles / verify`, a PR that touches nothing in this file. The default is not a statement
+// about how long building a corpus should take, so this hook names its own bound: a setup that
+// seeds a corpus is slow on purpose, and a timeout that trips on runner load reports the runner
+// rather than the code. The other four `beforeAll` hooks in this plugin run in 28-215ms total
+// and are nowhere near it, so only this one is named.
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "babel-import-"));
   durablePath = join(dir, "durable.db");
@@ -764,7 +771,7 @@ beforeAll(async () => {
   store = openPluginDatabase({ dataDir: join(dir, "hub"), pluginId: BABEL_PLUGIN_ID });
   expect(await ensureSchema(store)).toBe(true);
   await applyPlan(store, plans, () => "2026-09-12T00:00:00Z");
-});
+}, 60_000);
 
 afterAll(() => {
   store?.close();
