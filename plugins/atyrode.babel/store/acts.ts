@@ -440,14 +440,6 @@ export const ImportedSchema = z.strictObject({
 });
 export type Imported = z.infer<typeof ImportedSchema>;
 
-export const SessionsRehostedSchema = z.strictObject({
-  from: z.string(),
-  to: z.string(),
-  /** Catalogued sessions now reachable: the rows this act moved. */
-  sessions: z.number().int().nonnegative(),
-});
-export type SessionsRehosted = z.infer<typeof SessionsRehostedSchema>;
-
 // ---------------------------------------------------------------------------- reads the acts need
 
 async function first<Row extends SqlRow>(
@@ -1728,36 +1720,4 @@ export async function importLedger(store: ActsStore, chunk: ImportChunk): Promis
   );
   store.touch();
   return { source: chunk.source, table: chunk.table, inserted, skipped: chunk.rows.length - inserted };
-}
-
-/**
- * Re-host a catalogued corpus: every session row carrying one `host` value takes another (#310).
- *
- * THE VALUE IT LEAVES IS A MACHINE ID THE HUB HAS JUST DESCRIBED — the door checks that before
- * calling here, because the defect being repaired is a `host` no machine answers to, and writing
- * a second one would be the same defect spelled differently. Nothing is inferred: a name cannot
- * be resolved (the hub resolves none, and no door a plugin is served lists machines), so the
- * operator states the mapping and this writes exactly that.
- *
- * A no-op is reported rather than refused. `sessions: 0` is the truthful answer for a `from`
- * nothing was catalogued under, and it is what makes the act idempotent: running it twice moves
- * the rows once and says so the second time.
- */
-export async function rehostSessions(
-  store: ActsStore,
-  move: { from: string; to: string },
-): Promise<SessionsRehosted> {
-  if (move.from === move.to) {
-    throw new ActRefused("a re-host needs two different hosts; this one names the same value twice");
-  }
-  const [counted] = await store.db.query<{ sessions: number | bigint }>(
-    `SELECT COUNT(*) AS sessions FROM sessions WHERE host = ?`,
-    [move.from],
-  );
-  const sessions = Number(counted?.sessions ?? 0);
-  if (sessions > 0) {
-    await store.db.run(`UPDATE sessions SET host = ? WHERE host = ?`, [move.to, move.from]);
-    store.touch();
-  }
-  return { from: move.from, to: move.to, sessions };
 }

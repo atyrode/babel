@@ -22,21 +22,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
-- **A catalogued session is hosted on the machine id the hub knows, and the crossing cannot write
-  anything else.** `sessions.host` is a hub machine id — `describe`, `listRuns` and
-  `machines.repository` are all keyed on it and the hub resolves no names — but the import wrote
-  the `host` recorded in a Go preparation's selection in preference to its own `--host`, and that
-  field is the Go deployment's host name. Every catalogued session appears in some preparation, so
-  the documented id was replaced by a name the importer's own documentation warns about, and 588
-  rows arrived that no readiness check, run listing or folder question could reach. The importer
-  now records the id it was given; `importLedger` refuses a chunk whose `sessions.host` or
-  `runs.machine_id` names a machine the hub cannot describe, which closes the operator-typed path
-  a code change alone could not; and `atyrode.babel.rehostSessions` repairs what is already
-  stored — owner-only, with the hub describing the destination before anything is written, so the
-  repair cannot install a second unreachable value, and idempotent so a second run reports zero.
-  Nothing guesses which machine a name meant, because nothing can: no door a plugin is served
-  lists machines. Proved by a fixture whose Go selection host and `--host` differ, which fails on
-  the old code, and by door tests for the refusal, the repair and its ownership (#312).
+- **The crossing records the machine id it was given, not the Go deployment's host name.**
+  `sessions.host` is a hub machine id — `describe`, `listRuns` and `machines.repository` are all
+  keyed on it and the hub resolves no names — and `tools/import.ts` documents `--host` as exactly
+  that, warning in the same paragraph that "a corpus imported under `dev-01` is a corpus every
+  readiness check answers about a machine that does not exist". It then wrote the `host` recorded
+  in the Go `run_preparation` selection a session appears in, which is that name. Every
+  catalogued session appears in some preparation, so the documented id was replaced for all of
+  them and 588 rows arrived that nothing could reach. The Go name is no longer read for this
+  column. Proved by a fixture whose Go selection host and `--host` now differ — the old one used
+  one value for both, which is why nothing caught it — and the two import tests fail against the
+  previous code (#312).
 
 - **The conductor's cadence is registered on a machine ID, and a host it cannot use says so.**
   The loop picked the machine for its beat out of `SELECT DISTINCT host FROM sessions` unioned

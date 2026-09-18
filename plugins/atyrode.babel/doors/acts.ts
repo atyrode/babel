@@ -1,5 +1,4 @@
-import { defineServerAction, type GuestCtx } from "@manifold/plugin-kit/server";
-import type { BabelJobs } from "../server/plan.ts";
+import { defineServerAction } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
   AnswerInputSchema,
@@ -10,7 +9,6 @@ import {
   ImportChunkSchema,
   InterestInputSchema,
   RuleInputSchema,
-  RehostSessionsInputSchema,
   RuleResultSchema,
   TellInputSchema,
   UnfileInputSchema,
@@ -29,8 +27,6 @@ import {
   PolicySetSchema,
   SetBudgetInputSchema,
   SetPolicyInputSchema,
-  SessionsRehostedSchema,
-  rehostSessions,
   ToldSchema,
   answer,
   clearBudget,
@@ -185,24 +181,8 @@ const importLedgerAction = defineServerAction({
   name: ACTIONS.importLedger,
   title: "Import one chunk of the store the Go tree held (owner only)",
   caps: [],
-  // The machine columns it writes are checked against the hub first: a row hosted on a name is
-  // one nothing can read back (#310).
-  delegates: ["machines:read"],
   input: ImportChunkSchema,
   result: ImportedSchema,
-});
-
-/**
- * The crossing's repair (#310). Owner-only for the same reason `importLedger` is: it rewrites
- * provenance the crossing wrote, and no capability in the vocabulary means "the owner".
- */
-const rehostSessionsAction = defineServerAction({
-  name: ACTIONS.rehostSessions,
-  title: "Re-host catalogued sessions onto a machine id the hub knows (owner only)",
-  caps: [],
-  delegates: ["machines:read"],
-  input: RehostSessionsInputSchema,
-  result: SessionsRehostedSchema,
 });
 
 /**
@@ -213,11 +193,7 @@ const rehostSessionsAction = defineServerAction({
  * one (#279), and then there is no bound to refuse against: the hub refuses nothing at
  * `execute` for a ceiling nobody declared.
  */
-export function actDoors(
-  store: ActsStore,
-  concurrentJobs: number | null,
-  jobs: (ctx: GuestCtx) => Pick<BabelJobs, "describe">,
-): readonly Door[] {
+export function actDoors(store: ActsStore, concurrentJobs: number | null): readonly Door[] {
   return [
     defineDoor(ruleAction, async (ctx, args) =>
       await acted(async () => {
@@ -364,71 +340,8 @@ export function actDoors(
         if (!ctx.auth.isRoot) {
           return { refused: "the crossing is the owner's act; this principal is not the owner" };
         }
-        // A MACHINE COLUMN IS CHECKED AGAINST THE HUB BEFORE IT IS WRITTEN. `sessions.host` and
-        // `runs.machine_id` are hub machine ids that everything afterwards hands to `describe`,
-        // `listRuns` and `machines.repository`; a Go host NAME in either is a row no readiness
-        // check, run listing or folder question can ever reach, and 588 of them arrived that way
-        // before anything asked (#310). The hub is the only thing that can tell the difference,
-        // and it is reachable right here.
-        const unknown = await unknownMachines(jobs(ctx), args);
-        if (unknown.length > 0) {
-          return {
-            refused:
-              `${unknown.join(", ")} is not a machine this hub can describe, so a row hosted ` +
-              `there could not be read back: pass the machine id, not a host name`,
-          };
-        }
         return await importLedger(store, args);
       }),
     ),
-
-    defineDoor(rehostSessionsAction, async (ctx, args) =>
-      await acted(async () => {
-        if (!ctx.auth.isRoot) {
-          return { refused: "re-hosting the crossing's rows is the owner's act; this principal is not the owner" };
-        }
-        // THE HUB DECIDES WHETHER THE DESTINATION EXISTS, because that is the whole defect being
-        // repaired: a `host` no machine answers to. `describe` is keyed on the machine id and
-        // refuses an identifier that names no enrolled machine, so a name — the very thing in
-        // the rows — cannot be written back in as a second unusable value.
-        try {
-          await jobs(ctx).describe({ machineId: args.to, pluginId: BABEL_PLUGIN_ID });
-        } catch (error) {
-          return {
-            refused:
-              `${args.to} is not a machine this hub can describe, so it is not somewhere ` +
-              `sessions can be catalogued: ${message(error)}`,
-          };
-        }
-        return await rehostSessions(store, { from: args.from, to: args.to });
-      }),
-    ),
   ];
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** Which machine columns of one crossing chunk name something the hub cannot describe. */
-async function unknownMachines(
-  jobs: Pick<BabelJobs, "describe">,
-  chunk: { table: string; rows: readonly Readonly<Record<string, string | number | null>>[] },
-): Promise<readonly string[]> {
-  const column = chunk.table === "sessions" ? "host" : chunk.table === "runs" ? "machine_id" : null;
-  if (column === null) return [];
-  const named = new Set<string>();
-  for (const row of chunk.rows) {
-    const value = row[column];
-    if (typeof value === "string" && value !== "") named.add(value);
-  }
-  const unknown: string[] = [];
-  for (const machineId of named) {
-    try {
-      await jobs.describe({ machineId, pluginId: BABEL_PLUGIN_ID });
-    } catch {
-      unknown.push(machineId);
-    }
-  }
-  return unknown;
 }
