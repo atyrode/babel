@@ -1067,6 +1067,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   only one read again; a stream kept unscanned is never served to a preparation that redacts;
   and a corrupted entry costs one refusal and not a machine that can no longer prepare.
 
+- **The specification described work Babel no longer does, and did not describe work it does.**
+  Four behaviours had landed without `SPEC.md` saying so — the drain (its target, its allocation,
+  its controller, its four endings and the one record every ending leaves), the claim that dies
+  with its job, what a run reports while it is still running, and the fact that a review reads its
+  assignment and the sealed material rather than the corpus — so a conformant implementation could
+  still have digested the corpus once per review, which is the design that cost a whole drain day.
+  Two statements had also gone false: §4.10 said nothing indexes the corpus, and `docs/parity.md`'s
+  `index/` row named a closed issue, while an index over Babel's own **records** now exists behind
+  the `search` door. Both now say which half exists and which does not — the session corpus is
+  still unindexed, which is #415 — because "retrieval is built" would be wrong by the larger half.
+  `SPEC.md` §7.1 is new; §4.10, §4.12, §5.7, §6.3, §6.4, §7 and §9 gained a paragraph each, and
+  §6.4 no longer says nothing recognizes an input it has already prepared, because a machine now
+  keeps its reading of a settled log.
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed
