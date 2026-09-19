@@ -183,6 +183,30 @@ describe("a contribution the contract refuses costs itself and nothing else", ()
     expect(stored.refused).toEqual([]);
     expect(stored.result?.contributions).toHaveLength(1);
   });
+
+  test("a refinement naming the record as a whole is refused; a comment naming it is not", () => {
+    // The empty pointer is a legitimate target for a COMMENT — "this record, generally" — and
+    // cannot be one for a refinement: applying one replaces the wording under the pointer, so an
+    // empty pointer names nothing replaceable and the proposal would be refused the moment the
+    // operator accepted it. Refusing here costs the contribution and tells him why.
+    const whole = (kind: string): string =>
+      sealed({
+        vote: "support",
+        contributions: [
+          { kind, text: "the scope is overstated", target: { path: "" }, would_change: "narrower" },
+        ],
+      });
+
+    expect(reviewVerdict(preparation(), whole("refinement"), TARGET).refused).toEqual([
+      {
+        contribution: 1,
+        reason:
+          "schema: refinement 1 names the record as a whole; a refinement names the exact JSON " +
+          "Pointer whose wording it would replace",
+      },
+    ]);
+    expect(reviewVerdict(preparation(), whole("comment"), TARGET).refused).toEqual([]);
+  });
 });
 
 describe("what is left has to stand on its own", () => {

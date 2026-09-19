@@ -934,6 +934,251 @@ test("a promotion asserts the fact under the operator's authority and applyPlan 
   );
 });
 
+// ---------------------------------------------------------------------------- refinement
+
+/*
+  A REFINEMENT'S APPLICATION (§4.7, #341). A review proposes the exact revision, the exact JSON
+  Pointer and the replacement; the operator's acceptance of that proposal is what writes the
+  reworded revision, and a record is never edited, so it writes a supersession.
+*/
+
+/** One revision with a payload worth refining, and the proposal that would reword it. */
+async function seedRefinement(
+  store: ActsStore,
+  args: {
+    readonly proposalId: string;
+    readonly targetId: string;
+    readonly targetPath: string;
+    readonly replacement: string;
+  },
+): Promise<void> {
+  await store.db.run(
+    `INSERT INTO records(id, kind, root_id, supersedes_id, seq, parent_id, run_id, recipe_id,
+       recipe_version, actor_kind, actor_id, title, created_at, payload)
+     VALUES(?, 'finding', ?, NULL, 0, NULL, 'run_7', NULL, NULL, 'run', 'run_7',
+       'the drain stalls', ?, ?)`,
+    [
+      args.targetId,
+      args.targetId,
+      stamp(store.now()),
+      JSON.stringify({
+        title: "the drain stalls",
+        pattern: "every drain stalls on the third batch",
+        scope: ["dev-01", "dev-02"],
+      }),
+    ],
+  );
+  await store.db.run(
+    `INSERT INTO records(id, kind, root_id, supersedes_id, seq, parent_id, run_id, recipe_id,
+       recipe_version, actor_kind, actor_id, title, created_at, payload)
+     VALUES(?, 'proposal', ?, NULL, 0, NULL, 'run_8', NULL, NULL, 'run', 'run_8',
+       'Refine pattern', ?, ?)`,
+    [
+      args.proposalId,
+      args.proposalId,
+      stamp(store.now()),
+      JSON.stringify({
+        title: "Refine pattern",
+        problem: "the pattern overstates it",
+        outcome: args.replacement,
+        impact: "moderate",
+        classification: "private",
+        refinement: {
+          targetRecordId: args.targetId,
+          targetRevisionId: args.targetId,
+          depth: 1,
+          targetPath: args.targetPath,
+          reason: "the pattern overstates it",
+          replacement: args.replacement,
+          sourceRole: "challenge",
+        },
+      }),
+    ],
+  );
+}
+
+test("accepting a refinement writes the superseding revision, with its lineage", async () => {
+  const store = openStore();
+  await migrate(store);
+  await seedRefinement(store, {
+    proposalId: "pro_00000100",
+    targetId: "fnd_00000100",
+    targetPath: "/payload/pattern",
+    replacement: "two of the three drains stalled on the third batch",
+  });
+  // The record's own relations: a cited session and a consolidated observation. A rewording is
+  // the same claim, so the revision that replaces it has to keep them.
+  await seedRecord(store, "obs_00000100", "observation", "the third batch stalled");
+  await store.db.run(
+    `INSERT INTO edges(id, kind, from_kind, from_id, to_kind, to_id, position, note, actor_kind,
+       actor_id, created_at)
+     VALUES(?, 'consolidates', 'finding', 'fnd_00000100', 'observation', 'obs_00000100', 0, NULL,
+       'run', 'run_7', ?)`,
+    [newId("edg"), stamp(store.now())],
+  );
+
+  const ruled = await rule(store, { id: "pro_00000100", ruling: "accept", note: "" }, OPERATOR);
+  expect(ruled.refinement).toMatchObject({
+    targetRecordId: "fnd_00000100",
+    targetPath: "/payload/pattern",
+    applied: true,
+  });
+  const revisionId = ruled.refinement?.revisionId ?? "";
+
+  const chain = await rows<{
+    id: string;
+    root_id: string;
+    seq: bigint;
+    supersedes_id: string | null;
+    actor_kind: string;
+    actor_id: string;
+    run_id: string;
+    title: string;
+    payload: string;
+  }>(
+    store,
+    `SELECT id, root_id, seq, supersedes_id, actor_kind, actor_id, run_id, title, payload
+       FROM records WHERE root_id = 'fnd_00000100' ORDER BY seq`,
+  );
+  expect(chain).toHaveLength(2);
+  expect(chain[1]).toMatchObject({
+    id: revisionId,
+    root_id: "fnd_00000100",
+    seq: 1n,
+    supersedes_id: "fnd_00000100",
+    // The operator is the authority the acceptance rests on; the run that proposed it is not.
+    actor_kind: "operator",
+    actor_id: OPERATOR,
+    // The claim's provenance is the original's: the same run under the same method said it.
+    run_id: "run_7",
+    title: "the drain stalls",
+  });
+  // Only the wording under the pointer moved. The rest of the payload is the revision it
+  // superseded, and the wording it replaced is still readable on that row.
+  expect(JSON.parse(String(chain[1]?.payload))).toEqual({
+    title: "the drain stalls",
+    pattern: "two of the three drains stalled on the third batch",
+    scope: ["dev-01", "dev-02"],
+  });
+  expect(JSON.parse(String(chain[0]?.payload))).toMatchObject({
+    pattern: "every drain stalls on the third batch",
+  });
+
+  const edges = await rows<{ kind: string; from_id: string; to_id: string; note: string | null }>(
+    store,
+    `SELECT kind, from_id, to_id, note FROM edges ORDER BY kind`,
+  );
+  expect(edges).toEqual([
+    // The support, carried onto the revision so the reworded finding still rests on it.
+    { kind: "consolidates", from_id: "fnd_00000100", to_id: "obs_00000100", note: null },
+    { kind: "consolidates", from_id: revisionId, to_id: "obs_00000100", note: null },
+    {
+      kind: "supersedes",
+      from_id: revisionId,
+      to_id: "fnd_00000100",
+      note: "the pattern overstates it (pro_00000100, /payload/pattern)",
+    },
+  ]);
+  // NOTHING MARKS THE SUPERSEDED REVISION. `status_events` is read per root, so a `superseded`
+  // row here would gap out every review of the wording the refinement just installed.
+  expect(await rows(store, `SELECT id FROM status_events`)).toEqual([]);
+});
+
+test("a refinement against a superseded revision is refused, and the acceptance still stands", async () => {
+  const store = openStore();
+  await migrate(store);
+  await seedRefinement(store, {
+    proposalId: "pro_00000110",
+    targetId: "fnd_00000110",
+    targetPath: "/payload/pattern",
+    replacement: "a later wording",
+  });
+  // Something already replaced the wording the reviewer read.
+  await store.db.run(
+    `INSERT INTO records(id, kind, root_id, supersedes_id, seq, parent_id, run_id, recipe_id,
+       recipe_version, actor_kind, actor_id, title, created_at, payload)
+     VALUES('fnd_00000111', 'finding', 'fnd_00000110', 'fnd_00000110', 1, NULL, 'run_7', NULL,
+       NULL, 'operator', 'alex', 'the drain stalls', ?, '{"pattern":"corrected already"}')`,
+    [stamp(store.now())],
+  );
+
+  const ruled = await rule(store, { id: "pro_00000110", ruling: "accept", note: "" }, OPERATOR);
+  expect(ruled.refinement).toEqual({
+    targetRecordId: "fnd_00000110",
+    targetPath: "/payload/pattern",
+    revisionId: "",
+    applied: false,
+    error:
+      "revision fnd_00000110 was superseded by fnd_00000111 after this refinement was written, " +
+      "so it no longer names the record's current wording; refine the newest revision instead",
+  });
+  // §4.7 does not un-append a ruling: his answer to the proposal was still his answer.
+  expect(ruled.standing).toBe("accepted");
+  expect(await rows(store, `SELECT id FROM records WHERE root_id = 'fnd_00000110'`)).toHaveLength(
+    2,
+  );
+});
+
+test("a refinement that would change the record's identity or its shape is refused", async () => {
+  const store = openStore();
+  await migrate(store);
+  await seedRefinement(store, {
+    proposalId: "pro_00000120",
+    targetId: "fnd_00000120",
+    targetPath: "/id",
+    replacement: "fnd_ffffffff",
+  });
+  const identity = await rule(store, { id: "pro_00000120", ruling: "accept", note: "" }, OPERATOR);
+  expect(identity.refinement?.error).toMatch(/the record's identity rather than its wording/);
+
+  await seedRefinement(store, {
+    proposalId: "pro_00000121",
+    targetId: "fnd_00000121",
+    targetPath: "/payload/scope",
+    replacement: "dev-01, dev-02",
+  });
+  const shape = await rule(store, { id: "pro_00000121", ruling: "accept", note: "" }, OPERATOR);
+  expect(shape.refinement?.error).toMatch(/holds object, and a refinement replaces text/);
+
+  expect(await rows(store, `SELECT id FROM records WHERE seq = 1`)).toEqual([]);
+});
+
+test("a refinement names a title as readily as a payload field", async () => {
+  const store = openStore();
+  await migrate(store);
+  await seedRefinement(store, {
+    proposalId: "pro_00000130",
+    targetId: "fnd_00000130",
+    targetPath: "/title",
+    replacement: "the drain stalls on the third batch",
+  });
+
+  const ruled = await rule(store, { id: "pro_00000130", ruling: "accept", note: "" }, OPERATOR);
+  expect(ruled.refinement?.applied).toBe(true);
+  expect(await rows<{ title: string }>(store, `SELECT title FROM records WHERE seq = 1`)).toEqual([
+    { title: "the drain stalls on the third batch" },
+  ]);
+});
+
+test("a ruling other than accept applies no refinement", async () => {
+  const store = openStore();
+  await migrate(store);
+  await seedRefinement(store, {
+    proposalId: "pro_00000140",
+    targetId: "fnd_00000140",
+    targetPath: "/payload/pattern",
+    replacement: "a wording nobody asked for",
+  });
+
+  const deferred = await rule(
+    store,
+    { id: "pro_00000140", ruling: "defer", note: "later" },
+    OPERATOR,
+  );
+  expect(deferred.refinement).toBeNull();
+  expect(await rows(store, `SELECT id FROM records WHERE seq = 1`)).toEqual([]);
+});
+
 // ---------------------------------------------------------------------------- interest
 
 test("interest round-trips through the facts and supersedes the stance it replaces", async () => {

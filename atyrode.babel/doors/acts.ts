@@ -262,6 +262,16 @@ export function actDoors(
               entityId: ruled.plan.entityId ?? "",
             });
           }
+          // A refinement that landed wrote a NEW REVISION, and the surfaces are looking at the
+          // old one: the record page it was opened from is a wording nothing holds any more.
+          // The news names the revision so a panel re-reads the record rather than the ruling.
+          if (ruled.refinement?.applied === true) {
+            ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+              id: ruled.refinement.revisionId,
+              recordId: ruled.refinement.targetRecordId,
+              supersedes: args.id,
+            });
+          }
           return ruled;
         }),
     ),

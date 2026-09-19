@@ -3,8 +3,12 @@ import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/p
 import type { INTEREST_STATES } from "../contract.ts";
 import {
   NextActionStandingSchema,
+  REFINEMENT_KEY,
+  RefinementOutcomeSchema,
+  RefinementSchema,
   RoleSchema,
   type NextActionDecision,
+  type Refinement,
   type Ruling,
 } from "../contract.ts";
 import {
@@ -335,6 +339,15 @@ export interface PlanOutcome {
   error?: string;
 }
 
+/** What a ruling did to the refinement the record carried (§4.7). */
+export interface RefinementOutcome {
+  targetRecordId: string;
+  targetPath: string;
+  revisionId: string;
+  applied: boolean;
+  error?: string;
+}
+
 // ---------------------------------------------------------------------------- results
 
 export const RuledSchema = z.strictObject({
@@ -351,6 +364,7 @@ export const RuledSchema = z.strictObject({
       error: z.string().optional(),
     })
     .nullable(),
+  refinement: RefinementOutcomeSchema.nullable(),
 });
 export type Ruled = z.infer<typeof RuledSchema>;
 
@@ -1099,6 +1113,261 @@ async function backlogStatements(
   return statements;
 }
 
+// ------------------------------------------------------------------------ the refinement's
+// application
+
+/*
+  ACCEPTING A REFINEMENT WRITES THE SUPERSEDING REVISION (§4.7, #341).
+
+  A review can propose a refinement — the exact revision, the exact JSON Pointer, and the
+  replacement wording — and until now the operator's acceptance of one wrote a disposition and
+  nothing else: the reworded record was never written, so the whole lane produced proposals whose
+  acceptance did nothing.
+
+  IT IS NOT A PLAN ROW, and that is a schema fact rather than a preference. `plans.kind` is
+  `CHECK (kind IN ('topic','backlog','answer'))`; SQLite has no statement that widens a CHECK,
+  and this store's additions are applied only where the object they name is absent, so a store
+  already in the field could never reach a widened one. The refinement therefore travels in the
+  proposal's own payload, under `REFINEMENT_KEY`, and is applied from there.
+
+  A CORRECTION IS A SUPERSESSION. `records` refuses an UPDATE by trigger, so applying a
+  refinement appends a new revision of the same root: `root_id` carried over, `supersedes_id`
+  naming the wording it replaces, `seq` one past the root's highest. `store/coordinator.ts`'s
+  `heads()` picks the newest revision per root by `seq`, so the new row becomes what is reviewed
+  and the old one stops being drawn without anything being marked.
+
+  AND NOTHING WRITES A STATUS EVENT. It would be the obvious second lineage marker and it would
+  be a bug: `status_events` is read PER ROOT (`statuses()`), so a `superseded` row on the old
+  revision would gap out every review of the new head as `record-replaced` — the supersession
+  would silence the very wording it installed.
+*/
+
+/** The `records.id` family for each kind, as `RecordIdSchema` spells the four of them. */
+const RECORD_PREFIX: Record<string, string> = {
+  hypothesis: "hyp",
+  observation: "obs",
+  finding: "fnd",
+  proposal: "pro",
+};
+
+interface RevisionRow extends SqlRow {
+  id: string;
+  kind: string;
+  root_id: string;
+  seq: number;
+  title: string;
+  payload: string;
+}
+
+/**
+ * The refinement a proposal carries, or null when it carries none.
+ *
+ * A payload whose `refinement` block does not parse is a REFUSAL rather than an absence: the
+ * operator pressed accept on a proposal whose whole content is that block, and reading it as
+ * "this proposal proposes nothing" would report his acceptance as having succeeded at nothing.
+ */
+async function refinementFor(store: ActsStore, proposalId: string): Promise<Refinement | null> {
+  const row = await first<{ kind: string; payload: string }>(
+    store,
+    `SELECT kind, payload FROM records WHERE id = ?`,
+    [proposalId],
+  );
+  if (row === null || row.kind !== "proposal") return null;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(row.payload);
+  } catch {
+    return null;
+  }
+  if (typeof payload !== "object" || payload === null) return null;
+  const held = (payload as Record<string, unknown>)[REFINEMENT_KEY];
+  if (held === undefined) return null;
+  const parsed = RefinementSchema.safeParse(held);
+  if (!parsed.success) {
+    throw new ActRefused(
+      `the refinement ${proposalId} carries is not one this build can apply: ` +
+        parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; "),
+    );
+  }
+  return parsed.data;
+}
+
+/**
+ * The reworded `title` and `payload`, with the replacement written at the pointer.
+ *
+ * THE POINTER INDEXES THE PROJECTION A REVIEWER READ, not the payload column: a review is shown
+ * `{ id, kind, root_id, parent_id, title, created_at, payload }` (`server/conductor.ts`'s
+ * `project()`), which is why `/title` and `/payload/problem` are the two shapes a refinement
+ * names. Everything else in that projection is the record's IDENTITY — its id, its kind, its
+ * root, its instant — and a refinement is a rewording, so a pointer at one of those is refused
+ * rather than honoured.
+ *
+ * The replacement is text, so only text may be replaced. A pointer resting on an object or a
+ * number would otherwise have its shape swapped for a sentence, and the payload a later reader
+ * parses would no longer be the kind's own shape.
+ */
+function reworded(
+  revision: RevisionRow,
+  refinement: Refinement,
+): { title: string; payload: string } {
+  const path = refinement.targetPath;
+  if (path === "/title") return { title: refinement.replacement, payload: revision.payload };
+  if (!path.startsWith("/payload/")) {
+    throw new ActRefused(
+      `this refinement would change ${path}, which is the record's identity rather than its ` +
+        "wording; a refinement replaces the text under /title or under /payload",
+    );
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(revision.payload);
+  } catch {
+    throw new ActRefused(`revision ${revision.id} holds no readable payload to refine`);
+  }
+  const keys = path
+    .slice("/payload/".length)
+    .split("/")
+    .map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+  let holder: unknown = payload;
+  for (const key of keys.slice(0, -1)) holder = step(holder, key, path);
+  const last = keys[keys.length - 1] ?? "";
+  const target = step(holder, last, path);
+  if (typeof target !== "string") {
+    throw new ActRefused(
+      `${path} holds ${target === null ? "null" : typeof target}, and a refinement replaces ` +
+        "text; this one would change the record's shape rather than its wording",
+    );
+  }
+  if (Array.isArray(holder)) holder[Number(last)] = refinement.replacement;
+  else (holder as Record<string, unknown>)[last] = refinement.replacement;
+  return { title: revision.title, payload: JSON.stringify(payload) };
+}
+
+/** One step of a JSON Pointer into a payload, refusing a key the revision does not carry. */
+function step(holder: unknown, key: string, path: string): unknown {
+  if (Array.isArray(holder)) {
+    if (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= holder.length) {
+      throw new ActRefused(`${path} names no part of this revision`);
+    }
+    return holder[Number(key)];
+  }
+  if (typeof holder !== "object" || holder === null || !Object.hasOwn(holder, key)) {
+    throw new ActRefused(`${path} names no part of this revision`);
+  }
+  return (holder as Record<string, unknown>)[key];
+}
+
+/**
+ * Everything applying this refinement writes: the superseding revision, the `supersedes` edge
+ * that states the lineage as a relation, and the superseded revision's own outgoing edges
+ * carried onto it.
+ *
+ * THE EDGES ARE CARRIED BECAUSE A REWORDING IS THE SAME CLAIM. A record's supports, its cited
+ * sessions and its topic binding are `edges` rows whose `from_id` is the revision, and the reads
+ * over them are per row: `store/store.ts`'s `corroborationOf` counts a record's `consolidates`
+ * and `addresses` edges, and `server/conductor.ts`'s `project()` shows a reviewer the sessions a
+ * revision `cites`. A revision that inherited none of them would read as a finding that rests on
+ * nothing and would be reviewed with its evidence missing — the refinement would have destroyed
+ * the record it improved. Filings are NOT carried: they are a separate table read per root
+ * (`store/coordinator.ts`'s `filings()`), so they survive on their own, and a copy would be a
+ * second filing nobody made.
+ *
+ * The edge ids are minted in SQL rather than by {@link newId} because the number of edges is not
+ * known before the statement runs; the expression produces exactly `newId`'s shape, and one
+ * statement can carry any number of rows without approaching the engine's per-batch bound.
+ */
+async function refinementStatements(
+  store: ActsStore,
+  proposalId: string,
+  refinement: Refinement,
+  operator: string,
+  at: string,
+): Promise<{ statements: SqlStatement[]; revisionId: string }> {
+  const revision = await first<RevisionRow>(
+    store,
+    `SELECT id, kind, root_id, seq, title, payload FROM records WHERE id = ?`,
+    [refinement.targetRevisionId],
+  );
+  if (revision === null) {
+    throw new ActRefused(
+      `the revision ${refinement.targetRevisionId} this refinement names is not in this store`,
+    );
+  }
+  // A REFINEMENT WRITTEN AGAINST AN OLDER WORDING IS A REFINEMENT OF SOMETHING ELSE. The
+  // reviewer read one immutable revision and proposed a replacement for a sentence in it; if
+  // that revision has since been superseded, the sentence it names may no longer be there, may
+  // have been corrected already, or may have been the thing the newer wording exists to fix.
+  // Applying it anyway would fork the root — two revisions superseding one — and silently
+  // discard whichever lost.
+  const newer = await first<{ id: string }>(
+    store,
+    `SELECT id FROM records WHERE supersedes_id = ? LIMIT 1`,
+    [refinement.targetRevisionId],
+  );
+  if (newer !== null) {
+    throw new ActRefused(
+      `revision ${refinement.targetRevisionId} was superseded by ${newer.id} after this ` +
+        "refinement was written, so it no longer names the record's current wording; refine " +
+        "the newest revision instead",
+    );
+  }
+  const rewritten = reworded(revision, refinement);
+  const prefix = RECORD_PREFIX[revision.kind];
+  if (prefix === undefined) throw new ActRefused(`record kind ${revision.kind}`);
+  const revisionId = newId(prefix);
+  const statements: SqlStatement[] = [
+    {
+      // The row's own columns carry across — kind, root, parent, run, recipe — because a
+      // rewording is the same claim from the same run under the same method. What changes is the
+      // wording and who wrote it, and the actor is the operator: he is the authority the
+      // acceptance rests on, not the run that suggested it.
+      sql: `INSERT INTO records(id, kind, root_id, supersedes_id, seq, parent_id, run_id,
+              recipe_id, recipe_version, actor_kind, actor_id, title, created_at, payload)
+            SELECT ?, r.kind, r.root_id, r.id,
+                   (SELECT COALESCE(MAX(seq), 0) + 1 FROM records WHERE root_id = r.root_id),
+                   r.parent_id, r.run_id, r.recipe_id, r.recipe_version, 'operator', ?, ?, ?, ?
+              FROM records r
+             WHERE r.id = ?
+               AND NOT EXISTS (SELECT 1 FROM records l WHERE l.supersedes_id = r.id)`,
+      params: [
+        revisionId,
+        operator,
+        rewritten.title,
+        at,
+        rewritten.payload,
+        refinement.targetRevisionId,
+      ],
+    },
+    {
+      // Every row below is conditioned on the revision above having landed, so a target that
+      // went stale inside the transaction leaves no edge pointing at a record that is not there.
+      sql: `INSERT INTO edges(id, kind, from_kind, from_id, to_kind, to_id, position, note,
+              actor_kind, actor_id, created_at)
+            SELECT ?, 'supersedes', r.kind, r.id, r.kind, ?, NULL, ?, 'operator', ?, ?
+              FROM records r WHERE r.id = ?`,
+      params: [
+        newId("edg"),
+        refinement.targetRevisionId,
+        `${refinement.reason} (${proposalId}, ${refinement.targetPath})`,
+        operator,
+        at,
+        revisionId,
+      ],
+    },
+    {
+      sql: `INSERT INTO edges(id, kind, from_kind, from_id, to_kind, to_id, position, note,
+              actor_kind, actor_id, created_at)
+            SELECT 'edg_' || lower(hex(randomblob(8))), e.kind, e.from_kind, ?, e.to_kind,
+                   e.to_id, e.position, e.note, 'operator', ?, ?
+              FROM edges e
+             WHERE e.from_id = ? AND e.kind <> 'supersedes'
+               AND EXISTS (SELECT 1 FROM records r WHERE r.id = ?)`,
+      params: [revisionId, operator, at, refinement.targetRevisionId, revisionId],
+    },
+  ];
+  return { statements, revisionId };
+}
+
 /**
  * Applies the plan the proposal carries, on the operator's authority. It is the body a ruling of
  * `accept` runs, exposed on its own because the conductor applies a plan it has already ruled on
@@ -1165,9 +1434,9 @@ export interface RuleArgs {
  * keeps, the state the ledger has moved to — is checked while the record is still undecided,
  * because a ruling appended first would leave the record ruled and the plan unanswerable. Then
  * the ruling and everything it applies go into ONE transaction, so an acceptance never half
- * lands. The one thing that is reported rather than raised is a plan the ledger has moved past:
- * the ruling is the operator's answer to the proposal and stands on its own, so it is written
- * and the plan's refusal travels back beside it.
+ * lands. The two things that are reported rather than raised are a plan the ledger has moved
+ * past and a refinement whose revision has been superseded: the ruling is the operator's answer
+ * to the proposal and stands on its own, so it is written and the refusal travels back beside it.
  */
 export async function rule(store: ActsStore, args: RuleArgs, operator: string): Promise<Ruled> {
   if (operator === "") throw new ActRefused("a ruling has no operator");
@@ -1251,10 +1520,51 @@ export async function rule(store: ActsStore, args: RuleArgs, operator: string): 
     // Every other ruling — defer, duplicate, refine, reopen — leaves the plan open, which is
     // what a deferral means.
   }
+  // THE REFINEMENT IS ANSWERED ONLY BY AN ACCEPTANCE, and the asymmetry with a plan is real: a
+  // plan is a `plans` row whose `state` some ruling has to answer, so a rejection declines it,
+  // while a refinement is a block in the proposal's own payload with no state of its own.
+  // Deferring or rejecting a refinement proposal does exactly what it does to any proposal, and
+  // there is nothing to report about it.
+  let refined: RefinementOutcome | null = null;
+  if (args.ruling === "accept") {
+    try {
+      const refinement = await refinementFor(store, args.id);
+      if (refinement !== null) {
+        refined = {
+          targetRecordId: refinement.targetRecordId,
+          targetPath: refinement.targetPath,
+          revisionId: "",
+          applied: false,
+        };
+        const written = await refinementStatements(store, args.id, refinement, operator, at);
+        statements.push(...written.statements);
+        refined.revisionId = written.revisionId;
+        refined.applied = true;
+      }
+    } catch (error) {
+      if (!(error instanceof ActRefused)) throw error;
+      // A refinement the store will not apply leaves the acceptance standing and says why:
+      // §4.7 does not un-append a ruling, and the operator's answer to the proposal was still
+      // his answer.
+      refined = {
+        targetRecordId: refined?.targetRecordId ?? args.id,
+        targetPath: refined?.targetPath ?? "",
+        revisionId: "",
+        applied: false,
+        error: error.message,
+      };
+    }
+  }
   const results = await store.db.batch(statements);
   const seq = Number(results[0]?.[0]?.["seq"] ?? 0);
   store.touch();
-  return { id: args.id, standing: STANDING_OF[args.ruling], seq, plan: outcome };
+  return {
+    id: args.id,
+    standing: STANDING_OF[args.ruling],
+    seq,
+    plan: outcome,
+    refinement: refined,
+  };
 }
 
 export interface DecideArgs {

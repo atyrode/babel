@@ -26,7 +26,13 @@ function hub(overrides: Record<string, (args: unknown) => unknown> = {}): Fake {
     }),
     interest: () => ({}),
     tell: () => ({}),
-    rule: () => ({ id: "pro_0000000a", standing: "accepted", seq: 1, plan: null }),
+    rule: () => ({
+      id: "pro_0000000a",
+      standing: "accepted",
+      seq: 1,
+      plan: null,
+      refinement: null,
+    }),
     ...overrides,
   });
 }

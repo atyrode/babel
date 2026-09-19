@@ -147,7 +147,13 @@ test("a ruling is attributed to the dispatch's principal and emits `ruled`", asy
   await seedRecord(harness.store, "pro_00000001");
 
   const ruled = await knock(harness, ACTIONS.rule, { id: "pro_00000001", ruling: "accept" });
-  expect(ruled).toEqual({ id: "pro_00000001", standing: "accepted", seq: 1, plan: null });
+  expect(ruled).toEqual({
+    id: "pro_00000001",
+    standing: "accepted",
+    seq: 1,
+    plan: null,
+    refinement: null,
+  });
   expect(harness.emitted).toEqual([
     {
       kind: EVENTS.ruled,
