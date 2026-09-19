@@ -42,7 +42,6 @@ import {
   type FeedPost,
   type FeedQuery,
   type FeedResult,
-  type PostKind,
   type RecordPeel,
   type RunProgress,
   type Ruling,
@@ -86,21 +85,18 @@ function isRuling(value: string): value is Ruling {
   return RULING_NAMES.includes(value);
 }
 
-/**
- * A stored record kind as a post kind. An observation is refused before it reaches here — the
- * peel's top row is a `FeedPost` and cannot carry one — so a kind outside the four is a store
- * holding a value its own CHECK forbids, and saying so is better than picking a label.
- */
-function postKind(value: string): PostKind {
+/** A stored record kind as the peel's top-row kind, including evidence and operator questions. */
+function peelKind(value: string): RecordPeel["post"]["kind"] {
   if (
     value === "hypothesis" ||
+    value === "observation" ||
     value === "finding" ||
     value === "proposal" ||
     value === "question"
   ) {
     return value;
   }
-  throw new Error(`a record of kind ${value} is not a post`);
+  throw new Error(`a record of kind ${value} is not readable`);
 }
 
 // ---------------------------------------------------------------------------- shapes
@@ -974,7 +970,6 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     );
     if (row === null) return await questionPeel(id);
     const kind = text(row["kind"]);
-    if (kind === "observation") return null;
     const payload = document(row["payload"]);
     const current = await index();
     const post =
@@ -1247,12 +1242,13 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   /**
-   * A record the front page does not carry — a wording a later revision replaced — as a row.
+   * A record the front page does not carry — a wording a later revision replaced, or an
+   * observation whose place is under the record that cites it — as a row.
    *
-   * It carries the record's own kind, never a default: the four post kinds are the only ones
-   * that reach here, because an observation is refused above rather than relabelled.
+   * It carries the record's own kind, never a default. The peel admits an observation even though
+   * the feed does not, which is what lets a corpus reader judge evidence without relabelling it.
    */
-  const soloPost = async (row: SqlRow, current: FeedIndex): Promise<FeedPost> => {
+  const soloPost = async (row: SqlRow, current: FeedIndex): Promise<RecordPeel["post"]> => {
     const id = text(row["id"]);
     const createdAt = text(row["created_at"]);
     const tally = await one(
@@ -1269,7 +1265,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     const runId = text(row["run_id"]);
     return {
       id,
-      kind: postKind(text(row["kind"])),
+      kind: peelKind(text(row["kind"])),
       // A wording a later revision replaced is kept and not shown, which is the shelf. It is
       // stated rather than routed because `surfaceOf` reads a standing, and a superseded row
       // carries none: the ruling belongs to the revision that replaced it.

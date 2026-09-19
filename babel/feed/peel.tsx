@@ -1,7 +1,7 @@
 import { useState, type ReactElement, type ReactNode } from "react";
 import type { HostServices } from "@manifold/plugin";
 import { Chip, Cluster, Disclosure, Stack } from "@manifold/ui";
-import { ACTIONS } from "../contract.ts";
+import { ACTIONS, FeedPostSchema } from "../contract.ts";
 import { ask, refusal, since, type RecordPeel } from "./api.ts";
 import {
   KIND_LABELS,
@@ -264,6 +264,10 @@ export function Peel({
   const toggle = (index: number): void =>
     setOpen((current) => current.map((value, at) => (at === index ? !value : value)));
   const post = peel.post;
+  // An observation is a record the peel can open and the feed never lists. Every other top row
+  // is still the exact FeedPost the votes strip reads; parsing after the discriminant keeps the
+  // wider record-door contract out of the feed component.
+  const feedPost = post.kind === "observation" ? null : FeedPostSchema.parse(post);
   const fields = Object.entries(peel.case);
   const machinery = Object.entries(peel.machinery);
   const age = since(post.createdAt, now);
@@ -272,14 +276,17 @@ export function Peel({
     <Stack className="babel-record" gap="var(--babel-space-4)">
       <header className="babel-record-head">
         <Cluster gap="var(--babel-space-3)" align="start">
-          <Votes post={post} ticked={false} />
+          {feedPost !== null && <Votes post={feedPost} ticked={false} />}
           <Stack gap="var(--babel-space-2)">
             <h1 className="babel-record-claim">
               {post.title === "" ? peel.claim.statement : post.title}
             </h1>
             <Cluster className="babel-facts" gap="var(--babel-space-2)" align="baseline">
-              <span className="babel-kind" data-tone={KIND_TONES[post.kind]}>
-                {KIND_LABELS[post.kind]}
+              <span
+                className="babel-kind"
+                data-tone={post.kind === "observation" ? "quiet" : KIND_TONES[post.kind]}
+              >
+                {post.kind === "observation" ? "Observation" : KIND_LABELS[post.kind]}
               </span>
               <Chip className="babel-standing" data-standing={peel.claim.standing}>
                 {peel.claim.standing}
@@ -311,7 +318,7 @@ export function Peel({
           )}
           {post.kind === "question" ? (
             <RowAnswer host={host} id={post.id} onActed={onActed} />
-          ) : (
+          ) : post.kind === "observation" ? null : (
             <RuleActs host={host} id={post.id} acts={POST_ACTS} onActed={onActed} />
           )}
           {/* WHAT A RUN PROPOSED BE DONE, under the ruling and never above it: the record's

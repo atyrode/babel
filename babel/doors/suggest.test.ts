@@ -382,6 +382,49 @@ test("a sweep can state its size before it runs", async () => {
   expect([after.judged, after.unjudged, after.outstanding]).toEqual([1, 2, 1]);
 });
 
+test("the gap names exact revisions, and a moved basis makes only that kind pending again", async () => {
+  const harness = openHarness();
+  await migrate(harness.store);
+  await allow(harness.store, [{ principalId: JEV_PRINCIPAL, pluginId: JEV }]);
+  await seedRecord(harness.store, "fnd_00000001");
+  await seedRecord(harness.store, "fnd_00000002");
+  await seedRecord(harness.store, "fnd_00000003");
+  const basis = "bank/2/finding/2";
+
+  const before = (await knock(harness, ACTIONS.suggestions, {
+    basis,
+    kinds: ["finding"],
+    pending: 2,
+  })) as {
+    judged: number;
+    unjudged: number;
+    pending: readonly { recordId: string; revision: number; kind: string }[];
+  };
+  expect(before).toMatchObject({ judged: 0, unjudged: 3 });
+  expect(before.pending).toEqual([
+    { recordId: "fnd_00000001", revision: 0, kind: "finding" },
+    { recordId: "fnd_00000002", revision: 0, kind: "finding" },
+  ]);
+
+  await knock(harness, ACTIONS.suggest, { ...SUGGESTION, basis });
+  const marked = (await knock(harness, ACTIONS.suggestions, {
+    basis,
+    kinds: ["finding"],
+    pending: 3,
+  })) as typeof before;
+  expect(marked).toMatchObject({ judged: 1, unjudged: 2 });
+  expect(marked.pending.map((row) => row.recordId)).toEqual(["fnd_00000002", "fnd_00000003"]);
+
+  const moved = (await knock(harness, ACTIONS.suggestions, {
+    basis: "bank/2/finding/3",
+    kinds: ["finding"],
+    pending: 3,
+    after: "fnd_00000002",
+  })) as typeof before;
+  expect(moved).toMatchObject({ judged: 0, unjudged: 3 });
+  expect(moved.pending).toEqual([{ recordId: "fnd_00000003", revision: 0, kind: "finding" }]);
+});
+
 test("the frontier is untouched: the only table this door writes is next_actions", async () => {
   const harness = openHarness();
   await migrate(harness.store);
