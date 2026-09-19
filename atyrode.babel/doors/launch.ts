@@ -1,3 +1,4 @@
+import type { SqlStatement } from "@manifold/plugin";
 import { HostCallError } from "@manifold/plugin-kit/errors";
 import { defineServerAction, type GuestCtx } from "@manifold/plugin-kit/server";
 import {
@@ -34,6 +35,14 @@ import {
   PROMPT_VERSION,
   type Recipe,
 } from "../server/engine/prompts.ts";
+import {
+  composeTitlePrompt,
+  declinedTitles,
+  MAX_TITLE_BATCH,
+  offeredSelectors,
+  TITLE_PROMPT_VERSION,
+  titleStatements,
+} from "../server/engine/titles.ts";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import {
   PROMPT_LIMIT,
@@ -358,6 +367,19 @@ export interface LaunchMachinery {
    * finished and before the drain decides whether to launch more.
    */
   postPrepared(jobs: JobsSlice, engine: CodeEngine, plan: RunPlan): Promise<readonly Posted[]>;
+  /**
+   * NAMING THE SESSIONS WHOSE OWN LOGS CARRY NO TITLE, IF THIS CYCLE MAY SPEND ON IT (#342).
+   *
+   * Phase one of the same two-phase shape an explore has: a `prepare` over the untitled
+   * sessions, and a run row recorded as intent. {@link postPrepared} posts the Code session on
+   * the wake that preparation's settlement causes, and the conductor's settlement writes the
+   * titles. `cycleRunId` is the tick this is charged to, so the per-cycle ceiling is measured
+   * against the reviews the same cycle already dispatched.
+   *
+   * It answers null far more often than not: no route, no untitled session, one already in
+   * flight, or no allowance left. Those are the normal states and none of them is a note.
+   */
+  inferTitles(jobs: JobsSlice, cycleRunId: string): Promise<Posted | null>;
 }
 
 export interface LaunchDeps {
@@ -732,6 +754,188 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
   }
 
   /**
+   * THE UNTITLED SESSIONS THIS MACHINE HOLDS, NEWEST FIRST, AND NOTHING ELSE (#342).
+   *
+   * `title IS NULL` and not "no good title": a title the harness recorded and one this tree
+   * derived offline are both free and both outrank a guess that costs money, so neither is
+   * ever replaced. A row already answered in `session_titles` is not offered again whatever
+   * that answer was — a title, or the reason there is none — because the second half of
+   * "inferred once" is that a session the model declined is not re-offered on the next wake.
+   *
+   * The two exclusions are `prepare`'s own. A `live` log is still being appended and its
+   * digest is stale before the job starts; a session of `kind = 'agent'` is one of Babel's own
+   * runs' transcripts, which `prepare` refuses by name unless a caller asked for them — and
+   * naming Babel's own analysis logs is not what this lane is for.
+   */
+  async function untitled(machineId: string): Promise<readonly SessionRow[]> {
+    return await store.db.query<SessionRow>(
+      `SELECT s.selector AS selector, s.harness AS harness, s.source_id AS source_id,
+              s.content_digest AS content_digest, s.snapshot_id AS snapshot_id,
+              s.seen_at AS seen_at, s.size AS size
+         FROM sessions s
+        WHERE s.host = ? AND s.title IS NULL AND s.live = 0 AND s.kind = 'operator'
+          AND NOT EXISTS (SELECT 1 FROM session_titles t WHERE t.selector = s.selector)
+        ORDER BY s.modified_at DESC, s.selector
+        LIMIT ?`,
+      [machineId, MAX_TITLE_BATCH],
+    );
+  }
+
+  /**
+   * WHETHER THIS CYCLE MAY SPEND ON A TITLE, judged against the policy's own two ceilings and
+   * the same ledger a review is admitted against (`coordinator.spend`).
+   *
+   * ONE TITLING RUN RESERVES WHAT ONE REVIEW RESERVES — the per-cycle allowance divided by the
+   * batch — because it is one Code session and there is no second figure to invent. What it
+   * has actually charged the day is read off the run rows: a settled run counts what it cost, a
+   * run still open counts its full reservation, which is the same "reported cost where it
+   * settled, the reservation where it did not" rule the claims ledger is summed by. Reading it
+   * from `runs` rather than from `claims` is what keeps this lane out of the review
+   * coordinator's table: a claim is one reviewer's grant on one record in one role, and a
+   * titling batch is none of those.
+   *
+   * THE PER-CYCLE TEST IS THE CYCLE'S OWN CHARGES, so a tick that already filled its batch with
+   * reviews names nothing: the two lanes compete for one allowance rather than each having a
+   * private one. A deployment whose day is spent infers nothing and says so.
+   */
+  async function admitTitling(
+    policy: Policy,
+    cycleRunId: string,
+    at: number,
+  ): Promise<{ readonly reserved: number } | { readonly refused: string }> {
+    const reserved =
+      policy.batchSize <= 0 ? policy.perCycleCost : policy.perCycleCost / policy.batchSize;
+    const spent = await deps.coordinator.spend(at);
+    const day = new Date(at).toISOString().slice(0, 10);
+    const charged = await store.db.query<{ charged: number | null }>(
+      `SELECT COALESCE(SUM(COALESCE(cost_usd, ?)), 0) AS charged
+         FROM runs WHERE kind = ? AND started_at >= ? AND started_at < ?`,
+      [reserved, OPERATIONS.title, `${day}T00:00:00.000Z`, `${day}T23:59:59.999Z`],
+    );
+    const named = Number(charged[0]?.charged ?? 0);
+    if (spent.total + named + reserved > policy.dailyCost) {
+      return {
+        refused:
+          `daily ceiling ${policy.dailyCost.toFixed(4)} reached: ` +
+          `${(spent.total + named).toFixed(4)} committed today and a title reserves ` +
+          `${reserved.toFixed(4)}, so nothing is named`,
+      };
+    }
+    const cycle = spent.byRun[cycleRunId] ?? 0;
+    if (cycle + reserved > policy.perCycleCost) {
+      return {
+        refused:
+          `per-cycle ceiling ${policy.perCycleCost.toFixed(4)} reached: cycle ${cycleRunId} ` +
+          `has ${cycle.toFixed(4)} charged and a title reserves ${reserved.toFixed(4)}`,
+      };
+    }
+    return { reserved };
+  }
+
+  /**
+   * ONE TITLING RUN, POSTED IF THIS CYCLE MAY AFFORD ONE.
+   *
+   * The gates, in the order a reader should meet them: the policy must be enabled, because a
+   * disabled policy spends nothing at all (§14); it must name a review route, because the
+   * profile there is the only model authorization the operator has given and a lane that
+   * reached for a second one would be a second spend nobody metered; one titling run at a
+   * time, deployment-wide, because concurrency here buys nothing an operator asked for; the
+   * ceilings; and finally a session that actually needs a name.
+   */
+  async function inferTitles(jobs: JobsSlice, cycleRunId: string): Promise<Posted | null> {
+    const policy = (await deps.coordinator.policy()).policy;
+    const route = policy.review;
+    if (!policy.enabled || route === undefined) return null;
+    const open = await store.db.query<{ n: number | bigint }>(
+      `SELECT COUNT(*) AS n FROM runs WHERE kind = ? AND closure IS NULL`,
+      [OPERATIONS.title],
+    );
+    if (Number(open[0]?.n ?? 0) > 0) return null;
+
+    const at = deps.now();
+    const candidates = await untitled(route.machineId);
+    if (candidates.length === 0) return null;
+    const admitted = await admitTitling(policy, cycleRunId, at);
+    if ("refused" in admitted) return { runId: "", refused: admitted.refused };
+
+    const runId = `run_title_${String(at)}`;
+    const prepareJobId = materialJobId(`job_title_${String(at)}`);
+    const ready = await describeHost(jobs, route.machineId, OPERATIONS.prepare);
+    if ("refused" in ready) return { runId, refused: ready.refused };
+    const installation = ready.readiness.installation;
+    const selectors = candidates.map((row) => row.selector);
+    const built = document({
+      runId: `${runId}_material`,
+      machineId: route.machineId,
+      selectors,
+    });
+    if ("refused" in built) return { runId, refused: built.refused };
+    const sealed = await post(
+      jobs,
+      {
+        jobId: prepareJobId,
+        machineId: route.machineId,
+        operationId: OPERATIONS.prepare,
+        input: built.input,
+        outputs: [
+          { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [prepareJobId] },
+          {
+            name: MATERIAL_OUTPUT,
+            locationId: OUTPUT_LOCATION,
+            components: [prepareJobId, MATERIAL_OUTPUT],
+          },
+        ],
+        limits: deps.plan(policy, OPERATIONS.prepare).limits,
+        ...(installation === null
+          ? {}
+          : {
+              installationRevision: installation.revision,
+              artifactSha256: installation.artifactSha256,
+            }),
+      },
+      {
+        runId: `${runId}_material`,
+        kind: OPERATIONS.prepare,
+        recipeId: "",
+        authorityId: cycleRunId,
+        preparation: { for: runId, titles: selectors.length },
+      },
+    );
+    if (sealed !== null) return { runId, refused: sealed.refused };
+
+    // THE SELECTORS TRAVEL ON THE RUN ROW, and they are what makes the answer checkable and
+    // the work bounded: the settlement writes one `session_titles` row per selector NAMED HERE
+    // — never per selector the model chose to answer about — so a reply about a session this
+    // run never read is refused and a session the model ignored is still answered.
+    await store.db.run(
+      `INSERT INTO runs(id, kind, machine_id, container_id, prepare_job_id, recipe_id, profile,
+                        authority_kind, authority_id, preparation, started_at, records, payload)
+       VALUES (?, ?, ?, ?, ?, '', ?, 'conductor', ?, ?, ?, 0, ?)
+       ON CONFLICT(id) DO NOTHING`,
+      [
+        runId,
+        OPERATIONS.title,
+        route.machineId,
+        route.profile.containerId,
+        prepareJobId,
+        JSON.stringify({
+          containerId: route.profile.containerId,
+          expectedRevision: route.profile.expectedRevision,
+        }),
+        cycleRunId,
+        JSON.stringify({
+          titles: { selectors, reserved: admitted.reserved },
+          promptVersion: TITLE_PROMPT_VERSION,
+        }),
+        new Date(at).toISOString(),
+        JSON.stringify({ closure: null, preparing: prepareJobId }),
+      ],
+    );
+    store.touch();
+    return { runId, jobId: prepareJobId };
+  }
+
+  /**
    * ONE EXPLORE, IN THE FIVE STEPS A BABEL RUN IS MADE OF.
    *
    *   1. the SELECTION, from this machine's catalog and nothing else;
@@ -929,6 +1133,119 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
   }
 
   /**
+   * THE PROMPT ONE WAITING RUN IS POSTED WITH, chosen by the kind of run it is.
+   *
+   * Both kinds are composed HERE and not at the press, and for the same reason: the prompt is
+   * built from the index `prepare` actually wrote — the real file names — rather than from
+   * selectors the press could only guess the layout of.
+   */
+  async function composeFor(
+    run: PreparedRun,
+    material: MaterialIndex,
+  ): Promise<
+    | { readonly prompt: string; readonly preparation: Record<string, unknown> }
+    | { readonly refused: string }
+  > {
+    const intent = documentOf(run.preparation);
+    if (run.kind === OPERATIONS.title) {
+      // Only the sessions the preparation SEALED are named. A log that vanished between the
+      // catalog and the machine is not in the material and cannot be titled; it is still on
+      // the run's own list, and the settlement answers it with the reason rather than leaving
+      // it for the next cycle to offer again.
+      const offered = new Set(offeredSelectors(intent));
+      const subjects = material.sessions
+        .filter((entry) => offered.has(entry.selector))
+        .map((entry) => ({ selector: entry.selector, file: entry.file }));
+      if (subjects.length === 0) {
+        return {
+          refused:
+            `the preparation ${run.prepare_job_id ?? ""} sealed none of the ` +
+            `${String(offered.size)} session(s) this run was to name`,
+        };
+      }
+      return {
+        prompt: composeTitlePrompt({
+          subjects,
+          preparationId: material.preparationId,
+          params: { [PARAM.runId]: run.id, [PARAM.preparation]: material.preparationId },
+        }),
+        preparation: intent,
+      };
+    }
+    const asked = new Set(
+      (Array.isArray(intent["recipes"]) ? intent["recipes"] : [])
+        .map((entry) =>
+          typeof entry === "object" && entry !== null
+            ? String((entry as Record<string, unknown>)["id"])
+            : "",
+        )
+        .filter((id) => id !== ""),
+    );
+    const cookbook = await deps.cookbook();
+    const recipes = Object.values(cookbook).filter((recipe) => asked.has(recipe.id));
+    if (recipes.length === 0) {
+      return { refused: `this hub no longer holds the recipes this run was started with` };
+    }
+    // AND FROM WHAT THE OPERATOR HAS TOLD BABEL (#331). `tell` wrote those rows and the
+    // `policy` door reads them back; this is that same read and there is no second one. The
+    // prompt quotes a bounded selection of them as evidence — `carriedSteering` is the rule —
+    // and the same call says which ones, so the receipt records what the run was told.
+    const told = (await store.policy()).steering;
+    const params = {
+      [PARAM.stage]: "explore",
+      [PARAM.runId]: run.id,
+      [PARAM.preparation]: material.preparationId,
+    };
+    return {
+      prompt: composeExplorePrompt({
+        stage: "explore",
+        recipes,
+        sessions: material.sessions.map((entry) => ({
+          selector: entry.selector,
+          file: entry.file,
+        })),
+        preparationId: material.preparationId,
+        params,
+        steering: told,
+      }),
+      // WHAT THE PROMPT QUOTED HIM AS SAYING, ONTO THE RUN ROW (#331). The run's own document
+      // is the only thing that reaches the settlement — the prompt is Code's job's input and
+      // nothing reads it back — and the settlement is where the receipt is written.
+      preparation: { ...intent, steering: carriedSteering(told, params) },
+    };
+  }
+
+  /**
+   * ONE WAITING RUN CLOSED BEFORE IT EVER HAD A SESSION, with the sentence saying why.
+   *
+   * A TITLING RUN ALSO ANSWERS ITS SELECTORS HERE (#342), and that is the half without which
+   * this lane would be a loop: a session offered and not answered is a session the next cycle
+   * offers again, so a preparation that failed would post another preparation over the same
+   * batch on every wake, for ever. The row records the reason rather than a title, so the
+   * work happened once and an operator can see what it cost and why it produced nothing.
+   */
+  async function close(run: PreparedRun, at: string, reason: string): Promise<Posted> {
+    const statements: SqlStatement[] = [
+      {
+        sql: `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
+        params: [at, JSON.stringify({ closure: "failed", reason }), run.id],
+      },
+    ];
+    if (run.kind === OPERATIONS.title) {
+      statements.push(
+        ...titleStatements({
+          runId: run.id,
+          at,
+          titles: declinedTitles(offeredSelectors(documentOf(run.preparation)), reason),
+        }),
+      );
+    }
+    await store.db.batch(statements);
+    store.touch();
+    return { runId: run.id, refused: reason };
+  }
+
+  /**
    * EVERY RUN WHOSE MATERIAL IS SEALED AND WHOSE SESSION IS NOT POSTED YET, posted now (#592).
    *
    * The job-inputs primitive binds a SETTLED job's output — a binding whose source is still
@@ -953,9 +1270,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     void jobs;
     void plan;
     const waiting = await store.db.query<PreparedRun>(
-      `SELECT r.id AS id, r.machine_id AS machine_id, r.container_id AS container_id,
-              r.prepare_job_id AS prepare_job_id, r.profile AS profile,
-              r.preparation AS preparation, p.closure AS prepare_closure,
+      `SELECT r.id AS id, r.kind AS kind, r.machine_id AS machine_id,
+              r.container_id AS container_id, r.prepare_job_id AS prepare_job_id,
+              r.profile AS profile, r.preparation AS preparation, p.closure AS prepare_closure,
               p.payload AS prepare_payload
          FROM runs r JOIN runs p ON p.job_id = r.prepare_job_id
         WHERE r.closure IS NULL AND r.job_id IS NULL AND r.container_id IS NOT NULL
@@ -971,61 +1288,15 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           run.prepare_closure === "completed"
             ? `the preparation ${run.prepare_job_id ?? ""} sealed no material this run could read`
             : `the preparation ${run.prepare_job_id ?? ""} closed as ${run.prepare_closure ?? ""}`;
-        await store.db.run(
-          `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
-          [at, JSON.stringify({ closure: "failed", reason }), run.id],
-        );
-        store.touch();
-        posted.push({ runId: run.id, refused: reason });
+        posted.push(await close(run, at, reason));
         continue;
       }
-      const intent = documentOf(run.preparation);
       const report = documentOf(run.profile);
-      const asked = new Set(
-        (Array.isArray(intent["recipes"]) ? intent["recipes"] : [])
-          .map((entry) =>
-            typeof entry === "object" && entry !== null
-              ? String((entry as Record<string, unknown>)["id"])
-              : "",
-          )
-          .filter((id) => id !== ""),
-      );
-      const cookbook = await deps.cookbook();
-      const recipes = Object.values(cookbook).filter((recipe) => asked.has(recipe.id));
-      if (recipes.length === 0) {
-        const reason = `this hub no longer holds the recipes this run was started with`;
-        await store.db.run(
-          `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
-          [at, JSON.stringify({ closure: "failed", reason }), run.id],
-        );
-        store.touch();
-        posted.push({ runId: run.id, refused: reason });
+      const composed = await composeFor(run, material);
+      if ("refused" in composed) {
+        posted.push(await close(run, at, composed.refused));
         continue;
       }
-      // THE PROMPT IS BUILT FROM WHAT WAS ACTUALLY SEALED: the index's own file names, record
-      // counts and digests, rather than the selectors the press could only guess from.
-      //
-      // AND FROM WHAT THE OPERATOR HAS TOLD BABEL (#331). `tell` wrote those rows and the
-      // `policy` door reads them back; this is that same read and there is no second one. The
-      // prompt quotes a bounded selection of them as evidence — `carriedSteering` is the rule —
-      // and the same call says which ones, so the receipt records what the run was told.
-      const told = (await store.policy()).steering;
-      const params = {
-        [PARAM.stage]: "explore",
-        [PARAM.runId]: run.id,
-        [PARAM.preparation]: material.preparationId,
-      };
-      const prompt = composeExplorePrompt({
-        stage: "explore",
-        recipes,
-        sessions: material.sessions.map((entry) => ({
-          selector: entry.selector,
-          file: entry.file,
-        })),
-        preparationId: material.preparationId,
-        params,
-        steering: told,
-      });
       /*
         CODE BOUNDS A SESSION'S PROMPT IN BYTES, and the bound is the hub's own: a prompt is
         carried in the 64 KiB job-input map, which counts ENCODED bytes — so a character
@@ -1041,19 +1312,14 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         contract and the selection, both fixed by now — so the run closes rather than being
         retried.
       */
-      const bytes = promptBytes(prompt);
+      const bytes = promptBytes(composed.prompt);
       if (bytes > PROMPT_LIMIT) {
         const reason =
           `prompt_too_large: this run's prompt is ${String(bytes)} bytes and ` +
           `${CODE_PLUGIN_ID}.runSession takes ${String(PROMPT_LIMIT)}. The analysis contract ` +
           `and the stage's schema are most of it, so what moves is Code's bound or the ` +
           `contract itself — not this selection.`;
-        await store.db.run(
-          `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
-          [at, JSON.stringify({ closure: "failed", reason }), run.id],
-        );
-        store.touch();
-        posted.push({ runId: run.id, refused: reason });
+        posted.push(await close(run, at, reason));
         continue;
       }
       const answered = await engine.runSession({
@@ -1062,34 +1328,24 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           expectedRevision: Number(report["expectedRevision"] ?? 0),
         },
         machineId: run.machine_id ?? "",
-        prompt,
+        prompt: composed.prompt,
         prepareJobId: run.prepare_job_id ?? "",
       });
       if (!answered.ok) {
         // A REFUSAL HERE IS FINAL, not a thing to retry on every wake for ever: the material
         // is sealed and immutable, the profile was named at the press, and nothing a later
         // wake could do changes what Code just said. The run closes carrying the sentence.
-        await store.db.run(
-          `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
-          [at, JSON.stringify({ closure: "failed", reason: answered.refused }), run.id],
-        );
-        store.touch();
-        posted.push({ runId: run.id, refused: answered.refused });
+        posted.push(await close(run, at, answered.refused));
         continue;
       }
-      /*
-        WHAT THE PROMPT QUOTED HIM AS SAYING, ONTO THE RUN ROW (#331).
-
-        The run's own document is the only thing that reaches the settlement — the prompt is
-        Code's job's input and nothing reads it back — and the settlement is where the receipt
-        is written. So the selection travels with the intent it is part of: what this run was
-        asked is what it was told as well, and `settleSession` lifts it onto `receipt.steering`.
-      */
+      // The run's own document is the only thing that reaches the settlement — the prompt is
+      // Code's job's input and nothing reads it back — so whatever the composition decided
+      // this run was told travels on the row with the intent it is part of.
       await store.db.run(
         `UPDATE runs SET job_id = ?, preparation = ?, payload = ? WHERE id = ? AND job_id IS NULL`,
         [
           answered.value.jobId,
-          JSON.stringify({ ...intent, steering: carriedSteering(told, params) }),
+          JSON.stringify(composed.preparation),
           JSON.stringify({ closure: null, requestedAt: deps.now() }),
           run.id,
         ],
@@ -1100,12 +1356,14 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     return posted;
   }
 
-  return { startExplore, startBeat, startVerify, postPrepared };
+  return { startExplore, startBeat, startVerify, postPrepared, inferTitles };
 }
 
 /** A run waiting on its preparation, as the poster reads one. */
 type PreparedRun = {
   id: string;
+  /** The operation this run is: an explore, or a titling batch (#342). */
+  kind: string;
   machine_id: string | null;
   container_id: string | null;
   prepare_job_id: string | null;

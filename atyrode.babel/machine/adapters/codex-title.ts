@@ -34,7 +34,7 @@
 */
 
 /** A derived title is bounded here rather than truncated by every reader downstream. */
-const MAX_TITLE_RUNES = 72;
+export const MAX_TITLE_RUNES = 72;
 /** The shortest text worth calling a title; it rejects punctuation, not short prompts. */
 const MIN_TITLE_RUNES = 3;
 /** How much of one request record is retained: a title needs the first line, not the prompt. */
@@ -158,6 +158,24 @@ export function deriveTitle(evidence: TitleEvidence): DerivedTitle {
 function titleFromRequest(text: string): string {
   if (text.trim() === "" || injectedBlock(text)) return "";
   const title = condense(lastSection(text));
+  return runeLength(title) < MIN_TITLE_RUNES ? "" : title;
+}
+
+/**
+ * ONE UNTRUSTED TEXT AS A TITLE THIS CATALOG WILL HOLD, or "" when it is not one (#342).
+ *
+ * It lives here, beside the derived rule, because a model's inferred title and this adapter's
+ * arithmetic land in the SAME column and are read by the same listing. Two normalizers would
+ * be two column widths, and the day one of them moved a listing would reflow depending on
+ * which kind of title a row happened to carry — which is the reason the Go store bounded an
+ * inferred title at the adapters' own `MaxTitleRunes` and nothing else.
+ *
+ * The rules are therefore the derived one's: single line, whitespace runs collapsed, cut at a
+ * word boundary with a visible ellipsis past {@link MAX_TITLE_RUNES}. The floor rejects
+ * punctuation and a model's empty answer, not a short prompt.
+ */
+export function boundedTitle(text: string): string {
+  const title = condense(text);
   return runeLength(title) < MIN_TITLE_RUNES ? "" : title;
 }
 

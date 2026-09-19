@@ -359,6 +359,7 @@ export const RUN_KIND_LABELS: Record<string, string> = {
   [OPERATIONS.prepare]: "Preparation",
   [OPERATIONS.scan]: "Scan",
   [OPERATIONS.archive]: "Archive",
+  [OPERATIONS.title]: "Naming",
   conductor: "Loop",
 };
 

@@ -31,13 +31,25 @@ import {
 } from "../contract.ts";
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
-import { type CodeEngine, type CodeJob, type EngineAnswer } from "../server/engine/session.ts";
+import {
+  type CodeEngine,
+  type CodeJob,
+  type EngineAnswer,
+  type SessionRequest,
+} from "../server/engine/session.ts";
 import type { Recipe } from "../server/engine/prompts.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
-import { DRAW_MANAGED, MAX_MATERIAL_BYTES, launchDoors, type LaunchDeps } from "./launch.ts";
+import {
+  DRAW_MANAGED,
+  MAX_MATERIAL_BYTES,
+  launchDoors,
+  launchMachinery,
+  type LaunchDeps,
+  type LaunchMachinery,
+} from "./launch.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -141,15 +153,19 @@ class Code implements CodeEngine {
     return await Promise.resolve({ ok: true, value: this.saved });
   }
 
-  /*
-    THE PRESS DOES NOT REACH CODE AT ALL (ADR 0044). A job input binds a SETTLED job's output,
-    and `prepare` is running the instant the press posts it, so the session belongs to the
-    settle wake — `postPrepared`, which `doors/drain.test.ts` drives end to end. A `launch`
-    that called this is a `launch` that would bind a job still in flight, and the fake says so
-    rather than quietly answering a job id.
-  */
-  async runSession(): Promise<never> {
-    throw new Error("the press must not post a session: the preparation is still running");
+  /**
+   * WHAT A SETTLE WAKE POSTS, and nothing else. A job input binds a SETTLED job's output, and
+   * `prepare` is running the instant the press posts it, so the session belongs to
+   * `postPrepared` — a `launch` that called this is a `launch` that would bind a job still in
+   * flight, and the unset hook says so rather than quietly answering a job id.
+   */
+  posting: ((request: SessionRequest) => EngineAnswer<CodeJob>) | null = null;
+
+  async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
+    if (this.posting === null) {
+      throw new Error("the press must not post a session: the preparation is still running");
+    }
+    return await Promise.resolve(this.posting(request));
   }
 
   /** What a Stop reaches for on a Code session; the launch tests never press one. */
@@ -292,6 +308,7 @@ beforeEach(async () => {
     now: () => store.now(),
   };
   doors = launchDoors(store, deps);
+  machinery = launchMachinery(store, deps);
 });
 
 afterEach(() => {
@@ -982,5 +999,324 @@ test("a verification asked at the wrong node is refused before anything is poste
 
   expect(answer["refused"]).toContain(MACHINE_OPERATIONS.verify);
   expect(answer["refused"]).toContain(OPERATIONS.archive);
+  expect(fleet.executed).toEqual([]);
+});
+
+// ------------------------------------- naming the sessions whose logs carry no title (#342)
+
+/**
+ * The policy an autonomous lane needs: enabled, and naming the Code profile and machine that
+ * will spend. It is the SAME route a review is dispatched over, because it is the only model
+ * authorization the operator has given — a titling lane that reached for a second one would
+ * be a second spend nobody metered.
+ */
+const ROUTED = {
+  enabled: true,
+  perCycleCost: 0.25,
+  dailyCost: 2,
+  batchSize: 4,
+  review: {
+    machineId: MACHINE,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+    roleRecipes: {
+      reception: "code-health",
+      evidence: "code-health",
+      challenge: "code-health",
+      comparison: "code-health",
+      outcome: "code-health",
+      relevance: "code-health",
+      filing: "code-health",
+      backlog: "code-health",
+    },
+    recipes: [{ id: "code-health", version: 3, body: "Look for the thing that keeps failing." }],
+  },
+};
+
+/** Installs the routed policy over the `beforeEach` one, which names no route. */
+async function route(): Promise<void> {
+  await insert(harness.db, "policies", {
+    version: "p2",
+    seq: 2,
+    actor_id: "operator",
+    reason: "naming the box that spends",
+    payload: JSON.stringify(ROUTED),
+    recorded_at: stamp(NOW - HOUR),
+  });
+}
+
+/** One catalogued session with no title of its own, on the machine the route names. */
+async function nameless(sourceId: string, over: Record<string, unknown> = {}): Promise<void> {
+  await insert(harness.db, "sessions", {
+    selector: `codex/${sourceId}`,
+    host: MACHINE,
+    harness: "codex",
+    source_id: sourceId,
+    title: null,
+    live: 0,
+    kind: "operator",
+    size: 4096,
+    modified_at: stamp(NOW - HOUR),
+    seen_at: stamp(NOW - HOUR),
+    ...over,
+  });
+}
+
+/** The launch path the cycle drives, over the same deps the doors were built with. */
+let machinery: LaunchMachinery;
+
+test("the untitled sessions are prepared once, as one bounded batch charged to the cycle", async () => {
+  await route();
+  await nameless("a");
+  await nameless("b");
+  // Not candidates: a log still being appended, one of Babel's own runs' transcripts, and a
+  // session that already has a title. None of the three is work this lane may pay for.
+  await nameless("moving", { live: 1 });
+  await nameless("babels-own", { kind: "agent" });
+
+  const posted = await machinery.inferTitles(fleet, "cyc_1");
+
+  // ONE `prepare`, over exactly the two, and nothing posted to a model yet: a job input binds
+  // a SETTLED output, so the session belongs to the wake this preparation's settlement causes.
+  expect(fleet.executed).toHaveLength(1);
+  expect(fleet.executed[0]?.operationId).toBe(OPERATIONS.prepare);
+  expect(JSON.parse(String(fleet.executed[0]?.input?.["input"] ?? "null"))).toMatchObject({
+    machineId: MACHINE,
+    selectors: ["codex/a", "codex/b"],
+  });
+
+  const run = (
+    await harness.db.query<{ id: string; kind: string; preparation: string; container_id: string }>(
+      `SELECT id, kind, preparation, container_id FROM runs WHERE kind = ?`,
+      [OPERATIONS.title],
+    )
+  )[0]!;
+  expect(posted).toEqual({ runId: run.id, jobId: fleet.executed[0]?.jobId ?? "" });
+  expect(run.container_id).toBe("ctr_workbench");
+  expect(JSON.parse(run.preparation)).toMatchObject({
+    titles: { selectors: ["codex/a", "codex/b"], reserved: 0.0625 },
+  });
+
+  // AND ONE AT A TIME. A second wake finds the batch still in flight and posts nothing, so a
+  // cycle that fires every few seconds cannot fan the corpus out across the whole fleet.
+  expect(await machinery.inferTitles(fleet, "cyc_2")).toBeNull();
+  expect(fleet.executed).toHaveLength(1);
+});
+
+test("a deployment at its ceiling names nothing", async () => {
+  await route();
+  await nameless("a");
+  // The day's allowance, already committed by reviews. The ledger is the claims table and this
+  // lane reads the same one a draw is admitted against: what the reviews spent is what the
+  // titler has left, and 2.0 of 2.0 leaves nothing.
+  await insert(harness.db, "claims", {
+    id: "clm_spent",
+    record_id: RECORD,
+    role: "reception",
+    lane: "coverage",
+    policy_version: "p2",
+    run_id: "cyc_earlier",
+    fence: 1,
+    reserved_cost: 2,
+    granted_at: stamp(NOW - HOUR),
+    expires_at: stamp(NOW + HOUR),
+  });
+
+  const refused = await machinery.inferTitles(fleet, "cyc_1");
+
+  expect(refused).toMatchObject({ refused: expect.stringContaining("daily ceiling 2.0000") });
+  expect(fleet.executed).toEqual([]);
+  expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+});
+
+test("a cycle that has already committed its own allowance to reviews names nothing", async () => {
+  await route();
+  await nameless("a");
+  // Four reviews at 0.0625 apiece is one cycle's 0.25: the two lanes compete for one
+  // allowance rather than each having a private one.
+  for (const slot of [0, 1, 2, 3]) {
+    await insert(harness.db, "claims", {
+      id: `clm_${String(slot)}`,
+      record_id: RECORD,
+      role: "reception",
+      lane: "coverage",
+      policy_version: "p2",
+      run_id: "cyc_1",
+      fence: 1,
+      reserved_cost: 0.0625,
+      granted_at: stamp(NOW - 60_000),
+      expires_at: stamp(NOW + HOUR),
+    });
+  }
+
+  expect(await machinery.inferTitles(fleet, "cyc_1")).toMatchObject({
+    refused: expect.stringContaining("per-cycle ceiling 0.2500"),
+  });
+  expect(fleet.executed).toEqual([]);
+
+  // The NEXT cycle has its own allowance under a daily ceiling that still has room, so the
+  // lane is deferred rather than closed.
+  expect(await machinery.inferTitles(fleet, "cyc_2")).toMatchObject({
+    jobId: expect.stringContaining("_material"),
+  });
+});
+
+test("a session already answered is never offered again, and a policy with no route names nothing", async () => {
+  await route();
+  await nameless("a");
+  await nameless("b");
+  // `a` was named by an earlier run and `b` was declined by one. Both are answered, and the
+  // second half of "inferred once" is that a decline is an answer too.
+  await insert(harness.db, "session_titles", {
+    selector: "codex/a",
+    title: "Retention on dev-01",
+    reason: "",
+    run_id: "run_title_earlier",
+    inferred_at: stamp(NOW - HOUR),
+  });
+  await insert(harness.db, "session_titles", {
+    selector: "codex/b",
+    title: "",
+    reason: "the log holds one aborted turn",
+    run_id: "run_title_earlier",
+    inferred_at: stamp(NOW - HOUR),
+  });
+
+  expect(await machinery.inferTitles(fleet, "cyc_1")).toBeNull();
+  expect(fleet.executed).toEqual([]);
+
+  // AND A DEPLOYMENT THAT NAMED NO PROFILE NAMES NO SESSION. There is one road to a model and
+  // the operator has not opened it; a lane that found a second one would be Babel's first
+  // credential.
+  await nameless("c");
+  await insert(harness.db, "policies", {
+    version: "p3",
+    seq: 3,
+    actor_id: "operator",
+    reason: "the route is withdrawn",
+    payload: JSON.stringify({ enabled: true, perCycleCost: 0.25, dailyCost: 2, batchSize: 4 }),
+    recorded_at: stamp(NOW - 60_000),
+  });
+  expect(await machinery.inferTitles(fleet, "cyc_2")).toBeNull();
+  expect(fleet.executed).toEqual([]);
+});
+
+/**
+ * The preparation a titling run waited on, settled, with the index it sealed — and the run row
+ * `inferTitles` left behind, as `postPrepared` finds the pair.
+ */
+async function preparedTitles(selectors: readonly string[], closure = "completed"): Promise<void> {
+  await insert(harness.db, "runs", {
+    id: "run_prep_title",
+    kind: OPERATIONS.prepare,
+    machine_id: MACHINE,
+    job_id: "job_title_material",
+    started_at: stamp(NOW - HOUR),
+    finished_at: stamp(NOW - 60_000),
+    closure,
+    records: 0,
+    payload: JSON.stringify({
+      runId: "run_prep_title",
+      kind: "prepare",
+      closure,
+      material: {
+        schema: "babel.material/1",
+        preparationId: "prep-title",
+        preparedAt: stamp(NOW - 60_000),
+        machineId: MACHINE,
+        sessions: selectors.map((selector, index) => ({
+          selector,
+          harness: "codex",
+          sourceId: selector.slice(selector.indexOf("/") + 1),
+          captureDigest: "c".repeat(64),
+          sourceDigest: "d".repeat(64),
+          file: `000${String(index + 1)}-${selector.replace("/", "-")}.jsonl`,
+          records: 7,
+          bytes: 2048,
+        })),
+      },
+    }),
+  });
+  await insert(harness.db, "runs", {
+    id: "run_title_1",
+    kind: OPERATIONS.title,
+    machine_id: MACHINE,
+    container_id: "ctr_workbench",
+    prepare_job_id: "job_title_material",
+    profile: JSON.stringify({ containerId: "ctr_workbench", expectedRevision: 7 }),
+    preparation: JSON.stringify({ titles: { selectors, reserved: 0.0625 } }),
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null, preparing: "job_title_material" }),
+  });
+}
+
+test("a settled titling preparation posts a session asking for a title per sealed file", async () => {
+  await route();
+  await nameless("a");
+  await nameless("b");
+  await preparedTitles(["codex/a", "codex/b"]);
+  const posted: { prompt: string; prepareJobId?: string | undefined }[] = [];
+  code.posting = (request) => {
+    posted.push({ prompt: request.prompt, prepareJobId: request.prepareJobId });
+    return {
+      ok: true,
+      value: {
+        jobId: "job_code_title",
+        machineId: MACHINE,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "started",
+      },
+    };
+  };
+
+  const answers = await machinery.postPrepared(fleet, code, {
+    metered: {},
+    limits: { timeoutMs: 1, memoryBytes: 1, processes: 1, outputBytes: 1 },
+  });
+
+  expect(answers).toEqual([{ runId: "run_title_1", jobId: "job_code_title" }]);
+  const prompt = posted[0]?.prompt ?? "";
+  // The session is bound to the material its own preparation sealed, and the prompt names
+  // each selector against the file the index actually wrote.
+  expect(posted[0]?.prepareJobId).toBe("job_title_material");
+  expect(prompt).toContain("codex/a — `sessions/0001-codex-a.jsonl`");
+  expect(prompt).toContain("codex/b — `sessions/0002-codex-b.jsonl`");
+  // It asks for titles and nothing else: no cookbook recipe, no evidence contract, no record
+  // vocabulary — none of which a title needs and every one of which would invite an answer
+  // this lane refuses to write.
+  expect(prompt).toContain("# Babel session titles");
+  expect(prompt).not.toContain(RECIPES["code-health"]?.body ?? "unreachable");
+  expect(prompt).not.toContain("candidates");
+
+  // The job id lands on the row, which is what the conductor reconciles the session through.
+  expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = 'run_title_1'`)).toEqual([
+    { job_id: "job_code_title" },
+  ]);
+});
+
+test("a titling preparation that failed answers its sessions rather than leaving them for the next cycle", async () => {
+  await route();
+  await nameless("a");
+  await preparedTitles(["codex/a"], "failed");
+
+  const answers = await machinery.postPrepared(fleet, code, {
+    metered: {},
+    limits: { timeoutMs: 1, memoryBytes: 1, processes: 1, outputBytes: 1 },
+  });
+
+  expect(answers).toEqual([
+    { runId: "run_title_1", refused: "the preparation job_title_material closed as failed" },
+  ]);
+  expect(await harness.db.query(`SELECT selector, title, reason FROM session_titles`)).toEqual([
+    {
+      selector: "codex/a",
+      title: "",
+      reason: "the preparation job_title_material closed as failed",
+    },
+  ]);
+  // AND SO THE NEXT CYCLE ASKS FOR NOTHING. Without the row above this lane would post another
+  // preparation over the same session on every wake, for ever.
+  expect(await machinery.inferTitles(fleet, "cyc_2")).toBeNull();
   expect(fleet.executed).toEqual([]);
 });

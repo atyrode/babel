@@ -21,7 +21,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 8 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 9 } as const;
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -288,6 +288,42 @@ const RUN_CALL_SCHEMA: readonly string[] = [
   `CREATE TRIGGER run_calls_kept BEFORE DELETE ON run_calls BEGIN
      SELECT RAISE(ABORT, 'a call is never deleted; it is what a judgement is rechecked against');
    END`,
+];
+
+/**
+ * THE DURABLE STORE OF MODEL-INFERRED SESSION TITLES (#342) — spelled once and created twice,
+ * for the reason `budgets`, `drains`, `next_actions` and `run_calls` are.
+ *
+ * An inferred title is the ONE piece of session metadata Babel cannot recompute. Every other
+ * column of `sessions` is derivable from the live log — a recorded title is read out of the
+ * harness's own files on every scan and a derived one is recomputed from them for free — so
+ * losing one of those is a rescan. Losing a title a model wrote is a second bill.
+ *
+ * THE ROW EXISTS WHETHER OR NOT A TITLE CAME BACK, and that is what makes the work happen
+ * ONCE. `title` is the model's text; an empty `title` with a `reason` is the session the run
+ * declined, or whose run never reached a model at all. Either way the selector is answered and
+ * no later cycle offers it again — an automatic lane whose failures were not recorded would
+ * re-offer the same batch on every wake for ever, which is the unbounded spend this whole
+ * feature is fenced against. Retrying is an operator act: delete the row.
+ *
+ * IT IS NOT A CACHE OF TITLES IN GENERAL. Only the value with no other source is kept, because
+ * a copy of a recorded title here would be a second authority that could disagree with the
+ * session's own log. `sessions.title` carries the value a reader sees and
+ * `sessions.title_provenance` says `inferred` while it is this one; a later scan that finds a
+ * real title overwrites both, and this row stays as the account of what was paid for.
+ *
+ * `run_id` is the attribution: which run — and through it which profile, model and cost —
+ * produced the text. It is a column rather than a join through the selector because a title is
+ * re-judged by knowing what wrote it, and `runs` is where that is already written out.
+ */
+const SESSION_TITLE_SCHEMA: readonly string[] = [
+  `CREATE TABLE session_titles(
+     selector TEXT PRIMARY KEY,
+     title TEXT NOT NULL,
+     reason TEXT NOT NULL DEFAULT '',
+     run_id TEXT NOT NULL,
+     inferred_at TEXT NOT NULL
+   ) STRICT`,
 ];
 
 /** Statements of the first migration, in order; each is one `run`. */
@@ -738,6 +774,9 @@ export const SCHEMA_V1: readonly string[] = [
   // ---------------------------------------------------------------- a run's own traffic (#349)
   ...RUN_CALL_SCHEMA,
 
+  // ---------------------------------------------------------------- an inferred title (#342)
+  ...SESSION_TITLE_SCHEMA,
+
   // ---------------------------------------------------------------- a drain (#258)
   // No index, and now for one reason rather than two: a deployment accumulates drains at the
   // rate an operator decides to spend a window, and the running ones are read by `state` over
@@ -865,6 +904,9 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // #349: one row per call of a run, its locator, and no byte of its traffic — derived from the
   // same list `SCHEMA_V1` spreads, for the reason above.
   ...RUN_CALL_SCHEMA.map(objectAddition),
+  // #342: the titles a model wrote, which nothing else in this store could recover. Derived
+  // from the same list, for the reason above.
+  ...SESSION_TITLE_SCHEMA.map(objectAddition),
 ];
 
 /**

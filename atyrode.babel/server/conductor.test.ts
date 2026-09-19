@@ -4351,3 +4351,392 @@ test("two runs that sealed no transcript agreed about nothing, and the verdict s
   expect(diff.verdict).toBe("unanswered");
   expect(diff.differed).toEqual([]);
 });
+
+// ---------------------------------------------- a run that names untitled sessions (#342)
+
+/** The two untitled sessions a titling run is offered, and the material that sealed them. */
+const NAMED_MATERIAL: MaterialIndex = {
+  schema: MATERIAL_SCHEMA,
+  preparationId: "prep-title",
+  preparedAt: "2026-09-12T09:00:00Z",
+  machineId: MACHINE,
+  sessions: [
+    {
+      selector: "codex/untitled-a",
+      harness: "codex",
+      sourceId: "untitled-a",
+      captureDigest: "c".repeat(64),
+      sourceDigest: "d".repeat(64),
+      file: "0001-codex-untitled-a.jsonl",
+      records: 9,
+      bytes: 2048,
+    },
+    {
+      selector: "codex/untitled-b",
+      harness: "codex",
+      sourceId: "untitled-b",
+      captureDigest: "e".repeat(64),
+      sourceDigest: "f".repeat(64),
+      file: "0002-codex-untitled-b.jsonl",
+      records: 4,
+      bytes: 1024,
+    },
+  ],
+};
+
+/**
+ * A TITLING CODE SESSION IN FLIGHT: the two untitled catalog rows, the run row `inferTitles`
+ * wrote with the selectors it offered, and the settled `prepare` whose receipt carries the
+ * material those selectors were sealed into.
+ */
+async function titlingInFlight(
+  db: PluginDatabase,
+  offered: readonly string[] = ["codex/untitled-a", "codex/untitled-b"],
+): Promise<{ runId: string; jobId: string }> {
+  const runId = "run_title_1";
+  const jobId = "job_code_title";
+  await db.batch([
+    ...NAMED_MATERIAL.sessions.map((entry) => ({
+      sql:
+        `INSERT INTO sessions(selector, host, harness, source_id, title, title_provenance, seen_at) ` +
+        `VALUES (?, ?, 'codex', ?, NULL, NULL, '2026-09-01T00:00:00Z')`,
+      params: [entry.selector, MACHINE, entry.sourceId],
+    })),
+    {
+      sql: `INSERT INTO runs(id, kind, machine_id, job_id, container_id, prepare_job_id, profile,
+                             preparation, started_at, records, payload)
+            VALUES (?, ?, ?, ?, 'ctr_workbench', 'job_prep_title', ?, ?, ?, 0, '{}')`,
+      params: [
+        runId,
+        OPERATIONS.title,
+        MACHINE,
+        jobId,
+        JSON.stringify({ containerId: "ctr_workbench", expectedRevision: 7 }),
+        JSON.stringify({ titles: { selectors: offered, reserved: 0.0625 } }),
+        new Date(clock).toISOString(),
+      ],
+    },
+    {
+      sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, finished_at, closure,
+                             records, payload)
+            VALUES ('run_prep_title', ?, ?, 'job_prep_title', ?, ?, 'completed', 0, ?)`,
+      params: [
+        OPERATIONS.prepare,
+        MACHINE,
+        new Date(clock).toISOString(),
+        new Date(clock).toISOString(),
+        JSON.stringify({
+          runId: "run_prep_title",
+          kind: "prepare",
+          closure: "completed",
+          material: NAMED_MATERIAL,
+        }),
+      ],
+    },
+  ]);
+  return { runId, jobId };
+}
+
+/** One titling answer, in the fenced block the prompt asks the model to end with. */
+function namedAnswer(titles: readonly Record<string, string>[]): string {
+  return `Done.\n\n\`\`\`json\n${JSON.stringify({ titles })}\n\`\`\`\n`;
+}
+
+test("a titling session names the sessions it read, marks them inferred, and is never asked twice", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const { runId, jobId } = await titlingInFlight(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      jobId,
+      finalMessage: namedAnswer([
+        { selector: "codex/untitled-a", title: "Restic retention on dev-01" },
+        { selector: "codex/untitled-b", error: "the log holds one aborted turn and no request" },
+      ]),
+    }),
+  }));
+
+  await wakeOn(store, draws, code).tick();
+
+  // THE TITLE LANDS ON THE CATALOG ROW WITH ITS PROVENANCE, which is what a listing reads.
+  expect(
+    await db.query(
+      `SELECT selector, title, title_provenance FROM sessions
+        WHERE selector LIKE 'codex/%' ORDER BY selector`,
+    ),
+  ).toEqual([
+    {
+      selector: "codex/untitled-a",
+      title: "Restic retention on dev-01",
+      title_provenance: "inferred",
+    },
+    // The session the model declined keeps its empty column: a guess it refused to make is
+    // not a title, and inventing one is worse than the selector it would replace.
+    { selector: "codex/untitled-b", title: null, title_provenance: null },
+  ]);
+
+  // BOTH ARE ANSWERED IN THE DURABLE LEDGER, and the declined one carries the model's reason —
+  // that row is the whole of why it is never offered again.
+  expect(
+    await db.query(`SELECT selector, title, reason, run_id FROM session_titles ORDER BY selector`),
+  ).toEqual([
+    {
+      selector: "codex/untitled-a",
+      title: "Restic retention on dev-01",
+      reason: "",
+      run_id: runId,
+    },
+    {
+      selector: "codex/untitled-b",
+      title: "",
+      reason: "the log holds one aborted turn and no request",
+      run_id: runId,
+    },
+  ]);
+
+  const run = (
+    await db.query(`SELECT closure, cost_usd, payload FROM runs WHERE id = ?`, [runId])
+  )[0]!;
+  expect(run["closure"]).toBe("completed");
+  expect(run["cost_usd"]).toBe(0.31);
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(receipt["kind"]).toBe("title");
+  expect(receipt["counts"]).toEqual({ offered: 2, named: 1, unnamed: 1 });
+
+  // A SECOND WAKE OVER THE SAME RUN CHANGES NOTHING. The run is settled, so nothing reads the
+  // session again; and were the settlement itself replayed, the ledger's first answer stands.
+  clock += 60_000;
+  await wakeOn(store, draws, code).tick();
+  expect(await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM session_titles`)).toEqual([
+    { n: 2n },
+  ]);
+  clock -= 60_000;
+});
+
+test("a session the run never read is answered with that, not left for the next cycle", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  // Three offered, two sealed: the third's log went away between the catalog and the machine.
+  const { runId } = await titlingInFlight(db, [
+    "codex/untitled-a",
+    "codex/untitled-b",
+    "codex/vanished",
+  ]);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      jobId: "job_code_title",
+      // The model answers one of the two it was shown and says nothing about the other.
+      finalMessage: namedAnswer([{ selector: "codex/untitled-a", title: "Archive retention" }]),
+    }),
+  }));
+
+  await wakeOn(store, draws, code).tick();
+
+  expect(
+    await db.query(`SELECT selector, title, reason FROM session_titles ORDER BY selector`),
+  ).toEqual([
+    { selector: "codex/untitled-a", title: "Archive retention", reason: "" },
+    {
+      selector: "codex/untitled-b",
+      title: "",
+      reason: "the run's answer said nothing about this session",
+    },
+    {
+      selector: "codex/vanished",
+      title: "",
+      reason: "the preparation job_prep_title sealed no log for this session",
+    },
+  ]);
+  expect(
+    (await db.query<{ payload: string }>(`SELECT payload FROM runs WHERE id = ?`, [runId]))[0]
+      ?.payload,
+  ).toContain(`"offered":3`);
+});
+
+test("an answer naming a session the run was never served is refused, and every offer still answered", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const { runId } = await titlingInFlight(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      jobId: "job_code_title",
+      finalMessage: namedAnswer([{ selector: "omp/s1", title: "the operator's own work" }]),
+    }),
+  }));
+
+  await wakeOn(store, draws, code).tick();
+
+  // The catalog row the answer reached for is untouched: a title may only be written onto a
+  // session the run was actually served.
+  expect(await db.query(`SELECT title FROM sessions WHERE selector = 'omp/s1'`)).toEqual([
+    { title: "first title" },
+  ]);
+  const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBe("failed");
+  expect(String(run["payload"])).toContain("unknown-reference");
+  // A REFUSED SUBMISSION IS STILL SPEND AND STILL AN ANSWER: both offered sessions carry the
+  // refusal, so the next cycle pays to ask the same question again of nobody.
+  expect(
+    await db.query<{ n: bigint }>(
+      `SELECT COUNT(*) AS n FROM session_titles WHERE title = '' AND reason LIKE 'unknown-reference%'`,
+    ),
+  ).toEqual([{ n: 2n }]);
+});
+
+test("a title the harness itself records displaces an inferred one, and a scan that reads none leaves it", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  draws.review = ROUTE;
+  await titlingInFlight(db);
+  await wakeOn(
+    store,
+    draws,
+    codeAnswering(() => ({
+      ok: true,
+      value: sessionRead({
+        state: "exited",
+        jobId: "job_code_title",
+        finalMessage: namedAnswer([
+          { selector: "codex/untitled-a", title: "Restic retention on dev-01" },
+          { selector: "codex/untitled-b", title: "Reading the drain postmortem" },
+        ]),
+      }),
+    })),
+  ).tick();
+
+  // A LATER SCAN CATALOGUES BOTH AGAIN. One log now carries a title its harness wrote; the
+  // other still carries none, and the adapter reports that as NULL rather than as a value.
+  clock += 60_000;
+  const fleet = new Fleet();
+  fleet.beat("scan-titles", MACHINE, {
+    [JOB_OUTPUT_FILES.sessions]: [
+      {
+        selector: "codex/untitled-a",
+        host: MACHINE,
+        harness: "codex",
+        source_id: "untitled-a",
+        title: "Retention, as the operator wrote it",
+        title_provenance: "recorded",
+        seen_at: new Date(clock).toISOString(),
+      },
+      {
+        selector: "codex/untitled-b",
+        host: MACHINE,
+        harness: "codex",
+        source_id: "untitled-b",
+        title: null,
+        title_provenance: null,
+        seen_at: new Date(clock).toISOString(),
+      },
+    ],
+    [JOB_OUTPUT_FILES.receipt]: {
+      runId: "run_scan_titles",
+      kind: "scan",
+      machineId: MACHINE,
+      startedAt: new Date(clock - 60_000).toISOString(),
+      finishedAt: new Date(clock).toISOString(),
+      closure: "completed",
+      counts: { sessions: 2 },
+    },
+  });
+  await conductor({
+    engine: NO_CODE,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  expect(
+    await db.query(
+      `SELECT selector, title, title_provenance FROM sessions
+        WHERE selector LIKE 'codex/%' ORDER BY selector`,
+    ),
+  ).toEqual([
+    // THE READ TITLE WINS. The session's own word about itself outranks a guess that cost
+    // money, and the provenance follows the value rather than staying behind on it.
+    {
+      selector: "codex/untitled-a",
+      title: "Retention, as the operator wrote it",
+      title_provenance: "recorded",
+    },
+    // AND A SCAN THAT READ NO TITLE ERASES NOTHING. "this reader found none" is not "there is
+    // none": wiping it would lose what was paid for and queue the session to be paid for again.
+    {
+      selector: "codex/untitled-b",
+      title: "Reading the drain postmortem",
+      title_provenance: "inferred",
+    },
+  ]);
+  clock -= 60_000;
+});
+
+test("a read title that landed while the run was in flight is not overwritten by its answer", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  await titlingInFlight(db);
+  // Between the press and the answer a scan read a title out of the log itself. The session's
+  // own word outranks the guess the run is about to come back with — and the run is already
+  // paid for, so the answer is recorded rather than thrown away.
+  await db.run(`UPDATE sessions SET title = ?, title_provenance = 'recorded' WHERE selector = ?`, [
+    "What the harness called it",
+    "codex/untitled-a",
+  ]);
+
+  await wakeOn(
+    store,
+    draws,
+    codeAnswering(() => ({
+      ok: true,
+      value: sessionRead({
+        state: "exited",
+        jobId: "job_code_title",
+        finalMessage: namedAnswer([
+          { selector: "codex/untitled-a", title: "What the model called it" },
+          { selector: "codex/untitled-b", title: "Reading the drain postmortem" },
+        ]),
+      }),
+    })),
+  ).tick();
+
+  expect(
+    await db.query(
+      `SELECT selector, title, title_provenance FROM sessions
+        WHERE selector LIKE 'codex/%' ORDER BY selector`,
+    ),
+  ).toEqual([
+    {
+      selector: "codex/untitled-a",
+      title: "What the harness called it",
+      title_provenance: "recorded",
+    },
+    {
+      selector: "codex/untitled-b",
+      title: "Reading the drain postmortem",
+      title_provenance: "inferred",
+    },
+  ]);
+  // What was paid for stays readable even where it is not what the listing shows.
+  expect(
+    await db.query(`SELECT title FROM session_titles WHERE selector = 'codex/untitled-a'`),
+  ).toEqual([{ title: "What the model called it" }]);
+});

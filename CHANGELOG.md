@@ -36,6 +36,33 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Every document opens with the caveat the audit's §0 states: these distributions are one
   deployment's imported Go-era output, at one date, under one recipe and model set, and they are
   a reason to look rather than a target. Re-fit against what the plugin's own intake produces.
+- **A session with no title in its log gets one, once, and it is marked as inferred.** The catalog
+  has carried `title_provenance` to tell a read title from an inferred one since it shipped, with
+  nothing to put in it, so a session whose log carried no title had none permanently and a listing
+  of a few hundred read as a column of opaque selectors. It is inferred **as a Code session, like
+  every other model call Babel makes** — there is no second path, because Babel binds no model
+  service and holds no credential, and a titling lane with a route of its own would be Babel's
+  first credential and a second egress with no disclosure surface. The retired product reached the
+  same conclusion in its own words.
+
+  **It is bounded the way any other spend is**, not by a background loop that quietly costs money:
+  a disabled policy names nothing, a policy with no Code profile infers nothing rather than
+  inferring for free, the daily and per-cycle ceilings both bite, one titling run is in flight
+  deployment-wide, and a run offers at most twenty sessions — a batch the operator cannot finish
+  reading is not a disclosure.
+
+  **A read title always wins**, and two smaller rules make that hold. A scan that reads no title
+  no longer erases one: the sessions upsert keeps the existing value, where before every scan
+  wiped the inference and re-queued the session to be paid for again. And an answer arriving
+  after a scan found a real title does not overwrite it. The ledger keeps its row either way, so
+  what was paid for stays readable even when it is not what the listing shows — and a session is
+  offered once, whatever happened, so a failed preparation cannot post another over the same
+  batch on every wake for ever.
+
+  One asymmetry is flagged rather than hidden: the review lane's admission reads the claims ledger
+  only, so it does not see titling's dollars. With one titling run at a time the day's overshoot
+  is bounded by one run's actual cost, and widening the claims table would have invalidated every
+  stored policy.
 - **Jev's key never touches the plugin.** The part declares one authority — invoking the
   judgement service the operator installed — and names that service by id; the host resolves the
   credential by reference and writes it into the outbound request. There is no field in the

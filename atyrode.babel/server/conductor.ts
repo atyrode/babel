@@ -49,6 +49,13 @@ import {
   type ReviewPreparation,
   type ReviewProjection,
 } from "./engine/review.ts";
+import {
+  declinedTitles,
+  offeredSelectors,
+  readTitleAnswer,
+  titleStatements,
+  type InferredTitle,
+} from "./engine/titles.ts";
 
 /*
   THE CONDUCTOR — Babel's loop, on the hub (plan §4: `babel conductor run` becomes a server-half
@@ -661,6 +668,22 @@ interface TableIngest {
    */
   readonly conflict: "ignore" | "upsert";
   readonly key?: string;
+  /**
+   * COLUMNS AN OBSERVATION THAT SAW NOTHING MAY NOT ERASE, on an `upsert`.
+   *
+   * It is the same rule as "never mention the column", reached the other way. A scan that
+   * observed no snapshot leaves `snapshot_id` out of its row entirely and the archive's answer
+   * survives; a scan that observed no TITLE cannot do that, because the row it writes is the
+   * whole catalog shape and a title is one of its columns — so NULL arrives meaning "this
+   * reader found none", and the upsert reads it as "there is none".
+   *
+   * That was harmless while every title had a free source. It is not now: a model-inferred
+   * title (#342) is the one value here a rescan cannot recover, and wiping it would both lose
+   * what was paid for and put the session back in the queue to be paid for again on the next
+   * wake. `COALESCE(excluded.x, x)` is the whole fix — a scan that READ a title still wins,
+   * because its value is not null.
+   */
+  readonly observed?: readonly string[];
 }
 
 const SESSION_COLUMNS = [
@@ -714,6 +737,7 @@ const INGEST: Record<string, TableIngest> = {
     columns: SESSION_COLUMNS,
     conflict: "upsert",
     key: "selector",
+    observed: ["title", "title_provenance"],
   },
   [JOB_OUTPUT_FILES.records]: {
     table: "records",
@@ -999,9 +1023,14 @@ function rowStatement(
     return { sql: `INSERT OR IGNORE INTO ${ingest.table}(${names}) ${values}`, params: bound };
   }
   const key = ingest.key ?? "id";
+  const observed = new Set(ingest.observed ?? []);
   const updates = columns
     .filter((column) => column !== key)
-    .map((column) => `${column} = excluded.${column}`)
+    .map((column) =>
+      observed.has(column)
+        ? `${column} = COALESCE(excluded.${column}, ${column})`
+        : `${column} = excluded.${column}`,
+    )
     .join(", ");
   return {
     sql:
@@ -2336,6 +2365,156 @@ export function conductor(deps: ConductorDeps): Conductor {
   }
 
   /**
+   * ONE FINISHED TITLING SESSION, TURNED INTO ONE ANSWER PER SESSION IT WAS OFFERED (#342).
+   *
+   * EVERY OFFERED SELECTOR IS ANSWERED, whatever happened. A title where the model wrote one
+   * and the reason where it did not — the session it declined, the log its preparation never
+   * sealed, the one it simply left out, and, when the whole submission was refused, all of
+   * them at once. A selector with no row is one the next cycle offers again, so an unanswered
+   * session is not a gap in a report: it is an unbounded loop of preparations and prompts
+   * over the same batch.
+   *
+   * A REFUSED SUBMISSION IS SPEND here exactly as it is for an exploration: the receipt
+   * carries the cost and the refusal's own code, and the tally counts it. What is different
+   * is that the refusal still writes rows — they are the record of what was paid for and what
+   * it bought, which for a refused batch is nothing but the knowledge not to ask again.
+   *
+   * NO CLAIM SETTLES HERE. A claim is one reviewer's grant on one record in one role and a
+   * titling batch is none of those; what bounded this run was `inferTitles`, against the same
+   * two ceilings and the same ledger, before the preparation was ever posted.
+   */
+  async function settleTitleSession(
+    at: number,
+    run: PendingRun,
+    read: SessionRead,
+    closure: Receipt["closure"],
+    offered: readonly string[],
+    ingested: IngestedRun[],
+    notes: string[],
+    refusals: Counter,
+  ): Promise<void> {
+    const session = read.session;
+    const usage = session?.usage ?? null;
+    const inference: InferenceUsage | null =
+      usage === null
+        ? null
+        : {
+            calls: 1,
+            inputTokens: usage.input,
+            outputTokens: usage.output,
+            cachedInputTokens: usage.cacheRead,
+            costMicros: Math.round((usage.cost ?? 0) * 1_000_000),
+          };
+    const costUsd = usage?.cost ?? 0;
+
+    // The sessions the preparation actually sealed. An offered selector missing from the index
+    // is a log that went away between the catalog and the machine: the model was never shown
+    // it, so the honest answer for it is that and not "the model said nothing".
+    const material = await materialOf(run.prepare_job_id);
+    const sealed = new Set((material?.sessions ?? []).map((entry) => entry.selector));
+    const unsealed = offered.filter((selector) => !sealed.has(selector));
+    const shown = offered.filter((selector) => sealed.has(selector));
+
+    let reason = "";
+    let answers: readonly InferredTitle[] = [];
+    if (session === null) {
+      reason =
+        `${REFUSALS.empty}: the session closed as ${read.job.state} and sealed no transcript, ` +
+        `so it submitted no result`;
+    } else if (session.exitCode !== 0) {
+      reason = `${REFUSALS.schema}: the session exited ${String(session.exitCode)} and submitted no result`;
+    } else {
+      const answer = readTitleAnswer(session.finalMessage, shown);
+      if ("refused" in answer) reason = answer.refused;
+      else answers = answer.titles;
+    }
+    const refusedCode = reason === "" ? null : refusalCode(reason);
+    if (refusedCode !== null) count(refusals, refusedCode);
+    const written = [
+      ...(reason === "" ? answers : declinedTitles(shown, reason)),
+      ...declinedTitles(
+        unsealed,
+        `the preparation ${run.prepare_job_id ?? ""} sealed no log for this session`,
+      ),
+    ];
+    const named = written.filter((answer) => answer.title !== "").length;
+    const counts: Record<string, number> = {
+      offered: offered.length,
+      named,
+      unnamed: written.length - named,
+    };
+
+    const receipt: Receipt = {
+      runId: run.id,
+      kind: "title",
+      machineId: run.machine_id,
+      ...(namedAccount(run.profile) === undefined ? {} : { account: namedAccount(run.profile) }),
+      ...(session === null ? {} : { model: session.model }),
+      ...(preparationOf(run.preparation) === undefined
+        ? {}
+        : { preparation: preparationOf(run.preparation) }),
+      startedAt: run.started_at,
+      finishedAt: new Date(at).toISOString(),
+      closure: reason === "" ? "completed" : session === null ? closure : "failed",
+      ...(reason === "" ? {} : { reason }),
+      costUsd,
+      tokens: usage === null ? 0 : usage.input + usage.output,
+      ...(session === null ? {} : { models: [session.model] }),
+      counts,
+    };
+
+    // THE ANSWERS FIRST AND THE RUN ROW LAST, which is the same crash contract the exploration
+    // path is arranged by: a settlement that died between the two leaves the run unsettled,
+    // the reaper reads the same session again, and every statement above is a no-op on the
+    // rows that already landed.
+    const produced = titleStatements({
+      runId: run.id,
+      at: new Date(at).toISOString(),
+      titles: written,
+    });
+    for (let from = 0; from < produced.length; from += STATEMENTS_PER_BATCH) {
+      await store.db.batch(produced.slice(from, from + STATEMENTS_PER_BATCH));
+    }
+    await store.db.batch([
+      runStatement(
+        run.id,
+        {
+          runId: run.id,
+          jobId: run.job_id,
+          machineId: run.machine_id,
+          operationId: run.kind,
+          outputs: [],
+          closure: receipt.closure,
+          inference,
+        },
+        receipt,
+        counts,
+      ),
+      callStatement(
+        sessionCall({
+          runId: run.id,
+          at,
+          machineId: run.machine_id,
+          session,
+          closure: receipt.closure,
+          reason,
+        }),
+      ),
+    ]);
+    await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+    store.touch();
+    if (reason !== "") notes.push(`run ${run.id}: ${reason}`);
+    ingested.push({
+      runId: run.id,
+      jobId: run.job_id,
+      closure: receipt.closure,
+      costUsd,
+      rows: { [JOB_OUTPUT_FILES.sessions]: named },
+      skipped: 0,
+    });
+  }
+
+  /**
    * ONE FINISHED CODE SESSION, TURNED INTO A RECEIPT AND A SETTLED CLAIM (#279).
    *
    * The transcript is Code's; what Babel owns is the CONTRACT the prompt stated, and this is
@@ -2373,6 +2552,11 @@ export function conductor(deps: ConductorDeps): Conductor {
         notes,
         refusals,
       );
+      return;
+    }
+    const offered = offeredSelectors(preparationOf(run.preparation));
+    if (offered.length > 0) {
+      await settleTitleSession(at, run, read, closure, offered, ingested, notes, refusals);
       return;
     }
     /*

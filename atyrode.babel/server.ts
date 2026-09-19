@@ -323,6 +323,17 @@ async function cycle(
       console.warn(`${BABEL_PLUGIN_ID}: run ${posted.runId}: ${posted.refused}`);
     }
   }
+  /*
+    …AND ONE TITLING RUN, IF THIS CYCLE MAY AFFORD ONE (#342). A session whose own log records
+    no title never gets one from a scan, so the only way it gets one at all is a model — which
+    in Babel is a Code session like every other model call. It is posted here, after the
+    conductor has drawn and dispatched, so the ceilings it is admitted against already include
+    everything this cycle committed to reviewing.
+  */
+  const named = await machinery.inferTitles(jobs, report.cycleRunId);
+  if (named !== null && "refused" in named) {
+    console.warn(`${BABEL_PLUGIN_ID}: no session was named this cycle: ${named.refused}`);
+  }
   for (const report of await drainTick(draining(jobs, actions))) {
     for (const note of report.notes) {
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
