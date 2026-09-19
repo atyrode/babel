@@ -11,9 +11,9 @@
 
   Two jobs and no third:
 
-    bun atyrode.babel/tools/seed-recipes.ts import <dir>   reads a cookbook-shaped directory and writes
+    bun babel/tools/seed-recipes.ts import <dir>   reads a cookbook-shaped directory and writes
                                              `store/recipes.seed.json`
-    bun atyrode.babel/tools/seed-recipes.ts policy         prints the seed's `review.recipes` block, which is
+    bun babel/tools/seed-recipes.ts policy         prints the seed's `review.recipes` block, which is
                                              what `setPolicy` takes
 
   A cookbook-shaped directory is `versions.json`, `preamble.md` and `recipes/*.md`, each recipe a

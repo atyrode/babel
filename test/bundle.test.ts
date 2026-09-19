@@ -10,7 +10,7 @@ import {
   JOB_OUTPUT_FILES,
   OPERATIONS,
   WATCH_PLUGIN_ID,
-} from "../atyrode.babel/contract.ts";
+} from "../babel/contract.ts";
 
 /*
   ONE BUNDLE PER MANIFEST, cut by `pack` — the artifact the release ships and

@@ -1,13 +1,13 @@
 ---
-kind: finding
+kind: hypothesis
 version: 1
 ---
 
-# Finding
+# Hypothesis
 
-A finding consolidates observations into something that can be argued with. There are 207 of
-them against 3,039 observations, so this is the narrowest and most consequential of the four
-documents: a finding is what a proposal addresses and what the front page is mostly made of.
+A hypothesis is a claim a run put forward and nobody has ruled on yet, and it is the largest
+family Babel holds. It is asked the whole panel, because what a hypothesis needs is exactly the
+judgement a tally gives: many small independent opinions rather than one confident sort.
 
 Every number in the thresholds block was measured on one deployment's imported Go-era corpus, at
 one date, under one recipe and model set. It is calibration, not behaviour: re-fit it against what
@@ -17,41 +17,39 @@ before quoting any share here as if it described Babel in general.
 ## Thresholds
 
 Each row is one side of one voter: the question it thresholds, the direction it casts, the line at
-which the answer becomes an opinion, and the distribution over findings that justified that
-line. A row with no distribution is refused by `atyrode.babel.jev/bank/parse.ts` rather than
+which the answer becomes an opinion, and the distribution over hypotheses that justified that
+line. A row with no distribution is refused by `babel/jev/bank/parse.ts` rather than
 seeded. A side firing on under 2% or over 95% of its kind answers the same way for everything and
 is not admitted; it stays in the block, because deleting it would lose the measurement that
 retired it.
 
-| voter              | question           | casts | fires when    | observed                                |
-| ------------------ | ------------------ | ----- | ------------- | --------------------------------------- |
-| worth-of-attention | worth_first        | up    | `>= 2.7`      | `n=207 fires=27.1% mean=2.344 sd=0.450` |
-| worth-of-attention | worth_first        | down  | `<= 1.3`      | `n=207 fires=1% mean=2.344 sd=0.450`    |
-| concreteness       | specific           | up    | `>= 0.7`      | `n=207 fires=24.2% mean=0.454 sd=0.257` |
-| concreteness       | specific           | down  | `<= 0.3`      | `n=207 fires=34.3% mean=0.454 sd=0.257` |
-| contradicts-intent | contradicts_intent | up    | `>= 0.7`      | `n=207 fires=41.5% mean=0.597 sd=0.241` |
-| actionability      | actionable         | up    | `>= 0.7`      | `n=207 fires=48.8% mean=0.635 sd=0.251` |
-| actionability      | actionable         | down  | `<= 0.3`      | `n=207 fires=16.4% mean=0.635 sd=0.251` |
-| evidence           | evidence_strength  | up    | `>= 1.5`      | `n=207 fires=31.4% mean=1.221 sd=0.394` |
-| evidence           | evidence_strength  | down  | `<= 0.4`      | `n=207 fires=2.9% mean=1.221 sd=0.394`  |
-| recurrence         | recurring          | up    | `>= 0.7`      | `n=207 fires=44% mean=0.519 sd=0.384`   |
-| friction-lens      | friction_kind      | up    | `is not none` | `n=207 fires=65.7%`                     |
-| freshness          | temporal           | up    | `is current`  | `n=207 fires=43.5%`                     |
-| freshness          | temporal           | down  | `is changed`  | `n=207 fires=47.3%`                     |
-| rigour             | speculative        | down  | `>= 0.75`     | `n=207 fires=0.5% mean=0.496 sd=0.110`  |
-| scope              | self_referential   | down  | `>= 0.7`      | `n=207 fires=2.9% mean=0.280 sd=0.175`  |
-| editorial          | fused_to_fix       | down  | `>= 0.75`     | `n=207 fires=25.6% mean=0.588 sd=0.179` |
-| novelty            | restates_known     | down  | `>= 0.6`      | `n=207 fires=0% mean=0.102 sd=0.054`    |
-| trustworthiness    | needs_arithmetic   | down  | `>= 0.7`      | `n=207 fires=3.9% mean=0.365 sd=0.162`  |
+| voter              | question           | casts | fires when    | observed                                 |
+| ------------------ | ------------------ | ----- | ------------- | ---------------------------------------- |
+| worth-of-attention | worth_first        | up    | `>= 2.7`      | `n=2453 fires=9.3% mean=2.032 sd=0.430`  |
+| worth-of-attention | worth_first        | down  | `<= 1.3`      | `n=2453 fires=4.7% mean=2.032 sd=0.430`  |
+| concreteness       | specific           | up    | `>= 0.7`      | `n=2453 fires=24% mean=0.447 sd=0.270`   |
+| concreteness       | specific           | down  | `<= 0.3`      | `n=2453 fires=37.9% mean=0.447 sd=0.270` |
+| contradicts-intent | contradicts_intent | up    | `>= 0.7`      | `n=2453 fires=18.3% mean=0.442 sd=0.227` |
+| actionability      | actionable         | up    | `>= 0.7`      | `n=2453 fires=22% mean=0.454 sd=0.256`   |
+| actionability      | actionable         | down  | `<= 0.3`      | `n=2453 fires=37.3% mean=0.454 sd=0.256` |
+| evidence           | evidence_strength  | up    | `>= 1.5`      | `n=2453 fires=1% mean=0.444 sd=0.400`    |
+| evidence           | evidence_strength  | down  | `<= 0.4`      | `n=2453 fires=55.9% mean=0.444 sd=0.400` |
+| recurrence         | recurring          | up    | `>= 0.7`      | `n=2453 fires=46% mean=0.565 sd=0.326`   |
+| friction-lens      | friction_kind      | up    | `is not none` | `n=2453 fires=48.5%`                     |
+| freshness          | temporal           | up    | `is current`  | `n=2453 fires=69.3%`                     |
+| freshness          | temporal           | down  | `is changed`  | `n=2453 fires=25.4%`                     |
+| rigour             | speculative        | down  | `>= 0.75`     | `n=2453 fires=46% mean=0.708 sd=0.112`   |
+| scope              | self_referential   | down  | `>= 0.7`      | `n=2453 fires=11.9% mean=0.388 sd=0.219` |
+| editorial          | fused_to_fix       | down  | `>= 0.75`     | `n=2453 fires=12.6% mean=0.497 sd=0.189` |
+| novelty            | restates_known     | down  | `>= 0.6`      | `n=2453 fires=7.4% mean=0.208 sd=0.186`  |
+| trustworthiness    | needs_arithmetic   | down  | `>= 0.7`      | `n=2453 fires=10.1% mean=0.304 sd=0.239` |
 
-Three down sides are not admitted here — **worth-of-attention** at 1.0%, **rigour** at 0.5%
-and **novelty** at 0.0% — and they fail for one reason: a claim that reached consolidation has
-already passed a filter, so the bottom of each distribution is empty. **editorial** is the
-opposite and stays: a quarter of findings arrive welded to their remedy.
-
-The panel deliberately does not ask how many distinct runs a finding rests on, although 84.5% of
-these rest on exactly one. The `record` door already answers that from the store, and a question
-whose answer Babel holds is a question to stop paying a model for.
+Two rows are worth reading twice. **evidence**'s up side fires on 1.0% of hypotheses and
+is therefore not admitted — a hypothesis is a claim _awaiting_ evidence, so asking whether its
+material establishes it is asking a question the kind cannot answer; its down side, at 55.9%,
+stands, because a hypothesis showing nothing at all is a real objection. And **rigour** objects to
+46% of them, which is not a defect in the question: nearly half of these claims do assert a
+mechanism their material does not demonstrate.
 
 ## Routing
 
@@ -196,28 +194,18 @@ operator's taste — the four ruled provenances need a word from him, and this c
 operator rulings across 6,038 records, so it has none to give yet. Adding one is a version bump,
 which is a proposal, which goes through the pipeline that already exists.
 
-### fnd_6acd14ca9130dd6a608fc5ed55a807a0
+### hyp_b7f325486d75ca1599c876c2b7adce8f
 
 provenance: standing
-tally: +7
+tally: +5
 
-> The atyrode CLI's contract check asserts the argument strings the controller emits, so it moves
-> with each topology defect instead of constraining it
+> In the -tmp SSH session the agent maintains outcome integrity under a hard verification ceiling:
+> it cannot test the login because it does not hold the private key, and instead of claiming success
+> it names the exact limit, retracts its own earlier fix as a no-op, substitutes the strongest
+> available proxy check (ssh-keygen fingerprint parse), and warns the fix is not rebuild-durable.
 
-One sentence, seven up sides, nothing against. It is the exemplar for length not being the thing:
-the claim names the mechanism and the consequence in a line, and concreteness, contradicts-intent
-and actionability all fire on it. The study measured the opposite bias in the assessor — longer
-records score higher — so an exemplar this short is worth carrying on purpose.
-
-### fnd_6c3cf87167c794e50fc4e601690b7b16
-
-provenance: standing
-tally: +6
-
-> Credential handling in this project is designed per occasion, and the containment achieved tracks
-> the design effort rather than the credential's power
-
-Six up with concreteness objecting, because the finding describes a tendency rather than one
-identifiable thing. That is the honest reading of a consolidation: a finding is allowed to
-generalise, and the panel is allowed to note that it did. A bank that hid the objection would be
-teaching that generalising is free.
+Five up and nothing against: worth-of-attention, concreteness, actionability, friction-lens and
+freshness all fired, and evidence did not, which is the right reading — the claim is about conduct
+under a limit rather than about material that establishes it. It is the anchor for what a
+well-formed hypothesis looks like: one session, one named mechanism, and the limit of what could be
+checked stated rather than papered over.

@@ -4,7 +4,7 @@
   // debt behind by the thousand, and the only way it does not come back is a gate.
   //
   // THE ENTRY POINTS ARE WHAT THE MANIFESTS DECLARE, and the manifests are authoritative over
-  // this list. `atyrode.babel/manifest.json` declares `entry.server` and `entry.web`; the
+  // this list. `babel/manifest.json` declares `entry.server` and `entry.web`; the
   // reading parts declare their own `entry.web` and `atyrode.babel.jev` its own `entry.server`;
   // the baseline's `machine.artifacts` names the machine half's bundle, which `pack.sh` builds
   // from `machine/main.ts`. Anything else a bundle contains is reached from one of those, and if
@@ -19,23 +19,23 @@
   // unresolved IMPORT, and an unused DEPENDENCY: each is a defect with one remedy and no
   // defensible reason to exist. It does not fail on an unused EXPORT, because this family's
   // stated convention is that every id, door name, event kind and schema is spelled ONCE in
-  // `atyrode.babel/contract.ts` whether or not a consumer exists yet — `test/contract.test.ts`
+  // `babel/contract.ts` whether or not a consumer exists yet — `test/contract.test.ts`
   // pins the manifests to those names — so enforcing it would delete the vocabulary to satisfy
   // a tool. `bun run lint:reachability -- --include exports,types` reports them when that is
   // the question being asked.
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "include": ["files", "dependencies", "unlisted", "unresolved"],
   "entry": [
-    "atyrode.babel/server.ts",
-    "atyrode.babel/web.ts",
-    "atyrode.babel/feed/web.tsx",
-    "atyrode.babel/watch/web.tsx",
-    "atyrode.babel.jev/server.ts",
-    "atyrode.babel/machine/main.ts",
-    "atyrode.babel/tools/import.ts",
-    "atyrode.babel/tools/seed-recipes.ts",
-    "atyrode.babel/tools/link-corrections.ts",
-    "atyrode.babel.jev/tools/seed-questions.ts",
+    "babel/server.ts",
+    "babel/web.ts",
+    "babel/feed/web.tsx",
+    "babel/watch/web.tsx",
+    "babel/jev/server.ts",
+    "babel/machine/main.ts",
+    "babel/tools/import.ts",
+    "babel/tools/seed-recipes.ts",
+    "babel/tools/link-corrections.ts",
+    "babel/jev/tools/seed-questions.ts",
     "scripts/*.ts",
     "**/*.test.ts",
     "**/*.test.tsx",
@@ -44,7 +44,7 @@
   "ignore": [
     // The built machine half: `pack.sh` writes it from `machine/main.ts` and deletes it after,
     // and `.gitignore` excludes it. It is an output, never a source.
-    "atyrode.babel/machine.js",
+    "babel/machine.js",
     // Another repository's source and another family's bundles, prepared by `deps:code` so a
     // required dependency can be composed at verification.
     ".integration/**",

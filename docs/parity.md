@@ -1,6 +1,6 @@
 # Parity: the standalone product against the plugin
 
-Babel is a Manifold plugin family under `atyrode.babel/`. The standalone Go binary, its
+Babel is a Manifold plugin family under `babel/`. The standalone Go binary, its
 React surface and the multi-machine infrastructure behind them are gone. This document is the
 record of what that removal cost: one row per subpackage of the retired `internal/` tree, what
 capability it represented, and whether the plugin has it.

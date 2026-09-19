@@ -10,9 +10,9 @@
 
   Three jobs and no fourth:
 
-    bun atyrode.babel.jev/tools/seed-questions.ts import   reads bank/ and writes bank/questions.seed.json
-    bun atyrode.babel.jev/tools/seed-questions.ts check    refuses any drift between the two
-    bun atyrode.babel.jev/tools/seed-questions.ts policy   prints the wording an operator installs
+    bun babel/jev/tools/seed-questions.ts import   reads bank/ and writes bank/questions.seed.json
+    bun babel/jev/tools/seed-questions.ts check    refuses any drift between the two
+    bun babel/jev/tools/seed-questions.ts policy   prints the wording an operator installs
 
   `check` is the gate. An assessment cites `kind@version`, so a seed that no longer matches the
   documents it was generated from would make every judgement name a wording nobody can read back
@@ -110,7 +110,7 @@ async function main(argv: readonly string[]): Promise<number> {
     if (committed !== `${JSON.stringify(bank, null, 2)}\n`) {
       process.stderr.write(
         "bank/questions.seed.json no longer matches bank/questions/: an assessment cites " +
-          "kind@version, so run `bun atyrode.babel.jev/tools/seed-questions.ts import` and bump " +
+          "kind@version, so run `bun babel/jev/tools/seed-questions.ts import` and bump " +
           "the versions the edit changed\n",
       );
       return 1;

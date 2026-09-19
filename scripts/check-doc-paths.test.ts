@@ -59,7 +59,7 @@ test("what is deliberately not a path stays unchecked, and each exemption is a r
       // Another repository's path; this checkout has no opinion on it.
       "See `packages/plugin-kit/src/pack.ts` and `scripts/gate.sh`.",
       // Written by the build and absent in a clean tree.
-      "`pack.sh` writes `atyrode.babel/machine.js`.",
+      "`pack.sh` writes `babel/machine.js`.",
       "",
     ].join("\n"),
   );

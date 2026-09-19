@@ -6,7 +6,7 @@
 # Before any of that it builds the MACHINE HALF and stamps the baseline's manifest, because a
 # bundle carries that half as a `bundleFile` artifact and an artifact is named by its hash:
 #
-#   1. `bun build atyrode.babel/machine/main.ts` → atyrode.babel/machine.js, one bundled file
+#   1. `bun build babel/machine/main.ts` → babel/machine.js, one bundled file
 #      (git ignores it; `--machine` leaves it in place for `dev`, a pack deletes it after).
 #   2. `bun scripts/stamp-machine.ts` writes its sha256 into BOTH platform artifacts of
 #      manifest.json — a `raw` artifact is its own entry, so `sha256` and `entrySha256` are the
@@ -45,13 +45,12 @@ build_machine
 rm -rf dist
 mkdir -p dist
 
-# Every manifest.json in this repository is one plugin, and a child is a directory inside its
-# parent's, so the walk is recursive and the artifact is named by the manifest's own id — not by
-# the directory, which is why `atyrode.babel/` being id-named is a convenience rather than a
-# mechanism. Shallowest first, so a parent is packed before the parts nested inside it — but not
-# before a SIBLING part at the same depth: `atyrode.babel.jev/` sorts ahead of `atyrode.babel/`
-# because `.` precedes `/`. That costs nothing, because each pack is independent, SHA256SUMS is
-# written from dist's own glob, and install order at verify and dev is the kit's `familyOrder`.
+# Every manifest.json in this repository is one plugin, and a part is a directory inside its
+# parent's, so the walk is recursive and the artifact is named by the manifest's own id — never
+# by the directory. A directory is named for its id's LAST SEGMENT (`babel/`, `babel/feed/`,
+# `babel/jev/`), which is what the repository's own name and the parent's own directory already
+# say: repeating the whole id would spell `atyrode` and `babel` twice over inside `atyrode/babel`.
+# Shallowest first, so a parent is always packed before the parts nested inside it.
 #
 # THE WALK STARTS AT THE REPOSITORY ROOT, because the repository IS the plugin family: there is
 # no `plugins/` wrapper to descend into, so the prune list has to name everything at the root

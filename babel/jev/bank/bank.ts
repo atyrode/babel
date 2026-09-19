@@ -1,4 +1,4 @@
-import type { RecordKind } from "../../atyrode.babel/contract.ts";
+import type { RecordKind } from "../../contract.ts";
 import { BankSchema, type Bank, type BankDocument, type Vote } from "./schema.ts";
 import seed from "./questions.seed.json";
 

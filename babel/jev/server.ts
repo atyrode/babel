@@ -29,7 +29,7 @@ import manifestJson from "./manifest.json";
   `atyrode.babel` required, the baseline's names nothing of this part — which is why removing the
   directory removes a plugin and not a dependency.
 
-  The id is spelled once in the family's vocabulary (`JEV_PLUGIN_ID`, `atyrode.babel/contract.ts`)
+  The id is spelled once in the family's vocabulary (`JEV_PLUGIN_ID`, `babel/contract.ts`)
   and `test/contract.test.ts` pins this manifest and the service id under it to that name. Nothing
   here imports that file: the kit inlines every imported module into the bundle, and a part with
   this little code of its own has no reason to carry the baseline's whole contract for one string

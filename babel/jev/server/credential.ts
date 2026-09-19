@@ -18,7 +18,7 @@ import type { ServiceInput } from "@manifold/protocol";
 
   This module is the second, and it is `machine/restic.ts`'s discipline in the half that has no
   job: there too the repository and its password arrive through a service the operator installed
-  (`RESTIC_SERVICE`, atyrode.babel/contract.ts), the manifest's own `environment` is fixed
+  (`RESTIC_SERVICE`, babel/contract.ts), the manifest's own `environment` is fixed
   reviewed values and never a secret's home, and no ambient variable can redirect the call. The
   difference is only which door the host opens — a job's loopback proxy there, `services.invoke`
   here — and that difference is forced: an operation of kind `http-proxy` is refused

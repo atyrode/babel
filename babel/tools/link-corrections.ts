@@ -265,7 +265,7 @@ function resolveTarget(into: string): { dataDir: string; path: string } {
   return { dataDir: absolute, path: pluginDatabasePath(absolute, BABEL_PLUGIN_ID) };
 }
 
-const USAGE = `bun atyrode.babel/tools/link-corrections.ts --into <data.db> [--dry-run]
+const USAGE = `bun babel/tools/link-corrections.ts --into <data.db> [--dry-run]
 
   --into <path>        the hub data directory, or <dataDir>/plugins/${BABEL_PLUGIN_ID}/data.db
   --dry-run            plan everything and print the counts; write nothing

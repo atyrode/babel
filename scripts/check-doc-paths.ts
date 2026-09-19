@@ -24,7 +24,7 @@
   - A GENERATED ARTIFACT is named because the build writes it, and it is absent in a clean tree
     by construction.
 
-  A path resolves against the repository root, the document's own directory, or `atyrode.babel/` —
+  A path resolves against the repository root, the document's own directory, or `babel/` —
   that last one because a document about the plugin writes `store/schema.ts` and means the
   baseline's, which is the convention these documents already use and is worth keeping: the
   alternative is every line carrying a prefix that never varies.
@@ -34,7 +34,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /** Where a path may resolve from. The plugin root is the shorthand these documents already use. */
-const ROOTS = ["", "atyrode.babel/"] as const;
+const ROOTS = ["", "babel/"] as const;
 
 /** Another repository's paths, by owner. A local path may never be added here. */
 const FOREIGN: readonly { readonly prefix: string; readonly owner: string }[] = [
@@ -62,7 +62,7 @@ const LEDGERS: readonly string[] = ["CHANGELOG.md"];
 
 /** Written by the build, absent in a clean checkout. Each says what writes it. */
 const GENERATED: readonly { readonly path: string; readonly by: string }[] = [
-  { path: "atyrode.babel/machine.js", by: "pack.sh, which deletes it again" },
+  { path: "babel/machine.js", by: "pack.sh, which deletes it again" },
   { path: "dist/SHA256SUMS", by: "pack.sh" },
 ];
 
@@ -142,7 +142,7 @@ if (import.meta.main) {
   if (misses.length > 0) {
     process.stdout.write(
       `\n${String(misses.length)} documentation reference(s) name something that does not exist.\n` +
-        "A path resolves from the repository root, the document's own directory, or atyrode.babel/.\n",
+        "A path resolves from the repository root, the document's own directory, or babel/.\n",
     );
     process.exit(1);
   }

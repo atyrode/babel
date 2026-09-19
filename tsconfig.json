@@ -62,11 +62,9 @@
   // `scripts/` is in here because pack.sh drives it: the stamp that writes the manifest's own
   // digests and pins is not a place to discover a type error from a failed installation.
   "include": [
-    "atyrode.babel/**/*.ts",
-    "atyrode.babel/**/*.tsx",
-    "atyrode.babel/**/*.json",
-    "atyrode.babel.jev/**/*.ts",
-    "atyrode.babel.jev/**/*.json",
+    "babel/**/*.ts",
+    "babel/**/*.tsx",
+    "babel/**/*.json",
     "scripts/**/*.ts",
     "runtime-tools.json",
     "test/**/*.ts",

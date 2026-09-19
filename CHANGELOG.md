@@ -537,6 +537,28 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The tree is `babel/`, and the judgement part lives inside it.** Two layout facts had drifted
+  apart from what they meant. `atyrode/babel` contained `atyrode.babel/` — the organisation named
+  twice and the product named twice — because the id-named directory made sense inside the
+  `plugins/` wrapper that #326 deleted, and only the wrapper was removed. And
+  `atyrode.babel.jev/` sat beside the baseline while `feed/` and `watch/` sat inside it, so the
+  family had two conventions for the same kind of thing.
+
+  A directory is named for its id's last segment now, and a part is a directory inside its
+  parent's: `babel/feed`, `babel/watch`, `babel/jev`. Nothing about identity moves — `pack` reads
+  each id from its own `manifest.json`, so no manifest id, no bundle name and no dependency edge
+  changes.
+
+  The placement had been quietly charging rent. `tsconfig.json` needed an explicit include for a
+  top-level directory that nesting makes unnecessary; the import-boundary lint rule was written
+  **twice**, once keyed by path depth for the nested parts and once by name for the sibling, and
+  is now one rule covering all three; and `pack.sh`'s comment claimed parents are packed before
+  parts when a sibling sorted ahead of its own parent. The part's imports of the baseline lost a
+  path segment and stopped naming the baseline at all.
+
+  One test was found **passing vacuously**: the scan proving nothing in the baseline imports the
+  part walked a directory the rename had emptied. It walks the right tree now and was proved to
+  bite by importing the part from the baseline and watching it go red.
 - **The family is at 0.4.0.** The baseline stayed on 0.3.0 through a night that gave it a fourth
   machine operation, a secret preflight, correction edges, a steering memory, a corroboration
   determination, a repository on every record, a cycle's reasons on the pulse door and two new

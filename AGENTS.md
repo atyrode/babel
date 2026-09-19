@@ -111,7 +111,7 @@ toolchain; commands run from the repository root unless a working directory is s
 | Dependency closure  | `bun run deps:code`                                                                                                 | Fetches atyrode/code at `CODE_REV`, arranges the sibling layout Code's own `prepare:integration` expects and runs Code's packers, which build omp's bundles beneath it. `verify` composes Babel on top of them.                                                                                              |
 | Typecheck           | `bun run typecheck`                                                                                                 | `tsc --noEmit` over both halves, the store, the panels and the tests.                                                                                                                                                                                                                                        |
 | Every check at once | `bun run check`                                                                                                     | `typecheck`, `lint`, `format:check`, `lint:reachability`, `lint:doc-paths` and `check-test-rules`, in that order. It is one script because the reusable CI workflow runs `check` and nothing else of the caller's: a gate outside it is a gate CI does not run.                                              |
-| Suites              | `bun test`                                                                                                          | The manifests against `atyrode.babel/contract.ts` and `atyrode.babel/store/schema.ts`, the doors against a real temporary database, the panels in a document, and `pack` itself.                                                                                                                             |
+| Suites              | `bun test`                                                                                                          | The manifests against `babel/contract.ts` and `babel/store/schema.ts`, the doors against a real temporary database, the panels in a document, and `pack` itself.                                                                                                                                             |
 | Pack                | `bun run pack`                                                                                                      | Builds the machine half into one bundled file, stamps its digest into both platform artifacts of the manifest and writes one `dist/<id>.manifold-plugin.json` per manifest, parents first, plus `dist/SHA256SUMS`. A machine-half change shows up as a moved digest in the manifest diff.                    |
 | Verify              | `bun run verify`                                                                                                    | Installs every bundle on a disposable engine spawned from the `../manifold` sibling, dispatches every door it publishes, asserts the plugin's database file exists and then that a purge removed it. Needs `deps:code` and `pack` first.                                                                     |
 | Reachability        | `bun run lint:reachability`                                                                                         | knip over the entry points the manifests declare plus the dev-time tools. It FAILS on an unreachable file, an unlisted or unresolved import and an unused dependency; unused exports are reported and do not fail, because every name is spelled once in `contract.ts` whether or not a consumer exists yet. |
@@ -155,7 +155,7 @@ a local skip is not a pass.
   downstream writes is the failure mode this bullet exists to stop.
 - **There is no publication step, because there is nowhere to publish to.** The standalone
   product's `babel sync` retired with the product. The hub's own SQLite file is where a record
-  lives, and `atyrode.babel/store/schema.ts` says so — "nothing is sealed and nothing is
+  lives, and `babel/store/schema.ts` says so — "nothing is sealed and nothing is
   synced. The hub is the one place" — while `docs/parity.md` records the retired `sync/` package
   as absent by decision. A settled run's records are durable the instant the settlement writes
   them, so nothing is ever owed downstream and no publication has to be asked about. The restic
@@ -178,20 +178,20 @@ a local skip is not a pass.
 ## Task-specific guidance
 
 - **Any plugin change:** every id, door name, event kind, panel id, preset, job output file and
-  receipt field is spelled once in `atyrode.babel/contract.ts`, with the tables in
-  `atyrode.babel/store/schema.ts`, and `test/contract.test.ts` pins every
+  receipt field is spelled once in `babel/contract.ts`, with the tables in
+  `babel/store/schema.ts`, and `test/contract.test.ts` pins every
   manifest to both. A field that is not spelled there is refused by the door it was added for.
   A part reaches the baseline only through its doors, never as a library.
 - **Recipes:** the recipe bodies are plugin data. They live in
-  `atyrode.babel/store/recipes.seed.json`, are generated from a cookbook-shaped directory
-  by `atyrode.babel/tools/seed-recipes.ts`, and a hub reads them from its policy's
+  `babel/store/recipes.seed.json`, are generated from a cookbook-shaped directory
+  by `babel/tools/seed-recipes.ts`, and a hub reads them from its policy's
   `review.recipes` block, which is what a prompt writes verbatim. A claim cites a recipe as
   `id@version`, so a changed body and its version move together and the seed is regenerated
   rather than hand-edited. The tool prints a policy block and installs nothing.
 - **Drains and harvests:** read the drain procedure in `docs/runbook.md` and the open
   atyrode/babel issues labelled `drain` before starting one; the pre-flight, the 90-second
   go/no-go and the reporting rules there are mandatory, for an agent as for a person.
-- **Panels:** a change under `atyrode.babel/feed/` or `atyrode.babel/watch/` is
+- **Panels:** a change under `babel/feed/` or `babel/watch/` is
   proved by actual rendered interaction on a preview hub through `bun run dev`, not by the panel
   tests alone. Every CSS selector a part ships stays rooted at that plugin's own class, and
   React, `@manifold/plugin` and `@manifold/ui` are shared externals: a bundle may never carry a

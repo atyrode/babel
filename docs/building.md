@@ -11,12 +11,12 @@ independently enable-able **parts**, each a directory, each packed as one
 readable at the tag `v0.4.0` — `git show v0.4.0:internal/<pkg>` — and `docs/parity.md` records,
 per capability, what it did and whether this family does it.
 
-| Plugin                | Directory              | Halves       | What it is                                                                                                                                                                                                                                                  |
-| --------------------- | ---------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `atyrode.babel`       | `atyrode.babel/`       | server + web | The baseline: the store (one SQLite file of its own), the nine read doors, the operator's acts, the three drain doors, the machine operations and the conductor. Contributes the five event kinds and no panel.                                             |
-| `atyrode.babel.feed`  | `atyrode.babel/feed/`  | web          | Home — every record Babel produced, ranked by what needs the operator — the peeled record, and a topic with its filings and his interest. Panels `home`, `record`, `topic`.                                                                                 |
-| `atyrode.babel.watch` | `atyrode.babel/watch/` | web          | What is running, what will run and what a drain is spending: presets instead of flags, the model and the ceiling up front, the live pulse, the receipt afterwards. Panel `watch`.                                                                           |
-| `atyrode.babel.jev`   | `atyrode.babel.jev/`   | server       | Typed judgement over the records: the voters, their question bank and the calls that pay for them. Optional by construction — absent, disabled or out of credit, every door, panel and conductor path answers as it does without it. Publishes no door yet. |
+| Plugin                | Directory      | Halves       | What it is                                                                                                                                                                                                                                                  |
+| --------------------- | -------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `atyrode.babel`       | `babel/`       | server + web | The baseline: the store (one SQLite file of its own), the nine read doors, the operator's acts, the three drain doors, the machine operations and the conductor. Contributes the five event kinds and no panel.                                             |
+| `atyrode.babel.feed`  | `babel/feed/`  | web          | Home — every record Babel produced, ranked by what needs the operator — the peeled record, and a topic with its filings and his interest. Panels `home`, `record`, `topic`.                                                                                 |
+| `atyrode.babel.watch` | `babel/watch/` | web          | What is running, what will run and what a drain is spending: presets instead of flags, the model and the ceiling up front, the live pulse, the receipt afterwards. Panel `watch`.                                                                           |
+| `atyrode.babel.jev`   | `babel/jev/`   | server       | Typed judgement over the records: the voters, their question bank and the calls that pay for them. Optional by construction — absent, disabled or out of credit, every door, panel and conductor path answers as it does without it. Publishes no door yet. |
 
 A part is its own directory — inside its parent's, or beside it — and says so with
 `dependencies: { "atyrode.babel": { type: "required" } }`; assembly refuses it otherwise. The
@@ -25,8 +25,8 @@ callee the caller's manifest does not declare, so a part is removable by constru
 than by care. The baseline is not a library — a part reaches it only through its doors
 (`host.client.action` from a panel, `ctx.actions.call` from a server half), and the linter holds
 both directions to that: the one module of the baseline a part may import is
-`atyrode.babel/contract.ts`, where every id, door name, event kind, panel id, preset, job output
-file and receipt field is spelled once with the tables in `atyrode.babel/store/schema.ts`, and
+`babel/contract.ts`, where every id, door name, event kind, panel id, preset, job output
+file and receipt field is spelled once with the tables in `babel/store/schema.ts`, and
 nothing of the baseline's may import a part at all — an import would inline the part into the
 baseline's own bundle and survive the part being removed, which is how optional stops being
 optional. `test/contract.test.ts` pins every manifest to those two files, and
@@ -34,10 +34,10 @@ optional. `test/contract.test.ts` pins every manifest to those two files, and
 the fallback is run rather than described.
 
 The web halves are **in-realm React** (`docs/PLUGINS.md` §10): a part's `web.tsx` —
-`atyrode.babel/feed/web.tsx` and `atyrode.babel/watch/web.tsx` — default-exports `{ id, panels }`
+`babel/feed/web.tsx` and `babel/watch/web.tsx` — default-exports `{ id, panels }`
 of ordinary components on `@manifold/ui`'s layout primitives, with the skin in a `styles.css`
 whose every selector is rooted at the plugin's own class. The baseline's own
-`atyrode.babel/web.ts` registers an id and no panel: it paints nothing, and the entry exists so
+`babel/web.ts` registers an id and no panel: it paints nothing, and the entry exists so
 that a baseline surface, if one is ever wanted, belongs there rather than in a part. The server
 half is authored against the kit (`@manifold/plugin-kit/server`: `defineServerAction`,
 `GuestCtx`), which the in-realm loader takes as it stands — one authoring shape for a row that
@@ -48,7 +48,7 @@ may later be hardened.
 The baseline's data is a graph — 65,818 records, 60,793 links, filings, per-role tallies, a
 ledger of entities and facts — read by filter, sort, join and aggregate on every page, so it
 lives in the plugin database (manifold ADR 0034, `docs/PLUGINS.md` §4 "Your tables"): one SQLite
-file at `<data>/atyrode.babel/data.db`, asked for by `database: { maxBytes }` in the
+file at `<data>/babel/data.db`, asked for by `database: { maxBytes }` in the
 manifest and served as `ctx.database`. Three consequences worth knowing before reading
 `server.ts`:
 
@@ -67,7 +67,7 @@ manifest and served as `ctx.database`. Three consequences worth knowing before r
 ## The machine half: one bundled file, no pinned engine, three tools the machine provides
 
 A run is a **job on an enrolled machine** (manifold `docs/PLUGINS.md` §8), and the baseline's
-manifest carries the `machine` block that says what may run there. `atyrode.babel/machine/` is
+manifest carries the `machine` block that says what may run there. `babel/machine/` is
 the half that runs: one dispatcher, `main.ts`, behind one command line —
 
 ```
@@ -75,7 +75,7 @@ bun /job/artifact <operation> --input /inputs/input --out /outputs/outputs
 ```
 
 — which is literally the `argv` every operation declares. `pack.sh` builds that half with
-`bun build --target bun` into `atyrode.babel/machine.js`, and `scripts/stamp-machine.ts` stamps
+`bun build --target bun` into `babel/machine.js`, and `scripts/stamp-machine.ts` stamps
 its sha256 into **both** platform artifacts of the manifest (a `raw` artifact is its own entry,
 so `sha256` and `entrySha256` are one digest) along with the `machine.tools` pins below, then
 packs
