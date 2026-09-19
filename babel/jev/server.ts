@@ -112,10 +112,7 @@ export {
   type ScreenSuggestion,
 } from "./screen/screener.ts";
 export { SCREENERS } from "./screen/screeners.ts";
-export {
-  positionFor,
-  positionOf,
-} from "./tally/position.ts";
+export { positionFor, positionOf } from "./tally/position.ts";
 export {
   basisFor,
   sweep,

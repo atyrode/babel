@@ -2,7 +2,7 @@ import { useState, type ReactElement, type ReactNode } from "react";
 import type { HostServices } from "@manifold/plugin";
 import { Chip, Cluster, Disclosure, Stack } from "@manifold/ui";
 import { ACTIONS, FeedPostSchema } from "../contract.ts";
-import { ask, refusal, since, type RecordPeel } from "./api.ts";
+import { ask, NO_SEAT, openRecord, refusal, since, type RecordPeel } from "./api.ts";
 import {
   KIND_LABELS,
   KIND_TONES,
@@ -262,6 +262,7 @@ export function Peel({
   now: number;
 }): ReactElement {
   const [open, setOpen] = useState<readonly boolean[]>(INITIAL);
+  const [navigation, setNavigation] = useState("");
   const toggle = (index: number): void =>
     setOpen((current) => current.map((value, at) => (at === index ? !value : value)));
   const post = peel.post;
@@ -418,11 +419,21 @@ export function Peel({
         <Cluster className="babel-related" gap="var(--babel-space-2)">
           {peel.related.map((related) => (
             <span className="babel-related-row" key={`${related.relation}-${related.id}`}>
-              <span className="babel-related-word">{related.relation}</span> {related.title}
+              <span className="babel-related-word">{related.relation}</span>{" "}
+              <button
+                type="button"
+                className="babel-link"
+                onClick={() =>
+                  setNavigation(openRecord(host, related.id) === "no_tile" ? NO_SEAT : "")
+                }
+              >
+                {related.title}
+              </button>
             </span>
           ))}
         </Cluster>
       )}
+      {navigation !== "" && <p role="status">{navigation}</p>}
 
       <Depth index={3} title="The reception" open={open} onToggle={toggle}>
         <Stack gap="var(--babel-space-3)">

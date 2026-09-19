@@ -1729,11 +1729,11 @@ export interface SuggestArgs {
   revision: number;
   kind: NextAction;
   /**
-   * The other record this suggestion is about, or empty because there is not one. See
-   * `SuggestInputSchema` for why a pair finding needs it; here it is the fifth column of the
-   * live-uniqueness key and nothing else.
+   * The counterpart record, or empty for a per-record opinion. Subject and aspect distinguish
+   * independent findings without teaching the store any plugin's relation vocabulary.
    */
   subject: string;
+  aspect: string;
   summary: string;
   rationale: string;
   /** What the suggester judged under; kept on the row and compared by equality, never parsed. */
@@ -1750,11 +1750,9 @@ export interface SuggestArgs {
  * a record is immutable and a refinement is a new revision — a suggestion carrying only a record
  * id would silently re-attach to whatever the live revision becomes.
  *
- * ONE LIVE SUGGESTION PER (SUGGESTER, REVISION, KIND, SUBJECT), and the second supersedes the
- * first. The subject is in the key because a record can be half of two pairs — two records it
- * contradicts, one it supersedes — and without it the second finding would supersede the first
- * and the operator would only ever see one counterpart. It defaults to empty, which is every
- * per-record suggester and every row already written, so for them the key is the one it was.
+ * One live opinion per (suggester, revision, kind, subject, aspect). A repeat replaces only that
+ * opinion; another counterpart or another relation remains independently actionable. Empty
+ * subject and aspect preserve the identity of existing per-record callers and persisted rows.
  *
  * The same predicate is the durable "already judged" mark: `suggestionsOf` counts the revisions
  * this suggester has ever named — over any subject, because a record judged in one pair has been
@@ -1826,10 +1824,11 @@ export async function suggest(
       WHERE n.record_id = ? AND n.kind = ? AND n.proposed_by_kind = 'engine'
         AND n.proposed_by_id = ? AND json_extract(n.payload, '$.revision') = ?
         AND COALESCE(json_extract(n.payload, '$.subject'), '') = ?
+        AND COALESCE(json_extract(n.payload, '$.aspect'), '') = ?
         AND NOT EXISTS (SELECT 1 FROM next_actions s WHERE s.record_id = n.record_id
                           AND json_extract(s.payload, '$.supersedes') = n.id)
       ORDER BY n.created_at DESC, n.id DESC LIMIT 1`,
-    [args.recordId, args.kind, suggester, args.revision, args.subject],
+    [args.recordId, args.kind, suggester, args.revision, args.subject, args.aspect],
   );
   const supersedes = live?.id ?? "";
   const id = newId("nxt");
@@ -1843,6 +1842,7 @@ export async function suggest(
     // existed carries no leaf at all, which `COALESCE` reads as the same empty: the old rows and
     // the new per-record ones share one uniqueness key, as they must.
     subject: args.subject,
+    aspect: args.aspect,
     // The mark's own date: `suggestionsOf` reads it back as an equality, which is what lets a
     // suggester whose rules moved find its corpus unjudged again without forgetting this row.
     basis: args.basis,
@@ -1860,6 +1860,7 @@ export async function suggest(
                 WHERE n.record_id = ? AND n.kind = ? AND n.proposed_by_kind = 'engine'
                   AND n.proposed_by_id = ? AND json_extract(n.payload, '$.revision') = ?
                   AND COALESCE(json_extract(n.payload, '$.subject'), '') = ?
+                  AND COALESCE(json_extract(n.payload, '$.aspect'), '') = ?
                   AND n.id <> ?
                   AND NOT EXISTS (SELECT 1 FROM next_actions s WHERE s.record_id = n.record_id
                                     AND json_extract(s.payload, '$.supersedes') = n.id))
@@ -1877,6 +1878,7 @@ export async function suggest(
         suggester,
         args.revision,
         args.subject,
+        args.aspect,
         supersedes,
       ],
     },
@@ -1896,6 +1898,7 @@ export async function suggest(
     revision: args.revision,
     kind: args.kind,
     subject: args.subject,
+    aspect: args.aspect,
     suggester,
     supersedes,
     at,

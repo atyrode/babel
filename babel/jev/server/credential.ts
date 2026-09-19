@@ -98,6 +98,17 @@ export const JEV_SERVICE = {
   pairFields: { a: "state_a", b: "state_b" },
 } as const;
 
+/** Pin a pass to a ready policy without invoking it. Guest RPCs need only be awaitable. */
+export async function jevPolicyRevision(services: JevServices): Promise<string | null> {
+  try {
+    const roster = await services.listInstances({});
+    const bound = roster.services.find((service) => service.serviceId === JEV_SERVICE.serviceId);
+    return bound?.state === "ready" ? (bound.configuration?.revision ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** An operation id the part may ask for. A string the policy does not declare is refused by the
  *  host, but it is also a typo, and this keeps it from compiling. */
 export type JevOperationId = (typeof JEV_SERVICE.operations)[keyof typeof JEV_SERVICE.operations];

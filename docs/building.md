@@ -11,18 +11,18 @@ independently enable-able **parts**, each a directory, each packed as one
 readable at the tag `v0.4.0` — `git show v0.4.0:internal/<pkg>` — and `docs/parity.md` records,
 per capability, what it did and whether this family does it.
 
-| Plugin                | Directory      | Halves       | What it is                                                                                                                                                                                                                                                                                                                                                                          |
-| --------------------- | -------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `atyrode.babel`       | `babel/`       | server + web | The baseline: the store (one SQLite file of its own), the nine read doors, the operator's acts, the three drain doors, the machine operations and the conductor. Contributes the five event kinds and no panel.                                                                                                                                                                     |
-| `atyrode.babel.feed`  | `babel/feed/`  | web          | Home — every record Babel produced, ranked by what needs the operator — the peeled record, and a topic with its filings and his interest. Panels `home`, `record`, `topic`.                                                                                                                                                                                                         |
-| `atyrode.babel.watch` | `babel/watch/` | web          | What is running, what will run and what a drain is spending: presets instead of flags, the model and the ceiling up front, the live pulse, the receipt afterwards. Panel `watch`.                                                                                                                                                                                                   |
-| `atyrode.babel.jev`   | `babel/jev/`   | server       | Typed judgement over the records: the voters, their question bank and the calls that pay for them. Optional by construction — absent, disabled or out of credit, every baseline door, panel and conductor path answers as it does without it. Its two read-only doors size and run a bounded corpus sweep; they answer with suggestions for the caller to deliver and cannot write. |
+| Plugin                | Directory      | Halves       | What it is                                                                                                                                                                                                        |
+| --------------------- | -------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `atyrode.babel`       | `babel/`       | server + web | The baseline: the store (one SQLite file of its own), the nine read doors, the operator's acts, the three drain doors, the machine operations and the conductor. Contributes the five event kinds and no panel.   |
+| `atyrode.babel.feed`  | `babel/feed/`  | web          | Home — every record Babel produced, ranked by what needs the operator — the peeled record, and a topic with its filings and his interest. Panels `home`, `record`, `topic`.                                       |
+| `atyrode.babel.watch` | `babel/watch/` | web          | What is running, what will run and what a drain is spending: presets instead of flags, the model and the ceiling up front, the live pulse, the receipt afterwards. Panel `watch`.                                 |
+| `atyrode.babel.jev`   | `babel/jev/`   | server       | Optional typed judgement. Three read-only doors size and run a bounded corpus sweep or judge candidate pairs of named anchors. They return readings and suggestions for the caller to deliver; they cannot write. |
 
 A part is its own directory — inside its parent's, or beside it — and says so with
 `dependencies: { "atyrode.babel": { type: "required" } }`; assembly refuses it otherwise. The
-edge is one-way: no manifest of the baseline's names a part, and `ctx.actions.call` refuses a
-callee the caller's manifest does not declare, so a part is removable by construction rather
-than by care. The baseline is not a library — a part reaches it only through its doors
+edge from the baseline is one-way: its manifest names no part. Feed additionally declares Jev
+optional, so it can read available judgements without making installation or ordinary reading
+depend on them. `ctx.actions.call` refuses an undeclared callee. The baseline is not a library — a part reaches it only through its doors
 (`host.client.action` from a panel, `ctx.actions.call` from a server half), and the linter holds
 both directions to that: the one module of the baseline a part may import is
 `babel/contract.ts`, where every id, door name, event kind, panel id, preset, job output
@@ -554,13 +554,45 @@ bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifol
 server on a temporary data directory and a free port, installs each bundle parents first,
 requires the roster row enabled and not `enable_failed`, dispatches every door it publishes with
 `{}` as the owner and refuses `unavailable`, asserts the declared database file exists, then
-uninstalls with purge and asserts it is gone. `dev` is the inner loop: it packs every manifest
-under this directory, installs the baseline before its parts on the hub named by `--hub`, then
-watches for edits and reinstalls only the bundles whose sha changed; a browser reload shows the
-change. The line above is the integrated preview (`https://preview.manifold.tyrode.dev`) as
+uninstalls with purge and asserts it is gone. `dev` is the inner loop: it discovers manifests
+under `babel/`, installs the baseline before its parts on the named hub, then watches that source
+tree and reinstalls only bundles whose sha changed; a browser reload shows the change. Dependency
+checkouts under `.integration/` are not this family's plugins and must not enter that walk.
+The line above is the integrated preview (`https://preview.manifold.tyrode.dev`) as
 addressed from dev-01, where `docker:` delivery copies the bundle into the hub's container and
 reads the owner key from its volume, so the key never appears in argv, output or this repository.
 Against another hub, pass `--owner-key-file <path>` and `--deliver path`.
+
+### Running optional judgement
+
+`bun babel/jev/tools/seed-questions.ts policy` renders the versioned question literals and response
+projections for the `judge` and `pair` service operations. It installs nothing. The deployment must
+already have its operator-supplied Jev service policy and credential binding; printing the policy
+is not activation evidence. The baseline policy's `suggesters` list must map the caller's
+authenticated principal to `atyrode.babel.jev` before it can size the suggestion gap or submit.
+
+Home reads `atyrode.babel.jev.sweepPlan` without invoking a model. **Judge pending corpus** is the
+explicit spending action: it walks bounded batches up to the initial pending count, and **Stop
+sweep** stops after the current batch. All live record kinds are eligible for a reading; only
+unruled records can produce suggestions. **Submit** is a separate action under the caller's own
+authority, after the returned count is visible. No Jev door holds `containers:write`.
+
+Positions appear on feed rows and in reception without altering Babel's ranking. They are
+browser-session readings, not stored assessments: a reload loses them, while submitted suggestions
+remain. The continuation is also transient. Records that produced no durable suggestion can be
+offered again; the bounded process memo avoids another payment only while it retains the answer.
+A changed bank document or service policy revision changes the pending basis.
+
+The `pairs` door accepts at most 24 anchors, each with its exact record id, revision and kind, and
+at most 64 pair judgements. Its pool is those anchors: search neighbours outside it are not
+silently hydrated or claimed as checked. Explicit `contradicts` and `supersedes` cuts select which
+detectors may speak; missing cuts report uncalibrated and cause no paid call on their own.
+Returned suggestions carry `subject` and `aspect` as well as their policy-and-wording basis.
+The caller removes the diagnostic `detector` field before submitting through `babel.suggest`.
+
+The local preview exercises real installation, the unbound plan, reading doors and observation
+navigation. Funded Feed transitions can be exercised with isolated synthetic action responses;
+that verifies the rendered caller, not a paid provider run or coverage of a deployment's corpus.
 
 ## Where a change is proved, and how production gets it
 

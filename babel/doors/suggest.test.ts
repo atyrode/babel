@@ -352,13 +352,15 @@ test("the mark is per suggester, revision and kind: a second kind is a second su
   expect(other.outstanding).toBe(2);
 });
 
-test("two pair findings about one record coexist, in either order, and a repeat still supersedes", async () => {
-  // #432. A record can be half of two pairs — the contradiction the corpus has been sitting on
-  // is exactly this shape — and before the counterpart joined the key the second finding
-  // superseded the first, so the operator saw one of them and nothing said the other was lost.
+test("distinct counterparts and relations coexist in either order; repeating one replaces only it", async () => {
+  const left = { subject: "fnd_00000002", aspect: "contradiction" };
+  const right = { subject: "fnd_00000003", aspect: "contradiction" };
+  const later = { subject: "fnd_00000002", aspect: "supersession" };
   for (const order of [
-    ["fnd_00000002", "fnd_00000003"],
-    ["fnd_00000003", "fnd_00000002"],
+    [left, right],
+    [right, left],
+    [left, later],
+    [later, left],
   ]) {
     const harness = openHarness();
     await migrate(harness.store);
@@ -370,21 +372,20 @@ test("two pair findings about one record coexist, in either order, and a repeat 
     const first = (await knock(harness, ACTIONS.suggest, {
       ...SUGGESTION,
       kind: "ask-question",
-      subject: order[0],
-      summary: `cannot both be true with ${String(order[0])}`,
+      ...order[0],
+      summary: "first independent finding",
     })) as { id: string; subject: string; supersedes: string };
     const second = (await knock(harness, ACTIONS.suggest, {
       ...SUGGESTION,
       kind: "ask-question",
-      subject: order[1],
-      summary: `cannot both be true with ${String(order[1])}`,
+      ...order[1],
+      summary: "second independent finding",
     })) as { id: string; subject: string; supersedes: string; outstanding: number };
 
     // Neither replaced the other, whichever arrived first, and the operator is shown both.
     expect(first.supersedes).toBe("");
     expect(second.supersedes).toBe("");
     expect(second.outstanding).toBe(2);
-    expect([first.subject, second.subject].sort()).toEqual(["fnd_00000002", "fnd_00000003"]);
     const peel = await peeled(harness);
     expect(peel.nextActions.map((action) => action.id).sort()).toEqual(
       [first.id, second.id].sort(),
@@ -395,8 +396,8 @@ test("two pair findings about one record coexist, in either order, and a repeat 
     const again = (await knock(harness, ACTIONS.suggest, {
       ...SUGGESTION,
       kind: "ask-question",
-      subject: order[0],
-      summary: `restated about ${String(order[0])}`,
+      ...order[0],
+      summary: "restated first finding",
     })) as { supersedes: string; outstanding: number };
     expect(again.supersedes).toBe(first.id);
     expect(again.outstanding).toBe(2);

@@ -1118,6 +1118,8 @@ export const SuggestInputSchema = z.strictObject({
    * dangling counterpart in front of the operator, and `next_actions` has no foreign key on it.
    */
   subject: z.union([RecordIdSchema, z.literal("")]).default(""),
+  /** Independent findings about the same subject; empty preserves existing caller identity. */
+  aspect: z.string().max(64).default(""),
   summary: bounded(400),
   rationale: z.string().max(2000).default(""),
   /**
@@ -1140,9 +1142,10 @@ export const SuggestedSchema = z.strictObject({
   kind: NextActionSchema,
   /** The counterpart the input named, echoed so a caller can tell two pair findings apart. */
   subject: z.string(),
+  aspect: z.string(),
   /** The plugin it is attributed to, resolved from the principal and never from the input. */
   suggester: z.string(),
-  /** The one this replaced, or empty: one live suggestion per revision, kind and subject. */
+  /** The replaced row, or empty: one live opinion per revision, kind, subject and aspect. */
   supersedes: z.string(),
   at: z.string(),
   /** How many of this suggester's live suggestions the operator has not answered yet. */
@@ -1415,10 +1418,8 @@ export const JEV_PAIR_ANCHORS = 24;
 /**
  * HOW MANY PAIR JUDGEMENTS ONE PASS MAY PAY FOR, and the ceiling as well as the default.
  *
- * At 24 anchors and eight neighbours a proposal can carry 192 pairs, which is more money than a
- * door should spend without being asked twice. 64 is the number of judgements a first pass on a
- * new deployment can afford to be wrong about: enough to see whether either relation fires here
- * at all, small enough that finding out costs a fraction of a cent.
+ * Bound service invocations per dispatch independently of the number of retrieved candidates.
+ * This is a call-count ceiling, not a price estimate or a confidence threshold.
  */
 export const JEV_PAIR_JUDGEMENTS = 64;
 
@@ -1506,6 +1507,7 @@ export const PairsReportSchema = z.strictObject({
       kind: NextActionSchema,
       /** The counterpart record: what makes two findings about one record two suggestions. */
       subject: RecordIdSchema,
+      aspect: z.string(),
       summary: z.string(),
       rationale: z.string(),
       /** Which detector proposed it, so a report reads per relation as well as per record. */

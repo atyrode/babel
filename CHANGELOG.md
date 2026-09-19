@@ -677,20 +677,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `scope` and `editorial`; boundary tests pin a 2–1 disagreement separately from unanimous backing
   and extend the existing unrounded-score path through to the standing an operator would see.
 
-- **Jev can grade the corpus that was already there, one bounded and resumable pass at a time.**
-  A free `sweepPlan` call states how many live, unruled records are outside the current bank
-  before an operator authorises any model spend; `sweep` then reads at most 24, pays once per
-  readable record and returns suggestions for its caller to deliver. The part still has no write
-  authority: a real-store test serializes the records, claims and ranked feed before and after a
-  pass and requires all three to stay byte-identical.
+- **Jev can grade existing records in bounded passes, and Feed can read the result.** A free
+  `sweepPlan` sizes all live record kinds under the bank and service policy revisions; an explicit
+  press walks batches of at most 24 without changing Babel's ranking or the operator's rulings.
+  Contested readings lead with the disagreement, and reception names backers, objectors and
+  silent voters. Observations open from the related-record strip in their own kind, without
+  becoming posts or acquiring ruling controls.
 
-  The pending set is the gap rather than a stored cursor. Every delivered suggestion carries a
-  basis made from the bank version and that record kind's document version, so moving one
-  threshold makes that kind pending again without rebuying the other three; a short-lived
-  continuation only walks silent voters inside one authorised sequence and losing it can repeat
-  work but can never report unjudged rows as complete. The no-service path proves the invocation
-  count stays zero against a fake that throws if reached, and an out-of-credit pass stops on its
-  first unanswered record with an explicit no-op report instead of failing.
+  The part still cannot write. Suggestions are submitted separately by its allow-listed caller,
+  after their count is visible; only those submissions are durable. Readings and the continuation
+  last for the browser session, so a silent record can be offered again after the bounded memo
+  loses it. A refused judgement stops further calls without discarding an earlier batch.
+  Real-store tests preserve the frontier and ranked feed. The installed local preview proves the
+  unbound path and observation navigation; synthetic browser responses exercise contested and
+  unheard readings, partial progress and explicit submission without a paid provider call.
 
 - **Jev can propose which pairs are worth asking about, then report two relations without
   confusing them.** Comparing the imported 6,038 records outright would be 18,225,703 pairs, so
@@ -728,14 +728,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - **Two findings about one record no longer overwrite each other.** `babel.suggest` kept one live
   suggestion per suggester, revision and kind, which is right for a per-record voter and a loss
   for a pair: a record that contradicts two others carried whichever was written second, and
-  nothing said the first had been dropped. The input takes an optional `subject` — the
-  counterpart's record id — which joins the live-uniqueness key and the insert's own guard, is
-  echoed on the answer, and is validated to name a record that is neither missing nor the
-  subject of its own suggestion. It defaults to empty, so every existing caller and every row
-  already written keeps the key it had; rows written before the field carry no leaf at all and
-  read as that same empty. Proved in `babel/doors/suggest.test.ts`: two counterparts survive in
-  either order, the same counterpart restated still supersedes, and a per-record suggester is
-  unchanged.
+  nothing said the first had been dropped. Optional `subject` and `aspect` fields distinguish the
+  counterpart and the independent relation in both the live key and the insert guard. The
+  counterpart must exist and cannot be the record itself. Empty defaults preserve existing
+  per-record callers and rows. The door regression proves that different counterparts and
+  different relations about the same counterpart survive in either order, while restating one
+  replaces only that finding.
 
 ### Removed
 
@@ -839,6 +837,15 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   the door's (atyrode/manifold#749). An owner key is unaffected.
 
 ### Fixed
+
+- **Old malformed identifiers no longer poison a whole search.** Retrieval excludes unnameable
+  records before its candidate limit, reports their count in coverage, and keeps topics and
+  pending-suggestion reads usable without weakening the import guard. The regression includes
+  more malformed matches than the candidate window and an embedded NUL; the installed preview
+  returns valid results while reporting twelve legacy rows it cannot name.
+- **The preview loop discovers this family, not its downloaded dependencies.** After dependency
+  preparation, scanning the repository root tried to install duplicate Code bundles. `bun run dev`
+  now scans `babel/`; the local preview installed all four plugins after the change.
 
 - **A record could be imported that no door would ever open, and nothing could remove it.** Found
   by rendering the feed on a hub rather than in a test document: twelve rows went in through the

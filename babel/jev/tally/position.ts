@@ -73,7 +73,6 @@ import { answersOf, type ScreenedRecord } from "../screen/screener.ts";
   and "Jev was never installed" are one answer and not two code paths.
 */
 
-
 /**
  * THE POSITION, DERIVED. Pure, total, and the only place a standing is decided.
  *

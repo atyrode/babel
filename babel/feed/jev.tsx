@@ -3,8 +3,16 @@ import type { HostServices } from "@manifold/plugin";
 import { usePolledResource } from "@manifold/plugin/hooks";
 import { Cluster, Stack } from "@manifold/ui";
 import {
-  ACTIONS, JEV_ACTIONS, JEV_PLUGIN_ID, JEV_SWEEP_BATCH, SweepPlanSchema, SweptSchema,
-  SuggestedSchema, door, type RecordPosition, type Swept,
+  ACTIONS,
+  JEV_ACTIONS,
+  JEV_PLUGIN_ID,
+  JEV_SWEEP_BATCH,
+  SweepPlanSchema,
+  SweptSchema,
+  SuggestedSchema,
+  door,
+  type RecordPosition,
+  type Swept,
 } from "../contract.ts";
 import { refusal } from "./api.ts";
 
@@ -36,14 +44,23 @@ function clear(value: Readings): void {
 function usePosition(host: HostServices, id: string): RecordPosition | undefined {
   const value = readings(host);
   useSyncExternalStore(
-    (listener) => { value.listeners.add(listener); return () => value.listeners.delete(listener); },
+    (listener) => {
+      value.listeners.add(listener);
+      return () => value.listeners.delete(listener);
+    },
     () => value.version,
   );
   return value.positions.get(id);
 }
 
-export function JevPosition({ host, id, detail = false }: {
-  host: HostServices; id: string; detail?: boolean;
+export function JevPosition({
+  host,
+  id,
+  detail = false,
+}: {
+  host: HostServices;
+  id: string;
+  detail?: boolean;
 }): ReactElement | null {
   const position = usePosition(host, id);
   if (position === undefined || position.standing === "unjudged") return null;
@@ -51,15 +68,39 @@ export function JevPosition({ host, id, detail = false }: {
     <div className="babel-jev-position" data-standing={position.standing}>
       <p>
         Jev: <strong>{position.standing}</strong>
-        {position.tally !== null && <> · {position.up} back · {position.down} object</>}
-        {position.heard < position.roster && <> · {position.heard}/{position.roster} heard</>}
+        {position.tally !== null && (
+          <>
+            {" "}
+            · {position.up} back · {position.down} object
+          </>
+        )}
+        {position.heard < position.roster && (
+          <>
+            {" "}
+            · {position.heard}/{position.roster} heard
+          </>
+        )}
       </p>
       {detail && (
         <dl className="babel-rows">
-          <div><dt>Backed</dt><dd>{position.backed.join(", ") || "none"}</dd></div>
-          <div><dt>Objected</dt><dd>{position.objected.join(", ") || "none"}</dd></div>
-          <div><dt>Silent</dt><dd>{position.silent.join(", ") || "none"}</dd></div>
-          {position.failed.length > 0 && <div><dt>Failed advisers</dt><dd>{position.failed.join(", ")}</dd></div>}
+          <div>
+            <dt>Backed</dt>
+            <dd>{position.backed.join(", ") || "none"}</dd>
+          </div>
+          <div>
+            <dt>Objected</dt>
+            <dd>{position.objected.join(", ") || "none"}</dd>
+          </div>
+          <div>
+            <dt>Silent</dt>
+            <dd>{position.silent.join(", ") || "none"}</dd>
+          </div>
+          {position.failed.length > 0 && (
+            <div>
+              <dt>Failed advisers</dt>
+              <dd>{position.failed.join(", ")}</dd>
+            </div>
+          )}
         </dl>
       )}
     </div>
@@ -81,31 +122,39 @@ export function JevSweep({ host }: { host: HostServices }): ReactElement | null 
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; stop.current = true; };
+    return () => {
+      mounted.current = false;
+      stop.current = true;
+    };
   }, []);
-  const plan = usePolledResource(async () => {
-    try {
-      const result = await host.client.action(`${JEV_PLUGIN_ID}.${JEV_ACTIONS.sweepPlan}`, {});
-      const parsed = result.ok ? SweepPlanSchema.safeParse(result.result) : null;
-      if (parsed?.success && parsed.data.silent === "") {
-        const nextBasis = parsed.data.kinds.map((kind) => kind.basis).join("/");
-        if (basis.current !== nextBasis) {
-          basis.current = nextBasis;
-          after.current = "";
-          clear(value);
+  const plan = usePolledResource(
+    async () => {
+      try {
+        const result = await host.client.action(`${JEV_PLUGIN_ID}.${JEV_ACTIONS.sweepPlan}`, {});
+        const parsed = result.ok ? SweepPlanSchema.safeParse(result.result) : null;
+        if (parsed?.success && parsed.data.silent === "") {
+          const nextBasis = parsed.data.kinds.map((kind) => kind.basis).join("/");
+          if (basis.current !== nextBasis) {
+            basis.current = nextBasis;
+            after.current = "";
+            setDry(false);
+            clear(value);
+          }
+          return parsed.data;
         }
-        return parsed.data;
+      } catch {
+        // A missing/disabled optional part must not disturb the feed's own reading path.
       }
-    } catch {
-      // A missing/disabled optional part must not disturb the feed's own reading path.
-    }
-    clear(value);
-    return null;
-  }, 15_000, {
-    key: "babel-jev-plan",
-    initial: null,
-    hold: () => busy.current,
-  });
+      clear(value);
+      return null;
+    },
+    15_000,
+    {
+      key: "babel-jev-plan",
+      initial: null,
+      hold: () => busy.current,
+    },
+  );
 
   async function run(): Promise<void> {
     if (busy.current || plan.value === null) return;
@@ -119,7 +168,8 @@ export function JevSweep({ host }: { host: HostServices }): ReactElement | null 
       while (remaining > 0 && !stop.current) {
         const previous = after.current;
         const result = await host.client.action(`${JEV_PLUGIN_ID}.${JEV_ACTIONS.sweep}`, {
-          after: after.current, limit: Math.min(JEV_SWEEP_BATCH, remaining),
+          after: after.current,
+          limit: Math.min(JEV_SWEEP_BATCH, remaining),
         });
         if (!result.ok) throw new Error(result.denial.message);
         const batch = SweptSchema.parse(result.result);
@@ -135,7 +185,7 @@ export function JevSweep({ host }: { host: HostServices }): ReactElement | null 
         if (batch.stopped !== "") {
           setMessage(`${judged} judged; ${unread} not judged. ${batch.stopped}`);
           if (batch.read === 0) after.current = "";
-          if (batch.unjudged > 0 && batch.judged === 0) {
+          if (batch.unjudged > 0 && judged === 0) {
             clear(value);
             setDry(true);
           }
@@ -148,7 +198,10 @@ export function JevSweep({ host }: { host: HostServices }): ReactElement | null 
       if (mounted.current) setMessage(refusal(error));
     } finally {
       busy.current = false;
-      if (mounted.current) { setRunning(false); plan.refresh(); }
+      if (mounted.current) {
+        setRunning(false);
+        plan.refresh();
+      }
     }
   }
 
@@ -179,19 +232,36 @@ export function JevSweep({ host }: { host: HostServices }): ReactElement | null 
     }
   }
 
-  if (plan.value === null || dry) return null;
+  if ((plan.value === null || dry) && proposals.length === 0) return null;
   return (
     <Stack className="babel-jev-sweep" gap="var(--babel-space-2)">
-      <p>Jev can judge {plan.value.unjudged.toLocaleString()} pending records, including observations.</p>
+      <p>
+        {plan.value === null || dry
+          ? "Jev is unavailable. Suggestions from completed work remain for your decision."
+          : `Jev can judge ${plan.value.unjudged.toLocaleString()} pending records, including observations.`}
+      </p>
       <p className="babel-note">
-        Up to one paid call per record, in batches of {JEV_SWEEP_BATCH}. Readings last for this browser
-        session; only submitted suggestions are saved. Babel’s ordering and your rulings do not change.
+        Up to one paid call per record, in batches of {JEV_SWEEP_BATCH}. Readings last for this
+        browser session; only submitted suggestions are saved. Babel’s ordering and your rulings do
+        not change.
       </p>
       <Cluster gap="var(--babel-space-2)">
         {running ? (
-          <button type="button" onClick={() => { stop.current = true; setMessage("Stopping after this batch."); }}>Stop sweep</button>
+          <button
+            type="button"
+            onClick={() => {
+              stop.current = true;
+              setMessage("Stopping after this batch.");
+            }}
+          >
+            Stop sweep
+          </button>
         ) : (
-          <button type="button" disabled={submitting || proposals.length > 0 || plan.value.unjudged === 0} onClick={() => void run()}>
+          <button
+            type="button"
+            disabled={submitting || proposals.length > 0 || dry || !plan.value?.unjudged}
+            onClick={() => void run()}
+          >
             Judge pending corpus
           </button>
         )}

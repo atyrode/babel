@@ -381,7 +381,9 @@ test("without a bound Jev the pass says it did nothing and never invokes the thr
   const absent = host({ bound: false, throwOnInvoke: true });
   const result = await sweep(
     {
-      actions: memoryActions([{ recordId: "fnd_00000001", revision: 0, kind: "finding", suggestible: true }]),
+      actions: memoryActions([
+        { recordId: "fnd_00000001", revision: 0, kind: "finding", suggestible: true },
+      ]),
       services: absent.services,
       screeners: [ALWAYS],
       answers: new JevAnswers(),

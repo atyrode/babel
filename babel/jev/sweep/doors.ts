@@ -1,7 +1,7 @@
 import { defineServerAction, type ServerHandler } from "@manifold/plugin-kit/server";
 import { JEV_ACTIONS, SweepInputSchema, SweepPlanSchema, SweptSchema } from "../../contract.ts";
 import { sweep, sweepPlan } from "./sweep.ts";
-import { JEV_SERVICE } from "../server/credential.ts";
+import { jevPolicyRevision } from "../server/credential.ts";
 
 /*
   THE DRIVER OF THE SWEEP (#356), AND THE ONLY NEW SURFACE.
@@ -43,11 +43,8 @@ export const SWEEP_ACTIONS = [sweepPlanAction, sweepAction] as const;
 export const SWEEP_HANDLERS: Readonly<Record<string, ServerHandler>> = {
   [JEV_ACTIONS.sweepPlan]: async (ctx, args: unknown) => {
     const parsed = SweepInputSchema.parse(args);
-    const roster = await ctx.services.listInstances({}).catch(() => null);
-    const policyRevision = roster?.services.find(
-      (service) => service.serviceId === JEV_SERVICE.serviceId && service.state === "ready",
-    )?.configuration?.revision;
-    if (policyRevision === undefined) {
+    const policyRevision = await jevPolicyRevision(ctx.services);
+    if (policyRevision === null) {
       return {
         kinds: [],
         unjudged: 0,
@@ -58,7 +55,9 @@ export const SWEEP_HANDLERS: Readonly<Record<string, ServerHandler>> = {
       };
     }
     return await sweepPlan(ctx.actions, {
-      limit: parsed.limit, kinds: parsed.kinds, policyRevision,
+      limit: parsed.limit,
+      kinds: parsed.kinds,
+      policyRevision,
     });
   },
   [JEV_ACTIONS.sweep]: async (ctx, args: unknown) => {

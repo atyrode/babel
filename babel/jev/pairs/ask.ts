@@ -194,34 +194,6 @@ export function pairRequestKey(pair: RecordPair): string {
 const HELD = new JevAnswers();
 
 /**
- * THE POLICY THE PAIR OPERATION WOULD BE ASKED UNDER, or `null` because none would answer.
- *
- * The pass needs the revision BEFORE it spends, because {@link pairBasis} puts it on every
- * suggestion and a mark naming a policy that did not answer is worse than no mark. `askJev`
- * reads the roster too and deliberately keeps the revision to itself — the transport does not
- * know what a judgement means and should not learn — so this is a second read of the same free
- * roster rather than a widening of that return type for one caller.
- *
- * It is also the whole of "no policy, no invocation": a pass that gets `null` here stops having
- * read nothing and spent nothing, and `invokeInstance` is never reached.
- */
-export async function pairPolicyRevision(services: JevServices): Promise<string | null> {
-  try {
-    const roster = await services.listInstances({});
-    const bound = roster.services.find((service) => service.serviceId === JEV_SERVICE.serviceId);
-    // `ready` and a configuration are two facts, and the type keeps them apart: a row that
-    // claims the first without the second names no revision, which is one more way Jev is not
-    // available rather than a revision this pass may invent.
-    const configuration = bound?.state === "ready" ? bound.configuration : null;
-    if (configuration === null) return null;
-    return String(configuration.revision);
-  } catch {
-    // The host's own failures are Jev being unavailable, which is the same absence as the rest.
-    return null;
-  }
-}
-
-/**
  * Jev's judgement of one ORDERED pair, or `null` because Jev did not judge it.
  *
  * The one branch is the whole contract and it is `judge`'s: absent, disabled, out of credit, a

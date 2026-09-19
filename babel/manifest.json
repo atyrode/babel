@@ -29,7 +29,9 @@
   "database": {
     "maxBytes": 1073741824
   },
-  "purges": ["storage"],
+  "purges": [
+    "storage"
+  ],
   "contributes": {
     "panels": [],
     "sections": [],
@@ -62,20 +64,24 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "b65afc38655609d5a2bebd9b31170fa2b6de32ec2e7923ce82b90e99f0c1cb29",
+        "sha256": "b413929e89ce5ddd165507353f1a9dbd32f2500f50a6105c374adff3b7fc7160",
         "format": "raw",
-        "entry": ["machine.js"],
-        "entrySha256": "b65afc38655609d5a2bebd9b31170fa2b6de32ec2e7923ce82b90e99f0c1cb29",
+        "entry": [
+          "machine.js"
+        ],
+        "entrySha256": "b413929e89ce5ddd165507353f1a9dbd32f2500f50a6105c374adff3b7fc7160",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "b65afc38655609d5a2bebd9b31170fa2b6de32ec2e7923ce82b90e99f0c1cb29",
+        "sha256": "b413929e89ce5ddd165507353f1a9dbd32f2500f50a6105c374adff3b7fc7160",
         "format": "raw",
-        "entry": ["machine.js"],
-        "entrySha256": "b65afc38655609d5a2bebd9b31170fa2b6de32ec2e7923ce82b90e99f0c1cb29",
+        "entry": [
+          "machine.js"
+        ],
+        "entrySha256": "b413929e89ce5ddd165507353f1a9dbd32f2500f50a6105c374adff3b7fc7160",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -87,7 +93,10 @@
           "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64-baseline.zip",
           "sha256": "c678040f14fe0440eb839d37cbd0ce4c051a32da72806ac97de6a6aab6bf728f",
           "format": "zip",
-          "entry": ["bun-linux-x64-baseline", "bun"],
+          "entry": [
+            "bun-linux-x64-baseline",
+            "bun"
+          ],
           "entrySha256": "a83d263767d839e4d2649ca8e35d07159c7afc99afdc96d731ced29e056dda0c",
           "maxBytes": 36646949,
           "maxExpandedBytes": 79500640,
@@ -97,7 +106,10 @@
           "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-aarch64.zip",
           "sha256": "54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7",
           "format": "zip",
-          "entry": ["bun-linux-aarch64", "bun"],
+          "entry": [
+            "bun-linux-aarch64",
+            "bun"
+          ],
           "entrySha256": "616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1",
           "maxBytes": 36602920,
           "maxExpandedBytes": 79420872,
@@ -109,35 +121,47 @@
       "atyrode.babel.outputs": {
         "anchor": "runtime",
         "kind": "directory",
-        "components": ["outputs"],
+        "components": [
+          "outputs"
+        ],
         "revision": "2"
       },
       "atyrode.babel.cache": {
         "anchor": "state",
         "managed": true,
         "kind": "directory",
-        "components": ["cache"],
+        "components": [
+          "cache"
+        ],
         "revision": "1",
         "guestPath": "/home/job/.cache"
       },
       "atyrode.babel.omp": {
         "anchor": "home",
         "kind": "directory",
-        "components": [".omp", "agent", "sessions"],
+        "components": [
+          ".omp",
+          "agent",
+          "sessions"
+        ],
         "revision": "1",
         "guestPath": "/home/job/.omp/agent/sessions"
       },
       "atyrode.babel.codex": {
         "anchor": "home",
         "kind": "directory",
-        "components": [".codex"],
+        "components": [
+          ".codex"
+        ],
         "revision": "1",
         "guestPath": "/home/job/.codex"
       },
       "atyrode.babel.claude": {
         "anchor": "home",
         "kind": "directory",
-        "components": [".claude"],
+        "components": [
+          ".claude"
+        ],
         "revision": "1",
         "guestPath": "/home/job/.claude"
       }
@@ -176,7 +200,11 @@
             "input": "input"
           }
         },
-        "runtimeTools": ["bun", "development", "system"],
+        "runtimeTools": [
+          "bun",
+          "development",
+          "system"
+        ],
         "executable": {
           "runtimeTool": "bun"
         },
@@ -198,7 +226,9 @@
             "access": "read"
           }
         ],
-        "outputs": ["outputs"],
+        "outputs": [
+          "outputs"
+        ],
         "network": "none",
         "limits": {
           "timeoutMs": 600000,
@@ -244,12 +274,16 @@
             "literal": "{\"url\":\"\",\"bearer\":\"\"}",
             "jsonValues": [
               {
-                "path": ["url"],
+                "path": [
+                  "url"
+                ],
                 "serviceId": "atyrode.babel.restic",
                 "value": "url"
               },
               {
-                "path": ["bearer"],
+                "path": [
+                  "bearer"
+                ],
                 "serviceId": "atyrode.babel.restic",
                 "value": "bearer"
               }
@@ -260,13 +294,19 @@
           {
             "serviceId": "atyrode.babel.restic",
             "revision": "1",
-            "operationIds": ["storage"]
+            "operationIds": [
+              "storage"
+            ]
           }
         ],
         "environment": {
           "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic"
         },
-        "runtimeTools": ["bun", "restic", "system"],
+        "runtimeTools": [
+          "bun",
+          "restic",
+          "system"
+        ],
         "executable": {
           "runtimeTool": "bun"
         },
@@ -292,7 +332,9 @@
             "access": "read"
           }
         ],
-        "outputs": ["outputs"],
+        "outputs": [
+          "outputs"
+        ],
         "network": "host",
         "limits": {
           "timeoutMs": 600000,
@@ -344,7 +386,11 @@
         "environment": {
           "BABEL_PREPARE_CACHE_DIR": "/home/job/.cache/prepare"
         },
-        "runtimeTools": ["bun", "development", "system"],
+        "runtimeTools": [
+          "bun",
+          "development",
+          "system"
+        ],
         "executable": {
           "runtimeTool": "bun"
         },
@@ -370,8 +416,13 @@
             "access": "read"
           }
         ],
-        "outputs": ["outputs", "material"],
-        "exports": ["material"],
+        "outputs": [
+          "outputs",
+          "material"
+        ],
+        "exports": [
+          "material"
+        ],
         "network": "none",
         "limits": {
           "timeoutMs": 1800000,
@@ -417,12 +468,16 @@
             "literal": "{\"url\":\"\",\"bearer\":\"\"}",
             "jsonValues": [
               {
-                "path": ["url"],
+                "path": [
+                  "url"
+                ],
                 "serviceId": "atyrode.babel.restic",
                 "value": "url"
               },
               {
-                "path": ["bearer"],
+                "path": [
+                  "bearer"
+                ],
                 "serviceId": "atyrode.babel.restic",
                 "value": "bearer"
               }
@@ -433,14 +488,20 @@
           {
             "serviceId": "atyrode.babel.restic",
             "revision": "1",
-            "operationIds": ["storage"]
+            "operationIds": [
+              "storage"
+            ]
           }
         ],
         "environment": {
           "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic",
           "BABEL_VERIFY_SCRATCH_DIR": "/home/job/.cache/verify"
         },
-        "runtimeTools": ["bun", "restic", "system"],
+        "runtimeTools": [
+          "bun",
+          "restic",
+          "system"
+        ],
         "executable": {
           "runtimeTool": "bun"
         },
@@ -454,7 +515,9 @@
             "access": "write"
           }
         ],
-        "outputs": ["outputs"],
+        "outputs": [
+          "outputs"
+        ],
         "network": "host",
         "limits": {
           "timeoutMs": 3600000,

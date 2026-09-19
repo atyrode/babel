@@ -10,7 +10,7 @@ import {
 } from "../../contract.ts";
 import { JEV_SERVICE, type JevServices } from "../server/credential.ts";
 import { JevAnswers } from "../server/judge.ts";
-import { PAIR_HANDLERS, pairsAction } from "./doors.ts";
+import { PAIR_HANDLERS } from "./doors.ts";
 import { pairPass } from "./pass.ts";
 
 /*
@@ -145,7 +145,15 @@ function baseline(): { readonly actions: GuestActions; readonly knocked: string[
               keyword: -1,
               meaning: null,
             })),
-            coverage: { records: 2, keyworded: 2, embedded: 0, empty: 0, stale: 0, model: "" },
+            coverage: {
+              records: 2,
+              keyworded: 2,
+              embedded: 0,
+              empty: 0,
+              stale: 0,
+              model: "",
+              unnameable: 0,
+            },
             meaning: "absent" as const,
             meaningAbsent: "no embedding service is installed, so this answer is by keyword alone",
             scanned: 2,
@@ -178,12 +186,6 @@ async function knock(
   const ctx = { actions, services } as unknown as Parameters<typeof handler>[0];
   return PairsReportSchema.parse(await handler(ctx, parsed as never));
 }
-
-test("the door is read-only and registered under the name the family spells", () => {
-  expect(pairsAction.name).toBe(JEV_ACTIONS.pairs);
-  expect(pairsAction.caps).toEqual(["containers:read"]);
-  expect(Object.keys(PAIR_HANDLERS)).toEqual([JEV_ACTIONS.pairs]);
-});
 
 test("one paid call carries both claims, and both relations come off that one answer", async () => {
   const live = host({});

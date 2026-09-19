@@ -83,6 +83,7 @@ export function suggestDoors(store: ActsStore): readonly Door[] {
               revision: args.revision,
               kind: args.kind,
               subject: args.subject,
+              aspect: args.aspect,
               summary: args.summary,
               rationale: args.rationale,
               basis: args.basis,

@@ -221,7 +221,10 @@ export async function screenPass(
   let suggested = 0;
   for (const record of records) {
     const answer = await judge(
-      services, requestFor(record.kind, record.text), options.answers, options.expectedRevision,
+      services,
+      requestFor(record.kind, record.text),
+      options.answers,
+      options.expectedRevision,
     );
     // NOT JUDGED YET, and never judged and found wanting: no part, no binding, no credit, a
     // record too large to send. No voter is consulted, so none of them can be wrong about it —
