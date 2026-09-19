@@ -58,11 +58,18 @@ import {
     learn how.
 
   AND THE STORE IS NOT A SECOND STORE. It is a `Map` in this module's own scope, bounded, holding
-  nothing durable: a part with no store stays a part with no store, and an answer that is worth
-  keeping past a restart is an assessment the baseline's doors are asked to write. The bound is
-  what makes it a memo instead of a leak, and the bank version inside the key is what keeps it
-  from outliving the wording it was computed under — a stranded entry is unreachable the moment
-  the version moves and is evicted in its turn.
+  nothing durable: a part with no store stays a part with no store. The bound is what makes it a
+  memo instead of a leak, and the bank version inside the key is what keeps it from outliving the
+  wording it was computed under — a stranded entry is unreachable the moment the version moves and
+  is evicted in its turn.
+
+  NOTHING HERE OUTLIVES THE PROCESS, AND NOTHING YET CAN. An answer worth keeping past a restart
+  is a row in the baseline, and the baseline publishes no door that writes one: every act door
+  records the operator as the author and takes him from the calling principal, and no door writes
+  an `edges` or an `assessments` row at all. So a judgement is paid for, read once and forgotten,
+  and a caller cannot ask "have I judged this already" across a restart. That is #360's hold, not
+  a gap this file may close: a part that wrote its own durable answers would be the store it is
+  defined as not having.
 */
 
 /**
