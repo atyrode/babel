@@ -2,8 +2,8 @@
   "id": "atyrode.babel.jev",
   "version": "0.1.0",
   "title": "Jev",
-  "description": "Typed judgement over the records Babel produced, as a part the operator may enable and remove: the voters, their question bank and the calls that pay for them live here and nowhere else, so Babel absent this part behaves exactly as it does with it disabled. It holds no store and no panel of its own, declares no capability, and reaches the baseline only through its doors. It publishes none yet: this is the part, and the judgement is its children.",
-  "capabilities": [],
+  "description": "Typed judgement over the records Babel produced, as a part the operator may enable and remove: the voters, their question bank and the calls that pay for them live here and nowhere else, so Babel absent this part behaves exactly as it does with it disabled. It holds no store and no panel of its own, one authority - invoking the judgement service the operator installed - and reaches the baseline only through its doors. It publishes no voter yet: this is the part, the judgement is its children.",
+  "capabilities": ["services:invoke"],
   "dependencies": {
     "atyrode.babel": {
       "type": "required",
