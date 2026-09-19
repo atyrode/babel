@@ -11,6 +11,7 @@ import {
   openRecord,
   openTopic,
   refusal,
+  useNow,
   useSelection,
   type FeedPost,
   type FeedQuery,
@@ -54,6 +55,14 @@ const TICK_MS = 400;
 
 /** How long a ruling's way back stays offered: long enough to change your mind, short enough to go. */
 const TOAST_MS = 6_000;
+
+/**
+ * How long a row that just recorded something keeps the list still, so the confirmation on it
+ * can be read before the world moves. It is BOUNDED because a hold is a claim that a human is
+ * mid-gesture and a gesture ends: `acted` is emptied only by a new question, so an unbounded
+ * claim would hold the shared feed — every reader's, not only this list's — for the session.
+ */
+const ACTED_HOLD_MS = 4_000;
 
 /** The fallback cadence when no event has arrived. The rail and the pulse read on the same beat. */
 const LIVE_MS = 15_000;
@@ -167,11 +176,9 @@ export function FeedListing({
   const [counted, setCounted] = useState(false);
   const [toast, setToast] = useNote();
   const [ruledToday, setRuledToday] = useState(0);
-  const [now, setNow] = useState(() => Date.now());
+  const now = useNow();
   const rows = useRef(new Map<string, HTMLLIElement>());
   const seen = useRef<{ readonly asked: string; readonly posts: readonly FeedPost[] } | null>(null);
-  const held = useRef(false);
-  held.current = pick !== null || Object.keys(acted).length > 0;
 
   const wire = {
     sort: query.sort,
@@ -194,9 +201,15 @@ export function FeedListing({
       initial: null,
       topics: [BABEL_NODE],
       events: host.client,
-      // A confirmation on screen is a permanent act being written, and the row it belongs to
-      // must still be there when it is recorded.
-      hold: () => held.current,
+      /*
+        A confirmation on screen is a permanent act being written, and the row it belongs to
+        must still be there while it is read. The claim is written INLINE and bounded by the
+        act's own stamp: the kit commits this policy in an effect, which is what keeps a
+        render React abandoned out of a live read, and a predicate that never goes false
+        again starves the feed for every reader of it.
+      */
+      hold: () =>
+        pick !== null || Object.values(acted).some((act) => Date.now() - act.at < ACTED_HOLD_MS),
       onError: (reason) => setFailure(refusal(reason)),
       onSuccess: () => setFailure(""),
     },
@@ -215,7 +228,6 @@ export function FeedListing({
     if (answer === null) return undefined;
     const previous = seen.current;
     seen.current = { asked, posts: answer.posts };
-    setNow(Date.now());
     if (previous === null || previous.asked !== asked) return undefined;
     const before = previous.posts;
     const fresh = answer.posts.filter((post) => !before.some((row) => row.id === post.id));

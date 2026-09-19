@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import type { HostServices, OpenPanelRefusal } from "@manifold/plugin";
 import type { ManifoldRef, PanelArg } from "@manifold/protocol";
 import { z } from "zod";
@@ -236,4 +236,25 @@ export function since(value: string, now: number = Date.now()): string {
   if (ago < DAY) return `${Math.floor(ago / HOUR)}h ago`;
   if (ago < 30 * DAY) return `${Math.floor(ago / DAY)}d ago`;
   return new Date(at).toISOString().slice(0, 10);
+}
+
+/**
+ * THE CLOCK THE AGES ARE READ AGAINST, and it is subscribed to rather than derived.
+ *
+ * The passing of time is an external system: a surface that re-based its clock inside the
+ * effect that received an answer only aged while the hub was talking, so a quiet deployment
+ * printed "just now" on a record hours old — the answer that says nothing changed is still
+ * news about the clock, and on a socket-backed feed there is no answer at all.
+ *
+ * It re-bases on the WALL CLOCK'S OWN MINUTE because `since` speaks in minutes: an age is
+ * late by at most the smallest word it has, and a page of week-old records pays one render a
+ * minute rather than one a tick.
+ */
+export function useNow(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setTimeout(() => setNow(Date.now()), MINUTE - (now % MINUTE));
+    return () => window.clearTimeout(timer);
+  }, [now]);
+  return now;
 }

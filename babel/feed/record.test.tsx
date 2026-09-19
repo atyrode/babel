@@ -1,8 +1,18 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { forgetSelection, look } from "./api.ts";
 import { RecordPanel } from "./record.tsx";
-import { Denial, fakeHost, mount, peel, pointAt, thread, topics, type Fake } from "./testing.tsx";
+import {
+  Denial,
+  fakeHost,
+  mount,
+  peel,
+  pointAt,
+  post,
+  thread,
+  topics,
+  type Fake,
+} from "./testing.tsx";
 
 /*
   THE RECORD PANEL: the peel, the filing desk and the thread.
@@ -343,6 +353,27 @@ describe("the filing desk", () => {
       entity: "ent_0000beef",
       reason: "it was never about babel itself",
     });
+    await view.unmount();
+  });
+});
+
+describe("the clock it reads ages against", () => {
+  afterEach(() => setSystemTime());
+
+  test("an age ages while the record itself does not change (#345)", async () => {
+    // The clock is held still and moved by hand: the hub answers the same peel throughout and
+    // nothing but time passes. 09:00:59.100 puts the page's next reading of the clock 900ms
+    // of real time out.
+    const base = Date.parse("2026-09-12T09:00:59.100Z");
+    setSystemTime(new Date(base));
+    const stamp = new Date(base - 59_000).toISOString();
+    const fake = hub({ record: () => peel({ post: post({ createdAt: stamp }) }) });
+    look({ recordId: "pro_0000000a" });
+    const view = await mount(<RecordPanel host={fake.host} />);
+    expect(view.one(".babel-age").textContent).toBe("just now");
+    setSystemTime(new Date(base + 5 * 60_000));
+    await view.wait(1_200);
+    expect(view.one(".babel-age").textContent).toBe("5m ago");
     await view.unmount();
   });
 });
