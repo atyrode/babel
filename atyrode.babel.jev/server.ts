@@ -10,8 +10,17 @@ import manifestJson from "./manifest.json";
   credit, every door, panel and conductor path answers exactly as it does today — and this file
   is the cheapest structural proof of that, standing before a single voter exists to complicate
   the question. So the roster it registers is empty: no door, no lifecycle hook, no store, no
-  capability, no tool grant and no credential. Each of those arrives with the child that needs
-  it, and one acquired here "because it will be needed" is how an optional part stops being one.
+  tool grant. Each of those arrives with the child that needs it, and one acquired here "because
+  it will be needed" is how an optional part stops being one.
+
+  IT HOLDS EXACTLY ONE AUTHORITY, `services:invoke`, and this is the child that needed it. The
+  key Jev is reached with is the operator's; the part names the service and the host injects the
+  credential by reference, so the part never receives it (`server/credential.ts`, the whole
+  argument). Declaring the capability is what makes the fallback mechanical instead of a promise:
+  authority over a service nobody installed reaches nothing, so no binding is no call, and the
+  code below is the only code in the bundle that could make one. It is re-exported here rather
+  than left loose because a manifest that asks for an authority no shipped module can exercise is
+  the same mistake in the other direction.
 
   IT REACHES THE BASELINE ONLY THROUGH ITS DOORS (`ctx.actions.call`), never as a library, and
   the host is what enforces that rather than a convention: a call to a plugin this manifest does
@@ -21,10 +30,13 @@ import manifestJson from "./manifest.json";
   directory removes a plugin and not a dependency.
 
   The id is spelled once in the family's vocabulary (`JEV_PLUGIN_ID`, `atyrode.babel/contract.ts`)
-  and `test/contract.test.ts` pins this manifest to it. Nothing here imports that file: the kit
-  inlines every imported module into the bundle, and a part with no code of its own yet has no
-  reason to carry the baseline's whole contract for one string it does not use at runtime.
+  and `test/contract.test.ts` pins this manifest and the service id under it to that name. Nothing
+  here imports that file: the kit inlines every imported module into the bundle, and a part with
+  this little code of its own has no reason to carry the baseline's whole contract for one string
+  it does not use at runtime.
 */
+
+export { askJev, JEV_SERVICE, type JevAnswer, type JevServices } from "./server/credential.ts";
 
 export const plugin: ServerPluginDef = {
   manifest: PluginManifestSchema.parse(manifestJson),

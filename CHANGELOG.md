@@ -11,6 +11,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Jev's key never touches the plugin.** The part declares one authority — invoking the
+  judgement service the operator installed — and names that service by id; the host resolves the
+  credential by reference and writes it into the outbound request. There is no field in the
+  policy schema or in the call arguments where a credential *value* could be written, so the
+  absence of the key is structural rather than a discipline anyone has to keep. The shape is
+  `atyrode.babel.restic`'s, line for line, including the one thing deliberately **not** copied:
+  restic's ambient binary fallback has no analogue for a credential, and adding one is the bug a
+  test now defends against.
+
+  **"Out of credit" stops being a policy and becomes a mechanism.** No binding, no call: the
+  client reads the service roster first and answers nothing when no row is ready, having sent
+  nothing and spent nothing. A revoked credential, an exhausted account and an absent part all
+  arrive at the same return value along the same code path, rather than as three special cases
+  beside each other — which is what every other Jev issue's fallback rests on, and why it had to
+  be one path and not three.
 - **Accepting a refinement writes the superseding revision, and a record renders out of Babel.**
   Two halves of the retired review service had no counterpart. A review could write a refinement
   naming the exact revision and JSON Pointer it would change, and nothing let the operator's

@@ -35,6 +35,7 @@ import babelManifest from "../atyrode.babel/manifest.json";
 import feedManifest from "../atyrode.babel/feed/manifest.json";
 import watchManifest from "../atyrode.babel/watch/manifest.json";
 import jevManifest from "../atyrode.babel.jev/manifest.json";
+import { JEV_SERVICE } from "../atyrode.babel.jev/server/credential.ts";
 
 /*
   A manifest is JSON and cannot import `contract.ts`, so every id it repeats is pinned here:
@@ -122,7 +123,7 @@ describe("the parts are parts of the baseline", () => {
     expect(watch.capabilities).toEqual([]);
   });
 
-  test("the judgement part: its id, the required edge, and nothing else at all", () => {
+  test("the judgement part: its id, the required edge, and its one authority", () => {
     expect(jev.id).toBe(JEV_PLUGIN_ID);
     expect(jev.id.startsWith(`${BABEL_PLUGIN_ID}.`)).toBe(true);
     expect(jev.dependencies?.[BABEL_PLUGIN_ID]?.type).toBe("required");
@@ -133,15 +134,23 @@ describe("the parts are parts of the baseline", () => {
     expect(jev.contributes.seats).toBeUndefined();
     expect(jev.contributes.events).toEqual([]);
     /*
-      NOTHING IT COULD BE ASKED FOR YET. An empty part that already held authority, a store or a
-      machine block would be a part the operator cannot reason about the removal of, and the
-      capability acquired "because a child will need it" is exactly how an optional part stops
-      being optional. Each arrives with the child that spends it.
+      ONE AUTHORITY, AND IT IS THE ONE THAT MAKES THE FALLBACK MECHANICAL. A capability acquired
+      "because a child will need it" is how an optional part stops being optional, so each
+      arrives with the child that spends it — and `services:invoke` arrived with the credential
+      path, which is the only code in the part's bundle that can exercise it. It buys nothing on
+      its own: authority over a service nobody installed reaches nothing, which is why no binding
+      is no call rather than a policy somebody has to remember. A store, a machine block or a
+      purge target would each be a part the operator cannot reason about the removal of.
     */
-    expect(jev.capabilities).toEqual([]);
+    expect(jev.capabilities).toEqual(["services:invoke"]);
     expect(jev.database).toBeUndefined();
     expect(jev.machine).toBeUndefined();
     expect(jev.purges).toBeUndefined();
+    // The service it invokes is namespaced under the part, the way `atyrode.babel.restic` is
+    // namespaced under the baseline. `server/credential.ts` spells the id literally rather than
+    // importing the vocabulary — the kit would inline the baseline's whole contract into the
+    // part's bundle for one string — so this is where the two are held together.
+    expect(JEV_SERVICE.serviceId.startsWith(`${JEV_PLUGIN_ID}.`)).toBe(true);
   });
 
   test("the part is removable: nothing of Babel's names it", () => {
