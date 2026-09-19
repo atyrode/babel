@@ -1008,12 +1008,23 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * `standing` IS DERIVED FROM THE LEDGER and is never stored: a status column could come to
    * disagree with the entries behind it, and the entries are the evidence. An empty ledger is
    * `proposed`, which is a different thing from having been declined.
+   *
+   * A SUPERSEDED SUGGESTION IS NOT OFFERED (#410). A plugin the operator allow-listed may write
+   * one live suggestion per record revision and kind, and a second REPLACES the first by naming
+   * it in `$.supersedes` — the row itself stays, because `next_actions` is append-only by
+   * trigger and the history is the point. Showing both would put two identical choices in front
+   * of the reader, so the replaced one is filtered out here rather than deleted anywhere.
    */
   const nextActionsOf = async (id: string): Promise<RecordPeel["nextActions"]> => {
     const proposed = await db.query(
       `SELECT id, kind, summary, proposed_by_id,
               COALESCE(json_extract(payload, '$.rationale'), '') AS rationale, created_at
-         FROM next_actions WHERE record_id = ? ORDER BY created_at, id LIMIT 50`,
+         FROM next_actions
+        WHERE record_id = ?
+          AND NOT EXISTS (SELECT 1 FROM next_actions s
+                           WHERE s.record_id = next_actions.record_id
+                             AND json_extract(s.payload, '$.supersedes') = next_actions.id)
+        ORDER BY created_at, id LIMIT 50`,
       [id],
     );
     if (proposed.length === 0) return [];

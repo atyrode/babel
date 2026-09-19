@@ -231,6 +231,14 @@ export const ACTIONS = {
   setBudget: "setBudget",
   clearBudget: "clearBudget",
   /**
+   * THE ONE WRITE A DEPENDENT PLUGIN GETS (#410): a typed suggestion about one record revision,
+   * attributed to the plugin the operator allow-listed and never to him. It writes a
+   * `next_actions` row and can reach no other table, so the frontier keeps its two writer
+   * classes; `suggestions` is its reading half, and what a retroactive sweep sizes itself from.
+   */
+  suggest: "suggest",
+  suggestions: "suggestions",
+  /**
    * RENDERING A RECORD FOR A DESTINATION (§4.6): a sanitized issue draft, an agent brief, or an
    * operator note. The answer is a filename and its text — a file the operator takes. There is
    * no `publish` beside it and there will not be one: Babel opens no issue, writes into no
@@ -889,6 +897,105 @@ export const TellInputSchema = z.strictObject({
   target: z.strictObject({ kind: z.enum(["record", "entity", "run"]), id: z.string() }).optional(),
   replyTo: z.string().optional(),
 });
+
+// ------------------------------------------------------- what an allowed plugin may suggest
+
+/*
+  ONE NARROW DOOR, AND IT WRITES A SUGGESTION (#410, decided on #360).
+
+  Babel has exactly two writer classes and neither of them is a dependent plugin: the operator is
+  AUTHENTICATED and his acts arrive under his own principal, and a run is MEDIATED — its output
+  never touches a door, the conductor ingests it against a schema the baseline owns. A plugin that
+  judges records holds neither, so admitting it as a third writer on the frontier would put
+  `records`, `edges`, `assessments`, `dispositions` and `status_events` behind a rule somebody has
+  to remember at every one of them, for ever.
+
+  So it writes a `next_actions` row and nothing else. That table already exists, its `kind` is
+  already a CLOSED vocabulary, and `proposed_by_kind` already has an author slot that is neither
+  the operator nor a run — `engine`. A suggestion therefore renders where the record is read, as
+  one more proposed action, and the operator accepts or declines it through `decide` like any
+  other. There is no second review surface and no second acceptance vocabulary.
+
+  WHO IS SUGGESTING IS NEVER AN ARGUMENT, and it is not the plugin id either, because the host
+  does not supply one: `IsolateDispatchCtxSchema` (manifold `protocol/src/isolate.ts`) carries the
+  trace, the PRINCIPAL, its caps, its root flag, its container scope and the clock, and
+  `GuestCtx.pluginId` (manifold `plugin-kit/src/server.ts`) is this plugin's OWN manifest id. The
+  caller's plugin id is known host-side (`plugin-host.ts`'s `actionCalls`) and reaches the trace
+  ledger and the cycle bound, never the handler. What the host DOES authenticate is
+  `ctx.principal`, so the suggester is resolved from the principal through the operator's own
+  allow-list below, and the input document has nowhere to name an author: these are strict
+  objects, so a field trying to would be refused unread.
+*/
+
+/**
+ * ONE ALLOWED SUGGESTER, as the policy document carries it: the principal the host authenticates,
+ * and the plugin whose name its suggestions are written under.
+ *
+ * It is a LIST OF NAMES rather than "any plugin that declares a dependency on Babel", and the
+ * difference is authorising one plugin versus authorising a category — the only thing selecting a
+ * caller otherwise is a dependency edge the caller declares about ITSELF, so the category version
+ * grants every future Babel-dependent plugin write access to the queue by default.
+ */
+export const SuggesterSchema = z.strictObject({
+  /** The principal a suggestion arrives under; `ctx.principal.id`, which no caller chooses. */
+  principalId: bounded(200),
+  /** The plugin its suggestions are attributed to, written into `next_actions.proposed_by_id`. */
+  pluginId: z.string().regex(/^[a-z0-9][a-z0-9.-]{1,79}$/),
+  /** Why the operator allowed it. Read by nobody; kept because a grant with no reason ages badly. */
+  note: z.string().max(400).default(""),
+});
+export type Suggester = z.infer<typeof SuggesterSchema>;
+
+/**
+ * WHAT A SUGGESTION SAYS. `revision` is the `records.seq` the suggester judged, and it is
+ * required: a record is immutable and a refinement is a NEW revision, so a suggestion naming only
+ * a record id would silently re-attach to whatever the live wording becomes. Carrying it means a
+ * suggestion about a wording that has since been superseded is refused rather than quietly
+ * inherited.
+ */
+export const SuggestInputSchema = z.strictObject({
+  recordId: RecordIdSchema,
+  revision: z.number().int().min(0),
+  kind: NextActionSchema,
+  summary: bounded(400),
+  rationale: z.string().max(2000).default(""),
+});
+
+export const SuggestedSchema = z.strictObject({
+  id: z.string(),
+  recordId: RecordIdSchema,
+  revision: z.number().int(),
+  kind: NextActionSchema,
+  /** The plugin it is attributed to, resolved from the principal and never from the input. */
+  suggester: z.string(),
+  /** The suggestion this one replaced, or empty: one live suggestion per revision and kind. */
+  supersedes: z.string(),
+  at: z.string(),
+  /** How many of this suggester's live suggestions the operator has not answered yet. */
+  outstanding: z.number().int().nonnegative(),
+});
+export type Suggested = z.infer<typeof SuggestedSchema>;
+
+/**
+ * WHAT ONE SUGGESTER'S QUEUE LOOKS LIKE, so a sweep can state its size before it runs.
+ *
+ * #360 requires retroactive application over the whole imported corpus, filtered hard by default.
+ * A sweep that cannot say how many suggestions it would add is how the queue becomes the one
+ * undifferentiated list the desk/queue/shelf split was built to end, one level down — so the
+ * numbers are a door rather than something a caller counts by writing.
+ */
+export const SuggestionsResultSchema = z.strictObject({
+  suggester: z.string(),
+  /** Live suggestions with no answer from the operator. */
+  outstanding: z.number().int().nonnegative(),
+  /** Live suggestions he has accepted or declined. */
+  answered: z.number().int().nonnegative(),
+  /** Record revisions this suggester has already judged: the durable "do not judge twice" mark. */
+  judged: z.number().int().nonnegative(),
+  /** Live record revisions it has not judged: exactly what one more sweep would add. */
+  unjudged: z.number().int().nonnegative(),
+});
+export type SuggestionsResult = z.infer<typeof SuggestionsResultSchema>;
 
 // ------------------------------------------------------------------- what a draw answers
 

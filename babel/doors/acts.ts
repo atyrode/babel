@@ -85,9 +85,10 @@ const ACT_CAPS = ["containers:write"] as const;
 /**
  * Runs one act and turns the store's refusal into the dispatch's. It is the only place the two
  * kinds of error are told apart, so no door can accidentally report a bug as a refusal or a
- * refusal as a 500.
+ * refusal as a 500 — which is why `doors/suggest.ts` takes it from here rather than keeping a
+ * second copy of the discrimination.
  */
-async function acted<Out>(run: () => Promise<Out>): Promise<Out | { refused: string }> {
+export async function acted<Out>(run: () => Promise<Out>): Promise<Out | { refused: string }> {
   try {
     return await run();
   } catch (error) {

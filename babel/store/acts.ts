@@ -7,9 +7,14 @@ import {
   RefinementOutcomeSchema,
   RefinementSchema,
   RoleSchema,
+  SuggesterSchema,
+  type NextAction,
   type NextActionDecision,
   type Refinement,
   type Ruling,
+  type Suggested,
+  type Suggester,
+  type SuggestionsResult,
 } from "../contract.ts";
 import {
   acceptReviewResult,
@@ -1647,6 +1652,256 @@ export async function decide(
     standing: args.decision,
     seq: Number(appended?.[0]?.["seq"] ?? 0),
     at,
+  };
+}
+
+// ------------------------------------------------- what an allowed plugin may suggest (#410)
+
+/*
+  A SUGGESTION IS A `next_actions` ROW AND CAN BE NOTHING ELSE.
+
+  Every statement below names `next_actions` or reads `policies`, `records`, `dispositions` and
+  `next_action_rulings`, and that is the whole reachable set: no `records`, no `edges`, no
+  `assessments`, no `dispositions`, no `status_events`, no delete and no edit. The frontier's two
+  writer classes — the operator, authenticated; a run, mediated by the conductor against a schema
+  the baseline owns — are unchanged, which is what keeps "a run may propose and may never rule"
+  a property of the store rather than a rule somebody remembers.
+
+  THE SUGGESTER IS RESOLVED FROM THE PRINCIPAL, never from the input. The host authenticates
+  `ctx.principal` and supplies no caller plugin id at all, so the operator's allow-list maps the
+  one to the other; an unlisted principal is refused by name and told what would allow it. The
+  row's `proposed_by_kind` is the literal `'engine'` in the SQL below — there is no argument, and
+  no code path, that could make it `'operator'`.
+*/
+
+/** What the policy allows to suggest, as the newest `policies` row carries it. */
+async function allowedSuggesters(store: ActsStore): Promise<readonly Suggester[]> {
+  const row = await first<{ suggesters: string | null }>(
+    store,
+    `SELECT json_extract(payload, '$.suggesters') AS suggesters FROM policies ORDER BY seq DESC LIMIT 1`,
+    [],
+  );
+  // No policy, or one installed before the field existed: nobody may suggest, which is the
+  // right default for an authority the operator has not granted yet.
+  const carried = row?.suggesters;
+  if (carried === null || carried === undefined || carried === "") return [];
+  const parsed = z.array(SuggesterSchema).safeParse(JSON.parse(carried));
+  if (!parsed.success) {
+    throw new Error(`the policy's suggesters are not an allow-list: ${parsed.error.message}`);
+  }
+  return parsed.data;
+}
+
+/**
+ * The plugin this principal writes as, or the refusal saying what would allow it.
+ *
+ * The sentence names the act the operator would perform, because a refusal a caller cannot act
+ * on produces a support question rather than a policy change.
+ */
+export async function suggesterFor(store: ActsStore, principalId: string): Promise<string> {
+  if (principalId === "") throw new ActRefused("a suggestion has no caller");
+  const allowed = await allowedSuggesters(store);
+  const match = allowed.find((suggester) => suggester.principalId === principalId);
+  if (match === undefined) {
+    throw new ActRefused(
+      `${principalId} is not allowed to suggest: add ` +
+        `{"principalId":${JSON.stringify(principalId)},"pluginId":"<the plugin>"} to the ` +
+        `policy's "suggesters" and install it with the setPolicy door`,
+    );
+  }
+  return match.pluginId;
+}
+
+/** One revision, and the revision that has replaced it if any has. */
+interface JudgedRow extends SqlRow {
+  seq: number | bigint;
+  head_id: string;
+  head_seq: number | bigint;
+}
+
+export interface SuggestArgs {
+  recordId: string;
+  revision: number;
+  kind: NextAction;
+  summary: string;
+  rationale: string;
+}
+
+/**
+ * ONE TYPED SUGGESTION ABOUT ONE RECORD REVISION, attributed to the plugin the operator
+ * allow-listed.
+ *
+ * The refusals are in the order that keeps each one meaningful: who is asking, then what they
+ * named, then whether the argument is still open, then whether they have already said it. A
+ * suggestion about a wording that has been superseded is refused rather than inherited, because
+ * a record is immutable and a refinement is a new revision — a suggestion carrying only a record
+ * id would silently re-attach to whatever the live revision becomes.
+ *
+ * ONE LIVE SUGGESTION PER (SUGGESTER, REVISION, KIND), and the second supersedes the first. The
+ * same predicate is the durable "already judged" mark: `suggestionsOf` counts the revisions this
+ * suggester has ever named, so a retroactive sweep over the whole corpus can state how many rows
+ * it would add before it adds one. One constraint, two jobs, and no second bookkeeping table to
+ * disagree with the rows.
+ */
+export async function suggest(
+  store: ActsStore,
+  args: SuggestArgs,
+  principalId: string,
+): Promise<Suggested> {
+  const suggester = await suggesterFor(store, principalId);
+  if (args.summary.trim() === "") throw new ActRefused("a suggestion says what to do, in one line");
+  const judged = await first<JudgedRow>(
+    store,
+    `SELECT r.seq AS seq,
+            (SELECT h.id FROM records h WHERE h.root_id = r.root_id
+              ORDER BY h.seq DESC, h.rowid DESC LIMIT 1) AS head_id,
+            (SELECT h.seq FROM records h WHERE h.root_id = r.root_id
+              ORDER BY h.seq DESC, h.rowid DESC LIMIT 1) AS head_seq
+       FROM records r WHERE r.id = ?`,
+    [args.recordId],
+  );
+  // `next_actions.record_id` REFERENCES `records(id)`, so the store would refuse this anyway —
+  // as a foreign-key violation nobody can read. Saying it here keeps the refusal legible.
+  if (judged === null) throw new ActRefused(`no record ${args.recordId}`);
+  if (Number(judged.seq) !== args.revision) {
+    throw new ActRefused(
+      `${args.recordId} is revision ${String(Number(judged.seq))} and this suggestion was made ` +
+        `against revision ${String(args.revision)}`,
+    );
+  }
+  if (judged.head_id !== args.recordId) {
+    throw new ActRefused(
+      `${args.recordId} has been superseded by ${judged.head_id} (revision ` +
+        `${String(Number(judged.head_seq))}): a suggestion is about the revision it read`,
+    );
+  }
+  const standing = standingOf(
+    (
+      await first<{ disposition: string }>(
+        store,
+        `SELECT disposition FROM dispositions WHERE record_id = ? ORDER BY seq DESC LIMIT 1`,
+        [args.recordId],
+      )
+    )?.disposition ?? null,
+  );
+  // A RULING ENDS THE ARGUMENT. Reopening is the operator's own act and returns the standing to
+  // `new`, so a suggestion is admitted again exactly when he has re-opened the question.
+  if (standing !== "new") {
+    throw new ActRefused(`${args.recordId} is ${standing}: the operator has ruled on it`);
+  }
+  const live = await first<{ id: string }>(
+    store,
+    `SELECT n.id AS id FROM next_actions n
+      WHERE n.record_id = ? AND n.kind = ? AND n.proposed_by_kind = 'engine'
+        AND n.proposed_by_id = ? AND json_extract(n.payload, '$.revision') = ?
+        AND NOT EXISTS (SELECT 1 FROM next_actions s WHERE s.record_id = n.record_id
+                          AND json_extract(s.payload, '$.supersedes') = n.id)
+      ORDER BY n.created_at DESC, n.id DESC LIMIT 1`,
+    [args.recordId, args.kind, suggester, args.revision],
+  );
+  const supersedes = live?.id ?? "";
+  const id = newId("nxt");
+  const at = stamp(store.now());
+  const payload = JSON.stringify({
+    rationale: args.rationale,
+    revision: args.revision,
+    suggester,
+    supersedes,
+  });
+  // THE UNIQUENESS IS IN THE STATEMENT and not only in the read above, so two calls that raced
+  // past the same read cannot both land: the second finds a live sibling it is not superseding
+  // and inserts nothing.
+  const [inserted] = await store.db.batch([
+    {
+      sql: `INSERT INTO next_actions(id, record_id, kind, proposed_by_kind, proposed_by_id,
+              summary, created_at, payload)
+            SELECT ?, ?, ?, 'engine', ?, ?, ?, ?
+             WHERE NOT EXISTS (
+               SELECT 1 FROM next_actions n
+                WHERE n.record_id = ? AND n.kind = ? AND n.proposed_by_kind = 'engine'
+                  AND n.proposed_by_id = ? AND json_extract(n.payload, '$.revision') = ?
+                  AND n.id <> ?
+                  AND NOT EXISTS (SELECT 1 FROM next_actions s WHERE s.record_id = n.record_id
+                                    AND json_extract(s.payload, '$.supersedes') = n.id))
+            RETURNING id`,
+      params: [
+        id,
+        args.recordId,
+        args.kind,
+        suggester,
+        args.summary,
+        at,
+        payload,
+        args.recordId,
+        args.kind,
+        suggester,
+        args.revision,
+        supersedes,
+      ],
+    },
+  ]);
+  if ((inserted?.length ?? 0) === 0) {
+    throw new ActRefused(
+      `${suggester} already has a live ${args.kind} suggestion on ${args.recordId} revision ` +
+        `${String(args.revision)}`,
+    );
+  }
+  store.touch();
+  const counted = await suggestionsOf(store, suggester);
+  return {
+    id,
+    recordId: args.recordId,
+    revision: args.revision,
+    kind: args.kind,
+    suggester,
+    supersedes,
+    at,
+    outstanding: counted.outstanding,
+  };
+}
+
+/**
+ * WHAT ONE SUGGESTER'S QUEUE LOOKS LIKE, and what one more sweep would cost.
+ *
+ * `judged` counts every revision this suggester has ever named, superseded rows included: the
+ * mark exists so a sweep does not re-judge what it has judged, and a supersession is a second
+ * opinion rather than a reason to forget the first. `unjudged` is the complement over the live
+ * revisions — the head of every root — which is exactly the number of rows one more pass adds.
+ */
+export async function suggestionsOf(
+  store: ActsStore,
+  suggester: string,
+): Promise<SuggestionsResult> {
+  const live = await first<{ live: number | bigint; outstanding: number | bigint }>(
+    store,
+    `SELECT COUNT(*) AS live,
+            SUM(CASE WHEN (SELECT r.decision FROM next_action_rulings r
+                            WHERE r.next_action_id = n.id ORDER BY r.seq DESC LIMIT 1) IS NULL
+                     THEN 1 ELSE 0 END) AS outstanding
+       FROM next_actions n
+      WHERE n.proposed_by_kind = 'engine' AND n.proposed_by_id = ?
+        AND NOT EXISTS (SELECT 1 FROM next_actions s WHERE s.record_id = n.record_id
+                          AND json_extract(s.payload, '$.supersedes') = n.id)`,
+    [suggester],
+  );
+  const marks = await first<{ judged: number | bigint; unjudged: number | bigint }>(
+    store,
+    `SELECT (SELECT COUNT(DISTINCT record_id) FROM next_actions
+              WHERE proposed_by_kind = 'engine' AND proposed_by_id = ?) AS judged,
+            (SELECT COUNT(*) FROM records r
+              WHERE NOT EXISTS (SELECT 1 FROM records h WHERE h.supersedes_id = r.id)
+                AND NOT EXISTS (SELECT 1 FROM next_actions n WHERE n.record_id = r.id
+                                  AND n.proposed_by_kind = 'engine'
+                                  AND n.proposed_by_id = ?)) AS unjudged`,
+    [suggester, suggester],
+  );
+  const outstanding = Number(live?.outstanding ?? 0);
+  return {
+    suggester,
+    outstanding,
+    answered: Number(live?.live ?? 0) - outstanding,
+    judged: Number(marks?.judged ?? 0),
+    unjudged: Number(marks?.unjudged ?? 0),
   };
 }
 
