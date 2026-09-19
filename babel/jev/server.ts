@@ -37,11 +37,22 @@ import manifestJson from "./manifest.json";
   edge buys the composition and the install order; declaring the read is what buys the call.
   `test/part-ceiling.test.ts` dispatches one against a host that grades the ceiling.
 
-  `containers:write` IS NOT DECLARED, and that is a decision rather than an omission (#360):
-  it is the authority every ruling door carries, and whether a dependent plugin may write at
-  all is open. Babel's writers are the operator, authenticated through a door under his own
-  principal, and a run, mediated, whose output the conductor ingests against a schema the
-  baseline owns — a part is neither, and a manifest edit is not where that would be settled.
+  `containers:write` IS STILL NOT DECLARED, and after #360 that is a narrower statement than it
+  was. The decision is taken: Jev may write a SUGGESTION — one `next_actions` row through
+  `babel.suggest`, attributed to the part and answered by the operator through `decide` — and it
+  may not annotate a record, write an edge, change a standing, rule or delete. What has not been
+  granted is the capability that would carry that one call: a cross-plugin call is graded against
+  the CALLER's manifest ceiling for every engine capability the callee's door declares, and
+  `containers:write` is the authority EVERY ruling door carries. Declaring it here to reach one
+  door would open `rule`, `decide` and the rest of the acts to the part at the same stroke, with
+  only the operator's own principal behind them — which is the opposite of what #360 decided.
+  The door itself exists — #412 landed `babel.suggest`, whose allow-list is keyed on PRINCIPAL
+  rather than on a capability — and the missing piece is a host mechanism that admits that one
+  write without the rest, open upstream as atyrode/manifold#770. So NOTHING IN THIS BUNDLE
+  CALLS IT: `screen/pass.ts` hands each suggestion to a caller-supplied function and makes no
+  `babel.suggest` call at all, `test/part-ceiling.test.ts` holds the refusal it would meet, and
+  an inert part that computes correct advisories and delivers none of them is Jev's intended
+  state today rather than a gap in it.
 
   The id is spelled once in the family's vocabulary (`JEV_PLUGIN_ID`, `babel/contract.ts`)
   and `test/contract.test.ts` pins this manifest and the service id under it to that name. Nothing
@@ -66,6 +77,24 @@ export {
   requestKey,
   type JevRequest,
 } from "./server/judge.ts";
+export {
+  screenPass,
+  screenRecord,
+  sweepSize,
+  type PassReport,
+  type PassSuggestion,
+  type ScreenFailure,
+  type ScreenResult,
+  type SweepSize,
+} from "./screen/pass.ts";
+export {
+  answersOf,
+  type ScreenedRecord,
+  type Screener,
+  type ScreenSubject,
+  type ScreenSuggestion,
+} from "./screen/screener.ts";
+export { SCREENERS } from "./screen/screeners.ts";
 
 export const plugin: ServerPluginDef = {
   manifest: PluginManifestSchema.parse(manifestJson),

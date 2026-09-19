@@ -1,6 +1,6 @@
 ---
 kind: hypothesis
-version: 1
+version: 2
 ---
 
 # Hypothesis
@@ -50,6 +50,26 @@ material establishes it is asking a question the kind cannot answer; its down si
 stands, because a hypothesis showing nothing at all is a real objection. And **rigour** objects to
 46% of them, which is not a defect in the question: nearly half of these claims do assert a
 mechanism their material does not demonstrate.
+
+## Advisories
+
+A row here is not a vote and cannot become one. It carries a question, the line at which its
+answer becomes a SUGGESTION, and the next action that suggestion proposes — there is no `casts`
+column, so nothing in this block can move a record's standing by any amount. That is the whole
+reason it is a separate block: the questions that belong in it are the ones asked BECAUSE a
+measured bias moves standing, and a correction that could itself move standing would be the same
+bias again under a new name.
+
+`suggests` is one of the next actions the `suggest` door can write, or the word `none` — a line
+the operator kept the measurement for and withdrew the action from. Several rows may name one
+question, one per option a `choice` cares about, exactly as a two-sided voter writes one per
+side. The admission band is the thresholds block's: a row firing on under 2% or over 95%
+proposes the same thing for everything and is not admitted, and it stays here because deleting
+it would lose the measurement that retired it. The block may hold no rows and is still required,
+because a heading that quietly went missing is an edit nobody reviews.
+
+| question | suggests | fires when | observed |
+| -------- | -------- | ---------- | -------- |
 
 ## Routing
 

@@ -1,10 +1,10 @@
 {
   "about": "The question bank: what Jev is asked of each record kind, at what line each answer becomes a vote, and the distribution over this corpus that justified the line. An assessment cites kind@version; the thresholds are one deployment's calibration and not Babel's behaviour.",
-  "version": 1,
+  "version": 2,
   "documents": [
     {
       "kind": "finding",
-      "version": 1,
+      "version": 2,
       "title": "Finding",
       "questions": [
         {
@@ -429,6 +429,7 @@
           "admitted": true
         }
       ],
+      "advisories": [],
       "routing": [
         {
           "question": "subject",
@@ -464,7 +465,7 @@
     },
     {
       "kind": "hypothesis",
-      "version": 1,
+      "version": 2,
       "title": "Hypothesis",
       "questions": [
         {
@@ -889,6 +890,7 @@
           "admitted": true
         }
       ],
+      "advisories": [],
       "routing": [
         {
           "question": "subject",
@@ -916,7 +918,7 @@
     },
     {
       "kind": "observation",
-      "version": 1,
+      "version": 2,
       "title": "Observation",
       "questions": [
         {
@@ -1341,6 +1343,7 @@
           "admitted": true
         }
       ],
+      "advisories": [],
       "routing": [
         {
           "question": "subject",
@@ -1376,7 +1379,7 @@
     },
     {
       "kind": "proposal",
-      "version": 1,
+      "version": 2,
       "title": "Proposal",
       "questions": [
         {
@@ -1801,6 +1804,7 @@
           "admitted": false
         }
       ],
+      "advisories": [],
       "routing": [
         {
           "question": "subject",

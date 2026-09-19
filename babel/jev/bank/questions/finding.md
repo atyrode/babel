@@ -1,6 +1,6 @@
 ---
 kind: finding
-version: 1
+version: 2
 ---
 
 # Finding
@@ -52,6 +52,26 @@ opposite and stays: a quarter of findings arrive welded to their remedy.
 The panel deliberately does not ask how many distinct runs a finding rests on, although 84.5% of
 these rest on exactly one. The `record` door already answers that from the store, and a question
 whose answer Babel holds is a question to stop paying a model for.
+
+## Advisories
+
+A row here is not a vote and cannot become one. It carries a question, the line at which its
+answer becomes a SUGGESTION, and the next action that suggestion proposes — there is no `casts`
+column, so nothing in this block can move a record's standing by any amount. That is the whole
+reason it is a separate block: the questions that belong in it are the ones asked BECAUSE a
+measured bias moves standing, and a correction that could itself move standing would be the same
+bias again under a new name.
+
+`suggests` is one of the next actions the `suggest` door can write, or the word `none` — a line
+the operator kept the measurement for and withdrew the action from. Several rows may name one
+question, one per option a `choice` cares about, exactly as a two-sided voter writes one per
+side. The admission band is the thresholds block's: a row firing on under 2% or over 95%
+proposes the same thing for everything and is not admitted, and it stays here because deleting
+it would lose the measurement that retired it. The block may hold no rows and is still required,
+because a heading that quietly went missing is an edit nobody reviews.
+
+| question | suggests | fires when | observed |
+| -------- | -------- | ---------- | -------- |
 
 ## Routing
 

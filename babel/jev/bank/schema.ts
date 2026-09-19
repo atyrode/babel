@@ -1,8 +1,14 @@
 import { z } from "zod";
-import { RECORD_KINDS, RecordIdSchema, RecordKindSchema, RULINGS } from "../../contract.ts";
+import {
+  NextActionSchema,
+  RECORD_KINDS,
+  RecordIdSchema,
+  RecordKindSchema,
+  RULINGS,
+} from "../../contract.ts";
 
 /*
-  THE QUESTION BANK: WHAT JEV IS ASKED, AND AT WHAT LINE AN ANSWER BECOMES A VOTE.
+  THE QUESTION BANK: WHAT JEV IS ASKED, AND WHAT EACH ANSWER IS ALLOWED TO DO.
 
   A reworded criterion silently changes every vote downstream, so the bank is not a constant in a
   bundle: it is one reviewable document per record kind under `bank/questions/`, each declaring
@@ -12,13 +18,23 @@ import { RECORD_KINDS, RecordIdSchema, RecordKindSchema, RULINGS } from "../../c
   the way a claim cites `recipe@version`, and a citation is only worth writing if the thing it
   names can be read back exactly.
 
-  THIS MODULE IS THE VOCABULARY AND THE SHAPES: what a question, a vote, a routing question and
-  an exemplar are, and the tally that sums the first of those. `bank/bank.ts` is the runtime half
-  and holds the seed the hub ships with; `bank/parse.ts` is the dev-time bridge from the
-  documents to that seed. Nothing a hub runs reads a repository file, which is why the documents
-  and the shipped artifact are two things.
+  THIS MODULE IS THE VOCABULARY AND THE SHAPES: what a question, a vote, an advisory, a routing
+  question and an exemplar are, and the tally that sums the first of those. `bank/bank.ts` is the
+  runtime half and holds the seed the hub ships with; `bank/parse.ts` is the dev-time bridge from
+  the documents to that seed. Nothing a hub runs reads a repository file, which is why the
+  documents and the shipped artifact are two things.
 
-  THREE PROPERTIES ARE STRUCTURAL RATHER THAN CONVENTIONAL:
+  THERE ARE THREE BLOCKS BECAUSE THERE ARE THREE OUTPUTS, and which block a question sits in is
+  the whole of what its answer may do. A thresholds row casts a VOTE, which moves where the
+  record stands. A routing row produces a LABEL, which says where it is filed and whether it may
+  be published. An advisory row produces a SUGGESTION — one proposed next action written beside
+  the record through `babel.suggest`, which the operator accepts or declines and which moves
+  nothing by itself. Collapsing the third into the first would make every question that can only
+  propose also able to rank, and the first question to need the block is the one defending
+  against a measured ranking bias (#336), so it would rank on exactly the axis it exists to stop
+  ranking on.
+
+  FOUR PROPERTIES ARE STRUCTURAL RATHER THAN CONVENTIONAL:
 
   1. A ROUTING QUESTION CANNOT BE TALLIED. `subject`, `classification` and `contains_instruction`
      say where a record goes and whether it may be published; they are not opinions about its
@@ -27,16 +43,22 @@ import { RECORD_KINDS, RecordIdSchema, RecordKindSchema, RULINGS } from "../../c
      direction: a thresholds row naming a routing question is refused, and so is a routing row
      naming anything else, so a routing question cannot become a vote by being written as one.
 
-  2. A THRESHOLD WITHOUT ITS OBSERVED DISTRIBUTION IS REFUSED. Not marked, not defaulted —
-     refused, by `bank/parse.ts`, naming the row. A threshold copied from a vendor's
-     documentation is somebody else's corpus, and a number nobody can trace back to this one is
-     the same thing with the citation removed.
+  2. NEITHER CAN AN ADVISORY, and for the same reason rather than a similar one: `Advisory` has
+     no `voter` and no `casts`, so `tally()` will not take one either. The absence is the
+     mechanism and `bank.test.ts` holds a compile-time assertion on it, because the way this
+     would be lost is somebody adding a convenient `casts` field years from now and turning every
+     suggestion in the bank into a vote without noticing.
 
-  3. A SIDE THAT FIRES ON ALMOST NOTHING OR ALMOST EVERYTHING IS NOT ADMITTED. The study's own
+  3. A THRESHOLD WITHOUT ITS OBSERVED DISTRIBUTION IS REFUSED, and an advisory's cut is a
+     threshold. Not marked, not defaulted — refused, by `bank/parse.ts`, naming the row. A
+     threshold copied from a vendor's documentation is somebody else's corpus, and a number
+     nobody can trace back to this one is the same thing with the citation removed.
+
+  4. A SIDE THAT FIRES ON ALMOST NOTHING OR ALMOST EVERYTHING IS NOT ADMITTED. The study's own
      methodology finding is that a question answering the same way for everything is broken
      rather than calibrated, and it caught three of its own that way. `admitted` is derived from
-     the recorded distribution rather than declared, so the two cannot disagree, and
-     `bank.ts`'s `votesFor()` returns the admitted sides alone.
+     the recorded distribution rather than declared, so the two cannot disagree, and `bank.ts`'s
+     `votesFor()` and `advisoriesFor()` return the admitted rows alone.
 
   Every threshold and every distribution here was fitted to one deployment's imported Go-era
   corpus of 6,038 records, at one date, under one recipe and model set. That is calibration, not
@@ -152,6 +174,35 @@ export const RoutingSchema = z.strictObject({
 export type Routing = z.infer<typeof RoutingSchema>;
 
 /**
+ * ONE ADVISORY: a question, the line at which its answer becomes a SUGGESTION, and the next
+ * action that suggestion proposes.
+ *
+ * It is the atom of the third block, and it is deliberately not a `Vote`. There is no `voter`
+ * and no `casts`, so `tally()` cannot be handed one — the same structural argument `Routing`
+ * rests on, made again because the failure it prevents is worse here: the first question to
+ * need this block asks whether a record's confidence outruns its evidence, and the measured
+ * reason to ask it is that tone already moves the record's standing by 30 times the assessor's
+ * own noise floor. A question correcting for that bias which could itself move standing would
+ * be a second helping of the bias with a different name on it.
+ *
+ * `suggests` is nullable rather than optional, and `none` is how a document writes it: a record
+ * an advisory fires on and proposes nothing for is a measured answer, not a missing one.
+ *
+ * Several rows may name the same question. A `choice` question thresholds one row per option it
+ * cares about, exactly as a two-sided voter writes one row per side.
+ */
+export const AdvisorySchema = z.strictObject({
+  question: z.string().min(1),
+  /** What firing proposes, in `babel.suggest`'s own vocabulary, or nothing at all. */
+  suggests: NextActionSchema.nullable(),
+  when: ConditionSchema,
+  observed: DistributionSchema,
+  /** Derived from `observed.fires`, never declared, by the same rule a vote's side is. */
+  admitted: z.boolean(),
+});
+export type Advisory = z.infer<typeof AdvisorySchema>;
+
+/**
  * How an exemplar came to be one. Jev takes no conversational turns, so a few-shot example has
  * to live in the question definition — and an example is only worth carrying if the document
  * says whose judgement it records.
@@ -190,6 +241,8 @@ export const BankDocumentSchema = z.strictObject({
   title: z.string().min(1),
   questions: z.array(QuestionSchema).min(1),
   votes: z.array(VoteSchema).min(1),
+  /** The suggestion block, which may be empty: a kind nothing advises on advises nothing. */
+  advisories: z.array(AdvisorySchema),
   routing: z.array(RoutingSchema).length(ROUTING_QUESTIONS.length),
   exemplars: z.array(ExemplarSchema).min(1),
 });
@@ -223,6 +276,23 @@ function fires(when: Condition, answer: number | string | undefined): boolean {
     case "is-not":
       return answer !== when.value;
   }
+}
+
+/**
+ * Whether this advisory fires on these answers, and the ONLY spelling of that question outside
+ * the tally. Every voter module asks it rather than re-reading `when.op` itself, because the
+ * fourth hand-written copy of a four-armed operator is the one that is wrong, and a comparison
+ * that is wrong here produces a confident suggestion about a record nobody judged.
+ *
+ * A question Jev did not answer does not fire. That is the same rule the tally holds and for
+ * the same reason: an absent answer is not a judgement, and the part answers `null` for every
+ * absence there is — no binding, no credit, an unreadable response.
+ */
+export function advises(
+  advisory: Advisory,
+  answers: Readonly<Record<string, number | string>>,
+): boolean {
+  return fires(advisory.when, answers[advisory.question]);
 }
 
 export interface TallyResult {
