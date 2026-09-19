@@ -1090,5 +1090,6 @@ export function recordTextSql(alias: string): string {
 export function nameableRecordSql(column: string): string {
   return `substr(${column}, 1, 4) IN ('hyp_', 'obs_', 'fnd_', 'pro_', 'qst_')
           AND length(${column}) BETWEEN 12 AND 68
+          AND length(CAST(${column} AS BLOB)) = length(${column})
           AND substr(${column}, 5) NOT GLOB '*[^0-9a-f]*'`;
 }

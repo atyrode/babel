@@ -75,6 +75,7 @@ export function JevSweep({ host }: { host: HostServices }): ReactElement | null 
   const [message, setMessage] = useState("");
   const [proposals, setProposals] = useState<Swept["suggestions"]>([]);
   const after = useRef("");
+  const basis = useRef("");
   const stop = useRef(false);
   const busy = useRef(false);
   const mounted = useRef(true);
@@ -86,7 +87,15 @@ export function JevSweep({ host }: { host: HostServices }): ReactElement | null 
     try {
       const result = await host.client.action(`${JEV_PLUGIN_ID}.${JEV_ACTIONS.sweepPlan}`, {});
       const parsed = result.ok ? SweepPlanSchema.safeParse(result.result) : null;
-      if (parsed?.success && parsed.data.silent === "") return parsed.data;
+      if (parsed?.success && parsed.data.silent === "") {
+        const nextBasis = parsed.data.kinds.map((kind) => kind.basis).join("/");
+        if (basis.current !== nextBasis) {
+          basis.current = nextBasis;
+          after.current = "";
+          clear(value);
+        }
+        return parsed.data;
+      }
     } catch {
       // A missing/disabled optional part must not disturb the feed's own reading path.
     }
@@ -108,6 +117,7 @@ export function JevSweep({ host }: { host: HostServices }): ReactElement | null 
     let unread = 0;
     try {
       while (remaining > 0 && !stop.current) {
+        const previous = after.current;
         const result = await host.client.action(`${JEV_PLUGIN_ID}.${JEV_ACTIONS.sweep}`, {
           after: after.current, limit: Math.min(JEV_SWEEP_BATCH, remaining),
         });
@@ -120,18 +130,20 @@ export function JevSweep({ host }: { host: HostServices }): ReactElement | null 
         judged += batch.judged;
         unread += batch.unjudged;
         remaining -= batch.read;
+        if (batch.continuation !== "") after.current = batch.continuation;
         setMessage(`${judged} judged; ${unread} not judged. Suggestions await submission.`);
         if (batch.stopped !== "") {
           setMessage(`${judged} judged; ${unread} not judged. ${batch.stopped}`);
+          if (batch.read === 0) after.current = "";
           if (batch.unjudged > 0 && batch.judged === 0) {
             clear(value);
             setDry(true);
           }
           break;
         }
-        if (batch.read === 0 || batch.continuation === after.current) break;
-        after.current = batch.continuation;
+        if (batch.read === 0 || after.current === previous) break;
       }
+      if (remaining <= 0) after.current = "";
     } catch (error) {
       if (mounted.current) setMessage(refusal(error));
     } finally {
@@ -179,13 +191,18 @@ export function JevSweep({ host }: { host: HostServices }): ReactElement | null 
         {running ? (
           <button type="button" onClick={() => { stop.current = true; setMessage("Stopping after this batch."); }}>Stop sweep</button>
         ) : (
-          <button type="button" disabled={submitting || plan.value.unjudged === 0} onClick={() => void run()}>
+          <button type="button" disabled={submitting || proposals.length > 0 || plan.value.unjudged === 0} onClick={() => void run()}>
             Judge pending corpus
           </button>
         )}
         {proposals.length > 0 && (
           <button type="button" disabled={running || submitting} onClick={() => void submit()}>
             Submit {proposals.length} suggestions
+          </button>
+        )}
+        {proposals.length > 0 && (
+          <button type="button" disabled={running || submitting} onClick={() => setProposals([])}>
+            Discard unsent preview
           </button>
         )}
       </Cluster>

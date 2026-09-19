@@ -193,10 +193,12 @@ test("legacy damage cannot crowd valid records out of the candidate window", asy
   // More damaged rows than the keyword candidate window, all stronger keyword matches.
   // Filtering only the final fused slice would lose the valid result entirely.
   for (let index = 0; index < 40; index += 1) await seedUnnameable(`rec_seed_${String(index)}`);
+  // SQLite text length/substr stop at NUL; a valid prefix must not hide an invalid suffix.
+  await seedUnnameable("fnd_00000000\u0000hidden");
   const answer = await searchCorpus(corpus, null, { query: "drain", limit: 1, kinds: [] });
   expect(answer.hits.map((hit) => hit.id)).toEqual(["fnd_00000001"]);
-  expect(answer.coverage.records).toBe(43);
-  expect(answer.coverage.unnameable).toBe(40);
+  expect(answer.coverage.records).toBe(44);
+  expect(answer.coverage.unnameable).toBe(41);
 });
 
 test("the count of what cannot be named is the store's, so a query that ranks none still says so", async () => {

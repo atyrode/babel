@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { MAX_SQL_BATCH_STATEMENTS } from "@manifold/plugin";
 import type { PluginDatabase, SqlStatement } from "@manifold/plugin";
-import { isRecordId } from "../contract.ts";
 import { nameableRecordSql, recordTextSql } from "./schema.ts";
 
 /*
