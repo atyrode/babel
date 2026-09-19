@@ -2187,6 +2187,42 @@ const CONSTRAINT_WORDS: Record<string, true> = {
   CONSTRAINT: true,
 };
 
+/**
+ * Which columns of each table hold a HUB MACHINE ID, derived from the migration for the reason
+ * `importableTables` is: a list written out here would be a second copy of `SCHEMA_V1`, and the
+ * way a second copy comes to disagree is by being SHORT. The crossing's machine check is worth
+ * having only if it is exhaustive — a guard over two of the three columns reads as a statement
+ * that the third is fine, which is how `runs.machine_id` came to have no test at all and, behind
+ * it, a derivation bug that made its arm unreachable for months (#378, #379).
+ *
+ * The shape is the name: `machine_id`, or a column whose name ends in `host`. Both spellings are
+ * already in the store and both are handed to `describe` — `sessions.host` predates the hub's
+ * vocabulary, and `run_calls.transcript_host` is the machine holding a transcript, written from
+ * the run's own `machineId`. `policies.concurrent_per_machine` is a count of jobs and matches
+ * neither, which is the rule earning its shape rather than naming its tables.
+ *
+ * A COLUMN ADDED TO THE MIGRATION IS GUARDED WITHOUT ANYONE REMEMBERING TO GUARD IT, and one
+ * that takes the shape while holding something else — a `repository_host` — is over-guarded
+ * rather than under-: it refuses an import instead of admitting a row nothing can read back.
+ * Either way the derived map changes, and `store/acts.test.ts` pins it, so the change is a
+ * failing test rather than a quiet pass.
+ */
+let machines: Record<string, readonly string[]> | null = null;
+
+export function machineColumns(): Record<string, readonly string[]> {
+  if (machines !== null) return machines;
+  const holding: Record<string, readonly string[]> = {};
+  for (const [table, columns] of Object.entries(importableTables())) {
+    const named = columns.filter((column) => MACHINE_COLUMN.test(column));
+    if (named.length > 0) holding[table] = named;
+  }
+  machines = holding;
+  return holding;
+}
+
+/** The name of a column holding a hub machine id: `machine_id`, or something's `host`. */
+const MACHINE_COLUMN = /^(machine_id|([a-z_]+_)?host)$/;
+
 /** How many row statements ride in one batch, under the engine's 256-statement bound. */
 const IMPORT_BATCH = 200;
 

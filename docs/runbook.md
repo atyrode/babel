@@ -304,11 +304,14 @@ the hub owner's or the machine's declaration.
 > then an `archive` job settles with a snapshot per root. A successful `scan` with no roots is not
 > proof of anything but an empty machine.
 
-**A machine id is not a host name.** Every row Babel keys on a machine — `sessions.host`,
-`runs.machine_id` — holds the id `core.machines.list` publishes, and the hub resolves no names. The
-imported Go-era corpus carries the old deployment's host name instead, which is what the
-`rehostSessions` door exists to repair: it rewrites one `host` value to one machine id the hub has
-just described (`babel/contract.ts`).
+**A machine id is not a host name.** Every column Babel keys on a machine — `sessions.host`,
+`runs.machine_id`, `drains.machine_id` and `run_calls.transcript_host` — holds the id
+`core.machines.list` publishes, and the hub resolves no names. The crossing refuses a chunk whose
+machine column names something the hub cannot describe, and it reads that list of columns out of
+the migration rather than out of a list of its own, so a column added under either spelling is
+guarded from the day it exists. The imported Go-era corpus carries the old deployment's host name
+instead, which is what the `rehostSessions` door exists to repair: it rewrites one `host` value to
+one machine id the hub has just described (`babel/contract.ts`).
 
 ---
 

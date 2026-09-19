@@ -622,6 +622,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The crossing guards every machine column, and reads the list out of the migration.** The guard
+  that refuses a chunk hosting rows on a value the hub cannot describe covered `sessions.host` and
+  `runs.machine_id` by a hand-written ternary, and the schema had a third — `drains.machine_id`.
+  A guard covering two of three invites the reading that the third is fine, which is exactly how
+  the `runs` arm came to have no test at all and, behind it, a column-derivation bug that made
+  that arm unreachable. The columns are now derived from `SCHEMA_V1` the way the crossing's own
+  importable-table list already is, so a new machine column is guarded **with no edit**; a test
+  pins the derived map, so a change to the set fails in either direction — a new machine column
+  that nobody expected, and a non-machine column that merely takes the shape.
+
+  Deriving it found a fourth nobody had named: `run_calls.transcript_host`, added hours earlier
+  with the per-call trace, which is the locator of a run's transcript and would have taken a host
+  name as happily as the other three.
 - **One stop reason named both a blocked loop and a healthy one.** Reading all nineteen reason
   words as a set for the first time — which moving them into the contract forced — turned up that
   `batch` meant two opposite states of health: three sites where every review slot was held by

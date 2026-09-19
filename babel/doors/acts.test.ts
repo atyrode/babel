@@ -425,6 +425,60 @@ test("the crossing is owner-only, hub-checked and idempotent by (table, id)", as
       rows: [{ ...run, machine_id: machineId }],
     }),
   ).toMatchObject({ table: "runs", inserted: 1 });
+  // And the drain log's, which is the third and had no arm at all (#379). A drain is plugin-era
+  // controller state that no Go crossing produces, so this is a door that would accept the wrong
+  // shape rather than a corpus already in it — but `drains.machine_id` becomes the `machineId` of
+  // every launch the drain fans (`server/drain.ts`'s `drainInput`) and of every `jobs.cancel`
+  // that stops one, both of which the hub answers by id, so a drain crossed under a name is a
+  // drain the controller can neither fan nor stop. The arm exists because the guard's value is
+  // covering every machine column, not most of them.
+  const drain = {
+    id: "drn_1",
+    preset: "backlog",
+    concurrent: 2,
+    target: "{}",
+    started_at: "2026-03-01T09:00:00.000Z",
+    started_by: "alex",
+  };
+  expect(
+    await refusal(owner, ACTIONS.importLedger, {
+      source: "durable.db",
+      table: "drains",
+      rows: [{ ...drain, machine_id: "dev-01" }],
+    }),
+  ).toMatch(/dev-01 is not a machine this hub can describe/);
+  expect(await owner.store.db.query(`SELECT id FROM drains`)).toEqual([]);
+  expect(
+    await knock(owner, ACTIONS.importLedger, {
+      source: "durable.db",
+      table: "drains",
+      rows: [{ ...drain, machine_id: machineId }],
+    }),
+  ).toMatchObject({ table: "drains", inserted: 1 });
+  // The fourth is `run_calls.transcript_host`, which the derived map covers without anyone
+  // having named it: the locator of a run's log is the machine holding it, and a locator onto a
+  // machine the hub cannot describe points nowhere. Its default is the empty string, and an
+  // empty host is no host rather than an unknown one, so a call carrying none still crosses.
+  const call = {
+    run_id: "run_1",
+    seq: 1,
+    recorded_at: "2026-03-01T09:00:00.000Z",
+    closure: "completed",
+  };
+  expect(
+    await refusal(owner, ACTIONS.importLedger, {
+      source: "durable.db",
+      table: "run_calls",
+      rows: [{ ...call, transcript_host: "dev-01" }],
+    }),
+  ).toMatch(/dev-01 is not a machine this hub can describe/);
+  expect(
+    await knock(owner, ACTIONS.importLedger, {
+      source: "durable.db",
+      table: "run_calls",
+      rows: [{ ...call, transcript_host: "" }],
+    }),
+  ).toMatchObject({ table: "run_calls", inserted: 1 });
 });
 
 test("a re-host moves a catalogued corpus onto an id the hub knows, and refuses one it does not", async () => {
