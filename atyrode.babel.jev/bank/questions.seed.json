@@ -1,0 +1,1838 @@
+{
+  "about": "The question bank: what Jev is asked of each record kind, at what line each answer becomes a vote, and the distribution over this corpus that justified the line. An assessment cites kind@version; the thresholds are one deployment's calibration and not Babel's behaviour.",
+  "version": 1,
+  "documents": [
+    {
+      "kind": "finding",
+      "version": 1,
+      "title": "Finding",
+      "questions": [
+        {
+          "id": "worth_first",
+          "type": "score",
+          "asks": "If the operator could read only twenty records out of six thousand, how strongly does this one belong in those twenty?",
+          "criteria": [
+            "No: routine, already assumed, or too vague to act on. Most records are here.",
+            "Probably not: true and mildly interesting, but reading it changes nothing.",
+            "Yes: names a concrete cost or mistake the operator would want to know about.",
+            "Certainly: names something that is demonstrably costing the operator again and again, with the evidence to show it."
+          ]
+        },
+        {
+          "id": "specific",
+          "type": "noul",
+          "asks": "Does `record` concern one identifiable thing — a named file, command, tool, run or interaction — rather than a general tendency?",
+          "criteria": []
+        },
+        {
+          "id": "contradicts_intent",
+          "type": "noul",
+          "asks": "Does `record` show the system behaving differently from what its own documentation, comments, configuration or stated design say it should do?",
+          "criteria": []
+        },
+        {
+          "id": "actionable",
+          "type": "noul",
+          "asks": "Does `record` name a specific change — to a file, a command, a setting, an instruction or a process — that someone could make?",
+          "criteria": []
+        },
+        {
+          "id": "evidence_strength",
+          "type": "score",
+          "asks": "How well does the material shown in `record` establish what it claims?",
+          "criteria": [
+            "Nothing is shown; the claim stands alone.",
+            "Something is shown but it is consistent with other explanations too.",
+            "What is shown establishes the claim."
+          ]
+        },
+        {
+          "id": "recurring",
+          "type": "noul",
+          "asks": "Does `record` describe something that happens repeatedly, as opposed to a single incident?",
+          "criteria": []
+        },
+        {
+          "id": "friction_kind",
+          "type": "choice",
+          "asks": "What kind of operator-agent friction, if any, does `record` make visible?",
+          "criteria": [
+            "ambiguity — An instruction or request that could be read more than one way; not for: A plain mistake with no ambiguity",
+            "ignored_constraint — A stated constraint that never reached the work; not for: A constraint nobody stated",
+            "repeated_correction — The operator having to correct the same thing more than once; not for: A single correction",
+            "weak_handoff — Context lost between agents, sessions or machines; not for: Context that was never gathered",
+            "missing_tool — Work done by hand that a tool or pipeline could have done; not for: Work that needs judgment",
+            "missing_context — The agent lacking information that existed somewhere; not for: Information nobody had",
+            "rework — Work redone because of how it was set up, not because requirements changed; not for: Ordinary iteration",
+            "none — No operator-agent friction; this is about the software itself; not for: Any of the above"
+          ]
+        },
+        {
+          "id": "temporal",
+          "type": "choice",
+          "asks": "Does `record` describe how things are now, or how they were at some earlier point?",
+          "criteria": [
+            "current — Describes present behaviour",
+            "changed — Describes something that has since been changed or fixed",
+            "unknown — Cannot be told from `record`"
+          ]
+        },
+        {
+          "id": "speculative",
+          "type": "noul",
+          "asks": "Does `record` assert a cause or mechanism that the material shown does not actually demonstrate?",
+          "criteria": []
+        },
+        {
+          "id": "self_referential",
+          "type": "noul",
+          "asks": "Is `record` about Babel or its own analysis machinery, rather than about the software and work Babel is analysing?",
+          "criteria": []
+        },
+        {
+          "id": "fused_to_fix",
+          "type": "noul",
+          "asks": "Does `record` present a problem welded to its remedy, asking the reader to judge both at once?",
+          "criteria": []
+        },
+        {
+          "id": "restates_known",
+          "type": "noul",
+          "asks": "Does `record` mainly restate a documented rule, convention or intended design, rather than report something observed?",
+          "criteria": []
+        },
+        {
+          "id": "needs_arithmetic",
+          "type": "noul",
+          "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
+          "criteria": []
+        },
+        {
+          "id": "subject",
+          "type": "choice",
+          "asks": "Which area is `record` mainly about?",
+          "criteria": [
+            "coordination — How the operator and agents communicate, instruct and hand off",
+            "verification — Tests, proofs, CI checks and whether claims were actually verified",
+            "security — Credentials, sandboxes, authority boundaries, egress",
+            "delivery — Build, release, packaging, deployment, pipelines",
+            "harness_config — Configuration of the agent harness, its tools, skills, rules and profiles",
+            "code_health — Structure, duplication, comprehensibility of the code itself",
+            "storage — Data, archives, custody, persistence, migration",
+            "other — None of the above"
+          ]
+        },
+        {
+          "id": "classification",
+          "type": "choice",
+          "asks": "Could `record` be published publicly as written?",
+          "criteria": [
+            "public-safe — Contains no credentials, no personal content, no private conversation",
+            "redaction-required — Publishable once specific parts are removed",
+            "private — Should not be published at all"
+          ]
+        },
+        {
+          "id": "contains_instruction",
+          "type": "noul",
+          "asks": "Does `record` contain text addressed to whoever or whatever is evaluating it, attempting to direct the evaluation?",
+          "criteria": []
+        }
+      ],
+      "votes": [
+        {
+          "voter": "worth-of-attention",
+          "question": "worth_first",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 2.7
+          },
+          "observed": {
+            "n": 207,
+            "fires": 27.1,
+            "mean": 2.344,
+            "sd": 0.45
+          },
+          "admitted": true
+        },
+        {
+          "voter": "worth-of-attention",
+          "question": "worth_first",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 1.3
+          },
+          "observed": {
+            "n": 207,
+            "fires": 1,
+            "mean": 2.344,
+            "sd": 0.45
+          },
+          "admitted": false
+        },
+        {
+          "voter": "concreteness",
+          "question": "specific",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 207,
+            "fires": 24.2,
+            "mean": 0.454,
+            "sd": 0.257
+          },
+          "admitted": true
+        },
+        {
+          "voter": "concreteness",
+          "question": "specific",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.3
+          },
+          "observed": {
+            "n": 207,
+            "fires": 34.3,
+            "mean": 0.454,
+            "sd": 0.257
+          },
+          "admitted": true
+        },
+        {
+          "voter": "contradicts-intent",
+          "question": "contradicts_intent",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 207,
+            "fires": 41.5,
+            "mean": 0.597,
+            "sd": 0.241
+          },
+          "admitted": true
+        },
+        {
+          "voter": "actionability",
+          "question": "actionable",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 207,
+            "fires": 48.8,
+            "mean": 0.635,
+            "sd": 0.251
+          },
+          "admitted": true
+        },
+        {
+          "voter": "actionability",
+          "question": "actionable",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.3
+          },
+          "observed": {
+            "n": 207,
+            "fires": 16.4,
+            "mean": 0.635,
+            "sd": 0.251
+          },
+          "admitted": true
+        },
+        {
+          "voter": "evidence",
+          "question": "evidence_strength",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 1.5
+          },
+          "observed": {
+            "n": 207,
+            "fires": 31.4,
+            "mean": 1.221,
+            "sd": 0.394
+          },
+          "admitted": true
+        },
+        {
+          "voter": "evidence",
+          "question": "evidence_strength",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.4
+          },
+          "observed": {
+            "n": 207,
+            "fires": 2.9,
+            "mean": 1.221,
+            "sd": 0.394
+          },
+          "admitted": true
+        },
+        {
+          "voter": "recurrence",
+          "question": "recurring",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 207,
+            "fires": 44,
+            "mean": 0.519,
+            "sd": 0.384
+          },
+          "admitted": true
+        },
+        {
+          "voter": "friction-lens",
+          "question": "friction_kind",
+          "casts": "up",
+          "when": {
+            "op": "is-not",
+            "value": "none"
+          },
+          "observed": {
+            "n": 207,
+            "fires": 65.7,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "freshness",
+          "question": "temporal",
+          "casts": "up",
+          "when": {
+            "op": "is",
+            "value": "current"
+          },
+          "observed": {
+            "n": 207,
+            "fires": 43.5,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "freshness",
+          "question": "temporal",
+          "casts": "down",
+          "when": {
+            "op": "is",
+            "value": "changed"
+          },
+          "observed": {
+            "n": 207,
+            "fires": 47.3,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "rigour",
+          "question": "speculative",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.75
+          },
+          "observed": {
+            "n": 207,
+            "fires": 0.5,
+            "mean": 0.496,
+            "sd": 0.11
+          },
+          "admitted": false
+        },
+        {
+          "voter": "scope",
+          "question": "self_referential",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 207,
+            "fires": 2.9,
+            "mean": 0.28,
+            "sd": 0.175
+          },
+          "admitted": true
+        },
+        {
+          "voter": "editorial",
+          "question": "fused_to_fix",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.75
+          },
+          "observed": {
+            "n": 207,
+            "fires": 25.6,
+            "mean": 0.588,
+            "sd": 0.179
+          },
+          "admitted": true
+        },
+        {
+          "voter": "novelty",
+          "question": "restates_known",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.6
+          },
+          "observed": {
+            "n": 207,
+            "fires": 0,
+            "mean": 0.102,
+            "sd": 0.054
+          },
+          "admitted": false
+        },
+        {
+          "voter": "trustworthiness",
+          "question": "needs_arithmetic",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 207,
+            "fires": 3.9,
+            "mean": 0.365,
+            "sd": 0.162
+          },
+          "admitted": true
+        }
+      ],
+      "routing": [
+        {
+          "question": "subject",
+          "routes": "the topic a record is filed under, which is the axis the coverage grid counts against"
+        },
+        {
+          "question": "classification",
+          "routes": "whether a record may leave the machine as written, and what has to go first"
+        },
+        {
+          "question": "contains_instruction",
+          "routes": "whether the record is addressing its own judge, which is a gate and not an opinion"
+        }
+      ],
+      "exemplars": [
+        {
+          "record": "fnd_6acd14ca9130dd6a608fc5ed55a807a0",
+          "provenance": "standing",
+          "ruling": null,
+          "tally": 7,
+          "text": "The atyrode CLI's contract check asserts the argument strings the controller emits, so it moves with each topology defect instead of constraining it",
+          "why": "One sentence, seven up sides, nothing against. It is the exemplar for length not being the thing: the claim names the mechanism and the consequence in a line, and concreteness, contradicts-intent and actionability all fire on it. The study measured the opposite bias in the assessor — longer records score higher — so an exemplar this short is worth carrying on purpose."
+        },
+        {
+          "record": "fnd_6c3cf87167c794e50fc4e601690b7b16",
+          "provenance": "standing",
+          "ruling": null,
+          "tally": 6,
+          "text": "Credential handling in this project is designed per occasion, and the containment achieved tracks the design effort rather than the credential's power",
+          "why": "Six up with concreteness objecting, because the finding describes a tendency rather than one identifiable thing. That is the honest reading of a consolidation: a finding is allowed to generalise, and the panel is allowed to note that it did. A bank that hid the objection would be teaching that generalising is free."
+        }
+      ]
+    },
+    {
+      "kind": "hypothesis",
+      "version": 1,
+      "title": "Hypothesis",
+      "questions": [
+        {
+          "id": "worth_first",
+          "type": "score",
+          "asks": "If the operator could read only twenty records out of six thousand, how strongly does this one belong in those twenty?",
+          "criteria": [
+            "No: routine, already assumed, or too vague to act on. Most records are here.",
+            "Probably not: true and mildly interesting, but reading it changes nothing.",
+            "Yes: names a concrete cost or mistake the operator would want to know about.",
+            "Certainly: names something that is demonstrably costing the operator again and again, with the evidence to show it."
+          ]
+        },
+        {
+          "id": "specific",
+          "type": "noul",
+          "asks": "Does `record` concern one identifiable thing — a named file, command, tool, run or interaction — rather than a general tendency?",
+          "criteria": []
+        },
+        {
+          "id": "contradicts_intent",
+          "type": "noul",
+          "asks": "Does `record` show the system behaving differently from what its own documentation, comments, configuration or stated design say it should do?",
+          "criteria": []
+        },
+        {
+          "id": "actionable",
+          "type": "noul",
+          "asks": "Does `record` name a specific change — to a file, a command, a setting, an instruction or a process — that someone could make?",
+          "criteria": []
+        },
+        {
+          "id": "evidence_strength",
+          "type": "score",
+          "asks": "How well does the material shown in `record` establish what it claims?",
+          "criteria": [
+            "Nothing is shown; the claim stands alone.",
+            "Something is shown but it is consistent with other explanations too.",
+            "What is shown establishes the claim."
+          ]
+        },
+        {
+          "id": "recurring",
+          "type": "noul",
+          "asks": "Does `record` describe something that happens repeatedly, as opposed to a single incident?",
+          "criteria": []
+        },
+        {
+          "id": "friction_kind",
+          "type": "choice",
+          "asks": "What kind of operator-agent friction, if any, does `record` make visible?",
+          "criteria": [
+            "ambiguity — An instruction or request that could be read more than one way; not for: A plain mistake with no ambiguity",
+            "ignored_constraint — A stated constraint that never reached the work; not for: A constraint nobody stated",
+            "repeated_correction — The operator having to correct the same thing more than once; not for: A single correction",
+            "weak_handoff — Context lost between agents, sessions or machines; not for: Context that was never gathered",
+            "missing_tool — Work done by hand that a tool or pipeline could have done; not for: Work that needs judgment",
+            "missing_context — The agent lacking information that existed somewhere; not for: Information nobody had",
+            "rework — Work redone because of how it was set up, not because requirements changed; not for: Ordinary iteration",
+            "none — No operator-agent friction; this is about the software itself; not for: Any of the above"
+          ]
+        },
+        {
+          "id": "temporal",
+          "type": "choice",
+          "asks": "Does `record` describe how things are now, or how they were at some earlier point?",
+          "criteria": [
+            "current — Describes present behaviour",
+            "changed — Describes something that has since been changed or fixed",
+            "unknown — Cannot be told from `record`"
+          ]
+        },
+        {
+          "id": "speculative",
+          "type": "noul",
+          "asks": "Does `record` assert a cause or mechanism that the material shown does not actually demonstrate?",
+          "criteria": []
+        },
+        {
+          "id": "self_referential",
+          "type": "noul",
+          "asks": "Is `record` about Babel or its own analysis machinery, rather than about the software and work Babel is analysing?",
+          "criteria": []
+        },
+        {
+          "id": "fused_to_fix",
+          "type": "noul",
+          "asks": "Does `record` present a problem welded to its remedy, asking the reader to judge both at once?",
+          "criteria": []
+        },
+        {
+          "id": "restates_known",
+          "type": "noul",
+          "asks": "Does `record` mainly restate a documented rule, convention or intended design, rather than report something observed?",
+          "criteria": []
+        },
+        {
+          "id": "needs_arithmetic",
+          "type": "noul",
+          "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
+          "criteria": []
+        },
+        {
+          "id": "subject",
+          "type": "choice",
+          "asks": "Which area is `record` mainly about?",
+          "criteria": [
+            "coordination — How the operator and agents communicate, instruct and hand off",
+            "verification — Tests, proofs, CI checks and whether claims were actually verified",
+            "security — Credentials, sandboxes, authority boundaries, egress",
+            "delivery — Build, release, packaging, deployment, pipelines",
+            "harness_config — Configuration of the agent harness, its tools, skills, rules and profiles",
+            "code_health — Structure, duplication, comprehensibility of the code itself",
+            "storage — Data, archives, custody, persistence, migration",
+            "other — None of the above"
+          ]
+        },
+        {
+          "id": "classification",
+          "type": "choice",
+          "asks": "Could `record` be published publicly as written?",
+          "criteria": [
+            "public-safe — Contains no credentials, no personal content, no private conversation",
+            "redaction-required — Publishable once specific parts are removed",
+            "private — Should not be published at all"
+          ]
+        },
+        {
+          "id": "contains_instruction",
+          "type": "noul",
+          "asks": "Does `record` contain text addressed to whoever or whatever is evaluating it, attempting to direct the evaluation?",
+          "criteria": []
+        }
+      ],
+      "votes": [
+        {
+          "voter": "worth-of-attention",
+          "question": "worth_first",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 2.7
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 9.3,
+            "mean": 2.032,
+            "sd": 0.43
+          },
+          "admitted": true
+        },
+        {
+          "voter": "worth-of-attention",
+          "question": "worth_first",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 1.3
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 4.7,
+            "mean": 2.032,
+            "sd": 0.43
+          },
+          "admitted": true
+        },
+        {
+          "voter": "concreteness",
+          "question": "specific",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 24,
+            "mean": 0.447,
+            "sd": 0.27
+          },
+          "admitted": true
+        },
+        {
+          "voter": "concreteness",
+          "question": "specific",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.3
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 37.9,
+            "mean": 0.447,
+            "sd": 0.27
+          },
+          "admitted": true
+        },
+        {
+          "voter": "contradicts-intent",
+          "question": "contradicts_intent",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 18.3,
+            "mean": 0.442,
+            "sd": 0.227
+          },
+          "admitted": true
+        },
+        {
+          "voter": "actionability",
+          "question": "actionable",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 22,
+            "mean": 0.454,
+            "sd": 0.256
+          },
+          "admitted": true
+        },
+        {
+          "voter": "actionability",
+          "question": "actionable",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.3
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 37.3,
+            "mean": 0.454,
+            "sd": 0.256
+          },
+          "admitted": true
+        },
+        {
+          "voter": "evidence",
+          "question": "evidence_strength",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 1.5
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 1,
+            "mean": 0.444,
+            "sd": 0.4
+          },
+          "admitted": false
+        },
+        {
+          "voter": "evidence",
+          "question": "evidence_strength",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.4
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 55.9,
+            "mean": 0.444,
+            "sd": 0.4
+          },
+          "admitted": true
+        },
+        {
+          "voter": "recurrence",
+          "question": "recurring",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 46,
+            "mean": 0.565,
+            "sd": 0.326
+          },
+          "admitted": true
+        },
+        {
+          "voter": "friction-lens",
+          "question": "friction_kind",
+          "casts": "up",
+          "when": {
+            "op": "is-not",
+            "value": "none"
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 48.5,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "freshness",
+          "question": "temporal",
+          "casts": "up",
+          "when": {
+            "op": "is",
+            "value": "current"
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 69.3,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "freshness",
+          "question": "temporal",
+          "casts": "down",
+          "when": {
+            "op": "is",
+            "value": "changed"
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 25.4,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "rigour",
+          "question": "speculative",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.75
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 46,
+            "mean": 0.708,
+            "sd": 0.112
+          },
+          "admitted": true
+        },
+        {
+          "voter": "scope",
+          "question": "self_referential",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 11.9,
+            "mean": 0.388,
+            "sd": 0.219
+          },
+          "admitted": true
+        },
+        {
+          "voter": "editorial",
+          "question": "fused_to_fix",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.75
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 12.6,
+            "mean": 0.497,
+            "sd": 0.189
+          },
+          "admitted": true
+        },
+        {
+          "voter": "novelty",
+          "question": "restates_known",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.6
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 7.4,
+            "mean": 0.208,
+            "sd": 0.186
+          },
+          "admitted": true
+        },
+        {
+          "voter": "trustworthiness",
+          "question": "needs_arithmetic",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 2453,
+            "fires": 10.1,
+            "mean": 0.304,
+            "sd": 0.239
+          },
+          "admitted": true
+        }
+      ],
+      "routing": [
+        {
+          "question": "subject",
+          "routes": "the topic a record is filed under, which is the axis the coverage grid counts against"
+        },
+        {
+          "question": "classification",
+          "routes": "whether a record may leave the machine as written, and what has to go first"
+        },
+        {
+          "question": "contains_instruction",
+          "routes": "whether the record is addressing its own judge, which is a gate and not an opinion"
+        }
+      ],
+      "exemplars": [
+        {
+          "record": "hyp_b7f325486d75ca1599c876c2b7adce8f",
+          "provenance": "standing",
+          "ruling": null,
+          "tally": 5,
+          "text": "In the -tmp SSH session the agent maintains outcome integrity under a hard verification ceiling: it cannot test the login because it does not hold the private key, and instead of claiming success it names the exact limit, retracts its own earlier fix as a no-op, substitutes the strongest available proxy check (ssh-keygen fingerprint parse), and warns the fix is not rebuild-durable.",
+          "why": "Five up and nothing against: worth-of-attention, concreteness, actionability, friction-lens and freshness all fired, and evidence did not, which is the right reading — the claim is about conduct under a limit rather than about material that establishes it. It is the anchor for what a well-formed hypothesis looks like: one session, one named mechanism, and the limit of what could be checked stated rather than papered over."
+        }
+      ]
+    },
+    {
+      "kind": "observation",
+      "version": 1,
+      "title": "Observation",
+      "questions": [
+        {
+          "id": "worth_first",
+          "type": "score",
+          "asks": "If the operator could read only twenty records out of six thousand, how strongly does this one belong in those twenty?",
+          "criteria": [
+            "No: routine, already assumed, or too vague to act on. Most records are here.",
+            "Probably not: true and mildly interesting, but reading it changes nothing.",
+            "Yes: names a concrete cost or mistake the operator would want to know about.",
+            "Certainly: names something that is demonstrably costing the operator again and again, with the evidence to show it."
+          ]
+        },
+        {
+          "id": "specific",
+          "type": "noul",
+          "asks": "Does `record` concern one identifiable thing — a named file, command, tool, run or interaction — rather than a general tendency?",
+          "criteria": []
+        },
+        {
+          "id": "contradicts_intent",
+          "type": "noul",
+          "asks": "Does `record` show the system behaving differently from what its own documentation, comments, configuration or stated design say it should do?",
+          "criteria": []
+        },
+        {
+          "id": "actionable",
+          "type": "noul",
+          "asks": "Does `record` name a specific change — to a file, a command, a setting, an instruction or a process — that someone could make?",
+          "criteria": []
+        },
+        {
+          "id": "evidence_strength",
+          "type": "score",
+          "asks": "How well does the material shown in `record` establish what it claims?",
+          "criteria": [
+            "Nothing is shown; the claim stands alone.",
+            "Something is shown but it is consistent with other explanations too.",
+            "What is shown establishes the claim."
+          ]
+        },
+        {
+          "id": "recurring",
+          "type": "noul",
+          "asks": "Does `record` describe something that happens repeatedly, as opposed to a single incident?",
+          "criteria": []
+        },
+        {
+          "id": "friction_kind",
+          "type": "choice",
+          "asks": "What kind of operator-agent friction, if any, does `record` make visible?",
+          "criteria": [
+            "ambiguity — An instruction or request that could be read more than one way; not for: A plain mistake with no ambiguity",
+            "ignored_constraint — A stated constraint that never reached the work; not for: A constraint nobody stated",
+            "repeated_correction — The operator having to correct the same thing more than once; not for: A single correction",
+            "weak_handoff — Context lost between agents, sessions or machines; not for: Context that was never gathered",
+            "missing_tool — Work done by hand that a tool or pipeline could have done; not for: Work that needs judgment",
+            "missing_context — The agent lacking information that existed somewhere; not for: Information nobody had",
+            "rework — Work redone because of how it was set up, not because requirements changed; not for: Ordinary iteration",
+            "none — No operator-agent friction; this is about the software itself; not for: Any of the above"
+          ]
+        },
+        {
+          "id": "temporal",
+          "type": "choice",
+          "asks": "Does `record` describe how things are now, or how they were at some earlier point?",
+          "criteria": [
+            "current — Describes present behaviour",
+            "changed — Describes something that has since been changed or fixed",
+            "unknown — Cannot be told from `record`"
+          ]
+        },
+        {
+          "id": "speculative",
+          "type": "noul",
+          "asks": "Does `record` assert a cause or mechanism that the material shown does not actually demonstrate?",
+          "criteria": []
+        },
+        {
+          "id": "self_referential",
+          "type": "noul",
+          "asks": "Is `record` about Babel or its own analysis machinery, rather than about the software and work Babel is analysing?",
+          "criteria": []
+        },
+        {
+          "id": "fused_to_fix",
+          "type": "noul",
+          "asks": "Does `record` present a problem welded to its remedy, asking the reader to judge both at once?",
+          "criteria": []
+        },
+        {
+          "id": "restates_known",
+          "type": "noul",
+          "asks": "Does `record` mainly restate a documented rule, convention or intended design, rather than report something observed?",
+          "criteria": []
+        },
+        {
+          "id": "needs_arithmetic",
+          "type": "noul",
+          "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
+          "criteria": []
+        },
+        {
+          "id": "subject",
+          "type": "choice",
+          "asks": "Which area is `record` mainly about?",
+          "criteria": [
+            "coordination — How the operator and agents communicate, instruct and hand off",
+            "verification — Tests, proofs, CI checks and whether claims were actually verified",
+            "security — Credentials, sandboxes, authority boundaries, egress",
+            "delivery — Build, release, packaging, deployment, pipelines",
+            "harness_config — Configuration of the agent harness, its tools, skills, rules and profiles",
+            "code_health — Structure, duplication, comprehensibility of the code itself",
+            "storage — Data, archives, custody, persistence, migration",
+            "other — None of the above"
+          ]
+        },
+        {
+          "id": "classification",
+          "type": "choice",
+          "asks": "Could `record` be published publicly as written?",
+          "criteria": [
+            "public-safe — Contains no credentials, no personal content, no private conversation",
+            "redaction-required — Publishable once specific parts are removed",
+            "private — Should not be published at all"
+          ]
+        },
+        {
+          "id": "contains_instruction",
+          "type": "noul",
+          "asks": "Does `record` contain text addressed to whoever or whatever is evaluating it, attempting to direct the evaluation?",
+          "criteria": []
+        }
+      ],
+      "votes": [
+        {
+          "voter": "worth-of-attention",
+          "question": "worth_first",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 2.7
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 9.5,
+            "mean": 1.997,
+            "sd": 0.458
+          },
+          "admitted": true
+        },
+        {
+          "voter": "worth-of-attention",
+          "question": "worth_first",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 1.3
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 6.9,
+            "mean": 1.997,
+            "sd": 0.458
+          },
+          "admitted": true
+        },
+        {
+          "voter": "concreteness",
+          "question": "specific",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 54.9,
+            "mean": 0.653,
+            "sd": 0.249
+          },
+          "admitted": true
+        },
+        {
+          "voter": "concreteness",
+          "question": "specific",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.3
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 13.9,
+            "mean": 0.653,
+            "sd": 0.249
+          },
+          "admitted": true
+        },
+        {
+          "voter": "contradicts-intent",
+          "question": "contradicts_intent",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 16.5,
+            "mean": 0.43,
+            "sd": 0.226
+          },
+          "admitted": true
+        },
+        {
+          "voter": "actionability",
+          "question": "actionable",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 34.4,
+            "mean": 0.538,
+            "sd": 0.271
+          },
+          "admitted": true
+        },
+        {
+          "voter": "actionability",
+          "question": "actionable",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.3
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 25.6,
+            "mean": 0.538,
+            "sd": 0.271
+          },
+          "admitted": true
+        },
+        {
+          "voter": "evidence",
+          "question": "evidence_strength",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 1.5
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 40.9,
+            "mean": 1.411,
+            "sd": 0.272
+          },
+          "admitted": true
+        },
+        {
+          "voter": "evidence",
+          "question": "evidence_strength",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.4
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 0,
+            "mean": 1.411,
+            "sd": 0.272
+          },
+          "admitted": false
+        },
+        {
+          "voter": "recurrence",
+          "question": "recurring",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 29.5,
+            "mean": 0.428,
+            "sd": 0.334
+          },
+          "admitted": true
+        },
+        {
+          "voter": "friction-lens",
+          "question": "friction_kind",
+          "casts": "up",
+          "when": {
+            "op": "is-not",
+            "value": "none"
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 44,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "freshness",
+          "question": "temporal",
+          "casts": "up",
+          "when": {
+            "op": "is",
+            "value": "current"
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 50.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "freshness",
+          "question": "temporal",
+          "casts": "down",
+          "when": {
+            "op": "is",
+            "value": "changed"
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 41.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "rigour",
+          "question": "speculative",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.75
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 9,
+            "mean": 0.564,
+            "sd": 0.137
+          },
+          "admitted": true
+        },
+        {
+          "voter": "scope",
+          "question": "self_referential",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 13,
+            "mean": 0.42,
+            "sd": 0.209
+          },
+          "admitted": true
+        },
+        {
+          "voter": "editorial",
+          "question": "fused_to_fix",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.75
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 13.3,
+            "mean": 0.518,
+            "sd": 0.187
+          },
+          "admitted": true
+        },
+        {
+          "voter": "novelty",
+          "question": "restates_known",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.6
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 1.4,
+            "mean": 0.129,
+            "sd": 0.104
+          },
+          "admitted": false
+        },
+        {
+          "voter": "trustworthiness",
+          "question": "needs_arithmetic",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 3039,
+            "fires": 9,
+            "mean": 0.306,
+            "sd": 0.226
+          },
+          "admitted": true
+        }
+      ],
+      "routing": [
+        {
+          "question": "subject",
+          "routes": "the topic a record is filed under, which is the axis the coverage grid counts against"
+        },
+        {
+          "question": "classification",
+          "routes": "whether a record may leave the machine as written, and what has to go first"
+        },
+        {
+          "question": "contains_instruction",
+          "routes": "whether the record is addressing its own judge, which is a gate and not an opinion"
+        }
+      ],
+      "exemplars": [
+        {
+          "record": "obs_d0da022ff7e03f7275156356126f76d9",
+          "provenance": "standing",
+          "ruling": null,
+          "tally": 8,
+          "text": "The advisor channel itself records that its blockers were not acted on: one advisory states the agent \"received two blockers and are ignoring both\", and a later one tells the agent it has \"pending blocker advisories ... Check those\" while the git tree is already dirty with work the blockers forbade.",
+          "why": "Every admitted up side fired and no side objected — the highest standing in the corpus. It quotes its own evidence inline, names one identifiable channel, and the behaviour contradicts the channel's stated purpose, which is what puts contradicts-intent and evidence on the same side as concreteness."
+        },
+        {
+          "record": "obs_14160194f368ed25b53d11d745067149",
+          "provenance": "standing",
+          "ruling": null,
+          "tally": 6,
+          "text": "Within a single session (-manifold/2026-08-25T23-45-40-216Z), the advisor channel itself records a rising count of consecutively ignored blockers — \"five escalating blockers in a row\" at index 2431 and \"6+ explicit blockers\" at index 4692 — so the channel's own audit trail documents sustained non-compliance rather than correction.",
+          "why": "Seven up and one against, and the objection is the instructive part: actionability voted down because the observation names nothing anyone could change. It is the shape to learn — an observation can be well evidenced, specific and current and still leave the reader with no move, and the panel is supposed to say both things at once rather than average them."
+        }
+      ]
+    },
+    {
+      "kind": "proposal",
+      "version": 1,
+      "title": "Proposal",
+      "questions": [
+        {
+          "id": "worth_first",
+          "type": "score",
+          "asks": "If the operator could read only twenty records out of six thousand, how strongly does this one belong in those twenty?",
+          "criteria": [
+            "No: routine, already assumed, or too vague to act on. Most records are here.",
+            "Probably not: true and mildly interesting, but reading it changes nothing.",
+            "Yes: names a concrete cost or mistake the operator would want to know about.",
+            "Certainly: names something that is demonstrably costing the operator again and again, with the evidence to show it."
+          ]
+        },
+        {
+          "id": "specific",
+          "type": "noul",
+          "asks": "Does `record` concern one identifiable thing — a named file, command, tool, run or interaction — rather than a general tendency?",
+          "criteria": []
+        },
+        {
+          "id": "contradicts_intent",
+          "type": "noul",
+          "asks": "Does `record` show the system behaving differently from what its own documentation, comments, configuration or stated design say it should do?",
+          "criteria": []
+        },
+        {
+          "id": "actionable",
+          "type": "noul",
+          "asks": "Does `record` name a specific change — to a file, a command, a setting, an instruction or a process — that someone could make?",
+          "criteria": []
+        },
+        {
+          "id": "evidence_strength",
+          "type": "score",
+          "asks": "How well does the material shown in `record` establish what it claims?",
+          "criteria": [
+            "Nothing is shown; the claim stands alone.",
+            "Something is shown but it is consistent with other explanations too.",
+            "What is shown establishes the claim."
+          ]
+        },
+        {
+          "id": "recurring",
+          "type": "noul",
+          "asks": "Does `record` describe something that happens repeatedly, as opposed to a single incident?",
+          "criteria": []
+        },
+        {
+          "id": "friction_kind",
+          "type": "choice",
+          "asks": "What kind of operator-agent friction, if any, does `record` make visible?",
+          "criteria": [
+            "ambiguity — An instruction or request that could be read more than one way; not for: A plain mistake with no ambiguity",
+            "ignored_constraint — A stated constraint that never reached the work; not for: A constraint nobody stated",
+            "repeated_correction — The operator having to correct the same thing more than once; not for: A single correction",
+            "weak_handoff — Context lost between agents, sessions or machines; not for: Context that was never gathered",
+            "missing_tool — Work done by hand that a tool or pipeline could have done; not for: Work that needs judgment",
+            "missing_context — The agent lacking information that existed somewhere; not for: Information nobody had",
+            "rework — Work redone because of how it was set up, not because requirements changed; not for: Ordinary iteration",
+            "none — No operator-agent friction; this is about the software itself; not for: Any of the above"
+          ]
+        },
+        {
+          "id": "temporal",
+          "type": "choice",
+          "asks": "Does `record` describe how things are now, or how they were at some earlier point?",
+          "criteria": [
+            "current — Describes present behaviour",
+            "changed — Describes something that has since been changed or fixed",
+            "unknown — Cannot be told from `record`"
+          ]
+        },
+        {
+          "id": "speculative",
+          "type": "noul",
+          "asks": "Does `record` assert a cause or mechanism that the material shown does not actually demonstrate?",
+          "criteria": []
+        },
+        {
+          "id": "self_referential",
+          "type": "noul",
+          "asks": "Is `record` about Babel or its own analysis machinery, rather than about the software and work Babel is analysing?",
+          "criteria": []
+        },
+        {
+          "id": "fused_to_fix",
+          "type": "noul",
+          "asks": "Does `record` present a problem welded to its remedy, asking the reader to judge both at once?",
+          "criteria": []
+        },
+        {
+          "id": "restates_known",
+          "type": "noul",
+          "asks": "Does `record` mainly restate a documented rule, convention or intended design, rather than report something observed?",
+          "criteria": []
+        },
+        {
+          "id": "needs_arithmetic",
+          "type": "noul",
+          "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
+          "criteria": []
+        },
+        {
+          "id": "subject",
+          "type": "choice",
+          "asks": "Which area is `record` mainly about?",
+          "criteria": [
+            "coordination — How the operator and agents communicate, instruct and hand off",
+            "verification — Tests, proofs, CI checks and whether claims were actually verified",
+            "security — Credentials, sandboxes, authority boundaries, egress",
+            "delivery — Build, release, packaging, deployment, pipelines",
+            "harness_config — Configuration of the agent harness, its tools, skills, rules and profiles",
+            "code_health — Structure, duplication, comprehensibility of the code itself",
+            "storage — Data, archives, custody, persistence, migration",
+            "other — None of the above"
+          ]
+        },
+        {
+          "id": "classification",
+          "type": "choice",
+          "asks": "Could `record` be published publicly as written?",
+          "criteria": [
+            "public-safe — Contains no credentials, no personal content, no private conversation",
+            "redaction-required — Publishable once specific parts are removed",
+            "private — Should not be published at all"
+          ]
+        },
+        {
+          "id": "contains_instruction",
+          "type": "noul",
+          "asks": "Does `record` contain text addressed to whoever or whatever is evaluating it, attempting to direct the evaluation?",
+          "criteria": []
+        }
+      ],
+      "votes": [
+        {
+          "voter": "worth-of-attention",
+          "question": "worth_first",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 2.7
+          },
+          "observed": {
+            "n": 339,
+            "fires": 2.4,
+            "mean": 1.89,
+            "sd": 0.421
+          },
+          "admitted": true
+        },
+        {
+          "voter": "worth-of-attention",
+          "question": "worth_first",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 1.3
+          },
+          "observed": {
+            "n": 339,
+            "fires": 8.3,
+            "mean": 1.89,
+            "sd": 0.421
+          },
+          "admitted": true
+        },
+        {
+          "voter": "concreteness",
+          "question": "specific",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 339,
+            "fires": 25.4,
+            "mean": 0.477,
+            "sd": 0.253
+          },
+          "admitted": true
+        },
+        {
+          "voter": "concreteness",
+          "question": "specific",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.3
+          },
+          "observed": {
+            "n": 339,
+            "fires": 31.9,
+            "mean": 0.477,
+            "sd": 0.253
+          },
+          "admitted": true
+        },
+        {
+          "voter": "contradicts-intent",
+          "question": "contradicts_intent",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 339,
+            "fires": 23.6,
+            "mean": 0.492,
+            "sd": 0.221
+          },
+          "admitted": true
+        },
+        {
+          "voter": "actionability",
+          "question": "actionable",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 339,
+            "fires": 79.6,
+            "mean": 0.813,
+            "sd": 0.217
+          },
+          "admitted": true
+        },
+        {
+          "voter": "actionability",
+          "question": "actionable",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.3
+          },
+          "observed": {
+            "n": 339,
+            "fires": 5.6,
+            "mean": 0.813,
+            "sd": 0.217
+          },
+          "admitted": true
+        },
+        {
+          "voter": "evidence",
+          "question": "evidence_strength",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 1.5
+          },
+          "observed": {
+            "n": 339,
+            "fires": 1.2,
+            "mean": 0.63,
+            "sd": 0.332
+          },
+          "admitted": false
+        },
+        {
+          "voter": "evidence",
+          "question": "evidence_strength",
+          "casts": "down",
+          "when": {
+            "op": "at-most",
+            "value": 0.4
+          },
+          "observed": {
+            "n": 339,
+            "fires": 31.6,
+            "mean": 0.63,
+            "sd": 0.332
+          },
+          "admitted": true
+        },
+        {
+          "voter": "recurrence",
+          "question": "recurring",
+          "casts": "up",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 339,
+            "fires": 27.1,
+            "mean": 0.502,
+            "sd": 0.254
+          },
+          "admitted": true
+        },
+        {
+          "voter": "friction-lens",
+          "question": "friction_kind",
+          "casts": "up",
+          "when": {
+            "op": "is-not",
+            "value": "none"
+          },
+          "observed": {
+            "n": 339,
+            "fires": 61.1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "freshness",
+          "question": "temporal",
+          "casts": "up",
+          "when": {
+            "op": "is",
+            "value": "current"
+          },
+          "observed": {
+            "n": 339,
+            "fires": 44.8,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "freshness",
+          "question": "temporal",
+          "casts": "down",
+          "when": {
+            "op": "is",
+            "value": "changed"
+          },
+          "observed": {
+            "n": 339,
+            "fires": 48.7,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "voter": "rigour",
+          "question": "speculative",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.75
+          },
+          "observed": {
+            "n": 339,
+            "fires": 1.2,
+            "mean": 0.485,
+            "sd": 0.111
+          },
+          "admitted": false
+        },
+        {
+          "voter": "scope",
+          "question": "self_referential",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 339,
+            "fires": 5.9,
+            "mean": 0.321,
+            "sd": 0.196
+          },
+          "admitted": true
+        },
+        {
+          "voter": "editorial",
+          "question": "fused_to_fix",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.75
+          },
+          "observed": {
+            "n": 339,
+            "fires": 66.1,
+            "mean": 0.744,
+            "sd": 0.097
+          },
+          "admitted": true
+        },
+        {
+          "voter": "novelty",
+          "question": "restates_known",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.6
+          },
+          "observed": {
+            "n": 339,
+            "fires": 4.1,
+            "mean": 0.269,
+            "sd": 0.154
+          },
+          "admitted": true
+        },
+        {
+          "voter": "trustworthiness",
+          "question": "needs_arithmetic",
+          "casts": "down",
+          "when": {
+            "op": "at-least",
+            "value": 0.7
+          },
+          "observed": {
+            "n": 339,
+            "fires": 0.3,
+            "mean": 0.172,
+            "sd": 0.137
+          },
+          "admitted": false
+        }
+      ],
+      "routing": [
+        {
+          "question": "subject",
+          "routes": "the topic a record is filed under, which is the axis the coverage grid counts against"
+        },
+        {
+          "question": "classification",
+          "routes": "whether a record may leave the machine as written, and what has to go first"
+        },
+        {
+          "question": "contains_instruction",
+          "routes": "whether the record is addressing its own judge, which is a gate and not an opinion"
+        }
+      ],
+      "exemplars": [
+        {
+          "record": "pro_6af6707af5f5de5f63b4d99ff9f63a25",
+          "provenance": "standing",
+          "ruling": null,
+          "tally": 5,
+          "text": "State in nix-dotfiles what it does not govern on tyrode-dev-01",
+          "why": "Five up and nothing against, and worth-of-attention was not among them — the proposal is plainly worth doing and does not belong in the top twenty records of six thousand, which are different questions. It is the exemplar for a tally not being a score: a record can be unanimous and unremarkable at once."
+        },
+        {
+          "record": "pro_8587ac70cd4c04c73610377ec57a2bbd",
+          "provenance": "standing",
+          "ruling": null,
+          "tally": 5,
+          "text": "Make pipefail the default shell option for the harness bash tool rather than per-command discipline",
+          "why": "Six up with editorial objecting. Editorial objects to two thirds of proposals in this corpus, which is why its row carries a warning rather than confidence: here it is firing on a proposal whose whole content is a remedy, which is what a proposal is. Read this exemplar as evidence about the voter rather than about the record."
+        }
+      ]
+    }
+  ]
+}

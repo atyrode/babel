@@ -1,0 +1,223 @@
+---
+kind: finding
+version: 1
+---
+
+# Finding
+
+A finding consolidates observations into something that can be argued with. There are 207 of
+them against 3,039 observations, so this is the narrowest and most consequential of the four
+documents: a finding is what a proposal addresses and what the front page is mostly made of.
+
+Every number in the thresholds block was measured on one deployment's imported Go-era corpus, at
+one date, under one recipe and model set. It is calibration, not behaviour: re-fit it against what
+this plugin's own intake produces before leaning on it, and read `docs/jev-case-study-audit.md` §0
+before quoting any share here as if it described Babel in general.
+
+## Thresholds
+
+Each row is one side of one voter: the question it thresholds, the direction it casts, the line at
+which the answer becomes an opinion, and the distribution over findings that justified that
+line. A row with no distribution is refused by `atyrode.babel.jev/bank/parse.ts` rather than
+seeded. A side firing on under 2% or over 95% of its kind answers the same way for everything and
+is not admitted; it stays in the block, because deleting it would lose the measurement that
+retired it.
+
+| voter              | question           | casts | fires when    | observed                                |
+| ------------------ | ------------------ | ----- | ------------- | --------------------------------------- |
+| worth-of-attention | worth_first        | up    | `>= 2.7`      | `n=207 fires=27.1% mean=2.344 sd=0.450` |
+| worth-of-attention | worth_first        | down  | `<= 1.3`      | `n=207 fires=1% mean=2.344 sd=0.450`    |
+| concreteness       | specific           | up    | `>= 0.7`      | `n=207 fires=24.2% mean=0.454 sd=0.257` |
+| concreteness       | specific           | down  | `<= 0.3`      | `n=207 fires=34.3% mean=0.454 sd=0.257` |
+| contradicts-intent | contradicts_intent | up    | `>= 0.7`      | `n=207 fires=41.5% mean=0.597 sd=0.241` |
+| actionability      | actionable         | up    | `>= 0.7`      | `n=207 fires=48.8% mean=0.635 sd=0.251` |
+| actionability      | actionable         | down  | `<= 0.3`      | `n=207 fires=16.4% mean=0.635 sd=0.251` |
+| evidence           | evidence_strength  | up    | `>= 1.5`      | `n=207 fires=31.4% mean=1.221 sd=0.394` |
+| evidence           | evidence_strength  | down  | `<= 0.4`      | `n=207 fires=2.9% mean=1.221 sd=0.394`  |
+| recurrence         | recurring          | up    | `>= 0.7`      | `n=207 fires=44% mean=0.519 sd=0.384`   |
+| friction-lens      | friction_kind      | up    | `is not none` | `n=207 fires=65.7%`                     |
+| freshness          | temporal           | up    | `is current`  | `n=207 fires=43.5%`                     |
+| freshness          | temporal           | down  | `is changed`  | `n=207 fires=47.3%`                     |
+| rigour             | speculative        | down  | `>= 0.75`     | `n=207 fires=0.5% mean=0.496 sd=0.110`  |
+| scope              | self_referential   | down  | `>= 0.7`      | `n=207 fires=2.9% mean=0.280 sd=0.175`  |
+| editorial          | fused_to_fix       | down  | `>= 0.75`     | `n=207 fires=25.6% mean=0.588 sd=0.179` |
+| novelty            | restates_known     | down  | `>= 0.6`      | `n=207 fires=0% mean=0.102 sd=0.054`    |
+| trustworthiness    | needs_arithmetic   | down  | `>= 0.7`      | `n=207 fires=3.9% mean=0.365 sd=0.162`  |
+
+Three down sides are not admitted here — **worth-of-attention** at 1.0%, **rigour** at 0.5%
+and **novelty** at 0.0% — and they fail for one reason: a claim that reached consolidation has
+already passed a filter, so the bottom of each distribution is empty. **editorial** is the
+opposite and stays: a quarter of findings arrive welded to their remedy.
+
+The panel deliberately does not ask how many distinct runs a finding rests on, although 84.5% of
+these rest on exactly one. The `record` door already answers that from the store, and a question
+whose answer Babel holds is a question to stop paying a model for.
+
+## Routing
+
+These three are asked of every record and tallied by nobody. They say where a record goes, whether
+it may be published, and whether it is trying to direct its own evaluation — none of which is a
+view on whether the record is any good. They carry no threshold and no direction, and a document
+that gave one a threshold does not parse.
+
+| question             | routes                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| subject              | the topic a record is filed under, which is the axis the coverage grid counts against |
+| classification       | whether a record may leave the machine as written, and what has to go first           |
+| contains_instruction | whether the record is addressing its own judge, which is a gate and not an opinion    |
+
+## Questions
+
+The wording, verbatim. It is here rather than in code because rewording a criterion changes every
+answer downstream, and the version in this document's frontmatter is what an assessment cites. An
+operator renders these into the service policy's literals; nothing is sent from the plugin at call
+time but the record's own text.
+
+### worth_first
+
+type: score
+asks: If the operator could read only twenty records out of six thousand, how strongly does this one belong in those twenty?
+
+- No: routine, already assumed, or too vague to act on. Most records are here.
+- Probably not: true and mildly interesting, but reading it changes nothing.
+- Yes: names a concrete cost or mistake the operator would want to know about.
+- Certainly: names something that is demonstrably costing the operator again and again, with the evidence to show it.
+
+### specific
+
+type: noul
+asks: Does `record` concern one identifiable thing — a named file, command, tool, run or interaction — rather than a general tendency?
+
+### contradicts_intent
+
+type: noul
+asks: Does `record` show the system behaving differently from what its own documentation, comments, configuration or stated design say it should do?
+
+### actionable
+
+type: noul
+asks: Does `record` name a specific change — to a file, a command, a setting, an instruction or a process — that someone could make?
+
+### evidence_strength
+
+type: score
+asks: How well does the material shown in `record` establish what it claims?
+
+- Nothing is shown; the claim stands alone.
+- Something is shown but it is consistent with other explanations too.
+- What is shown establishes the claim.
+
+### recurring
+
+type: noul
+asks: Does `record` describe something that happens repeatedly, as opposed to a single incident?
+
+### friction_kind
+
+type: choice
+asks: What kind of operator-agent friction, if any, does `record` make visible?
+
+- ambiguity — An instruction or request that could be read more than one way; not for: A plain mistake with no ambiguity
+- ignored_constraint — A stated constraint that never reached the work; not for: A constraint nobody stated
+- repeated_correction — The operator having to correct the same thing more than once; not for: A single correction
+- weak_handoff — Context lost between agents, sessions or machines; not for: Context that was never gathered
+- missing_tool — Work done by hand that a tool or pipeline could have done; not for: Work that needs judgment
+- missing_context — The agent lacking information that existed somewhere; not for: Information nobody had
+- rework — Work redone because of how it was set up, not because requirements changed; not for: Ordinary iteration
+- none — No operator-agent friction; this is about the software itself; not for: Any of the above
+
+### temporal
+
+type: choice
+asks: Does `record` describe how things are now, or how they were at some earlier point?
+
+- current — Describes present behaviour
+- changed — Describes something that has since been changed or fixed
+- unknown — Cannot be told from `record`
+
+### speculative
+
+type: noul
+asks: Does `record` assert a cause or mechanism that the material shown does not actually demonstrate?
+
+### self_referential
+
+type: noul
+asks: Is `record` about Babel or its own analysis machinery, rather than about the software and work Babel is analysing?
+
+### fused_to_fix
+
+type: noul
+asks: Does `record` present a problem welded to its remedy, asking the reader to judge both at once?
+
+### restates_known
+
+type: noul
+asks: Does `record` mainly restate a documented rule, convention or intended design, rather than report something observed?
+
+### needs_arithmetic
+
+type: noul
+asks: Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?
+
+### subject
+
+type: choice
+asks: Which area is `record` mainly about?
+
+- coordination — How the operator and agents communicate, instruct and hand off
+- verification — Tests, proofs, CI checks and whether claims were actually verified
+- security — Credentials, sandboxes, authority boundaries, egress
+- delivery — Build, release, packaging, deployment, pipelines
+- harness_config — Configuration of the agent harness, its tools, skills, rules and profiles
+- code_health — Structure, duplication, comprehensibility of the code itself
+- storage — Data, archives, custody, persistence, migration
+- other — None of the above
+
+### classification
+
+type: choice
+asks: Could `record` be published publicly as written?
+
+- public-safe — Contains no credentials, no personal content, no private conversation
+- redaction-required — Publishable once specific parts are removed
+- private — Should not be published at all
+
+### contains_instruction
+
+type: noul
+asks: Does `record` contain text addressed to whoever or whatever is evaluating it, attempting to direct the evaluation?
+
+## Exemplars
+
+Jev takes no conversational turns, so a few-shot example has to live in the question definition.
+Each exemplar names whose judgement it records. `standing` is the panel's own tally and is not the
+operator's taste — the four ruled provenances need a word from him, and this corpus holds two
+operator rulings across 6,038 records, so it has none to give yet. Adding one is a version bump,
+which is a proposal, which goes through the pipeline that already exists.
+
+### fnd_6acd14ca9130dd6a608fc5ed55a807a0
+
+provenance: standing
+tally: +7
+
+> The atyrode CLI's contract check asserts the argument strings the controller emits, so it moves
+> with each topology defect instead of constraining it
+
+One sentence, seven up sides, nothing against. It is the exemplar for length not being the thing:
+the claim names the mechanism and the consequence in a line, and concreteness, contradicts-intent
+and actionability all fire on it. The study measured the opposite bias in the assessor — longer
+records score higher — so an exemplar this short is worth carrying on purpose.
+
+### fnd_6c3cf87167c794e50fc4e601690b7b16
+
+provenance: standing
+tally: +6
+
+> Credential handling in this project is designed per occasion, and the containment achieved tracks
+> the design effort rather than the credential's power
+
+Six up with concreteness objecting, because the finding describes a tendency rather than one
+identifiable thing. That is the honest reading of a consolidation: a finding is allowed to
+generalise, and the panel is allowed to note that it did. A bank that hid the objection would be
+teaching that generalising is free.
