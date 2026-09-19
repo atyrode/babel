@@ -29,6 +29,7 @@ import {
   leaseFloor,
   machineColumns,
   newId,
+  recordColumns,
   refuseRow,
   validateNewPolicy,
   rule,
@@ -1797,14 +1798,119 @@ test("every machine column of the migration is one the crossing guard covers", (
   expect(machineColumns()["budgets"]).toBeUndefined();
 });
 
+test("every record-identifier column of the migration is one the crossing guard covers", () => {
+  // The same pin as the machine columns above, for the same reason and against the same failure
+  // mode. A column added to `SCHEMA_V1` that holds a record id — by name, or by saying
+  // `REFERENCES records(id)` — lands here and fails this line rather than quietly becoming the
+  // one place an unopenable row can still get in (#414).
+  expect(recordColumns()).toEqual({
+    records: ["id", "root_id", "supersedes_id", "parent_id"],
+    status_events: ["record_id"],
+    dispositions: ["record_id", "duplicate_of_id"],
+    next_actions: ["record_id"],
+    filings: ["record_id"],
+    feedback: ["record_id"],
+    steering: ["root_id"],
+    assessments: ["record_id", "revision_id"],
+    claims: ["record_id"],
+    record_vectors: ["record_id"],
+  });
+  // A `supersedes_id` that references its OWN table is not a record id, and the crossing must
+  // still carry those rows: the name family is the columns whose meaning is fixed, and the
+  // REFERENCES clause carries the rest. `filings` and `facts` supersede themselves.
+  expect(importableTables()["filings"]).toContain("supersedes_id");
+  expect(recordColumns()["filings"]).toEqual(["record_id"]);
+  expect(recordColumns()["facts"]).toBeUndefined();
+  // `edges` is absent because its ends are polymorphic; the row's own kind decides, which the
+  // import path checks and the test below proves.
+  expect(recordColumns()["edges"]).toBeUndefined();
+});
+
+test("the crossing refuses a record id no door could read back, and imports none of the chunk", async () => {
+  const store = openStore();
+  await migrate(store);
+  const row = (id: string) => ({
+    id,
+    kind: "hypothesis",
+    root_id: id,
+    seq: 0,
+    actor_kind: "run",
+    actor_id: "run_old",
+    title: "a candidate",
+    created_at: "2026-03-01T09:00:00.000000000Z",
+    payload: "{}",
+  });
+  // THE DEFECT: twelve rows like this were accepted, listed by the feed, and refused by the
+  // `record` door when opened — and `records_kept` means they can never be removed.
+  await expect(
+    importLedger(store, {
+      source: "seed.db",
+      table: "records",
+      rows: [row("hyp_00000001"), row("rec_seed_001")],
+    }),
+  ).rejects.toThrow(/records\.id holds "rec_seed_001"/);
+  // Not the bad row only: the good one beside it stayed out too, because an append-only table
+  // cannot be rolled back and a half-delivered chunk is the worse answer.
+  expect(await rows<{ id: string }>(store, `SELECT id FROM records`)).toEqual([]);
+
+  await expect(
+    importLedger(store, {
+      source: "seed.db",
+      table: "status_events",
+      rows: [
+        {
+          id: "ste_00000001",
+          record_id: "rec_seed_001",
+          seq: 1,
+          status: "open",
+          actor_kind: "run",
+          actor_id: "run_old",
+          recorded_at: "2026-03-01T09:00:00.000000000Z",
+        },
+      ],
+    }),
+  ).rejects.toThrow(/status_events\.record_id holds "rec_seed_001"/);
+
+  // An edge's end is checked against the kind beside it: a record end must be a record id, and
+  // an entity end is left alone. Guarding `from_id` by name would refuse every entity edge.
+  const edge = (fromKind: string, fromId: string) => ({
+    id: "edg_00000001",
+    kind: "cites",
+    from_kind: fromKind,
+    from_id: fromId,
+    to_kind: "entity",
+    to_id: "ent_00000001",
+    actor_kind: "run",
+    actor_id: "run_old",
+    created_at: "2026-03-01T09:00:00.000000000Z",
+  });
+  await expect(
+    importLedger(store, {
+      source: "seed.db",
+      table: "edges",
+      rows: [edge("record", "rec_seed_1")],
+    }),
+  ).rejects.toThrow(/edges\.from_id holds "rec_seed_1"/);
+  expect(
+    await importLedger(store, {
+      source: "seed.db",
+      table: "edges",
+      rows: [edge("entity", "ent_00000002")],
+    }),
+  ).toEqual({ source: "seed.db", table: "edges", inserted: 1, skipped: 0 });
+});
+
 test("importing a chunk is idempotent by primary key and keeps its own ledger", async () => {
   const store = openStore();
   await migrate(store);
+  // The ids are the shape the Go tree actually minted — `newID` in `internal/frontier/store.go`
+  // at v0.4.0 is a family, an underscore and sixteen random bytes in hex — because a fixture
+  // that invents an id shape is how an import path came to accept one no door can read (#414).
   const rowsIn = [
     {
-      id: "hyp_imported1",
+      id: "hyp_1a3b5c7d9e0f24683b5d7f91a2c4e608",
       kind: "hypothesis",
-      root_id: "hyp_imported1",
+      root_id: "hyp_1a3b5c7d9e0f24683b5d7f91a2c4e608",
       seq: 0,
       actor_kind: "run",
       actor_id: "run_old",
@@ -1813,9 +1919,9 @@ test("importing a chunk is idempotent by primary key and keeps its own ledger", 
       payload: "{}",
     },
     {
-      id: "hyp_imported2",
+      id: "hyp_9f2c4d0b7a1e58630c4d2f9a8b7e6150",
       kind: "hypothesis",
-      root_id: "hyp_imported2",
+      root_id: "hyp_9f2c4d0b7a1e58630c4d2f9a8b7e6150",
       seq: 0,
       actor_kind: "run",
       actor_id: "run_old",
