@@ -99,8 +99,13 @@ jobs:
   # The verified bundles ride the release, then reach the integrated preview through its
   # receiver: `plugin <asset-url> <sha256>` over the forced-command SSH key, dependency closure
   # first and baseline before its parts - omp, then Code, then Babel - exactly what a developer
-  # types from dev-01 (docs/building.md "Where a change is proved"). Production
-  # (manifold.tyrode.dev) is installed by the operator, by hand, and is not touched here.
+  # types from dev-01 (docs/building.md "Where a change is proved"). THAT SEQUENCE IS READ OFF
+  # THE BUNDLES rather than written out here: `scripts/delivery-order.ts` sorts the two
+  # downloaded artifacts by their own declared dependencies, through the same `familyOrder`
+  # `verify` installs by in the job above, so a plugin added to the repository is delivered with
+  # no edit to this file. That is why the job holds a checkout and the SDK beside the artifacts.
+  # Production (manifold.tyrode.dev) is installed by the operator, by hand, and is
+  # not touched here.
   deliver:
     needs: [release, plugins, dependencies]
     runs-on: ubuntu-latest
@@ -111,6 +116,31 @@ jobs:
       TAG: ${{ github.ref_name }}
       REPOSITORY: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: caller
+      - name: Read the Manifold pin
+        id: rev
+        working-directory: caller
+        run: |
+          rev="$(tr -d '[:space:]' < MANIFOLD_REV)"
+          [ -n "$rev" ] || { echo "MANIFOLD_REV is empty"; exit 1; }
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: atyrode/manifold
+          ref: ${{ steps.rev.outputs.rev }}
+          path: manifold
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      # The kit and nothing else. `delivery-order.ts` reaches `familyOrder` through
+      # tsconfig.json's sibling-checkout paths, so this repository's own install is not needed to
+      # read a bundle - and a delivery that cannot start because a devDependency moved would be a
+      # tag half-installed.
+      - name: Install the kit
+        working-directory: manifold
+        run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
           name: manifold-plugins
@@ -131,6 +161,25 @@ jobs:
             dist/*.manifold-plugin.json dist/manifold-plugins.SHA256SUMS \
             deps/*.manifold-plugin.json deps/dependency-plugins.SHA256SUMS
 
+      # THE GUARD THE OTHER WAY ROUND. The old one proved every id it was asked about had a
+      # checksum, which says nothing about a bundle nobody asked about: that is how a part is
+      # attached to a release and never delivered. This proves the packed were asked for -
+      # every artifact in `deps/` and `dist/` appears in the order - and it is its own step so
+      # that it runs whether or not a receiver is configured below.
+      - name: Derive the delivery order, and refuse a bundle nobody delivers
+        run: |
+          set -euo pipefail
+          bun caller/scripts/delivery-order.ts deps dist > order
+          cat order
+          ls deps/*.manifold-plugin.json dist/*.manifold-plugin.json | sort > packed
+          cut -d " " -f 2 order | sort > asked
+          undelivered="$(comm -23 packed asked)"
+          [ -z "$undelivered" ] || {
+            printf 'packed and never delivered:\n%s\n' "$undelivered"
+            echo "every bundle in deps/ and dist/ must appear in the delivery order"
+            exit 1
+          }
+
       - name: Install on the preview, dependencies and parents first
         env:
           DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
@@ -142,26 +191,20 @@ jobs:
           key=$(mktemp); printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"; chmod 600 "$key"
           trap 'rm -f "$key"' EXIT
           cat dist/SHA256SUMS deps/SHA256SUMS > sums
-          # THIS LIST IS HAND-MAINTAINED, AND IT IS THE ONE THING HERE THAT IS. Everything above
-          # globs — `dist/*.manifold-plugin.json` is attached whole, and `sums` is both families'
-          # checksums — but the receiver takes one bundle per call, and a hub refuses a part
-          # whose baseline is not installed yet, so the ORDER is the reason this is written out
-          # rather than derived: dependencies first, then each baseline before its own parts.
-          # A new plugin therefore has to be added here by hand. The `no sum for` guard below
-          # catches a bundle that was asked for and not built; nothing catches a bundle that was
-          # built and never asked for, which is how a part reaches a release and never a preview.
-          for id in \
-            atyrode.omp atyrode.omp.accounts atyrode.omp.gateway \
-            atyrode.code atyrode.code.accounts atyrode.code.generator atyrode.code.usage \
-            atyrode.babel atyrode.babel.feed atyrode.babel.watch atyrode.babel.jev; do
-            file="$id.manifold-plugin.json"
-            sha=$(awk -v f="$file" '$2 == f { print $1 }' sums)
-            [ -n "$sha" ] || { echo "no sum for $file"; exit 1; }
-            url="https://github.com/$REPOSITORY/releases/download/$TAG/$file"
+          # The digest handed to the receiver is read from the bundle's own bytes by the step
+          # above; `sums` is what the release published over those same bytes, so a disagreement
+          # means the artifact and its checksum came apart between packing and delivery.
+          # `ssh -n` because a receiver that read stdin would swallow the rest of the order.
+          while read -r id file sha; do
+            asset="${file##*/}"
+            published=$(awk -v f="$asset" '$2 == f { print $1 }' sums)
+            [ "$published" = "$sha" ] || { echo "$asset: published checksum is not the delivered bytes"; exit 1; }
+            echo "installing $id"
+            url="https://github.com/$REPOSITORY/releases/download/$TAG/$asset"
             for attempt in 1 2 3; do
-              if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
+              if ssh -n -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
                 "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "plugin $url $sha"; then break; fi
               [ "$attempt" -lt 3 ] || exit 1
               sleep 15
             done
-          done
+          done < order

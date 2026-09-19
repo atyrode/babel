@@ -622,6 +622,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A release delivers every bundle it packed, and nothing says which by hand.** The release job
+  handed the preview's receiver a hand-maintained list of plugin ids while everything around it
+  globbed, so a new part was attached to the release and never delivered — and the guard could not
+  notice, because it checked that every id it *asked* about had a checksum, which says nothing
+  about a bundle nobody asked about. A tag cut the day the judgement part landed would have
+  attached four bundles and delivered three. The order is derived from the packed bundles' own
+  declared dependencies now, through the kit's own `familyOrder` — the same function `verify` and
+  `dev` install by, rather than a second topological sort — and the guard is reversed: **a bundle
+  in `dist` that nobody delivers fails the job.**
+
+  A prerequisite that is not in the set keeps its place and is named on stderr rather than sinking
+  to the end or being dropped. Only the hub knows whether an external dependency is already
+  installed, and ordering an unresolved bundle last would put a baseline after its own parts — the
+  exact refusal the ordering exists to avoid.
+
+  Two more defects in the same loop. The published checksum was compared against what the script
+  was told rather than against the bytes it read, so it proved the asked-for were packed rather
+  than that the delivered were right. And **`ssh` without `-n` swallows the rest of the list**:
+  with a faithful stub, the loop delivered one bundle of six and exited 0. Both are fixed, and the
+  second is the kind of green that is worse than a failure.
 - **The crossing guards every machine column, and reads the list out of the migration.** The guard
   that refuses a chunk hosting rows on a value the hub cannot describe covered `sessions.host` and
   `runs.machine_id` by a hand-written ternary, and the schema had a third — `drains.machine_id`.
