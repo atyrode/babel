@@ -846,6 +846,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - **The preview loop discovers this family, not its downloaded dependencies.** After dependency
   preparation, scanning the repository root tried to install duplicate Code bundles. `bun run dev`
   now scans `babel/`; the local preview installed all four plugins after the change.
+- **Packing leaves the stamped manifest ready for the same checks as a clean checkout.** The
+  stamper uses the repository's formatter instead of rewriting the file in generic JSON layout;
+  packing followed immediately by the format check now succeeds, rather than failing the next CI
+  run after a successful local gate.
 
 - **A record could be imported that no door would ever open, and nothing could remove it.** Found
   by rendering the feed on a hub rather than in a test document: twelve rows went in through the
