@@ -231,6 +231,14 @@ export const ACTIONS = {
   setBudget: "setBudget",
   clearBudget: "clearBudget",
   /**
+   * RENDERING A RECORD FOR A DESTINATION (§4.6): a sanitized issue draft, an agent brief, or an
+   * operator note. The answer is a filename and its text — a file the operator takes. There is
+   * no `publish` beside it and there will not be one: Babel opens no issue, writes into no
+   * repository and launches no agent at a destination, and this door holds no authority that
+   * would let it.
+   */
+  export: "export",
+  /**
    * STARTING A RUN, which is posting a Code session (#279). Babel's runs are Code sessions: the
    * operator picks a saved Code profile or parametrizes one in Code's own generator, and Babel
    * posts the run through `atyrode.code.runSession` — reached with `ctx.actions.call` on the
@@ -688,6 +696,90 @@ export const TopicResultSchema = z.strictObject({
   feed: FeedResultSchema,
 });
 
+// -------------------------------------------- refinement (§4.7) and output projections (§4.6)
+
+/*
+  TWO THINGS A RECORD CAN HAVE DONE TO IT ONCE IT EXISTS, and they are here together because
+  both are the same shape of act: the operator decides, and Babel writes nothing outward.
+
+  A REFINEMENT (§4.7) is a separately reviewable proposal that names the exact revision and JSON
+  Pointer it would change and the replacement it proposes. It is written by a review
+  (`server/engine/review.ts`) and applied — as a supersession, never an edit — by the operator's
+  acceptance of it (`store/acts.ts`). The pointer is into the PROJECTION a review was shown, not
+  into the payload column: `/title` and `/payload/problem` are the two shapes it takes, because
+  `server/conductor.ts`'s `project()` is what a reviewer reads and what its pointer indexes.
+
+  AN OUTPUT PROJECTION (§4.6) renders a proposal for a destination. Exactly one of the three
+  destinations leaves this deployment, and §4.6 is the thing that says which: the issue draft is
+  the one it calls SANITIZED, and the agent brief is the one it requires to carry "evidence
+  locators an agent can open rather than excerpts it must trust". So a classification governs the
+  issue draft and governs nothing else — and there is no `publish` here, in any spelling. Babel
+  renders a file; the operator takes it.
+*/
+
+/**
+ * The payload key a proposal carries its refinement under. Spelled once because two files write
+ * and read it — the review that proposes and the act that applies — and a key one of them
+ * misspelled would be a refinement nothing could ever find.
+ */
+export const REFINEMENT_KEY = "refinement";
+
+/** One refinement, as the proposal that carries it spells it under `payload.refinement`. */
+export const RefinementSchema = z.strictObject({
+  /** The record the refinement rewords, which is the revision's own root-line identity. */
+  targetRecordId: RecordIdSchema,
+  /** The exact immutable revision the reviewer read. A newer one is a different wording. */
+  targetRevisionId: RecordIdSchema,
+  /** How many refinements deep this one is, against the policy's bound. */
+  depth: z.number().int().min(0),
+  /**
+   * The JSON Pointer into the reviewed projection. Never empty: §4.7 requires the EXACT pointer,
+   * and a refinement naming the record as a whole names no wording that could be replaced.
+   */
+  targetPath: z.string().min(1).startsWith("/"),
+  reason: z.string().min(1),
+  replacement: z.string().min(1),
+  sourceRole: RoleSchema,
+});
+export type Refinement = z.infer<typeof RefinementSchema>;
+
+/** What accepting a refinement did: the revision it wrote, or the refusal that stopped it. */
+export const RefinementOutcomeSchema = z.strictObject({
+  targetRecordId: RecordIdSchema,
+  targetPath: z.string(),
+  /** The superseding revision the acceptance wrote, and "" when it wrote none. */
+  revisionId: z.string(),
+  applied: z.boolean(),
+  /** Why nothing was written, in the store's own sentence. */
+  error: z.string().optional(),
+});
+
+/** §4.6's three destinations. A fourth is a destination, never a publishing capability. */
+export const PROJECTIONS = ["issue-draft", "agent-brief", "operator-note"] as const;
+export const ProjectionSchema = z.enum(PROJECTIONS);
+export type Projection = z.infer<typeof ProjectionSchema>;
+
+export const ExportInputSchema = z.strictObject({
+  id: RecordIdSchema,
+  projection: ProjectionSchema,
+});
+
+export const ExportResultSchema = z.strictObject({
+  recordId: RecordIdSchema,
+  projection: ProjectionSchema,
+  /** The classification the redaction was decided from; "" when the record states none. */
+  classification: z.string(),
+  /** A name for the file the operator saves. Babel writes no file and sends nothing. */
+  filename: z.string(),
+  contentType: z.literal("text/markdown"),
+  /**
+   * What the classification kept out, named. A reader has to be able to tell a projection that
+   * carries everything from one that was cut down, or a redacted draft reads as the whole record.
+   */
+  withheld: z.array(z.string()),
+  text: z.string(),
+});
+
 // ---------------------------------------------------------------------------- the operator's acts
 
 export const RuleInputSchema = z.strictObject({
@@ -712,6 +804,13 @@ export const RuleResultSchema = z.strictObject({
       error: z.string().optional(),
     })
     .nullable(),
+  /**
+   * What the ruling did to the refinement the proposal carries. It is a sibling of `plan` rather
+   * than a variant of it because a refinement is not a plan row: `plans.kind` is a closed
+   * `('topic','backlog','answer')` and SQLite cannot widen a CHECK, so the refinement travels in
+   * the proposal's own payload and is applied from there.
+   */
+  refinement: RefinementOutcomeSchema.nullable(),
 });
 
 /**

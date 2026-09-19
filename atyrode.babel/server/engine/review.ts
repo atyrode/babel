@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { JOB_OUTPUT_FILES, ROLES } from "../../contract.ts";
+import { JOB_OUTPUT_FILES, REFINEMENT_KEY, ROLES, type Refinement } from "../../contract.ts";
 import {
   acceptReviewResult,
   contributionRefusal,
@@ -449,6 +449,18 @@ function contributionReason(
   if (refused !== null) return refusalReason(refused);
   const unserved = unservedReviewLocator(contribution, served);
   if (unserved !== "") return `${REFUSALS.unknownReference}: ${unserved}`;
+  // A REFINEMENT NAMES AN EXACT POINTER OR IT IS NOT A REFINEMENT (§4.7). The contribution
+  // vocabulary lets an empty pointer address the record as a whole, which is right for a comment
+  // and impossible for a refinement: the operator's acceptance of one replaces the wording UNDER
+  // that pointer, so an empty one names nothing to replace and the proposal could only ever be
+  // refused at the moment he accepted it. Refusing the contribution costs it and nothing else,
+  // and the receipt says why rather than leaving him a proposal that does nothing.
+  if (contribution.kind === "refinement" && contribution.target?.path === "") {
+    return (
+      `${REFUSALS.schema}: refinement ${String(index + 1)} names the record as a whole; a ` +
+      "refinement names the exact JSON Pointer whose wording it would replace"
+    );
+  }
   const path = contribution.target?.path;
   if (path !== undefined && !pointerExists(target, path)) {
     return (
@@ -630,16 +642,26 @@ export function reviewRows(
   for (const [index, contribution] of result.contributions.entries()) {
     if (contribution.kind !== "refinement") continue;
     const path = contribution.target?.path ?? "";
+    // The pointer's last element, as a reader sees it: `/payload/problem` is "problem". An empty
+    // pointer cannot reach here — `contributionReason` refuses a refinement that names no exact
+    // part — and the fallback is what makes that a compile-time certainty rather than a cast.
     const label =
-      path === ""
-        ? "the record"
-        : (path
-            .split("/")
-            .filter((part) => part !== "")
-            .at(-1)
-            ?.replace(/~1/g, "/")
-            .replace(/~0/g, "~") ?? "the record");
+      path
+        .split("/")
+        .filter((part) => part !== "")
+        .at(-1)
+        ?.replace(/~1/g, "/")
+        .replace(/~0/g, "~") ?? "the record";
     const title = `Refine ${label} in ${preparation.recordId}`;
+    const refinement: Refinement = {
+      targetRecordId: preparation.recordId,
+      targetRevisionId: preparation.revisionId,
+      depth: preparation.refinementDepth + 1,
+      targetPath: path,
+      reason: contribution.text,
+      replacement: contribution.would_change,
+      sourceRole: preparation.role,
+    };
     const proposalId = mintId("pro", runId, `refinement|${String(index)}|${path}`);
     rows[JOB_OUTPUT_FILES.records]?.push(
       proposalRow(
@@ -651,15 +673,11 @@ export function reviewRows(
           outcome: contribution.would_change,
           impact: "moderate",
           classification: "private",
-          refinement: {
-            targetRecordId: preparation.recordId,
-            targetRevisionId: preparation.revisionId,
-            depth: preparation.refinementDepth + 1,
-            targetPath: path,
-            reason: contribution.text,
-            replacement: contribution.would_change,
-            sourceRole: preparation.role,
-          },
+          // Spelled under the key the operator's acceptance reads it back from, and typed
+          // against the same schema that parses it there (`contract.ts`): a refinement Babel
+          // writes and a refinement Babel applies are one shape or the operator reviews a
+          // proposal whose acceptance can do nothing.
+          [REFINEMENT_KEY]: refinement,
         },
         // A refinement REFINES the record it rewrites; it does not rest on it. The count this
         // marks is over `consolidates` and `addresses` alone, so this proposal supports nothing.

@@ -30,7 +30,13 @@ function hub(
       feed: () => feed(),
       topics: () => topics(),
       pulse: () => PULSE,
-      rule: () => ({ id: "pro_0000000a", standing: "accepted", seq: 7, plan: null }),
+      rule: () => ({
+        id: "pro_0000000a",
+        standing: "accepted",
+        seq: 7,
+        plan: null,
+        refinement: null,
+      }),
       comment: () => ({}),
       answer: () => ({}),
       ...overrides,
@@ -349,6 +355,7 @@ describe("ruling", () => {
           declined: false,
           entityId: "ent_0000dead",
         },
+        refinement: null,
       }),
     });
     const view = await mount(<HomePanel host={fake.host} />);

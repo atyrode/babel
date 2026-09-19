@@ -11,6 +11,34 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Accepting a refinement writes the superseding revision, and a record renders out of Babel.**
+  Two halves of the retired review service had no counterpart. A review could write a refinement
+  naming the exact revision and JSON Pointer it would change, and nothing let the operator's
+  acceptance of one **apply** it; and nothing rendered a record out of Babel at all, which is what
+  "Babel drafts; the operator acts" rests on — a proposal the operator cannot carry anywhere is a
+  proposal he has to retype.
+
+  Accepting one now writes the new revision through the supersession path the operator's own acts
+  already use, in the same transaction as the ruling, with the lineage on the edge. **A refinement
+  written against a revision that has since been superseded is refused by name** — a refinement of
+  an older wording is a refinement of something else — and the acceptance still stands, because a
+  ruling is not un-appended by the failure of what it authorised. Two further refusals: a pointer
+  at the record's identity rather than its wording, and a pointer resting on something that is not
+  text.
+
+  Two deliberate non-writes, both load-bearing. **No `status_events` row**: status is read per
+  root, so marking the old revision superseded would have gapped out every review of the new head
+  as replaced — the supersession would have silenced the wording it installed. And the superseded
+  revision's outgoing edges **are** carried across, because a rewording is the same claim: a
+  revision inheriting none would read as a finding resting on nothing and be reviewed with its
+  evidence missing.
+
+  The three projections §4.6 names — the issue draft, the agent brief, the operator note — are
+  text and a filename. **There is no publish verb in any spelling**: the door asks for read
+  authority and delegates nothing, so the power to reach anything outside this plugin's own rows
+  is not held rather than merely unused. The issue draft and the agent brief are a proposal's
+  alone, because a problem, a proposed outcome and acceptance criteria are a proposal's fields and
+  an issue draft of a hypothesis would be a change request assembled out of a guess.
 - **Every drain leaves a record of itself.** After the 2026-09-13 drain the questions the operator
   asked — did we hit a cap, what did it cost in tokens, how much erroring, how much value came out
   — had to be answered by hand, hours later, from receipts, `/proc`, fan logs and attempt rows.
