@@ -75,10 +75,16 @@ unlike the thresholds above: the questions in this block were asked of the corpu
 document's slice of it, and a per-kind share nobody measured would be a number somebody typed.
 Re-fit them per kind once this plugin's own intake has produced enough of each.
 
-| question   | suggests        | fires when | observed                                |
-| ---------- | --------------- | ---------- | --------------------------------------- |
-| overclaims | develop-further | `>= 3`     | `n=974 fires=31.7% mean=2.227 sd=0.444` |
-| overclaims | none            | `<= 1`     | `n=974 fires=5.9% mean=2.227 sd=0.444`  |
+| question   | suggests        | fires when             | observed                                |
+| ---------- | --------------- | ---------------------- | --------------------------------------- |
+| overclaims | develop-further | `>= 3`                 | `n=974 fires=31.7% mean=2.227 sd=0.444` |
+| overclaims | none            | `<= 1`                 | `n=974 fires=5.9% mean=2.227 sd=0.444`  |
+| settleable | develop-further | `is query_own_data`    | `n=974 fires=37.5%`                     |
+| settleable | develop-further | `is reading_code`      | `n=974 fires=33.2%`                     |
+| settleable | ask-question    | `is needs_live_system` | `n=974 fires=17%`                       |
+| settleable | develop-further | `is command_or_test`   | `n=974 fires=11.2%`                     |
+| settleable | none            | `is not_settleable`    | `n=974 fires=1%`                        |
+| settleable | draft-issue     | `is needs_new_work`    | `n=974 fires=0.1%`                      |
 
 ## Routing
 
@@ -186,6 +192,18 @@ asks: Does `record` mainly restate a documented rule, convention or intended des
 
 type: noul
 asks: Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?
+
+### settleable
+
+type: choice
+asks: What kind of check would settle whether `record`'s central claim is true?
+
+- query_own_data — A query against the records, runs, edges or events Babel already holds; not for: Data Babel would first have to go and collect
+- reading_code — Reading the code, configuration or documentation as it stands; not for: Anything that needs the system running
+- needs_live_system — Watching a running system behave; not for: Anything a static read settles
+- command_or_test — Running one command, test or build and reading what it prints; not for: A change that would have to be written first
+- not_settleable — Nothing checks it; it is a matter of judgement; not for: A claim that is merely expensive to check
+- needs_new_work — Nothing short of doing the work the record describes; not for: Work needed to act on the claim rather than to believe it
 
 ### overclaims
 

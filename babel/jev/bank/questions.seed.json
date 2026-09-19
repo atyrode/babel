@@ -108,6 +108,19 @@
           "criteria": []
         },
         {
+          "id": "settleable",
+          "type": "choice",
+          "asks": "What kind of check would settle whether `record`'s central claim is true?",
+          "criteria": [
+            "query_own_data — A query against the records, runs, edges or events Babel already holds; not for: Data Babel would first have to go and collect",
+            "reading_code — Reading the code, configuration or documentation as it stands; not for: Anything that needs the system running",
+            "needs_live_system — Watching a running system behave; not for: Anything a static read settles",
+            "command_or_test — Running one command, test or build and reading what it prints; not for: A change that would have to be written first",
+            "not_settleable — Nothing checks it; it is a matter of judgement; not for: A claim that is merely expensive to check",
+            "needs_new_work — Nothing short of doing the work the record describes; not for: Work needed to act on the claim rather than to believe it"
+          ]
+        },
+        {
           "id": "overclaims",
           "type": "score",
           "asks": "How far does `record`'s stated confidence run ahead of the material it actually shows?",
@@ -470,6 +483,96 @@
             "sd": 0.444
           },
           "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "query_own_data"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 37.5,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "reading_code"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 33.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "ask-question",
+          "when": {
+            "op": "is",
+            "value": "needs_live_system"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 17,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "command_or_test"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 11.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": null,
+          "when": {
+            "op": "is",
+            "value": "not_settleable"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "settleable",
+          "suggests": "draft-issue",
+          "when": {
+            "op": "is",
+            "value": "needs_new_work"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 0.1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
         }
       ],
       "routing": [
@@ -609,6 +712,19 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "settleable",
+          "type": "choice",
+          "asks": "What kind of check would settle whether `record`'s central claim is true?",
+          "criteria": [
+            "query_own_data — A query against the records, runs, edges or events Babel already holds; not for: Data Babel would first have to go and collect",
+            "reading_code — Reading the code, configuration or documentation as it stands; not for: Anything that needs the system running",
+            "needs_live_system — Watching a running system behave; not for: Anything a static read settles",
+            "command_or_test — Running one command, test or build and reading what it prints; not for: A change that would have to be written first",
+            "not_settleable — Nothing checks it; it is a matter of judgement; not for: A claim that is merely expensive to check",
+            "needs_new_work — Nothing short of doing the work the record describes; not for: Work needed to act on the claim rather than to believe it"
+          ]
         },
         {
           "id": "overclaims",
@@ -973,6 +1089,96 @@
             "sd": 0.444
           },
           "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "query_own_data"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 37.5,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "reading_code"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 33.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "ask-question",
+          "when": {
+            "op": "is",
+            "value": "needs_live_system"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 17,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "command_or_test"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 11.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": null,
+          "when": {
+            "op": "is",
+            "value": "not_settleable"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "settleable",
+          "suggests": "draft-issue",
+          "when": {
+            "op": "is",
+            "value": "needs_new_work"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 0.1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
         }
       ],
       "routing": [
@@ -1104,6 +1310,19 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "settleable",
+          "type": "choice",
+          "asks": "What kind of check would settle whether `record`'s central claim is true?",
+          "criteria": [
+            "query_own_data — A query against the records, runs, edges or events Babel already holds; not for: Data Babel would first have to go and collect",
+            "reading_code — Reading the code, configuration or documentation as it stands; not for: Anything that needs the system running",
+            "needs_live_system — Watching a running system behave; not for: Anything a static read settles",
+            "command_or_test — Running one command, test or build and reading what it prints; not for: A change that would have to be written first",
+            "not_settleable — Nothing checks it; it is a matter of judgement; not for: A claim that is merely expensive to check",
+            "needs_new_work — Nothing short of doing the work the record describes; not for: Work needed to act on the claim rather than to believe it"
+          ]
         },
         {
           "id": "overclaims",
@@ -1468,6 +1687,96 @@
             "sd": 0.444
           },
           "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "query_own_data"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 37.5,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "reading_code"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 33.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "ask-question",
+          "when": {
+            "op": "is",
+            "value": "needs_live_system"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 17,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "command_or_test"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 11.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": null,
+          "when": {
+            "op": "is",
+            "value": "not_settleable"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "settleable",
+          "suggests": "draft-issue",
+          "when": {
+            "op": "is",
+            "value": "needs_new_work"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 0.1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
         }
       ],
       "routing": [
@@ -1607,6 +1916,19 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "settleable",
+          "type": "choice",
+          "asks": "What kind of check would settle whether `record`'s central claim is true?",
+          "criteria": [
+            "query_own_data — A query against the records, runs, edges or events Babel already holds; not for: Data Babel would first have to go and collect",
+            "reading_code — Reading the code, configuration or documentation as it stands; not for: Anything that needs the system running",
+            "needs_live_system — Watching a running system behave; not for: Anything a static read settles",
+            "command_or_test — Running one command, test or build and reading what it prints; not for: A change that would have to be written first",
+            "not_settleable — Nothing checks it; it is a matter of judgement; not for: A claim that is merely expensive to check",
+            "needs_new_work — Nothing short of doing the work the record describes; not for: Work needed to act on the claim rather than to believe it"
+          ]
         },
         {
           "id": "overclaims",
@@ -1971,6 +2293,96 @@
             "sd": 0.444
           },
           "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "query_own_data"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 37.5,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "reading_code"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 33.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "ask-question",
+          "when": {
+            "op": "is",
+            "value": "needs_live_system"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 17,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "command_or_test"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 11.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": null,
+          "when": {
+            "op": "is",
+            "value": "not_settleable"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "settleable",
+          "suggests": "draft-issue",
+          "when": {
+            "op": "is",
+            "value": "needs_new_work"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 0.1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
         }
       ],
       "routing": [
