@@ -1,10 +1,12 @@
-import { RecordKindSchema } from "../../contract.ts";
+import { NEXT_ACTIONS, RecordKindSchema } from "../../contract.ts";
 import {
   admits,
+  AdvisorySchema,
   BankDocumentSchema,
   ExemplarSchema,
   ROUTING_QUESTIONS,
   VOTERS,
+  type Advisory,
   type BankDocument,
   type Condition,
   type Distribution,
@@ -32,10 +34,14 @@ import {
     documentation is fitted to somebody else's corpus, and the only defence against one arriving
     is that a row without its own `n=` and `fires=` does not parse. A numeric threshold must
     also carry `mean=` and `sd=`; a categorical one has no mean to carry.
-  - A ROUTING QUESTION IN THE THRESHOLDS BLOCK is refused, and so is anything else in the
-    routing block. The type system already makes a routing question untalliable — `Routing` has
-    no `casts` and no `when`, so `tally()` will not take one — and this closes the way round it,
-    which is writing the routing question as a vote in the first place.
+  - A ROUTING QUESTION IN THE THRESHOLDS BLOCK is refused, and so is one in the advisories
+    block, and so is anything else in the routing block. The type system already makes a routing
+    question untalliable and an advisory untalliable — neither `Routing` nor `Advisory` has
+    `casts`, so `tally()` will not take either — and this closes the ways round it, which are
+    writing the routing question as a vote, or as a suggestion, in the first place.
+  - AN ADVISORY PROPOSING A WORD THAT IS NOT A NEXT ACTION is refused. `babel.suggest` writes a
+    `next_actions` row and that vocabulary is closed, so a suggestion the door would reject is
+    better caught in the document than at the call that was paid for.
   - A QUESTION DEFINED AND NEVER ASKED, or asked and never defined, is refused. The definitions
     are what an operator renders into the service policy's literals; one no row reaches is text
     going out that nothing reads back.
@@ -221,6 +227,52 @@ function votesOf(file: string, body: string): readonly Vote[] {
   return found;
 }
 
+/**
+ * The suggestion block. Every row carries a cut and the distribution that justified it, exactly
+ * as a threshold does, because the argument is the same one: a line nobody can trace to this
+ * corpus is a line from somebody else's, and a suggestion is a thing the operator has to read
+ * and answer. The block may hold no rows — a kind nothing advises on advises nothing — but it
+ * has to exist, so that deleting every suggestion in a document is an edit a reviewer sees
+ * rather than a heading that quietly went missing.
+ */
+function advisoriesOf(file: string, body: string): readonly Advisory[] {
+  const found: Advisory[] = [];
+  for (const row of rows(section(file, body, "Advisories"))) {
+    const [question, suggests, when, observed] = row;
+    if (question === undefined || suggests === undefined || when === undefined) {
+      throw new Error(`${file}: an advisories row has fewer than four cells: ${row.join(" | ")}`);
+    }
+    // A LABEL IS NOT A REASON TO PROPOSE ANYTHING. Where a record is filed and whether it may be
+    // published are not views on what should happen to it, so the routing questions are kept out
+    // of this block for the reason they are kept out of the thresholds one.
+    if ((ROUTING_QUESTIONS as readonly string[]).includes(question)) {
+      throw new Error(
+        `${file}: ${question} is a routing question and cannot be given a threshold; it says ` +
+          `where a record goes, not what should happen to it`,
+      );
+    }
+    if (suggests !== "none" && !(NEXT_ACTIONS as readonly string[]).includes(suggests)) {
+      throw new Error(
+        `${file}: ${question} suggests "${suggests}", which is not one of the next actions ` +
+          `babel.suggest can write`,
+      );
+    }
+    const condition = conditionOf(file, question, when);
+    const numeric = condition.op === "at-least" || condition.op === "at-most";
+    const distribution = distributionOf(file, question, observed ?? "", numeric);
+    found.push(
+      AdvisorySchema.parse({
+        question,
+        suggests: suggests === "none" ? null : suggests,
+        when: condition,
+        observed: distribution,
+        admitted: admits(distribution),
+      }),
+    );
+  }
+  return found;
+}
+
 function routingOf(file: string, body: string): readonly Routing[] {
   const table = rows(section(file, body, "Routing"));
   for (const row of table) {
@@ -315,10 +367,12 @@ export function documentOf(
   }
   const questions = questionsOf(file, body);
   const votes = votesOf(file, body);
+  const advisories = advisoriesOf(file, body);
   const routing = routingOf(file, body);
   const defined = new Set(questions.map((question) => question.id));
   const asked = new Set([
     ...votes.map((vote) => vote.question),
+    ...advisories.map((advisory) => advisory.question),
     ...routing.map((entry) => entry.question),
   ]);
   for (const question of asked) {
@@ -336,6 +390,7 @@ export function documentOf(
     title: heading === undefined ? kind : heading.slice(2).trim(),
     questions,
     votes,
+    advisories,
     routing,
     exemplars: exemplarsOf(file, kind, body),
   });

@@ -641,6 +641,27 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   with its own votes and challenges, while a policy depth bound prevents recursive refinement
   from becoming an unbounded obligation. The routed conductor lifecycle, claim binding,
   granular validation and bounded refinement persistence are covered by the plugin tests.
+- **Jev now screens a record and proposes work beside it, and can do nothing else to it.** An
+  intake pass judges each record once for the whole document and asks every voter what that
+  judgement means; the only thing a voter may return is a next action from the closed
+  vocabulary, so no code path exists by which one could refuse, hide or demote a record. Every
+  absence — the part removed, no service binding, no credit, a record too large to send — is one
+  `null` and the record is reported NOT JUDGED YET rather than judged and found wanting, and a
+  voter that throws is reported `failed` by voter and record while the sweep finishes. Three
+  voters ship on it, each a line in a reviewable bank document rather than a constant: whether a
+  record's confidence outruns its evidence (a score, because the yes/no form answered the same
+  way for 92.4% of the corpus), what kind of check would settle its claim (a choice over six,
+  the study's most robust axis at 37.5% settleable from Babel's own tables), and whether it says
+  what to do at all (a score whose lower two levels hold 54.9% of the corpus). The part computes
+  and does not deliver: `babel.suggest` (#412) declares `containers:write`, a cross-plugin call
+  is graded against the caller's own ceiling, and declaring that capability to reach one door
+  would open every ruling door at the same stroke, so the pass hands its suggestions to a
+  caller-supplied function and makes no door call but the one that sizes a sweep. The host
+  mechanism that would admit the single write is open as atyrode/manifold#770. Proved by
+  `babel/jev/screen/pass.test.ts` and the three voter suites: an unbound host, a refused
+  service and an over-cap record leave a record byte-identical and produce one identical
+  report; an admitted row that advises `none` still proposes nothing; and a score of 0.7
+  reaches the tally as 0.7, backing a voter that 0.69 does not.
 
 ### Removed
 

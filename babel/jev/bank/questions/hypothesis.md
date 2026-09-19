@@ -1,6 +1,6 @@
 ---
 kind: hypothesis
-version: 1
+version: 2
 ---
 
 # Hypothesis
@@ -50,6 +50,40 @@ material establishes it is asking a question the kind cannot answer; its down si
 stands, because a hypothesis showing nothing at all is a real objection. And **rigour** objects to
 46% of them, which is not a defect in the question: nearly half of these claims do assert a
 mechanism their material does not demonstrate.
+
+## Advisories
+
+A row here is not a vote and cannot become one. It carries a question, the line at which its
+answer becomes a SUGGESTION, and the next action that suggestion proposes — there is no `casts`
+column, so nothing in this block can move a record's standing by any amount. That is the whole
+reason it is a separate block: the questions that belong in it are the ones asked BECAUSE a
+measured bias moves standing, and a correction that could itself move standing would be the same
+bias again under a new name.
+
+`suggests` is one of the next actions the `suggest` door can write, or the word `none` — a line
+the operator kept the measurement for and withdrew the action from. Several rows may name one
+question, one per option a `choice` cares about, exactly as a two-sided voter writes one per
+side. The admission band is the thresholds block's: a row firing on under 2% or over 95%
+proposes the same thing for everything and is not admitted, and it stays here because deleting
+it would lose the measurement that retired it. The block may hold no rows and is still required,
+because a heading that quietly went missing is an edit nobody reviews.
+
+These distributions are fitted over the study's whole 974-record sample rather than per kind,
+unlike the thresholds above: the questions in this block were asked of the corpus and not of one
+document's slice of it, and a per-kind share nobody measured would be a number somebody typed.
+Re-fit them per kind once this plugin's own intake has produced enough of each.
+
+| question   | suggests        | fires when             | observed                                |
+| ---------- | --------------- | ---------------------- | --------------------------------------- |
+| overclaims | develop-further | `>= 3`                 | `n=974 fires=31.7% mean=2.227 sd=0.444` |
+| overclaims | none            | `<= 1`                 | `n=974 fires=5.9% mean=2.227 sd=0.444`  |
+| settleable | develop-further | `is query_own_data`    | `n=974 fires=37.5%`                     |
+| settleable | develop-further | `is reading_code`      | `n=974 fires=33.2%`                     |
+| settleable | ask-question    | `is needs_live_system` | `n=974 fires=17%`                       |
+| settleable | develop-further | `is command_or_test`   | `n=974 fires=11.2%`                     |
+| settleable | none            | `is not_settleable`    | `n=974 fires=1%`                        |
+| settleable | draft-issue     | `is needs_new_work`    | `n=974 fires=0.1%`                      |
+| vague      | develop-further | `<= 1`                 | `n=974 fires=54.9% mean=1.581 sd=0.876` |
 
 ## Routing
 
@@ -157,6 +191,38 @@ asks: Does `record` mainly restate a documented rule, convention or intended des
 
 type: noul
 asks: Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?
+
+### vague
+
+type: score
+asks: How concretely does `record` say what to do about what it describes?
+
+- No action is implied at all.
+- An area of concern, with no move named.
+- An action, but in general terms.
+- A specific action an agent could start on.
+
+### settleable
+
+type: choice
+asks: What kind of check would settle whether `record`'s central claim is true?
+
+- query_own_data — A query against the records, runs, edges or events Babel already holds; not for: Data Babel would first have to go and collect
+- reading_code — Reading the code, configuration or documentation as it stands; not for: Anything that needs the system running
+- needs_live_system — Watching a running system behave; not for: Anything a static read settles
+- command_or_test — Running one command, test or build and reading what it prints; not for: A change that would have to be written first
+- not_settleable — Nothing checks it; it is a matter of judgement; not for: A claim that is merely expensive to check
+- needs_new_work — Nothing short of doing the work the record describes; not for: Work needed to act on the claim rather than to believe it
+
+### overclaims
+
+type: score
+asks: How far does `record`'s stated confidence run ahead of the material it actually shows?
+
+- The wording is more careful than the material requires: it claims less than what is shown establishes.
+- The wording matches the material: every claim in it is carried by something shown.
+- The wording runs ahead of the material: a claim or two rests on assertion rather than on what is shown.
+- The wording runs well ahead of the material: the central claim is asserted rather than shown.
 
 ### subject
 

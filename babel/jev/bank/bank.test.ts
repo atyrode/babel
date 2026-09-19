@@ -48,6 +48,12 @@ version: 3
 | concreteness | specific | up | \`>= 0.7\` | \`n=207 fires=24.2% mean=0.454 sd=0.257\` |
 | friction-lens | friction_kind | up | \`is not none\` | \`n=207 fires=65.7%\` |
 
+## Advisories
+
+| question | suggests | fires when | observed |
+| --- | --- | --- | --- |
+| specific | develop-further | \`<= 0.3\` | \`n=207 fires=34.3% mean=0.454 sd=0.257\` |
+
 ## Routing
 
 | question | routes |
