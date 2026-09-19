@@ -71,8 +71,15 @@ proposes the same thing for everything and is not admitted, and it stays here be
 it would lose the measurement that retired it. The block may hold no rows and is still required,
 because a heading that quietly went missing is an edit nobody reviews.
 
-| question | suggests | fires when | observed |
-| -------- | -------- | ---------- | -------- |
+These distributions are fitted over the study's whole 974-record sample rather than per kind,
+unlike the thresholds above: the questions in this block were asked of the corpus and not of one
+document's slice of it, and a per-kind share nobody measured would be a number somebody typed.
+Re-fit them per kind once this plugin's own intake has produced enough of each.
+
+| question   | suggests        | fires when | observed                                |
+| ---------- | --------------- | ---------- | --------------------------------------- |
+| overclaims | develop-further | `>= 3`     | `n=974 fires=31.7% mean=2.227 sd=0.444` |
+| overclaims | none            | `<= 1`     | `n=974 fires=5.9% mean=2.227 sd=0.444`  |
 
 ## Routing
 
@@ -180,6 +187,16 @@ asks: Does `record` mainly restate a documented rule, convention or intended des
 
 type: noul
 asks: Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?
+
+### overclaims
+
+type: score
+asks: How far does `record`'s stated confidence run ahead of the material it actually shows?
+
+- The wording is more careful than the material requires: it claims less than what is shown establishes.
+- The wording matches the material: every claim in it is carried by something shown.
+- The wording runs ahead of the material: a claim or two rests on assertion rather than on what is shown.
+- The wording runs well ahead of the material: the central claim is asserted rather than shown.
 
 ### subject
 

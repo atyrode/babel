@@ -108,6 +108,17 @@
           "criteria": []
         },
         {
+          "id": "overclaims",
+          "type": "score",
+          "asks": "How far does `record`'s stated confidence run ahead of the material it actually shows?",
+          "criteria": [
+            "The wording is more careful than the material requires: it claims less than what is shown establishes.",
+            "The wording matches the material: every claim in it is carried by something shown.",
+            "The wording runs ahead of the material: a claim or two rests on assertion rather than on what is shown.",
+            "The wording runs well ahead of the material: the central claim is asserted rather than shown."
+          ]
+        },
+        {
           "id": "subject",
           "type": "choice",
           "asks": "Which area is `record` mainly about?",
@@ -429,7 +440,38 @@
           "admitted": true
         }
       ],
-      "advisories": [],
+      "advisories": [
+        {
+          "question": "overclaims",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-least",
+            "value": 3
+          },
+          "observed": {
+            "n": 974,
+            "fires": 31.7,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "overclaims",
+          "suggests": null,
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 5.9,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        }
+      ],
       "routing": [
         {
           "question": "subject",
@@ -567,6 +609,17 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "overclaims",
+          "type": "score",
+          "asks": "How far does `record`'s stated confidence run ahead of the material it actually shows?",
+          "criteria": [
+            "The wording is more careful than the material requires: it claims less than what is shown establishes.",
+            "The wording matches the material: every claim in it is carried by something shown.",
+            "The wording runs ahead of the material: a claim or two rests on assertion rather than on what is shown.",
+            "The wording runs well ahead of the material: the central claim is asserted rather than shown."
+          ]
         },
         {
           "id": "subject",
@@ -890,7 +943,38 @@
           "admitted": true
         }
       ],
-      "advisories": [],
+      "advisories": [
+        {
+          "question": "overclaims",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-least",
+            "value": 3
+          },
+          "observed": {
+            "n": 974,
+            "fires": 31.7,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "overclaims",
+          "suggests": null,
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 5.9,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        }
+      ],
       "routing": [
         {
           "question": "subject",
@@ -1020,6 +1104,17 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "overclaims",
+          "type": "score",
+          "asks": "How far does `record`'s stated confidence run ahead of the material it actually shows?",
+          "criteria": [
+            "The wording is more careful than the material requires: it claims less than what is shown establishes.",
+            "The wording matches the material: every claim in it is carried by something shown.",
+            "The wording runs ahead of the material: a claim or two rests on assertion rather than on what is shown.",
+            "The wording runs well ahead of the material: the central claim is asserted rather than shown."
+          ]
         },
         {
           "id": "subject",
@@ -1343,7 +1438,38 @@
           "admitted": true
         }
       ],
-      "advisories": [],
+      "advisories": [
+        {
+          "question": "overclaims",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-least",
+            "value": 3
+          },
+          "observed": {
+            "n": 974,
+            "fires": 31.7,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "overclaims",
+          "suggests": null,
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 5.9,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        }
+      ],
       "routing": [
         {
           "question": "subject",
@@ -1481,6 +1607,17 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "overclaims",
+          "type": "score",
+          "asks": "How far does `record`'s stated confidence run ahead of the material it actually shows?",
+          "criteria": [
+            "The wording is more careful than the material requires: it claims less than what is shown establishes.",
+            "The wording matches the material: every claim in it is carried by something shown.",
+            "The wording runs ahead of the material: a claim or two rests on assertion rather than on what is shown.",
+            "The wording runs well ahead of the material: the central claim is asserted rather than shown."
+          ]
         },
         {
           "id": "subject",
@@ -1804,7 +1941,38 @@
           "admitted": false
         }
       ],
-      "advisories": [],
+      "advisories": [
+        {
+          "question": "overclaims",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-least",
+            "value": 3
+          },
+          "observed": {
+            "n": 974,
+            "fires": 31.7,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "overclaims",
+          "suggests": null,
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 5.9,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        }
+      ],
       "routing": [
         {
           "question": "subject",

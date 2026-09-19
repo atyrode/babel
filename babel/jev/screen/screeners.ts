@@ -1,3 +1,4 @@
+import { OVERREACH } from "../voters/overreach.ts";
 import type { Screener } from "./screener.ts";
 
 /*
@@ -20,4 +21,4 @@ import type { Screener } from "./screener.ts";
  * The voters this bundle ships, in the order they are consulted, which is not an order of
  * precedence — see the head.
  */
-export const SCREENERS: readonly Screener[] = [];
+export const SCREENERS: readonly Screener[] = [OVERREACH];
