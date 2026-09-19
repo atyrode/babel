@@ -1,22 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import {
-  MATERIAL_INDEX,
-  MATERIAL_ROOT,
-  MATERIAL_SESSIONS,
-  materialFile,
-  type MaterialEntry,
-} from "../../contract.ts";
-import { REFUSALS, parseExploreResult, type ExploreResult } from "../../machine/results.ts";
+import { MATERIAL_INDEX, MATERIAL_ROOT, MATERIAL_SESSIONS, materialFile } from "../../contract.ts";
+import { REFUSALS } from "../../machine/results.ts";
 import {
   ANSWER_FENCE,
   PARAM,
-  PROMPT_VERSION,
   STEERING_BOUND,
   answerOf,
   carriedSteering,
   composeExplorePrompt,
   readExploreAnswer,
-  unservedLocator,
   type StandingRemark,
 } from "./prompts.ts";
 
@@ -28,48 +20,6 @@ import {
   material's index. Both are promises the model is given in writing; these tests are what keeps
   them true.
 */
-
-const DIGEST = "a".repeat(64);
-const FILE = "0001-omp-s1.jsonl";
-
-/** One session as the material's index carries it. */
-const SERVED: readonly MaterialEntry[] = [
-  {
-    selector: "omp/s1",
-    harness: "omp",
-    sourceId: "s1",
-    captureDigest: "c".repeat(64),
-    sourceDigest: DIGEST,
-    file: FILE,
-    records: 12,
-    bytes: 4096,
-  },
-];
-
-/** A valid explore result citing one locator, parsed the way the hub parses a submission. */
-function cited(path: string, digest: string): ExploreResult {
-  return parseExploreResult("explore", {
-    candidates: [
-      {
-        ref: "h1",
-        hypothesis: { statement: "the catalog forgets archived sessions" },
-        observations: [
-          {
-            ref: "o1",
-            recipe: { id: "code-health", version: 3 },
-            claim: {
-              claim: "the rescan dropped the snapshot",
-              confidence: "high",
-              impact: "moderate",
-              evidence: [{ locator: { path, line: 12, byte_offset: 0, digest }, note: "the row" }],
-              counter_evidence_absent: true,
-            },
-          },
-        ],
-      },
-    ],
-  });
-}
 
 describe("the answer is the last fenced block of the final message", () => {
   test("a correction written after a draft is the one that is taken", () => {
@@ -128,31 +78,6 @@ describe("reading one exploration's answer", () => {
   });
 });
 
-describe("a locator is admissible exactly when the material served those bytes", () => {
-  test("the index's own file and its own digest are served, under either spelling of the path", () => {
-    expect(unservedLocator(cited(`${MATERIAL_SESSIONS}/${FILE}`, DIGEST), SERVED)).toBe("");
-    expect(unservedLocator(cited(FILE, DIGEST), SERVED)).toBe("");
-    expect(
-      unservedLocator(cited(`${MATERIAL_ROOT}/${MATERIAL_SESSIONS}/${FILE}`, DIGEST), SERVED),
-    ).toBe("");
-  });
-
-  test("a file the index does not name is not a file this run was served", () => {
-    const unserved = unservedLocator(
-      cited(`${MATERIAL_SESSIONS}/0002-other.jsonl`, DIGEST),
-      SERVED,
-    );
-    expect(unserved).toContain("0002-other.jsonl");
-    expect(unserved).toContain("not a file this run was served");
-  });
-
-  test("a retyped digest names the two values, so the claim can be seen to be wrong", () => {
-    const unserved = unservedLocator(cited(`${MATERIAL_SESSIONS}/${FILE}`, "b".repeat(64)), SERVED);
-    expect(unserved).toContain(DIGEST);
-    expect(unserved).toContain("b".repeat(64));
-  });
-});
-
 test("the material section describes the layout the machine half actually writes", () => {
   const prompt = composeExplorePrompt({
     stage: "explore",
@@ -183,7 +108,12 @@ test("the material section describes the layout the machine half actually writes
   expect(prompt).toContain("Infer nothing about what a marker contained");
   // And no tool block: Babel runs no session, so there is nothing to call.
   expect(prompt).not.toContain("## Tools");
-  expect(PROMPT_VERSION).toBe("babel.analysis-prompt/3");
+  // THE QUOTE CONTRACT, IN WRITING (#348). The model is asked for the span and told what
+  // Babel does with it, because a check nobody was told about is a trap rather than a rule —
+  // and `engine/citations.ts` is what keeps this sentence true.
+  expect(prompt).toContain('"quote" is the span');
+  expect(prompt).toContain("found at another line of that session");
+  expect(prompt).toContain("None of those three refuses the claim");
 });
 
 test("a run prepared over nothing says so rather than describing an empty corpus", () => {

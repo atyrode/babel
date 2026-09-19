@@ -507,6 +507,13 @@ export const RecordPeelSchema = z.strictObject({
         .nullable(),
       note: z.string(),
       line: z.number().int().nullable(),
+      /**
+       * WHAT BECAME OF THE EXCERPT WHEN BABEL LOOKED FOR IT (#348), one of
+       * {@link CITATION_OUTCOMES} — and EMPTY for a record written before anything looked,
+       * which is the whole imported corpus. Empty is not "clean": a page that rendered an
+       * unchecked citation as verified would be making the claim the check exists to stop.
+       */
+      verification: z.string(),
     }),
   ),
   /**
@@ -1614,6 +1621,53 @@ export type MaterialIndex = z.infer<typeof MaterialIndexSchema>;
 export const MATERIAL_EXPORT = MATERIAL_OUTPUT;
 
 /**
+ * WHAT BECAME OF ONE CITATION'S QUOTED TEXT (#348), in the five words a record may carry.
+ *
+ * A citation names a location and quotes what is there. Checking that the location was SERVED
+ * and checking that the QUOTE is at it are two different questions, and only the first was ever
+ * asked: of 300 digest-verified citations in the imported corpus, 86 carried a quote of twelve
+ * characters or more, 53 matched the cited line, 57 matched somewhere else in the right file and
+ * 29 matched nowhere in it at all (`docs/jev-case-study-audit.md`). The plugin's own rate is
+ * unmeasured, which is the reason these five words exist rather than a refusal: the outcome is
+ * RECORDED, on the record, and a deployment can count its own before anyone argues from a
+ * number measured somewhere else.
+ *
+ * `verified` — the quoted text is at the line the citation names.
+ * `moved`    — it is in that session at another line. The claim is about real bytes and the
+ *              locator does not reach them, which is a different defect from an invention.
+ * `absent`   — it is nowhere in the session the citation names.
+ * `unquoted` — the citation quoted nothing, so there was nothing to check. It is a word rather
+ *              than an absence because "not checked" and "checked and clean" must not look alike.
+ * `unchecked`— Babel could not read the bytes: the material is past the bound the hub reads back,
+ *              the preparation's own lease is gone, or the quote is too short to mean anything.
+ */
+export const CITATION_OUTCOMES = {
+  verified: "verified",
+  moved: "moved",
+  absent: "absent",
+  unquoted: "unquoted",
+  unchecked: "unchecked",
+} as const;
+export type CitationOutcome = (typeof CITATION_OUTCOMES)[keyof typeof CITATION_OUTCOMES];
+
+/**
+ * The field a citation carries its quoted text in, and the most of it one citation may carry.
+ *
+ * The bound is the Go tree's own served-excerpt bound (`v0.4.0:internal/explore/retrieval.go`,
+ * `maxServedExcerptBytes`): an excerpt longer than this is a copy of the record rather than the
+ * span that supports the claim, and a payload that grows with the corpus is the thing every
+ * bound in this file exists to stop.
+ */
+export const MAX_CITATION_QUOTE = 2048;
+
+/**
+ * The shortest quote worth checking, and the study's own threshold (`11-the-bench.md`): below
+ * twelve characters a span matches somewhere in almost any session, so a verdict either way
+ * would be noise presented as a finding. A shorter quote is {@link CITATION_OUTCOMES.unchecked}.
+ */
+export const MIN_CITATION_QUOTE = 12;
+
+/**
  * THE FOUR NAMES BABEL GIVES AN ENGINE REFUSAL, because the operator acts differently on each.
  *
  * A call into Code refuses in two shapes and they arrive by different roads (ADR 0041): the
@@ -2321,6 +2375,20 @@ export const ReceiptSchema = z.strictObject({
    */
   models: z.array(z.string()).optional(),
   counts: z.record(z.string(), z.number().int()),
+  /**
+   * WHAT THIS RUN'S CITATIONS WERE FOUND TO BE (#348), one count per {@link CITATION_OUTCOMES}.
+   *
+   * It is the measurement the issue asks for before anyone acts on the imported corpus's own
+   * numbers: those were measured on one deployment, over Go-era output, at one date, and the
+   * plugin's intake path has never been measured at all. Every one of the five keys is present
+   * on an exploration's receipt, so a run whose citations were all checked and all sound is
+   * distinguishable from one nothing looked at; absent on every other kind of run, which cites
+   * nothing.
+   *
+   * A count here is not a refusal. `absent` and `moved` are recorded and the records stand —
+   * the verdict travels on the record's own evidence, where the reader of the claim is.
+   */
+  citations: z.record(z.string(), z.number().int().nonnegative()).optional(),
 });
 export type Receipt = z.infer<typeof ReceiptSchema>;
 

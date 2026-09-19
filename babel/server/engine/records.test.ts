@@ -71,6 +71,9 @@ function settle(result: ExploreResult, holds: readonly string[] = [], runId = "r
     at: "2026-09-18T00:00:00.000Z",
     sessions: [SESSION],
     holds: new Set(holds),
+    // The citation checks are the settlement's, not the writer's: these tests are about the
+    // rows an answer becomes, and `citations.test.ts` owns what a verdict is.
+    checks: new Map(),
   });
   if ("refusal" in written) throw new Error(`refused: ${written.refusal.message}`);
   return written;

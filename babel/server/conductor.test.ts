@@ -10,7 +10,9 @@ import {
   CONDUCTOR_CYCLE_KEY,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
+  MATERIAL_OUTPUT,
   MATERIAL_SCHEMA,
+  MATERIAL_SESSIONS,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
@@ -161,11 +163,20 @@ async function snapshot(db: PluginDatabase): Promise<string> {
 
 // ---------------------------------------------------------------------------- a ustar archive
 
-/** The archive shape the agent seals an output as: regular files, mode 0600, no extensions. */
+/**
+ * The archive shape the agent seals an output as: regular files, mode 0600, no extensions.
+ *
+ * A string member is written verbatim, which is what the MATERIAL is: one canonical JSON
+ * record per line rather than one JSON document, and a citation's quote is checked against
+ * exactly those bytes.
+ */
 function tar(files: Readonly<Record<string, unknown>>): Buffer {
   const blocks: Buffer[] = [];
   for (const [name, document] of Object.entries(files)) {
-    const body = Buffer.from(JSON.stringify(document), "utf8");
+    const body = Buffer.from(
+      typeof document === "string" ? document : JSON.stringify(document),
+      "utf8",
+    );
     const header = Buffer.alloc(512);
     header.write(name, 0, 100, "utf8");
     header.write("0000600\0", 100, 8, "ascii");
@@ -194,6 +205,9 @@ interface FakeJob {
   machineId: string;
   operationId: string;
   archive: Buffer | null;
+  /** The `material` output a `prepare` job seals beside its receipt: the bytes a citation's
+   *  quote is checked against. */
+  material: Buffer | null;
   /** What the hub's replay ring holds for this job, in sequence; the fold reads it whole. */
   journal: FollowEvent[];
   /** What the OWNER metered, as `usage.inference` on the result of a settled job. */
@@ -324,6 +338,7 @@ class Fleet implements JobsSlice {
       machineId,
       operationId,
       archive: null,
+      material: null,
       journal: [],
       inference: null,
     });
@@ -333,17 +348,23 @@ class Fleet implements JobsSlice {
     const job = this.jobs.get(node.jobId);
     if (job === undefined) throw new Error(`unknown job ${node.jobId}`);
     if (this.silent.has(node.jobId)) throw new Error(`the machine holding ${node.jobId} is gone`);
-    const outputs: JobOutput[] =
-      job.archive === null
-        ? []
-        : [
-            {
-              outputId: `out_${node.jobId}`,
-              name: OUTPUT_BINDING,
-              bytes: job.archive.byteLength,
-              files: 1,
-            },
-          ];
+    const outputs: JobOutput[] = [];
+    if (job.archive !== null) {
+      outputs.push({
+        outputId: `out_${node.jobId}`,
+        name: OUTPUT_BINDING,
+        bytes: job.archive.byteLength,
+        files: 1,
+      });
+    }
+    if (job.material !== null) {
+      outputs.push({
+        outputId: `mat_${node.jobId}`,
+        name: MATERIAL_OUTPUT,
+        bytes: job.material.byteLength,
+        files: 1,
+      });
+    }
     return {
       jobId: node.jobId,
       machineId: job.machineId,
@@ -377,16 +398,19 @@ class Fleet implements JobsSlice {
     return { runs };
   }
 
-  output(args: { node: { jobId: string }; offset: number; maxBytes: number }): {
+  output(args: { node: { jobId: string; outputId: string }; offset: number; maxBytes: number }): {
     data: string;
     eof: boolean;
   } {
     const job = this.jobs.get(args.node.jobId);
-    if (job?.archive == null) throw new Error(`job ${args.node.jobId} sealed no output`);
-    const end = Math.min(job.archive.byteLength, args.offset + args.maxBytes);
+    // WHICH SEALED OUTPUT WAS ASKED FOR, because a `prepare` job has two and they are read by
+    // different readers: the receipt by the ingest, the material by the citation check.
+    const sealed = args.node.outputId.startsWith("mat_") ? job?.material : job?.archive;
+    if (sealed == null) throw new Error(`job ${args.node.jobId} sealed no output`);
+    const end = Math.min(sealed.byteLength, args.offset + args.maxBytes);
     return {
-      data: job.archive.subarray(args.offset, end).toString("base64"),
-      eof: end === job.archive.byteLength,
+      data: sealed.subarray(args.offset, end).toString("base64"),
+      eof: end === sealed.byteLength,
     };
   }
 
@@ -489,10 +513,30 @@ class Fleet implements JobsSlice {
       machineId,
       operationId: BEAT_OPERATION,
       archive: tar(files),
+      material: null,
       journal: [],
       inference: null,
     });
     this.beats.add(jobId);
+  }
+
+  /**
+   * A `prepare` job this machine finished, with the material it sealed: one file per session,
+   * verbatim, under the names the index gives them. It is what a citation's quote is checked
+   * against, and a run whose preparation the fake does not hold is how "the bytes could not be
+   * read" is exercised.
+   */
+  prepared(jobId: string, machineId: string, sessions: Readonly<Record<string, string>>): void {
+    this.jobs.set(jobId, {
+      state: "exited",
+      exitCode: 0,
+      machineId,
+      operationId: OPERATIONS.prepare,
+      archive: null,
+      material: tar(sessions),
+      journal: [],
+      inference: null,
+    });
   }
 
   /** What this job's replay ring holds, as the owner would have emitted it. */
@@ -3304,7 +3348,7 @@ const SERVED_DIGEST = "a".repeat(64);
  * and one question the corpus could not settle — because the settlement's job is to turn all of
  * it into rows and a fixture with only a candidate would prove nothing about the edges.
  */
-function answered(path: string, digest: string, statement?: string): string {
+function answered(path: string, digest: string, statement?: string, quote = ""): string {
   const result = {
     candidates: [
       {
@@ -3319,7 +3363,16 @@ function answered(path: string, digest: string, statement?: string): string {
               confidence: "high",
               impact: "moderate",
               evidence: [
-                { locator: { path, line: 12, byte_offset: 0, digest }, note: "the rescan's row" },
+                {
+                  locator: {
+                    path,
+                    line: 12,
+                    byte_offset: 0,
+                    digest,
+                    ...(quote === "" ? {} : { quote }),
+                  },
+                  note: "the rescan's row",
+                },
               ],
               counter_evidence_absent: true,
             },
@@ -3550,7 +3603,7 @@ test("a citation the material never served is refused, and the refusal is spend 
   const code = codeAnswering(() => ({
     ok: true,
     // The path is one the index names; the digest is not the one it was served at, which is a
-    // retyped digest and exactly what `unservedLocator` exists to catch.
+    // retyped digest and exactly what `unservedCitation` exists to catch.
     value: sessionRead({
       state: "exited",
       finalMessage: answered(`sessions/${SERVED_FILE}`, "b".repeat(64)),
@@ -3583,6 +3636,182 @@ test("a citation the material never served is refused, and the refusal is spend 
   ]);
   // …and it is counted by the code the contract refused with, not as a failure of the loop.
   expect(report.pulse.tick.refusals).toEqual({ "unknown-reference": 1 });
+});
+
+/** The material as `prepare` sealed it: one canonical record per line, twelve of them, and the
+ *  twelfth is the one the fixture's locator names. */
+const SERVED_SESSION = [
+  ...Array.from({ length: 11 }, (_, index) =>
+    JSON.stringify({ type: "message", text: `record ${String(index + 1)} says nothing useful` }),
+  ),
+  JSON.stringify({
+    type: "message",
+    text: "the rescan wrote no snapshot_id at all, so the column was cleared",
+  }),
+  "",
+].join("\n");
+
+/** One prepare job holding that material, under the job id `sessionInFlight` points its run at. */
+function withMaterial(): Fleet {
+  const fleet = new Fleet();
+  fleet.prepared("job_prep_1", "dev-01", {
+    [`${MATERIAL_SESSIONS}/${SERVED_FILE}`]: SERVED_SESSION,
+  });
+  return fleet;
+}
+
+/** The verdict the settlement wrote beside the first citation of the first record. */
+async function verdictOf(db: PluginDatabase): Promise<Record<string, unknown> | undefined> {
+  const rows = await db.query(
+    `SELECT payload FROM records WHERE kind = 'observation' ORDER BY id LIMIT 1`,
+  );
+  const payload = JSON.parse(String(rows[0]?.["payload"] ?? "{}")) as {
+    evidence?: { verification?: Record<string, unknown> }[];
+  };
+  return payload.evidence?.[0]?.verification;
+}
+
+test("a quote that is at the line it cites is verified, and the record carries the verdict", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(
+        `sessions/${SERVED_FILE}`,
+        SERVED_DIGEST,
+        undefined,
+        "the rescan wrote no snapshot_id at all",
+      ),
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: withMaterial(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBe("completed");
+  // THE HUB OPENED THE BYTES. Without the read this would be `unchecked`, which is why this
+  // test exists beside the one below: a check that never reaches a corpus accuses nothing and
+  // proves nothing.
+  expect(await verdictOf(db)).toEqual({ outcome: "verified", detail: "" });
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(receipt["citations"]).toEqual({
+    verified: 1,
+    moved: 0,
+    absent: 0,
+    unquoted: 0,
+    unchecked: 0,
+  });
+});
+
+test("a quote that is nowhere in the session it cites marks the record and refuses nothing", async () => {
+  /*
+    THE DECISION THIS TEST PINS (#348). A fabricated quote is recorded, not refused: the claim
+    is the model's and the run is paid for either way, and discarding the whole answer over one
+    citation is the all-or-nothing waste #231 and #311 measured. What must not happen is the
+    verdict living only in a log — a reader of the record has to see it, so it is on the
+    record's own evidence and counted on the receipt.
+  */
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(
+        `sessions/${SERVED_FILE}`,
+        SERVED_DIGEST,
+        undefined,
+        "the rescan deleted the snapshot and logged the deletion",
+      ),
+    }),
+  }));
+  const { runId, claimId } = await sessionInFlight(db);
+
+  const report = await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: withMaterial(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBe("completed");
+  const written = await db.query(`SELECT count(*) AS held FROM records`);
+  expect(Number(written[0]?.["held"])).toBeGreaterThan(0);
+  const verdict = await verdictOf(db);
+  expect(verdict?.["outcome"]).toBe("absent");
+  expect(String(verdict?.["detail"])).toContain("nowhere in the session");
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(receipt["reason"]).toBeUndefined();
+  expect(receipt["citations"]).toEqual({
+    verified: 0,
+    moved: 0,
+    absent: 1,
+    unquoted: 0,
+    unchecked: 0,
+  });
+  expect(report.settled).toEqual([
+    { claimId, outcome: "completed", cost: 0.31, overrun: false, refused: null, reason: null },
+  ]);
+  expect(report.notes.some((note) => note.includes("nowhere in the session named"))).toBe(true);
+});
+
+test("a preparation this hub can no longer read leaves the quote unchecked, not accused", async () => {
+  // The material's lease is gone — the fake holds no `job_prep_1` at all — and the index is
+  // still on the run row, so the citation is admissible and uncheckable at the same time. A
+  // hub that called that a fabrication would be reporting its own reach as the model's fault.
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(
+        `sessions/${SERVED_FILE}`,
+        SERVED_DIGEST,
+        undefined,
+        "the rescan wrote no snapshot_id at all",
+      ),
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBe("completed");
+  expect((await verdictOf(db))?.["outcome"]).toBe("unchecked");
 });
 
 test("a Code session still running leaves its run open and settles nothing", async () => {

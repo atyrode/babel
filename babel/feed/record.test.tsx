@@ -150,6 +150,48 @@ describe("the peel", () => {
     await view.unmount();
   });
 
+  test("an excerpt the bytes do not carry says so where the excerpt is read", async () => {
+    /*
+      #348's whole point is that a fabricated quote must not read like a real one. The page is
+      where a person meets the claim, so the verdict is beside the words rather than in a log
+      nobody opens — and a citation that quoted nothing renders no pull-quote at all, because
+      an empty blockquote reads as a person who said nothing.
+    */
+    const fake = hub({
+      record: () =>
+        peel({
+          evidence: [
+            {
+              excerpt: "we deleted the snapshot on purpose",
+              speaker: "",
+              session: null,
+              note: "the claim rests on this sentence",
+              line: 12,
+              verification: "absent",
+            },
+            {
+              excerpt: "",
+              speaker: "",
+              session: null,
+              note: "an imported record, written before anything looked",
+              line: null,
+              verification: "",
+            },
+          ],
+        }),
+    });
+    look({ recordId: "pro_0000000a" });
+    const view = await mount(<RecordPanel host={fake.host} />);
+    const cited = view.all(".babel-evidence");
+    expect(cited[0]?.getAttribute("data-verification")).toBe("absent");
+    expect(cited[0]?.textContent).toContain("not found in this session");
+    // An unchecked citation is not a clean one, and neither is rendered as the other: the
+    // second carries no quote, no verdict and no claim about either.
+    expect(cited[1]?.getAttribute("data-verification")).toBeNull();
+    expect(view.all(".babel-evidence blockquote")).toHaveLength(1);
+    await view.unmount();
+  });
+
   test("which codebase it is about is read where the evidence is, and says on whose word", async () => {
     const fake = hub();
     look({ recordId: "pro_0000000a" });

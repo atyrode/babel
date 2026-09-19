@@ -406,6 +406,12 @@ interface Citation {
   line: number;
   path: string;
   counter: boolean;
+  /** The span of the record the claim rests on, as the citation copied it; "" when it quoted
+   *  nothing, which is most of the imported corpus. */
+  quote: string;
+  /** What the settlement found when it looked for that span in the bytes (#348), or "" for a
+   *  record written before anything looked. */
+  verification: string;
 }
 
 /**
@@ -424,11 +430,17 @@ function citations(kind: string, payload: Record<string, unknown>): Citation[] {
         typeof item["locator"] === "object" && item["locator"] !== null
           ? (item["locator"] as Record<string, unknown>)
           : {};
+      const verification =
+        typeof item["verification"] === "object" && item["verification"] !== null
+          ? (item["verification"] as Record<string, unknown>)
+          : {};
       out.push({
         note: stringField(item, "note"),
         line: numberField(locator, "line"),
         path: stringField(locator, "path"),
         counter,
+        quote: stringField(locator, "quote"),
+        verification: stringField(verification, "outcome"),
       });
     }
   };
@@ -1258,10 +1270,14 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * about it and the session it names where this hub still holds the row.
    *
    * The session is matched the way the record pages always have: the cited file's own name is
-   * the lookup, and the catalog row's full source id checked against the path is the proof. The
-   * excerpt is empty here and that is the hub being honest — the bytes live in a session log on
-   * a machine, and a blank pull-quote reads as a person who said nothing, so nothing is
-   * invented for it.
+   * the lookup, and the catalog row's full source id checked against the path is the proof.
+   *
+   * THE EXCERPT IS THE CITATION'S OWN QUOTE, AND IT COMES WITH WHAT WAS FOUND (#348). It used
+   * to be empty always, and that was the hub being honest: the bytes live in a session log on
+   * a machine and a blank pull-quote reads as a person who said nothing. A citation that
+   * quotes now carries the span, and the settlement has already looked for it in those bytes,
+   * so the page can show the words AND whether they were there. A record whose citation quoted
+   * nothing still renders no pull-quote, and its `verification` is empty rather than clean.
    */
   const evidenceOf = async (
     kind: string,
@@ -1303,7 +1319,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
           : null;
       const event = item.line > 0 ? item.line - 1 : 0;
       return {
-        excerpt: "",
+        excerpt: item.quote,
         speaker: "",
         session:
           matched === null
@@ -1319,6 +1335,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         // side is said in the note rather than dropped.
         note: item.counter ? `counter-evidence · ${item.note}` : item.note,
         line: item.line > 0 ? item.line : null,
+        verification: item.verification,
       };
     });
   };

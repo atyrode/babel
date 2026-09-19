@@ -8,6 +8,7 @@ import {
   CONDUCTOR_CYCLE_KEY,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
+  MATERIAL_OUTPUT,
   MaterialIndexSchema,
   OPERATIONS,
   OUTPUT_BINDING,
@@ -32,7 +33,17 @@ import {
   type SessionReceipt,
   type SessionRead,
 } from "./engine/session.ts";
-import { readExploreAnswer, unservedLocator, type Recipe } from "./engine/prompts.ts";
+import { readExploreAnswer, type Recipe } from "./engine/prompts.ts";
+import {
+  admitCitation,
+  checkCitations,
+  citationNotes,
+  citationTally,
+  citedEvidence,
+  materialLines,
+  unservedCitation,
+  type SessionLines,
+} from "./engine/citations.ts";
 import { exploreRows, markerReferences } from "./engine/records.ts";
 import {
   blindedLeak,
@@ -2004,6 +2015,71 @@ export function conductor(deps: ConductorDeps): Conductor {
     return parsed.success ? parsed.data : null;
   }
 
+  /**
+   * THE BYTES OF THE SESSIONS THIS ANSWER QUOTED, read back out of the preparation's own sealed
+   * material — the one read in this lane that opens a corpus rather than an index (#348).
+   *
+   * IT IS NOT A SECOND INDEX. {@link materialOf} answers "was this path served, at these
+   * bytes" out of a row, and that is what admits a citation at all. This answers "is the quoted
+   * text there", which no digest can: the digest covers the whole file, and a fabricated span
+   * inside a file whose digest is right is exactly the defect the study measured. Only the
+   * bytes can say.
+   *
+   * THREE THINGS BOUND WHAT IT COSTS. It is called only when the answer carries a quote worth
+   * checking; it reads the material ONCE for the whole answer, however many citations there
+   * are; and it decodes only the members a citation actually named. What is left is one
+   * re-read of a sealed output per quoting answer, against the read the hub already performs
+   * over every output of every settled job ({@link ingestOutputs}) — the same archive, the
+   * same chunked transport, the same {@link MAX_OUTPUT_BYTES} ceiling.
+   *
+   * IT NEVER FAILS THE ANSWER. A preparation whose lease is gone, a machine that no longer
+   * answers, a material past the ceiling: each returns null for that file, the citation is
+   * recorded `unchecked` with the reason, and the run settles. A hub that refused a claim
+   * because it could not reach the bytes would be punishing the model for the hub's own reach.
+   */
+  async function quotedSessions(
+    run: PendingRun,
+    wanted: ReadonlySet<string>,
+  ): Promise<SessionLines> {
+    const held = new Map<string, readonly string[]>();
+    const prepareJobId = run.prepare_job_id;
+    if (prepareJobId !== null && prepareJobId !== "" && wanted.size > 0) {
+      try {
+        const state = await jobs.status({
+          kind: "job",
+          machineId: run.machine_id,
+          operationId: OPERATIONS.prepare,
+          jobId: prepareJobId,
+        });
+        const sealed = (state.result?.outputs ?? []).find(
+          (output) => output.name === MATERIAL_OUTPUT,
+        );
+        if (sealed !== undefined) {
+          const bytes = await readOutput(
+            jobs,
+            {
+              kind: "output",
+              machineId: run.machine_id,
+              operationId: OPERATIONS.prepare,
+              jobId: prepareJobId,
+              outputId: sealed.outputId,
+            },
+            sealed.bytes,
+          );
+          for (const member of tarMembers(bytes)) {
+            if (!wanted.has(member.name)) continue;
+            held.set(member.name, materialLines(TEXT.decode(member.body)));
+          }
+        }
+      } catch {
+        // The reason a reader needs is on the citation, not here: an empty map answers null
+        // for every file, and `checkCitations` writes `unchecked` against each one.
+        held.clear();
+      }
+    }
+    return (entry) => held.get(entry.file) ?? null;
+  }
+
   /** The account a launch NAMED, kept on the run row so a drain's total can be attributed. */
   function namedAccount(profile: string | null): Receipt["account"] {
     if (profile === null || profile === "") return undefined;
@@ -2520,7 +2596,14 @@ export function conductor(deps: ConductorDeps): Conductor {
    * The transcript is Code's; what Babel owns is the CONTRACT the prompt stated, and this is
    * where it is enforced: the answer is the last fenced block of the final message
    * ({@link readExploreAnswer}), and every locator it cites must name a file the material's
-   * index served at the digest the index recorded ({@link unservedLocator}).
+   * index served at the digest the index recorded ({@link unservedCitation}).
+   *
+   * THE TWO CITATION CHECKS REFUSE DIFFERENTLY, AND `engine/citations.ts` HOLDS THE REASON. A
+   * path outside the served selection refuses the whole answer, because it is a claim about
+   * bytes nobody served and nothing later can check it. A quote that is not at the line it
+   * names is RECORDED on the record's own evidence and refuses nothing, because it is a claim
+   * about real bytes that is wrong about where they are, and discarding a paid run over one is
+   * the all-or-nothing waste #231 and #311 measured.
    *
    * A REFUSED SUBMISSION IS SPEND, and that is the sentence the whole function is arranged
    * around. The model answered; the deployment paid for it; the answer did not stand. So the
@@ -2594,6 +2677,10 @@ export function conductor(deps: ConductorDeps): Conductor {
     let reason = "";
     const produced: SqlStatement[] = [];
     const counts: Record<string, number> = {};
+    // WHAT THE CITATIONS TURNED OUT TO BE, for every answer that got as far as being checked.
+    // It is undefined rather than empty on a run that never submitted one, because "this run
+    // wrote no citations" and "nobody looked" are different facts about a receipt (#348).
+    let citations: Record<string, number> | undefined;
     if (session === null) {
       reason =
         `${REFUSALS.empty}: the session closed as ${read.job.state} and sealed no transcript, ` +
@@ -2607,7 +2694,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       } else {
         const material = await materialOf(run.prepare_job_id);
         const served: readonly MaterialEntry[] = material?.sessions ?? [];
-        const unserved = unservedLocator(answer.result, served);
+        const unserved = unservedCitation(answer.result, served);
         if (unserved !== "") {
           reason = `${REFUSALS.unknownReference}: ${unserved}`;
         } else if (material === null) {
@@ -2633,11 +2720,28 @@ export function conductor(deps: ConductorDeps): Conductor {
             );
             for (const row of held) holds.add(row.id);
           }
+          // WHAT THE ANSWER'S QUOTES ACTUALLY SAY (#348). The bytes are read once, for the
+          // sessions a quote names and no others, and a citation nobody could read comes back
+          // `unchecked` rather than accused. The verdicts travel into the payload beside the
+          // citations they belong to; none of them refuses anything.
+          // The file is taken from the ADMITTED ENTRY and never from the cited string: the
+          // path a model wrote selects an index entry or nothing at all, and no byte is ever
+          // opened by a name it chose (`engine/citations.ts`).
+          const quoted = new Set<string>();
+          for (const evidence of citedEvidence(answer.result)) {
+            if (evidence.locator.quote.trim() === "") continue;
+            const entry = admitCitation(evidence.locator.path, served);
+            if (entry !== null) quoted.add(entry.file);
+          }
+          const checks = checkCitations(answer.result, served, await quotedSessions(run, quoted));
+          citations = citationTally(checks);
+          for (const note of citationNotes(checks)) notes.push(`run ${run.id}: ${note}`);
           const written = exploreRows(answer.result, {
             runId: run.id,
             at: new Date(at).toISOString(),
             sessions: served,
             holds,
+            checks,
           });
           if ("refusal" in written) {
             reason = refusalReason(written.refusal);
@@ -2703,6 +2807,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       tokens: usage === null ? 0 : usage.input + usage.output,
       ...(session === null ? {} : { models: [session.model] }),
       counts,
+      ...(citations === undefined ? {} : { citations }),
     };
     /*
       THE ROWS FIRST, THE RUN ROW LAST, and the order is the crash contract.

@@ -45,6 +45,19 @@ function label(key: string): string {
 
 const COUNTED = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
 
+/**
+ * WHAT A CITATION'S VERDICT SAYS TO A READER (#348), in the words a person acts on rather than
+ * the vocabulary the record stores. `unquoted` has no entry: a citation that quoted nothing is
+ * rendered as a citation without a pull-quote, and telling a reader what was not checked about
+ * a quote that does not exist is noise.
+ */
+const VERDICTS: Record<string, string> = {
+  verified: "found at this line",
+  moved: "found elsewhere in this session",
+  absent: "not found in this session",
+  unchecked: "not checked",
+};
+
 /** A count as a word up to nine, because a sentence reads and a numeral tallies. */
 function counted(value: number): string {
   return COUNTED[value] ?? String(value);
@@ -359,9 +372,14 @@ export function Peel({
             {peel.evidence.map((item, index) => (
               <figure
                 className="babel-evidence"
+                data-verification={item.verification === "" ? undefined : item.verification}
                 key={`${item.excerpt.slice(0, 24)}-${String(index)}`}
               >
-                <blockquote className="babel-quote">{item.excerpt}</blockquote>
+                {/* A CITATION THAT QUOTED NOTHING SHOWS NO PULL-QUOTE. An empty one reads as a
+                    person who said nothing, and most of the imported corpus quoted nothing. */}
+                {item.excerpt !== "" && (
+                  <blockquote className="babel-quote">{item.excerpt}</blockquote>
+                )}
                 <figcaption className="babel-note">
                   {item.speaker}
                   {item.session !== null && (
@@ -371,6 +389,13 @@ export function Peel({
                     </>
                   )}
                   {item.line !== null && <> · line {item.line}</>}
+                  {/* WHAT BABEL FOUND WHEN IT LOOKED (#348). It is beside the line because it
+                      is a fact about the locator, and it is words rather than a badge: badges
+                      are rationed to standing and kind, and "not found in this session" is a
+                      sentence a reader has to actually read. */}
+                  {VERDICTS[item.verification] !== undefined && (
+                    <> · {VERDICTS[item.verification]}</>
+                  )}
                 </figcaption>
                 {item.note !== "" && <p className="babel-evidence-note">{item.note}</p>}
               </figure>
