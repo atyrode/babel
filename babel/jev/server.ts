@@ -36,7 +36,22 @@ import manifestJson from "./manifest.json";
   it does not use at runtime.
 */
 
-export { askJev, JEV_SERVICE, type JevAnswer, type JevServices } from "./server/credential.ts";
+export {
+  askJev,
+  JEV_CALL_CAP_BYTES,
+  JEV_SERVICE,
+  withinCallCap,
+  type JevAnswer,
+  type JevServices,
+} from "./server/credential.ts";
+export {
+  JEV_ANSWERS_HELD,
+  JevAnswers,
+  judge,
+  requestFor,
+  requestKey,
+  type JevRequest,
+} from "./server/judge.ts";
 
 export const plugin: ServerPluginDef = {
   manifest: PluginManifestSchema.parse(manifestJson),
