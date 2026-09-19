@@ -86,6 +86,7 @@ Re-fit them per kind once this plugin's own intake has produced enough of each.
 | settleable | develop-further | `is command_or_test`   | `n=974 fires=11.2%`                     |
 | settleable | none            | `is not_settleable`    | `n=974 fires=1%`                        |
 | settleable | draft-issue     | `is needs_new_work`    | `n=974 fires=0.1%`                      |
+| vague      | develop-further | `<= 1`                 | `n=974 fires=54.9% mean=1.581 sd=0.876` |
 
 ## Routing
 
@@ -193,6 +194,16 @@ asks: Does `record` mainly restate a documented rule, convention or intended des
 
 type: noul
 asks: Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?
+
+### vague
+
+type: score
+asks: How concretely does `record` say what to do about what it describes?
+
+- No action is implied at all.
+- An area of concern, with no move named.
+- An action, but in general terms.
+- A specific action an agent could start on.
 
 ### settleable
 

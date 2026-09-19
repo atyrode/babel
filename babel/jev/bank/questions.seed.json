@@ -108,6 +108,17 @@
           "criteria": []
         },
         {
+          "id": "vague",
+          "type": "score",
+          "asks": "How concretely does `record` say what to do about what it describes?",
+          "criteria": [
+            "No action is implied at all.",
+            "An area of concern, with no move named.",
+            "An action, but in general terms.",
+            "A specific action an agent could start on."
+          ]
+        },
+        {
           "id": "settleable",
           "type": "choice",
           "asks": "What kind of check would settle whether `record`'s central claim is true?",
@@ -573,6 +584,21 @@
             "sd": null
           },
           "admitted": false
+        },
+        {
+          "question": "vague",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 54.9,
+            "mean": 1.581,
+            "sd": 0.876
+          },
+          "admitted": true
         }
       ],
       "routing": [
@@ -712,6 +738,17 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "vague",
+          "type": "score",
+          "asks": "How concretely does `record` say what to do about what it describes?",
+          "criteria": [
+            "No action is implied at all.",
+            "An area of concern, with no move named.",
+            "An action, but in general terms.",
+            "A specific action an agent could start on."
+          ]
         },
         {
           "id": "settleable",
@@ -1179,6 +1216,21 @@
             "sd": null
           },
           "admitted": false
+        },
+        {
+          "question": "vague",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 54.9,
+            "mean": 1.581,
+            "sd": 0.876
+          },
+          "admitted": true
         }
       ],
       "routing": [
@@ -1310,6 +1362,17 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "vague",
+          "type": "score",
+          "asks": "How concretely does `record` say what to do about what it describes?",
+          "criteria": [
+            "No action is implied at all.",
+            "An area of concern, with no move named.",
+            "An action, but in general terms.",
+            "A specific action an agent could start on."
+          ]
         },
         {
           "id": "settleable",
@@ -1777,6 +1840,21 @@
             "sd": null
           },
           "admitted": false
+        },
+        {
+          "question": "vague",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 54.9,
+            "mean": 1.581,
+            "sd": 0.876
+          },
+          "admitted": true
         }
       ],
       "routing": [
@@ -1916,6 +1994,17 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "vague",
+          "type": "score",
+          "asks": "How concretely does `record` say what to do about what it describes?",
+          "criteria": [
+            "No action is implied at all.",
+            "An area of concern, with no move named.",
+            "An action, but in general terms.",
+            "A specific action an agent could start on."
+          ]
         },
         {
           "id": "settleable",
@@ -2383,6 +2472,21 @@
             "sd": null
           },
           "admitted": false
+        },
+        {
+          "question": "vague",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 54.9,
+            "mean": 1.581,
+            "sd": 0.876
+          },
+          "admitted": true
         }
       ],
       "routing": [
