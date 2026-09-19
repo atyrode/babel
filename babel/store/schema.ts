@@ -841,6 +841,8 @@ export const SCHEMA_V1: readonly string[] = [
      last_model TEXT NOT NULL DEFAULT '',
      last_call_at TEXT NOT NULL DEFAULT '',
      seq INTEGER NOT NULL DEFAULT 0,
+     /* The distinct models that have answered, JSON, first-heard order; see SCHEMA_ADDITIONS. */
+     models TEXT NOT NULL DEFAULT '',
      stalled INTEGER NOT NULL DEFAULT 0 CHECK (stalled IN (0, 1)),
      updated_at TEXT NOT NULL
    ) STRICT`,
@@ -931,6 +933,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
      last_model TEXT NOT NULL DEFAULT '',
      last_call_at TEXT NOT NULL DEFAULT '',
      seq INTEGER NOT NULL DEFAULT 0,
+     models TEXT NOT NULL DEFAULT '',
      stalled INTEGER NOT NULL DEFAULT 0 CHECK (stalled IN (0, 1)),
      updated_at TEXT NOT NULL
    ) STRICT`,
@@ -990,6 +993,17 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // above — and the one addition in this file that names a VIRTUAL table, which `sqlite_master`
   // answers for by name exactly as it does for an ordinary one.
   ...CORPUS_INDEX_SCHEMA.map(objectAddition),
+  // #169: the models that have answered a running job, JSON, in the order it first heard from
+  // each. A column and not a table, because the table above already arrives by addition for a
+  // store created before #261 — and an addition keyed only on the table's name would have left
+  // such a store with the table and without this column, which is the one shape the fold's
+  // INSERT cannot write. A row an earlier shape wrote reads `''`, which is the truth about it:
+  // that fold recorded only the newest model, so which others answered is not recoverable.
+  {
+    object: "run_progress",
+    column: "models",
+    sql: `ALTER TABLE run_progress ADD COLUMN models TEXT NOT NULL DEFAULT ''`,
+  },
 ];
 
 /**

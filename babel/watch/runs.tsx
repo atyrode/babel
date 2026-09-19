@@ -1,15 +1,18 @@
 import { Cluster, Stack } from "@manifold/ui";
 import { ACTIONS, RUN_STAGES, door } from "../contract.ts";
 import {
+  FALLBACK_NOTE,
   FRESHNESS_NOTE,
   RUN_KIND_LABELS,
   STAGE_NOTE,
   STALLED_NOTE,
+  STALE_NOTE,
   ageClause,
   elapsedClock,
   elapsedSince,
   figure,
   since,
+  modelClause,
   tokenClause,
   usd,
   type RunRow,
@@ -81,7 +84,13 @@ function LiveTable({
             // The stage's own clock, ticking against the panel's: "at the model" is a claim
             // about a phase, and "at the model since 11m 40s" is the one an operator acts on.
             const progress = run.progress;
-            const inStage = progress === null ? null : elapsedSince(progress.since, now);
+            // A STALE ROW GETS NO TICKING CLOCK. The stage is a reading taken at `updatedAt`
+            // and the loop has not been able to confirm it since; counting from `since`
+            // against the panel's own clock would render a job that died twenty minutes ago
+            // as one that is still working.
+            const inStage =
+              progress === null || progress.stale ? null : elapsedSince(progress.since, now);
+            const unconfirmed = progress === null ? null : elapsedSince(progress.updatedAt, now);
             return (
               <tr key={run.id} className="plugin-atyrode_babel_watch__live-row">
                 <td>
@@ -106,6 +115,13 @@ function LiveTable({
                           {elapsedClock(inStage)}
                         </span>
                       )}
+                      {progress.stale ? (
+                        <span className="plugin-atyrode_babel_watch__stalled" title={STALE_NOTE}>
+                          {unconfirmed === null
+                            ? "unconfirmed"
+                            : `last heard ${elapsedClock(unconfirmed)} ago`}
+                        </span>
+                      ) : null}
                       {progress.stalled ? (
                         <span className="plugin-atyrode_babel_watch__stalled" title={STALLED_NOTE}>
                           stalled
@@ -126,8 +142,11 @@ function LiveTable({
                 <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
                   {progress === null ? "—" : usd(progress.costUsd)}
                 </td>
-                <td className="plugin-atyrode_babel_watch__mono">
-                  {progress === null || progress.lastModel === "" ? "—" : progress.lastModel}
+                <td
+                  className="plugin-atyrode_babel_watch__mono"
+                  title={run.models.length > 1 ? FALLBACK_NOTE : ""}
+                >
+                  {modelClause(run.models, progress?.lastModel ?? "") || "—"}
                 </td>
                 <td className="plugin-atyrode_babel_watch__numeric">{figure(run.records)}</td>
                 <td
@@ -170,6 +189,7 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
             <th className="plugin-atyrode_babel_watch__numeric">Calls</th>
             <th className="plugin-atyrode_babel_watch__numeric">Tokens</th>
             <th className="plugin-atyrode_babel_watch__numeric">Spend</th>
+            <th>Answered by</th>
             <th>Closed</th>
           </tr>
         </thead>
@@ -212,6 +232,15 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
                 <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
                   {run.costUsd === null ? "—" : usd(run.costUsd)}
                 </td>
+                {/* WHAT ANSWERED, off the receipt (#169). A receipt used to name one model and
+                    call it the run's, so a fallback left no trace at all; a dash here is a run
+                    nothing metered and whose receipt named none. */}
+                <td
+                  className="plugin-atyrode_babel_watch__mono"
+                  title={run.models.length > 1 ? FALLBACK_NOTE : ""}
+                >
+                  {run.models.length === 0 ? "—" : run.models.join(" → ")}
+                </td>
                 <td>
                   <span className={`plugin-atyrode_babel_watch__closed is-${run.state}`}>
                     {run.state}
@@ -231,16 +260,25 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
  * the 2026-09-13 drain had: twenty-six jobs "in flight", every one of them reading a corpus, no
  * engine anywhere, and a header that said they were fine. So it says how many have reached a
  * model and how many said they had and went quiet, and nothing else changes.
+ *
+ * A STALE ROW IS NOT COUNTED AT THE MODEL, and that is the same rule applied to a second way
+ * of being wrong: a reading nobody has been able to confirm for five minutes says where a job
+ * WAS. Counting it in "at the model" would rebuild the header that lied, out of rows that are
+ * each individually honest.
  */
 function lede(live: readonly RunRow[]): string {
   if (live.length === 0) return "Nothing running. Every row below is a receipt.";
-  const atModel = live.filter((run) => run.progress?.stage === RUN_STAGES.atModel).length;
+  const unconfirmed = live.filter((run) => run.progress?.stale === true).length;
+  const atModel = live.filter(
+    (run) => run.progress?.stage === RUN_STAGES.atModel && run.progress.stale === false,
+  ).length;
   const stalled = live.filter((run) => run.progress?.stalled === true).length;
   const heardFrom = live.filter(
     (run) => run.freshness === "fresh" || run.freshness === "recent",
   ).length;
   const clauses = [`${live.length} in flight`, `${atModel} at the model`];
   if (stalled > 0) clauses.push(`${stalled} stalled`);
+  if (unconfirmed > 0) clauses.push(`${unconfirmed} not confirmed lately`);
   if (heardFrom !== live.length) clauses.push(`${heardFrom} heard from lately`);
   return `${clauses.join(", ")}.`;
 }

@@ -2001,6 +2001,67 @@ export const STAGE_PATTERN = /^[a-z0-9](?:[a-z0-9 ._-]{0,62}[a-z0-9])?$/;
 export const STAGE_MESSAGE_MAX = 256;
 
 /**
+ * HOW OLD A FOLD MAY BE BEFORE THE ROW IT WROTE STOPS BEING READ AS THE PRESENT (#261).
+ *
+ * `run_progress` is rewritten once per dispatch-woken cycle for every job still running, and
+ * that write is as much a heartbeat as an account: `updatedAt` is when a cycle last CONFIRMED
+ * this job with the hub. Nothing deletes the row when the confirmations stop — a hub that will
+ * not answer about a job, a machine that went away, a loop nobody is waking all leave the last
+ * fold standing — so without a bound the panel renders `at the model since T` over a clock that
+ * keeps ticking for a job that died an hour ago. That is the 2026-09-13 failure in miniature:
+ * a surface that reports a stale reading as a live one.
+ *
+ * WHY FIVE MINUTES, against the rate the row is actually written at. A fold happens once per
+ * running job per dispatch-woken cycle — one upsert on a primary key, over a table bounded by
+ * the number of jobs in flight, and never per frame or per token: a cycle folds the whole ring
+ * it has not seen and writes once. A deployment with work is woken far more often than its
+ * beat, because every settlement of its own jobs is a wake, so a healthy running job is
+ * reconfirmed in seconds to a couple of minutes. A deployment with nothing running is woken by
+ * the beat alone, and `cadenceSeconds` defaults to an hour — but a job in flight is itself what
+ * keeps the loop being woken, so an hour of silence over a RUNNING row is the symptom and not
+ * the schedule. Five minutes therefore sits above the healthy gap and an order of magnitude
+ * below the quiet beat: one slow cycle is not called a silence, and a loop that has stopped
+ * waking is named while an operator can still act on it. Past it the row is still shown — it is
+ * the last true thing anyone observed — but as `last heard T ago` rather than a running clock.
+ */
+export const PROGRESS_STALE_AFTER_MS = 300_000;
+
+/**
+ * HOW MANY DISTINCT MODELS ONE RUNNING ROW KEEPS, in the order it first heard from each (#169).
+ *
+ * The meter names a model on every `inference_call`, and keeping only the newest made a
+ * fallback invisible: a run that opened on one model and was answered by another for the rest
+ * of its life read as though the second had answered all along. Eight is past any real
+ * fallback chain and bounds a TEXT column that is rewritten every cycle; a run that flapped
+ * across more than eight keeps the first eight it heard, and `lastModel` still names whichever
+ * one is answering now, so nothing about the present is lost to the bound.
+ */
+export const MODELS_KEPT = 8;
+
+/**
+ * THE ONE ENCODING OF "WHICH MODELS ANSWERED", read back.
+ *
+ * A JSON array of strings, in two columns that hold the same fact at two times: the running
+ * fold's `run_progress.models` and the settled receipt's `models`. One reader for both is what
+ * keeps a live row and its own receipt from disagreeing about the shape of the answer. Anything
+ * that is not an array of strings — `''` on a row an older shape wrote, a receipt whose
+ * producer wrote something else — reads as no models, which is the truth about it: nobody
+ * recorded which ones answered.
+ */
+export function modelList(held: unknown): readonly string[] {
+  const text = typeof held === "string" ? held : "";
+  if (text === "") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((entry): entry is string => typeof entry === "string" && entry !== "");
+}
+
+/**
  * WHAT A RUNNING JOB IS DOING AND WHAT IT HAS SPENT, as the conductor folds it out of the job's
  * replay ring each cycle: the newest `job_progress` for the stage and every `inference_call`
  * since the last fold for the spend (manifold#554).
@@ -2026,6 +2087,17 @@ export const RunProgressSchema = z.strictObject({
   lastModel: z.string(),
   stalled: z.boolean(),
   updatedAt: z.string(),
+  /**
+   * WHETHER A CYCLE HAS CONFIRMED THIS ROW LATELY, decided at read time against
+   * {@link PROGRESS_STALE_AFTER_MS} and the reader's own clock.
+   *
+   * It is a statement about the FOLD and never about the job: a stale row means no cycle has
+   * been able to say where this job is since `updatedAt`, which is what a job that died
+   * between two writes leaves behind. `stalled` is the narrower judgement and they are not the
+   * same thing — a stalled row was confirmed seconds ago and is silent at the model; a stale
+   * one is the last thing anybody saw.
+   */
+  stale: z.boolean(),
 });
 export type RunProgress = z.infer<typeof RunProgressSchema>;
 
@@ -2057,6 +2129,16 @@ export const RunRowSchema = z.strictObject({
   calls: z.number().int().nullable(),
   /** Where it is and what it has spent so far; null for a run nothing is folding. */
   progress: RunProgressSchema.nullable(),
+  /**
+   * THE MODELS THAT ANSWERED THIS RUN, in the order it first heard from each (#169).
+   *
+   * One field for both halves of a run's life: while it runs it is what the meter has named on
+   * the calls folded so far, and once it settles it is the receipt's own `models`. A fallback
+   * is therefore two entries here and one in whatever the run ASKED for — which is the whole
+   * of what 2026-09-13 could not answer, because the only model anyone recorded was the last
+   * one to speak. Empty for a run nothing has metered and no receipt named a model for.
+   */
+  models: z.array(z.string()),
 });
 
 /** `runs` serves all five narrowings; Watch sends the first three. */
@@ -2563,6 +2645,11 @@ export const RUN_DIFF_FIELDS = [
   "cacheReadTokens",
   "cacheWriteTokens",
   "costMicros",
+  // THE MODELS THAT ANSWERED, call by call (#169). `model` above is what the run ASKED for and
+  // sits on the request side; without this one a fallback was invisible to a comparison — two
+  // runs of the same request, one of them answered by a different model, differed in nothing a
+  // diff named and the substitution was attributed to chance.
+  "answered",
 ] as const;
 export type RunDiffField = (typeof RUN_DIFF_FIELDS)[number];
 
@@ -2588,6 +2675,7 @@ export const RUN_DIFF_SIDES: Readonly<Record<RunDiffField, "request" | "answer">
   cacheReadTokens: "answer",
   cacheWriteTokens: "answer",
   costMicros: "answer",
+  answered: "answer",
 };
 
 export const RunFieldDiffSchema = z.strictObject({
@@ -2658,6 +2746,7 @@ function foldTrace(trace: RunTrace): Readonly<Record<RunDiffField, string>> {
     cacheReadTokens: sum((call) => call.cacheReadTokens),
     cacheWriteTokens: sum((call) => call.cacheWriteTokens),
     costMicros: sum((call) => call.costMicros),
+    answered: join((call) => call.model),
   };
 }
 

@@ -492,6 +492,39 @@ export function tokenClause(progress: RunProgress): string {
   return `${figure(progress.inputTokens)} / ${figure(progress.outputTokens)} / ${figure(progress.cacheTokens)}`;
 }
 
+/**
+ * What `stale` means, and why the row is still on the page.
+ *
+ * The stage a stale row shows is the last one anybody observed, not a claim about now — the
+ * loop that should have refreshed it is the one that did not run. Shown rather than hidden,
+ * because the last true reading is what an operator goes looking for when a job stops
+ * answering; marked rather than ticking, because a clock over a dead job is the lie #261
+ * exists to stop.
+ */
+export const STALE_NOTE =
+  "No cycle has been able to confirm this job for over five minutes. The stage below is the " +
+  "last reading anyone took, not where the job is now.";
+
+/** What a second model on one run means: something other than the one asked for answered. */
+export const FALLBACK_NOTE =
+  "More than one model answered this run. The first one it heard from is not the one " +
+  "answering now, which is a fallback, a retry or a steer — never a thing to read off a total.";
+
+/**
+ * The model cell: what is answering, and whether it is the only one that has.
+ *
+ * A run is one row and a fallback is two facts, so the cell shows the current model and, when
+ * the run has heard from others, how many came before it. On 2026-09-13 the only model
+ * anybody could name was the last one to speak, and a receipt that says `sonnet` about a run
+ * launched on `opus` is a statement of fact that reads as a statement of intent (#169).
+ */
+export function modelClause(models: readonly string[], lastModel: string): string {
+  const current = lastModel === "" ? (models[models.length - 1] ?? "") : lastModel;
+  if (current === "") return "";
+  const earlier = models.filter((model) => model !== current).length;
+  return earlier === 0 ? current : `${current} (+${String(earlier)} earlier)`;
+}
+
 // ------------------------------------------------------------------ draining a window (#258)
 
 /** One drain as the door answers for it; the contract spells the schema and not the type. */

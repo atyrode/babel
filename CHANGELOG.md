@@ -1156,6 +1156,36 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   refusal — same code, same zero cost — from `free` to `paid` and the park from `barren` to
   `spent`.
 
+- **The model a receipt named was the one that answered last, filed under the field that means
+  "what it asked for".** A run reaches a model through a Code profile and the transcript names
+  whatever actually served the turn, so a fallback, a retry or a steer moved it silently and
+  `receipt.model` — documented as the ASK, read as the ask by `RunTrace` and diffed on the
+  request side — was quietly a statement of fact wearing a statement of intent. Two runs of one
+  identical request, one of them served by a substitute, therefore compared as
+  `different-request`, a verdict that disqualifies every other field of the comparison and
+  destroys exactly the same-request-twice measurement the trace exists for. `model` is now the
+  launch's own `askedModel` and nothing else — absent for a conductor-dispatched review, which
+  names a profile and never a model, because absent is the truth about it — `models` is what
+  answered, and a new answer-side diff field `answered` names the models call by call.
+
+  **And on the metered lane nothing recorded what answered at all.** The fold saw a model on
+  every `inference_call` and kept only the newest; `usage.inference` is five numbers and no
+  name; the row holding the newest was deleted by the settlement. So `run_progress` now keeps
+  the distinct models in first-heard order, bounded at eight, the settlement reads them one last
+  time before dropping the row and keeps them in the receipt, and one `models` field on a run
+  answers for both halves of its life — the fold's list while it runs, the receipt's after.
+  Watch shows `sonnet (+1 earlier)` on a live row and the whole chain on a settled one.
+
+  **A progress row also stopped being read as the present.** Nothing deletes one but a
+  settlement, so a job whose hub went quiet — or whose loop stopped waking — left its last fold
+  standing and the panel rendered `at the model since T` over a clock still ticking for a job
+  that died an hour before, which is the 2026-09-13 header in miniature. A fold older than five
+  minutes is now `stale`, judged at read time against the reader's own clock: the stage is still
+  shown, because it is the last true thing anybody observed, but as `last heard 10m ago`, and
+  the header stops counting it "at the model". Proven through the `runs` door a panel calls —
+  a live row's stage, spend, models and freshness, a settled run's models off its receipt, and a
+  fold nobody refreshed coming back stale — and in the panel document.
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed

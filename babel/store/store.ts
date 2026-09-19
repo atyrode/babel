@@ -28,11 +28,13 @@ import {
   FEED_SORTS,
   POST_KINDS,
   NextActionDecisionSchema,
+  PROGRESS_STALE_AFTER_MS,
   NextActionSchema,
   REPOSITORY_PROVENANCES,
   ROLES,
   RULINGS,
   normalizeRemote,
+  modelList,
   type BudgetOverlay,
   type Comment,
   type FeedGroup,
@@ -193,6 +195,12 @@ export interface RunRow {
   lastWord: string;
   /** Where the run is and what it has spent, folded from its replay ring; null before any. */
   progress: RunProgress | null;
+  /**
+   * The models that answered this run, in the order it first heard from each (#169): the
+   * fold's list while it runs, the receipt's once it settled. Empty for a run nothing metered
+   * and no receipt named a model for.
+   */
+  models: string[];
 }
 
 export interface RunsQuery {
@@ -595,11 +603,21 @@ function runFreshness(
  * `since` is what makes the row worth reading — "at the model since T", not "at the model" —
  * and the only judgement in it is `stalled`, which the loop decides against its own clock so
  * that two readers of the same row never disagree about it (#261).
+ *
+ * `stale` IS THE SECOND CLOCK AND IT IS THIS READ'S, not the loop's. The loop writes
+ * `updated_at` once per cycle for every running job, so the row says when a cycle last
+ * CONFIRMED the job with the hub; nothing deletes it when the confirmations stop, because the
+ * only thing that deletes it is a settlement. A job that died between two writes therefore
+ * leaves its last fold behind for ever, and a reader shown it without this flag reads a
+ * corpse's stage over a clock still ticking. Judged here rather than written by the loop for
+ * the reason the flag exists: the fold that should have moved it is the one that did not run.
  */
-function runProgress(row: SqlRow): RunProgress | null {
+function runProgress(row: SqlRow, nowMs: number): RunProgress | null {
   const since = text(row["progress_since"]);
   if (since === "") return null;
   const fraction = row["progress_fraction"];
+  const updatedAt = text(row["progress_updated_at"]);
+  const confirmed = instant(updatedAt);
   return {
     stage: text(row["progress_stage"]),
     message: text(row["progress_message"]),
@@ -612,7 +630,11 @@ function runProgress(row: SqlRow): RunProgress | null {
     costUsd: count(row["progress_cost_usd"]),
     lastModel: text(row["progress_last_model"]),
     stalled: count(row["progress_stalled"]) === 1,
-    updatedAt: text(row["progress_updated_at"]),
+    updatedAt,
+    // An unreadable instant is as stale as it gets: a row whose own stamp cannot be parsed
+    // says nothing about when it was confirmed, and reading that as "just now" is the error
+    // this flag exists to stop.
+    stale: confirmed === null || nowMs - confirmed >= PROGRESS_STALE_AFTER_MS,
   };
 }
 
@@ -644,7 +666,12 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
     records: count(row["records"]),
     freshness: runFreshness(state, instant(lastWord), nowMs),
     lastWord,
-    progress: runProgress(row),
+    progress: runProgress(row, nowMs),
+    // ONE FIELD FOR BOTH HALVES OF A RUN'S LIFE (#169): the fold's list while it runs, the
+    // receipt's after it settles. The two are never both there — the fold's row is deleted by
+    // the settlement that writes the receipt — so `COALESCE` reads whichever half this run is
+    // in, and an empty list is a run nothing metered and no receipt named a model for.
+    models: [...modelList(row["models"])],
   };
 }
 
@@ -665,6 +692,8 @@ const RUN_COLUMNS = `r.id AS id, r.kind AS kind, r.machine_id AS machine_id, r.j
   p.output_tokens AS progress_output_tokens, p.cache_tokens AS progress_cache_tokens,
   p.cost_usd AS progress_cost_usd, p.last_model AS progress_last_model,
   p.stalled AS progress_stalled, p.updated_at AS progress_updated_at,
+  COALESCE(NULLIF(p.models, ''),
+           CASE WHEN json_valid(r.payload) THEN json_extract(r.payload, '$.models') END) AS models,
   MAX(r.started_at, COALESCE(r.finished_at, ''),
       COALESCE((SELECT MAX(created_at) FROM records WHERE run_id = r.id), ''),
       COALESCE((SELECT MAX(recorded_at) FROM assessments WHERE run_id = r.id), '')) AS last_word`;
