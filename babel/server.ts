@@ -21,6 +21,7 @@ import { launchMachinery, type LaunchDeps } from "./doors/launch.ts";
 import type { Recipe } from "./server/engine/prompts.ts";
 import { codeEngine, type ActionsSlice } from "./server/engine/session.ts";
 import { drainTick, type DrainDeps } from "./server/drain.ts";
+import { embedder, type EmbeddingServices } from "./server/embed.ts";
 import {
   conductor,
   type Conductor,
@@ -42,6 +43,7 @@ import {
 } from "./server/plan.ts";
 import { coordinator, type Policy } from "./store/coordinator.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
+import { ensureTerms } from "./store/corpus.ts";
 import { openStore } from "./store/store.ts";
 import manifestJson from "./manifest.json";
 
@@ -79,10 +81,10 @@ import manifestJson from "./manifest.json";
 /**
  * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column, table, index and
  * trigger `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
- * `2026-09-14-store-v1-next-actions` — recorded under the same key by the enable before
+ * `2026-09-14-store-v1-run-calls` — recorded under the same key by the enable before
  * it — is its predecessor.
  */
-const STORE_MIGRATION = "2026-09-14-store-v1-run-calls";
+const STORE_MIGRATION = "2026-09-19-store-v1-corpus-index";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -250,8 +252,19 @@ const LAUNCH_DEPS: LaunchDeps = {
 /** The launch path every start goes through, doors and drain controller alike (#258). */
 const machinery = launchMachinery(store, LAUNCH_DEPS);
 
-/** The controller's dependencies over one wake's own authority (#258, #279). */
-function draining(jobs: BabelJobs, actions: ActionsSlice | undefined): DrainDeps {
+/**
+ * The controller's dependencies over one wake's own authority (#258, #279).
+ *
+ * `embed` is `null` on a wake that holds no service authority, which is every background one
+ * (#337): `GuestServices` is a dispatch's, and the settled-job hook is served jobs and actions
+ * and nothing else. So the corpus backfill rides a tick the operator's own dispatch woke, and a
+ * settlement's tick launches and embeds nothing.
+ */
+function draining(
+  jobs: BabelJobs,
+  actions: ActionsSlice | undefined,
+  services?: EmbeddingServices | undefined,
+): DrainDeps {
   return {
     store,
     coordinator: coordinated,
@@ -259,6 +272,7 @@ function draining(jobs: BabelJobs, actions: ActionsSlice | undefined): DrainDeps
     jobs,
     engine: codeEngine(actions),
     plan: planFor,
+    embed: services === undefined ? null : embedder(services),
     now: () => store.now(),
   };
 }
@@ -281,6 +295,7 @@ async function cycle(
   jobs: BabelJobs,
   machines: MachinesSlice,
   actions: ActionsSlice | undefined,
+  services?: EmbeddingServices | undefined,
 ): Promise<void> {
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
@@ -335,7 +350,7 @@ async function cycle(
   if (named !== null && "refused" in named) {
     console.warn(`${BABEL_PLUGIN_ID}: no session was named this cycle: ${named.refused}`);
   }
-  for (const report of await drainTick(draining(jobs, actions))) {
+  for (const report of await drainTick(draining(jobs, actions, services))) {
     for (const note of report.notes) {
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
     }
@@ -397,6 +412,7 @@ const doors = babelDoors(
       draining(
         jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
         ctx.actions,
+        ctx.services,
       ),
     concurrentJobs: DRAIN_FAN,
     now: () => store.now(),
@@ -435,6 +451,10 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
             jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
             machinesSlice(ctx.machines),
             ctx.actions,
+            // THE ONE WAKE THAT HOLDS SERVICE AUTHORITY (#337). A dispatch is served
+            // `ctx.services`; a hook is not, so the corpus backfill happens on the operator's
+            // own ticks and nowhere else.
+            ctx.services,
           );
         } catch (error) {
           console.warn(`${BABEL_PLUGIN_ID}: the cycle after ${name} failed: ${message(error)}`);
@@ -489,6 +509,27 @@ export const plugin: ServerPluginDef = {
         if (pending.length > 0) await database.batch(pending);
       }
       await ctx.storage.set(SCHEMA_KEY, STORE_MIGRATION);
+      /*
+        THE KEYWORD INDEX IS BROUGHT CURRENT HERE (#337), because an enable is the one moment
+        that is certain to happen once per shape and needs nobody's account. A store that reached
+        this shape by addition holds every record and no term — the 6,038 of the crossing among
+        them — and `record_terms_follow` only ever fires for a record written after it existed.
+        The counts inside are the whole condition, so every later enable pays for two of them.
+
+        It cannot fail an enable. A store whose keyword index could not be written is a store
+        whose searches answer by meaning or not at all, which is a degraded deployment rather
+        than a refused one; the drain's own duty tries again on every tick.
+      */
+      try {
+        const seeded = await ensureTerms(store);
+        if (seeded > 0) {
+          console.warn(
+            `${BABEL_PLUGIN_ID}: the keyword index was built over ${String(seeded)} records`,
+          );
+        }
+      } catch (error) {
+        console.warn(`${BABEL_PLUGIN_ID}: the keyword index could not be built: ${message(error)}`);
+      }
       /*
         AN ENABLED POLICY REGISTERS ITS BEAT HERE (#534). The hook's context carries the job
         slice its installer's credential was restored for — every job verb but the live

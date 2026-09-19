@@ -13,7 +13,8 @@
     "jobs:cancel",
     "locations:read",
     "locations:write",
-    "services:configure"
+    "services:configure",
+    "services:invoke"
   ],
   "dependencies": {
     "atyrode.code": {
@@ -23,7 +24,7 @@
   },
   "dataVersion": {
     "major": 1,
-    "minor": 9
+    "minor": 10
   },
   "database": {
     "maxBytes": 1073741824

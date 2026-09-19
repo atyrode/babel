@@ -1575,3 +1575,80 @@ test("the report a drain leaves is a record the corpus reaches, so an explore ca
     harness.db.run(`UPDATE records SET title = 'rewritten' WHERE id = ?`, [id]),
   ).rejects.toThrow(/never edited/u);
 });
+
+/*
+  THE CORPUS INDEX AS A DUTY OF THE TICK (#337).
+
+  Two properties, and both are about what a drain does BESIDE launching. The keyword half must
+  advance on a wake that holds no service authority at all, because that half needs nobody's
+  account and is what makes a search work on a deployment that installed nothing. The meaning half
+  must be bounded per tick and resumable across ticks, because it is 6,038 service calls and a
+  pass that tried to finish would hold the dispatch that woke it.
+*/
+
+async function claim(id: string, title: string, pattern: string): Promise<void> {
+  await harness.db.run(
+    `INSERT INTO records(id, kind, root_id, seq, run_id, actor_kind, actor_id, title, created_at,
+                         payload)
+     VALUES (?, 'finding', ?, 0, NULL, 'run', 'run_x', ?, ?, ?)`,
+    [id, id, title, stamp(NOW), JSON.stringify({ pattern })],
+  );
+}
+
+test("a tick with no service authority still brings the keyword index current", async () => {
+  await claim("fnd_0000001a", "The drain stalls at zero", "the fan never drains");
+  await claim("fnd_0000001b", "A window is unspent", "the account resets with the window full");
+  // A store that reached this shape by addition holds the records and none of the terms.
+  await harness.db.run("DELETE FROM record_terms");
+  await start({ concurrent: 1 });
+
+  const [report] = await drainTick(deps);
+  expect(report?.notes.join(" ")).toMatch(/keyword index was rebuilt over 2 records/u);
+  const terms = await harness.db.query<{ n: number }>("SELECT COUNT(*) AS n FROM record_terms");
+  expect(Number(terms[0]?.n)).toBe(2);
+  // Nothing was embedded, because this tick held no service authority — which is every background
+  // wake — and no note claims otherwise.
+  expect(await harness.db.query("SELECT record_id FROM record_vectors")).toEqual([]);
+  expect(report?.notes.join(" ")).not.toMatch(/embedded/u);
+
+  // And it does not rebuild again: the gap between the two counts is the whole condition.
+  const [second] = await drainTick(deps);
+  expect(second?.notes.join(" ")).not.toMatch(/keyword index/u);
+});
+
+test("the backfill rides the drain: bounded per tick, resumable across ticks, and journaled", async () => {
+  for (const n of [1, 2, 3]) {
+    await claim(
+      `fnd_0000002${String(n)}`,
+      `A window is unspent ${String(n)}`,
+      "the drain runs dry",
+    );
+  }
+  const asked: string[] = [];
+  deps = {
+    ...deps,
+    embed: async (text: string) => {
+      asked.push(text);
+      return { model: "stub-embed-v1", values: [1, -1] };
+    },
+  };
+  const drainId = String((await start({ concurrent: 1 }))["drainId"]);
+
+  const [first] = await drainTick(deps);
+  expect(first?.notes.join(" ")).toMatch(/3 records embedded by stub-embed-v1, 0 left/u);
+  expect(asked).toHaveLength(3);
+  const rows = await harness.db.query<{ n: number }>("SELECT COUNT(*) AS n FROM record_vectors");
+  expect(Number(rows[0]?.n)).toBe(3);
+
+  // A LATER TICK PAYS FOR NOTHING. The pending set is a query over the rows themselves, so there
+  // is no cursor to be wrong and a drain that ticks for two hours does not re-embed a corpus.
+  const before = asked.length;
+  const [second] = await drainTick(deps);
+  expect(asked).toHaveLength(before);
+  expect(second?.notes.join(" ")).not.toMatch(/embedded/u);
+
+  // WHAT IT COST IS ON THE DRAIN'S OWN ROW, which is what makes the report (#270) able to say it:
+  // the index's rows say what the corpus reached and can never say which tick paid for them.
+  const row = await readDrain(harness.store, drainId);
+  expect(row?.journal.notes.map((note) => note.kind)).toContain("index");
+});

@@ -11,6 +11,40 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Babel can find its own records.** Nothing indexed the corpus, so nothing retrieved against it:
+  a preparation selected sessions by recency, the feed enumerated structured columns and accepted
+  no text query at all, and the audit's own verdict — that the binding constraint is not ranking
+  but that most records do not say what they are about — could not even be measured at scale. A
+  `search` door answers keyword **and** meaning, fused by reciprocal rank because bm25 is
+  unbounded and negative while cosine is bounded, with both raw numbers travelling beside the
+  answer.
+
+  **Two host facts chose the data structure, not taste.** A plugin cannot `load_extension`, so
+  there is no vector extension below the SQL boundary — `vec0` does not exist. And a SQL call is
+  bounded at 4 MiB while 6,038 records at 768 float32 dimensions is 18.5 MB, so a brute-force scan
+  over full vectors **cannot cross the plugin's own boundary**. The index therefore keeps a
+  one-bit-per-dimension sketch — 96 bytes a record, 580 KB for the whole corpus, one query — and
+  rescores a bounded slice exactly. FTS5 turned out to be compiled in, so the keyword half needed
+  nothing new.
+
+  **The baseline now declares `services:invoke`, and that is the line to read twice.** Babel's
+  server half could previously reach nothing at all; embedding a *query* has to happen at door
+  latency, which the machine half cannot do, so the one honest mechanism is the service binding
+  the judgement part already uses — the host resolves the credential and the key never enters this
+  bundle. What leaves is a record's prose, capped, in one named field: no id, no run, no locator,
+  no instant, asserted against the request's own bytes. **With no policy installed the baseline
+  makes no outbound call at all**, which a test asserts by counting invocations rather than
+  reading a return value.
+
+  Partial is usable and says which: coverage travels with every answer, `absent`/`partial`/`full`
+  names the state, and an approximation is separable from a miss — `scanned` of zero means nothing
+  to compare against, while `scanned > rescored` means the sketch cut and a better match may lie
+  outside the slice. A vector carries the model that made it and **cannot exist without one**, so
+  a query is never compared against another model's vectors; those rows report `stale`, which is
+  what a model change should mean. The backfill is a drain duty with no cursor — the pending set
+  is the gap itself, so a dead tick, a restarted hub and a stopped drain all leave the same state,
+  and a pass with nothing pending makes no call. The keyword half runs regardless of any account,
+  so the imported corpus is searchable with zero configuration.
 - **One narrow door, through which an allowed plugin may suggest and nothing more.** Babel has two
   writer classes — the operator, authenticated through a door under his principal, and a run,
   mediated by the conductor against a schema the baseline owns — and a dependent plugin is
