@@ -36,6 +36,7 @@ import feedManifest from "../babel/feed/manifest.json";
 import watchManifest from "../babel/watch/manifest.json";
 import jevManifest from "../babel/jev/manifest.json";
 import { JEV_SERVICE } from "../babel/jev/server/credential.ts";
+import * as contract from "../babel/contract.ts";
 
 /*
   A manifest is JSON and cannot import `contract.ts`, so every id it repeats is pinned here:
@@ -509,6 +510,31 @@ describe("the machine half is declared as the machine half is built", () => {
       expect(machine.operations[other]!.services).toBeUndefined();
       expect(machine.operations[other]!.environment).toBeUndefined();
     }
+  });
+
+  test("the baseline names two host services, and neither of them is a model", () => {
+    /*
+      THE ABSENCE IS THE CLAIM (#255).
+
+      A run reaches a model, and the credential that pays for it is never Babel's: the account
+      belongs to a Code profile and the key to the machine's broker, so `atyrode.code.runSession`
+      is handed a container and never a value. The shape that would undo that is a service of
+      Babel's OWN carrying a model key — an `atyrode.babel.inference` reborn, which v0.4.0
+      deliberately deleted, and which `docs/sandbox-threat-model.md` §7 names as an invalidating
+      condition. The per-operation loop above catches one way to add it. This catches the other:
+      a third `*_SERVICE` in the contract, which is where every service id this half may name is
+      spelled and the only place one can come from.
+
+      It reads the module rather than a list, so adding the constant is what fails — not
+      forgetting to add it to a list somebody would then update.
+    */
+    const named = Object.entries(contract)
+      .filter(
+        ([, value]) =>
+          typeof value === "object" && value !== null && "serviceId" in (value as object),
+      )
+      .map(([name]) => name);
+    expect(named.toSorted()).toEqual(["EMBEDDING_SERVICE", "RESTIC_SERVICE"]);
   });
 
   test("the ceiling on a run is the ceiling the operator was promised", () => {

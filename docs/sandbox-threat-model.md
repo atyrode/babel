@@ -136,6 +136,23 @@ That last property is the one worth stating as security rather than as correctne
 cite its way to a file it was not given, and it cannot quietly substitute different bytes for the
 ones a reviewer will later read.
 
+**And Babel will not post one it has no authority to pay for** (`babel/server/engine/session.ts`;
+#255). A model is paid for by an account on the Code profile a run names, and the key behind that
+account is held by the machine's own broker — Babel names a container and Code resolves the rest,
+the same arrangement as §1's embedding service with Code in the host's place. What was missing was
+the other half of it: the plugin posted the spend without asking whether the deployment had an
+account at all. `CodeEngine.spendAuthority` asks Code, and `runSession` is behind it, so the call
+that spends is unreachable where the operator installed nothing. The order is §1's order and the
+property is §1's property: the free question first, the paid one second, and a deployment with no
+account makes no posting rather than a posting that fails. What the answer carries back is a
+provider and an identity NAME — the half of a credential a repository may hold — and Code's own
+`SessionRunInputSchema` is a strict object of a container, a destination, a revision, a prompt and
+its inputs, so there is no field on the wire a key could travel in even if this bundle held one.
+
+The gate answers whether an account EXISTS, not whether the provider will honour it: a revoked
+key, an exhausted window or a broker that is down are all Code refusing a posted session, and
+they reach an operator as they always did.
+
 ## 5. Residuals, ranked by reachability
 
 Most reachable first. A residual discovered in the system belongs in this list in the same change.
@@ -199,6 +216,8 @@ Most reachable first. A residual discovered in the system belongs in this list i
   installing none means the corpus index answers by keyword and reaches nothing.
 - Running an analysis means accepting that a credential in a format the preflight's rules do not
   name travels with the material.
+- Installing no account on the Code profile a preset names means no analysis of that preset runs
+  at all, and says so at the press; it never means one runs and pays with something of Babel's.
 
 ## 7. What would invalidate this document
 
@@ -230,3 +249,11 @@ Most reachable first. A residual discovered in the system belongs in this list i
   that ordering; a rule removed or a scan moved after the seal is a different disclosure boundary.
 - **Citations ceasing to be checked against the material index**, which is the only mechanism that
   makes a model's claim about the corpus verifiable.
+- **A model credential reaching this repository by any path at all** — an `environment` entry, an
+  argv literal, a service of Babel's own carrying a provider key, or a field added to what
+  `runSession` is handed. §4's last paragraph is the claim, and its enforcement is three things
+  that must stay together: `test/contract.test.ts` pins that the contract names exactly two host
+  services and that no operation but `archive` and `verify` declares one, and
+  `babel/server/engine/session.ts` is the only module that can post a session. v0.4.0 removed an
+  `atyrode.babel.inference` service that did hold one, so this is a condition with a precedent
+  rather than a hypothetical.

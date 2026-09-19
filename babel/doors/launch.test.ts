@@ -27,6 +27,7 @@ import {
   OPERATIONS,
   OUTPUT_BINDING,
   PRESET_OPERATIONS,
+  type ProfileAccount,
   type ProfileRow,
 } from "../contract.ts";
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
@@ -38,6 +39,7 @@ import {
   type SessionRequest,
 } from "../server/engine/session.ts";
 import type { Recipe } from "../server/engine/prompts.ts";
+import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
@@ -151,6 +153,32 @@ class Code implements CodeEngine {
       return await Promise.resolve(refusedByCode("engine_unavailable", this.unavailable));
     }
     return await Promise.resolve({ ok: true, value: this.saved });
+  }
+
+  /**
+   * THE QUESTION THE PRESS ASKS BEFORE IT SEALS ANYTHING (#255), answered the way the adapter
+   * answers it: the profile's own accounts, or the refusal that says the deployment has none.
+   * `saved` is the whole of it, so a test sets up "no account installed" by emptying the list
+   * or the row's `accounts` rather than by stubbing a verb.
+   */
+  async spendAuthority(containerId: string): Promise<EngineAnswer<readonly ProfileAccount[]>> {
+    const listed = await this.profiles();
+    if (!listed.ok) return listed;
+    const held = listed.value.find((profile) => profile.containerId === containerId);
+    if (held === undefined) {
+      return refusedByCode(
+        "engine_stale_profile",
+        `${CODE_PLUGIN_ID} holds no profile for container ${containerId}`,
+      );
+    }
+    if (held.resolved && held.accounts.length === 0) {
+      return refusedByCode(
+        "engine_no_account",
+        `the Code profile ${containerId} spends no account: Code resolved its saved choices ` +
+          `against the live observation and found none`,
+      );
+    }
+    return { ok: true, value: held.accounts };
   }
 
   /**
@@ -414,6 +442,32 @@ test("a model preset naming no Code profile is refused by name, and nothing is p
   expect(String(answer["refused"])).toStartWith("profile_required:");
   expect(fleet.executed).toEqual([]);
   expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+});
+
+/*
+  NOTHING IS SEALED FOR A PROFILE THAT CANNOT PAY FOR THE SESSION (#255).
+
+  The session this press leads to is posted two wakes later and is gated there too — every
+  posting in this bundle goes through `codeEngine.runSession`. What this pins is the PRESS: an
+  `atyrode.babel.prepare` job is half a gigabyte and thirty minutes of a real machine's time,
+  and a deployment that never installed an account must not spend it to be told so afterwards.
+  The assertion is therefore what the FLEET was asked to run, not what the door returned.
+*/
+test("a profile Code resolved with no account refuses the press, and no preparation is posted", async () => {
+  code.saved = [{ ...code.saved[0]!, accounts: [] }];
+
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  expect(fleet.executed).toEqual([]);
+  expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+  // The engine's own word, forwarded verbatim: which profile, and what is missing from it. The
+  // whole sentence an operator reads is pinned where it is written, in `engine/session.test.ts`.
+  expect(String(answer["refused"])).toStartWith("engine_no_account:");
+  expect(String(answer["refused"])).toContain("ctr_workbench");
 });
 
 test("a hub holding no cookbook recipe refuses an explore rather than posting one with no method", async () => {

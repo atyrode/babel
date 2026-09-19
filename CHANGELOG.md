@@ -1043,6 +1043,27 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   an age cross a minute while the hub answers the same thing, one answers a question and then
   watches the list let the world back in, one pages a topic and changes subject.
 
+- **A run was posted without anyone asking whether the deployment could pay for it.** A Babel run
+  is a Code session, the account that pays for it belongs to the Code profile, and the key behind
+  that account is the machine broker's — Babel names a container and holds nothing. What was
+  missing is the other half of that arrangement: the plugin posted the spend blind. A press
+  against a profile with no account sealed its material first — an `atyrode.babel.prepare` job
+  with thirty minutes and half a gigabyte in its ceiling — and was told `code_…` two wakes later,
+  and the conductor re-dispatched a review every wake for ever against the same absence.
+  `CodeEngine.spendAuthority` now asks Code what the named profile spends, and `runSession` sits
+  behind it, so the one call that costs money is unreachable where the operator installed
+  nothing: the refusal is `engine_no_account` and it names the profile, says what is missing and
+  says that no install of Babel's own can supply it. The gate is in the ADAPTER and not at the
+  two call sites, so a third caller inherits it by existing. **With no account installed no
+  session is posted at all**, which the tests assert by counting the invocations of Code's door
+  rather than by reading a return value, and the press refuses before it posts the preparation.
+  An unresolved profile is still posted, because Code stores account choices as exclusions and an
+  empty list it could not resolve means ask again, never "spends nothing". **No capability is
+  added or widened and the manifest does not move**: the authority read is `containers:read`,
+  which Babel already held. And the absence is now pinned — `test/contract.test.ts` fails if the
+  contract ever names a third host service, which is the shape a model credential of Babel's own
+  would arrive in (#255).
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed

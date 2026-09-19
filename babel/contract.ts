@@ -1614,13 +1614,13 @@ export type MaterialIndex = z.infer<typeof MaterialIndexSchema>;
 export const MATERIAL_EXPORT = MATERIAL_OUTPUT;
 
 /**
- * THE FOUR NAMES BABEL GIVES AN ENGINE REFUSAL, because the operator acts differently on each.
+ * THE FIVE NAMES BABEL GIVES AN ENGINE REFUSAL, because the operator acts differently on each.
  *
  * A call into Code refuses in two shapes and they arrive by different roads (ADR 0041): the
  * HOST's own refusal is a rejection whose sentence starts with its class
  * (`undeclared_dependency`, `dependency_unavailable`, `unknown_action`, `caller_ceiling`,
  * `capability`, `refused`, `dispatch_cycle`, `dispatch_depth`), and CODE's own refusal is a
- * resolved `{ refused: "code_…" }` value. Both are folded onto these four:
+ * resolved `{ refused: "code_…" }` value. Both are folded onto these:
  *
  *   `engine_unavailable`  — there is no Code to ask: not declared, not installed, not enabled,
  *                           or too old to publish the door. The operator installs or upgrades.
@@ -1629,12 +1629,19 @@ export const MATERIAL_EXPORT = MATERIAL_OUTPUT;
  *   `engine_stale_profile`— the profile moved between the read and the press. Re-read the list
  *                           and press again; the panel does exactly that.
  *   `engine_refused`      — Code said no, in its own word, which rides the detail.
+ *   `engine_no_account`   — Code resolved the profile this run names and it spends NOTHING.
+ *                           It is not Code refusing and not an authority Babel lacks: it is
+ *                           the deployment never having installed the thing a run spends, and
+ *                           the operator's move is to open that workspace in Code and choose
+ *                           the account. Babel holds no key of its own and never will (#255),
+ *                           so this is the one refusal no install of Babel's can clear.
  */
 export const ENGINE_REFUSALS = {
   unavailable: "engine_unavailable",
   forbidden: "engine_forbidden",
   staleProfile: "engine_stale_profile",
   refused: "engine_refused",
+  noAccount: "engine_no_account",
 } as const;
 export type EngineRefusalCode = (typeof ENGINE_REFUSALS)[keyof typeof ENGINE_REFUSALS];
 

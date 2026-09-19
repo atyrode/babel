@@ -17,6 +17,7 @@ import {
   RUN_STAGES,
   diffRunTraces,
   type MaterialIndex,
+  type ProfileAccount,
   type RunTrace,
 } from "../contract.ts";
 import type {
@@ -1124,6 +1125,8 @@ function refusedByCode<T>(code: string, detail: string): EngineAnswer<T> {
  */
 const NO_CODE: CodeEngine = {
   profiles: async () => await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
+  spendAuthority: async () =>
+    await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
   runSession: async () =>
     await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
   readSession: async () => {
@@ -1186,6 +1189,13 @@ class ReviewCode implements CodeEngine {
   async profiles(): Promise<EngineAnswer<readonly never[]>> {
     return await Promise.resolve({ ok: true, value: [] });
   }
+  /** The profile a drawn review is dispatched on spends one account, as Code reports it. */
+  async spendAuthority(): Promise<EngineAnswer<readonly ProfileAccount[]>> {
+    return await Promise.resolve({
+      ok: true,
+      value: [{ provider: "anthropic", identityKey: "the-review-account", label: "" }],
+    });
+  }
 
   async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
     this.posted.push(request);
@@ -1218,6 +1228,8 @@ function codeAnswering(
   return {
     asked,
     profiles: async () =>
+      await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
+    spendAuthority: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
     runSession: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
@@ -4048,6 +4060,8 @@ function codeReplying(
   return {
     asked,
     profiles: async () =>
+      await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
+    spendAuthority: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
     runSession: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
