@@ -33,6 +33,7 @@ import {
   REPOSITORY_PROVENANCES,
   ROLES,
   RULINGS,
+  isRecordId,
   normalizeRemote,
   modelList,
   type BudgetOverlay,
@@ -815,6 +816,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       const proposalId = text(row["subject_id"]);
       const title = titles[proposalId];
       if (title === undefined) continue;
+      // A proposal whose record id this deployment cannot name is dropped for the same reason
+      // one it does not hold is (#426): the rail is a shortcut into the feed, a reader cannot
+      // open a record no input schema admits, and naming it would fail this door's own result.
+      if (!isRecordId(proposalId)) continue;
       const payload = document(row["payload"]);
       let posts = 0;
       for (const named of objectsField(payload, "records")) {

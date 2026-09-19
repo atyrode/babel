@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { MAX_SQL_BATCH_STATEMENTS } from "@manifold/plugin";
 import type { PluginDatabase, SqlStatement } from "@manifold/plugin";
-import { recordTextSql } from "./schema.ts";
+import { isRecordId } from "../contract.ts";
+import { nameableRecordSql, recordTextSql } from "./schema.ts";
 
 /*
   THE CORPUS INDEX (#337): what the records say, in two indexes, and the one door that reads them.
@@ -493,7 +494,12 @@ export interface CorpusCoverage {
   readonly empty: number;
   /** Records whose only vector was made by a different model, and are therefore pending. */
   readonly stale: number;
-  /** The model the vectors read were made by; empty when none were read. */
+  /**
+   * Records whose stored id is not one {@link isRecordId} admits (#426). They are left out of
+   * every answer because no caller could ask for one, and they are counted so an answer that
+   * is short says why rather than looking complete.
+   */
+  readonly unnameable: number;
   readonly model: string;
 }
 
@@ -538,10 +544,16 @@ export interface CorpusQuery {
 
 async function coverageOf(store: CorpusStore, model: string): Promise<CorpusCoverage> {
   const counted = await termCounts(store);
-  const rows = await store.db.query<{ embedded: number; empty: number; stale: number }>(
+  const rows = await store.db.query<{
+    embedded: number;
+    empty: number;
+    stale: number;
+    unnameable: number;
+  }>(
     `SELECT COALESCE(SUM(CASE WHEN model = ? AND dims > 0 THEN 1 ELSE 0 END), 0) AS embedded,
             COALESCE(SUM(CASE WHEN model = ? AND dims = 0 THEN 1 ELSE 0 END), 0) AS empty,
-            COALESCE(SUM(CASE WHEN model <> ? THEN 1 ELSE 0 END), 0) AS stale
+            COALESCE(SUM(CASE WHEN model <> ? THEN 1 ELSE 0 END), 0) AS stale,
+            (SELECT COUNT(*) FROM records r WHERE NOT (${nameableRecordSql("r.id")})) AS unnameable
        FROM record_vectors`,
     [model, model, model],
   );
@@ -552,6 +564,7 @@ async function coverageOf(store: CorpusStore, model: string): Promise<CorpusCove
     embedded: Number(row?.embedded ?? 0),
     empty: Number(row?.empty ?? 0),
     stale: Number(row?.stale ?? 0),
+    unnameable: Number(row?.unnameable ?? 0),
     model,
   };
 }
@@ -668,7 +681,13 @@ export async function searchCorpus(
   }
   const coverage = await coverageOf(store, model);
   const scores = new Map<string, number>();
+  // A ROW THIS ANSWER CANNOT NAME IS DROPPED HERE, BEFORE THE SLICE (#426), and not after it:
+  // the door's own result validates every hit's id, so one such row read out of the store used
+  // to fail the whole dispatch. Dropped before fusion, it also costs no place in the `limit`
+  // rows a caller asked for — the records that can be named take the places it was ranked into.
+  // `coverage.unnameable` is where the store's damage is reported.
   const add = (id: string, rank: number): void => {
+    if (!isRecordId(id)) return;
     scores.set(id, (scores.get(id) ?? 0) + 1 / (RRF_K + rank + 1));
   };
   keyword.forEach((hit, rank) => {

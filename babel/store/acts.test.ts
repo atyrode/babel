@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginDatabase, SqlRow } from "@manifold/plugin";
 import { openPluginDatabase } from "@manifold/server/plugin-database";
-import { BABEL_PLUGIN_ID } from "../contract.ts";
+import { BABEL_PLUGIN_ID, isRecordId } from "../contract.ts";
 import {
   parseReviewResult,
   ResultRefusal,
@@ -36,11 +36,12 @@ import {
   setPolicy,
   stamp,
   standingOf,
+  suggestionsOf,
   tell,
   unfile,
   type ActsStore,
 } from "./acts.ts";
-import { SCHEMA_V1 } from "./schema.ts";
+import { nameableRecordSql, SCHEMA_V1 } from "./schema.ts";
 
 /*
   These run against a REAL plugin database — the engine's own file, opened by
@@ -2142,4 +2143,106 @@ test("every refusal is an ActRefused, so a door can tell a mistake from a bug", 
   ).catch((error: unknown) => error);
   expect(caught).toBeInstanceOf(ActRefused);
   expect(touched).toBeGreaterThan(0);
+});
+
+// -------------------------------------------------------------- what a sweep may be offered
+
+/** The suggester a sweep's marks are attributed to; any plugin id serves here. */
+const SWEEPER = "atyrode.babel.jev";
+
+test("the gap holds no record a sweep could not name, in the count or in any page of it", async () => {
+  const store = openStore();
+  await migrate(store);
+  // Interleaved on purpose: the unnameable rows sit BETWEEN the two a pass can deliver, so a
+  // page filtered after its own LIMIT would answer nothing and leave `after` where it was —
+  // a sweep that walks the gap one row at a time would never reach the second record.
+  await seedRecord(store, "pro_00000001", "proposal", "worth judging");
+  await seedRecord(store, "rec_seed_001", "proposal", "imported before the guard");
+  await seedRecord(store, "pro_00ABCDEF", "proposal", "hex, but not as the schema spells it");
+  await seedRecord(store, "pro_00000002", "proposal", "also worth judging");
+
+  const counted = await suggestionsOf(store, SWEEPER, {
+    pending: 10,
+    basis: "",
+    kinds: [],
+    after: "",
+  });
+  expect(counted.unjudged).toBe(2);
+  expect(counted.pending.map((row) => row.recordId)).toEqual(["pro_00000001", "pro_00000002"]);
+
+  const firstPage = await suggestionsOf(store, SWEEPER, {
+    pending: 1,
+    basis: "",
+    kinds: [],
+    after: "",
+  });
+  expect(firstPage.pending.map((row) => row.recordId)).toEqual(["pro_00000001"]);
+  const nextPage = await suggestionsOf(store, SWEEPER, {
+    pending: 1,
+    basis: "",
+    kinds: [],
+    after: "pro_00000001",
+  });
+  // The continuation moved past the two rows nothing can name rather than stalling on them.
+  expect(nextPage.pending.map((row) => row.recordId)).toEqual(["pro_00000002"]);
+  expect(nextPage.unjudged).toBe(2);
+});
+
+test("a ruled record is still offered to a sweep, marked as one no suggestion may land on", async () => {
+  const store = openStore();
+  await migrate(store);
+  await seedRecord(store, "pro_00000001", "proposal", "open, and nobody has ruled");
+  await seedRecord(store, "pro_00000002", "proposal", "the operator has accepted this one");
+  await rule(store, { id: "pro_00000002", ruling: "accept", note: "" }, OPERATOR);
+
+  const queue = await suggestionsOf(store, SWEEPER, {
+    pending: 10,
+    basis: "",
+    kinds: [],
+    after: "",
+  });
+  // A ruling decides what may be OFFERED on a record, not whether a screener may read it: the
+  // imported corpus is mostly ruled, and a gap that skipped those would leave it unscreened.
+  expect(queue.unjudged).toBe(2);
+  expect(queue.pending.map((row) => [row.recordId, row.suggestible])).toEqual([
+    ["pro_00000001", true],
+    ["pro_00000002", false],
+  ]);
+  // Reopening is the operator's own act and returns the record to `new`, which is exactly when
+  // `suggest` admits a suggestion again — so the flag follows the newest ruling and not the
+  // existence of a ruling.
+  await rule(store, { id: "pro_00000002", ruling: "reopen", note: "new evidence" }, OPERATOR);
+  const reopened = await suggestionsOf(store, SWEEPER, {
+    pending: 10,
+    basis: "",
+    kinds: [],
+    after: "",
+  });
+  expect(reopened.pending.map((row) => row.suggestible)).toEqual([true, true]);
+});
+
+test("the store's own test of a nameable id answers exactly as the contract's does", async () => {
+  const store = openStore();
+  await migrate(store);
+  // Two spellings of one rule drift apart silently, and the count and the page would then
+  // disagree with every schema the rows are validated against on the way out.
+  const ids = [
+    "fnd_00000001",
+    `hyp_${"a".repeat(64)}`,
+    `hyp_${"a".repeat(65)}`,
+    "obs_0000001",
+    "obs_00000001",
+    "pro_00ABCDEF",
+    "rec_seed_001",
+    "qst_deadbeef",
+    "pro_0000000g",
+    "fnd_0000_001",
+    "pro_",
+  ];
+  for (const id of ids) await seedRecord(store, id, "proposal", "a row of some vintage");
+  const named = await rows<{ id: string }>(
+    store,
+    `SELECT id FROM records r WHERE ${nameableRecordSql("r.id")} ORDER BY id`,
+  );
+  expect(named.map((row) => row.id)).toEqual([...ids].filter(isRecordId).sort());
 });

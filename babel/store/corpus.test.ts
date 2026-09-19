@@ -176,6 +176,45 @@ test("a keyword search answers over records the trigger indexed, and names what 
   expect(answer.approximate).toBe(false);
 });
 
+/**
+ * The shape #426 was reported from: a row imported before the frontier's guard (#416) existed,
+ * carrying an id no input schema admits. `records_kept` refuses DELETE below the doors, so it is
+ * permanent, and the read side is the only place it can be survivable.
+ */
+async function seedUnnameable(): Promise<void> {
+  await record("rec_seed_001", "finding", "The drain stalls at zero, again", {
+    pattern: "the drain is the drain and the drain never drains",
+    significance: "a spend nobody can account for",
+  });
+}
+
+test("a record whose id nothing can name is left out of the answer and counted, not raised", async () => {
+  await seedThree();
+  await seedUnnameable();
+  // `limit: 1` is the point: the unnameable row outranks the record that can be named — it says
+  // "drain" four times — so an answer that dropped it only after cutting the slice would hand
+  // back nothing at all, and one that kept it would fail the door's own result on the way out.
+  const answer = await searchCorpus(corpus, null, { query: "drain", limit: 1, kinds: [] });
+  expect(answer.hits.map((hit) => hit.id)).toEqual(["fnd_00000001"]);
+  expect(answer.coverage.records).toBe(4);
+  expect(answer.coverage.unnameable).toBe(1);
+});
+
+test("the count of what cannot be named is the store's, so a query that ranks none still says so", async () => {
+  await seedThree();
+  await seedUnnameable();
+  // The damage is query-independent — every query failed, including one matching nothing the
+  // bad row holds — so the account of it cannot be a property of the query either.
+  const missed = await searchCorpus(corpus, null, { query: "kubernetes", limit: 10, kinds: [] });
+  expect(missed.hits).toEqual([]);
+  expect(missed.coverage.unnameable).toBe(1);
+  // A query with no terms at all reaches neither index and must still answer rather than throw.
+  const empty = await searchCorpus(corpus, null, { query: "  ", limit: 10, kinds: [] });
+  expect(empty.hits).toEqual([]);
+  expect(empty.coverage.unnameable).toBe(1);
+  expect(empty.coverage.records).toBe(4);
+});
+
 test("with no embedding policy installed, a search makes no outbound call at all", async () => {
   await seedThree();
   const { services, asks } = host({ roster: [] });

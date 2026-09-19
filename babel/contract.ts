@@ -120,7 +120,22 @@ export const INTEREST_STATES = ["working", "watching", "not-now", "excluded"] as
 export const InterestStateSchema = z.enum(INTEREST_STATES);
 
 /** A record identifier as the frontier mints them: a three-letter family and a hex tail. */
-export const RecordIdSchema = z.string().regex(/^(hyp|obs|fnd|pro|qst)_[0-9a-f]{8,64}$/);
+const RECORD_ID = /^(hyp|obs|fnd|pro|qst)_[0-9a-f]{8,64}$/;
+export const RecordIdSchema = z.string().regex(RECORD_ID);
+
+/**
+ * WHETHER A STORED IDENTIFIER IS ONE A READER COULD ASK BACK FOR (#426).
+ *
+ * A row imported before the frontier's guard existed carries an id no input schema admits, and
+ * a read whose result names it fails the door's own result — taking the whole answer with it,
+ * for rows nobody could have opened anyway. Reads drop such rows and account for them; they
+ * are never repaired and never deleted, and this predicate is the one place that decides which
+ * they are, so the read side and {@link RecordIdSchema} cannot come to disagree.
+ */
+export function isRecordId(id: string): boolean {
+  return RECORD_ID.test(id);
+}
+
 export const EntityIdSchema = z.string().regex(/^ent_[0-9a-f]{8,64}$/);
 
 /**
@@ -661,6 +676,14 @@ export type SearchQuery = z.infer<typeof SearchQuerySchema>;
  * were read. A vector whose model nobody recorded is a vector nobody can tell is stale, and
  * `stale` counts the rows some earlier model made — they are not compared and not deleted, they
  * are the backfill's remaining work.
+ *
+ * `unnameable` is the other kind of gap and the reason the answer can be trusted to be partial
+ * rather than wrong (#426): rows imported before the frontier's guard carry an id
+ * {@link RecordIdSchema} does not admit, no caller could open one, and a hit naming one would
+ * fail this door's own result and take every other hit with it. They are left out of the hits
+ * and counted here instead. The count is of the store and not of the query, like every other
+ * number in this block, so an operator sees the damage on any answer rather than only on the
+ * queries unlucky enough to rank one.
  */
 export const SearchCoverageSchema = z.strictObject({
   records: z.number().int().min(0),
@@ -669,6 +692,8 @@ export const SearchCoverageSchema = z.strictObject({
   /** Records with no text to embed; they are covered, because they can never be more. */
   empty: z.number().int().min(0),
   stale: z.number().int().min(0),
+  /** Records this hub holds and no answer can name; never repaired and never deleted. */
+  unnameable: z.number().int().min(0),
   model: z.string(),
 });
 
@@ -1115,11 +1140,19 @@ export type Suggested = z.infer<typeof SuggestedSchema>;
  * revision could only guess the live one, which is the single thing a suggestion may never
  * inherit. `kind` travels for the same reason — it decides which of a suggester's rules speak
  * for the record, and a record's kind is the store's fact rather than a reader's inference.
+ *
+ * `suggestible` is whether `suggest` would ACCEPT a suggestion on this row: the gap is every
+ * live record a sweep has not screened, ruled ones included, because a ruling decides what may
+ * be offered rather than whether a screener may read. A caller derives its position for every
+ * row and delivers one only where this is true. It is a boolean rather than a standing because
+ * the alternative is a caller reading the peel's human-facing prose and deciding for itself
+ * which words mean "the operator has ruled" — the store answers the question it owns.
  */
 export const UnjudgedRecordSchema = z.strictObject({
   recordId: RecordIdSchema,
   revision: z.number().int().nonnegative(),
   kind: RecordKindSchema,
+  suggestible: z.boolean(),
 });
 export type UnjudgedRecord = z.infer<typeof UnjudgedRecordSchema>;
 

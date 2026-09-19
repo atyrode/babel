@@ -398,12 +398,17 @@ test("the gap names exact revisions, and a moved basis makes only that kind pend
   })) as {
     judged: number;
     unjudged: number;
-    pending: readonly { recordId: string; revision: number; kind: string }[];
+    pending: readonly {
+      recordId: string;
+      revision: number;
+      kind: string;
+      suggestible: boolean;
+    }[];
   };
   expect(before).toMatchObject({ judged: 0, unjudged: 3 });
   expect(before.pending).toEqual([
-    { recordId: "fnd_00000001", revision: 0, kind: "finding" },
-    { recordId: "fnd_00000002", revision: 0, kind: "finding" },
+    { recordId: "fnd_00000001", revision: 0, kind: "finding", suggestible: true },
+    { recordId: "fnd_00000002", revision: 0, kind: "finding", suggestible: true },
   ]);
 
   await knock(harness, ACTIONS.suggest, { ...SUGGESTION, basis });
@@ -422,7 +427,9 @@ test("the gap names exact revisions, and a moved basis makes only that kind pend
     after: "fnd_00000002",
   })) as typeof before;
   expect(moved).toMatchObject({ judged: 0, unjudged: 3 });
-  expect(moved.pending).toEqual([{ recordId: "fnd_00000003", revision: 0, kind: "finding" }]);
+  expect(moved.pending).toEqual([
+    { recordId: "fnd_00000003", revision: 0, kind: "finding", suggestible: true },
+  ]);
 });
 
 test("the frontier is untouched: the only table this door writes is next_actions", async () => {

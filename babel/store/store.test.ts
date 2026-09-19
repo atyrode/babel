@@ -1007,6 +1007,39 @@ describe("topics", () => {
     expect(proposal?.targets).toEqual([{ id: PROJECT, name: "babel" }]);
   });
 
+  test("a proposal whose record id nothing can name is dropped from the rail, not raised", async () => {
+    // A row of the vintage #426 was reported from: written before the frontier's guard existed,
+    // undeletable below the doors, and carrying an id `TopicProposalSchema` refuses. The rail
+    // is a shortcut into the feed and nothing could open this one, so listing it would only
+    // fail the `topics` door's own result and take the nameable proposal with it.
+    await insert(harness.db, "records", {
+      id: "rec_seed_002",
+      kind: "proposal",
+      root_id: "rec_seed_002",
+      seq: 1,
+      actor_kind: "run",
+      actor_id: "run-b",
+      title: "an imported proposal",
+      created_at: stamp(NOW - 5 * HOUR),
+      payload: JSON.stringify({ schema: 1, outcome: "file the imports somewhere" }),
+    });
+    await insert(harness.db, "plans", {
+      id: "pln_0002",
+      kind: "topic",
+      subject_kind: "proposal",
+      subject_id: "rec_seed_002",
+      operation: "create",
+      payload: JSON.stringify({ reasoning: "the imports cite it", name: "the imports" }),
+      proposed_by_kind: "run",
+      proposed_by_id: "run-b",
+      state: "open",
+      created_at: stamp(NOW - 5 * HOUR),
+    });
+    harness.store.touch();
+    const answer = await harness.store.topics();
+    expect(answer.proposed.map((row) => row.proposalId)).toEqual([AGREED]);
+  });
+
   test("one topic answers with its row, its proposals and its own feed", async () => {
     const answer = await harness.store.topic("tyrode-infra");
     expect(answer.topic?.id).toBe(REPOSITORY);

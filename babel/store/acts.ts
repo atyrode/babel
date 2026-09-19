@@ -27,7 +27,7 @@ import {
   ResultRefusal,
   type RefusalCode,
 } from "../machine/results.ts";
-import { SCHEMA_V1 } from "./schema.ts";
+import { nameableRecordSql, SCHEMA_V1 } from "./schema.ts";
 import {
   budgetChanges,
   coordinator,
@@ -1874,26 +1874,32 @@ export async function suggest(
 const EVERY_SUGGESTION: SuggestionsQuery = { pending: 0, basis: "", kinds: [], after: "" };
 
 /**
- * The rulings that leave a record undecided, taken from the one map that decides it rather than
- * spelled a second time in SQL: `suggest` refuses a record whose standing is not `new`, so a gap
- * that offered one would be offering work the door is about to refuse.
- */
-const OPEN_RULINGS: readonly string[] = Object.entries(STANDING_OF)
-  .filter(([, standing]) => standing === "new")
-  .map(([ruling]) => ruling);
-
-/**
- * THE GAP, AS ONE PREDICATE: the live, unruled records of these kinds that this suggester has no
- * mark on under this basis.
+ * THE GAP, AS ONE PREDICATE: the live records of these kinds that this suggester has no mark on
+ * under this basis.
  *
  * It is built once and used by both the count and the page, because a sweep that was told a
  * number by one query and handed rows by another could be told the two disagree — and the number
  * is what an operator authorises spending against.
  *
+ * A RULED RECORD IS STILL UNSCREENED. The gap is what a sweep has not LOOKED at, and #360 asks
+ * for the whole imported corpus: a record the operator accepted or declined has a position a
+ * screener can still hold about it, and excluding it would leave the larger half of a long-lived
+ * hub permanently unread. What a ruling governs is what may be OFFERED — a caller suppresses the
+ * action it would deliver on a ruled record — and that is a decision about delivery rather than
+ * a reason to never read the row. Only the record's live head is here: a superseded revision is
+ * a wording nobody can act on.
+ *
  * A row whose `basis` is not the one asked for counts as UNJUDGED, which is the whole mechanism
  * behind a moved rule set: it is `pendingVectors`' join on the model (`store/corpus.ts`) in the
  * other half of the family, and for the same reason — a derived fact computed under something
  * that has since changed is pending rather than present, and needs no second bookkeeping.
+ *
+ * A ROW WHOSE ID NOTHING CAN NAME IS NOT IN THE GAP AT ALL (#426). `suggest` refuses such an id
+ * on the way in and `UnjudgedRecordSchema` refuses it on the way out, so a sweep offered one
+ * could only fail on it for ever — and because the exclusion is in the predicate rather than in
+ * the caller, the count and the page still answer about the same set: filtering the page after
+ * its LIMIT would make `unjudged` promise work no pass can deliver and could hand back an empty
+ * page whose continuation never moves.
  */
 function gap(
   suggester: string,
@@ -1904,16 +1910,14 @@ function gap(
   return {
     sql: `FROM records r
            WHERE r.kind IN (${holes(kinds)})
+             AND ${nameableRecordSql("r.id")}
              AND NOT EXISTS (SELECT 1 FROM records h WHERE h.supersedes_id = r.id)
-             AND COALESCE((SELECT d.disposition FROM dispositions d
-                            WHERE d.record_id = r.id ORDER BY d.seq DESC LIMIT 1), '')
-                 IN ('', ${holes(OPEN_RULINGS)})
              AND NOT EXISTS (SELECT 1 FROM next_actions n
                               WHERE n.record_id = r.id AND n.proposed_by_kind = 'engine'
                                 AND n.proposed_by_id = ?
                                 AND (? = '' OR
                                      COALESCE(json_extract(n.payload, '$.basis'), '') = ?))`,
-    params: [...kinds, ...OPEN_RULINGS, suggester, ask.basis, ask.basis],
+    params: [...kinds, suggester, ask.basis, ask.basis],
   };
 }
 
@@ -1923,7 +1927,9 @@ function gap(
  * `judged` counts every record this suggester has marked under the basis asked for, superseded
  * rows included: the mark exists so a sweep does not re-judge what it has judged, and a
  * supersession is a second opinion rather than a reason to forget the first. `unjudged` is
- * {@link gap} counted, and `pending` is the same gap's first rows — so the number a pass is
+ * {@link gap} counted — the LIVE records this suggester has not screened under this basis,
+ * ruled ones included, since a ruling decides what may be offered on a record and not whether a
+ * screener has read it — and `pending` is the same gap's first rows, so the number a pass is
  * authorised against and the records it would read are one query's two answers.
  *
  * `after` walks the gap in `rowid` order, oldest record first. An `after` naming a record this
@@ -1966,8 +1972,16 @@ export async function suggestionsOf(
   );
   const pending: UnjudgedRecord[] = [];
   if (ask.pending > 0) {
-    const rows = await store.db.query<{ id: string; seq: number | bigint; kind: string }>(
-      `SELECT r.id AS id, r.seq AS seq, r.kind AS kind ${unjudged.sql}
+    const rows = await store.db.query<{
+      id: string;
+      seq: number | bigint;
+      kind: string;
+      disposition: string | null;
+    }>(
+      `SELECT r.id AS id, r.seq AS seq, r.kind AS kind,
+              (SELECT d.disposition FROM dispositions d
+                WHERE d.record_id = r.id ORDER BY d.seq DESC LIMIT 1) AS disposition
+         ${unjudged.sql}
          AND r.rowid > COALESCE((SELECT a.rowid FROM records a WHERE a.id = ?), 0)
         ORDER BY r.rowid LIMIT ?`,
       [...unjudged.params, ask.after, ask.pending],
@@ -1977,6 +1991,10 @@ export async function suggestionsOf(
         recordId: String(row.id),
         revision: Number(row.seq),
         kind: RecordKindSchema.parse(row.kind),
+        // The newest ruling decides it, read exactly as `suggest` reads it on the way in: the
+        // gap carries ruled rows so a screener can still read them, and this is what says the
+        // door would refuse the suggestion. The row is the live head already.
+        suggestible: standingOf(row.disposition) === "new",
       });
     }
   }
