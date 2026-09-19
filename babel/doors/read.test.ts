@@ -388,7 +388,7 @@ describe("the answers", () => {
       lastModel: "anthropic/claude-sonnet-4",
       stalled: false,
       updatedAt: stamp(NOW - 20_000),
-      stale: false,
+      unheard: false,
     });
     // THE FALLBACK IS THE POINT. `lastModel` is what answered the newest call and would have
     // been the whole record; both models are here, in the order this run first heard them, so
@@ -428,7 +428,7 @@ describe("the answers", () => {
     because it is the last true thing anyone observed, but it is marked: the stage is a reading
     taken at `updatedAt` and not a claim about now.
   */
-  test("a fold nobody has refreshed is reported stale rather than as the present", async () => {
+  test("a fold nobody has refreshed is reported unheard rather than as the present", async () => {
     const { db } = harness;
     await insert(db, "runs", {
       id: "run-gone",
@@ -455,10 +455,10 @@ describe("the answers", () => {
     harness.store.touch();
 
     const answer = (await dispatch(ACTIONS.runs, {})) as {
-      runs: readonly { id: string; progress: { stage: string; stale: boolean } | null }[];
+      runs: readonly { id: string; progress: { stage: string; unheard: boolean } | null }[];
     };
     const gone = answer.runs.find((row) => row.id === "run-gone");
-    expect(gone?.progress?.stale).toBe(true);
+    expect(gone?.progress?.unheard).toBe(true);
     // The stage is NOT erased: "nobody has confirmed this since" is a different sentence from
     // "this job is nowhere", and only the first one is true.
     expect(gone?.progress?.stage).toBe("at the model");

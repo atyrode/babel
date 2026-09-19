@@ -1180,11 +1180,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   settlement, so a job whose hub went quiet — or whose loop stopped waking — left its last fold
   standing and the panel rendered `at the model since T` over a clock still ticking for a job
   that died an hour before, which is the 2026-09-13 header in miniature. A fold older than five
-  minutes is now `stale`, judged at read time against the reader's own clock: the stage is still
-  shown, because it is the last true thing anybody observed, but as `last heard 10m ago`, and
-  the header stops counting it "at the model". Proven through the `runs` door a panel calls —
-  a live row's stage, spend, models and freshness, a settled run's models off its receipt, and a
-  fold nobody refreshed coming back stale — and in the panel document.
+  minutes is now `unheard`, judged at read time against the reader's own clock: the stage is
+  still shown, because it is the last true thing anybody observed, but as `last heard 10m ago`,
+  and the header stops counting it "at the model". The word is deliberately not `stale`, which
+  §4.13 gives to a record and defines as the one judgement no clock makes; unheard is a
+  statement about the report and not about the run, and a job may be perfectly alive and
+  unheard. Proven through the `runs` door a panel calls — a live row's stage, spend, models and
+  freshness, a settled run's models off its receipt, and a fold nobody refreshed coming back
+  unheard — and in the panel document.
 
 ## [0.4.0] - 2026-09-14
 

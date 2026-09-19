@@ -493,15 +493,15 @@ export function tokenClause(progress: RunProgress): string {
 }
 
 /**
- * What `stale` means, and why the row is still on the page.
+ * What `unheard` means, and why the row is still on the page.
  *
- * The stage a stale row shows is the last one anybody observed, not a claim about now — the
- * loop that should have refreshed it is the one that did not run. Shown rather than hidden,
- * because the last true reading is what an operator goes looking for when a job stops
- * answering; marked rather than ticking, because a clock over a dead job is the lie #261
- * exists to stop.
+ * The stage an unheard row shows is the last one anybody observed, not a claim about now —
+ * the loop that should have refreshed it is the one that did not run, and the job behind it
+ * may be perfectly alive. Shown rather than hidden, because the last true reading is what an
+ * operator goes looking for when a job stops answering; marked rather than ticking, because a
+ * clock over a dead job is the lie #261 exists to stop.
  */
-export const STALE_NOTE =
+export const UNHEARD_NOTE =
   "No cycle has been able to confirm this job for over five minutes. The stage below is the " +
   "last reading anyone took, not where the job is now.";
 

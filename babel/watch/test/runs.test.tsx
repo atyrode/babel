@@ -196,7 +196,7 @@ test("a job nobody has confirmed lately shows its last reading, not a running cl
               updatedAt: new Date(base - 600_000).toISOString(),
               calls: 1,
               lastModel: "anthropic/claude-opus-4-1",
-              stale: true,
+              unheard: true,
             }),
           }),
         ]),

@@ -6,7 +6,7 @@ import {
   RUN_KIND_LABELS,
   STAGE_NOTE,
   STALLED_NOTE,
-  STALE_NOTE,
+  UNHEARD_NOTE,
   ageClause,
   elapsedClock,
   elapsedSince,
@@ -84,12 +84,12 @@ function LiveTable({
             // The stage's own clock, ticking against the panel's: "at the model" is a claim
             // about a phase, and "at the model since 11m 40s" is the one an operator acts on.
             const progress = run.progress;
-            // A STALE ROW GETS NO TICKING CLOCK. The stage is a reading taken at `updatedAt`
+            // AN UNHEARD ROW GETS NO TICKING CLOCK. The stage is a reading taken at `updatedAt`
             // and the loop has not been able to confirm it since; counting from `since`
             // against the panel's own clock would render a job that died twenty minutes ago
             // as one that is still working.
             const inStage =
-              progress === null || progress.stale ? null : elapsedSince(progress.since, now);
+              progress === null || progress.unheard ? null : elapsedSince(progress.since, now);
             const unconfirmed = progress === null ? null : elapsedSince(progress.updatedAt, now);
             return (
               <tr key={run.id} className="plugin-atyrode_babel_watch__live-row">
@@ -115,8 +115,8 @@ function LiveTable({
                           {elapsedClock(inStage)}
                         </span>
                       )}
-                      {progress.stale ? (
-                        <span className="plugin-atyrode_babel_watch__stalled" title={STALE_NOTE}>
+                      {progress.unheard ? (
+                        <span className="plugin-atyrode_babel_watch__stalled" title={UNHEARD_NOTE}>
                           {unconfirmed === null
                             ? "unconfirmed"
                             : `last heard ${elapsedClock(unconfirmed)} ago`}
@@ -261,16 +261,16 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
  * engine anywhere, and a header that said they were fine. So it says how many have reached a
  * model and how many said they had and went quiet, and nothing else changes.
  *
- * A STALE ROW IS NOT COUNTED AT THE MODEL, and that is the same rule applied to a second way
+ * AN UNHEARD ROW IS NOT COUNTED AT THE MODEL, and that is the same rule applied to a second way
  * of being wrong: a reading nobody has been able to confirm for five minutes says where a job
  * WAS. Counting it in "at the model" would rebuild the header that lied, out of rows that are
  * each individually honest.
  */
 function lede(live: readonly RunRow[]): string {
   if (live.length === 0) return "Nothing running. Every row below is a receipt.";
-  const unconfirmed = live.filter((run) => run.progress?.stale === true).length;
+  const unconfirmed = live.filter((run) => run.progress?.unheard === true).length;
   const atModel = live.filter(
-    (run) => run.progress?.stage === RUN_STAGES.atModel && run.progress.stale === false,
+    (run) => run.progress?.stage === RUN_STAGES.atModel && run.progress.unheard === false,
   ).length;
   const stalled = live.filter((run) => run.progress?.stalled === true).length;
   const heardFrom = live.filter(

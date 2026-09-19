@@ -2001,7 +2001,12 @@ export const STAGE_PATTERN = /^[a-z0-9](?:[a-z0-9 ._-]{0,62}[a-z0-9])?$/;
 export const STAGE_MESSAGE_MAX = 256;
 
 /**
- * HOW OLD A FOLD MAY BE BEFORE THE ROW IT WROTE STOPS BEING READ AS THE PRESENT (#261).
+ * HOW LONG A RUNNING JOB MAY GO UNHEARD BEFORE ITS ROW STOPS BEING READ AS THE PRESENT (#261).
+ *
+ * UNHEARD AND NOT "STALE", because §4.13 owns that word for the opposite discipline: a RECORD
+ * is never stale by a clock, only because a reviewer found it so, its topic is not now, or a
+ * newer record supersedes it. One document cannot have one word meaning "judged by a clock"
+ * here and "explicitly never judged by a clock" there.
  *
  * `run_progress` is rewritten once per dispatch-woken cycle for every job still running, and
  * that write is as much a heartbeat as an account: `updatedAt` is when a cycle last CONFIRMED
@@ -2009,7 +2014,7 @@ export const STAGE_MESSAGE_MAX = 256;
  * not answer about a job, a machine that went away, a loop nobody is waking all leave the last
  * fold standing — so without a bound the panel renders `at the model since T` over a clock that
  * keeps ticking for a job that died an hour ago. That is the 2026-09-13 failure in miniature:
- * a surface that reports a stale reading as a live one.
+ * a surface that reports an old reading as a live one.
  *
  * WHY FIVE MINUTES, against the rate the row is actually written at. A fold happens once per
  * running job per dispatch-woken cycle — one upsert on a primary key, over a table bounded by
@@ -2024,7 +2029,7 @@ export const STAGE_MESSAGE_MAX = 256;
  * waking is named while an operator can still act on it. Past it the row is still shown — it is
  * the last true thing anyone observed — but as `last heard T ago` rather than a running clock.
  */
-export const PROGRESS_STALE_AFTER_MS = 300_000;
+export const UNHEARD_AFTER_MS = 300_000;
 
 /**
  * HOW MANY DISTINCT MODELS ONE RUNNING ROW KEEPS, in the order it first heard from each (#169).
@@ -2088,16 +2093,17 @@ export const RunProgressSchema = z.strictObject({
   stalled: z.boolean(),
   updatedAt: z.string(),
   /**
-   * WHETHER A CYCLE HAS CONFIRMED THIS ROW LATELY, decided at read time against
-   * {@link PROGRESS_STALE_AFTER_MS} and the reader's own clock.
+   * WHETHER NO CYCLE HAS CONFIRMED THIS ROW LATELY, decided at read time against
+   * {@link UNHEARD_AFTER_MS} and the reader's own clock.
    *
-   * It is a statement about the FOLD and never about the job: a stale row means no cycle has
+   * It is a statement about the REPORT and never about the run: unheard means no cycle has
    * been able to say where this job is since `updatedAt`, which is what a job that died
-   * between two writes leaves behind. `stalled` is the narrower judgement and they are not the
-   * same thing — a stalled row was confirmed seconds ago and is silent at the model; a stale
-   * one is the last thing anybody saw.
+   * between two writes leaves behind — and a job may be perfectly alive and unheard. It is
+   * deliberately not called stale, which §4.13 gives to a record and defines as the one thing
+   * no clock decides. `stalled` is a third and narrower judgement: a stalled row was confirmed
+   * seconds ago and is silent AT THE MODEL, where an unheard one is the last thing anybody saw.
    */
-  stale: z.boolean(),
+  unheard: z.boolean(),
 });
 export type RunProgress = z.infer<typeof RunProgressSchema>;
 

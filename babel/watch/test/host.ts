@@ -123,7 +123,7 @@ export function runProgress(
     costUsd: 0,
     lastModel: "",
     stalled: false,
-    stale: false,
+    unheard: false,
     updatedAt: over.since,
     ...over,
   };

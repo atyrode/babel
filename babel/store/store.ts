@@ -28,7 +28,7 @@ import {
   FEED_SORTS,
   POST_KINDS,
   NextActionDecisionSchema,
-  PROGRESS_STALE_AFTER_MS,
+  UNHEARD_AFTER_MS,
   NextActionSchema,
   REPOSITORY_PROVENANCES,
   ROLES,
@@ -604,13 +604,15 @@ function runFreshness(
  * and the only judgement in it is `stalled`, which the loop decides against its own clock so
  * that two readers of the same row never disagree about it (#261).
  *
- * `stale` IS THE SECOND CLOCK AND IT IS THIS READ'S, not the loop's. The loop writes
+ * `unheard` IS THE SECOND CLOCK AND IT IS THIS READ'S, not the loop's. The loop writes
  * `updated_at` once per cycle for every running job, so the row says when a cycle last
  * CONFIRMED the job with the hub; nothing deletes it when the confirmations stop, because the
  * only thing that deletes it is a settlement. A job that died between two writes therefore
  * leaves its last fold behind for ever, and a reader shown it without this flag reads a
  * corpse's stage over a clock still ticking. Judged here rather than written by the loop for
  * the reason the flag exists: the fold that should have moved it is the one that did not run.
+ * It is not called `stale` because §4.13 gives that word to a record and defines it as the
+ * one judgement no clock makes.
  */
 function runProgress(row: SqlRow, nowMs: number): RunProgress | null {
   const since = text(row["progress_since"]);
@@ -631,10 +633,10 @@ function runProgress(row: SqlRow, nowMs: number): RunProgress | null {
     lastModel: text(row["progress_last_model"]),
     stalled: count(row["progress_stalled"]) === 1,
     updatedAt,
-    // An unreadable instant is as stale as it gets: a row whose own stamp cannot be parsed
-    // says nothing about when it was confirmed, and reading that as "just now" is the error
-    // this flag exists to stop.
-    stale: confirmed === null || nowMs - confirmed >= PROGRESS_STALE_AFTER_MS,
+    // An instant that cannot be parsed has not been heard from: a row whose own stamp is
+    // unreadable says nothing about when it was confirmed, and reading that as "just now" is
+    // the error this flag exists to stop.
+    unheard: confirmed === null || nowMs - confirmed >= UNHEARD_AFTER_MS,
   };
 }
 
