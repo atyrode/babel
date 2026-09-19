@@ -174,3 +174,47 @@ test("a tracker in good order reports nothing at all", () => {
   ];
   expect(evaluate(clean, NOW)).toEqual([]);
 });
+
+test("T7: a blocker that closed is not a blocker, and nothing else notices", () => {
+  // The live set is what the caller read back from the tracker: open issues AND open pull
+  // requests, because a blocker is as often one as the other and they share a numbering space.
+  const live = new Set([10, 11]);
+  const spent = issue({ labels: ["blocked"], body: "Blocked by #99, which shipped." });
+  expect(rules(evaluate([spent], NOW, live))).toEqual(["T7"]);
+
+  // One live blocker still blocks. A rule that fired on "any blocker closed" would unblock an
+  // issue that is genuinely waiting, which is worse than the staleness it set out to catch.
+  const partly = issue({ labels: ["blocked"], body: "Blocked by #99 and blocked by #10." });
+  expect(evaluate([partly], NOW, live)).toEqual([]);
+
+  // A mention is not a dependency: T3 is satisfied by any `#N`, and this must not be.
+  const mentions = issue({ labels: ["blocked"], body: "Related to #99. Blocked by #10." });
+  expect(evaluate([mentions], NOW, live)).toEqual([]);
+
+  // A blocker in another repository is real and its state is not knowable here, so the rule
+  // declines rather than guessing — `owner/repo#N` is not this repository's #N.
+  const elsewhere = issue({
+    labels: ["blocked"],
+    body: "Blocked by atyrode/manifold#99, upstream.",
+  });
+  expect(evaluate([elsewhere], NOW, live)).toEqual([]);
+
+  // And the rule is off entirely when the caller could not supply the set, rather than
+  // reporting every blocked issue as spent.
+  expect(evaluate([spent], NOW)).toEqual([]);
+});
+
+test("T7: the blocker may be named in a comment, because that is where it usually arrives", () => {
+  const later = issue({
+    labels: ["blocked"],
+    body: "this needs something else first",
+    comments: [
+      {
+        body: "Blocked by #99, which scaffolds the part.",
+        createdAt: new Date(NOW).toISOString(),
+        author: "atyrode",
+      },
+    ],
+  });
+  expect(rules(evaluate([later], NOW, new Set([10])))).toEqual(["T7"]);
+});

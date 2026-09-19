@@ -59,6 +59,7 @@ The machine-checkable half, one rule per report row:
 | T4   | `needs-operator` carries a `## Decision` block in its body or a comment          | no                  |
 | T5   | `aging` is present exactly when the last human activity is over 14 days old      | adds/removes        |
 | T6   | At most one priority label                                                       | no                  |
+| T7   | No `blocked` issue's named blockers are all closed                               | no                  |
 
 T1 and T5 are bookkeeping, so the script does them. The rest are judgement — choosing a state,
 naming a blocker, writing a question — so the script reports them and a person or an agent running
@@ -66,7 +67,15 @@ naming a blocker, writing a question — so the script reports them and a person
 edit is not activity**, which is why a relabelled issue does not look fresh, and why the script
 reads comment timestamps rather than `updatedAt`.
 
-[`../scripts/triage-policy.test.ts`](../scripts/triage-policy.test.ts) proves all six against
+**T7 is the one that catches a lie rather than an omission.** T3 asks only that a blocker be
+_named_, so an issue can sit `blocked` for ever behind something that shipped — indistinguishable
+from abandoned, and the way a ready issue hides. It counts only an explicit `blocked by #N` in
+this repository: an incidental mention is not a dependency, and a blocker in another repository
+is one this script cannot judge and must not guess at. It fires only when **every** named blocker
+is spent, because one live blocker still blocks. The script reads open pull requests as well as
+open issues, since a blocker is as often one as the other and they share a numbering space.
+
+[`../scripts/triage-policy.test.ts`](../scripts/triage-policy.test.ts) proves all seven against
 constructed issues, including both sides of T5's fourteen-day boundary — the live tracker cannot
 exercise that on demand, because nothing on it is fourteen days quiet at the moment you want to
 check.
