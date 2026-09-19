@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { GuestActions } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
@@ -124,8 +125,10 @@ export const SWEPT_KINDS: readonly RecordKind[] = RECORD_KINDS;
  * alone would report a record as judged under wording it never saw. It is read from the bundle
  * rather than passed in, so no caller can claim a basis this part does not ship.
  */
-export function basisFor(kind: RecordKind): string {
-  return `bank/${String(BANK.version)}/${kind}/${String(bankFor(kind).version)}`;
+export function basisFor(kind: RecordKind, policyRevision: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify([BANK.version, kind, bankFor(kind).version, policyRevision]))
+    .digest("hex");
 }
 
 /** What the part needs to run a pass: the judgement service, and the doors it reads through. */
@@ -170,7 +173,11 @@ async function askSuggestions(
  */
 export async function sweepPlan(
   actions: GuestActions,
-  options: { readonly limit?: number; readonly kinds?: readonly RecordKind[] } = {},
+  options: {
+    readonly limit?: number;
+    readonly kinds?: readonly RecordKind[];
+    readonly policyRevision: string;
+  },
 ): Promise<SweepPlan> {
   const asked = options.kinds?.length ? options.kinds : SWEPT_KINDS;
   const kinds = SWEPT_KINDS.filter((kind) => asked.includes(kind));
@@ -189,7 +196,7 @@ export async function sweepPlan(
     const size = await sweepSize(actions);
     const rows: SweepPlan["kinds"] = await Promise.all(
       kinds.map(async (kind) => {
-        const basis = basisFor(kind);
+        const basis = basisFor(kind, options.policyRevision);
         const answer = await askSuggestions(actions, {
           basis,
           kinds: [kind],
@@ -270,6 +277,13 @@ export async function sweep(deps: SweepDeps, ask: SweepAsk): Promise<Swept> {
   if (kinds.length === 0) {
     return { ...nothing, stopped: "no kind this part can read was asked for" };
   }
+  const roster = await deps.services.listInstances({}).catch(() => null);
+  const policyRevision = roster?.services.find(
+    (service) => service.serviceId === JEV_SERVICE.serviceId && service.state === "ready",
+  )?.configuration?.revision;
+  if (policyRevision === undefined) {
+    return { ...nothing, stopped: "the judgement service is not available" };
+  }
   // ONE KIND PER PASS, because the basis and continuation are per document. A continuation is
   // `kind/id`: kinds before it are already walked, its own gap resumes after the id, and a later
   // kind begins at its first row. It is carried by the caller only; the rows still decide what is
@@ -286,7 +300,7 @@ export async function sweep(deps: SweepDeps, ask: SweepAsk): Promise<Swept> {
       if (kind !== resumeKind) continue;
       started = true;
     }
-    const basis = basisFor(kind);
+    const basis = basisFor(kind, policyRevision);
     bases.set(kind, basis);
     let answer: SuggestionsResult;
     try {
@@ -348,6 +362,7 @@ export async function sweep(deps: SweepDeps, ask: SweepAsk): Promise<Swept> {
         ...(deps.screeners ? { screeners: deps.screeners } : {}),
         ...(deps.answers ? { answers: deps.answers } : {}),
         onPosition: (position) => positions.push(position),
+        expectedRevision: policyRevision,
       },
     );
     failed.push(...report.failed);
@@ -360,7 +375,7 @@ export async function sweep(deps: SweepDeps, ask: SweepAsk): Promise<Swept> {
     }
     judged += 1;
     continuation = cursorFor(row);
-    const basis = bases.get(row.kind) ?? basisFor(row.kind);
+    const basis = bases.get(row.kind) ?? basisFor(row.kind, policyRevision);
     for (const suggestion of collected) {
       suggestions.push({
         recordId: suggestion.recordId,

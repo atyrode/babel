@@ -210,7 +210,8 @@ async function keywordHits(
   if (match === "") return [];
   const rows = await store.db.query<{ record_id: string; rank: number }>(
     `SELECT record_id, bm25(record_terms) AS rank
-       FROM record_terms WHERE record_terms MATCH ? ORDER BY rank LIMIT ?`,
+       FROM record_terms WHERE record_terms MATCH ? AND ${nameableRecordSql("record_id")}
+       ORDER BY rank LIMIT ?`,
     [match, limit],
   );
   return rows.map((row) => ({ id: String(row.record_id), rank: Number(row.rank) }));
@@ -592,7 +593,8 @@ async function meaningHits(
 ): Promise<MeaningHits> {
   const wanted = probeBits(query.values);
   const sketches = await store.db.query<{ record_id: string; probe: Uint8Array }>(
-    `SELECT record_id, probe FROM record_vectors WHERE model = ? AND dims = ?`,
+    `SELECT record_id, probe FROM record_vectors WHERE model = ? AND dims = ?
+       AND ${nameableRecordSql("record_id")}`,
     [query.model, query.values.length],
   );
   if (sketches.length === 0) {
@@ -681,13 +683,9 @@ export async function searchCorpus(
   }
   const coverage = await coverageOf(store, model);
   const scores = new Map<string, number>();
-  // A ROW THIS ANSWER CANNOT NAME IS DROPPED HERE, BEFORE THE SLICE (#426), and not after it:
-  // the door's own result validates every hit's id, so one such row read out of the store used
-  // to fail the whole dispatch. Dropped before fusion, it also costs no place in the `limit`
-  // rows a caller asked for — the records that can be named take the places it was ranked into.
-  // `coverage.unnameable` is where the store's damage is reported.
+  // Both retrieval lanes exclude unaddressable ids before their candidate bounds, so even a
+  // whole leading slice of legacy damage cannot crowd valid records out of the fused answer.
   const add = (id: string, rank: number): void => {
-    if (!isRecordId(id)) return;
     scores.set(id, (scores.get(id) ?? 0) + 1 / (RRF_K + rank + 1));
   };
   keyword.forEach((hit, rank) => {

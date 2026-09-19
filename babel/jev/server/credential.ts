@@ -156,6 +156,8 @@ export interface JevAnswerStore {
 export interface JevMemo {
   readonly key: string;
   readonly answers: JevAnswerStore;
+  /** A sweep pins the policy it used to size and label this work. */
+  readonly expectedRevision?: string;
 }
 
 /**
@@ -189,6 +191,9 @@ export async function askJev(
     // behaviour in all of them is the behaviour it has when the part is not installed at all.
     const configuration = bound?.state === "ready" ? bound.configuration : null;
     if (configuration === null) return null;
+    if (memo?.expectedRevision !== undefined && memo.expectedRevision !== configuration.revision) {
+      return null;
+    }
     // THE MEMO IS BEHIND THE BINDING CHECK, so a warm store cannot make an unbound, disabled or
     // dry part answer — the fallback stays the same single path with a full cache as with none —
     // and IN FRONT OF THE INVOCATION, which is the only statement here that spends anything.

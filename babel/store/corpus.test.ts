@@ -181,23 +181,22 @@ test("a keyword search answers over records the trigger indexed, and names what 
  * carrying an id no input schema admits. `records_kept` refuses DELETE below the doors, so it is
  * permanent, and the read side is the only place it can be survivable.
  */
-async function seedUnnameable(): Promise<void> {
-  await record("rec_seed_001", "finding", "The drain stalls at zero, again", {
+async function seedUnnameable(id = "rec_seed_001"): Promise<void> {
+  await record(id, "finding", "The drain stalls at zero, again", {
     pattern: "the drain is the drain and the drain never drains",
     significance: "a spend nobody can account for",
   });
 }
 
-test("a record whose id nothing can name is left out of the answer and counted, not raised", async () => {
+test("legacy damage cannot crowd valid records out of the candidate window", async () => {
   await seedThree();
-  await seedUnnameable();
-  // `limit: 1` is the point: the unnameable row outranks the record that can be named — it says
-  // "drain" four times — so an answer that dropped it only after cutting the slice would hand
-  // back nothing at all, and one that kept it would fail the door's own result on the way out.
+  // More damaged rows than the keyword candidate window, all stronger keyword matches.
+  // Filtering only the final fused slice would lose the valid result entirely.
+  for (let index = 0; index < 40; index += 1) await seedUnnameable(`rec_seed_${String(index)}`);
   const answer = await searchCorpus(corpus, null, { query: "drain", limit: 1, kinds: [] });
   expect(answer.hits.map((hit) => hit.id)).toEqual(["fnd_00000001"]);
-  expect(answer.coverage.records).toBe(4);
-  expect(answer.coverage.unnameable).toBe(1);
+  expect(answer.coverage.records).toBe(43);
+  expect(answer.coverage.unnameable).toBe(40);
 });
 
 test("the count of what cannot be named is the store's, so a query that ranks none still says so", async () => {

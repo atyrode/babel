@@ -208,11 +208,12 @@ export async function judge(
   services: JevServices,
   request: JevRequest,
   answers: JevAnswerStore = HELD,
+  expectedRevision?: string,
 ): Promise<JevAnswer | null> {
   return await askJev(
     services,
     request.operation,
     { [JEV_SERVICE.stateField]: request.text },
-    { key: requestKey(request), answers },
+    { key: requestKey(request), answers, ...(expectedRevision ? { expectedRevision } : {}) },
   );
 }

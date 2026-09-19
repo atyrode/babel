@@ -270,32 +270,33 @@ afterEach(() => {
 test("the plan sizes the current-bank gap before any judgement can be spent", async () => {
   const plan = await sweepPlan(
     memoryActions([
-      { recordId: "fnd_00000001", revision: 0, kind: "finding" },
-      { recordId: "fnd_00000002", revision: 0, kind: "finding" },
+      { recordId: "fnd_00000001", revision: 0, kind: "finding", suggestible: true },
+      { recordId: "fnd_00000002", revision: 0, kind: "finding", suggestible: true },
+      { recordId: "obs_00000001", revision: 0, kind: "observation", suggestible: false },
     ]),
-    { limit: 1, kinds: ["finding"] },
+    { limit: 1, kinds: [], policyRevision: POLICY.revision },
   );
   expect(plan).toMatchObject({
-    unjudged: 2,
+    unjudged: 3,
     outstanding: 0,
     unreadable: 0,
     batch: 1,
     silent: "",
-    kinds: [
+    kinds: expect.arrayContaining([
       {
         kind: "finding",
-        basis: basisFor("finding"),
+        basis: basisFor("finding", POLICY.revision),
         judged: 0,
         unjudged: 2,
       },
-    ],
+    ]),
   });
 });
 
 test("the continuation walks past a silent voter without becoming stored authority", async () => {
   const actions = memoryActions([
-    { recordId: "obs_00000001", revision: 0, kind: "observation" },
-    { recordId: "fnd_00000001", revision: 0, kind: "finding" },
+    { recordId: "obs_00000001", revision: 0, kind: "observation", suggestible: true },
+    { recordId: "fnd_00000001", revision: 0, kind: "finding", suggestible: true },
   ]);
   const jev = host({ result: { vague: 1 } });
   const answers = new JevAnswers();
@@ -371,8 +372,8 @@ test("a bounded sweep touches no record, claim or ranking, and a second pass ski
   expect(second.suggestions.map((row) => row.recordId)).toEqual(["fnd_00000003"]);
   expect(jev.asks).toEqual(["claim fnd_00000001", "claim fnd_00000002", "claim fnd_00000003"]);
   expect(first.suggestions.map((row) => row.basis)).toEqual([
-    basisFor("finding"),
-    basisFor("finding"),
+    basisFor("finding", POLICY.revision),
+    basisFor("finding", POLICY.revision),
   ]);
 });
 
@@ -380,7 +381,7 @@ test("without a bound Jev the pass says it did nothing and never invokes the thr
   const absent = host({ bound: false, throwOnInvoke: true });
   const result = await sweep(
     {
-      actions: memoryActions([{ recordId: "fnd_00000001", revision: 0, kind: "finding" }]),
+      actions: memoryActions([{ recordId: "fnd_00000001", revision: 0, kind: "finding", suggestible: true }]),
       services: absent.services,
       screeners: [ALWAYS],
       answers: new JevAnswers(),
@@ -388,7 +389,7 @@ test("without a bound Jev the pass says it did nothing and never invokes the thr
     { limit: 1, kinds: ["finding"], after: "" },
   );
   expect(absent.invocations).toBe(0);
-  expect(result).toMatchObject({ read: 1, judged: 0, unjudged: 1, suggestions: [] });
+  expect(result).toMatchObject({ read: 0, judged: 0, unjudged: 0, suggestions: [], positions: [] });
 });
 
 test("a pass that is out of credit stops on the first record instead of failing", async () => {
@@ -396,9 +397,9 @@ test("a pass that is out of credit stops on the first record instead of failing"
   const result = await sweep(
     {
       actions: memoryActions([
-        { recordId: "fnd_00000001", revision: 0, kind: "finding" },
-        { recordId: "fnd_00000002", revision: 0, kind: "finding" },
-        { recordId: "fnd_00000003", revision: 0, kind: "finding" },
+        { recordId: "fnd_00000001", revision: 0, kind: "finding", suggestible: true },
+        { recordId: "fnd_00000002", revision: 0, kind: "finding", suggestible: true },
+        { recordId: "fnd_00000003", revision: 0, kind: "finding", suggestible: true },
       ]),
       services: dry.services,
       screeners: [ALWAYS],

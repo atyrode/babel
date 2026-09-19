@@ -44,13 +44,10 @@ export const SWEEP_HANDLERS: Readonly<Record<string, ServerHandler>> = {
   [JEV_ACTIONS.sweepPlan]: async (ctx, args: unknown) => {
     const parsed = SweepInputSchema.parse(args);
     const roster = await ctx.services.listInstances({}).catch(() => null);
-    const available = roster?.services.some(
-      (service) =>
-        service.serviceId === JEV_SERVICE.serviceId &&
-        service.state === "ready" &&
-        service.configuration !== null,
-    );
-    if (!available) {
+    const policyRevision = roster?.services.find(
+      (service) => service.serviceId === JEV_SERVICE.serviceId && service.state === "ready",
+    )?.configuration?.revision;
+    if (policyRevision === undefined) {
       return {
         kinds: [],
         unjudged: 0,
@@ -60,7 +57,9 @@ export const SWEEP_HANDLERS: Readonly<Record<string, ServerHandler>> = {
         silent: "the judgement service is not available",
       };
     }
-    return await sweepPlan(ctx.actions, { limit: parsed.limit, kinds: parsed.kinds });
+    return await sweepPlan(ctx.actions, {
+      limit: parsed.limit, kinds: parsed.kinds, policyRevision,
+    });
   },
   [JEV_ACTIONS.sweep]: async (ctx, args: unknown) => {
     const parsed = SweepInputSchema.parse(args);

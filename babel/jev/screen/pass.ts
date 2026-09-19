@@ -203,6 +203,7 @@ export async function screenPass(
     readonly screeners?: readonly Screener[];
     readonly answers?: JevAnswerStore;
     readonly onPosition?: (position: RecordPosition) => void;
+    readonly expectedRevision?: string;
   } = {},
 ): Promise<PassReport> {
   const failed: ScreenFailure[] = [];
@@ -219,7 +220,9 @@ export async function screenPass(
   let judged = 0;
   let suggested = 0;
   for (const record of records) {
-    const answer = await judge(services, requestFor(record.kind, record.text), options.answers);
+    const answer = await judge(
+      services, requestFor(record.kind, record.text), options.answers, options.expectedRevision,
+    );
     // NOT JUDGED YET, and never judged and found wanting: no part, no binding, no credit, a
     // record too large to send. No voter is consulted, so none of them can be wrong about it —
     // and this is the one standing the pass counts without building a position, because
