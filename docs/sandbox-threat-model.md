@@ -130,11 +130,20 @@ side of the line (`SPEC.md` §2.6; `babel/machine/prepare.ts`):
   scope instead, and either way the receipt carries what was found by class and never by value.
 - The index records, per session, the selector, the file and the digest it was served at. Every
   citation is checked against it, and a path the material does not name or a digest that does not
-  match refuses the whole answer as `unknown-reference`.
+  match refuses the whole answer as `unknown-reference`. The check is a whitelist of the exact
+  spellings the index carries, never a resolver: a locator containing a `..` segment is refused
+  even where resolving it would land back inside the material, and the bytes of a session are
+  reached through the index entry rather than through the string the model wrote
+  (`babel/server/engine/citations.ts`).
+- A citation's quoted text is checked against the bytes at the line it names, and what was found
+  is recorded on the record's own evidence: at that line, elsewhere in that session, or nowhere
+  in it. This one MARKS and does not refuse — it is an accuracy finding about real bytes rather
+  than a claim about bytes nobody served — and the hub reads the cited member of the sealed
+  material back to make it, which is residual 9.
 
-That last property is the one worth stating as security rather than as correctness: a model cannot
-cite its way to a file it was not given, and it cannot quietly substitute different bytes for the
-ones a reviewer will later read.
+The first of those two is the one worth stating as security rather than as correctness: a model
+cannot cite its way to a file it was not given, and it cannot quietly substitute different bytes
+for the ones a reviewer will later read.
 
 ## 5. Residuals, ranked by reachability
 
@@ -186,6 +195,14 @@ Most reachable first. A residual discovered in the system belongs in this list i
    closure; Code confines the session. Babel audits none of the three and depends on all of them.
 8. **A shared kernel shares microarchitecture.** No claim is made against timing or
    speculative-execution side channels, and none is implied.
+9. **Checking a quote puts corpus bytes in the hub's own memory.** Verifying that a citation's
+   quoted text is where it says it is cannot be done from an index — a digest covers a whole
+   file and says nothing about a span inside it — so the settlement reads the cited member of
+   the sealed material back through the hub. It is transient, bounded by the ceiling the hub
+   already reads every sealed output under, decoded only for the sessions a quote actually
+   names, and it happens only where an answer carried a quote. It is still one more place the
+   corpus exists, in a process that also holds the store, so it belongs here: residual 5 counts
+   the copies, and this is the fourth.
 
 ## 6. What the operator is asked to accept, in one sentence each
 
@@ -228,5 +245,9 @@ Most reachable first. A residual discovered in the system belongs in this list i
 - **A detector class leaving the preflight's rule table, or the scan ceasing to run before the
   material is sealed.** §4's third property and residual 6 are written against that table and
   that ordering; a rule removed or a scan moved after the seal is a different disclosure boundary.
-- **Citations ceasing to be checked against the material index**, which is the only mechanism that
-  makes a model's claim about the corpus verifiable.
+- **Citations ceasing to be checked against the material index**, which is the mechanism that
+  makes a model's claim about the corpus verifiable at all. Two shapes of loosening count as
+  the same condition: admitting a path by resolving it rather than by matching the index, which
+  turns a whitelist into a traversal question; and letting the quote check refuse a claim,
+  which would make the accuracy finding into a second gate and put the all-or-nothing waste
+  back where #231 and #311 found it.

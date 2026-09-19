@@ -1102,6 +1102,34 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   §6.4 no longer says nothing recognizes an input it has already prepared, because a machine now
   keeps its reading of a settled log.
 
+- **A citation's quoted text is now checked against the line it cites, and a claim still cannot
+  cite outside the corpus it was served.** Until now a locator was checked only against the
+  material's index — the path was served, the digest matches — which says nothing about whether
+  the quoted span is actually there, so a fabricated quote and a real one were the same row. Of
+  300 digest-verified citations in the imported corpus, 86 carried a quote of twelve characters
+  or more; 53 matched the cited line, 57 matched somewhere else in the right file and 29 matched
+  nowhere in it, and a model asked to judge the same 86 scored 60.5% against a 62% majority
+  baseline. It is string matching, so code does it: a locator now carries `quote`, the
+  settlement reads the cited member of the sealed material back and writes what it found —
+  `verified`, `moved`, `absent`, `unquoted` or `unchecked` — onto the record's own evidence,
+  where the peel renders it beside the words and the receipt counts all five so a deployment can
+  measure its own rate rather than argue from someone else's.
+
+  **The two halves refuse differently, deliberately.** A path outside the selection still refuses
+  the whole answer as `unknown-reference`: it is a claim about bytes nobody served and nothing
+  later can check it. A quote that is not where it says it is MARKS and refuses nothing — it is a
+  claim about real bytes that is wrong about where they are, and discarding a paid run over one
+  is the all-or-nothing waste #231 and #311 measured. The admission is a whitelist of the exact
+  spellings the index carries rather than a resolver, so `sessions/../sessions/<file>` is refused
+  even though it would resolve back inside the material, and bytes are only ever reached through
+  the index entry and never through the string the model wrote. The normalisation is written into
+  `babel/server/engine/citations.ts`'s header and biased one way: whitespace, line endings,
+  Unicode composition and the JSON escaping of a canonical record are not content, so a
+  re-wrapped quote is not an accusation, while case and punctuation are content and a span under
+  twelve characters is `unchecked` rather than verified. The cost an owner should read twice is
+  in `docs/sandbox-threat-model.md` residual 9: checking a quote means the hub reads the cited
+  member of the sealed material into its own memory, once per quoting answer.
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed

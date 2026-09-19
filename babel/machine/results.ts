@@ -30,7 +30,7 @@
 
 import { z } from "zod";
 import type { ROLES } from "../contract.ts";
-import { NextActionSchema, VOTES, normalizeRemote } from "../contract.ts";
+import { MAX_CITATION_QUOTE, NextActionSchema, VOTES, normalizeRemote } from "../contract.ts";
 
 // ---------------------------------------------------------------------------- versions
 
@@ -107,12 +107,23 @@ export function refusalCode(reason: string): RefusalCode | null {
 
 // ---------------------------------------------------------------------------- shared payloads
 
-/** Where cited bytes live. Path and digest identify them and prove they have not changed. */
+/**
+ * Where cited bytes live, and what they say. Path and digest identify them and prove they have
+ * not changed; `quote` is the span of the record itself that supports the claim, and it is the
+ * only field here anybody can check against the bytes rather than against an index (#348).
+ *
+ * It is OPTIONAL and it is not a refusal to omit it. A citation without a quote is recorded as
+ * `unquoted` and stands: the corpus that exists was produced under a contract that never asked
+ * for one, and a rule that refused every claim written before it would delete history rather
+ * than improve it. What the field buys is that a quote, once written, is checkable — and a run
+ * that stops writing them becomes visible in the receipt's own tally instead of invisible.
+ */
 export const LocatorSchema = z.strictObject({
   path: z.string().min(1),
   line: z.number().int().min(0).default(0),
   byte_offset: z.number().int().min(0).default(0),
   digest: z.string().min(1),
+  quote: z.string().max(MAX_CITATION_QUOTE).default(""),
 });
 
 /**

@@ -15,6 +15,7 @@ import {
   type Objection,
   type QuestionDraft,
 } from "../../machine/results.ts";
+import type { CitationCheck } from "./citations.ts";
 import { mintId, recordRow, titleCell, type RecordKind, type Row } from "./rows.ts";
 
 /*
@@ -52,6 +53,13 @@ import { mintId, recordRow, titleCell, type RecordKind, type Row } from "./rows.
 /** The payload shape a record's own JSON declares, as {@link RESULT_SCHEMA}'s version. */
 const PAYLOAD_SCHEMA = Number(RESULT_SCHEMA.slice(RESULT_SCHEMA.lastIndexOf("/") + 1));
 
+/**
+ * The four keys a claim payload carries citations under: an observation's own evidence and its
+ * counter-evidence, and a proposal's supporting and conflicting material. A finding's is
+ * `counter_evidence` too — it rests on observations and has no evidence of its own.
+ */
+const CITED_FIELDS = ["evidence", "counter_evidence", "supporting", "conflicting"] as const;
+
 /** What a settlement needs to know about the run whose answer it is writing. */
 export interface ExploreSettlement {
   readonly runId: string;
@@ -66,6 +74,16 @@ export interface ExploreSettlement {
    * are built synchronously and the store is not.
    */
   readonly holds: ReadonlySet<string>;
+  /**
+   * WHAT BECAME OF EACH CITATION'S QUOTED TEXT (`./citations.ts`, `checkCitations`), keyed on
+   * the evidence object the answer carries.
+   *
+   * It is here rather than on the evidence itself because a run may not mint its own verdict:
+   * the submitted shape has no field for one, and the map is built by the settlement out of
+   * bytes the model never touched. The Writer copies each verdict into the payload beside the
+   * citation it belongs to, which is where a reader of the record finds it.
+   */
+  readonly checks: ReadonlyMap<Evidence, CitationCheck>;
 }
 
 /** The rows one answer becomes, keyed by the output file the ingest binds to each table. */
@@ -677,7 +695,10 @@ class Writer {
         runId: this.settlement.runId,
         at: this.settlement.at,
         title,
-        payload: { schema: PAYLOAD_SCHEMA, ...(payload as Record<string, unknown>) },
+        payload: {
+          schema: PAYLOAD_SCHEMA,
+          ...this.checked(payload as Record<string, unknown>),
+        },
         supports: of.supports,
         ownRecords: this.ownRecords,
         parentId: of.parentId ?? null,
@@ -691,6 +712,34 @@ class Writer {
     // characters and a marker that fell across that boundary would be read as prose, so what
     // is parsed is the text the model wrote and not the cell the table holds.
     this.marked.push({ id, kind, text: title });
+  }
+
+  /**
+   * THE PAYLOAD WITH EACH CITATION'S VERDICT BESIDE IT (#348).
+   *
+   * The four keys are the four places a claim shape carries citations, and they are listed
+   * rather than walked for the same reason {@link markedTexts} is a list: a shape added later
+   * must come here and say whether its citations are checked, and a reflective walk would
+   * answer "yes" for a field nobody had thought about.
+   *
+   * A verdict is written only where the settlement made one, so an imported record and a
+   * record whose citations nothing could read keep the shape they had — and `verified` is
+   * never implied by absence.
+   */
+  private checked(payload: Record<string, unknown>): Record<string, unknown> {
+    if (this.settlement.checks.size === 0) return payload;
+    let out = payload;
+    for (const field of CITED_FIELDS) {
+      const held = payload[field];
+      if (!Array.isArray(held)) continue;
+      const written = held.map((item: unknown) => {
+        const check = this.settlement.checks.get(item as Evidence);
+        return check === undefined ? item : { ...(item as object), verification: check };
+      });
+      if (out === payload) out = { ...payload };
+      out[field] = written;
+    }
+    return out;
   }
 
   private status(recordId: string, seq: number, status: string, reason: string): void {

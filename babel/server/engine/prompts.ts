@@ -2,14 +2,14 @@ import {
   MATERIAL_INDEX,
   MATERIAL_ROOT,
   MATERIAL_SESSIONS,
-  type MaterialEntry,
+  MAX_CITATION_QUOTE,
+  MIN_CITATION_QUOTE,
 } from "../../contract.ts";
 import {
   exploreJsonSchema,
   parseExploreResult,
   REFUSALS,
   ResultRefusal,
-  type Evidence,
   type ExploreResult,
   type Stage,
 } from "../../machine/results.ts";
@@ -53,7 +53,7 @@ import {
 
 /** The job and prompt this module composes, recorded in every receipt (§7). */
 export const JOB_VERSION = 3;
-export const PROMPT_VERSION = "babel.analysis-prompt/3";
+export const PROMPT_VERSION = "babel.analysis-prompt/4";
 
 // ---------------------------------------------------------------------------- the answer
 
@@ -121,67 +121,6 @@ export function readExploreAnswer(
     if (error instanceof ResultRefusal) return { refusal: error };
     throw error;
   }
-}
-
-/**
- * EVERY LOCATOR THIS RESULT CITES, CHECKED AGAINST WHAT BABEL ACTUALLY SERVED — which is the
- * sentence {@link INSTRUCTIONS_EVIDENCE} promises the model, kept here so the promise is true.
- *
- * #284 checked a locator against a served trace the host tools had recorded. There are no host
- * tools now, and there is something better: the material is an immutable selection with a source
- * digest per session, so a locator is admissible exactly when its `path` is one of the files the
- * material's index names and its `digest` is that entry's own source digest. A retyped digest, an
- * edited path or a citation of a session this run was never given is `unknown-reference` — the
- * claim is refused, its siblings are not, and nothing repairs it.
- *
- * The check is over the SELECTION rather than over the sealed bytes, and deliberately: the
- * selection is on the run row, so verifying costs no read of a 12 GB corpus — which is the whole
- * economy this lane was rebuilt for (post-mortem F1).
- */
-export function unservedLocator(result: ExploreResult, sessions: readonly MaterialEntry[]): string {
-  const served = new Map<string, string>();
-  for (const entry of sessions) {
-    served.set(`${MATERIAL_SESSIONS}/${entry.file}`, entry.sourceDigest);
-    served.set(entry.file, entry.sourceDigest);
-    served.set(`${MATERIAL_ROOT}/${MATERIAL_SESSIONS}/${entry.file}`, entry.sourceDigest);
-  }
-  for (const evidence of citedEvidence(result)) {
-    const digest = served.get(evidence.locator.path);
-    if (digest === undefined) {
-      return `${evidence.locator.path} is not a file this run was served`;
-    }
-    if (digest !== evidence.locator.digest) {
-      return `${evidence.locator.path} was served at ${digest} and this claim cites ${evidence.locator.digest}`;
-    }
-  }
-  return "";
-}
-
-/**
- * Every citation one exploration result carries, wherever the shape allows one: an observation's
- * claim and its counter-evidence, an objection's, a finding's counter-evidence (a finding rests on
- * observations and has no evidence field of its own), and the supporting and conflicting material
- * of both kinds of proposal.
- */
-function citedEvidence(result: ExploreResult): readonly Evidence[] {
-  const cited: Evidence[] = [];
-  for (const candidate of result.candidates) {
-    for (const observation of candidate.observations) {
-      cited.push(...observation.claim.evidence, ...observation.claim.counter_evidence);
-    }
-    const remedy = candidate.remedy;
-    if (remedy !== undefined)
-      cited.push(...remedy.proposal.supporting, ...remedy.proposal.conflicting);
-  }
-  for (const objection of result.objections) {
-    cited.push(...objection.claim.evidence, ...objection.claim.counter_evidence);
-  }
-  for (const consolidation of result.consolidations) {
-    cited.push(...consolidation.finding.counter_evidence);
-    const proposal = consolidation.proposal;
-    if (proposal !== undefined) cited.push(...proposal.supporting, ...proposal.conflicting);
-  }
-  return cited;
 }
 
 // ---------------------------------------------------------------------------- parameters
@@ -543,6 +482,8 @@ Gradings are coarse on purpose: "confidence" and "impact" are "low", "moderate" 
 `;
 
 const INSTRUCTIONS_EVIDENCE = `Evidence is a locator plus a note, and the locator must name bytes this run was served. Those bytes are in the material and nowhere else: "path" is the session's own file as \`${MATERIAL_INDEX}\` names it (\`${MATERIAL_SESSIONS}/<file>\`), "line" is the 1-based line of the record you read in that file, "byte_offset" is 0 unless you can state a real offset within it, and "digest" is that entry's "sourceDigest", copied from the index unchanged. The "note" says in one sentence what those bytes show.
+
+"quote" is the span of that record which supports the claim, copied from what you read and not retyped from memory: at least ${String(MIN_CITATION_QUOTE)} characters, at most ${String(MAX_CITATION_QUOTE)}, and the shortest span that actually carries the point. Babel looks for it in the bytes at the line you named and records what it found on the claim itself — found there, found at another line of that session, or found nowhere in it. None of those three refuses the claim; all three are readable by whoever reads the record afterwards, so a quote you are not sure of is better left out than approximated. Omit "quote" when the claim rests on the shape of a record rather than on words in it.
 
 Babel verifies every locator against the selection before persisting the claim. A path the index does not name, or a digest that is not the one the index records for it, makes that claim a recorded refusal; nothing repairs it, and the items beside it are unaffected. Do not cite anything outside the material — not a file elsewhere on the machine, not a document from the network, not a record you remember.
 
