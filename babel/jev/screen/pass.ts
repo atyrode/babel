@@ -2,6 +2,7 @@ import type { GuestActions } from "@manifold/plugin-kit/server";
 import { ACTIONS, BABEL_PLUGIN_ID } from "../../contract.ts";
 import type { JevAnswerStore, JevServices } from "../server/credential.ts";
 import { judge, requestFor } from "../server/judge.ts";
+import { positionOf, type RecordPosition, type Standing } from "../tally/position.ts";
 import {
   answersOf,
   type ScreenedRecord,
@@ -45,6 +46,14 @@ import { SCREENERS } from "./screeners.ts";
   what one more pass would add, and it asks BEFORE anything is written. It is a reading call and
   inside the part's own ceiling.
 
+  THE PASS HAS A READING HALF, AND IT IS THE ONLY OUTPUT THAT NEEDS NO DOOR (#355). Screening one
+  record produces a {@link RecordPosition} beside its suggestions: the panel's tally over the one
+  judgement already paid for, with the voters that backed it, the voters that objected, and the
+  voters the reply left nothing readable for. It is DERIVED and written nowhere — `tally/position.ts`
+  argues that at length — so it costs the pass one object per judged record and costs the store
+  nothing, and a report over six thousand records carries the counted standings rather than a
+  mean, because an average over the corpus hides exactly the forty records the panel argued about.
+
   THE PASS DOES NOT DELIVER, AND TODAY NOTHING IN THIS BUNDLE DOES. `deliver` is the caller's
   function and the pass hands each suggestion to it unchanged; it does not catch what that
   function throws, because a voter throwing is a bug in a pure function and the pass's to
@@ -79,19 +88,34 @@ export interface ScreenFailure {
   readonly reason: string;
 }
 
-/** What screening one record produced, with the voters that failed kept beside what succeeded. */
+/**
+ * What screening one record produced: where the panel stands on it, the suggestions its advisory
+ * voters proposed, and the voters that failed kept beside what succeeded.
+ *
+ * The position is the reading half (#355) and the suggestions are the writing half (#410). They
+ * are two fields rather than one because they answer to different authorities: a position is
+ * derived from the bank and the judgement and is never written anywhere, while a suggestion
+ * becomes a `next_actions` row the operator answers.
+ */
 export interface ScreenResult {
+  readonly position: RecordPosition;
   readonly suggestions: readonly PassSuggestion[];
   readonly failed: readonly ScreenFailure[];
 }
 
 /**
- * WHAT A PASS DID, in the four numbers an owner needs and no others.
+ * WHAT A PASS DID, in the four numbers an owner needs and the standings they resolve into.
  *
  * `judged + unjudged === read` always, which is what makes "Jev was off" and "Jev found nothing"
  * impossible to confuse: a pass with the part removed reports every record unjudged and nothing
  * suggested, and a pass that ran and liked the corpus reports every record judged and nothing
  * suggested.
+ *
+ * `standings` is the same fact one level finer, and it is a COUNT PER WORD rather than an average
+ * or a top slice: a sweep can say how many records the panel argued about before anything is
+ * written, and a mean over a corpus of six thousand would hide exactly the forty records that
+ * reached a tally of six or more. `standings.unjudged === unjudged` always, so the two halves of
+ * the report cannot disagree about what was checked.
  */
 export interface PassReport {
   readonly read: number;
@@ -99,6 +123,7 @@ export interface PassReport {
   readonly unjudged: number;
   readonly suggested: number;
   readonly failed: readonly ScreenFailure[];
+  readonly standings: Readonly<Record<Standing, number>>;
 }
 
 /** What a sweep would add, as the reading half of `babel.suggest` answers it. */
@@ -149,7 +174,14 @@ export function screenRecord(
       screener: screener.id,
     });
   }
-  return { suggestions, failed };
+  // WHERE THE PANEL STANDS, derived from the same one judgement the voters read and stored
+  // nowhere. The failures travel into it by id: a position over a panel where a voter crashed is
+  // a position with a hole in it, and `backed` must never be read as though the roster were
+  // whole. See `tally/position.ts`.
+  const position = positionOf(record, answers, {
+    failed: failed.map((failure) => failure.screener),
+  });
+  return { position, suggestions, failed };
 }
 
 /**
@@ -172,22 +204,45 @@ export async function screenPass(
   } = {},
 ): Promise<PassReport> {
   const failed: ScreenFailure[] = [];
+  // Every word, at zero. A map built from the vocabulary would need a cast; written out, the
+  // typechecker is what refuses a report that has stopped counting one of the standings.
+  const standings: Record<Standing, number> = {
+    unjudged: 0,
+    unheard: 0,
+    unremarked: 0,
+    backed: 0,
+    objected: 0,
+    contested: 0,
+  };
   let judged = 0;
   let suggested = 0;
   for (const record of records) {
     const answer = await judge(services, requestFor(record.kind, record.text), options.answers);
     // NOT JUDGED YET, and never judged and found wanting: no part, no binding, no credit, a
-    // record too large to send. No voter is consulted, so none of them can be wrong about it.
-    if (answer === null) continue;
+    // record too large to send. No voter is consulted, so none of them can be wrong about it —
+    // and this is the one standing the pass counts without building a position, because
+    // `positionOf(record, null)` would say exactly this for every one of six thousand records.
+    if (answer === null) {
+      standings.unjudged += 1;
+      continue;
+    }
     judged += 1;
     const result = screenRecord(record, answersOf(answer), options.screeners);
+    standings[result.position.standing] += 1;
     failed.push(...result.failed);
     for (const suggestion of result.suggestions) {
       await deliver(suggestion);
       suggested += 1;
     }
   }
-  return { read: records.length, judged, unjudged: records.length - judged, suggested, failed };
+  return {
+    read: records.length,
+    judged,
+    unjudged: records.length - judged,
+    suggested,
+    failed,
+    standings,
+  };
 }
 
 /**

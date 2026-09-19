@@ -330,3 +330,43 @@ export function tally(
     objected,
   };
 }
+
+/**
+ * WHETHER THIS ANSWER IS OF THE SHAPE THIS LINE CUTS ON, which is a different question from
+ * whether it fires and the one a tally needs in order not to invent an abstention.
+ *
+ * `fires` answers `false` for an absent answer and for one of the wrong type, because a line that
+ * cannot be applied has not been crossed. But "the voter was asked and did not object" and "the
+ * voter was never in a position to say anything" are the two facts a position must keep apart:
+ * a magnitude cut on a projection that returned the level as the word `"high"` is missing data,
+ * and counting it as indifference is how a confident tally gets made out of a truncated reply.
+ *
+ * So: present, and a finite number where the condition compares magnitudes, or a string where it
+ * compares names. Nothing else is readable, and `answersOf` has already dropped every leaf that
+ * is neither.
+ */
+export function readable(when: Condition, answer: number | string | undefined): boolean {
+  if (answer === undefined) return false;
+  switch (when.op) {
+    case "at-least":
+    case "at-most":
+      return typeof answer === "number";
+    case "is":
+    case "is-not":
+      return typeof answer === "string";
+  }
+}
+
+/**
+ * THE DISTINCT VOTERS A SET OF ROWS SPEAKS FOR, in the order the rows are written.
+ *
+ * A voter is one opinion however many rows it writes: a two-sided one writes a row per side, and
+ * a `choice` one writes a row per option it cares about. The denominator of a tally is therefore
+ * the panel and never the row count, and this is the one place that reduction is spelled —
+ * `bank.ts`'s `votersFor` is this over the admitted rows of one kind.
+ */
+export function panel(votes: readonly Vote[]): readonly Voter[] {
+  const seen: Voter[] = [];
+  for (const vote of votes) if (!seen.includes(vote.voter)) seen.push(vote.voter);
+  return seen;
+}

@@ -95,6 +95,13 @@ export {
   type ScreenSuggestion,
 } from "./screen/screener.ts";
 export { SCREENERS } from "./screen/screeners.ts";
+export {
+  positionFor,
+  positionOf,
+  STANDINGS,
+  type RecordPosition,
+  type Standing,
+} from "./tally/position.ts";
 
 export const plugin: ServerPluginDef = {
   manifest: PluginManifestSchema.parse(manifestJson),

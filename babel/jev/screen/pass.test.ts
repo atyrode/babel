@@ -6,7 +6,8 @@ import { votesFor } from "../bank/bank.ts";
 import { tally, type TallyResult } from "../bank/schema.ts";
 import { JEV_CALL_CAP_BYTES, JEV_SERVICE, type JevServices } from "../server/credential.ts";
 import { JevAnswers } from "../server/judge.ts";
-import { screenPass, sweepSize, type PassSuggestion } from "./pass.ts";
+import type { Standing } from "../tally/position.ts";
+import { screenPass, screenRecord, sweepSize, type PassSuggestion } from "./pass.ts";
 import type { ScreenedRecord, Screener, ScreenSubject, ScreenSuggestion } from "./screener.ts";
 
 /*
@@ -119,6 +120,20 @@ const BROKEN: Screener = {
 
 const SILENT: Screener = { id: "silent", kinds: ["finding"], screen: () => null };
 
+/**
+ * Every standing at zero, to be spread over with the ones a case expects. A report names all six
+ * words always, so a case that listed only the interesting one would pass while the pass counted
+ * the other five wrongly.
+ */
+const NO_STANDING: Record<Standing, number> = {
+  unjudged: 0,
+  unheard: 0,
+  unremarked: 0,
+  backed: 0,
+  objected: 0,
+  contested: 0,
+};
+
 /** The suggestions a pass produced, in the order it produced them. */
 function collector(): {
   readonly written: PassSuggestion[];
@@ -148,8 +163,16 @@ test("with the part unbound every record is unjudged, no voter runs and nothing 
   expect(seen).toHaveLength(0);
   expect(sink.written).toHaveLength(0);
   // NOT JUDGED YET, never judged and found wanting. The two numbers say different things and a
-  // pass that reported these as judged would be claiming a check it never paid for.
-  expect(report).toEqual({ read: 2, judged: 0, unjudged: 2, suggested: 0, failed: [] });
+  // pass that reported these as judged would be claiming a check it never paid for — and no
+  // record has a standing, because a standing is what a panel that was shown a judgement holds.
+  expect(report).toEqual({
+    read: 2,
+    judged: 0,
+    unjudged: 2,
+    suggested: 0,
+    failed: [],
+    standings: { ...NO_STANDING, unjudged: 2 },
+  });
 });
 
 test("a voter that throws is reported by name and the pass finishes the sweep", async () => {
@@ -183,7 +206,16 @@ test("a silent voter and a broken one are not the same report", async () => {
     screeners: [SILENT],
     answers: new JevAnswers(),
   });
-  expect(report).toEqual({ read: 1, judged: 1, unjudged: 0, suggested: 0, failed: [] });
+  // The projection answered `vague` alone, which no voter for a finding thresholds, so the
+  // record was judged and the panel was left with nothing readable: UNHEARD, and not a shrug.
+  expect(report).toEqual({
+    read: 1,
+    judged: 1,
+    unjudged: 0,
+    suggested: 0,
+    failed: [],
+    standings: { ...NO_STANDING, unheard: 1 },
+  });
 });
 
 test("one record is one call however many voters are asked", async () => {
@@ -232,22 +264,36 @@ test("the answer a voter reads is the answer that came back, unrounded and unres
 test("a score reaches the tally unrounded, end to end from the host's own reply", async () => {
   /*
     THE FULL PATH, not the coercion alone: the host's reply, through `answersOf`, into the same
-    `answers` the voters read and `tally()` sums. `concreteness` backs a finding at `>= 0.7` and
-    objects at `<= 0.3`, so four points one hundredth apart pin every way the number could be
-    quietly changed — truncation drops 0.7 to 0 and loses the backing, rounding lifts 0.69 to 1
-    and invents one, and any rescale moves at least one of the four across its line.
+    `answers` the voters read and `tally()` sums, and on into the STANDING the pass reports.
+    `concreteness` backs a finding at `>= 0.7` and objects at `<= 0.3`, so four points one
+    hundredth apart pin every way the number could be quietly changed — truncation drops 0.7 to 0
+    and loses the backing, rounding lifts 0.69 to 1 and invents one, and any rescale moves at
+    least one of the four across its line. Each of those four crossings moves a WORD an operator
+    reads, which is what makes this the whole path rather than the arithmetic alone.
   */
   const seen: ScreenSubject[] = [];
   const asked: Record<string, TallyResult> = {};
+  const stood: string[] = [];
   for (const specific of [0.7, 0.69, 0.3, 0.31]) {
     const live = host({ result: { specific } });
     const sink = collector();
-    await screenPass(live.services, [record("fnd_00000001", "first")], sink.deliver, {
-      screeners: [always(`at-${String(specific)}`, seen)],
-      answers: new JevAnswers(),
-    });
+    const report = await screenPass(
+      live.services,
+      [record("fnd_00000001", "first")],
+      sink.deliver,
+      {
+        screeners: [always(`at-${String(specific)}`, seen)],
+        answers: new JevAnswers(),
+      },
+    );
     const answers = seen[seen.length - 1]?.answers ?? {};
     asked[String(specific)] = tally(votesFor("finding"), answers);
+    stood.push(
+      Object.entries(report.standings)
+        .filter(([, count]) => count > 0)
+        .map(([standing]) => standing)
+        .join(),
+    );
   }
   expect(seen.map((subject) => subject.answers.specific)).toEqual([0.7, 0.69, 0.3, 0.31]);
   expect(asked["0.7"]?.backed).toEqual(["concreteness"]);
@@ -255,6 +301,31 @@ test("a score reaches the tally unrounded, end to end from the host's own reply"
   expect(asked["0.69"]?.objected).toEqual([]);
   expect(asked["0.3"]?.objected).toEqual(["concreteness"]);
   expect(asked["0.31"]?.objected).toEqual([]);
+  // And the same four numbers reach the pass's own report as four standings, two of which are
+  // the record having been heard and not remarked on — a real zero, and not the `unjudged` a
+  // record nobody judged gets.
+  expect(stood).toEqual(["backed", "unremarked", "objected", "unremarked"]);
+});
+
+test("a voter that failed is never counted as agreement", () => {
+  /*
+    A CRASH IS NOT A VOTE, and the way that would be lost is a position built from "every voter
+    that did not object". The bank's own rows are unmoved by a throw — a voter that throws
+    produces no row and there is nothing for the sum to read — so the backing is identical with
+    the broken voter on the roster and without it, and the hole is reported beside it rather than
+    folded into it. An operator reading `backed` can see the roster was not whole.
+  */
+  const backing = { specific: 0.7 };
+  const whole = screenRecord(record("fnd_00000001", "first"), backing, [always("steady")]);
+  const holed = screenRecord(record("fnd_00000001", "first"), backing, [BROKEN, always("steady")]);
+  expect(holed.position.backed).toEqual(["concreteness"]);
+  expect(holed.position.backed).toEqual(whole.position.backed);
+  expect(holed.position.up).toBe(whole.position.up);
+  expect(holed.position.failed).toEqual(["broken"]);
+  expect(whole.position.failed).toEqual([]);
+  // The record is still backed by the panel, and the position names the wording that was judged.
+  expect(holed.position.standing).toBe("backed");
+  expect(holed.position.revision).toBe(3);
 });
 
 test("the record comes out of the pass exactly as it went in, judged or not", async () => {
@@ -296,7 +367,14 @@ test("the record comes out of the pass exactly as it went in, judged or not", as
       { screeners: [always("chatty")], answers: new JevAnswers() },
     ),
   ];
-  const off = { read: 1, judged: 0, unjudged: 1, suggested: 0, failed: [] };
+  const off = {
+    read: 1,
+    judged: 0,
+    unjudged: 1,
+    suggested: 0,
+    failed: [],
+    standings: { ...NO_STANDING, unjudged: 1 },
+  };
   expect(reports).toEqual([off, off, off]);
   expect(subject).toEqual(before);
   // Nothing was delivered by any of the three, so the sink holds only the judged pass's one.
