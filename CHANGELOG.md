@@ -11,6 +11,31 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Jev's question bank is a versioned document, drift-checked the way a recipe is.** Four
+  documents, one per record kind, with `version:` frontmatter registered in a manifest — the same
+  shape `tools/seed-recipes.ts` already enforces for the cookbook, and for the same reason: an
+  assessment cites `kind@version`, so a document whose wording moved without its version moving
+  is a claim citing something that no longer exists. Two drifts are refused by name: a document
+  disagreeing with the manifest, and a committed seed disagreeing with the documents.
+
+  **A routing question cannot be tallied as a vote, structurally.** `subject`, `classification`
+  and "contains instruction" route a record; they are not opinions about it. A routing entry has
+  no threshold fields at all, so it does not typecheck as a vote — a `@ts-expect-error` holds
+  that, which means the day it starts compiling the build fails. The parser closes both
+  directions too: a threshold row naming a routing question is refused, and so is a routing row
+  naming anything else.
+
+  **A threshold with no observed distribution beside it is refused, not marked.** Every row
+  carries the sample size and the share that fired, and a numeric cut additionally carries the
+  mean and standard deviation it cuts at — because a threshold nobody can trace to a corpus is a
+  threshold from somebody else's. "Admitted" is derived from the observed share rather than
+  declared, so the flag cannot disagree with the number: nine sides sit in the documents as
+  measurements and are excluded from voting, including two that fire on 0% of the observations
+  they were written for. Deleting them would lose the evidence that retired them.
+
+  Every document opens with the caveat the audit's §0 states: these distributions are one
+  deployment's imported Go-era output, at one date, under one recipe and model set, and they are
+  a reason to look rather than a target. Re-fit against what the plugin's own intake produces.
 - **Jev's key never touches the plugin.** The part declares one authority — invoking the
   judgement service the operator installed — and names that service by id; the host resolves the
   credential by reference and writes it into the outbound request. There is no field in the
