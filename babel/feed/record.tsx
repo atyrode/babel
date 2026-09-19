@@ -7,6 +7,7 @@ import {
   BABEL_NODE,
   ask,
   refusal,
+  useNow,
   useShown,
   type RecordPeel,
   type ThreadResult,
@@ -55,7 +56,7 @@ export function RecordPanel({ host, arg }: PanelProps): ReactElement {
 function RecordView({ host, id }: { host: HostServices; id: string }): ReactElement {
   const [announcement, setAnnouncement] = useState("");
   const [failure, setFailure] = useState("");
-  const [now, setNow] = useState(() => Date.now());
+  const now = useNow();
   const root = useRef<HTMLDivElement | null>(null);
 
   const peel = usePolledResource<RecordPeel | null>(
@@ -82,8 +83,6 @@ function RecordView({ host, id }: { host: HostServices; id: string }): ReactElem
       events: host.client,
     },
   );
-
-  useEffect(() => setNow(Date.now()), [peel.value]);
 
   const acted: ActedHandler = (_act, _done, message) => {
     setAnnouncement(message);

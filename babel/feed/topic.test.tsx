@@ -318,3 +318,26 @@ describe("a lens that never looked here", () => {
     await view.unmount();
   });
 });
+
+describe("changing subject", () => {
+  /*
+    THE NARROWING IS DERIVED FROM THE SEAT, not mirrored into state by an effect (#345). What
+    the reader observes is the page he lands on: a topic he has never expanded opens at the
+    top of its own list, not at the depth the last one was paged to.
+  */
+  test("the new topic opens at the top of its own list", async () => {
+    const fake = hub({ feed: () => feed({ posts: feed().posts.slice(0, 1), total: 40 }) });
+    look({ topic: "ent_0000beef" });
+    const view = await mount(<TopicPanel host={fake.host} />);
+    expect(fake.last("feed")).toMatchObject({ topic: "ent_0000beef", limit: 15 });
+    await view.press(".babel-more button");
+    await view.settle();
+    expect(fake.last("feed")).toMatchObject({ topic: "ent_0000beef", limit: 30 });
+    await pointAt({ topic: "ent_0000cafe" });
+    await view.settle();
+    expect(fake.last("feed")).toMatchObject({ topic: "ent_0000cafe", limit: 15 });
+    // And the way down is offered again, because there is a list under it again.
+    expect(view.one(".babel-more button").textContent).toBe("Show 15 more");
+    await view.unmount();
+  });
+});

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import type { OpenPanelOutcome, OpenPanelRequest } from "@manifold/plugin";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { forgetSelection, looking } from "./api.ts";
@@ -662,6 +662,65 @@ describe("what the last read did", () => {
     await view.settle();
     expect(view.all("[data-arrived]")).toHaveLength(0);
     expect(view.all("[data-leaving]")).toHaveLength(0);
+    await view.unmount();
+  });
+});
+
+/*
+  THE TWO RENDER DEFECTS THE LINTER FOUND HERE (#345), as the reader meets them: a clock that
+  only moved when the hub did, and a hold on the shared feed that never went false again.
+*/
+describe("the clock and the hold", () => {
+  afterEach(() => setSystemTime());
+
+  test("an age ages while the hub says nothing", async () => {
+    /*
+      The clock is held still and moved by hand, which is what makes this a statement about
+      the surface: the hub answers the same thing throughout, and nothing but time passes.
+      09:00:59.100 puts the wall clock's next minute 900ms of real time out, which is when
+      the page is owed its next reading of the clock.
+    */
+    const base = Date.parse("2026-09-12T09:00:59.100Z");
+    setSystemTime(new Date(base));
+    const stamp = new Date(base - 59_000).toISOString();
+    const fake = hub({
+      feed: () => feed({ posts: [post({ createdAt: stamp, lastActivityAt: stamp })], total: 1 }),
+    });
+    const view = await mount(<HomePanel host={fake.host} />);
+    expect(view.one('[data-post="pro_0000000a"] .babel-age').textContent).toBe("just now");
+    setSystemTime(new Date(base + 5 * 60_000));
+    await view.wait(1_200);
+    expect(view.one('[data-post="pro_0000000a"] .babel-age').textContent).toBe("5m ago");
+    await view.unmount();
+  });
+
+  test("a recorded act holds the list while it is read, and lets the world back in after", async () => {
+    const base = Date.parse("2026-09-12T09:00:00.000Z");
+    setSystemTime(new Date(base));
+    let answer = feed();
+    const fake = hub({ feed: () => answer });
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.press('[data-post="qst_0000000c"] [data-answer="answered"]');
+    await view.type(".babel-confirm textarea", "the shared catalog is retired");
+    await view.press(".babel-confirm .babel-primary");
+    await view.settle();
+    expect(view.one('[data-post="qst_0000000c"] .babel-acted').textContent).toBe("answered");
+
+    answer = feed({
+      posts: [post({ id: "hyp_0000000e", title: "Restic prune has never run", awaiting: false })],
+      total: 1,
+    });
+    fake.announce();
+    await view.wait(120);
+    // The confirmation is on screen and is being read: the list holds still under it.
+    expect(view.all('[data-post="hyp_0000000e"]')).toHaveLength(0);
+
+    // Six seconds later it is no longer a gesture. The hold is the reader's, not the
+    // session's, so the answer lands — and it lands on every other reader of this feed too.
+    setSystemTime(new Date(base + 6_000));
+    fake.announce();
+    await view.wait(400);
+    expect(view.all('[data-post="hyp_0000000e"]')).toHaveLength(1);
     await view.unmount();
   });
 });

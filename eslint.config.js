@@ -38,26 +38,7 @@ export default tseslint.config(
   {
     files: ["babel/feed/**/*.{ts,tsx}", "babel/watch/**/*.{ts,tsx}"],
     plugins: { "react-hooks": reactHooks },
-    rules: {
-      ...reactHooks.configs.recommended.rules,
-      /*
-        TWO RULES ARE WARNINGS, AND THE REASON IS RECORDED RATHER THAN THE RULE REMOVED.
-
-        `refs` and `set-state-in-effect` find four real defects in the reading surface today: a
-        ref written during render in `feed/home.tsx`, and three effects that call `setState` in
-        their own body (`feed/home.tsx`, `feed/record.tsx`, `feed/topic.tsx`). Each is a
-        cascading-render hazard on the front page, each is a genuine finding, and none of them is
-        safe to change without exercising the rendered surface on a hub — which is a different
-        change from installing a linter.
-
-        So they warn, they stay visible on every run, and the issue that fixes them owns turning
-        them back to `error`. Deleting the rules would have hidden four defects to make a gate
-        green; fixing render semantics inside a tooling PR would have shipped an unverified
-        change to the page the operator reads.
-      */
-      "react-hooks/refs": "warn",
-      "react-hooks/set-state-in-effect": "warn",
-    },
+    rules: reactHooks.configs.recommended.rules,
   },
   /*
     A PART REACHES THE BASELINE THROUGH ITS DOORS, AND THROUGH ONE FILE.

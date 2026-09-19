@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactElement } from "react";
+import { useState, type FormEvent, type ReactElement } from "react";
 import type { HostServices, PanelProps } from "@manifold/plugin";
 import { usePolledResource } from "@manifold/plugin/hooks";
 import type { MachineSummary } from "@manifold/protocol";
@@ -9,6 +9,7 @@ import {
   ask,
   refusal,
   since,
+  useNow,
   useShown,
   type CoverageRow,
   type FeedQuery,
@@ -77,7 +78,7 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
     topic,
   });
   const [failure, setFailure] = useState("");
-  const [now, setNow] = useState(() => Date.now());
+  const now = useNow();
 
   const read = usePolledResource<TopicResult | null>(
     async () => ask(host, ACTIONS.topic, { topic }),
@@ -93,11 +94,19 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
     },
   );
 
-  // The list follows the rail: pointing the panels at another topic re-narrows the feed.
-  useEffect(() => {
-    setQuery((current) => ({ ...current, topic, offset: 0 }));
-    setNow(Date.now());
-  }, [topic]);
+  /*
+    THE LIST FOLLOWS THE RAIL, and the narrowing is DERIVED rather than mirrored into state
+    behind an effect. A prop copied into state by a commit is a commit where the header names
+    one topic and the rows under it belong to the one the reader just left; deriving it means
+    the first render of the new subject is already the new subject.
+
+    Changing subject also returns the list to the top of it: `limit` is what "Show 15 more"
+    raises, so a topic inheriting the depth the reader had paged the LAST one to opened
+    part-way down a list he had never expanded. `offset` was the field this reset reached for
+    and nothing on these surfaces moves it.
+  */
+  const narrowed: FeedQuery =
+    query.topic === topic ? query : { ...query, topic, offset: 0, limit: EMPTY_QUERY.limit };
 
   const row = read.value?.topic ?? null;
   const proposed = read.value?.proposed ?? [];
@@ -105,7 +114,7 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
   return (
     <FeedListing
       host={host}
-      query={query}
+      query={narrowed}
       onQuery={setQuery}
       heading={
         <header className="babel-topic-header">

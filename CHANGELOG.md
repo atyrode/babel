@@ -1026,6 +1026,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `pulse` through a bridge attenuated exactly as the host attenuates one and assert the cadence is
   registered from it.
 
+- **The reading surface's clock stopped when the hub did, and one confirmation froze the feed
+  for everyone reading it.** The `react-hooks` rules installed with #327 found four render
+  defects and were held at `warn` until the rendered surface could be exercised; all four are
+  fixed and both rules are back at the plugin's own `error` (#345). Home and the record panel
+  re-based their clock inside the effect that received an answer, so a quiet deployment printed
+  "just now" on a record hours old — ages now follow the wall clock's own minute, which is the
+  smallest word `since` has, whatever the hub is doing. Home also declared its hold on the
+  shared feed by writing a ref during render, and the predicate it wrote — "a row has recorded
+  something" — was emptied only by a new question, so the first ruling of a session held every
+  reader's copy of that feed for the rest of it; the claim is now written inline, where the kit
+  commits it after a render actually survives, and it is bounded by the act's own stamp. The
+  topic panel mirrored its subject into state behind an effect, which is why a topic the reader
+  had never expanded opened at the depth he had paged the last one to; the narrowing is derived
+  now, and a new subject opens at the top of its own list. Four panel tests hold them: two watch
+  an age cross a minute while the hub answers the same thing, one answers a question and then
+  watches the list let the world back in, one pages a topic and changes subject.
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed
