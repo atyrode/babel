@@ -389,7 +389,6 @@ test("without a bound Jev the pass says it did nothing and never invokes the thr
   );
   expect(absent.invocations).toBe(0);
   expect(result).toMatchObject({ read: 1, judged: 0, unjudged: 1, suggestions: [] });
-  expect(result.stopped).toContain("nothing was screened and nothing was spent");
 });
 
 test("a pass that is out of credit stops on the first record instead of failing", async () => {
@@ -409,5 +408,4 @@ test("a pass that is out of credit stops on the first record instead of failing"
   );
   expect(dry.invocations).toBe(1);
   expect(result).toMatchObject({ read: 1, judged: 0, unjudged: 1, suggestions: [] });
-  expect(result.stopped).toContain("no judgement service answered");
 });

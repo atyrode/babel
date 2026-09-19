@@ -1,6 +1,7 @@
 import { defineServerAction, type ServerHandler } from "@manifold/plugin-kit/server";
 import { JEV_ACTIONS, SweepInputSchema, SweepPlanSchema, SweptSchema } from "../../contract.ts";
 import { sweep, sweepPlan } from "./sweep.ts";
+import { JEV_SERVICE } from "../server/credential.ts";
 
 /*
   THE DRIVER OF THE SWEEP (#356), AND THE ONLY NEW SURFACE.
@@ -42,6 +43,23 @@ export const SWEEP_ACTIONS = [sweepPlanAction, sweepAction] as const;
 export const SWEEP_HANDLERS: Readonly<Record<string, ServerHandler>> = {
   [JEV_ACTIONS.sweepPlan]: async (ctx, args: unknown) => {
     const parsed = SweepInputSchema.parse(args);
+    const roster = await ctx.services.listInstances({}).catch(() => null);
+    const available = roster?.services.some(
+      (service) =>
+        service.serviceId === JEV_SERVICE.serviceId &&
+        service.state === "ready" &&
+        service.configuration !== null,
+    );
+    if (!available) {
+      return {
+        kinds: [],
+        unjudged: 0,
+        outstanding: 0,
+        unreadable: 0,
+        batch: 0,
+        silent: "the judgement service is not available",
+      };
+    }
     return await sweepPlan(ctx.actions, { limit: parsed.limit, kinds: parsed.kinds });
   },
   [JEV_ACTIONS.sweep]: async (ctx, args: unknown) => {

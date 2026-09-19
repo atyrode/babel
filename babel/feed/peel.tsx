@@ -13,6 +13,7 @@ import {
 } from "./rows.tsx";
 import { Votes } from "./votes.tsx";
 
+import { JevPosition } from "./jev.tsx";
 /*
   ONE RECORD, PEELED (§8.6).
 
@@ -425,6 +426,7 @@ export function Peel({
 
       <Depth index={3} title="The reception" open={open} onToggle={toggle}>
         <Stack gap="var(--babel-space-3)">
+          <JevPosition host={host} id={post.id} detail />
           {peel.reception.contested && (
             <p className="babel-contested-note">Babel&apos;s reviewers are split on this.</p>
           )}

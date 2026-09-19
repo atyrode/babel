@@ -8,6 +8,10 @@
     "atyrode.babel": {
       "type": "required",
       "reason": "the panels read and rule through babel's doors and its store"
+    },
+    "atyrode.babel.jev": {
+      "type": "optional",
+      "reason": "explicit corpus judgement and independent voter readings, absent without Jev"
     }
   },
   "contributes": {

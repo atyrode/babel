@@ -6,7 +6,7 @@ import { votesFor } from "../bank/bank.ts";
 import { tally, type TallyResult } from "../bank/schema.ts";
 import { JEV_CALL_CAP_BYTES, JEV_SERVICE, type JevServices } from "../server/credential.ts";
 import { JevAnswers } from "../server/judge.ts";
-import type { Standing } from "../tally/position.ts";
+import type { Standing } from "../../contract.ts";
 import { screenPass, screenRecord, sweepSize, type PassSuggestion } from "./pass.ts";
 import type { ScreenedRecord, Screener, ScreenSubject, ScreenSuggestion } from "./screener.ts";
 

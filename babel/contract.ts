@@ -1211,6 +1211,33 @@ export type JevActionName = (typeof JEV_ACTIONS)[keyof typeof JEV_ACTIONS];
  */
 export const JEV_SWEEP_BATCH = 24;
 
+/** Independent voter coverage is not an operator ruling or a replacement feed rank. */
+export const STANDINGS = [
+  "unjudged",
+  "unheard",
+  "unremarked",
+  "backed",
+  "objected",
+  "contested",
+] as const;
+export type Standing = (typeof STANDINGS)[number];
+
+export const RecordPositionSchema = z.strictObject({
+  recordId: RecordIdSchema,
+  revision: z.number().int().nonnegative(),
+  standing: z.enum(STANDINGS),
+  tally: z.number().int().nullable(),
+  up: z.number().int().nonnegative(),
+  down: z.number().int().nonnegative(),
+  backed: z.array(z.string()).readonly(),
+  objected: z.array(z.string()).readonly(),
+  silent: z.array(z.string()).readonly(),
+  failed: z.array(z.string()).readonly(),
+  roster: z.number().int().nonnegative(),
+  heard: z.number().int().nonnegative(),
+});
+export type RecordPosition = z.infer<typeof RecordPositionSchema>;
+
 /**
  * WHAT A SWEEP WOULD COST, PER RECORD KIND AND IN TOTAL, before a record is judged.
  *
@@ -1261,6 +1288,8 @@ export const SweptSchema = z.strictObject({
   read: z.number().int().nonnegative(),
   judged: z.number().int().nonnegative(),
   unjudged: z.number().int().nonnegative(),
+  /** Positions derived from this batch's answers; no second judgement or persisted ranking. */
+  positions: z.array(RecordPositionSchema),
   suggestions: z.array(
     z.strictObject({
       recordId: RecordIdSchema,

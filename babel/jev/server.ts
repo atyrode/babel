@@ -97,9 +97,6 @@ export { SCREENERS } from "./screen/screeners.ts";
 export {
   positionFor,
   positionOf,
-  STANDINGS,
-  type RecordPosition,
-  type Standing,
 } from "./tally/position.ts";
 export {
   basisFor,

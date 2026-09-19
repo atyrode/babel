@@ -172,7 +172,7 @@ export async function sweepPlan(
   actions: GuestActions,
   options: { readonly limit?: number; readonly kinds?: readonly RecordKind[] } = {},
 ): Promise<SweepPlan> {
-  const asked = options.kinds ?? SWEPT_KINDS;
+  const asked = options.kinds?.length ? options.kinds : SWEPT_KINDS;
   const kinds = SWEPT_KINDS.filter((kind) => asked.includes(kind));
   const limit = options.limit ?? JEV_SWEEP_BATCH;
   const empty: SweepPlan = {
@@ -214,21 +214,6 @@ export async function sweepPlan(
   }
 }
 
-/** The record's own words and citations, as the peel reports them. */
-function contentsOf(peel: RecordPeel): {
-  readonly title: string;
-  readonly text: string;
-  readonly evidence: readonly { readonly quote: string; readonly verification: string }[];
-} {
-  return {
-    title: peel.post.title,
-    text: peel.claim.statement,
-    evidence: peel.evidence.map((entry) => ({
-      quote: entry.excerpt,
-      verification: entry.verification,
-    })),
-  };
-}
 
 /**
  * One record of the gap, as the loop reads it: the door's own id, revision and kind, and the
@@ -251,18 +236,14 @@ async function readRecord(
   } catch {
     return null;
   }
-  const contents = contentsOf(peel);
-  if (contents.text === "") return null;
+  if (peel.claim.statement === "") return null;
   return {
     id: pending.recordId,
     revision: pending.revision,
     kind: pending.kind,
-    title: contents.title,
-    text: contents.text,
-    // #367 widens ScreenedRecord with the citations the same peel already carried. Kept on the
-    // constructed object now so integrating that voter adds no second read or paid call.
-    evidence: contents.evidence,
-  } as ScreenedRecord;
+    title: peel.post.title,
+    text: peel.claim.statement,
+  };
 }
 
 /**
@@ -280,6 +261,7 @@ export async function sweep(deps: SweepDeps, ask: SweepAsk): Promise<Swept> {
     read: 0,
     judged: 0,
     unjudged: 0,
+    positions: [],
     suggestions: [],
     failed: [],
     continuation: "",
@@ -324,12 +306,13 @@ export async function sweep(deps: SweepDeps, ask: SweepAsk): Promise<Swept> {
   if (pending.length === 0) {
     return {
       ...nothing,
-      stopped: "nothing is pending: every record this part can read is judged under this bank",
+      stopped: "no pending records remain after this continuation",
     };
   }
   const cursorFor = (row: UnjudgedRecord): string => `${row.kind}/${row.recordId}`;
   const suggestions: Swept["suggestions"] = [];
   const failed: Swept["failed"] = [];
+  const positions: Swept["positions"] = [];
   let read = 0;
   let judged = 0;
   let unjudged = 0;
@@ -358,29 +341,22 @@ export async function sweep(deps: SweepDeps, ask: SweepAsk): Promise<Swept> {
       deps.services,
       [record],
       async (suggestion) => {
-        collected.push(suggestion);
+        if (row.suggestible) collected.push(suggestion);
         await Promise.resolve();
       },
       {
         ...(deps.screeners ? { screeners: deps.screeners } : {}),
         ...(deps.answers ? { answers: deps.answers } : {}),
+        onPosition: (position) => positions.push(position),
       },
     );
     failed.push(...report.failed);
     if (report.judged === 0) {
       unjudged += 1;
-      // NOTHING YET, NOT THIS ONE: before a single record has been judged, an absence is the
-      // deployment's answer — no service bound, disabled, or out of credit — and the pass stops
-      // on it having spent nothing. Afterwards it is this record's own (too large to send, an
-      // unreadable reply) and the pass carries on rather than letting one row end a sweep.
-      if (judged === 0) {
-        stopped =
-          `jev did not judge ${row.recordId}: no judgement service answered, so nothing was ` +
-          `screened and nothing was spent`;
-        break;
-      }
-      continuation = cursorFor(row);
-      continue;
+      // Absence can follow a paid refusal or unreadable answer. Stop rather than spend the
+      // rest of the batch; never claim a null answer proves that nothing was charged.
+      stopped = `jev did not return a judgement for ${row.recordId}; the sweep stopped`;
+      break;
     }
     judged += 1;
     continuation = cursorFor(row);
@@ -397,5 +373,5 @@ export async function sweep(deps: SweepDeps, ask: SweepAsk): Promise<Swept> {
       });
     }
   }
-  return { read, judged, unjudged, suggestions, failed, continuation, stopped };
+  return { read, judged, unjudged, suggestions, positions, failed, continuation, stopped };
 }

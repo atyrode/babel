@@ -2,7 +2,8 @@ import type { GuestActions } from "@manifold/plugin-kit/server";
 import { ACTIONS, BABEL_PLUGIN_ID } from "../../contract.ts";
 import type { JevAnswerStore, JevServices } from "../server/credential.ts";
 import { judge, requestFor } from "../server/judge.ts";
-import { positionOf, type RecordPosition, type Standing } from "../tally/position.ts";
+import { positionOf } from "../tally/position.ts";
+import type { RecordPosition, Standing } from "../../contract.ts";
 import {
   answersOf,
   type ScreenedRecord,
@@ -201,6 +202,7 @@ export async function screenPass(
   options: {
     readonly screeners?: readonly Screener[];
     readonly answers?: JevAnswerStore;
+    readonly onPosition?: (position: RecordPosition) => void;
   } = {},
 ): Promise<PassReport> {
   const failed: ScreenFailure[] = [];
@@ -228,6 +230,7 @@ export async function screenPass(
     }
     judged += 1;
     const result = screenRecord(record, answersOf(answer), options.screeners);
+    options.onPosition?.(result.position);
     standings[result.position.standing] += 1;
     failed.push(...result.failed);
     for (const suggestion of result.suggestions) {
