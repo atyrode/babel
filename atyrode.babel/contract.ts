@@ -1026,11 +1026,11 @@ export const MACHINE_OPERATIONS = {
 /**
  * EVERY OPERATION BABEL NAMES, which is not the same list (#279).
  *
- * `explore` and `evaluate` are NAMED and not DECLARED. A Babel run is a Code session: the
- * operator parametrizes it through a saved Code profile or Code's generator, and Code's
+ * `explore`, `evaluate` and `title` are NAMED and not DECLARED. A Babel run is a Code session:
+ * the operator parametrizes it through a saved Code profile or Code's generator, and Code's
  * `runSession` door posts it to omp (atyrode/code#170, reached through atyrode/manifold#575).
- * Babel neither composes the session nor launches omp, so neither is a machine operation of
- * this bundle any more — but both are still what a run is CALLED: the node a launch asks
+ * Babel neither composes the session nor launches omp, so none of them is a machine operation
+ * of this bundle any more — but each is still what a run is CALLED: the node a launch asks
  * authority at, the `kind` a run row and a receipt record, and the lane a preset names. The two
  * tables are therefore two different questions, and the day they answered as one is the day
  * Babel had a launcher of its own.
@@ -1039,6 +1039,8 @@ export const OPERATIONS = {
   ...MACHINE_OPERATIONS,
   explore: `${BABEL_PLUGIN_ID}.explore`,
   evaluate: `${BABEL_PLUGIN_ID}.evaluate`,
+  /** Naming the sessions whose own logs carry no title (#342); never a preset, never declared. */
+  title: `${BABEL_PLUGIN_ID}.title`,
 } as const;
 export type OperationName = (typeof OPERATIONS)[keyof typeof OPERATIONS];
 
@@ -1983,7 +1985,7 @@ export const RECORD_RESTS_ON_ONE_RUN = "restsOnOneRunAtCreation";
 /** The receipt every run writes last (§7): what it was asked, read, produced and cost. */
 export const ReceiptSchema = z.strictObject({
   runId: z.string(),
-  kind: z.enum(["scan", "archive", "prepare", "verify", "explore", "evaluate"]),
+  kind: z.enum(["scan", "archive", "prepare", "verify", "explore", "evaluate", "title"]),
   machineId: z.string(),
   recipeId: z.string().optional(),
   role: RoleSchema.optional(),
