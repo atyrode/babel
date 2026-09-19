@@ -30,6 +30,17 @@
   difference is what a later reviewer needs in order to tell "the corpus changed" from "our
   reading of it changed".
 
+  WHAT A SECOND PREPARATION OVER AN UNCHANGED SCOPE DOES NOT DO AGAIN (#236). Reading a log is
+  this operation's whole cost, and the answer does not depend on which run asked: twenty
+  explorations over overlapping scopes on 2026-09-12 read and hashed the same files twenty
+  times, at load 41 with no model call in flight. So the reading is KEPT on the machine, keyed
+  on the observation it was derived from — path, size, mtime, normalization, detector set,
+  preflight mode — and a later pass that observes the same triple replays it instead of reading
+  the log (`machine/cache.ts` holds the whole of the reasoning, and why an entry is a claim
+  about an observation rather than a position). The two rules above are what make that safe: a
+  file that could still be moving is never in a scope, so an entry is only ever about a log that
+  settled minutes ago.
+
   What the normalization IS, in this wave: one canonical JSON record per line — object keys
   ordered, insignificant whitespace gone — and an explicit opaque marker for a line that is not
   a record, so nothing is ever dropped. What it is NOT, yet: v0.4.0:internal/event's classification of
@@ -46,6 +57,8 @@
   this machine holds, so what crosses to the hub is a locator and a class.
 */
 
+import { stat } from "node:fs/promises";
+
 import { z } from "zod";
 import {
   MATERIAL_SCHEMA,
@@ -60,7 +73,8 @@ import {
   type Receipt,
 } from "../contract.ts";
 import { LIVE_GRACE_MS, babelOwnLog, type SessionRef } from "./adapters/index.ts";
-import type { MaterialSink, OutputSink, RecordSink } from "./output.ts";
+import { readingCache, type Observation } from "./cache.ts";
+import { teeRecords, type MaterialSink, type OutputSink, type RecordSink } from "./output.ts";
 import {
   PREFLIGHT_DETECTORS,
   refusalMessage,
@@ -69,6 +83,19 @@ import {
   type SecretScan,
 } from "./preflight.ts";
 import { SILENT, type ProgressChannel } from "./progress.ts";
+
+/**
+ * The one binding this operation reads from the environment, for the reason `VERIFY_ENV`'s is a
+ * fixed, reviewed, non-secret path inside a location the manifest declares writable — here the
+ * managed `atyrode.babel.cache`, shared by every `prepare` job on the machine, which is what
+ * makes one reading serve twenty concurrent explorations (#236).
+ *
+ * Absent — a hand-run outside a job, the suites — keeps nothing: a cache a hand-run invented
+ * under the system's temporary directory would be a surprise rather than a saving.
+ */
+export const PREPARE_ENV = {
+  cacheDir: "BABEL_PREPARE_CACHE_DIR",
+} as const;
 
 export const PrepareInputSchema = z.strictObject({
   /** The run this job is; empty mints one (see archive.ts). */
@@ -138,11 +165,12 @@ export interface PrepareDeps {
     scan?: SecretScan | undefined,
   ): Promise<SessionDigests>;
   /**
-   * When this session's primary log was last written, in epoch ms; 0 when nothing could be
-   * observed. It is asked BEFORE the digests on purpose — one `stat` against a whole read —
-   * because skipping a moving 240 MB log is the point.
+   * How large this session's log is and when it was last written; `modifiedAt` 0 when nothing
+   * could be observed. It is asked BEFORE the digests on purpose — one `stat` against a whole
+   * read — because skipping a moving 240 MB log is the point, and because the same `stat` is
+   * what says whether a kept reading of that log is still a reading OF IT (#236).
    */
-  modifiedAt(ref: SessionRef): Promise<number>;
+  observe(ref: SessionRef): Promise<Observation>;
   /**
    * Where the material is sealed: the second output lease (`machine/output.ts`). Null for a
    * hand-run that bound none, which prepares a selection and seals no evidence — the receipt
@@ -151,6 +179,12 @@ export interface PrepareDeps {
   material?: MaterialSink | null | undefined;
   /** Where this run says it is; a caller that hands none is not watched (`progress.ts`). */
   progress?: ProgressChannel | undefined;
+  /**
+   * Where a reading is kept between preparations (`machine/cache.ts`, #236). Empty for an
+   * invocation that was given no such directory — a hand-run, the tests that pass none — which
+   * reads every log it selects, every time, and says so as `counts.reused` 0.
+   */
+  cacheDir?: string | undefined;
 }
 
 /** The version of the preparation record's shape AND of the normalization behind its source
@@ -427,14 +461,18 @@ export async function resolveRedaction(
 }
 
 /**
- * When a session's primary log was last written, in epoch ms; 0 when the file is gone or the
- * filesystem answered nothing. A log that cannot be stat-ed is not treated as live: it is the
- * digest pass that will fail over it, with the path in the refusal, and "unreadable" is a
- * better answer than "still being written".
+ * How large a session's primary log is and when it was last written, in epoch ms; zeroes when
+ * the file is gone or the filesystem answered nothing.
+ *
+ * A log that cannot be stat-ed is not treated as live: it is the digest pass that will fail over
+ * it, with the path in the refusal, and "unreadable" is a better answer than "still being
+ * written". Nor is it a log a reading may be kept of, for the same reason — an observation of
+ * nothing matches nothing.
  */
-export async function modifiedAt(ref: SessionRef): Promise<number> {
-  const at = Bun.file(ref.primaryPath).lastModified;
-  return await Promise.resolve(Number.isFinite(at) && at > 0 ? at : 0);
+export async function observe(ref: SessionRef): Promise<Observation> {
+  const info = await stat(ref.primaryPath).catch(() => null);
+  if (info === null) return { size: 0, modifiedAt: 0 };
+  return { size: info.size, modifiedAt: Math.trunc(info.mtimeMs) };
 }
 
 /**
@@ -480,6 +518,13 @@ export async function prepare(
     agent: 0,
     /** Spans the secret preflight replaced, over every session in the scope (#339). */
     redacted: 0,
+    /**
+     * Sessions served from a reading this machine already had (#236). It is on the receipt
+     * because it is the only place the saving is visible: two preparations over one scope cost
+     * the same wall-clock to an operator watching them, and this is what says the second one
+     * did not read the corpus again.
+     */
+    reused: 0,
   };
   const rows: PreparedSessionRow[] = [];
   /** What each session's scan found, folded into the receipt's report at the end. */
@@ -494,6 +539,19 @@ export async function prepare(
     stage: RUN_STAGES.preparing,
     message: "discovering the sessions this machine holds",
   });
+  /**
+   * The readings this machine keeps. Constructed here rather than handed in because the context
+   * an entry is valid under is this input's — the preflight mode is part of it — and a cache
+   * keyed on someone else's mode would serve an unscanned stream to a preparation that redacts.
+   */
+  const cache =
+    (deps.cacheDir ?? "") === ""
+      ? null
+      : readingCache(deps.cacheDir ?? "", {
+          schema: PREPARATION_SCHEMA,
+          detectors: PREFLIGHT_DETECTORS,
+          mode: input.preflight,
+        });
 
   const discovered = await deps.discover();
   counts.discovered = discovered.length;
@@ -523,7 +581,8 @@ export async function prepare(
         message: `${session.selector} (${String(examined)}/${String(chosen.chosen.length)})`,
         fraction: examined / chosen.chosen.length,
       });
-      const left = await excluded(session, input, deps, at);
+      const seen = await deps.observe(session);
+      const left = excluded(session, input, seen, at);
       if (left !== null) {
         if (named) {
           // A selector that names an excluded session is refused for the reason an unmatched
@@ -543,24 +602,74 @@ export async function prepare(
       // opened before the read and closed after it whatever the read did, so a scope refused
       // half way leaves no half-written stream a later reader could mistake for a session.
       const file = materialFile(sealed.length, session.selector);
-      const seal = (await deps.material?.session(file)) ?? null;
-      // NOTHING IS SEALED UNSCANNED (#339). The scan is what the stream is written THROUGH, so
-      // the redaction happens before the sink and before the source digest — see `digests`.
-      const scan = input.preflight === "off" ? null : secretScan();
-      let measured;
-      try {
-        measured = await deps.digests(session, seal ?? undefined, scan ?? undefined);
-      } catch (err) {
-        // The scope is refused whole. A preparation missing one of the sessions it was asked
-        // for would be an immutable record of a corpus nobody chose.
-        await seal?.close();
-        closure = "failed";
-        reason = `read ${session.selector}: ${err instanceof Error ? err.message : String(err)}`;
-        break;
+      const reused = cache === null ? null : await cache.reuse(session, seen);
+      let measured: SessionDigests;
+      let found: ScanReport | null;
+      if (cache !== null && reused !== null) {
+        /*
+          A READING THIS MACHINE ALREADY HAD (#236). The log is not opened at all: the kept
+          stream is replayed into the material and HASHED as it goes, and what it hashes to is
+          what the selection records. So the digest a citation carries is always a digest of the
+          bytes that were actually sealed, and the cache's only remembered claim is the capture
+          digest of a file whose size and mtime it just re-observed.
+
+          A stream that does not hash to what it was kept as refuses the scope rather than
+          falling back to a read. The entry is dropped, so the next preparation reads the log and
+          succeeds — and the alternative, sealing bytes nothing verified into a material a model
+          reads, is the one outcome worth failing a run over.
+        */
+        const seal = (await deps.material?.session(file)) ?? null;
+        let digested = reused.sourceDigest;
+        try {
+          if (seal !== null) digested = await cache.replay(reused, seal);
+        } finally {
+          await seal?.close();
+        }
+        if (digested !== reused.sourceDigest) {
+          await cache.forget(session);
+          closure = "failed";
+          reason =
+            `the reading kept for ${session.selector} does not digest to what it was kept ` +
+            `as; it has been dropped, and the next preparation reads the log`;
+          break;
+        }
+        measured = {
+          captureDigest: reused.captureDigest,
+          sourceDigest: reused.sourceDigest,
+          bytes: reused.bytes,
+          records: reused.records,
+        };
+        found = reused.report;
+        counts.reused++;
+      } else {
+        const seal = (await deps.material?.session(file)) ?? null;
+        // The reading is kept in the SAME pass, off the same bytes, for the reason the scan is
+        // in it: a second pass to fill a cache would have paid the cost the cache exists to
+        // avoid.
+        const kept = cache === null ? null : await cache.keep(session, seen);
+        // NOTHING IS SEALED UNSCANNED (#339). The scan is what the stream is written THROUGH, so
+        // the redaction happens before the sink and before the source digest — see `digests`.
+        const scan = input.preflight === "off" ? null : secretScan();
+        // BOTH SINKS ARE CLOSED BEFORE EITHER IS MEASURED. `digests` writes and never closes,
+        // and a kept stream whose writer had not flushed would be committed at whatever length
+        // happened to have reached the disk — a reading of a truncation.
+        const into = teeRecords(seal, kept?.sink ?? null);
+        try {
+          measured = await deps.digests(session, into ?? undefined, scan ?? undefined);
+        } catch (err) {
+          // The scope is refused whole. A preparation missing one of the sessions it was asked
+          // for would be an immutable record of a corpus nobody chose.
+          await into?.close();
+          await kept?.abandon();
+          closure = "failed";
+          reason = `read ${session.selector}: ${err instanceof Error ? err.message : String(err)}`;
+          break;
+        }
+        await into?.close();
+        found = scan === null ? null : scan.report();
+        await kept?.commit({ ...measured, report: found });
       }
-      await seal?.close();
-      if (scan !== null) {
-        const found = scan.report();
+      if (found !== null) {
         scans.push({ selector: session.selector, report: found });
         counts.redacted += found.redactions;
         if (input.preflight === "refuse" && found.redactions > 0) {
@@ -717,19 +826,19 @@ type Exclusion = { readonly kind: "live" | "agent"; readonly reason: string } | 
  * Whether this session may be in a scope, and the sentence saying why not.
  *
  * The two rules are the ones #262 names, in the order that costs least: Babel's own transcripts
- * are recognized from the path alone, and liveness costs one `stat` — so a 240 MB log that is
- * still being appended is excluded without being read, which is the whole point of asking here
- * rather than after the digests.
+ * are recognized from the path alone, and liveness is read off the one `stat` the loop already
+ * took — so a 240 MB log that is still being appended is excluded without being read, which is
+ * the whole point of asking here rather than after the digests.
  *
  * A log written in the FUTURE is live. Clocks on one machine disagree by seconds, and a file
  * whose mtime is ahead of this process is the last thing to treat as settled.
  */
-async function excluded(
+function excluded(
   session: SessionRef,
   input: PrepareInput,
-  deps: PrepareDeps,
+  seen: Observation,
   at: number,
-): Promise<Exclusion> {
+): Exclusion {
   if (!input.agentSessions && babelOwnLog(session.primaryPath)) {
     return {
       kind: "agent",
@@ -738,9 +847,8 @@ async function excluded(
         `the operator's work does not read`,
     };
   }
-  const written = await deps.modifiedAt(session);
-  if (written > 0 && at - written < LIVE_GRACE_MS) {
-    const seconds = Math.max(0, Math.round((at - written) / 1000));
+  if (seen.modifiedAt > 0 && at - seen.modifiedAt < LIVE_GRACE_MS) {
+    const seconds = Math.max(0, Math.round((at - seen.modifiedAt) / 1000));
     return {
       kind: "live",
       reason:

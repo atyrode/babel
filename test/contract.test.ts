@@ -486,28 +486,45 @@ describe("the machine half is declared as the machine half is built", () => {
         { path: ["url"], serviceId: RESTIC_SERVICE.serviceId, value: "url" },
         { path: ["bearer"], serviceId: RESTIC_SERVICE.serviceId, value: "bearer" },
       ]);
-      // Every environment value is a DIRECTORY inside a location this operation may write:
-      // restic's index cache, or the scratch space a restore is proved in. Neither is a secret
-      // and neither is a locator — and a cache outside a writable location would make every
-      // backup re-read every byte it already archived.
+    }
+    /*
+      AND THE RULE ABOUT AN ENVIRONMENT VALUE IS EVERY OPERATION'S, not those two's.
+
+      Every value is a DIRECTORY inside a location that operation may write: restic's index
+      cache, the scratch space a restore is proved in, or the readings `prepare` keeps between
+      preparations (#236). None is a secret and none is a locator — and a cache outside a
+      writable location would make every backup re-read every byte it already archived, and
+      every preparation re-read every log it already digested.
+
+      Held over ALL of them because the failure this catches is a path written into a manifest
+      by hand that the sandbox never mounts: the operation then silently caches nothing, which
+      is the defect #236 exists to fix, reintroduced where no test was looking.
+    */
+    for (const operation of declared) {
+      const op = machine.operations[operation]!;
       const writable = op.locations
         .filter((location) => location.access === "write")
         .map((location) => machine.locations[location.locationId]?.guestPath ?? "\0");
-      const environment = Object.entries(op.environment ?? {});
-      expect(environment.length).toBeGreaterThan(0);
-      for (const [name, value] of environment) {
+      for (const [name, value] of Object.entries(op.environment ?? {})) {
         expect({ name, inside: writable.some((guest) => value.startsWith(`${guest}/`)) }).toEqual({
           name,
           inside: true,
         });
       }
     }
-    // And nothing else has either (#279): the operations that bound the inference service and
-    // fixed the CA bundle `SSL_CERT_FILE` names went with the launcher, because a run that
-    // reaches a model is a job Code posts under Code's own policy.
+    // The three that reach the repository or keep a reading are the three that have one, and
+    // `scan` has neither: it reads logs and writes rows, and nothing it does is worth a byte of
+    // machine-local state.
+    expect(
+      declared
+        .filter((operation) => machine.operations[operation]!.environment !== undefined)
+        .toSorted(),
+    ).toEqual([OPERATIONS.archive, OPERATIONS.prepare, MACHINE_OPERATIONS.verify].toSorted());
+    // And nothing outside those two binds a service (#279): the operations that bound the
+    // inference service and fixed the CA bundle `SSL_CERT_FILE` names went with the launcher,
+    // because a run that reaches a model is a job Code posts under Code's own policy.
     for (const other of declared.filter((operation) => !touching.includes(operation))) {
       expect(machine.operations[other]!.services).toBeUndefined();
-      expect(machine.operations[other]!.environment).toBeUndefined();
     }
   });
 
