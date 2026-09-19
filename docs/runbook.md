@@ -1,6 +1,6 @@
 # Operations runbook: archive, custody, recovery, drains
 
-Babel is a Manifold plugin family under `atyrode.babel/`. There is no `babel` binary, no
+Babel is a Manifold plugin family under `babel/`. There is no `babel` binary, no
 local configuration document any Babel program reads, no PostgreSQL catalog and no publication
 step. What an operator still owns is the restic repository the archive lives in, the secrets that
 open it, the machines the jobs run on, and the hub the store lives in. This document is those
@@ -22,10 +22,10 @@ Where this runbook says _nothing does this_, that document says the same in a ro
 ## 1. Backing up: the `archive` operation
 
 The archive is `atyrode.babel.archive`, one of the operations the machine half implements
-(`atyrode.babel/machine/main.ts`; `MACHINE_OPERATIONS` in
-`atyrode.babel/contract.ts`). It runs `restic backup` over this machine's session roots —
+(`babel/machine/main.ts`; `MACHINE_OPERATIONS` in
+`babel/contract.ts`). It runs `restic backup` over this machine's session roots —
 OMP, Codex, Claude Code, and Babel's own — **one snapshot per root**, tagged `babel`, attributed
-to the machine's own id as restic's `--host` (`atyrode.babel/machine/archive.ts`). Per-root
+to the machine's own id as restic's `--host` (`babel/machine/archive.ts`). Per-root
 snapshots keep each root's parent chain stable when a machine gains a harness, let one unreadable
 root fail alone, and make restoring one harness a restore of one snapshot.
 
@@ -65,7 +65,7 @@ There are two paths, and the second is the one that must never stop working.
 
 **Through Babel.** `atyrode.babel.verify` reads the repository back: `restic check`, structurally
 or over every stored byte, and one catalogued session restored from a named snapshot and compared
-byte for byte against the digest `scan` recorded (`atyrode.babel/machine/verify.ts`). The
+byte for byte against the digest `scan` recorded (`babel/machine/verify.ts`). The
 `atyrode.babel.verify` door posts it and the run's receipt carries the verdict. It is the path for
 the routine question — is the archive sound, and does this session still come back — because it
 takes the snapshot and the digest out of the catalog rather than out of somebody's memory, it
@@ -212,7 +212,7 @@ placement, not today's custody.
 ## 4. The storage document, and how a job reaches it
 
 The `archive` operation reads the repository and the secrets that open it from **one Manifold
-service**, `atyrode.babel.restic`, and from nowhere else (`atyrode.babel/machine/restic.ts`;
+service**, `atyrode.babel.restic`, and from nowhere else (`babel/machine/restic.ts`;
 `docs/building.md` owns the install shape). The document it answers with is
 
 ```
@@ -263,7 +263,7 @@ above, and the operator reads a value out of custody only when he is about to us
 ## 5. Backing up the store itself
 
 The hub holds Babel's one durable store: a SQLite file at
-`<data>/atyrode.babel/data.db`, created by the enable hook and deleted by a purge
+`<data>/babel/data.db`, created by the enable hook and deleted by a purge
 (`docs/building.md`). Records, edges, rulings, assessments, filings, the ledger and every receipt
 live there and nowhere else. There is no second copy, no publication and nothing to reconcile:
 `docs/parity.md` records publication, the shared catalog and the object store as absent by decision.
@@ -308,7 +308,7 @@ the hub owner's or the machine's declaration.
 `runs.machine_id` — holds the id `core.machines.list` publishes, and the hub resolves no names. The
 imported Go-era corpus carries the old deployment's host name instead, which is what the
 `rehostSessions` door exists to repair: it rewrites one `host` value to one machine id the hub has
-just described (`atyrode.babel/contract.ts`).
+just described (`babel/contract.ts`).
 
 ---
 
@@ -317,7 +317,7 @@ just described (`atyrode.babel/contract.ts`).
 ### 7.1 The one schedule
 
 `engine.jobs.schedule` schedules a job on a machine, so the loop's beat is the cheapest useful job
-Babel owns: `scan` (`BEAT_OPERATION`, `atyrode.babel/server/conductor.ts`). It spends no
+Babel owns: `scan` (`BEAT_OPERATION`, `babel/server/conductor.ts`). It spends no
 model money, refreshes the catalog every cadence, and its settlement is what wakes the hub — a
 plugin has no clock of its own and may not poll as an alternate scheduler.
 
@@ -393,7 +393,7 @@ There is one hub, so there is one place to read: the panels. `atyrode.babel.feed
 record, ranked by what needs the operator), the peeled record and a topic with its filings and his
 interest; `atyrode.babel.watch` serves what is running, what will run and what a drain is spending
 (`docs/building.md`). Behind them are the read doors — `feed`, `record`, `thread`, `topics`,
-`topic`, `pulse`, `runs`, `run`, `policy` — spelled in `atyrode.babel/contract.ts`.
+`topic`, `pulse`, `runs`, `run`, `policy` — spelled in `babel/contract.ts`.
 
 Three things that used to be commands are now properties of having one hub:
 
@@ -408,7 +408,7 @@ Three things that used to be commands are now properties of having one hub:
 ## 10. Turning evaluation on
 
 Evaluation is off until one operator decision turns it on: `enabled` defaults to false in the
-policy schema (`atyrode.babel/store/coordinator.ts`), which is the activation gate
+policy schema (`babel/store/coordinator.ts`), which is the activation gate
 expressed as a value rather than as a migration.
 
 The policy is one document, written through the `setPolicy` door, and it carries both the
@@ -427,8 +427,8 @@ authorization and the route:
 A policy that cannot be honoured is refused with the sentence saying why: an unversioned policy
 could never be replayed against, a zero exploration or discovery share removes a protected
 allocation, shares over one over-commit a cycle, and a daily ceiling below one cycle's makes the
-per-cycle bound decorative. The recipe bodies come from `atyrode.babel/store/recipes.seed.json`,
-produced by `atyrode.babel/tools/seed-recipes.ts`.
+per-cycle bound decorative. The recipe bodies come from `babel/store/recipes.seed.json`,
+produced by `babel/tools/seed-recipes.ts`.
 
 `setBudget` and `clearBudget` are the bounded exception: an overlay with its own TTL and a required
 reason, which never edits the standing policy — because assignment ids are derived from the policy
@@ -443,7 +443,7 @@ version, and editing the standing policy mid-flight mints new ids for subjects a
 > shows an assessment carrying the model that answered and what it cost.
 >
 > **What is unproven, and it is verification rather than a defect:** the drawn lane dispatches —
-> `dispatchReviews` in `atyrode.babel/server/conductor.ts` draws, claims under a fence,
+> `dispatchReviews` in `babel/server/conductor.ts` draws, claims under a fence,
 > blinds the projection, posts the review as a Code session and binds the claim to Code's job id
 > — but no drawn review has ever run against a real hub. The evidence is synthetic: a conductor
 > regression over the real SQLite store with a simulated Code receipt, 2026-09-16. The first live
@@ -487,7 +487,7 @@ one run.
 Two bounds are structural rather than advisory. **A drawn preset cannot be fanned out**: the
 coordinator arbitrates a draw under a claim and a fence, and fanning it would be a second
 implementation of that arbitration — so `drainStart` takes the directly-launched presets only
-(`atyrode.babel/server/drain.ts`). And **a drain without a target and a deadline is not a
+(`babel/server/drain.ts`). And **a drain without a target and a deadline is not a
 drain; it is a loop** — a drain that names no deadline is given one two hours out, and a fan above
 the manifest's `concurrentJobs` for the operation it posts is refused at the door rather than
 discovered one refused job at a time.
@@ -600,8 +600,8 @@ Mandatory, and each one was broken on 2026-09-13.
 ### 11.7 What shipped, and what was exercised
 
 **Shipped.** The drain: `drainStart` / `drainStatus` / `drainStop`, the controller
-(`atyrode.babel/server/drain.ts`) and the Watch drain section
-(`atyrode.babel/watch/drain.tsx`). The release path: a `v*` tag packs, verifies, attaches
+(`babel/server/drain.ts`) and the Watch drain section
+(`babel/watch/drain.tsx`). The release path: a `v*` tag packs, verifies, attaches
 the bundles and hands them to the integrated preview's receiver.
 
 **The engine is Code.** Babel does not launch omp and does not compose a session: `atyrode.babel`
@@ -623,14 +623,14 @@ order: `atyrode.omp` and its two parts, `atyrode.code` and its three, then `atyr
 two — which is what a `required` dependency costs and what it proves. Beside the gate: the Code
 client's refusal translation against the real host sentences and the material bound into a posted
 session that takes Code's job id, with Code's own input schema parsing the request
-(`atyrode.babel/server/engine/session.test.ts`, `atyrode.babel/doors/drain.test.ts`);
+(`babel/server/engine/session.test.ts`, `babel/doors/drain.test.ts`);
 the settle path — valid, refused-and-charged, still running, cancelled-with-no-transcript, and a
 read Code refuses twice — against a fake `readSession`
-(`atyrode.babel/server/conductor.test.ts`); the sealed material's layout and its digests
-against a real temporary lease (`atyrode.babel/machine/prepare.test.ts`); both launch wakes,
-the press that seals and the settle that posts (`atyrode.babel/doors/launch.test.ts`); and
+(`babel/server/conductor.test.ts`); the sealed material's layout and its digests
+against a real temporary lease (`babel/machine/prepare.test.ts`); both launch wakes,
+the press that seals and the settle that posts (`babel/doors/launch.test.ts`); and
 Watch's Start and drain sections rendered from a fake `profiles` door
-(`atyrode.babel/watch/test/`).
+(`babel/watch/test/`).
 
 Local synthetic evidence, 2026-09-16: the conductor regression uses the real SQLite store and the
 reception read model with a simulated Code receipt. It covers a reclaimed claim's new run, rejects

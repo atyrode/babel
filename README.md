@@ -4,11 +4,11 @@ Babel is an open-ended exploratory instrument for archived conversations from OM
 
 Babel **is** a [Manifold](https://github.com/atyrode/manifold) plugin family. It has no binary and no web application of its own: it is installed into a Manifold hub, which owns its data, runs its jobs on enrolled machines, and renders its pages as panels in its shell.
 
-| Plugin                | Directory              | What it is                                                                                                                                                                                                          |
-| --------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `atyrode.babel`       | `atyrode.babel/`       | The baseline: the store (one SQLite file of its own), the read doors, the operator's acts, the machine operations that catalogue, prepare and archive sessions, and the conductor that decides what deserves a run. |
-| `atyrode.babel.feed`  | `atyrode.babel/feed/`  | Home, a peeled record, and a topic with its filings — every record Babel produced, ranked by what needs the operator.                                                                                               |
-| `atyrode.babel.watch` | `atyrode.babel/watch/` | What is running, what will run, and what a drain is spending: the model and the ceiling up front, the live pulse, the receipt afterwards.                                                                           |
+| Plugin                | Directory      | What it is                                                                                                                                                                                                          |
+| --------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `atyrode.babel`       | `babel/`       | The baseline: the store (one SQLite file of its own), the read doors, the operator's acts, the machine operations that catalogue, prepare and archive sessions, and the conductor that decides what deserves a run. |
+| `atyrode.babel.feed`  | `babel/feed/`  | Home, a peeled record, and a topic with its filings — every record Babel produced, ranked by what needs the operator.                                                                                               |
+| `atyrode.babel.watch` | `babel/watch/` | What is running, what will run, and what a drain is spending: the model and the ceiling up front, the live pulse, the receipt afterwards.                                                                           |
 
 [SPEC.md](SPEC.md) is the product and delivery specification. [docs/building.md](docs/building.md) is how the family is built, packed, verified and delivered. [docs/runbook.md](docs/runbook.md) holds the exercised recovery, custody and rollback procedures, and [docs/parity.md](docs/parity.md) records, per capability, what the retired standalone product did and whether the plugin does it.
 
@@ -50,5 +50,5 @@ Every change is proved on a preview hub — the integrated preview at `preview.m
 - **Resumable rather than exhaustive.** Finite runs checkpoint unexplored hypotheses so later inference can continue without constraining initial emergence.
 - **Reality is versioned, not remembered.** Stable entities and append-only, temporal, provenance-bearing facts ground attention without becoming an opaque global prompt; agent-inferred context remains proposed until a human or trusted source authorizes it.
 - **Suggestions, never side effects.** Babel may render an issue draft; publishing or applying it is out of scope.
-- **The recipes are a product.** Analysis recipes are versioned, reviewable assets that improve as useful and harmful patterns are learned. Their bodies live in `atyrode.babel/store/recipes.seed.json`, and a hub reads them from its own policy, so a claim can cite the exact version it was produced under.
+- **The recipes are a product.** Analysis recipes are versioned, reviewable assets that improve as useful and harmful patterns are learned. Their bodies live in `babel/store/recipes.seed.json`, and a hub reads them from its own policy, so a claim can cite the exact version it was produced under.
 - **Good patterns matter too.** Babel should preserve effective habits, not merely collect failures.

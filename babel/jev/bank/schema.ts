@@ -1,10 +1,5 @@
 import { z } from "zod";
-import {
-  RECORD_KINDS,
-  RecordIdSchema,
-  RecordKindSchema,
-  RULINGS,
-} from "../../atyrode.babel/contract.ts";
+import { RECORD_KINDS, RecordIdSchema, RecordKindSchema, RULINGS } from "../../contract.ts";
 
 /*
   THE QUESTION BANK: WHAT JEV IS ASKED, AND AT WHAT LINE AN ANSWER BECOMES A VOTE.
@@ -13,7 +8,7 @@ import {
   bundle: it is one reviewable document per record kind under `bank/questions/`, each declaring
   its own version, each registered in `bank/versions.json`, and drift between the two is refused
   by `tools/seed-questions.ts` — the same mechanism, and deliberately the same shape, as the
-  cookbook's recipes (`atyrode.babel/tools/seed-recipes.ts`). An assessment cites `kind@version`
+  cookbook's recipes (`babel/tools/seed-recipes.ts`). An assessment cites `kind@version`
   the way a claim cites `recipe@version`, and a citation is only worth writing if the thing it
   names can be read back exactly.
 

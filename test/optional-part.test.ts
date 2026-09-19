@@ -1,17 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import {
-  ACTIONS,
-  BABEL_PLUGIN_ID,
-  JEV_PLUGIN_ID,
-  type ActionName,
-} from "../atyrode.babel/contract.ts";
-import type { Door } from "../atyrode.babel/doors/door.ts";
-import { readDoors } from "../atyrode.babel/doors/read.ts";
-import { stamp } from "../atyrode.babel/store/feedindex.ts";
-import { insert, openTestStore, type TestStore } from "../atyrode.babel/store/testdb.ts";
-import babelManifest from "../atyrode.babel/manifest.json";
+import { ACTIONS, BABEL_PLUGIN_ID, JEV_PLUGIN_ID, type ActionName } from "../babel/contract.ts";
+import type { Door } from "../babel/doors/door.ts";
+import { readDoors } from "../babel/doors/read.ts";
+import { stamp } from "../babel/store/feedindex.ts";
+import { insert, openTestStore, type TestStore } from "../babel/store/testdb.ts";
+import babelManifest from "../babel/manifest.json";
 
 /*
   THE PART IS OPTIONAL, AND THAT IS A PROPERTY OF THE BASELINE.
@@ -38,7 +33,7 @@ import babelManifest from "../atyrode.babel/manifest.json";
   epic touches (the feed's ranking, the peel, the topic). The acts are not dispatched here: a
   write's effect is the store, and the part has no database, no store and no reach into one —
   its only road is a door, which is what this file holds. That a cycle survives a refused sibling
-  call is `atyrode.babel/server.test.ts`'s ("a cycle that stumbles never fails the door it
+  call is `babel/server.test.ts`'s ("a cycle that stumbles never fails the door it
   followed"), and it is proved there rather than restated here.
 */
 

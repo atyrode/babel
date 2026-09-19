@@ -17,7 +17,7 @@ Babel executes in three places and holds a process in none of them.
   is its transaction and a service binding is its secret.
 - **The machine half** is a Bun bundle the hub installs and runs as a **job** on an enrolled
   machine: `scan`, `archive`, `prepare`, `verify`, and nothing else
-  (`atyrode.babel/manifest.json`; `atyrode.babel/machine/main.ts`). It reads
+  (`babel/manifest.json`; `babel/machine/main.ts`). It reads
   session logs, runs restic, and writes sealed outputs. It never reaches a model.
 - **A run that reaches a model is a Code session.** Babel composes a prompt and posts it through
   `atyrode.code.runSession`. It chooses no model, no thinking level and no account, holds no
@@ -68,7 +68,7 @@ Five properties of that table carry the weight:
   reaches restic as `RESTIC_PASSWORD` in the **child's** environment only — never argv, never the
   parent's environment, never a receipt — and each child gets a minimal environment, so no ambient
   `RESTIC_*` variable can redirect an archive or aim a verification at another repository
-  (`atyrode.babel/machine/restic.ts`).
+  (`babel/machine/restic.ts`).
 - **A restore writes corpus bytes onto the machine, and the sandbox is what bounds where.**
   `verify` restores a catalogued session to prove it comes back byte for byte, so those bytes
   land outside the repository: under the job's own managed cache location, or in the target the
@@ -80,7 +80,7 @@ Five properties of that table carry the weight:
 - **Nothing deletes, and the absence is enforced rather than incidental.** The verbs restic may be
   asked for are a closed set of eight — `cat`, `init`, `backup`, `snapshots`, `check`, `ls`,
   `dump`, `restore` — and every invocation is built by the one function that admits a verb or
-  throws (`RESTIC_VERBS` and `resticArgv`, `atyrode.babel/machine/restic.ts`), with a test that
+  throws (`RESTIC_VERBS` and `resticArgv`, `babel/machine/restic.ts`), with a test that
   pins the refusal of `forget`, `prune`, `repair` and `unlock`. A compromised `archive` could
   write a snapshot and a compromised `verify` could read one; neither has a verb that removes one,
   and a fifth destructive verb costs a deliberate edit to a named list and a failing test rather
@@ -101,7 +101,7 @@ and a reviewer who needs to know how that session was confined reads Code's decl
 document. Claiming otherwise would be Babel describing a boundary it neither builds nor observes.
 
 What Babel does own about that session is the **material**, and it is the one real control on this
-side of the line (`SPEC.md` §2.6; `atyrode.babel/machine/prepare.ts`):
+side of the line (`SPEC.md` §2.6; `babel/machine/prepare.ts`):
 
 - A run reads `/inputs/material`, an immutable sealed selection bound read-only. It is not a live
   view of the corpus: the bytes were fixed when the preparation was sealed, and a session still
@@ -110,7 +110,7 @@ side of the line (`SPEC.md` §2.6; `atyrode.babel/machine/prepare.ts`):
   itself by accident.
 - The selection is scanned for likely credentials before it is sealed, and a matched span is
   replaced by a marker naming its class and the locator of the original
-  (`atyrode.babel/machine/preflight.ts`). The scan is deterministic — patterns and an entropy
+  (`babel/machine/preflight.ts`). The scan is deterministic — patterns and an entropy
   heuristic, no model and no network — so the same bytes redact the same way on any machine, and
   the locator resolves only against the log this machine holds. A preparation may refuse the
   scope instead, and either way the receipt carries what was found by class and never by value.
@@ -153,7 +153,7 @@ Most reachable first. A residual discovered in the system belongs in this list i
 5. **A credential the scan does not recognize still travels.** The preflight is deterministic, so
    it catches what its rules describe and nothing else: a credential in a format no rule names, or
    one the entropy heuristic reads as prose, reaches the provider like any other bytes. The rule
-   table is the claim, class by class (`atyrode.babel/machine/preflight.ts`), and the receipt
+   table is the claim, class by class (`babel/machine/preflight.ts`), and the receipt
    names the rule set that ran so a corpus scanned by an older one is identifiable rather than
    assumed clean.
 6. **The trust base is the hub, the machine and Code.** The hub constructs the job sandbox, holds

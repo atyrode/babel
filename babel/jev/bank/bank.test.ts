@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
-import { RECORD_KINDS, type RecordKind } from "../../atyrode.babel/contract.ts";
+import { RECORD_KINDS, type RecordKind } from "../../contract.ts";
 import { BANK, bankFor, votesFor } from "./bank.ts";
 import { documentOf } from "./parse.ts";
 import { ROUTING_QUESTIONS, tally, type Vote } from "./schema.ts";
@@ -281,12 +281,17 @@ test("nothing in the baseline imports the part, which is what makes it removable
   // so a hub where the part was never installed answers fine and the optionality is gone with
   // nobody having decided to end it. `test/` is excluded on purpose — `contract.test.ts` reads
   // the part's manifest as data to pin its ids, which ships nothing.
-  const root = resolve(import.meta.dir, "../..");
+  //
+  // The part is a directory inside the baseline's now, so the specifier to catch is a `jev/`
+  // path segment rather than a whole plugin id, and the part's own files are skipped: reaching
+  // `./bank/` from inside the part is the part importing itself.
+  const root = resolve(import.meta.dir, "../../..");
   const reached: string[] = [];
-  for (const directory of ["atyrode.babel", "scripts"]) {
+  for (const directory of ["babel", "scripts"]) {
     for (const file of new Bun.Glob("**/*.{ts,tsx}").scanSync({ cwd: resolve(root, directory) })) {
+      if (file.startsWith("jev/")) continue;
       const source = await Bun.file(resolve(root, directory, file)).text();
-      if (/(?:from|import)\s*\(?\s*["'][^"']*atyrode\.babel\.jev/u.test(source)) {
+      if (/(?:from|import)\s*\(?\s*["'][^"']*\bjev\//u.test(source)) {
         reached.push(`${directory}/${file}`);
       }
     }

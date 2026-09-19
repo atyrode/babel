@@ -1,4 +1,4 @@
-import { RecordKindSchema } from "../../atyrode.babel/contract.ts";
+import { RecordKindSchema } from "../../contract.ts";
 import {
   admits,
   BankDocumentSchema,
@@ -19,7 +19,7 @@ import {
 
   This is the dev-time half: `tools/seed-questions.ts` runs it over `bank/questions/*.md` and
   writes `bank/questions.seed.json`, which is the only thing the runtime reads. It is the same
-  shape as `atyrode.babel/tools/seed-recipes.ts` and for the same reason — a document declares
+  shape as `babel/tools/seed-recipes.ts` and for the same reason — a document declares
   its version, `versions.json` records it, an assessment cites it, and a document seeded under a
   number the manifest does not record would make every citation of it name something nobody can
   read back.

@@ -18,7 +18,7 @@ before quoting any share here as if it described Babel in general.
 
 Each row is one side of one voter: the question it thresholds, the direction it casts, the line at
 which the answer becomes an opinion, and the distribution over observations that justified that
-line. A row with no distribution is refused by `atyrode.babel.jev/bank/parse.ts` rather than
+line. A row with no distribution is refused by `babel/jev/bank/parse.ts` rather than
 seeded. A side firing on under 2% or over 95% of its kind answers the same way for everything and
 is not admitted; it stays in the block, because deleting it would lose the measurement that
 retired it.

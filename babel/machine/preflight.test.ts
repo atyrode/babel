@@ -140,7 +140,7 @@ const ROWS: readonly Row[] = [
     class: "high-entropy-string",
     positive: `curl -H "x-internal: Zp4Kq9Lm2Xv7Bn3Rt8Yw1Hd6Fj5Gs0Ac"`,
     // Long, mixed and dense enough to fail a naive entropy floor, and public by purpose.
-    negative: `commit 4f9c1b7e2a8d6350e1c4b9a7f2d8e6c3b5a09172 in atyrode.babel/machine/prepare.ts`,
+    negative: `commit 4f9c1b7e2a8d6350e1c4b9a7f2d8e6c3b5a09172 in babel/machine/prepare.ts`,
   },
 ];
 
@@ -162,12 +162,12 @@ test("what a transcript is mostly made of is not a secret", () => {
   // while catching nothing.
   const ordinary = record(
     [
-      "run 550e8400-e29b-41d4-a716-446655440000 read atyrode.babel/store/schema.ts at",
+      "run 550e8400-e29b-41d4-a716-446655440000 read babel/store/schema.ts at",
       "sha256:9c1185a5c5e9fc54612808977ee8f548b2258d31e8cb8bd5b4b0b2a1c1d0e0f1 and wrote",
       "prep-0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff0 at",
       "2026-09-13T07:41:22.518Z, and an inline image",
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AAAAMBAQCS9G2MAAAAAElFTkSuQmCC",
-      "and /home/alex/babel/atyrode.babel/machine/preflight.ts:1",
+      "and /home/alex/babel/babel/machine/preflight.ts:1",
     ].join(" "),
   );
   expect(findSecrets(ordinary)).toEqual([]);

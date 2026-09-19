@@ -23,19 +23,19 @@ import {
   RUNTIME_TOOLS,
   WATCH_PLUGIN_ID,
   asLaunchRequest,
-} from "../atyrode.babel/contract.ts";
-import { launchRequest } from "../atyrode.babel/watch/api.ts";
+} from "../babel/contract.ts";
+import { launchRequest } from "../babel/watch/api.ts";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
-import { ADAPTERS } from "../atyrode.babel/machine/adapters/index.ts";
-import { STORE_DATA_VERSION } from "../atyrode.babel/store/schema.ts";
-import { importableTables } from "../atyrode.babel/store/acts.ts";
-import { MAX_MATERIAL_BYTES } from "../atyrode.babel/doors/launch.ts";
-import { plugin } from "../atyrode.babel/server.ts";
-import babelManifest from "../atyrode.babel/manifest.json";
-import feedManifest from "../atyrode.babel/feed/manifest.json";
-import watchManifest from "../atyrode.babel/watch/manifest.json";
-import jevManifest from "../atyrode.babel.jev/manifest.json";
-import { JEV_SERVICE } from "../atyrode.babel.jev/server/credential.ts";
+import { ADAPTERS } from "../babel/machine/adapters/index.ts";
+import { STORE_DATA_VERSION } from "../babel/store/schema.ts";
+import { importableTables } from "../babel/store/acts.ts";
+import { MAX_MATERIAL_BYTES } from "../babel/doors/launch.ts";
+import { plugin } from "../babel/server.ts";
+import babelManifest from "../babel/manifest.json";
+import feedManifest from "../babel/feed/manifest.json";
+import watchManifest from "../babel/watch/manifest.json";
+import jevManifest from "../babel/jev/manifest.json";
+import { JEV_SERVICE } from "../babel/jev/server/credential.ts";
 
 /*
   A manifest is JSON and cannot import `contract.ts`, so every id it repeats is pinned here:
