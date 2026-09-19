@@ -646,6 +646,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The `controversial` order ranked agreement above disagreement.** A record the voters split on
+  is supposed to surface rather than land mid-ranked, and most of that shipped with the two axes:
+  the split is computed, the row is badged, the gutter is marked, the peel says so and the
+  standing filters on it. **The order itself was the one piece missing, and it was inverted** — a
+  record every role agreed on, cross-role, outranked one genuinely divided inside a single role.
+  Rank is balance times magnitude *within each role that took both sides*, summed over the roles
+  that did, and zero when no single role divided; a zero-ranked record now drops out of the list
+  the way silence already drops out of `rising`, so the list is exactly the split records and its
+  total is how many of the window are contested.
+
+  The empty state says **both** readings of its own absence rather than claiming the corpus
+  agrees. #366 flagged the doubt itself: if the roles are redundant — several reviewers asked one
+  question several ways — then a cross-role mixture is a real disagreement and this order
+  under-counts by exactly those records. Nothing measures which, so nothing pretends to.
 - **A release delivers every bundle it packed, and nothing says which by hand.** The release job
   handed the preview's receiver a hand-maintained list of plugin ids while everything around it
   globbed, so a new part was attached to the release and never delivered — and the guard could not

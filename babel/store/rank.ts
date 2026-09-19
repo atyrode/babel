@@ -127,18 +127,22 @@ export function establishedOf(awaiting: boolean, contested: boolean, votes: numb
 /**
  * The few facts of a post every rank and every tie-break reads.
  *
- * The four columns are reached through `post` rather than copied beside it, because the index
- * holds tens of thousands of entries and the wire shape already carries them: a flat copy would
- * be six more fields per row that two writers could disagree about.
+ * They are reached through `post` rather than copied beside it, because the index holds tens of
+ * thousands of entries and the wire shape already carries them: a flat copy would be five more
+ * fields per row that two writers could disagree about.
  */
 export interface Ranked {
   readonly post: {
     readonly id: string;
     readonly kind: PostKind;
     readonly score: number;
-    readonly support: number;
-    readonly oppose: number;
     readonly awaiting: boolean;
+    /**
+     * The surviving votes, each naming the role it answered: what the controversial order is
+     * about. The two columns would not do, because the split this store means is inside one
+     * role and a column has already lost which role each vote came from.
+     */
+    readonly votes: readonly RankedVote[];
   };
   /** Milliseconds since the Unix epoch. */
   readonly createdAt: number;
@@ -146,6 +150,16 @@ export interface Ranked {
   readonly activity: readonly number[];
   /** Which of `next`'s groups this post belongs to; read only when it awaits the operator. */
   readonly urgency: number;
+}
+
+/**
+ * One surviving vote as the ranks read it: the question a run was asked, and how it answered.
+ * A vote whose grant named a role this build cannot carries `""`, which is how the index spells
+ * it and what keeps such a vote in the score and outside every split.
+ */
+export interface RankedVote {
+  readonly role: string;
+  readonly vote: string;
 }
 
 /**
@@ -172,17 +186,57 @@ export function topRank(score: number): number {
 }
 
 /**
- * Balance times magnitude, and zero for anything one-sided.
+ * HOW SPLIT THE REVIEWERS ARE: balance times magnitude inside each role that divided, summed
+ * over the roles that did, and zero for a record no single role divided.
  *
- * The zero is the honest answer rather than a small number: §8.7 says controversial "needs both
+ * THE ROLE BOUNDARY IS THE WHOLE RULE, and it is the one this rank used to lose. A role is the
+ * question a run was asked, so support on whether a proposal matters beside opposition on
+ * whether its evidence holds is two reviewers answering two questions rather than an argument.
+ * Folding every vote into one support and one oppose column and taking the balance of that
+ * scores those two as maximally controversial and scores a record two runs contradicted each
+ * other on, under one question, below it — which is how the list that exists to find
+ * disagreement comes to be led by records nobody contradicted. It also made the page say two
+ * things at once: the row's badge, the mark beside the score and the peel's note all read the
+ * split inside one role, and only the order read any mixture.
+ *
+ * Zero is the honest answer rather than a small number: §8.7 says controversial "needs both
  * support and opposition", and a record nine reviewers supported is not slightly controversial
- * — it is agreed on.
+ * — it is agreed on. Summing the split roles rather than taking the widest is what makes a
+ * record two roles divided over rank above one a single role did: the disagreement is broader.
+ *
+ * An unsure is neither side. A reviewer who declined to answer is not half of an argument.
  */
-export function controversialRank(support: number, oppose: number): number {
-  if (support <= 0 || oppose <= 0) return 0;
-  const smaller = Math.min(support, oppose);
-  const larger = Math.max(support, oppose);
-  return Math.pow(support + oppose, smaller / larger);
+export function controversialRank(votes: readonly RankedVote[]): number {
+  let rank = 0;
+  for (let at = 0; at < votes.length; at++) {
+    const here = votes[at];
+    if (here === undefined || here.role === "") continue;
+    // Each role is weighed once, at the first vote that names it: a role weighed once per vote
+    // would add its whole argument again for every voter in it, so one role five runs split
+    // 3–2 would outrank five roles that each split. The vocabulary §4.12 closes is short
+    // enough that finding the first vote costs less than a map per post.
+    let weighed = false;
+    for (let before = 0; before < at; before++) {
+      if (votes[before]?.role === here.role) {
+        weighed = true;
+        break;
+      }
+    }
+    if (weighed) continue;
+    let support = 0;
+    let oppose = 0;
+    for (let other = at; other < votes.length; other++) {
+      const vote = votes[other];
+      if (vote === undefined || vote.role !== here.role) continue;
+      if (vote.vote === "support") support++;
+      else if (vote.vote === "oppose") oppose++;
+    }
+    if (support === 0 || oppose === 0) continue;
+    const smaller = Math.min(support, oppose);
+    const larger = Math.max(support, oppose);
+    rank += Math.pow(support + oppose, smaller / larger);
+  }
+  return rank;
 }
 
 /**
@@ -213,7 +267,7 @@ export function rankOf(sort: FeedSort, entry: Ranked, nowMs: number): number {
     case "top":
       return topRank(entry.post.score);
     case "controversial":
-      return controversialRank(entry.post.support, entry.post.oppose);
+      return controversialRank(entry.post.votes);
     case "rising":
       return risingRank(entry.activity, entry.createdAt, nowMs);
     case "new":

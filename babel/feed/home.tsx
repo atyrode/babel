@@ -394,6 +394,13 @@ export function FeedListing({
   // with nothing on it: one is a statement about the query, the other about the corpus.
   const narrowed =
     query.kinds.length > 0 || query.established.length > 0 || (query.topic ?? "") !== "";
+  // The controversial order is a narrowing as well as an order — it lists only the records
+  // Babel's reviewers took both sides on inside one role — so an empty one is a fact about the
+  // argument rather than about the corpus. It is also the one emptiness on this page a reader
+  // could mistake for a finding: "nothing is contested" reads as "everything agrees" when it
+  // may instead mean the reviewers were asked one question several ways, which the deployment
+  // has not measured. The page says both halves rather than implying the first.
+  const unsplit = query.sort === "controversial";
   // ONE toast at the foot of the page, whatever raised it: a ruling this list recorded, or a
   // note the surface around it pushed in. A refusal carries no way back, so it offers none.
   const note = toast ?? (said === undefined || said === "" ? null : { said, reopens: "" });
@@ -509,9 +516,17 @@ export function FeedListing({
       )}
       {answer !== null && shown.length === 0 && (
         <div className="babel-state">
-          <strong>{narrowed ? "Nothing matches this view" : NOTHING_HERE[query.surface]}</strong>
+          <strong>
+            {unsplit
+              ? "Nothing here is split"
+              : narrowed
+                ? "Nothing matches this view"
+                : NOTHING_HERE[query.surface]}
+          </strong>
           <span>
-            {narrowed ? (
+            {unsplit ? (
+              "This order lists only the records Babel's reviewers took both sides on inside one question. That none did may mean they agree, or that they were asked one question several ways; Babel has not measured which."
+            ) : narrowed ? (
               "That is a statement about the filters, not about what Babel has produced."
             ) : query.surface === "desk" ? (
               <>

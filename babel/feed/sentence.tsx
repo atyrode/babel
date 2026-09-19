@@ -97,7 +97,8 @@ const SORT_BASIS: Record<FeedSort, string> = {
   hot: "The score against how long ago the post arrived.",
   new: "Newest first, and nothing else.",
   top: "The highest score inside the window.",
-  controversial: "Support and opposition together, strongest where they are most evenly split.",
+  controversial:
+    "Only the records Babel's reviewers split on — both sides inside one question — most evenly split first.",
   rising: "Votes and comments in the last twelve hours, against the age of the post.",
 };
 

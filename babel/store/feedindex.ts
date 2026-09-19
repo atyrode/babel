@@ -41,6 +41,7 @@ import {
 import { standingOf } from "./acts.ts";
 import {
   ageWord,
+  controversialRank,
   establishedOf,
   feedWhy,
   risingRank,
@@ -913,6 +914,12 @@ export function filterFeed(
     if (since > 0 && entry.createdAt < since) continue;
     if (query.sort === "rising" && risingRank(entry.activity, entry.createdAt, nowMs) === 0)
       continue;
+    // A list that exists to find disagreement and then ends in every record nobody contradicted
+    // is a list of the whole corpus with a few interesting rows on top — the same reason above
+    // that `rising` excludes silence. It is also the count: asking for controversial answers HOW
+    // MANY of the window's records the reviewers split on, which is the number to check before
+    // reading anything into "almost nothing is contested".
+    if (query.sort === "controversial" && controversialRank(entry.post.votes) === 0) continue;
     out.push(entry);
   }
   return out;
