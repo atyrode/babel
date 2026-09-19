@@ -6,6 +6,7 @@ import { drainDoors, type DrainDoorDeps } from "./drain.ts";
 import { exportDoors } from "./export.ts";
 import { launchDoors, type LaunchDeps } from "./launch.ts";
 import { readDoors } from "./read.ts";
+import { serviceDoors, type DeclaredService } from "./services.ts";
 
 /*
   EVERY DOOR OF THE BASELINE, in one list. The kit takes a plugin's actions and its handlers as
@@ -25,6 +26,12 @@ import { readDoors } from "./read.ts";
   once. There is no model lane here: a run that reaches a model is a Code session, and what
   starts one is Code's `runSession` door (#279), so `launch.ts` refuses and `drain.ts` refuses
   through it.
+
+  The two service doors (`services.ts`, #400) come last and are the only pair the OWNER alone
+  may knock on: they compose the policy behind the `services` block the manifest's operations
+  declare, and installing one is a compare-and-swap on the machine's whole configuration. They
+  take that declaration as an argument rather than reading the manifest here, because the
+  manifest is parsed once in `server.ts` and a second parse is a second answer.
 */
 
 export interface BabelDoors {
@@ -37,6 +44,7 @@ export function babelDoors(
   deps: LaunchDeps,
   drain: DrainDoorDeps,
   concurrentJobs: number | null,
+  services: readonly DeclaredService[],
 ): BabelDoors {
   const actions: ServerActionDef[] = [];
   const handlers: Record<string, ServerHandler> = {};
@@ -46,6 +54,7 @@ export function babelDoors(
     ...exportDoors(store),
     ...launchDoors(store, deps),
     ...drainDoors(store, drain),
+    ...serviceDoors(services),
   ];
   for (const door of doors) {
     const { name } = door.action;

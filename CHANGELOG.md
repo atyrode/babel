@@ -11,6 +11,32 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A service policy is composed and installed from a panel, and it names the file.** Babel binds
+  host services and nothing in Babel composed one: installing the restic policy was a
+  hand-written owner call spelled out in prose in the runbook. Two owner-only doors now preview
+  and install, following the pattern `atyrode.code` already uses — the policy is composed from
+  what the manifest's own `services` blocks declare, so a binding mismatch cannot be created by
+  hand-editing one of the two; it is previewed with a digest; and it is applied as a
+  compare-and-swap against the revision it was read at. A preview whose revision moved is
+  refused, and so is one whose **composition** moved while the revision did not. Both non-owner
+  refusals are proved to reach the hub **not at all** — the tests assert the configuration was
+  never even read, because a version that asked and then caught would satisfy any assertion about
+  its return value while reading something nobody authorised.
+
+  **There is no key field, and there cannot be one.** Manifold has no path for a credential value
+  anywhere: the agent reads it from a file on the machine, and the protocol says so — *"Native
+  bootstrap advertises references and allowed origins, never source paths or values."* That gap
+  is filed upstream. So the panel does the next best thing and **names the file**: the credential
+  reference the policy wants, the path on that machine the agent will read it from, and whether
+  the binding came up. Three separate facts — advertised, readable, and the remedy sentence — so
+  that *not configured* and *configured and refused* stop producing identical silence, which is
+  the failure mode "out of credit" was deliberately designed to look like.
+
+  The proof that no value passes through Babel is on the same terms the call path already uses: a
+  planted token in the environment, a full preview and install, and an assertion that neither the
+  serialized preview nor the serialized host arguments contain it anywhere — plus that both input
+  schemas reject a credential field outright, and that the policy's credential references are
+  exactly the one name, read back through the engine's own function.
 - **A Jev call has a size the part will pay for, and the same question is asked once.** The
   policy's ceilings meter spend per cycle and per day; neither bounds how large **one** call may
   be, and nothing stopped the same record being judged twice for two payments. A call is capped at

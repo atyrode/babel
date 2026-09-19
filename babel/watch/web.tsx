@@ -17,6 +17,8 @@ import {
   PulseResultSchema,
   RunsQuerySchema,
   RunsResultSchema,
+  ServicesInstalledSchema,
+  ServicesPreviewSchema,
   TopicsResultSchema,
   WATCH_PLUGIN_ID,
 } from "../contract.ts";
@@ -29,6 +31,7 @@ import {
   drainStopInput,
   launchRequest,
   read,
+  serviceOrigins,
   stopInput,
   type CycleReport,
   type DrainDraft,
@@ -38,6 +41,7 @@ import {
   type ProfilesResult,
   type RunRow,
   type RunsResult,
+  type ServicesPreview,
   type TopicsResult,
 } from "./api.ts";
 import { Ceilings } from "./ceilings.tsx";
@@ -45,6 +49,7 @@ import { Cycle } from "./cycle.tsx";
 import { Drain } from "./drain.tsx";
 import { Recipes } from "./recipes.tsx";
 import { Runs } from "./runs.tsx";
+import { Services } from "./services.tsx";
 import { Start } from "./start.tsx";
 
 /*
@@ -130,6 +135,23 @@ export function Watch({ host }: PanelProps) {
   const [policyNote, setPolicyNote] = useState("");
   const [profilesNote, setProfilesNote] = useState("");
   const [cycleNote, setCycleNote] = useState("");
+  /*
+    THE SERVICE POLICY IS READ ON DEMAND, not polled (#400). It is an owner-only read of a
+    machine's whole service configuration, and there is no machine to read until the operator
+    picks one — so a poll would be a refusal every thirty seconds for every viewer who is not
+    the owner, about a machine nobody named. The press is the read, which is also what makes
+    "write the file, then check" a sentence the panel can honour.
+  */
+  const [serviceMachine, setServiceMachine] = useState("");
+  const [serviceDrafts, setServiceDrafts] = useState<Readonly<Record<string, string>>>({});
+  const [servicePreview, setServicePreview] = useState<ServicesPreview | null>(null);
+  /* The same two notes the runs feed keeps apart: a failed read, which the next good answer
+     clears, and what the operator's own act said, which a refresh must not erase — the refresh
+     is the very thing the act asked for. */
+  const [serviceRead, setServiceRead] = useState("");
+  const [serviceNote, setServiceNote] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [installing, setInstalling] = useState(false);
 
   const runs = usePolledResource<RunsResult>(
     () => read(host, ACTIONS.runs, RunsQuerySchema.parse({ limit }), RunsResultSchema),
@@ -352,6 +374,57 @@ export function Watch({ host }: PanelProps) {
     [host, runs],
   );
 
+  /*
+    CHECK, which is the read and the readiness in one press: `previewServices` composes the
+    policy out of the manifest and reports, per service, what is installed and whether the
+    machine's own credential came up. A refusal — the commonest being that this principal is
+    not the hub's owner — lands as the note under the section, like every other refused read
+    on this panel.
+  */
+  const onServiceCheck = useCallback(async () => {
+    setChecking(true);
+    const outcome = await act(
+      host,
+      ACTIONS.previewServices,
+      { machineId: serviceMachine, origins: serviceOrigins(serviceDrafts) },
+      ServicesPreviewSchema,
+    );
+    setChecking(false);
+    setServicePreview(outcome.ok ? outcome.value : null);
+    setServiceRead(outcome.ok ? "" : outcome.message);
+  }, [host, serviceDrafts, serviceMachine]);
+
+  /*
+    THE PRESS CARRIES THE PREVIEW IT WAS READ FROM — the revision and the digest — so a policy
+    that moved between the two is refused by name rather than overwritten. The answer replaces
+    the preview with a fresh read, because the revision the operator now holds is the one the
+    install just minted and a second press against the old one would refuse.
+  */
+  const onServiceInstall = useCallback(async () => {
+    if (servicePreview === null) return;
+    setInstalling(true);
+    const outcome = await act(
+      host,
+      ACTIONS.installServices,
+      {
+        machineId: serviceMachine,
+        origins: serviceOrigins(serviceDrafts),
+        expectedRevision: servicePreview.expectedRevision,
+        previewDigest: servicePreview.previewDigest,
+      },
+      ServicesInstalledSchema,
+    );
+    setInstalling(false);
+    setServiceNote(
+      outcome.ok
+        ? `Installed ${outcome.value.services.map((service) => service.serviceId).join(", ")} on ` +
+            `${outcome.value.machineId}. Re-install the jobs so their service bindings carry the ` +
+            `new fingerprint.`
+        : outcome.message,
+    );
+    if (outcome.ok) await onServiceCheck();
+  }, [host, onServiceCheck, serviceDrafts, serviceMachine, servicePreview]);
+
   return (
     <Stack gap="var(--babel-space-6)" className="plugin-atyrode_babel_watch">
       {/*
@@ -403,6 +476,39 @@ export function Watch({ host }: PanelProps) {
       />
       <Recipes recipes={policy.value?.recipes ?? []} now={now} note={policyNote} />
       <Ceilings policy={policy.value} now={now} note={policyNote} />
+      {/*
+        LAST, under the ceilings, because it is the least frequent thing an operator does here:
+        a service policy is installed once per machine and then re-read only when something has
+        stopped working. It is on this panel rather than a settings page of its own for the
+        reason the archive's own steps are — what it configures is what the machines run.
+      */}
+      <Services
+        preview={servicePreview}
+        drafts={serviceDrafts}
+        machines={machines.value}
+        machineId={serviceMachine}
+        checking={checking}
+        installing={installing}
+        note={serviceNote === "" ? serviceRead : serviceNote}
+        onMachine={(machineId) => {
+          setServiceMachine(machineId);
+          // A preview belongs to one machine; keeping it while the picker moved would show one
+          // machine's readiness under another's name.
+          setServicePreview(null);
+          setServiceNote("");
+          setServiceRead("");
+        }}
+        onDraft={(serviceId, origin) =>
+          setServiceDrafts((held) => ({ ...held, [serviceId]: origin }))
+        }
+        onCheck={() => {
+          // A read the OPERATOR asked for clears what the last act said; the read the install
+          // makes for itself does not, which is why this is here and not inside `onServiceCheck`.
+          setServiceNote("");
+          void onServiceCheck();
+        }}
+        onInstall={onServiceInstall}
+      />
     </Stack>
   );
 }
