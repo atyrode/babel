@@ -662,6 +662,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   service and an over-cap record leave a record byte-identical and produce one identical
   report; an admitted row that advises `none` still proposes nothing; and a score of 0.7
   reaches the tally as 0.7, backing a voter that 0.69 does not.
+- **Jev's independent votes are now a position a consumer can read, rather than one net number.**
+  The bank already held the thirteen calibrated voters and a weightless `tally()`; nothing said
+  what that sum meant when two voters backed a record and one objected, when a reply left a voter
+  silent, or when Jev did not judge the record at all. A derived position now names `backed`,
+  `objected` or `contested` before giving the sum, carries both sides by voter, and states the
+  admitted roster, who was heard and who was silent. Missing judgement has no number; a measured
+  abstention is a real zero; a voter handed an answer of the wrong shape is silent rather than
+  agreement; and a voter that throws is reported beside the position and never counted into it.
+  The position is recomputed from the record revision, bank and judgement and is never stored, so
+  there is no second authority to disagree with those rows. A pass reports the count at every
+  standing, and one-record reads return the same `unjudged` position whether Jev is unbound or was
+  never installed. The measured corpus row still reproduces seven back, two object, naming
+  `scope` and `editorial`; boundary tests pin a 2–1 disagreement separately from unanimous backing
+  and extend the existing unrounded-score path through to the standing an operator would see.
+
 
 ### Removed
 
