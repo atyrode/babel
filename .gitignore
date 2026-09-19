@@ -4,9 +4,9 @@ dist/
 # the disposable engine `verify` starts. They are another repository's source and another
 # family's bundles; the pin that reproduces them is CODE_REV, which IS committed.
 .integration/
-# Built by pack.sh from atyrode.babel/machine/ and carried inside the baseline's bundle; the
+# Built by pack.sh from babel/machine/ and carried inside the baseline's bundle; the
 # manifest pins its sha256, so the file itself is never committed.
-atyrode.babel/machine.js
+babel/machine.js
 
 # scratch research briefs recovered from subagents; the curated record is docs/
 .omp/research/

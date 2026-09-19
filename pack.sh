@@ -25,7 +25,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 MANIFOLD="$(./manifold-dir.sh)"
 PACK="$MANIFOLD/packages/plugin-kit/src/pack.ts"
-BASELINE=atyrode.babel
+BASELINE=babel
 
 build_machine() {
   bun build "$BASELINE/machine/main.ts" --target bun --outfile "$BASELINE/machine.js" >/dev/null
