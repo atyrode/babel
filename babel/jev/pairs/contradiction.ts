@@ -1,4 +1,4 @@
-import type { NextAction } from "../../contract.ts";
+import { PAIR_QUESTIONS, type NextAction } from "../../contract.ts";
 import { clip, RATIONALE_CHARS, SUMMARY_CHARS } from "../voters/say.ts";
 import {
   degreeOf,
@@ -48,8 +48,10 @@ import {
   authority on that and it applies to every sentence above.
 */
 
-/** The question this detector reads, asked of the pair as a whole. Symmetric by its wording. */
-export const CONTRADICTS_QUESTION = "contradicts";
+/** The question this detector reads, asked of the pair as a whole. Symmetric by its wording.
+ *  The literal is the family's (`PAIR_QUESTIONS`), so the leaf a policy projects, the leaf the
+ *  door's input names a cut for and the leaf read here cannot drift apart. */
+export const CONTRADICTS_QUESTION = PAIR_QUESTIONS.contradicts;
 
 /**
  * WHAT THE STUDY MEASURED, at the two cuts it reported and on the sample it reported them for.

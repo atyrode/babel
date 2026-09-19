@@ -352,6 +352,85 @@ test("the mark is per suggester, revision and kind: a second kind is a second su
   expect(other.outstanding).toBe(2);
 });
 
+test("two pair findings about one record coexist, in either order, and a repeat still supersedes", async () => {
+  // #432. A record can be half of two pairs — the contradiction the corpus has been sitting on
+  // is exactly this shape — and before the counterpart joined the key the second finding
+  // superseded the first, so the operator saw one of them and nothing said the other was lost.
+  for (const order of [
+    ["fnd_00000002", "fnd_00000003"],
+    ["fnd_00000003", "fnd_00000002"],
+  ]) {
+    const harness = openHarness();
+    await migrate(harness.store);
+    await allow(harness.store, [{ principalId: JEV_PRINCIPAL, pluginId: JEV }]);
+    await seedRecord(harness.store, SUGGESTION.recordId);
+    await seedRecord(harness.store, "fnd_00000002");
+    await seedRecord(harness.store, "fnd_00000003");
+
+    const first = (await knock(harness, ACTIONS.suggest, {
+      ...SUGGESTION,
+      kind: "ask-question",
+      subject: order[0],
+      summary: `cannot both be true with ${String(order[0])}`,
+    })) as { id: string; subject: string; supersedes: string };
+    const second = (await knock(harness, ACTIONS.suggest, {
+      ...SUGGESTION,
+      kind: "ask-question",
+      subject: order[1],
+      summary: `cannot both be true with ${String(order[1])}`,
+    })) as { id: string; subject: string; supersedes: string; outstanding: number };
+
+    // Neither replaced the other, whichever arrived first, and the operator is shown both.
+    expect(first.supersedes).toBe("");
+    expect(second.supersedes).toBe("");
+    expect(second.outstanding).toBe(2);
+    expect([first.subject, second.subject].sort()).toEqual(["fnd_00000002", "fnd_00000003"]);
+    const peel = await peeled(harness);
+    expect(peel.nextActions.map((action) => action.id).sort()).toEqual(
+      [first.id, second.id].sort(),
+    );
+
+    // The key still deduplicates where it must: the SAME counterpart said again is one opinion
+    // restated, not a third live row.
+    const again = (await knock(harness, ACTIONS.suggest, {
+      ...SUGGESTION,
+      kind: "ask-question",
+      subject: order[0],
+      summary: `restated about ${String(order[0])}`,
+    })) as { supersedes: string; outstanding: number };
+    expect(again.supersedes).toBe(first.id);
+    expect(again.outstanding).toBe(2);
+  }
+});
+
+test("a per-record suggestion keeps the key it had, and an unknown counterpart is refused", async () => {
+  const harness = openHarness();
+  await migrate(harness.store);
+  await allow(harness.store, [{ principalId: JEV_PRINCIPAL, pluginId: JEV }]);
+  await seedRecord(harness.store, SUGGESTION.recordId);
+
+  // A caller that names no counterpart is every caller that existed before #432, and for it the
+  // live-uniqueness key is unchanged: the second call supersedes the first.
+  const first = (await knock(harness, ACTIONS.suggest, SUGGESTION)) as { id: string };
+  const second = (await knock(harness, ACTIONS.suggest, {
+    ...SUGGESTION,
+    summary: "restated",
+  })) as { supersedes: string; subject: string; outstanding: number };
+  expect(second.supersedes).toBe(first.id);
+  expect(second.subject).toBe("");
+  expect(second.outstanding).toBe(1);
+
+  // `next_actions` has no foreign key on the counterpart, so nothing but the door refuses an id
+  // that resolves to nothing — and a pair finding whose other half cannot be opened is worse
+  // than no finding.
+  expect(await refusal(harness, ACTIONS.suggest, { ...SUGGESTION, subject: "fnd_0000dead" })).toBe(
+    "no counterpart record fnd_0000dead",
+  );
+  expect(
+    await refusal(harness, ACTIONS.suggest, { ...SUGGESTION, subject: SUGGESTION.recordId }),
+  ).toBe("fnd_00000001 cannot be its own counterpart");
+});
+
 test("a sweep can state its size before it runs", async () => {
   const harness = openHarness();
   await migrate(harness.store);

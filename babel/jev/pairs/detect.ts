@@ -43,11 +43,12 @@ import { SUPERSESSION, SUPERSESSION_PROPOSES } from "./supersession.ts";
       on both — which is what keeps "neither side is favoured" true in what the operator actually
       sees — and a directed one is delivered ONCE, beside the record that needs the work. The
       counterpart's id travels in the summary and in `counterpart`.
-    - THE DOOR KEEPS ONE LIVE SUGGESTION PER REVISION AND KIND, so a record in two contradicting
-      pairs carries one of them and the second supersedes the first. That is the door's
-      deduplication doing its job on a shape it was not designed for; it is recorded in this
-      slice's report rather than worked around here, because a second suggestion vocabulary would
-      be a second answer to what has already been judged.
+    - THE DOOR KEEPS ONE LIVE SUGGESTION PER REVISION, KIND AND SUBJECT, and the third column is
+      #432, added for this shape. Without it a record in two contradicting pairs would carry
+      whichever was written second and the first counterpart would vanish — the door's
+      deduplication doing its job on a shape it was not designed for. `counterpart` is what
+      travels as `subject`, so two findings about one record are two suggestions and a second
+      finding about the SAME counterpart still supersedes rather than duplicating.
 */
 
 /**

@@ -77,10 +77,25 @@ export const JEV_SERVICE = {
   serviceId: "atyrode.babel.jev.typesafe",
   credentialRef: "typesafe-api",
   origin: "https://api.typesafe.ai",
-  /** The operations the part may name. A policy may declare more; the part calls these. */
-  operations: { judge: "judge" },
+  /**
+   * The operations the part may name. A policy may declare more; the part calls these.
+   *
+   * `pair` is a SECOND operation rather than a second question on the first, because the first
+   * carries ONE state and a relation is asked of two. `bun babel/jev/tools/seed-questions.ts
+   * policy` prints the literals and the projection for both; a deployment whose policy declares
+   * only `judge` reaches nothing here — the host refuses an operation the policy does not
+   * declare, which lands in `askJev`'s one absence like every other.
+   */
+  operations: { judge: "judge", pair: "pair" },
   /** Jev's own word for the material a question is asked of, and the one field a caller fills. */
   stateField: "state",
+  /**
+   * The two states an ORDERED pair is asked about. The order is the question's subject, not
+   * decoration: `supersedes` asks whether the second describes a later state of the first, so a
+   * policy that mapped these two literals to one another's leaves would invert every direction
+   * it reported.
+   */
+  pairFields: { a: "state_a", b: "state_b" },
 } as const;
 
 /** An operation id the part may ask for. A string the policy does not declare is refused by the

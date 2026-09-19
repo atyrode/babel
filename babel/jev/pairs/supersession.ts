@@ -1,4 +1,4 @@
-import type { NextAction } from "../../contract.ts";
+import { PAIR_QUESTIONS, type NextAction } from "../../contract.ts";
 import { clip, RATIONALE_CHARS, SUMMARY_CHARS } from "../voters/say.ts";
 import {
   degreeOf,
@@ -67,8 +67,9 @@ import {
   honest state; a number somebody typed would not be.
 */
 
-/** The question this detector reads. Directed by its own wording: `b` later than `a`. */
-export const SUPERSEDES_QUESTION = "supersedes";
+/** The question this detector reads. Directed by its own wording: `b` later than `a`. The
+ *  literal is the family's (`PAIR_QUESTIONS`), for `contradiction.ts`'s reason. */
+export const SUPERSEDES_QUESTION = PAIR_QUESTIONS.supersedes;
 
 /**
  * WHAT THE STUDY MEASURED, at the one cut it reported, over candidate pairs and not records. Data

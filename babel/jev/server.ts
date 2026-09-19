@@ -1,10 +1,11 @@
 import { defineServerPlugin, type ServerPluginDef } from "@manifold/plugin-kit/server";
 import { PluginManifestSchema } from "@manifold/protocol";
 import manifestJson from "./manifest.json";
+import { PAIR_ACTIONS, PAIR_HANDLERS } from "./pairs/doors.ts";
 import { SWEEP_ACTIONS, SWEEP_HANDLERS } from "./sweep/doors.ts";
 
 /*
-  THE SERVER HALF OF atyrode.babel.jev, AND THE TWO DOORS THE CORPUS SWEEP NEEDS.
+  THE SERVER HALF OF atyrode.babel.jev, AND THE THREE DOORS ITS PASSES ARE DRIVEN THROUGH.
 
   Jev is a part: typed judgement over the records the baseline holds, enabled and removed on its
   own. The whole design constraint is that Babel never depends on it — absent, disabled or out of
@@ -13,6 +14,16 @@ import { SWEEP_ACTIONS, SWEEP_HANDLERS } from "./sweep/doors.ts";
   no job and no lifecycle hook — so a driver asks one door what a bounded pass would cost, then
   asks the other to run one. Neither writes; every suggestion comes back to the caller for
   delivery, which leaves the baseline unaware of the part and keeps the dependency edge one-way.
+
+  THE THIRD DOOR IS `pairs` (#357, #358), and it is the same shape one unit up: a relation
+  between two records is not a property of either, so it cannot ride the per-record sweep. Its
+  caller names the anchors to retrieve around and the confidence cuts this deployment has
+  MEASURED — there is no default for either, because the study's numbers were taken on one
+  corpus through a lexical block and are data rather than thresholds — and it answers with
+  suggestions the caller delivers, exactly as the sweep does. It spends through a SECOND service
+  operation, `pair`: the per-record `judge` operation carries one state and projects the
+  per-record leaves, so asking it about two records would send half a pair and read a relation
+  off a projection that never names one (`pairs/ask.ts`).
 
   IT HOLDS TWO AUTHORITIES, AND EACH ARRIVED WITH THE CHILD THAT SPENDS IT. `services:invoke` is
   the judgement call. The key Jev is reached with is the operator's; the part names the service
@@ -50,11 +61,18 @@ import { SWEEP_ACTIONS, SWEEP_HANDLERS } from "./sweep/doors.ts";
   The door itself exists — #412 landed `babel.suggest`, whose allow-list is keyed on PRINCIPAL
   rather than on a capability — and the missing piece is a host mechanism that admits that one
   write without the rest, open upstream as atyrode/manifold#770. So NOTHING IN THIS BUNDLE CALLS
-  IT: `screen/pass.ts` hands each suggestion to a caller-supplied function and `sweep/sweep.ts`
-  hands the resulting rows back to whoever knocked. `test/part-ceiling.test.ts` holds the refusal
-  the part would meet if it tried.
+  IT: `screen/pass.ts` hands each suggestion to a caller-supplied function, and `sweep/sweep.ts`
+  and `pairs/pass.ts` hand the resulting rows back to whoever knocked.
+  `test/part-ceiling.test.ts` holds the refusal the part would meet if it tried.
 
-  The id and the sweep's two door names are spelled once in the family's vocabulary
+  WHAT #432 CHANGED ABOUT THAT ROW, and it is the pair door's own requirement rather than a
+  general widening: `babel.suggest` keeps ONE live suggestion per suggester, revision and kind,
+  which for a per-record voter is exactly right and for a pair finding is a loss — a record that
+  contradicts two others would carry whichever was written second. So the door's input grew an
+  optional `subject`, the counterpart's record id, and it joins that uniqueness key. Empty is the
+  default and every existing row and caller keeps the behaviour it had.
+
+  The id and the three door names are spelled once in the family's vocabulary
   (`JEV_PLUGIN_ID` and `JEV_ACTIONS`, `babel/contract.ts`) and `test/contract.test.ts` pins the
   manifest and service id to that vocabulary. A part may import that one baseline module
   (`docs/building.md`); every other reach into Babel is a door.
@@ -106,11 +124,46 @@ export {
   type SweepAsk,
   type SweepDeps,
 } from "./sweep/sweep.ts";
+export {
+  askPair,
+  pairBasis,
+  PAIR_QUESTION_WORDING,
+  PAIR_WORDING_VERSION,
+  pairInput,
+  pairRequestKey,
+  type PairQuestion,
+} from "./pairs/ask.ts";
+export {
+  deliveries,
+  detectPair,
+  DETECTORS,
+  type PairFailure,
+  type PairResult,
+  type PairUncalibrated,
+} from "./pairs/detect.ts";
+export {
+  chronological,
+  pairKey,
+  type PairDetection,
+  type PairDetector,
+  type PairRecord,
+  type PairSuggestion,
+  type RecordPair,
+} from "./pairs/pair.ts";
+export { pairPass, type PairAsk, type PairPassDeps } from "./pairs/pass.ts";
+export {
+  anchorQuery,
+  NEIGHBOURS_PER_ANCHOR,
+  PAIRS_PROPOSED_CAP,
+  proposePairs,
+  type PairProposal,
+  type PairSearch,
+} from "./pairs/propose.ts";
 
 export const plugin: ServerPluginDef = {
   manifest: PluginManifestSchema.parse(manifestJson),
-  actions: SWEEP_ACTIONS,
-  handlers: SWEEP_HANDLERS,
+  actions: [...SWEEP_ACTIONS, ...PAIR_ACTIONS],
+  handlers: { ...SWEEP_HANDLERS, ...PAIR_HANDLERS },
 };
 
 export default plugin;

@@ -23,12 +23,21 @@
   endpoint, the credential reference and the spend the calls are made under, none of which is a
   file's to supply.
 
+  `policy` PRINTS BOTH OPERATIONS. The bank answers for `judge`, which is asked of one record and
+  is one document per record kind. The PAIR operation is asked of two records at once and has no
+  document here, because `BankSchema` holds one per RECORD kind and a pair is not one: its two
+  questions are `pairs/ask.ts`'s own literals and their leaves are what the detectors read. A
+  policy installed with only the first is a deployment where the sweep works and the pair door
+  reaches nothing, which is why one command prints both.
+
   It is a dev-time Bun CLI and never enters a packed artifact.
 */
 
 import { resolve } from "node:path";
 import type { Bank, BankDocument } from "../bank/schema.ts";
 import { documentOf } from "../bank/parse.ts";
+import { PAIR_QUESTION_WORDING, PAIR_WORDING_VERSION } from "../pairs/ask.ts";
+import { JEV_SERVICE } from "../server/credential.ts";
 
 const BANK_DIR = resolve(import.meta.dir, "../bank");
 const SEED_PATH = resolve(BANK_DIR, "questions.seed.json");
@@ -123,13 +132,30 @@ async function main(argv: readonly string[]): Promise<number> {
     const bank = JSON.parse(await read(SEED_PATH)) as Bank;
     // THE WORDING ALONE. The endpoint, the credential reference and the spend ceiling belong to
     // the operator's own service policy, and a tool that printed them would be choosing them.
+    //
+    // BOTH OPERATIONS, because the part calls both and a policy carrying only the first makes
+    // the pair door reach nothing: the host refuses an operation the policy does not declare.
+    // `judge` is per record kind and takes one state; `pair` is per ordered pair, takes two,
+    // and its two leaves are what the detectors read — a projection that names anything else
+    // answers a question nobody asked.
     process.stdout.write(
       `${JSON.stringify(
-        bank.documents.map((document) => ({
-          kind: document.kind,
-          version: document.version,
-          questions: document.questions,
-        })),
+        {
+          [JEV_SERVICE.operations.judge]: {
+            input: [JEV_SERVICE.stateField],
+            documents: bank.documents.map((document) => ({
+              kind: document.kind,
+              version: document.version,
+              questions: document.questions,
+            })),
+          },
+          [JEV_SERVICE.operations.pair]: {
+            version: PAIR_WORDING_VERSION,
+            input: [JEV_SERVICE.pairFields.a, JEV_SERVICE.pairFields.b],
+            questions: PAIR_QUESTION_WORDING,
+            response: { fields: PAIR_QUESTION_WORDING.map((question) => question.id) },
+          },
+        },
         null,
         2,
       )}\n`,
@@ -140,7 +166,7 @@ async function main(argv: readonly string[]): Promise<number> {
     "usage: seed-questions.ts import | seed-questions.ts check | seed-questions.ts policy\n" +
       "  import  reads bank/versions.json and bank/questions/*.md into bank/questions.seed.json\n" +
       "  check   exits 1 when the seed and the documents disagree\n" +
-      "  policy  prints the wording an operator renders into the service policy's literals\n",
+      "  policy  prints both operations' wording for the operator's own service policy\n",
   );
   return 2;
 }

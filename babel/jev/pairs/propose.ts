@@ -42,12 +42,14 @@ import { chronological, pairKey, type PairRecord, type RecordPair } from "./pair
   A proposal that answered by keyword alone and did not say so would be a proposal reporting a
   floor as a measurement.
 
-  THE PROPOSER DOES NOT SEARCH; IT IS HANDED A SEARCH. `atyrode.babel.jev` declares no capability
-  at all (#370) — not `containers:write`, which `screen/pass.ts` argues at length, and not
-  `containers:read` either, so it cannot call `babel.search` any more than it can call
-  `babel.suggest`. The function is the caller's, exactly as `deliver` is, and it is typed in the
-  DOOR's own schemas rather than in `store/corpus.ts`'s: what this consumes is a published answer,
-  not the baseline's internals, and a part reaches the baseline only through its doors.
+  THE PROPOSER DOES NOT SEARCH; IT IS HANDED A SEARCH. The part does hold `containers:read`
+  (#404) and `pairs/pass.ts` is what spends it, so this is a purity boundary rather than a
+  ceiling: a proposer that called a door could not be exercised without one, and the whole of
+  what it needs from the baseline is an ANSWER. The function is typed in the DOOR's own schemas
+  rather than in `store/corpus.ts`'s for the matching reason — what this consumes is published,
+  not the baseline's internals, and a part reaches the baseline only through its doors. Writing
+  is the different case and stays impossible: `babel.suggest` declares `containers:write`,
+  which this manifest does not hold, and `screen/pass.ts` argues why it must not.
 
   THE QUERY IS A DERIVATION AND IT SAYS WHAT IT DROPS. `SearchQuerySchema` bounds a query at 512
   characters and REFUSES a longer one rather than truncating it, because "a search whose last

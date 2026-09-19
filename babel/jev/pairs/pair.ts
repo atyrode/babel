@@ -63,13 +63,19 @@ import type { ScreenedRecord } from "../screen/screener.ts";
   the rate a floor rather than an estimate. Read `docs/jev-case-study-audit.md` §0 before quoting
   one as if it described Babel.
 
-  JEV COMPUTES; A CALLER PAYS, RETRIEVES AND DELIVERS. `screen/pass.ts` argues why nothing here
-  may write: the `suggest` door declares `containers:write`, a cross-plugin call is graded against
-  the CALLER's ceiling, and the allow-list is keyed on a principal the host does not expose
-  (atyrode/manifold#770). The part holds no capability at all (#370), so the same rule reaches one
-  step further here than it does for a per-record voter: it cannot call the `search` door either,
-  and {@link PairSubject} contains no handle on anything. A pair is proposed through a function the
-  caller supplies, judged by a call the caller makes, and delivered by a function the caller owns.
+  JEV COMPUTES AND PAYS; A CALLER DELIVERS. `screen/pass.ts` argues why nothing here may write:
+  the `suggest` door declares `containers:write`, a cross-plugin call is graded against the
+  CALLER's ceiling, and the allow-list is keyed on a principal the host does not expose
+  (atyrode/manifold#770). What the part DOES hold is `containers:read` (#404) and
+  `services:invoke`, so the reading and the judgement are its own: `pairs/pass.ts` retrieves
+  through `babel.search`, reads through `babel.record` and buys one answer per ordered pair.
+
+  NOTHING IN THIS FILE OR THE TWO DETECTORS DOES ANY OF THAT. {@link PairSubject} contains no
+  handle on anything and {@link PairDetector} is synchronous, which is the same rule
+  `screen/screener.ts` holds a voter to and for the same two reasons: a detector that could
+  reach the store would be untestable without a database, and one that read per pair would turn
+  one read per record into one read per record per relation. The loop reaches; the relations
+  are pure functions of what it brought back.
 */
 
 /**
@@ -214,9 +220,11 @@ export interface PairDetector {
  * suggestion beside the record that needs the work — which is the asymmetry falling out of the
  * relation rather than being decided again.
  *
- * `counterpart` is the other record of the pair. It is not a door field and cannot be: the
- * schema has no place for a second record, so the id travels in the summary the operator reads
- * and here, for a caller that wants to group or count without parsing prose.
+ * `counterpart` is the other record of the pair, and since #432 it is a door field: it travels
+ * as `SuggestInputSchema.subject` and joins the live-uniqueness key, which is what lets the two
+ * pairs a record belongs to be two suggestions instead of one overwriting the other. The id is
+ * also in the summary the operator reads, because a field is for a caller and a sentence is for
+ * him.
  */
 export interface PairSuggestion {
   readonly recordId: string;

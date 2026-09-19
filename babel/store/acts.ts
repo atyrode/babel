@@ -1728,6 +1728,12 @@ export interface SuggestArgs {
   recordId: string;
   revision: number;
   kind: NextAction;
+  /**
+   * The other record this suggestion is about, or empty because there is not one. See
+   * `SuggestInputSchema` for why a pair finding needs it; here it is the fifth column of the
+   * live-uniqueness key and nothing else.
+   */
+  subject: string;
   summary: string;
   rationale: string;
   /** What the suggester judged under; kept on the row and compared by equality, never parsed. */
@@ -1744,11 +1750,17 @@ export interface SuggestArgs {
  * a record is immutable and a refinement is a new revision — a suggestion carrying only a record
  * id would silently re-attach to whatever the live revision becomes.
  *
- * ONE LIVE SUGGESTION PER (SUGGESTER, REVISION, KIND), and the second supersedes the first. The
- * same predicate is the durable "already judged" mark: `suggestionsOf` counts the revisions this
- * suggester has ever named, so a retroactive sweep over the whole corpus can state how many rows
- * it would add before it adds one. One constraint, two jobs, and no second bookkeeping table to
- * disagree with the rows.
+ * ONE LIVE SUGGESTION PER (SUGGESTER, REVISION, KIND, SUBJECT), and the second supersedes the
+ * first. The subject is in the key because a record can be half of two pairs — two records it
+ * contradicts, one it supersedes — and without it the second finding would supersede the first
+ * and the operator would only ever see one counterpart. It defaults to empty, which is every
+ * per-record suggester and every row already written, so for them the key is the one it was.
+ *
+ * The same predicate is the durable "already judged" mark: `suggestionsOf` counts the revisions
+ * this suggester has ever named — over any subject, because a record judged in one pair has been
+ * judged — so a retroactive sweep over the whole corpus can state how many rows it would add
+ * before it adds one. One constraint, two jobs, and no second bookkeeping table to disagree with
+ * the rows.
  */
 export async function suggest(
   store: ActsStore,
@@ -1782,6 +1794,18 @@ export async function suggest(
         `${String(Number(judged.head_seq))}): a suggestion is about the revision it read`,
     );
   }
+  // THE COUNTERPART HAS TO BE A RECORD. `next_actions` has no foreign key for it — the column
+  // is one leaf of a JSON payload — so nothing but this refuses an id that resolves to nothing,
+  // and a dangling counterpart is a pair finding the operator cannot read the other half of.
+  if (args.subject !== "") {
+    if (args.subject === args.recordId) {
+      throw new ActRefused(`${args.recordId} cannot be its own counterpart`);
+    }
+    const counterpart = await first<{ id: string }>(store, `SELECT id FROM records WHERE id = ?`, [
+      args.subject,
+    ]);
+    if (counterpart === null) throw new ActRefused(`no counterpart record ${args.subject}`);
+  }
   const standing = standingOf(
     (
       await first<{ disposition: string }>(
@@ -1801,10 +1825,11 @@ export async function suggest(
     `SELECT n.id AS id FROM next_actions n
       WHERE n.record_id = ? AND n.kind = ? AND n.proposed_by_kind = 'engine'
         AND n.proposed_by_id = ? AND json_extract(n.payload, '$.revision') = ?
+        AND COALESCE(json_extract(n.payload, '$.subject'), '') = ?
         AND NOT EXISTS (SELECT 1 FROM next_actions s WHERE s.record_id = n.record_id
                           AND json_extract(s.payload, '$.supersedes') = n.id)
       ORDER BY n.created_at DESC, n.id DESC LIMIT 1`,
-    [args.recordId, args.kind, suggester, args.revision],
+    [args.recordId, args.kind, suggester, args.revision, args.subject],
   );
   const supersedes = live?.id ?? "";
   const id = newId("nxt");
@@ -1814,6 +1839,10 @@ export async function suggest(
     revision: args.revision,
     suggester,
     supersedes,
+    // The counterpart, empty for a per-record suggestion. A row written before this field
+    // existed carries no leaf at all, which `COALESCE` reads as the same empty: the old rows and
+    // the new per-record ones share one uniqueness key, as they must.
+    subject: args.subject,
     // The mark's own date: `suggestionsOf` reads it back as an equality, which is what lets a
     // suggester whose rules moved find its corpus unjudged again without forgetting this row.
     basis: args.basis,
@@ -1830,6 +1859,7 @@ export async function suggest(
                SELECT 1 FROM next_actions n
                 WHERE n.record_id = ? AND n.kind = ? AND n.proposed_by_kind = 'engine'
                   AND n.proposed_by_id = ? AND json_extract(n.payload, '$.revision') = ?
+                  AND COALESCE(json_extract(n.payload, '$.subject'), '') = ?
                   AND n.id <> ?
                   AND NOT EXISTS (SELECT 1 FROM next_actions s WHERE s.record_id = n.record_id
                                     AND json_extract(s.payload, '$.supersedes') = n.id))
@@ -1846,6 +1876,7 @@ export async function suggest(
         args.kind,
         suggester,
         args.revision,
+        args.subject,
         supersedes,
       ],
     },
@@ -1853,7 +1884,8 @@ export async function suggest(
   if ((inserted?.length ?? 0) === 0) {
     throw new ActRefused(
       `${suggester} already has a live ${args.kind} suggestion on ${args.recordId} revision ` +
-        `${String(args.revision)}`,
+        `${String(args.revision)}` +
+        (args.subject === "" ? "" : ` about ${args.subject}`),
     );
   }
   store.touch();
@@ -1863,6 +1895,7 @@ export async function suggest(
     recordId: args.recordId,
     revision: args.revision,
     kind: args.kind,
+    subject: args.subject,
     suggester,
     supersedes,
     at,

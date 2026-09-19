@@ -711,6 +711,32 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   reported as uncalibrated. Proved by `babel/jev/pairs/`: no-policy invocation count, observable
   proposal bound, symmetric contradiction delivery and direction-reversing supersession delivery.
 
+  Those two relations are now reachable at runtime rather than only computable. `jev.pairs` is a
+  third door beside the sweep's two: its caller names the anchors and the cuts this deployment
+  has measured, the pass reads each anchor through `babel.record`, retrieves candidates through
+  `babel.search`, and buys ONE judgement per ordered pair through a second service operation —
+  `pair`, which carries two states where the per-record `judge` carries one. Reusing `judge`
+  would have sent half a pair and read a relation off a projection that never names one, so
+  `seed-questions.ts policy` now prints both operations' literals and the pair projection's two
+  leaves. The report separates candidates, attempted, judged and truncation, so a deployment
+  that installed half a policy reads nothing like a corpus with no contradictions in it; the
+  door declares `containers:read` alone and the suggestions come back for the caller to deliver.
+  Every suggestion's basis digests the service policy revision and the stated cuts alongside the
+  question wording, and the revision is re-checked at the call, so an answer can never be filed
+  under a policy that did not produce it.
+
+- **Two findings about one record no longer overwrite each other.** `babel.suggest` kept one live
+  suggestion per suggester, revision and kind, which is right for a per-record voter and a loss
+  for a pair: a record that contradicts two others carried whichever was written second, and
+  nothing said the first had been dropped. The input takes an optional `subject` — the
+  counterpart's record id — which joins the live-uniqueness key and the insert's own guard, is
+  echoed on the answer, and is validated to name a record that is neither missing nor the
+  subject of its own suggestion. It defaults to empty, so every existing caller and every row
+  already written keeps the key it had; rows written before the field carry no leaf at all and
+  read as that same empty. Proved in `babel/doors/suggest.test.ts`: two counterparts survive in
+  either order, the same counterpart restated still supersedes, and a per-record suggester is
+  unchanged.
+
 ### Removed
 
 - **The standalone Go product is gone.** `cmd/`, `internal/`, `web/`, `test/`, `cookbook/`,
