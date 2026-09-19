@@ -672,6 +672,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The judgement part could not call a single Babel door.** It declared `atyrode.babel` a
+  required dependency and then held no capability to use it: a cross-plugin call is bounded by
+  the **caller's** own ceiling, every Babel read door carries `containers:read`, and the part's
+  manifest carried `services:invoke` alone. The declared edge opened nothing. It declares
+  `containers:read` now — and deliberately **not** `containers:write`, which is the authority
+  every ruling door carries and which #360 holds open; a pin makes widening it a failing test
+  rather than a quiet edit.
+
+  Nothing could have caught it. Every fake in the repository hands a handler a synthetic context
+  and calls it directly, which is one layer *below* where the ceiling is graded — the refusal
+  happens before the callee is asked, so a fake that starts at the handler can never see it. The
+  test added for this walks the host's rungs in the host's order and raises the host's own
+  sentence, with the grading line taken from the server and the wildcard rules imported from the
+  protocol rather than restated. It models the governed-capability subtraction, which is the part
+  that matters here: `services:invoke` is governed, so the part's usable ceiling is the read
+  alone.
 - **The `controversial` order ranked agreement above disagreement.** A record the voters split on
   is supposed to surface rather than land mid-ranked, and most of that shipped with the two axes:
   the split is computed, the row is badged, the gutter is marked, the peel says so and the
