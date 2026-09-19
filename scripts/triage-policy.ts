@@ -25,6 +25,22 @@ const PAGE_LIMIT = 1000;
 const DECISION_BLOCK = /^## Decision\b/m;
 const NAMED_REFERENCE = /#\d+/;
 
+/**
+ * An explicit "blocked by #N" naming an issue in THIS repository, anywhere in the issue's own
+ * text or its comments.
+ *
+ * Deliberately narrow on both sides. An incidental `#123` is a mention and not a dependency, so
+ * only the phrasing that states one counts. And `(?<![\w/])` drops `owner/repo#N`: a blocker in
+ * another repository is real, and whether it is still open is a question this script cannot
+ * answer, so it is not one it may guess at.
+ */
+const BLOCKED_BY = /blocked[-\s]by[^#\n]{0,40}(?<![\w/])#(\d+)/giu;
+
+function blockers(issue: Issue): readonly number[] {
+  const text = [issue.body, ...issue.comments.map((comment) => comment.body)].join("\n");
+  return [...new Set([...text.matchAll(BLOCKED_BY)].map((match) => Number(match[1])))];
+}
+
 interface Comment {
   readonly body: string;
   readonly createdAt: string;
@@ -131,8 +147,17 @@ function lastActivity(issue: Issue): number {
  * The whole rule engine, pure: issues in, findings out. Exported because the live tracker
  * cannot exercise every rule on demand — nothing on it is 14 days quiet today — so T5's
  * boundary is provable only against constructed issues.
+ *
+ * `live` is every issue AND pull request number this repository still has open. T7 needs both,
+ * because a blocker is as often a pull request as an issue and they share one numbering space —
+ * a set of issues alone would report every PR-blocked row as spent. It is optional so a caller
+ * that cannot supply it gets the other six rules rather than a wrong seventh.
  */
-export function evaluate(issues: readonly Issue[], now: number): readonly Finding[] {
+export function evaluate(
+  issues: readonly Issue[],
+  now: number,
+  live?: ReadonlySet<number>,
+): readonly Finding[] {
   const findings: Finding[] = [];
   for (const issue of issues) {
     const states = STATE.filter((label) => issue.labels.includes(label));
@@ -212,6 +237,23 @@ export function evaluate(issues: readonly Issue[], now: number): readonly Findin
           issue: issue.number,
           message: "aging label stale",
           repair: { flag: "--remove-label", label: "aging", fixed: "removed aging" },
+        });
+      }
+    }
+
+    // T7 — A BLOCKER THAT CLOSED IS NOT A BLOCKER, and nothing else notices. T3 asks only that
+    // a blocker be NAMED; an issue can therefore sit `blocked` for ever behind something that
+    // shipped, which is indistinguishable from abandoned and is how a ready issue hides. Only
+    // an explicit "blocked by #N" in this repository counts: an incidental mention is not a
+    // dependency, and a cross-repository reference is one this script cannot judge. It fires
+    // only when EVERY named blocker is spent, because one live blocker still blocks.
+    if (issue.labels.includes("blocked") && live !== undefined) {
+      const named = blockers(issue);
+      if (named.length > 0 && named.every((blocker) => !live.has(blocker))) {
+        findings.push({
+          rule: "T7",
+          issue: issue.number,
+          message: `every named blocker is closed: ${named.map((n) => `#${String(n)}`).join(", ")}`,
         });
       }
     }
@@ -312,9 +354,33 @@ if (import.meta.main) {
     ),
   ).map(toIssue);
 
+  // T7 asks whether a named blocker is still open, and a blocker is as often a pull request as
+  // an issue. `gh issue list` never returns pull requests, so asking it alone would report
+  // every PR-blocked row as spent — the false positive that would make the rule untrustworthy
+  // on its first run, which is the only run anybody grades a new rule on.
+  const openPulls = asArray(
+    JSON.parse(
+      await gh([
+        "pr",
+        "list",
+        ...repoArgs,
+        "--state",
+        "open",
+        "--limit",
+        String(PAGE_LIMIT),
+        "--json",
+        "number",
+      ]),
+    ),
+  ).map((row) => {
+    const number = asRecord(row)["number"];
+    return typeof number === "number" ? number : 0;
+  });
+  const live = new Set<number>([...issues.map((issue) => issue.number), ...openPulls]);
+
   const now = Date.now();
   const rows: Row[] = [];
-  for (const finding of evaluate(issues, now)) {
+  for (const finding of evaluate(issues, now, live)) {
     const { repair } = finding;
     if (fix && repair !== undefined) {
       await gh(["issue", "edit", String(finding.issue), ...repoArgs, repair.flag, repair.label]);

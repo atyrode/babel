@@ -11,6 +11,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A blocker that closed is not a blocker, and now something notices.** T3 asks only that a
+  blocked issue *name* what it waits on, so an issue could sit blocked for ever behind something
+  that shipped — indistinguishable from abandoned, and the way a ready issue hides. T7 reports a
+  blocked issue whose named blockers have all closed. It counts only an explicit `blocked by #N`
+  in this repository, because an incidental mention is not a dependency and a blocker in another
+  repository is one the script cannot judge; it fires only when **every** named blocker is spent,
+  because one live blocker still blocks; and it reads open pull requests as well as open issues,
+  since a blocker is as often one as the other and they share a numbering space — asking `gh
+  issue list` alone would report every PR-blocked row as spent, which is the false positive that
+  makes a new rule untrustworthy on the only run anybody grades it on.
+
+  It found one on its first pass: #144, blocked by a #312 that closed hours earlier. That issue
+  is now closed too — every anchor it rested on was deleted with the Go tree, and its substance
+  was settled harder by the fix it was waiting for.
 - **A service policy is composed and installed from a panel, and it names the file.** Babel binds
   host services and nothing in Babel composed one: installing the restic policy was a
   hand-written owner call spelled out in prose in the runbook. Two owner-only doors now preview
