@@ -10,6 +10,7 @@ import {
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
   MATERIAL_OUTPUT,
+  MODELS_KEPT,
   MaterialIndexSchema,
   OPERATIONS,
   OUTPUT_BINDING,
@@ -17,6 +18,7 @@ import {
   RUN_STAGES,
   ReceiptSchema,
   TallyReasonSchema,
+  modelList,
   type GapReason,
   type MaterialEntry,
   type MaterialIndex,
@@ -1147,11 +1149,21 @@ function runStatement(
     // receipt stays the run's word about itself, `inference` is the hub's word about it, and
     // neither is written into the other's fields. Which models answered is the receipt's
     // `models`: the meter's frames name one per call and `JobInferenceUsageSchema` keeps none.
-    payload: JSON.stringify(
-      target.inference === null || target.inference === undefined
-        ? (receipt ?? { closure, reason: target.closure })
-        : { ...(receipt ?? { closure, reason: target.closure }), inference: target.inference },
-    ),
+    // THE MODELS OUTLIVE THE FOLD FOR THE SAME REASON THE METER DOES (#169). The row that
+    // heard them is deleted the moment this statement runs, so a metered run's answer — which
+    // model spoke, and whether more than one did — would otherwise be gone the instant it
+    // became a receipt. The receipt's own `models` WINS where it has one: a session lane run
+    // read its model off the transcript it sealed, and the loop's reading of a ring is not an
+    // improvement on the run's word about itself.
+    payload: JSON.stringify({
+      ...(receipt ?? { closure, reason: target.closure }),
+      ...(target.inference === null || target.inference === undefined
+        ? {}
+        : { inference: target.inference }),
+      ...(receipt?.models !== undefined || (target.models ?? []).length === 0
+        ? {}
+        : { models: target.models }),
+    }),
   };
   const columns = RUN_COLUMNS.filter((column) => values[column] !== undefined);
   const updates = columns.filter((column) => column !== "id").map((c) => `${c} = excluded.${c}`);
@@ -1437,6 +1449,17 @@ export interface IngestTarget {
    * about itself, this is what the thing holding the credential counted (#261).
    */
   readonly inference?: InferenceUsage | null | undefined;
+  /**
+   * THE MODELS THE METER NAMED WHILE THIS JOB RAN, as the fold heard them (#169).
+   *
+   * `usage.inference` is the hub's total and keeps no model at all, and the fold's row is
+   * deleted the instant a run settles — so without this the only record of which models
+   * answered a metered run died with the row that held it, and a receipt could say what a run
+   * cost and never what answered it. Empty for a run nothing metered, and for a receipt that
+   * names its own models, which win: the run's word about itself is not overwritten by the
+   * loop's reading of the ring.
+   */
+  readonly models?: readonly string[] | undefined;
 }
 
 /**
@@ -1568,6 +1591,8 @@ type RunProgressRow = {
   last_model: string;
   last_call_at: string;
   seq: number;
+  /** The distinct models that have answered, JSON, in the order this run first heard each. */
+  models: string;
 };
 /** A claim row as SQLite hands it back: `fence` is an INTEGER column and the engine's own
  *  database answers those as bigints, so it is carried as the coordinator's {@link Fence} and
@@ -2253,6 +2278,25 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
   }
 
+  /**
+   * WHICH MODEL THE LAUNCH ASKED FOR, off the run row's own launch report (#169).
+   *
+   * The receipt's `model` is documented as the model a run ASKED for, and it was being written
+   * from the session's transcript — which names the model that ANSWERED. So a fallback was
+   * recorded as an intent nobody had, `RunTrace.model` said "requested" about an observation,
+   * and two runs of one request that fell back differently compared as `different-request`,
+   * which disqualifies every other field of the comparison.
+   *
+   * `askedModel` is written by the launch door, which is the only place Babel knows the answer:
+   * a review the conductor dispatched names a Code PROFILE and Code resolves the model behind
+   * it, so for those runs nothing here asked for a model by name and the field is absent.
+   * Absent is the honest reading of that and is not "the same as what answered".
+   */
+  function askedModel(profile: string | null): string | undefined {
+    const asked = jsonRecord(profile)?.["askedModel"];
+    return typeof asked === "string" && asked !== "" ? asked : undefined;
+  }
+
   /** The immutable, blinded record revision a review session is shown. */
   async function project(recordId: string): Promise<ReviewProjection | null> {
     const records = await store.db.query<{
@@ -2424,7 +2468,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       recipeId: preparation.recipe.id,
       role: preparation.role,
       ...(jsonRecord(run.profile) === undefined ? {} : { profile: jsonRecord(run.profile) }),
-      ...(session === null ? {} : { model: session.model, models: [session.model] }),
+      // ASKED ON THE LEFT, ANSWERED ON THE RIGHT (#169). A review names a Code profile and not
+      // a model, so `model` is absent here and `models` is the whole of what is known.
+      ...(askedModel(run.profile) === undefined ? {} : { model: askedModel(run.profile) }),
+      ...(session === null ? {} : { models: [session.model] }),
       preparation: {
         review: preparation,
         jobVersion: REVIEW_JOB_VERSION,
@@ -2679,7 +2726,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       kind: "title",
       machineId: run.machine_id,
       ...(namedAccount(run.profile) === undefined ? {} : { account: namedAccount(run.profile) }),
-      ...(session === null ? {} : { model: session.model }),
+      ...(askedModel(run.profile) === undefined ? {} : { model: askedModel(run.profile) }),
       ...(preparationOf(run.preparation) === undefined
         ? {}
         : { preparation: preparationOf(run.preparation) }),
@@ -2951,7 +2998,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       kind: "explore",
       machineId: run.machine_id,
       ...(namedAccount(run.profile) === undefined ? {} : { account: namedAccount(run.profile) }),
-      ...(session === null ? {} : { model: session.model }),
+      ...(askedModel(run.profile) === undefined ? {} : { model: askedModel(run.profile) }),
       ...(preparationOf(run.preparation) === undefined
         ? {}
         : { preparation: preparationOf(run.preparation) }),
@@ -3147,7 +3194,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     const held = (
       await store.db.query<RunProgressRow & { stalled: number | bigint }>(
         `SELECT stage, message, fraction, since, calls, input_tokens, output_tokens, cache_tokens,
-                cost_usd, last_model, last_call_at, seq, stalled
+                cost_usd, last_model, last_call_at, seq, models, stalled
            FROM run_progress WHERE run_id = ?`,
         [run.id],
       )
@@ -3172,6 +3219,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       last_model: held?.last_model ?? "",
       last_call_at: held?.last_call_at ?? "",
       seq: Number(held?.seq ?? 0),
+      models: held?.models ?? "",
     };
 
     let read: FollowSnapshot;
@@ -3237,6 +3285,20 @@ export function conductor(deps: ConductorDeps): Conductor {
       folded.cache_tokens += frame.data.cachedInputTokens;
       folded.cost_usd += frame.data.costMicros / 1_000_000;
       folded.last_model = frame.data.model;
+      // WHAT ANSWERED, AND NOT ONLY WHAT ANSWERED LAST (#169). The meter names a model on
+      // every call and the row kept only the newest, so a run that opened on one model and
+      // fell back to another read as though the second had answered throughout — the exact
+      // sentence 2026-09-13 could not get out of anything. Distinct and in first-heard order,
+      // because the question is WHICH models answered rather than how often each did; the
+      // count is `calls` and the current one is `last_model`.
+      const heard = modelList(folded.models);
+      if (
+        frame.data.model !== "" &&
+        !heard.includes(frame.data.model) &&
+        heard.length < MODELS_KEPT
+      ) {
+        folded.models = JSON.stringify([...heard, frame.data.model]);
+      }
       // THIS CYCLE'S CLOCK, because a call has no instant of its own: `inference_call` carries
       // the tokens and the price and no time, and the ring stamps nothing. So the newest call
       // is dated when the loop SAW it, which is the same clock the stall is judged against —
@@ -3275,15 +3337,16 @@ export function conductor(deps: ConductorDeps): Conductor {
     await store.db.run(
       `INSERT INTO run_progress(run_id, job_id, stage, message, fraction, since, calls,
                                 input_tokens, output_tokens, cache_tokens, cost_usd, last_model,
-                                last_call_at, seq, stalled, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                last_call_at, seq, models, stalled, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(run_id) DO UPDATE SET
          job_id = excluded.job_id, stage = excluded.stage, message = excluded.message,
          fraction = excluded.fraction, since = excluded.since, calls = excluded.calls,
          input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
          cache_tokens = excluded.cache_tokens, cost_usd = excluded.cost_usd,
          last_model = excluded.last_model, last_call_at = excluded.last_call_at,
-         seq = excluded.seq, stalled = excluded.stalled, updated_at = excluded.updated_at`,
+         seq = excluded.seq, models = excluded.models, stalled = excluded.stalled,
+         updated_at = excluded.updated_at`,
       [
         run.id,
         run.job_id,
@@ -3299,6 +3362,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         folded.last_model,
         folded.last_call_at,
         folded.seq,
+        folded.models,
         stalled ? 1 : 0,
         new Date(at).toISOString(),
       ],
@@ -3376,6 +3440,14 @@ export function conductor(deps: ConductorDeps): Conductor {
         if (folded.stalled) stalled += 1;
         continue;
       }
+      // THE LAST READ OF THE FOLD, taken before the settlement deletes it. Which models
+      // answered is not in `state.result` — the hub's `usage.inference` is five numbers and no
+      // name — so this row is the only place it was ever written, and the receipt is the only
+      // place it can survive (#169).
+      const heard = await store.db.query<{ models: string }>(
+        `SELECT models FROM run_progress WHERE run_id = ?`,
+        [run.id],
+      );
       await settle(
         at,
         {
@@ -3386,6 +3458,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           outputs: state.result?.outputs ?? [],
           closure: closureOf(state),
           inference: state.result?.usage?.inference ?? null,
+          models: modelList(heard[0]?.models),
         },
         ingested,
         settled,

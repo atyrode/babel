@@ -1345,7 +1345,7 @@ test("a running job's stage and spend are folded out of its replay ring, and the
 
   const row = (
     await db.query(`SELECT stage, message, since, calls, input_tokens, output_tokens, cache_tokens,
-                           cost_usd, last_model, stalled
+                           cost_usd, last_model, models, stalled
                       FROM run_progress WHERE run_id = 'run_asg_a1b2'`)
   )[0];
   expect(row).toMatchObject({
@@ -1361,6 +1361,10 @@ test("a running job's stage and spend are folded out of its replay ring, and the
     last_model: "claude-sonnet-4",
     stalled: 0n,
   });
+  // WHICH MODELS ANSWERED, AND NOT ONLY THE NEWEST (#169). The second call was served by a
+  // different model; before this the row kept `last_model` alone and the run read as though
+  // sonnet had answered both, which is how a fallback became invisible.
+  expect(row?.["models"]).toBe(JSON.stringify(["claude-opus-4", "claude-sonnet-4"]));
   expect(Number(row?.["cost_usd"])).toBeCloseTo(0.28, 6);
   // Every subscription this cycle opened was closed in the same turn.
   expect(fleet.followed).toEqual(["job_asg_a1b2"]);
@@ -1395,6 +1399,14 @@ test("a running job's stage and spend are folded out of its replay ring, and the
       costMicros: 30_000,
     }),
     progressed(11, started + 72_000, RUN_STAGES.atModel, "challenge"),
+    // The run comes BACK to the model it opened on. A list that appended every call would
+    // grow without bound and read as a three-model run; first-heard order, kept once.
+    called(13, {
+      inputTokens: 300,
+      outputTokens: 80,
+      cachedInputTokens: 0,
+      costMicros: 20_000,
+    }),
   ]);
   clock = started + 75_000;
   const turning = await loop.tick();
@@ -1404,6 +1416,9 @@ test("a running job's stage and spend are folded out of its replay ring, and the
     message: "challenge",
     since: new Date(started + 72_000).toISOString(),
   });
+  expect((await db.query(`SELECT models FROM run_progress`))[0]?.["models"]).toBe(
+    JSON.stringify(["claude-opus-4", "claude-sonnet-4"]),
+  );
 
   // The job ends and the OWNER's meter — not the receipt's own numbers — fills the run row.
   fleet.metered("job_asg_a1b2", {
@@ -1434,6 +1449,10 @@ test("a running job's stage and spend are folded out of its replay ring, and the
     cachedInputTokens: 400,
     costMicros: 410_000,
   });
+  // …AND SO ARE THE MODELS. `usage.inference` is five numbers and no name, and the row that
+  // heard the names is deleted one statement later, so without this the answer to "what
+  // answered this run" died with the run (#169).
+  expect(kept["models"]).toEqual(["claude-opus-4", "claude-sonnet-4"]);
   // …and the in-flight row is gone: the receipt is the record of a run that ended.
   expect(await db.query(`SELECT run_id FROM run_progress`)).toEqual([]);
   clock = started;
@@ -3706,6 +3725,9 @@ async function sessionInFlight(
           containerId: "ctr_workbench",
           expectedRevision: 7,
           account: { provider: "anthropic", identityKey: "victorballu@gmail.com" },
+          // What the launch door writes when a launch names a model (#169): the model ASKED
+          // for, which is the only thing on this row a fallback can be read against.
+          askedModel: "anthropic/claude-opus-4-1",
         }),
         JSON.stringify({ preset: "read-whats-new", selected: 1 }),
         new Date(clock).toISOString(),
@@ -4147,7 +4169,11 @@ test("a session Code cancelled closes as stopped with no receipt, and its claim 
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
   expect(String(receipt["reason"])).toStartWith("empty:");
   expect(String(receipt["reason"])).toContain("cancelled");
-  expect(receipt["model"]).toBeUndefined();
+  // WHAT IT ASKED FOR SURVIVES A SESSION THAT ANSWERED NOTHING, and what answered does not
+  // exist to record: `model` is the launch's own word, `models` is the transcript's, and a
+  // cancelled session sealed no transcript (#169).
+  expect(receipt["model"]).toBe("anthropic/claude-opus-4-1");
+  expect(receipt["models"]).toBeUndefined();
   expect(run["cost_usd"]).toBe(0);
   // …and the claim is SKIPPED rather than failed: nobody answered, so there is no paid
   // refusal here and the park heuristic must not read a streak of operator stops as a lane
@@ -4567,6 +4593,7 @@ async function anotherSession(
   db: PluginDatabase,
   suffix: string,
   identityKey = "victorballu@gmail.com",
+  askedModel = "anthropic/claude-opus-4-1",
 ): Promise<{ runId: string; jobId: string }> {
   const runId = `run_session_${suffix}`;
   const jobId = `job_code_${suffix}`;
@@ -4582,6 +4609,7 @@ async function anotherSession(
         containerId: "ctr_workbench",
         expectedRevision: 7,
         account: { provider: "anthropic", identityKey },
+        askedModel,
       }),
       JSON.stringify({ preset: "read-whats-new", selected: 1 }),
       new Date(clock).toISOString(),
@@ -4843,6 +4871,61 @@ test("two runs that sealed no transcript agreed about nothing, and the verdict s
   // NOT `same-answer`: neither run answered, and two silences are not an agreement.
   expect(diff.verdict).toBe("unanswered");
   expect(diff.differed).toEqual([]);
+});
+
+/*
+  THE MODEL THAT ANSWERED IS NOT THE MODEL THAT WAS ASKED FOR (#169).
+
+  Both runs asked for opus, as the launch door records on the run row; one of them was served
+  by sonnet and said so in the transcript it sealed. Before this the receipt's `model` was
+  written from the transcript, so the fallback was recorded as an intent nobody had — and the
+  two runs, which asked for exactly the same thing, compared as `different-request`, a verdict
+  that disqualifies every other field of the comparison.
+*/
+test("a fallback records the model that answered, and the request stays the one that was asked", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const same = answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST);
+  const fell = await sessionInFlight(db);
+  const held = await anotherSession(db, "2");
+  const code = codeReplying({
+    [fell.jobId]: sessionRead({
+      state: "exited",
+      finalMessage: same,
+      sessionId: "ses_fell",
+      model: "anthropic/claude-sonnet-4",
+    }),
+    [held.jobId]: sessionRead({ state: "exited", finalMessage: same, sessionId: "ses_held" }),
+  });
+
+  await wakeOn(store, draws, code).tick();
+
+  const receipt = JSON.parse(
+    String((await db.query(`SELECT payload FROM runs WHERE id = ?`, [fell.runId]))[0]?.["payload"]),
+  ) as Record<string, unknown>;
+  // ASKED on the left, ANSWERED on the right, and they disagree — which is the whole fact.
+  expect(receipt["model"]).toBe("anthropic/claude-opus-4-1");
+  expect(receipt["models"]).toEqual(["anthropic/claude-sonnet-4"]);
+  // The call row is the per-call account of the same thing: what ANSWERED this call.
+  expect(
+    (await db.query(`SELECT model FROM run_calls WHERE run_id = ?`, [fell.runId]))[0]?.["model"],
+  ).toBe("anthropic/claude-sonnet-4");
+
+  const diff = diffRunTraces(await traceOf(db, fell.runId), await traceOf(db, held.runId));
+  // THE SAME REQUEST. Two identical asks, answered with identical bytes — and the one field
+  // that moved is on the ANSWER side and names both models, so the substitution is readable
+  // instead of being charged to the request.
+  expect(diff.verdict).toBe("same-answer");
+  expect(diff.differed).toEqual([
+    {
+      field: "answered",
+      side: "answer",
+      a: "anthropic/claude-sonnet-4",
+      b: "anthropic/claude-opus-4-1",
+    },
+  ]);
 });
 
 // ---------------------------------------------- a run that names untitled sessions (#342)
