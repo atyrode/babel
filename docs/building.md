@@ -576,7 +576,11 @@ revision, builds the dependency closure beside it, attaches `dist/*.manifold-plu
 its checksums to the GitHub Release — a tag publishes plugin bundles and nothing else — and
 hands each asset URL and sha to the integrated preview's receiver (`plugin <url> <sha256>` over
 the forced-command key, the same verb a developer runs from dev-01), dependencies first and a
-baseline before its parts, so the preview installs the release by itself. Between
+baseline before its parts, so the preview installs the release by itself. That order is read off
+the bundles: `scripts/delivery-order.ts` sorts the packed artifacts by their own declared
+dependencies through the kit's `familyOrder`, the function `verify` and `dev` install by, so a
+plugin added to the repository is delivered without the workflow being edited — and a bundle the
+order does not name fails the job rather than riding the release undelivered. Between
 releases a preview gets a build through `bun run dev --deliver`, and the sha256 that counts is
 the one CI prints. A tag is permanent: a bad one stays and the next patch follows it.
 
