@@ -21,6 +21,7 @@ import {
   URGENCY,
   WINDOW_MS,
   type Ranked,
+  type RankedVote,
 } from "./rank.ts";
 
 const HOUR = 60 * 60 * 1000;
@@ -32,13 +33,20 @@ interface Entry extends Ranked {
     id: string;
     kind: PostKind;
     score: number;
-    support: number;
-    oppose: number;
     awaiting: boolean;
+    votes: RankedVote[];
   };
   createdAt: number;
   activity: number[];
   urgency: number;
+}
+
+/** `role: vote` per reviewer, so a case reads as the votes it is: `["reception: support"]`. */
+function votes(said: readonly string[]): RankedVote[] {
+  return said.map((one) => {
+    const [role = "", vote = ""] = one.split(": ");
+    return { role, vote };
+  });
 }
 
 function entry(
@@ -47,8 +55,7 @@ function entry(
   score: number,
   extra: Partial<{
     kind: PostKind;
-    support: number;
-    oppose: number;
+    votes: readonly string[];
     awaiting: boolean;
     urgency: number;
     activity: number[];
@@ -59,9 +66,8 @@ function entry(
       id,
       kind: extra.kind ?? "proposal",
       score,
-      support: extra.support ?? Math.max(score, 0),
-      oppose: extra.oppose ?? Math.max(-score, 0),
       awaiting: extra.awaiting ?? false,
+      votes: votes(extra.votes ?? []),
     },
     createdAt,
     activity: extra.activity ?? [],
@@ -111,19 +117,70 @@ describe("the window", () => {
   });
 });
 
+// The order exists to find the records the reviewers argued over, and what counts as an
+// argument is the same thing the row's badge and the peel's note call one: both sides inside
+// ONE role. Getting that wrong does not degrade the list, it inverts it.
 describe("controversial", () => {
   // The zero is the half worth asserting. A record nine reviewers supported is not slightly
   // controversial; it is agreed on, and a rank that returned a small positive number for it
   // would put the deployment's most popular records at the bottom of a list nobody asked for.
-  test("is zero for anything one-sided", () => {
-    expect(controversialRank(9, 0)).toBe(0);
-    expect(controversialRank(0, 9)).toBe(0);
-    expect(controversialRank(0, 0)).toBe(0);
+  test("is zero for anything no single role divided", () => {
+    expect(controversialRank(votes(["reception: support", "evidence: support"]))).toBe(0);
+    expect(controversialRank(votes(["reception: oppose", "evidence: oppose"]))).toBe(0);
+    expect(controversialRank([])).toBe(0);
+    // Neither side, twice over: a reviewer who declined to answer is not half of an argument.
+    expect(controversialRank(votes(["reception: unsure", "reception: unsure"]))).toBe(0);
+  });
+
+  // THE CASE THIS ORDER GOT BACKWARDS. Support on whether a proposal matters beside opposition
+  // on whether its evidence holds is two reviewers answering two questions; two runs answering
+  // the SAME question in opposite directions is the argument. Summed into two columns the first
+  // reads as perfectly balanced and outranks the second, so the list that exists to find
+  // disagreement was led by a record the page itself labels `reviewed`.
+  test("ranks a split inside one role above a mixture across two", () => {
+    const split = votes(["reception: support", "reception: oppose", "evidence: support"]);
+    const crossRole = votes(["reception: support", "evidence: oppose"]);
+    expect(controversialRank(crossRole)).toBe(0);
+    expect(controversialRank(split)).toBeGreaterThan(controversialRank(crossRole));
   });
 
   test("rewards balance, and magnitude inside it", () => {
-    expect(controversialRank(5, 5)).toBeGreaterThan(controversialRank(9, 1));
-    expect(controversialRank(10, 10)).toBeGreaterThan(controversialRank(1, 1));
+    const even = votes([
+      "reception: support",
+      "reception: support",
+      "reception: oppose",
+      "reception: oppose",
+    ]);
+    const lopsided = votes([
+      "reception: support",
+      "reception: support",
+      "reception: support",
+      "reception: oppose",
+    ]);
+    const small = votes(["reception: support", "reception: oppose"]);
+    expect(controversialRank(even)).toBeGreaterThan(controversialRank(lopsided));
+    expect(controversialRank(even)).toBeGreaterThan(controversialRank(small));
+  });
+
+  // Two questions the reviewers each divided over is a broader argument than one, and the sum
+  // is what says so. A rank that took the widest split alone would call them equal.
+  test("counts every role that divided, and counts each one once", () => {
+    const oneRole = votes(["reception: support", "reception: oppose"]);
+    const twoRoles = votes([
+      "reception: support",
+      "reception: oppose",
+      "evidence: support",
+      "evidence: oppose",
+    ]);
+    expect(controversialRank(twoRoles)).toBeGreaterThan(controversialRank(oneRole));
+    expect(controversialRank(twoRoles)).toBe(2 * controversialRank(oneRole));
+  });
+
+  // A grant whose role the index could not name is in the score and outside every split: a bare
+  // vote credited to a role nobody authorized it for reads as a question that was answered.
+  test("ignores a vote that names no role", () => {
+    expect(controversialRank(votes([": support", ": oppose"]))).toBe(0);
+    expect(controversialRank(votes(["reception: support", ": oppose"]))).toBe(0);
   });
 });
 

@@ -703,6 +703,27 @@ describe("the feed", () => {
     expect(agreed?.contested).toBe(false);
   });
 
+  // The order that exists to find the argument reads it the same way the row's badge does:
+  // inside one role. ARGUED is two runs contradicting each other on whether the proposal is
+  // wanted; AGREED is one reviewer on whether it matters and another on whether the evidence
+  // holds, which is two answers to two questions. Summed into a support and an oppose column
+  // AGREED is the perfectly balanced one and leads the list, and the page then labels the row
+  // it led with `reviewed` — the list saying one thing and its own rows another.
+  test("controversial is the records split inside one role, and only those", async () => {
+    const argued = await feed({ sort: "controversial", window: "all", surface: "all", limit: 100 });
+    const ids = argued.posts.map((post) => post.id);
+    expect(ids).toContain(ARGUED);
+    expect(ids).not.toContain(AGREED);
+    // A list of the whole corpus ordered by a number that is zero for most of it is a list of
+    // the whole corpus, so the count is the answer to "how much of this is contested".
+    expect(argued.total).toBe(1);
+    expect(argued.posts[0]?.contested).toBe(true);
+    // The same query under any other order carries both, so the narrowing is this sort's and
+    // not a filter the feed grew.
+    const whole = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
+    expect(whole.posts.map((post) => post.id)).toContain(AGREED);
+  });
+
   test("reviewing flips with an open claim and not with a finished or lapsed one", async () => {
     const all = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
     expect(all.posts.find((post) => post.id === UNDER_REVIEW)?.reviewing).toBe(true);

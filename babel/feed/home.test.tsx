@@ -187,6 +187,33 @@ describe("the list", () => {
     expect(view.text()).toContain("the store is not open yet");
     await view.unmount();
   });
+
+  // The controversial order lists only what the reviewers took both sides on inside one role,
+  // so an empty one has to say which emptiness it is. "Babel has not posted anything yet" over
+  // a corpus of thousands is a lie, and "nothing is contested" left alone is a finding this
+  // deployment has not earned — the study that asked for this order measured 4 split records in
+  // 120 and then flagged its own number as possibly the question bank agreeing with itself.
+  test("an empty controversial list says what it is empty of, and not that the corpus agrees", async () => {
+    const fake = hub({ feed: () => feed({ posts: [], total: 0, desk: 0 }) });
+    const view = await mount(<HomePanel host={fake.host} />);
+    // The emptiness the page already had: a fact about the surface.
+    expect(view.one(".babel-state strong").textContent).toBe("Nothing is waiting on you");
+    await view.press('[data-pick="sort"]');
+    await view.press('[data-sort="controversial"]');
+    // An order computed over a period keeps its menu open, and an open menu holds the read —
+    // a confirmation on screen must not have its row pulled out from under it.
+    await view.press('[data-pick="sort"]');
+    // The read taken while the menu was open was held, so the list arrives on the next live
+    // read — the same way every other read after a gesture does here.
+    await view.wait(50);
+    fake.announce();
+    await view.wait(200);
+    expect(view.one(".babel-state strong").textContent).toBe("Nothing here is split");
+    const said = view.one(".babel-state span").textContent;
+    expect(said).toContain("both sides on inside one question");
+    expect(said).toContain("asked one question several ways");
+    await view.unmount();
+  });
 });
 
 describe("the sentence", () => {
