@@ -14,6 +14,8 @@ import type {
   RunProgressSchema,
   RunRowSchema,
   RunsResultSchema,
+  ServicePreviewSchema,
+  ServicesPreviewSchema,
   TopicRowSchema,
   TopicsResultSchema,
 } from "../contract.ts";
@@ -765,3 +767,42 @@ export const GAP_NOTE: Record<GapReason, string> = {
   empty: "the lane had nothing to draw",
   unsupported: "not the kind of record that lane works",
 };
+
+// -------------------------------------------------- the services this bundle binds (#400)
+
+export type ServicesPreview = z.infer<typeof ServicesPreviewSchema>;
+export type ServicePreview = z.infer<typeof ServicePreviewSchema>;
+
+/**
+ * WHERE ONE SERVICE STANDS, in a word, and the word decides the colour rather than the prose.
+ *
+ * Three states, and the whole reason the section exists is that the first two are the pair a
+ * job cannot tell apart: nothing installed and something installed whose credential is not on
+ * the machine both end as an archive that refuses and says nothing. So the panel answers the
+ * operator's actual question — is there a policy, and did it come up — as two separate facts.
+ */
+export type ServiceState = "unconfigured" | "unready" | "ready";
+
+export function serviceState(service: ServicePreview): ServiceState {
+  if (service.standing !== "installed") return "unconfigured";
+  return service.reason === "" ? "ready" : "unready";
+}
+
+export const SERVICE_STATE_WORD: Record<ServiceState, string> = {
+  unconfigured: "not configured",
+  unready: "configured, not ready",
+  ready: "ready",
+};
+
+/**
+ * The origins an install would carry, as the panel's drafts hold them. A service the operator
+ * has typed nothing for sends nothing, which is what makes the door compose against the origin
+ * already installed rather than against a blank.
+ */
+export function serviceOrigins(
+  drafts: Readonly<Record<string, string>>,
+): { readonly serviceId: string; readonly origin: string }[] {
+  return Object.entries(drafts)
+    .filter(([, origin]) => origin.trim() !== "")
+    .map(([serviceId, origin]) => ({ serviceId, origin: origin.trim() }));
+}

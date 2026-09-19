@@ -12,7 +12,8 @@
     "jobs:input",
     "jobs:cancel",
     "locations:read",
-    "locations:write"
+    "locations:write",
+    "services:configure"
   ],
   "dependencies": {
     "atyrode.code": {

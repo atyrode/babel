@@ -10,6 +10,8 @@ import type {
   RunRow,
   RunsResult,
   ProfileRow,
+  ServicePreview,
+  ServicesPreview,
   TopicsResult,
 } from "../api.ts";
 
@@ -291,6 +293,43 @@ export function drainStatus(over: Partial<DrainStatus> = {}): DrainStatus {
   };
 }
 
+/**
+ * WHAT THE SERVICE SECTION READS (#400): one declared service, composed against a machine.
+ *
+ * The default is the state a hub is in before anybody has installed anything — no policy, no
+ * credential advertised — because that is what an operator meets first and the one the panel
+ * has to tell apart from a policy whose key is missing.
+ */
+export function servicePreview(over: Partial<ServicePreview> = {}): ServicePreview {
+  return {
+    serviceId: "atyrode.babel.restic",
+    revision: "1",
+    origin: "",
+    operations: ["storage"],
+    credential: {
+      ref: "babel-restic",
+      file: "/run/credentials/babel-restic-token",
+      advertised: false,
+      readable: false,
+    },
+    standing: "absent",
+    reason: "no policy is installed under atyrode.babel.restic on m-dev-01",
+    ...over,
+  };
+}
+
+export function servicesPreview(over: Partial<ServicesPreview> = {}): ServicesPreview {
+  return {
+    machineId: "m-dev-01",
+    connected: true,
+    expectedRevision: null,
+    services: [servicePreview()],
+    previewDigest: "c".repeat(64),
+    current: false,
+    ...over,
+  };
+}
+
 /** The door table a Watch test mounts against; override one door to make it refuse. */
 export function watchDoors(answers: {
   readonly runs: () => RunsResult;
@@ -309,12 +348,26 @@ export function watchDoors(answers: {
   readonly drainStatus?: (args: unknown) => { readonly drains: readonly DrainStatus[] };
   readonly drainStart?: (args: unknown) => unknown;
   readonly drainStop?: (args: unknown) => unknown;
+  /** The composed policy and where it stands; the panel reads it on a press, never on a poll. */
+  readonly previewServices?: (args: unknown) => unknown;
+  readonly installServices?: (args: unknown) => unknown;
 }): Record<string, Doorman> {
   return {
     [door(ACTIONS.runs)]: () => answers.runs(),
     [door(ACTIONS.policy)]: () => (answers.policy ?? (() => POLICY))(),
     [door(ACTIONS.topics)]: () => (answers.topics ?? (() => TOPICS))(),
     [door(ACTIONS.pulse)]: () => (answers.pulse ?? (() => pulseResult()))(),
+    [door(ACTIONS.previewServices)]: (args) =>
+      (answers.previewServices ?? (() => servicesPreview()))(args),
+    [door(ACTIONS.installServices)]: (args) =>
+      (
+        answers.installServices ??
+        (() => ({
+          machineId: "m-dev-01",
+          revision: "d".repeat(64),
+          services: [{ serviceId: "atyrode.babel.restic", revision: "1" }],
+        }))
+      )(args),
     [door(ACTIONS.launch)]: (args) => (answers.launch ?? (() => ({ asked: true })))(args),
     [door(ACTIONS.stop)]: (args) => (answers.stop ?? (() => ({ asked: true })))(args),
     [door(ACTIONS.drainStatus)]: (args) => (answers.drainStatus ?? (() => ({ drains: [] })))(args),

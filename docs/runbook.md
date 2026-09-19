@@ -241,16 +241,36 @@ by procedure:
 > **Prerequisites:** the deployment's storage document is served by the operator's own store over
 > HTTPS, and that store's token is placed on the machine as a service credential
 > (`serviceCredentials.babel-restic`, sourced from a file the machine holds — the nix shape is in
-> `docs/building.md`). The store is the operator's; Babel ships none and generates none.
+> `docs/building.md`). The store is the operator's; Babel ships none and generates none. **Nothing
+> anywhere accepts the token's value through a screen**: Manifold has no path for a person to
+> supply a credential value at all (atyrode/manifold#768), so the file is written on the machine
+> and the policy only ever names it.
+> **Procedure:** Watch's **Services** section. Pick the machine and press **Check**: it composes
+> the policy out of the `services` block `babel/manifest.json` already declares — the service id,
+> its revision and its operations — and reports, per service, what is installed, the credential
+> reference the policy needs, the file the machine's agent reads it from, and whether the binding
+> came up. Fill the endpoint, press Check again to compose it, then press **Install**, which
+> applies the policies as a compare-and-swap on the configuration revision the preview was read
+> at. A preview that has gone stale is refused naming why rather than overwritten. Then install
+> the job with `resourceBindings.services["atyrode.babel.restic"]` carrying the fingerprint
+> `engine.jobs.describe` reports for that policy; that half is still by hand.
+> **Success:** the section reports the service as `ready`, and an `archive` job admits rather than
+> refusing `service_binding_mismatch`. A policy the operator changed is a new installation, never
+> a silent upgrade — the mismatch is the point.
+
+> **OPERATOR STEP — install it by hand instead (three cases, and only these three).**
+> The panel is the ordinary path; the hand-written call remains right when **there is no hub UI to
+> reach** (a headless recovery, a script, a machine being provisioned before anyone signs in),
+> when **recovering from a configuration the panel cannot compose** — a policy Babel no longer
+> declares, or one that must be removed rather than replaced — or when **the machine is one the
+> panel cannot reach**, because Watch offers only machines this hub enrolls.
 > **Procedure:** one owner call of `engine.services.configureConfiguration` naming
 > `serviceId: "atyrode.babel.restic"`, `revision: "1"`, the origin, the credential ref and the
-> single `storage` operation, with `expectedRevision` set to what `readConfiguration` last reported
-> (`null` for a machine with no configuration). Then install the job with
-> `resourceBindings.services["atyrode.babel.restic"]` carrying the fingerprint
-> `engine.jobs.describe` reports for that policy.
-> **Success:** `engine.services.readConfiguration` reports the policy at the expected revision, and
-> an `archive` job admits rather than refusing `service_binding_mismatch`. A policy the operator
-> changed is a new installation, never a silent upgrade — the mismatch is the point.
+> single `storage` operation, with `expectedRevision` set to what `readConfiguration` last
+> reported (`null` for a machine with no configuration). The document's exact shape is in
+> `docs/building.md`. It carries every policy on that machine, not only Babel's: the call
+> replaces the whole configuration, which is the one thing the panel does for you.
+> **Success:** as above.
 
 **Nothing on the machine is a Babel configuration file any more.** No path under `~/.config` is
 read by any Babel program; `docs/parity.md` records the retired configuration package as absent by

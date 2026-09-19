@@ -272,6 +272,25 @@ export const ACTIONS = {
   drainStart: "drainStart",
   drainStatus: "drainStatus",
   drainStop: "drainStop",
+  /**
+   * THE HOST SERVICES THIS BUNDLE'S OPERATIONS BIND, composed and installed (#400). Owner only,
+   * for the same reason the crossing is: `engine.services` admits a configuration read or write
+   * only from the hub's owner holding `services:configure` on that machine, and no capability in
+   * Manifold's vocabulary means "the owner".
+   *
+   * `previewServices` composes the policy each `services` binding in the manifest declares,
+   * reports what is installed on that machine and whether its credential came up, and digests
+   * the whole of it. `installServices` echoes that digest and applies the policies as a
+   * compare-and-swap on the configuration revision the preview was read against, so a policy
+   * that moved underneath is refused rather than overwritten by a screen nobody re-read.
+   *
+   * NEITHER CARRIES A CREDENTIAL VALUE, and there is nowhere in their schemas one could be
+   * written: a policy names a credential by reference and the machine's owner resolves it. The
+   * preview says which reference and which file on that machine, which is the whole of what
+   * Babel may know about it.
+   */
+  previewServices: "previewServices",
+  installServices: "installServices",
   // the crossing (owner only)
   importLedger: "importLedger",
   /**
@@ -2413,9 +2432,118 @@ export const RESTIC_SERVICE = {
   path: "/storage",
   /** The input file the binding is materialized into, as `{url, bearer}`. */
   inputFile: "restic",
+  /**
+   * THE NAME OF THE STORE'S TOKEN, AND THE FILE THE MACHINE'S AGENT READS IT OUT OF — never the
+   * token. A policy carries `credential.ref`; the owner resolves it against a source it holds
+   * and writes the value into the outbound request, so nothing in this family ever holds the
+   * other half. `JEV_SERVICE` names its own the same way, for the same reason.
+   *
+   * `credentialFile` is the ONE thing the protocol will not tell anybody: native bootstrap
+   * "advertises references and allowed origins, never source paths or values"
+   * (manifold `packages/protocol/src/services.ts`), so a hub can say a reference is missing and
+   * can never say where to put it. It is this deployment's own convention — the path
+   * `docs/building.md`'s nix block writes — stated here so a panel can tell the operator where
+   * to write the file rather than leaving him the same silence "out of credit" produces.
+   */
+  credentialRef: "babel-restic",
+  credentialFile: "/run/credentials/babel-restic-token",
 } as const;
 /** Where the engine binds that file inside the sandbox: one job's own, read-only. */
 export const RESTIC_CREDENTIAL_FILE = `/inputs/${RESTIC_SERVICE.inputFile}`;
+
+// -------------------------------------------------------------- composing a service policy (#400)
+
+/*
+  INSTALLING A SERVICE POLICY WAS A PROCEDURE IN A DOCUMENT, and a policy whose install lives
+  only in a runbook is a policy nobody can verify they installed correctly. These two doors are
+  the same act as a screen: compose what the manifest already declares, show it, then swap it in
+  against the revision it was read at.
+
+  WHAT THEY DO NOT DO is take a key. Manifold has no path anywhere for a person to supply a
+  credential VALUE — the machine's agent opens `serviceCredentials[<ref>].source` off its own
+  disk, and the protocol states the boundary outright (atyrode/manifold#768 is the upstream
+  gap). A field here would mean the value transiting Babel's server half, which is exactly what
+  naming a credential by reference removed. So the preview NAMES the reference and the file, and
+  the operator writes it there himself.
+*/
+
+/** What is installed on a machine under one service id, as a preview reports it. */
+export const SERVICE_STANDINGS = ["absent", "different", "installed"] as const;
+export const ServiceStandingSchema = z.enum(SERVICE_STANDINGS);
+export type ServiceStanding = z.infer<typeof ServiceStandingSchema>;
+
+/**
+ * ONE DECLARED SERVICE, composed and weighed against the machine.
+ *
+ * `reason` is the one sentence an operator can act on, and its whole point is that it tells
+ * *not configured* from *configured and refused*: today both produce identical silence at the
+ * job, which is the state this preview exists to end. Empty means a job binding this service
+ * would admit.
+ */
+export const ServicePreviewSchema = z.strictObject({
+  serviceId: z.string(),
+  revision: z.string(),
+  /** The endpoint the policy admits; empty when nobody has named one and none is installed. */
+  origin: z.string(),
+  /** The operation ids the manifest's binding names — the policy declares these and no others. */
+  operations: z.array(z.string()),
+  credential: z.strictObject({
+    /** The name the policy carries. There is no field here for the value, by construction. */
+    ref: z.string(),
+    /** Where the agent on that machine reads it from, so the operator has somewhere to write. */
+    file: z.string(),
+    /** Whether that machine advertises a source under the name at all. */
+    advertised: z.boolean(),
+    /** Whether it advertises one it can read, allowed for this origin. */
+    readable: z.boolean(),
+  }),
+  standing: ServiceStandingSchema,
+  reason: z.string(),
+});
+export type ServicePreview = z.infer<typeof ServicePreviewSchema>;
+
+/**
+ * The endpoint a service's policy may reach, which is the one part of a policy this bundle
+ * cannot know: it is where THIS deployment's store lives, not a fact about Babel. A service the
+ * request names no origin for keeps the origin of the policy already installed, so re-checking a
+ * configured machine needs nothing typed.
+ */
+export const ServiceOriginSchema = z.strictObject({
+  serviceId: bounded(120),
+  origin: z.url().max(4096),
+});
+
+export const PreviewServicesInputSchema = z.strictObject({
+  machineId: bounded(120),
+  origins: z.array(ServiceOriginSchema).max(16).default([]),
+});
+
+export const ServicesPreviewSchema = z.strictObject({
+  machineId: z.string(),
+  /** Whether the hub can reach that machine's owner; nothing below is known while it cannot. */
+  connected: z.boolean(),
+  /** The configuration revision this was composed against, `null` for a machine with none. */
+  expectedRevision: z.string().nullable(),
+  services: z.array(ServicePreviewSchema),
+  /** What an install must carry back. A preview nobody re-read cannot be the one applied. */
+  previewDigest: z.string(),
+  /** Whether installing would change anything at all. */
+  current: z.boolean(),
+});
+export type ServicesPreview = z.infer<typeof ServicesPreviewSchema>;
+
+export const InstallServicesInputSchema = z.strictObject({
+  ...PreviewServicesInputSchema.shape,
+  expectedRevision: z.string().nullable(),
+  previewDigest: z.string().min(1).max(64),
+});
+
+export const ServicesInstalledSchema = z.strictObject({
+  machineId: z.string(),
+  /** The revision the hub minted for the configuration that now stands. */
+  revision: z.string().nullable(),
+  services: z.array(z.strictObject({ serviceId: z.string(), revision: z.string() })),
+});
 
 // ---------------------------------------------------------------------------- the drain (#258)
 

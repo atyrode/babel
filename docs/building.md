@@ -297,9 +297,14 @@ and the document behind it is what carries the secret — which is also why the 
 is the operator's own store rather than anything Babel ships or generates: Babel never creates
 or emits a credential, and stays vault-agnostic (`SPEC.md`).
 
-Installing it is one owner call per machine, `engine.services.configureConfiguration`
-(`expectedRevision` is what `readConfiguration` last reported, `null` for a machine with no
-configuration yet):
+Installing it is Watch's **Services** section, which composes exactly the document below out of
+the `services` block above — the service id, its revision and its operations come from the
+manifest, so the binding and the policy cannot be edited apart — previews it with a digest and
+applies it as a compare-and-swap on the configuration revision it was read at
+(`babel/doors/services.ts`). The same document by hand is one owner call per machine,
+`engine.services.configureConfiguration`, and `docs/runbook.md` §4 says when that is still the
+right path (`expectedRevision` is what `readConfiguration` last reported, `null` for a machine
+with no configuration yet):
 
 ```json
 {
@@ -325,9 +330,9 @@ configuration yet):
             "contentTypes": ["application/json"],
             "headers": []
           },
-          "timeoutMs": 5000,
+          "timeoutMs": 10000,
           "maxRequestBytes": 1024,
-          "maxResponseBytes": 4096
+          "maxResponseBytes": 65536
         }
       }
     }

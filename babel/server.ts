@@ -16,6 +16,7 @@ import {
   type OperationName,
 } from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
+import { declaredServices } from "./doors/services.ts";
 import { launchMachinery, type LaunchDeps } from "./doors/launch.ts";
 import type { Recipe } from "./server/engine/prompts.ts";
 import { codeEngine, type ActionsSlice } from "./server/engine/session.ts";
@@ -401,6 +402,10 @@ const doors = babelDoors(
     now: () => store.now(),
   },
   CONCURRENT_JOBS,
+  // THE SERVICES THIS BUNDLE BINDS, read off the same manifest the ceiling is (#400). The
+  // `services` block on `archive` and `verify` is the declaration; the composer behind the two
+  // owner doors turns it into the policy, so the binding and the policy cannot be edited apart.
+  declaredServices(manifest),
 );
 
 /**
