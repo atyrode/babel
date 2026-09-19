@@ -30,6 +30,13 @@ import {
   type LiveJob,
   type Reconciled,
 } from "../store/drains.ts";
+import {
+  backfillVectors,
+  ensureTerms,
+  BACKFILL_BATCH,
+  type CorpusStore,
+  type Embedder,
+} from "../store/corpus.ts";
 import type { BabelStore } from "../store/store.ts";
 import { materialJobId, type LaunchIdentity, type Started } from "../doors/launch.ts";
 import type { JobsSlice, RunPlan } from "./conductor.ts";
@@ -136,6 +143,18 @@ export interface DrainDeps {
    * its own stored profile to every job it launches, never a default re-read later.
    */
   plan(policy: Policy, operationId: OperationName, profile?: DrainProfile | undefined): RunPlan;
+  /**
+   * THE EMBEDDING AUTHORITY THIS WAKE HOLDS, or `null` because it holds none (#337).
+   *
+   * It is `null` on every background wake and that is the host's construction rather than a
+   * choice: `GuestServices` is served to a DISPATCH, and the settled-job hook's context
+   * (`GuestJobSettledCtx`) carries jobs and actions and no services at all. So the corpus
+   * backfill rides the ticks a dispatch woke — the operator watching his drain, which is
+   * precisely when he is paying attention to what it is spending — and a settlement's tick does
+   * the launching and none of the embedding. Absent is one branch: the keyword half of the index
+   * is still brought current, because that half needs nobody's account.
+   */
+  readonly embed?: Embedder | null;
   now(): number;
 }
 
@@ -456,6 +475,76 @@ async function leaveReport(deps: DrainDeps, id: string): Promise<readonly string
 }
 
 /**
+ * THE CORPUS INDEX AS A DRAIN DUTY (#337): what one tick of one drain spends on it.
+ *
+ * WHY THE DRAIN PAYS FOR IT. Embedding 6,038 records is the exact shape of work this mechanism
+ * exists for — bounded, resumable, worth doing while capacity is free and not worth blocking on
+ * when it is not — and the drain is the one thing in Babel that spends surplus deliberately,
+ * meters it, and leaves a report of what it cost (#270). It also answers the only real objection
+ * to embeddings, which was never the money but the STANDING cost: a re-embed when the model
+ * changes is a drain, and a drain is a thing Babel already knows how to run and account for.
+ *
+ * BOUNDED. {@link BACKFILL_BATCH} records a tick, one service call each. The bound is here
+ * rather than in the index because it is a statement about a TICK: a tick holds the wake that
+ * called it, and a pass that embedded a whole corpus would hold a dispatch open for minutes.
+ *
+ * RESUMABLE, AND WITH NO CURSOR. The pending set is a query over `records` and `record_vectors`
+ * (`store/corpus.ts`, `pendingVectors`), so a tick that died, a hub that restarted and a drain
+ * that was stopped all leave the same state: the rows that were written, and the rest still
+ * pending. Nothing has to be reconciled on the way back up.
+ *
+ * THE KEYWORD HALF RUNS WHATEVER THE ACCOUNT SAYS. `ensureTerms` needs no model, no credential
+ * and no egress, so it is ahead of the embedding and outside its condition: a deployment that
+ * installed nothing still gets its index brought current by every tick, which is the half that
+ * makes a search work at all.
+ *
+ * IT CANNOT FAIL A DRAIN. Everything here is inside one `catch`: a drain is an operator's
+ * decision to spend a window that is about to reset, and an index that could not be written is
+ * not a reason to stop spending it. The sentence is journaled as an `error` note, which is where
+ * every other thing a tick could not do already goes.
+ */
+async function indexDuty(
+  deps: DrainDeps,
+  at: number,
+): Promise<{ readonly journal: readonly DrainNote[]; readonly notes: readonly string[] }> {
+  const journal: DrainNote[] = [];
+  const notes: string[] = [];
+  const corpus: CorpusStore = { db: deps.store.db };
+  try {
+    const terms = await ensureTerms(corpus);
+    if (terms > 0) {
+      const detail = `the keyword index was rebuilt over ${String(terms)} records`;
+      journal.push({ at, kind: "index", detail });
+      notes.push(detail);
+    }
+    const embed = deps.embed ?? null;
+    if (embed === null) return { journal, notes };
+    const report = await backfillVectors(corpus, embed, new Date(at).toISOString(), BACKFILL_BATCH);
+    if (report.model === "") {
+      // No policy installed, or the service did not answer. Neither is an error and neither is
+      // journaled: a note per tick for a deployment that has installed nothing would fill the
+      // drain's own report with the absence of a feature.
+      return { journal, notes };
+    }
+    if (report.embedded === 0 && report.empty === 0 && report.unanswered === 0) {
+      return { journal, notes };
+    }
+    const detail =
+      `${String(report.embedded)} records embedded by ${report.model}` +
+      `${report.empty === 0 ? "" : `, ${String(report.empty)} with no text`}` +
+      `${report.unanswered === 0 ? "" : `, ${String(report.unanswered)} unanswered`}` +
+      `, ${String(report.remaining)} left`;
+    journal.push({ at, kind: "index", detail });
+    notes.push(detail);
+  } catch (error) {
+    const detail = `the corpus index could not be advanced: ${message(error)}`;
+    journal.push({ at, kind: "error", detail });
+    notes.push(detail);
+  }
+  return { journal, notes };
+}
+
+/**
  * One drain, moved on by one tick.
  *
  * The order is the whole of it: fold what closed BEFORE deciding, so a target met by the job
@@ -634,6 +723,11 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
     holding.push(job);
     launched += 1;
   }
+  // THE CORPUS INDEX'S OWN SLICE OF THIS TICK (#337), after the launching and before the
+  // journal, so the note it leaves rides the one write that already happens here.
+  const indexed = await indexDuty(deps, at);
+  journaled.push(...indexed.journal);
+  notes.push(...indexed.notes);
   await noteDrain(deps.store, row.id, journaled);
 
   // A DRAIN THAT HOLDS NOTHING AND CANNOT LAUNCH HAS FAILED, and says so rather than sitting at

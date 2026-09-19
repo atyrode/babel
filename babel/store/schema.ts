@@ -6,9 +6,10 @@
   provenance survives the rewrite; the crossing runs once and the Go stores are then retired.
 
   What changed in the crossing, and why:
-  - ninety-four tables become twenty-three, and the shapes since have added six (`budgets`,
+  - ninety-four tables become twenty-three, and the shapes since have added seven (`budgets`,
     #260, `run_progress`, #261, `drains`, #258, `next_actions` with `next_action_rulings`,
-    #340, and `run_calls`, #349). The Go tree kept a table per concept per
+    #340, `run_calls`, #349, `session_titles`, #342, and the corpus index of `record_terms`
+    and `record_vectors`, #337). The Go tree kept a table per concept per
     package; here a record is a record whatever its kind, an edge is an edge whatever it
     relates, and a revision is a row that supersedes another rather than a parallel table of
     revisions.
@@ -21,7 +22,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 9 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 10 } as const;
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -324,6 +325,79 @@ const SESSION_TITLE_SCHEMA: readonly string[] = [
      run_id TEXT NOT NULL,
      inferred_at TEXT NOT NULL
    ) STRICT`,
+];
+
+/**
+ * THE CORPUS INDEX (#337) — spelled once and created twice, for the reason `budgets`, `drains`,
+ * `next_actions`, `run_calls` and `session_titles` are.
+ *
+ * Nothing retrieved over the corpus before this. A preparation selected by recency or by topic,
+ * the feed filtered structured columns, and the measurement of what that costs is in
+ * `docs/jev-case-study-audit.md`: a correctly matched record scores 2.043 on real work, the
+ * mechanism that picked one scored 0.606, and picking at random scored 0.680. Retrieval that
+ * loses to a coin is not retrieval, and the reason is that no index existed for one to read.
+ *
+ * TWO INDEXES, NOT ONE, and they are here together because the features waiting on this —
+ * duplicate detection, a run citing prior work it did not know about, a question finding the
+ * records it is about — are the ones where MEANING is the requirement. A keyword index alone
+ * would have shipped a door that worked over a capability that did not.
+ *
+ * BOTH ARE DERIVED STATE AND NEITHER IS BACKED UP. Every row below is reconstructible from
+ * `records` alone on a machine that has never seen this file (`store/corpus.ts`, `rebuildTerms`
+ * and the pending query), which is why nothing here is append-only: a re-embed REPLACES, and a
+ * corrected index is not a correction of a fact but a recomputation of a derivation.
+ *
+ * `record_terms` IS FTS5, which the runtime already carries — `ENABLE_FTS5` is in the SQLite Bun
+ * ships and `CREATE` is not among the leading keywords the engine refuses. It costs no
+ * dependency, no model and no egress, and it is what makes a deployment that installs nothing
+ * else searchable. Its rows are written by the trigger below as records arrive and by one
+ * rebuild pass for the ones that arrived before this shape existed, so the keyword half is
+ * never partial for long and never waits on anybody's account.
+ *
+ * `record_vectors` IS ONE ROW PER RECORD, KEYED ON THE RECORD, and the model that produced it is
+ * a column rather than a note somewhere: a vector whose model nobody recorded is a vector nobody
+ * can tell is stale, and two models' vectors compared against each other produce confident
+ * nonsense that nothing downstream would notice. A search reads only the rows matching the model
+ * it embedded its own query with; the rest are pending work, which is exactly what a model change
+ * should mean.
+ *
+ * `probe` IS A SIGN BIT PER DIMENSION AND THE HOST'S BUDGET CHOSE IT. A plugin's SQL call may
+ * return 4 MiB (`MAX_SQL_RESULT_BYTES`), and 6,038 records at 768 float32 dimensions is 18.5 MB —
+ * so a brute-force scan over `vector` cannot cross this boundary at corpus scale, and
+ * `load_extension` is refused, so there is no vector extension to do it below the boundary
+ * either. One bit per dimension is 96 bytes a record and 580 KB for the whole corpus: it crosses
+ * in one query, Hamming distance over it orders candidates, and the float vectors of a bounded
+ * top slice are read back to score them exactly. The sketch is LOSSY and `store/corpus.ts` says
+ * what that costs and reports when an answer was drawn from it.
+ *
+ * A RECORD WITH NO TEXT GETS A ROW ANYWAY, `dims` 0 and a `reason`, on `session_titles`' rule:
+ * work that cannot succeed must be recorded as done or every later pass offers it again for
+ * ever. Only a permanent, local fact is written that way — an empty text — never a service that
+ * was unavailable, which is a fact about the minute rather than about the record.
+ */
+const CORPUS_INDEX_SCHEMA: readonly string[] = [
+  `CREATE VIRTUAL TABLE record_terms USING fts5(
+     record_id UNINDEXED,
+     title,
+     body,
+     tokenize = 'unicode61 remove_diacritics 2'
+   )`,
+  `CREATE TRIGGER record_terms_follow AFTER INSERT ON records BEGIN
+     INSERT INTO record_terms(record_id, title, body)
+     VALUES (new.id, new.title, ${recordTextSql("new.")});
+   END`,
+  `CREATE TABLE record_vectors(
+     record_id TEXT PRIMARY KEY REFERENCES records(id),
+     model TEXT NOT NULL,
+     dims INTEGER NOT NULL CHECK (dims >= 0),
+     probe BLOB NOT NULL,
+     vector BLOB NOT NULL,
+     digest TEXT NOT NULL,
+     reason TEXT NOT NULL DEFAULT '',
+     embedded_at TEXT NOT NULL,
+     CHECK ((dims = 0) = (reason <> ''))
+   ) STRICT`,
+  `CREATE INDEX record_vectors_by_model ON record_vectors(model, dims)`,
 ];
 
 /** Statements of the first migration, in order; each is one `run`. */
@@ -777,6 +851,11 @@ export const SCHEMA_V1: readonly string[] = [
   // ---------------------------------------------------------------- an inferred title (#342)
   ...SESSION_TITLE_SCHEMA,
 
+  // ---------------------------------------------------------------- the corpus index (#337)
+  // After `records`, because the trigger names that table, and before the crossing, because the
+  // importer's own inserts are what the trigger first fires for.
+  ...CORPUS_INDEX_SCHEMA,
+
   // ---------------------------------------------------------------- a drain (#258)
   // No index, and now for one reason rather than two: a deployment accumulates drains at the
   // rate an operator decides to spend a window, and the running ones are read by `state` over
@@ -907,6 +986,10 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // #342: the titles a model wrote, which nothing else in this store could recover. Derived
   // from the same list, for the reason above.
   ...SESSION_TITLE_SCHEMA.map(objectAddition),
+  // #337: the corpus index, keyword and meaning. Derived from the same list, for the reason
+  // above — and the one addition in this file that names a VIRTUAL table, which `sqlite_master`
+  // answers for by name exactly as it does for an ordinary one.
+  ...CORPUS_INDEX_SCHEMA.map(objectAddition),
 ];
 
 /**
@@ -928,8 +1011,52 @@ export interface SchemaAddition {
  * addition would then run on every enable and fail on the second.
  */
 function objectAddition(sql: string): SchemaAddition {
-  const named = /^\s*CREATE\s+(?:TABLE|INDEX|TRIGGER)\s+([a-z_][a-z_0-9]*)/iu.exec(sql);
+  const named = /^\s*CREATE\s+(?:VIRTUAL\s+)?(?:TABLE|INDEX|TRIGGER)\s+([a-z_][a-z_0-9]*)/iu.exec(
+    sql,
+  );
   const object = named?.[1];
   if (object === undefined) throw new Error(`a schema addition creates nothing named: ${sql}`);
   return { object, sql };
+}
+
+/**
+ * A RECORD'S OWN TEXT, AS SQL, SPELLED ONCE — the trigger above and the rebuild pass in
+ * `store/corpus.ts` both read it through this, so "what a record says" cannot come to mean two
+ * things depending on which path indexed the row.
+ *
+ * It is the prose the peel puts at depths one and two (`store/store.ts`, `claimOf` and `caseOf`)
+ * and nothing else: no id, no run, no locator, no timestamp. That matters twice over — an
+ * identifier in a keyword index is noise a reader never searches for, and this same text is the
+ * ONLY thing an embedding service is ever sent, so the discipline is enforced by what the
+ * expression selects rather than by a caller remembering to strip something.
+ *
+ * The four kinds name their claim differently and a payload holds only its own kind's fields, so
+ * the missing ones coalesce away; the list is flat rather than a `CASE` over `kind` because a
+ * trigger that had to branch would need the branch repeated in the rebuild. List-valued fields
+ * (`scope`, `risks`, `open_questions`) are left out: `json_extract` hands those back as JSON
+ * text, and bracket-and-quote noise in an embedding's input buys less than it costs.
+ *
+ * `json_valid` guards the whole of it because an imported Go-era payload was never validated by
+ * this contract, and `json_extract` RAISES on text that is not JSON — inside an `AFTER INSERT`
+ * trigger that would abort the insert of the record itself. An index may be empty about a
+ * record; it may never refuse one.
+ */
+export function recordTextSql(alias: string): string {
+  const fields = [
+    "statement",
+    "claim",
+    "pattern",
+    "outcome",
+    "problem",
+    "impact",
+    "significance",
+    "category",
+    "classification",
+    "uncertainty",
+    "estimated_scope",
+  ];
+  const parts = fields
+    .map((field) => `COALESCE(json_extract(${alias}payload, '$.${field}'), '')`)
+    .join(` || ' ' || `);
+  return `CASE WHEN json_valid(${alias}payload) THEN TRIM(${parts}) ELSE '' END`;
 }

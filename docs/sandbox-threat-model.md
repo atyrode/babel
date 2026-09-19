@@ -13,8 +13,9 @@ the same change.
 Babel executes in three places and holds a process in none of them.
 
 - **The server half** runs in the hub, answering doors and ticking the conductor on whatever wake
-  the hub gives it. It has no open database handle, no port, no timer and no credential: a `batch`
-  is its transaction and a service binding is its secret.
+  the hub gives it. It has no open database handle, no port and no timer: a `batch` is its
+  transaction. It holds no credential, and it reaches exactly one origin — the embedding service
+  the operator installed, and only if he installed one. That call is the paragraph below.
 - **The machine half** is a Bun bundle the hub installs and runs as a **job** on an enrolled
   machine: `scan`, `archive`, `prepare`, `verify`, and nothing else
   (`babel/manifest.json`; `babel/machine/main.ts`). It reads
@@ -23,6 +24,19 @@ Babel executes in three places and holds a process in none of them.
   `atyrode.code.runSession`. It chooses no model, no thinking level and no account, holds no
   provider credential, and owns no process to reap. The session's containment is Code's, and §4
   says exactly what Babel may therefore assert about it.
+
+**The server half reaches one origin, for one thing, and only when the operator installed it.** The
+corpus index's meaning half needs a model, and Babel holds no model and no key, so the vector is
+computed by a host service: the plugin names `atyrode.babel.embeddings` and an operation, the host
+resolves the credential by reference against a source only the machine's owner holds, and writes it
+into the outbound request. `babel/server/embed.ts` is the only module in the bundle that can make
+that call, and its own order is the control — the size cap first, the roster second, the invocation
+behind both. No service configured under that id means no call at all, so a deployment that
+installs no policy makes no outbound request and is indistinguishable from one running a build
+without this shape. What leaves is a record's own prose — its title and the claim fields the peel
+shows — capped at 8 KiB, in one named field, with no identifier, no run, no session byte, no
+locator and no instant beside it. The keyword half of the same index is SQLite FTS5 in the hub's
+own file and reaches nothing ever, so search itself does not depend on this being installed.
 
 ## 2. What is being contained, and why
 
@@ -142,7 +156,18 @@ Most reachable first. A residual discovered in the system belongs in this list i
 3. **The provider credential is Code's, and Babel never sees it.** This removes a residual rather
    than adding one, but it relocates it: a compromise of the session reaches whatever credential
    Code placed there, and Babel's receipt cannot tell a reviewer what that was.
-4. **The material is a second copy of sensitive bytes, and a restore is a third.** A preparation
+4. **An installed embedding policy sends every record's prose to one more provider.** The corpus
+   index's meaning half is the second place Babel's content leaves the hub, and it differs from
+   the first in scope rather than in kind: an analysis sends the selection an operator chose, and
+   a backfill sends every record there is, once each, as the drain works through them. The prose
+   is all that goes — no identifier, no locator, no session byte — and the origin, the credential
+   and whether any of it happens at all are the operator's, because an uninstalled policy makes
+   no call. The secret preflight does not stand in front of this path: it scans session logs on
+   the machine half, and a record's own text is a model's summary of one rather than a copy of it,
+   so a credential a run copied into a claim would travel here as prose. What bounds it is the
+   8 KiB cap and the expression that selects the text, both of which name fields rather than
+   forwarding a payload.
+5. **The material is a second copy of sensitive bytes, and a restore is a third.** A preparation
    seals real session logs into a job output lease, which is then bound into a session's sandbox.
    The corpus's sensitivity travels with it, and a machine that may run `prepare` is a machine
    that may read every session the selection names. A `verify` that restores a session writes
@@ -150,16 +175,16 @@ Most reachable first. A residual discovered in the system belongs in this list i
    an operation killed in between leaves them until the job's state is reclaimed. A restore that
    named a target meant to be kept is a copy the operator now owns, in the open, with none of the
    repository's encryption around it.
-5. **A credential the scan does not recognize still travels.** The preflight is deterministic, so
+6. **A credential the scan does not recognize still travels.** The preflight is deterministic, so
    it catches what its rules describe and nothing else: a credential in a format no rule names, or
    one the entropy heuristic reads as prose, reaches the provider like any other bytes. The rule
    table is the claim, class by class (`babel/machine/preflight.ts`), and the receipt
    names the rule set that ran so a corpus scanned by an older one is identifiable rather than
    assumed clean.
-6. **The trust base is the hub, the machine and Code.** The hub constructs the job sandbox, holds
+7. **The trust base is the hub, the machine and Code.** The hub constructs the job sandbox, holds
    the store and mints the service capability; the machine's owner binds `restic` and the native
    closure; Code confines the session. Babel audits none of the three and depends on all of them.
-7. **A shared kernel shares microarchitecture.** No claim is made against timing or
+8. **A shared kernel shares microarchitecture.** No claim is made against timing or
    speculative-execution side channels, and none is implied.
 
 ## 6. What the operator is asked to accept, in one sentence each
@@ -170,6 +195,8 @@ Most reachable first. A residual discovered in the system belongs in this list i
 - Running `verify` means a job on that machine can read the whole repository, and can write a
   session restored out of it back onto that machine.
 - Enabling a machine for `prepare` means that machine can read every session the selection names.
+- Installing an embedding policy means every record's own prose reaches that provider once, and
+  installing none means the corpus index answers by keyword and reaches nothing.
 - Running an analysis means accepting that a credential in a format the preflight's rules do not
   name travels with the material.
 
@@ -180,6 +207,17 @@ Most reachable first. A residual discovered in the system belongs in this list i
   line and requires a declared backend with measured properties.
 - **A machine operation gaining network, or write access to the corpus.** Both are manifest facts
   today, and §3's table is the claim; either change rewrites it.
+- **The server half reaching a second origin, or reaching one without a policy the operator
+  installed.** §1's paragraph is the claim, and it is narrow on purpose: one service id, one
+  operation, one module able to call it, one field on the wire, and no call at all where nothing
+  is configured. A second binding, a call from a path other than `babel/server/embed.ts`, a field
+  added to that request, or a fallback that reads an origin or a key out of the environment is
+  each a different boundary — and the last of those is the shape the condition exists to catch,
+  because it would look like a convenience.
+- **The text an embedding is computed from ceasing to be the expression that selects it.** The
+  claim that no identifier leaves rests on `recordTextSql` naming prose fields, so a change that
+  sent a payload, a row or a locator instead moves this from "one field of prose" to "whatever
+  the caller had".
 - **A machine operation this table does not name**, or one whose secret arrives by any path other
   than the job's own service binding. The table is the claim operation by operation, so an
   operation added without a row here is one running with no stated boundary at all.
@@ -188,7 +226,7 @@ Most reachable first. A residual discovered in the system belongs in this list i
   absolute target the hub does not check, a write outside the job's own filesystem — is a
   different document.
 - **A detector class leaving the preflight's rule table, or the scan ceasing to run before the
-  material is sealed.** §4's third property and residual 5 are written against that table and
+  material is sealed.** §4's third property and residual 6 are written against that table and
   that ordering; a rule removed or a scan moved after the seal is a different disclosure boundary.
 - **Citations ceasing to be checked against the material index**, which is the only mechanism that
   makes a model's claim about the corpus verifiable.

@@ -211,6 +211,21 @@ export const ACTIONS = {
   runs: "runs",
   run: "run",
   policy: "policy",
+  /**
+   * RETRIEVING OVER THE CORPUS BY WHAT A RECORD SAYS (#337).
+   *
+   * It is a reading door beside `feed` rather than a mode of it, because the two answer
+   * different questions with different guarantees: `feed` enumerates and filters structured
+   * columns and is exhaustive by construction, and this one RANKS by relevance and is only as
+   * complete as the indexes behind it. Folding them together would make one result shape carry
+   * "everything that matched these filters" and "the best guesses about these words" under one
+   * name, and a caller could not tell which it had.
+   *
+   * Its answer says which of the two indexes found each record and how much of the corpus each
+   * index holds, because a partially built index that answered silently would be indistinguishable
+   * from a corpus that holds nothing about the question.
+   */
+  search: "search",
   // the operator's acts
   rule: "rule",
   /**
@@ -595,6 +610,94 @@ export const RecordPeelSchema = z.strictObject({
   ),
 });
 export type RecordPeel = z.infer<typeof RecordPeelSchema>;
+
+// ---------------------------------------------------------------------------- searching (#337)
+
+/**
+ * WHAT A SEARCH IS ASKED, and it is one line of prose plus two bounds.
+ *
+ * There is no field for an operator, a filter grammar or a page: the corpus is one hub's and the
+ * feed is where structured filtering already lives. What this door adds is the one thing the feed
+ * cannot do, which is answer "about what".
+ *
+ * The query is bounded at 512 characters because it is a question and not a document — the door
+ * that carries a document is `launch`. A longer one is refused rather than truncated: a search
+ * whose last third was silently dropped returns a confident answer to something nobody asked.
+ */
+export const SearchQuerySchema = z.strictObject({
+  query: bounded(512),
+  limit: z.number().int().min(1).max(100).default(20),
+  /** Record kinds to answer with; an empty list means every kind. */
+  kinds: z.array(RecordKindSchema).max(RECORD_KINDS.length).default([]),
+});
+export type SearchQuery = z.infer<typeof SearchQuerySchema>;
+
+/**
+ * HOW MUCH OF THE CORPUS EACH INDEX HOLDS, on every answer.
+ *
+ * A partially built index that answered silently is indistinguishable from a corpus that holds
+ * nothing about the question, and the two want opposite responses from a reader: one is "ask
+ * again later", the other is "nobody has looked at this". So the counts travel with the hits
+ * rather than living behind a second door somebody would have to know to open.
+ *
+ * `model` is the embedding model the vectors read were produced by, and it is empty when none
+ * were read. A vector whose model nobody recorded is a vector nobody can tell is stale, and
+ * `stale` counts the rows some earlier model made — they are not compared and not deleted, they
+ * are the backfill's remaining work.
+ */
+export const SearchCoverageSchema = z.strictObject({
+  records: z.number().int().min(0),
+  keyworded: z.number().int().min(0),
+  embedded: z.number().int().min(0),
+  /** Records with no text to embed; they are covered, because they can never be more. */
+  empty: z.number().int().min(0),
+  stale: z.number().int().min(0),
+  model: z.string(),
+});
+
+/**
+ * One record a search matched, and which index matched it.
+ *
+ * `score` is the fused rank and is comparable only within one answer: the two indexes score on
+ * incommensurable scales — bm25 is unbounded and negative, cosine is bounded in [-1, 1] — so
+ * their RANKS are fused and the underlying numbers travel beside the result for a reader who
+ * wants to see why. `keyword` and `meaning` are null where that index did not match the record,
+ * which is a different fact from matching it badly.
+ */
+export const SearchHitSchema = z.strictObject({
+  id: RecordIdSchema,
+  title: z.string(),
+  via: z.enum(["keyword", "meaning", "both"]),
+  score: z.number(),
+  keyword: z.number().nullable(),
+  meaning: z.number().nullable(),
+});
+
+/**
+ * A SEARCH'S ANSWER, AND ITS OWN ACCOUNT OF ITSELF.
+ *
+ * `meaning` is `absent`, `partial` or `full`, and `meaningAbsent` is the sentence saying why when
+ * it is absent — no service installed, the service did not answer, or nothing has been embedded
+ * yet. All three are ordinary states of a deployment rather than errors, and a door that raised
+ * for them would make a keyword search fail because an account ran dry.
+ *
+ * `scanned`, `rescored` and `approximate` are what let a caller tell a miss from a near miss.
+ * The meaning index is scanned through a one-bit-per-dimension sketch and only the best
+ * `rescored` of `scanned` are scored exactly, so an answer where the two differ was drawn from a
+ * prefilter that may have cut a better match. `scanned` of 0 means there was nothing to compare
+ * against at all. A search that silently missed would be worse than one that says it is
+ * approximate.
+ */
+export const SearchResultSchema = z.strictObject({
+  hits: z.array(SearchHitSchema),
+  coverage: SearchCoverageSchema,
+  meaning: z.enum(["absent", "partial", "full"]),
+  meaningAbsent: z.string(),
+  scanned: z.number().int().min(0),
+  rescored: z.number().int().min(0),
+  approximate: z.boolean(),
+});
+export type SearchResult = z.infer<typeof SearchResultSchema>;
 
 // ---------------------------------------------------------------------------- the thread
 
@@ -2558,6 +2661,58 @@ export const RESTIC_SERVICE = {
 /** Where the engine binds that file inside the sandbox: one job's own, read-only. */
 export const RESTIC_CREDENTIAL_FILE = `/inputs/${RESTIC_SERVICE.inputFile}`;
 
+/**
+ * THE EMBEDDING SERVICE the corpus index's meaning half is computed through (#337).
+ *
+ * BABEL BINDS NO MODEL SERVICE AND HOLDS NO CREDENTIAL, so the question "how does an embedding
+ * get computed" has four possible answers in this tree and only one of them works. `preflight`
+ * is deterministic and local, which means no model and therefore no meaning. `restic` is a
+ * runtime tool on the MACHINE half — a sandboxed job posted to an enrolled machine and read back
+ * a wake later — and a search door has to embed THE QUERY at the latency of a door, so a local
+ * model there would serve the backfill and could not serve one search; two mechanisms for one
+ * capability is how the halves come to disagree about what a vector means. A Code session, which
+ * is how every other model call Babel makes reaches a model, returns prose: right for a session
+ * title, and no way to obtain a vector anybody should trust. What is left is `JEV_SERVICE`'s
+ * shape, and it is the correct one: the plugin names the service and the operation, the host
+ * resolves the credential by reference and writes it into the outbound request, and the key is
+ * never in this bundle's address space — not by discipline, by construction.
+ *
+ * WHAT THAT COSTS, because it is not free. The baseline's manifest declares `services:invoke`
+ * for this and held no such authority before: Babel's server half could previously reach nothing
+ * at all, and after this it can reach one origin an operator installed. The property that
+ * replaces "it cannot" is "it does not unless the operator installed something saying it may" —
+ * `server/embed.ts` reads the roster first and every absence is one branch, so a deployment that
+ * never installs a policy makes no outbound call and is indistinguishable from this shape not
+ * existing. `docs/sandbox-threat-model.md` carries the same change one layer up.
+ *
+ * WHAT LEAVES, exactly: the record's own prose — its title and the claim fields the peel shows at
+ * depths one and two — capped, and nothing else. No identifier, no run, no session byte, no
+ * locator, no timestamp. It is the expression `recordTextSql` selects rather than a caller's
+ * discipline, and `store/corpus.test.ts` asserts it against the serialized request.
+ *
+ * `modelField` IS NOT OPTIONAL. The decision this implements requires the producing model to be
+ * named in what it produced, and a policy whose projection omits it leaves no way to tell a
+ * stale vector from a current one — so an answer without it is refused rather than stored under
+ * a guess.
+ */
+export const EMBEDDING_SERVICE = {
+  serviceId: `${BABEL_PLUGIN_ID}.embeddings`,
+  revision: "1",
+  /** The operations the baseline may name. A policy may declare more; this calls this one. */
+  operations: { embed: "embed" },
+  /** The one input leaf this bundle fills: the text to be embedded. */
+  textField: "text",
+  /** The two leaves the operator's response projection must name. */
+  vectorField: "embedding",
+  modelField: "model",
+  /** The name of the key, which is the only half of a credential a repository may hold. */
+  credentialRef: "babel-embeddings",
+  credentialFile: "/run/credentials/babel-embeddings-token",
+} as const;
+/** An operation id this bundle may ask for; a typo should not compile. */
+export type EmbeddingOperationId =
+  (typeof EMBEDDING_SERVICE.operations)[keyof typeof EMBEDDING_SERVICE.operations];
+
 // -------------------------------------------------------------- composing a service policy (#400)
 
 /*
@@ -2913,10 +3068,14 @@ export const DrainGapSchema = z.strictObject({
 });
 
 /**
- * WHAT THE CONTROLLER SAW AND COULD NOT ACT ON. Each is something a tick reported and nothing
- * durable would otherwise hold: an admission refusal leaves no run row at all, a stall is read
- * off `run_progress` which is deleted the instant a run settles, and an adopted job is a write
- * this controller lost and took back.
+ * WHAT THE CONTROLLER SAW AND COULD NOT ACT ON, and what it did beside the launching. Each is
+ * something a tick reported and nothing durable would otherwise hold: an admission refusal leaves
+ * no run row at all, a stall is read off `run_progress` which is deleted the instant a run
+ * settles, and an adopted job is a write this controller lost and took back.
+ *
+ * `index` is the corpus index's own slice of a tick (#337). The index's ROWS say what the corpus
+ * has reached; they cannot say that this drain's tick is what paid for twenty-four of them, and a
+ * drain that leaves a report of what it cost has to be able to.
  */
 export const DRAIN_NOTE_KINDS = [
   "stall",
@@ -2924,6 +3083,7 @@ export const DRAIN_NOTE_KINDS = [
   "orphan",
   "adopted",
   "cancel",
+  "index",
   "error",
 ] as const;
 const DrainNoteKindSchema = z.enum(DRAIN_NOTE_KINDS);
