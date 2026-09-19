@@ -128,9 +128,15 @@ function cleaned(path: string): string {
 }
 
 /**
- * EVERY LOCATOR THIS RESULT CITES, CHECKED AGAINST WHAT BABEL ACTUALLY SERVED — which is the
- * sentence the prompt's evidence instructions promise the model, kept here so the promise is
- * true. The empty string means every one of them is admissible.
+ * THE FIRST LOCATOR ONE CLAIM CITES THAT BABEL DID NOT SERVE, as the clause that follows the
+ * item's own name in a refusal — `observation "o1" cites ` + this. The empty string means every
+ * one of them is admissible. The words are here, with the rule, so a refusal cannot say one
+ * thing while the check does another.
+ *
+ * IT IS ASKED PER ITEM, over the citations of one observation, one proposal, one finding or one
+ * objection, because that is the grain a refusal is recorded at (#231): a retyped digest costs
+ * the claim that carries it and nothing beside it. `machine/results.ts`'s `itemRefusal` is the
+ * caller, and it is the only one — the rule is stated here and judged there, never twice.
  *
  * #284 checked a locator against a served trace the host tools had recorded. There are no host
  * tools now, and there is something better: the material is an immutable selection with a source
@@ -145,18 +151,18 @@ function cleaned(path: string): string {
  * quote check does, once, and only for a file this function has already admitted.
  */
 export function unservedCitation(
-  result: ExploreResult,
+  cited: readonly Evidence[],
   sessions: readonly MaterialEntry[],
 ): string {
-  for (const evidence of citedEvidence(result)) {
+  for (const evidence of cited) {
     const entry = admitCitation(evidence.locator.path, sessions);
     if (entry === null) {
-      return `${evidence.locator.path} is not a file this run was served`;
+      return `${evidence.locator.path}, which is not a file this run was served`;
     }
     if (entry.sourceDigest !== evidence.locator.digest) {
       return (
-        `${evidence.locator.path} was served at ${entry.sourceDigest} ` +
-        `and this claim cites ${evidence.locator.digest}`
+        `${evidence.locator.path} at ${evidence.locator.digest}, ` +
+        `which this run was served at ${entry.sourceDigest}`
       );
     }
   }

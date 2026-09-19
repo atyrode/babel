@@ -3061,6 +3061,89 @@ test("a review with one refused contribution records the rest, and its receipt c
   expect(assessments[0]?.payload).not.toContain("hyp_other");
 });
 
+test("a submission the one validator refuses is recorded nowhere and still settles the claim at cost", async () => {
+  /*
+    F8 (#263), through the hub's own review path. A contribution beside an `environment` that
+    scopes nothing is the shape the Go tree stated in three places and enforced inconsistently:
+    the review contract required an environment on criterion results, the store refused any
+    environment without an outcome, and a results-only assessment counted as empty — so an
+    evidence review was paid for and then refused at submit. It is one function now, and
+    `store/acts.test.ts` asserts that this same shape is refused under this same code from the
+    store's side. What this pins is the OTHER half of the acceptance: the refusal is the row's,
+    never the run's, so the claim is finished with what the model was paid.
+  */
+  const db = openDatabase();
+  await seed(db);
+  const store = openReadStore(db, () => clock);
+  const draws = new Draws(db);
+  const recipeId = "babel-triages-the-queue";
+  draws.review = {
+    machineId: MACHINE,
+    profile: { containerId: "ctr_union", expectedRevision: 1 },
+    roleRecipes: {
+      reception: recipeId,
+      evidence: recipeId,
+      challenge: recipeId,
+      comparison: recipeId,
+      outcome: recipeId,
+      relevance: recipeId,
+      filing: recipeId,
+      backlog: recipeId,
+    },
+    recipes: [
+      { id: recipeId, version: 2, body: "Assess the assigned record under the role contract." },
+    ],
+  };
+  draws.pending = [{ ...ASSIGNMENT, role: "evidence" }];
+  const code = new ReviewCode();
+  const loop = conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  await loop.tick();
+
+  code.read = sessionRead({
+    jobId: "job_code_review",
+    state: "exited",
+    model: FIXTURE_MODEL,
+    finalMessage:
+      "```json\n" +
+      JSON.stringify({
+        contributions: [{ kind: "comment", text: "the criteria are not stated" }],
+        environment: "dev-01",
+      }) +
+      "\n```",
+  });
+  const settled = await loop.tick();
+
+  // NOTHING WAS RECORDED: the scope rule is about the review as a whole, so there is no subset
+  // of it to keep — which is the line between this and a refused contribution.
+  expect(
+    await db.query(`SELECT id FROM assessments WHERE record_id = ?`, [ASSIGNMENT.recordId]),
+  ).toEqual([]);
+  const run = (
+    await db.query<{ closure: string; cost_usd: number; payload: string }>(
+      `SELECT closure, cost_usd, payload FROM runs WHERE id = ?`,
+      [`run_${ASSIGNMENT.id}_1`],
+    )
+  )[0]!;
+  expect(run.closure).toBe("failed");
+  const receipt = JSON.parse(run.payload) as Record<string, unknown>;
+  expect(String(receipt["reason"])).toStartWith("schema:");
+  expect(String(receipt["reason"])).toContain("environment");
+  // AND IT IS SPEND: the claim is finished at the cost of the session that earned the refusal,
+  // which is what stops the park heuristic reading a paid refusal as a free failure (#265).
+  expect(run.cost_usd).toBeCloseTo(0.31, 6);
+  expect(settled.settled.map((row) => [row.outcome, row.cost])).toEqual([["failed", 0.31]]);
+  expect(settled.pulse.tick.refusals.paid).toEqual({ schema: 1 });
+});
+
 test("a stale review completion retains usage without writing or settling the newer epoch", async () => {
   const db = openDatabase();
   await seed(db);
@@ -3698,6 +3781,18 @@ function answered(path: string, digest: string, statement?: string, quote = ""):
 }
 
 /**
+ * AN ANSWER NOTHING IN WHICH CAN BE RECORDED: its one candidate states no claim at all.
+ *
+ * A submission is kept in part, so "refused" has to be tested at the limit as well as in the
+ * middle: with every item refused there is no path-closed subset to keep, and the run is spend
+ * with a receipt that says what it refused (#231).
+ */
+function unusable(): string {
+  const result = { candidates: [{ ref: "h1", hypothesis: { statement: "" } }], questions: [] };
+  return `Here is what I found.\n\n\`\`\`json\n${JSON.stringify(result)}\n\`\`\`\n`;
+}
+
+/**
  * A CODE SESSION ALREADY IN FLIGHT: the run row `startExplore` writes after Code accepts the
  * job, plus the settled `prepare` run whose receipt carries the material this session read.
  *
@@ -3881,7 +3976,7 @@ test("the receipt names the remarks this run was quoted, and how many the bound 
   expect(receipt["steering"]).toEqual(quoted);
 });
 
-test("a citation the material never served is refused, and the refusal is spend with its claim settled", async () => {
+test("a citation the material never served costs the claim and what rested on it, and the rest of the paid run stands", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
@@ -3889,7 +3984,8 @@ test("a citation the material never served is refused, and the refusal is spend 
   const code = codeAnswering(() => ({
     ok: true,
     // The path is one the index names; the digest is not the one it was served at, which is a
-    // retyped digest and exactly what `unservedCitation` exists to catch.
+    // retyped digest and exactly what the per-item locator check exists to catch: the rule is
+    // `engine/citations.ts`'s and the grain is `itemRefusal`'s.
     value: sessionRead({
       state: "exited",
       finalMessage: answered(`sessions/${SERVED_FILE}`, "b".repeat(64)),
@@ -3908,20 +4004,52 @@ test("a citation the material never served is refused, and the refusal is spend 
     now: () => clock,
   }).tick();
 
+  /*
+    WHAT A RETYPED DIGEST COSTS (#231). The observation cited bytes this run was never served,
+    so that claim is refused; the finding consolidating it would then rest on a record nobody
+    wrote, so it falls with it. The candidate rests on nothing and the question authorizes
+    nothing, and both were paid for — before this they were thrown away with the claim.
+  */
+  const records = await db.query<{ kind: string }>(
+    `SELECT kind FROM records WHERE run_id = ? ORDER BY kind`,
+    [runId],
+  );
+  expect(records.map((row) => row.kind)).toEqual(["hypothesis"]);
+  expect(
+    await db.query(`SELECT COUNT(*) AS n FROM questions WHERE raised_by_id = ?`, [runId]),
+  ).toEqual([{ n: 1n }]);
+
   const run = (
     await db.query(`SELECT closure, cost_usd, payload FROM runs WHERE id = ?`, [runId])
   )[0]!;
-  expect(run["closure"]).toBe("failed");
+  expect(run["closure"]).toBe("completed");
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
-  expect(String(receipt["reason"])).toStartWith("unknown-reference:");
+  expect(receipt["reason"]).toBeUndefined();
+  expect(receipt["refusedItems"]).toEqual([
+    {
+      item: "/candidates/0/observations/0",
+      reason: expect.stringContaining("unknown-reference:") as unknown,
+    },
+    {
+      item: "/consolidations/0",
+      reason: `development-path: consolidation "f1" rests on "o1", which this submission refused`,
+    },
+  ]);
+  expect((receipt["counts"] as Record<string, number>)["itemsRefused"]).toBe(2);
   // THE MONEY IS STILL SPENT. The model answered and the deployment paid for it; a refusal
   // recorded at zero is how a fan reads a refused lane as free and relaunches into it.
   expect(run["cost_usd"]).toBeCloseTo(0.31, 6);
   expect(report.settled).toEqual([
-    { claimId, outcome: "failed", cost: 0.31, overrun: false, refused: null, reason: null },
+    { claimId, outcome: "completed", cost: 0.31, overrun: false, refused: null, reason: null },
   ]);
-  // …and it is counted by the code the contract refused with, not as a failure of the loop.
-  expect(report.pulse.tick.refusals.paid).toEqual({ "unknown-reference": 1 });
+  // …AND THE RUN IS NOT A REFUSAL. `refusals` answers "which submissions did the deployment
+  // pay for and get no result from"; this one produced records, so counting its dropped items
+  // there would put a paid refusal against a cycle that delivered (#424). The measurement of
+  // what was dropped is on the receipt above and in the cycle's notes.
+  expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
+  expect(
+    report.notes.some((note) => note.includes("recorded the answer and refused 2 of its items")),
+  ).toBe(true);
 });
 
 /** The material as `prepare` sealed it: one canonical record per line, twelve of them, and the
@@ -4098,6 +4226,110 @@ test("a preparation this hub can no longer read leaves the quote unchecked, not 
   const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
   expect(run["closure"]).toBe("completed");
   expect((await verdictOf(db))?.["outcome"]).toBe("unchecked");
+});
+
+/**
+ * ONE ANSWER THAT IS BOTH: a claim whose locator was served and whose quote is really at the
+ * line it names, and beside it a claim citing a file nobody served.
+ *
+ * The two halves of a citation answer differently — the scope half refuses the item, the quote
+ * half marks the record — and this fixture is the only place they meet in one submission.
+ */
+function answeredWithOneUnservedClaim(quote: string): string {
+  const observation = (ref: string, path: string) => ({
+    ref,
+    recipe: { id: "catalog-integrity", version: 3 },
+    claim: {
+      claim: "the archive wrote a snapshot the rescan did not carry",
+      confidence: "high",
+      impact: "moderate",
+      evidence: [
+        { locator: { path, line: 12, byte_offset: 0, digest: SERVED_DIGEST, quote }, note: "row" },
+      ],
+      counter_evidence_absent: true,
+    },
+  });
+  const result = {
+    candidates: [
+      {
+        ref: "h1",
+        hypothesis: { statement: "the catalog forgets archived sessions" },
+        observations: [observation("o1", `${MATERIAL_SESSIONS}/${SERVED_FILE}`)],
+      },
+      {
+        ref: "h2",
+        hypothesis: { statement: "the reaper reads a sealed session twice" },
+        observations: [observation("o2", `${MATERIAL_SESSIONS}/0002-never-served.jsonl`)],
+      },
+    ],
+  };
+  return `Here is what I found.\n\n\`\`\`json\n${JSON.stringify(result)}\n\`\`\`\n`;
+}
+
+test("one unserved claim is dropped and the claim beside it still has its quote checked", async () => {
+  /*
+    THE TWO PROPERTIES HELD TOGETHER, because a merge is exactly where one of them goes quiet.
+    The scope check and the quote check are one module (`engine/citations.ts`) asked at two
+    grains: per item, by the contract's one validator, where it REFUSES; and over the kept
+    result, by the settlement, where it MARKS. An answer carrying one of each has to come out
+    with the bad claim named on the receipt, the good claim recorded, and the good claim's
+    verdict on its own evidence.
+  */
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answeredWithOneUnservedClaim("the rescan wrote no snapshot_id at all"),
+    }),
+  }));
+  const { runId, claimId } = await sessionInFlight(db);
+
+  const report = await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: withMaterial(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  // BOTH CANDIDATES STAND — a hypothesis rests on nothing — and only the claim that cited
+  // bytes nobody served is gone, so one observation is recorded and not two.
+  const records = await db.query<{ kind: string }>(
+    `SELECT kind FROM records WHERE run_id = ? ORDER BY kind`,
+    [runId],
+  );
+  expect(records.map((row) => row.kind)).toEqual(["hypothesis", "hypothesis", "observation"]);
+
+  const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBe("completed");
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(receipt["reason"]).toBeUndefined();
+  expect(receipt["refusedItems"]).toEqual([
+    {
+      item: "/candidates/1/observations/0",
+      reason: expect.stringContaining("0002-never-served.jsonl") as unknown,
+    },
+  ]);
+  // AND THE SURVIVOR'S QUOTE WAS ACTUALLY OPENED: the verdict is on the record's own evidence,
+  // and the receipt counts the one citation that reached the check rather than both.
+  expect(await verdictOf(db)).toEqual({ outcome: "verified", detail: "" });
+  expect(receipt["citations"]).toEqual({
+    verified: 1,
+    moved: 0,
+    absent: 0,
+    unquoted: 0,
+    unchecked: 0,
+  });
+  expect(report.settled).toEqual([
+    { claimId, outcome: "completed", cost: 0.31, overrun: false, refused: null, reason: null },
+  ]);
 });
 
 test("a Code session still running leaves its run open and settles nothing", async () => {
@@ -4408,24 +4640,21 @@ test("a record whose own text names what it contradicts gets the edge, and a mis
   ]);
 });
 
-test("a refused answer writes no record at all, and the receipt is still written at cost", async () => {
+test("a wholly unusable answer writes no record at all, and is still settled as spend", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
   const draws = new Draws(db);
   const code = codeAnswering(() => ({
     ok: true,
-    value: sessionRead({
-      state: "exited",
-      finalMessage: answered(`sessions/${SERVED_FILE}`, "b".repeat(64)),
-    }),
+    value: sessionRead({ state: "exited", finalMessage: unusable() }),
   }));
-  const { runId } = await sessionInFlight(db);
+  const { runId, claimId } = await sessionInFlight(db);
 
   const report = await wakeOn(store, draws, code).tick();
 
-  // NOTHING LANDED. A partial development path is worse than none: a finding consolidating
-  // observations nobody holds is exactly the shape §4.2 forbids.
+  // NOTHING LANDED, because there was nothing to land: every item this answer carried was
+  // refused, so the path-closed subset is empty and the floor is moot.
   expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId])).toEqual([
     { n: 0n },
   ]);
@@ -4445,13 +4674,24 @@ test("a refused answer writes no record at all, and the receipt is still written
   expect(run["closure"]).toBe("failed");
   expect(Number(run["records"])).toBe(0);
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
-  expect(String(receipt["reason"])).toStartWith("unknown-reference:");
-  expect(receipt["counts"]).toEqual({});
+  expect(String(receipt["reason"])).toStartWith("schema:");
+  // THE REFUSED ITEMS ARE ON THE RECEIPT EVEN HERE. They are what the whole refusal was made
+  // of, and they are the only measurement the spend bought.
+  expect(receipt["refusedItems"]).toEqual([
+    { item: "/candidates/0", reason: expect.stringContaining("schema:") as unknown },
+  ]);
+  expect(receipt["counts"]).toEqual({ itemsRefused: 1 });
+  // AND IT IS STILL SPEND, with the claim finished at what the model was paid.
   expect(run["cost_usd"]).toBeCloseTo(0.31, 6);
-  expect(report.pulse.tick.refusals.paid).toEqual({ "unknown-reference": 1 });
+  expect(report.settled).toEqual([
+    { claimId, outcome: "failed", cost: 0.31, overrun: false, refused: null, reason: null },
+  ]);
+  // A WHOLLY REFUSED SUBMISSION IS A REFUSAL OF THE RUN, and a PAID one: the hub's meter
+  // attached a call to this job, so the money left the day's allowance (#424, `paidRefusal`).
+  expect(report.pulse.tick.refusals).toEqual({ paid: { schema: 1 }, free: {} });
 });
 
-test("a consolidation resting on a candidate is the development path skipped, and writes nothing", async () => {
+test("a consolidation resting on a candidate skips the development path, and the candidate still stands", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
@@ -4480,14 +4720,24 @@ test("a consolidation resting on a candidate is the development path skipped, an
 
   const report = await wakeOn(store, draws, code).tick();
 
-  expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId])).toEqual([
-    { n: 0n },
+  // The candidate is a record this run produced and the finding is not one it could have: one
+  // of the two is refused, and the store now holds the other instead of neither.
+  const records = await db.query<{ kind: string }>(`SELECT kind FROM records WHERE run_id = ?`, [
+    runId,
   ]);
+  expect(records.map((row) => row.kind)).toEqual(["hypothesis"]);
   const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
-  expect(run["closure"]).toBe("failed");
+  expect(run["closure"]).toBe("completed");
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
-  expect(String(receipt["reason"])).toStartWith("development-path:");
-  expect(report.pulse.tick.refusals.paid).toEqual({ "development-path": 1 });
+  expect(receipt["reason"]).toBeUndefined();
+  expect(receipt["refusedItems"]).toEqual([
+    {
+      item: "/consolidations/0",
+      reason: expect.stringContaining("hypothesis rather than an observation") as unknown,
+    },
+  ]);
+  // One item dropped out of a run that recorded the rest is not a refusal of the run.
+  expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
 });
 
 test("settling the same run twice writes the rows once: the identifiers are the run's own", async () => {
@@ -4746,11 +4996,8 @@ test("a refused answer leaves a call row carrying the refusal and what it cost",
   const draws = new Draws(db);
   const code = codeAnswering(() => ({
     ok: true,
-    // A locator the material never served: the answer parses and is refused on its citation.
-    value: sessionRead({
-      state: "exited",
-      finalMessage: answered("sessions/never.jsonl", "b".repeat(64)),
-    }),
+    // An answer with nothing in it the store may hold: the submission is refused whole.
+    value: sessionRead({ state: "exited", finalMessage: unusable() }),
   }));
   const { runId } = await sessionInFlight(db);
 
@@ -4766,7 +5013,7 @@ test("a refused answer leaves a call row carrying the refusal and what it cost",
     )
   )[0]!;
   expect(call["closure"]).toBe("failed");
-  expect(call["refusal"]).toBe("unknown-reference");
+  expect(call["refusal"]).toBe("schema");
   expect(call["cost_micros"]).toBe(310_000n);
   expect(call["response_digest"]).not.toBe("");
   expect(await db.query(`SELECT id FROM records WHERE run_id = ?`, [runId])).toEqual([]);

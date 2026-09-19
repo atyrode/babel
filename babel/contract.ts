@@ -2528,6 +2528,25 @@ export const ReceiptSchema = z.strictObject({
    * the verdict travels on the record's own evidence, where the reader of the claim is.
    */
   citations: z.record(z.string(), z.number().int().nonnegative()).optional(),
+  /**
+   * WHAT THE CONTRACT REFUSED WHILE THE REST OF THE EXPLORATION STOOD (#231).
+   *
+   * `refusedContributions` above says the same thing about one review's contributions; this says
+   * it about one exploration's items, and it exists because the exploration was the expensive
+   * half: a run is one agent session over a large corpus, so a submission refused whole is a
+   * window spent for nothing (post-mortem F16). `item` is a JSON Pointer into the document the
+   * model submitted — `/candidates/0/observations/1` — because three of the seven lists carry
+   * items of their own and "which one" has to be findable in `rejectedSubmission` beside it.
+   * `reason` is `<code>: <sentence>` here too, so the same `refusalCode` reads it back and a
+   * refusal is countable whether it cost the run or only one of its items.
+   *
+   * Absent, never empty, on a submission that had nothing refused; `counts.itemsRefused` is how
+   * many. Present on a submission refused WHOLE as well: the items are what that refusal was
+   * made of, and dropping them there would lose the measurement the refusal is evidence of.
+   */
+  refusedItems: z
+    .array(z.strictObject({ item: z.string().min(1), reason: z.string().min(1) }))
+    .optional(),
 });
 export type Receipt = z.infer<typeof ReceiptSchema>;
 
@@ -3460,3 +3479,32 @@ export type DrainStatus = z.infer<typeof DrainStatusSchema>;
 export const DrainStatusResultSchema = z.strictObject({
   drains: z.array(DrainStatusSchema),
 });
+
+// ------------------------------------------------------- the floor a partial submission clears
+
+/**
+ * THE SHARE OF ITS OWN ITEMS A SUBMISSION MUST KEEP TO BE RECORDED AT ALL (#231, #311).
+ *
+ * A submission is partial: the items that validate are kept and the items that do not are
+ * recorded as refused with their reason, so a run that produced nine good records and one bad
+ * one keeps the nine. This is the one point in that path that is a judgement rather than a
+ * consequence, and it is a number here because it is a policy and not a rule of the shape.
+ *
+ * HALF, because that is where "mostly worked, one item was wrong" flips to "this answer was not
+ * written against this contract". Below it the model has demonstrably misread its instructions,
+ * and the items that happened to parse are then likely wrong in the ways a schema cannot see —
+ * a claim recorded out of such an answer costs a reviewer's window to discover, which is more
+ * than the claim was worth. Above it the refusals are individual mistakes and the survivors are
+ * ordinary work. A submission whose every item is refused is the same case at the limit.
+ *
+ * It is a SHARE rather than a count so it says the same thing about a two-item answer and a
+ * two-hundred-item one, and the comparison is inclusive: an answer that keeps exactly half
+ * stands. Cascades count against it — an item refused because the observation it rested on was
+ * refused is an item this submission did not deliver — because the alternative rewards a
+ * submission for having built everything on one bad claim.
+ *
+ * Refusing whole is never cheaper for the deployment: the run is spend either way, the refusal
+ * and every item of it reach the receipt, and the claim settles. The only thing the floor buys
+ * is a corpus that does not carry records from answers that failed to follow their contract.
+ */
+export const SUBMISSION_KEPT_FLOOR = 0.5;
