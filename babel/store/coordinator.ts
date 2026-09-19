@@ -1059,13 +1059,22 @@ export function coordinator(
   }
 
   /**
-   * The batch slots held right now, and WHERE. A claim is a slot only while a JOB stands behind
-   * it: a row whose `job_id` is NULL is a grant whose posting never landed (`claim` reserves
-   * before the conductor calls `jobs.execute`), and a grant with no worker is not work in
-   * progress. Counting it would let a refused posting hold a quarter of the cycle's batch for a
-   * whole lease — the ghost of F3, arriving through the one door the settle path cannot see.
-   * Releasing it is the conductor reaper's job (`server/conductor.ts`); refusing to count it is
-   * this one's.
+   * The batch slots held right now, and WHERE. A claim is a slot only while a JOB IS STILL
+   * RUNNING BEHIND IT, which rules out two rows the table still calls open:
+   *
+   *   - a row whose `job_id` is NULL is a grant whose posting never landed (`claim` reserves
+   *     before the conductor calls `jobs.execute`), and a grant with no worker is not work in
+   *     progress. Counting it would let a refused posting hold a quarter of the cycle's batch
+   *     for a whole lease — the ghost of F3, arriving through the one door the settle path
+   *     cannot see.
+   *   - a row whose job HAS A CLOSED RUN is a job that is over: whatever settles the claim has
+   *     not got to it yet, and until it does the slot is held by nobody. The conductor's
+   *     reaper releases those, but a reap is bounded per cycle and a settlement is a write
+   *     that can fail, while this is a read that cannot: a dead job must not be able to hold a
+   *     slot for a lease merely because the row that releases it is queued behind others.
+   *
+   * Releasing them is the conductor reaper's job (`server/conductor.ts`); refusing to count
+   * them is this one's, and the two answers agree because both ask the runs table.
    *
    * The machine is the claim's job's run row, read as a scalar subquery rather than a join: one
    * machine per claim whatever the `runs` table holds, where a join could fan one claim out
@@ -1079,6 +1088,8 @@ export function coordinator(
               COUNT(*) AS open
          FROM claims c
         WHERE c.finished_at IS NULL AND c.expires_at > ? AND c.job_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM runs r
+                           WHERE r.job_id = c.job_id AND r.closure IS NOT NULL)
         GROUP BY machine`,
       [iso(moment)],
     );
