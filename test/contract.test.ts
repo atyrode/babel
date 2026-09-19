@@ -123,7 +123,7 @@ describe("the parts are parts of the baseline", () => {
     expect(watch.capabilities).toEqual([]);
   });
 
-  test("the judgement part: its id, the required edge, and its one authority", () => {
+  test("the judgement part: its id, the required edge, and its two authorities", () => {
     expect(jev.id).toBe(JEV_PLUGIN_ID);
     expect(jev.id.startsWith(`${BABEL_PLUGIN_ID}.`)).toBe(true);
     expect(jev.dependencies?.[BABEL_PLUGIN_ID]?.type).toBe("required");
@@ -134,15 +134,26 @@ describe("the parts are parts of the baseline", () => {
     expect(jev.contributes.seats).toBeUndefined();
     expect(jev.contributes.events).toEqual([]);
     /*
-      ONE AUTHORITY, AND IT IS THE ONE THAT MAKES THE FALLBACK MECHANICAL. A capability acquired
-      "because a child will need it" is how an optional part stops being optional, so each
-      arrives with the child that spends it — and `services:invoke` arrived with the credential
-      path, which is the only code in the part's bundle that can exercise it. It buys nothing on
-      its own: authority over a service nobody installed reaches nothing, which is why no binding
-      is no call rather than a policy somebody has to remember. A store, a machine block or a
+      TWO AUTHORITIES, AND NEITHER IS SPARE. A capability acquired "because a child will need
+      it" is how an optional part stops being optional, so each arrives with the child that
+      spends it.
+
+      `services:invoke` arrived with the credential path, which is the only code in the part's
+      bundle that can exercise it. It buys nothing on its own: authority over a service nobody
+      installed reaches nothing, which is why no binding is no call rather than a policy
+      somebody has to remember.
+
+      `containers:read` is what the declared edge is worth (#404). A cross-plugin call is
+      bounded by the CALLER's own ceiling, and every reading door of Babel's demands that one
+      — so a part declaring only the service authority could not open a single door of the
+      baseline it declares required. `test/part-ceiling.test.ts` dispatches that, against a
+      host that grades the ceiling; this line is only the set.
+
+      `containers:write` is deliberately absent, and #360 is why: whether a dependent plugin
+      may write at all is an open decision, not a manifest edit. A store, a machine block or a
       purge target would each be a part the operator cannot reason about the removal of.
     */
-    expect(jev.capabilities).toEqual(["services:invoke"]);
+    expect(jev.capabilities).toEqual(["containers:read", "services:invoke"]);
     expect(jev.database).toBeUndefined();
     expect(jev.machine).toBeUndefined();
     expect(jev.purges).toBeUndefined();
