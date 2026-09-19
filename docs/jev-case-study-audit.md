@@ -30,6 +30,15 @@ true of the code, whatever any deployment happens to hold.
 **And every percentage is a range.** Option ordering moves an aggregate share by ten to twenty
 points while per-record answers stay 72–79% stable (§5). Quote the range or quote nothing.
 
+**None of that makes the corpus disposable, and the distinction is load-bearing.** Those records
+are not a yardstick for the plugin's behaviour, and they _are_ the material the loop starts from:
+the only real corpus Babel has, and the seed for retrieval, for memories, for calibrating what a
+reviewer is worth, and for whatever judgement is applied retroactively (operator direction,
+2026-09-19). So the caveat above is narrow. **Do not read a share off the corpus and call it
+Babel's** — and equally **do not skip the corpus because its shares are unrepresentative.** A
+feature that only ever applies to records not yet written cannot bootstrap anything, and a loop
+that improves on itself needs something to improve from.
+
 **Jev is optional by construction.** Nothing in Babel may ever depend on it. Where this document
 names Jev work it names an enable-able part, `atyrode.babel.jev`, that reaches the baseline only
 through its doors, and with the part absent every door, panel and conductor path behaves exactly
