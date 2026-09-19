@@ -3,6 +3,7 @@ import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/p
 import type { INTEREST_STATES } from "../contract.ts";
 import {
   NextActionStandingSchema,
+  RecordIdSchema,
   REFINEMENT_KEY,
   RefinementOutcomeSchema,
   RefinementSchema,
@@ -2369,14 +2370,22 @@ export function importableTables(): Record<string, readonly string[]> {
     if (head === null) continue;
     const name = head[1];
     if (name === undefined) continue;
-    tables[name] = columnNames(statement.slice(head[0].length));
+    tables[name] = columnParts(statement.slice(head[0].length)).map((column) => column.name);
   }
   importable = tables;
   return tables;
 }
 
+/** One column of a `CREATE TABLE` body: its name, and the whole of what was declared about it. */
+interface ColumnPart {
+  readonly name: string;
+  readonly text: string;
+}
+
 /**
- * The column names of one `CREATE TABLE` body: the leading identifier of each top-level part.
+ * The columns of one `CREATE TABLE` body: the leading identifier of each top-level part, and the
+ * part itself. Callers that want only the names throw the text away; `recordColumns` reads it,
+ * because a column's REFERENCES clause is the one place the migration says what a value MEANS.
  *
  * A COMMENT IS SKIPPED RATHER THAN SCANNED, because a comment is prose and prose carries
  * apostrophes. The note inside `runs` — "where this run's job is" — opened a string literal that
@@ -2384,15 +2393,20 @@ export function importableTables(): Record<string, readonly string[]> {
  * quoted run and never became a column. The crossing then refused every `runs` chunk for having
  * no column "payload", which is the column every receipt carries, and the run log could not
  * cross at all.
+ *
+ * THERE IS ONE PARSER because there was nearly a second: the shape below is fiddly enough that a
+ * sibling written to read REFERENCES clauses would have had to repeat the comment and literal
+ * handling, and a repeat of that handling is how the apostrophe bug happens twice.
  */
-function columnNames(body: string): readonly string[] {
-  const columns: string[] = [];
+function columnParts(body: string): readonly ColumnPart[] {
+  const columns: ColumnPart[] = [];
   let depth = 0;
   let part = "";
   const take = (): void => {
     const leading = /^\s*([a-z_][a-z_0-9]*)/i.exec(part);
     const word = leading?.[1];
-    if (word !== undefined && !CONSTRAINT_WORDS[word.toUpperCase()]) columns.push(word);
+    if (word !== undefined && !CONSTRAINT_WORDS[word.toUpperCase()])
+      columns.push({ name: word, text: part });
     part = "";
   };
   for (let at = 0; at < body.length; at += 1) {
@@ -2478,6 +2492,65 @@ export function machineColumns(): Record<string, readonly string[]> {
 /** The name of a column holding a hub machine id: `machine_id`, or something's `host`. */
 const MACHINE_COLUMN = /^(machine_id|([a-z_]+_)?host)$/;
 
+/**
+ * Which columns of each table hold a RECORD IDENTIFIER, derived from the migration for the reason
+ * `machineColumns` is: a list written out here would be a second copy of `SCHEMA_V1`, and the way
+ * a second copy comes to disagree is by being SHORT.
+ *
+ * THE DEFECT THIS EXISTS FOR (#414): `records.id` carries no CHECK, and the crossing validated
+ * the table name and the column names against the migration and then inserted whatever values it
+ * was handed. Every reading door takes `RecordIdSchema`, so a row whose id did not match it was
+ * listed by the feed — title, kind, age, five acts offered — and refused by the `record` door
+ * when opened. `records_kept` refuses DELETE below the doors, so such a row is PERMANENT: there
+ * is no repair after the fact, which is what makes this a guard on the way in rather than a
+ * message on the way out.
+ *
+ * A column holds a record id if the migration says so with `REFERENCES records(id)`, or if its
+ * name is one the frontier only ever spells with one — ten tables, checked against the migration
+ * rather than assumed. `filings.supersedes_id` and `facts.supersedes_id` reference their OWN
+ * tables and are correctly absent: the name family is the columns whose meaning is fixed, and
+ * the REFERENCES clause carries the rest.
+ */
+let records: Record<string, readonly string[]> | null = null;
+
+export function recordColumns(): Record<string, readonly string[]> {
+  if (records !== null) return records;
+  const holding: Record<string, readonly string[]> = {};
+  for (const statement of SCHEMA_V1) {
+    const head = /^\s*CREATE TABLE\s+(\w+)\s*\(/.exec(statement);
+    const table = head?.[1];
+    if (head === null || table === undefined) continue;
+    const named = columnParts(statement.slice(head[0].length))
+      .filter(
+        (column) =>
+          RECORD_COLUMN.test(column.name) ||
+          RECORD_REFERENCE.test(column.text) ||
+          (table === "records" && column.name === "id"),
+      )
+      .map((column) => column.name);
+    if (named.length > 0) holding[table] = named;
+  }
+  records = holding;
+  return holding;
+}
+
+/** The name of a column the frontier only ever writes a record identifier into. */
+const RECORD_COLUMN = /^(record_id|root_id|parent_id|revision_id|duplicate_of_id)$/;
+
+/** The migration saying outright that a column holds one. */
+const RECORD_REFERENCE = /REFERENCES\s+records\s*\(\s*id\s*\)/i;
+
+/**
+ * `edges` is the one table whose identifier columns are POLYMORPHIC: `from_id` holds a record or
+ * an entity, and the row's own `from_kind` says which. Guarding them by name would refuse every
+ * entity edge; not guarding them would admit an edge pointing at a record that cannot exist. So
+ * the check reads the kind beside the id, which is exact rather than over- or under-guarded.
+ */
+const EDGE_ENDS: readonly (readonly [kind: string, id: string])[] = [
+  ["from_kind", "from_id"],
+  ["to_kind", "to_id"],
+];
+
 /** How many row statements ride in one batch, under the engine's 256-statement bound. */
 const IMPORT_BATCH = 200;
 
@@ -2495,6 +2568,11 @@ export interface ImportChunk {
  *
  * `INSERT OR IGNORE` is the whole of the idempotence, and it is also why nothing here fights the
  * append-only triggers: a row already held is skipped rather than updated.
+ *
+ * A RECORD IDENTIFIER IS CHECKED BEFORE ANY OF IT IS WRITTEN (#414), against the same schema
+ * every reading door takes. The chunk is refused whole rather than row by row: a partial import
+ * of an append-only table cannot be undone, and `records_kept` refuses the DELETE that would be
+ * the repair, so "some of it went in" is a worse answer than "none of it did".
  */
 export async function importLedger(store: ActsStore, chunk: ImportChunk): Promise<Imported> {
   const columns = importableTables()[chunk.table];
@@ -2508,6 +2586,29 @@ export async function importLedger(store: ActsStore, chunk: ImportChunk): Promis
     if (keys.length === 0) throw new ActRefused(`a row for ${chunk.table} carries no columns`);
     for (const key of keys) {
       if (!known[key]) throw new ActRefused(`${chunk.table} has no column ${JSON.stringify(key)}`);
+    }
+    for (const column of recordColumns()[chunk.table] ?? []) {
+      const value = row[column];
+      if (value === undefined || value === null) continue;
+      if (!RecordIdSchema.safeParse(value).success) {
+        throw new ActRefused(
+          `${chunk.table}.${column} holds ${JSON.stringify(value)}, which no record can be ` +
+            `named: a record id is a family and a hex tail, and every door that reads one ` +
+            `refuses this. Nothing was imported from this chunk.`,
+        );
+      }
+    }
+    if (chunk.table === "edges") {
+      for (const [kind, id] of EDGE_ENDS) {
+        const value = row[id];
+        if (row[kind] !== "record" || value === undefined || value === null) continue;
+        if (!RecordIdSchema.safeParse(value).success) {
+          throw new ActRefused(
+            `edges.${id} holds ${JSON.stringify(value)} with ${kind} "record", which no record ` +
+              `can be named. Nothing was imported from this chunk.`,
+          );
+        }
+      }
     }
     statements.push({
       sql: `INSERT OR IGNORE INTO ${chunk.table}(${keys.join(", ")})

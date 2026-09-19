@@ -745,6 +745,33 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A record could be imported that no door would ever open, and nothing could remove it.** Found
+  by rendering the feed on a hub rather than in a test document: twelve rows went in through the
+  crossing, the feed listed all twelve with title, kind, age and five acts offered, and opening
+  one rendered "The record could not be read. id Invalid string: must match pattern …". The
+  identifier is spelled once, in `RecordIdSchema`, and every reading door takes it — but
+  `records.id` carries no CHECK and the crossing validated the table name and the column names
+  against the migration and then inserted whatever values it was handed.
+
+  What makes it a door-time defect rather than a display one is that **there is no repair**:
+  `records_kept` refuses DELETE below the doors, `INSERT OR IGNORE` cannot rewrite a row, and no
+  door deletes a record. An unopenable record is permanent for the life of the store, so the only
+  place the guard can be is the way in. The chunk is now refused whole rather than row by row,
+  because a half-delivered import of an append-only table cannot be taken back either.
+
+  The guarded columns are **derived from the migration** — a column that says
+  `REFERENCES records(id)`, or whose name is one the frontier only ever writes a record id into —
+  so a column added later is guarded without anyone remembering to guard it, and a test pins the
+  derived set. That is the argument `machineColumns()` already made in the same file about the
+  same crossing: a guard over two of three columns reads as a statement that the third is fine,
+  which is how `runs.machine_id` went untested with a derivation bug behind it (#378, #379).
+  `edges` is checked against the row's own `from_kind`/`to_kind`, since those ends legitimately
+  hold entity identifiers too, and a name-based guard would refuse every entity edge.
+
+  No real row becomes unimportable: the Go tree minted a family and sixteen random bytes in hex
+  (`internal/frontier/store.go` at `v0.4.0`), which the pattern admits. One test fixture did not,
+  and it was the fixture that was wrong — an invented id shape is how the hole stayed open.
+
 - **The judgement part could not call a single Babel door.** It declared `atyrode.babel` a
   required dependency and then held no capability to use it: a cross-plugin call is bounded by
   the **caller's** own ceiling, every Babel read door carries `containers:read`, and the part's
