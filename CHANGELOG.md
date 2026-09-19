@@ -11,6 +11,31 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **One narrow door, through which an allowed plugin may suggest and nothing more.** Babel has two
+  writer classes — the operator, authenticated through a door under his principal, and a run,
+  mediated by the conductor against a schema the baseline owns — and a dependent plugin is
+  neither. Rather than admit a third writer to the append-only frontier, a plugin the operator has
+  **named** may write one thing: a typed suggestion in `next_actions`, beside the record, which he
+  accepts or declines. It cannot annotate a record, write an edge, change a standing, rule or
+  delete, and the set of tables its path can reach is asserted rather than inspected. The rule the
+  whole codebase already runs on — propose, never rule — now holds for a plugin too.
+
+  **The host names no caller, which decided the design.** `IsolateDispatchCtxSchema` carries the
+  trace, the principal, the capabilities and the scope, and nothing that says which plugin called.
+  The caller *is* known host-side and reaches only the trace ledger and the cycle bound. So the
+  door resolves a suggester from the authenticated principal through an allow-list on the policy
+  document — the one thing the operator installs through a door, read back through another, every
+  version kept with who set it and why, which is exactly the provenance a grant of write authority
+  needs. It defaults empty: no plugin may write until he names one, and the same principal listed
+  twice is refused, because otherwise attribution would depend on array order.
+
+  Six refusals, each proved to bite by removing it: a forged author (the input has nowhere to name
+  one — both schemas are strict, and the row's actor is a literal), an unlisted caller (refused by
+  name, and told exactly what to add), a suggestion against a revision it did not read, one
+  against wording since superseded, a record already ruled on, and the same suggestion twice —
+  which is also the durable "already judged" mark a retroactive sweep needs, one constraint doing
+  two jobs. A reading half sizes a sweep before it runs, because 6,038 unfiltered suggestions
+  would be the one-list problem rebuilt inside the queue.
 - **A blocker that closed is not a blocker, and now something notices.** T3 asks only that a
   blocked issue *name* what it waits on, so an issue could sit blocked for ever behind something
   that shipped — indistinguishable from abandoned, and the way a ready issue hides. T7 reports a

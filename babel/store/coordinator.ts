@@ -42,7 +42,7 @@
 import { z } from "zod";
 import type { GuestDatabase, GuestSqlParam, GuestSqlRow } from "@manifold/plugin-kit";
 import type { GapReason, INTEREST_STATES, StopReason } from "../contract.ts";
-import { CodeProfileSchema, ROLES } from "../contract.ts";
+import { CodeProfileSchema, ROLES, SuggesterSchema } from "../contract.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
 export interface CoordinatorStore {
@@ -204,6 +204,21 @@ export const PolicySchema = z.strictObject({
   concurrentPerMachine: z.number().int().optional(),
   review: ReviewDispatchSchema.optional(),
   /**
+   * WHICH PLUGINS MAY SUGGEST, AND UNDER WHICH PRINCIPAL (#410).
+   *
+   * The allow-list lives in the policy because the policy is already the one document the
+   * operator installs through a door (`setPolicy`), reads back through another (`policy`), and
+   * whose every version is kept with who set it, when and why — which is exactly the provenance
+   * a grant of write authority needs. Plugin storage has none of that and no operator-facing
+   * write path at all.
+   *
+   * A door reads it for the price of one `json_extract` over the newest `policies` row
+   * (`suggesters` in `store/acts.ts`), so admitting a suggestion costs one indexed statement
+   * more than refusing it. Empty is the default and the honest one: no plugin may write until
+   * the operator names it.
+   */
+  suggesters: z.array(SuggesterSchema).max(16).default([]),
+  /**
    * Legacy read support for policies written before review dispatch owned the cookbook. New
    * policies are refused below: their versioned recipes belong inside `review`, beside the
    * route whose work they govern.
@@ -318,6 +333,16 @@ export function validatePolicy(policy: Policy, concurrentJobs: number | null): s
         return `review role ${role} names missing recipe ${JSON.stringify(recipeId)}`;
       }
     }
+  }
+  // A PRINCIPAL NAMES ONE SUGGESTER. The door resolves a caller by its principal, so the same
+  // principal listed twice would make the attribution of everything it writes depend on the
+  // order of an array — and attribution is the whole of what this list grants.
+  const principals = new Set<string>();
+  for (const suggester of policy.suggesters) {
+    if (principals.has(suggester.principalId)) {
+      return `principal ${JSON.stringify(suggester.principalId)} is allowed to suggest twice, under two plugin names`;
+    }
+    principals.add(suggester.principalId);
   }
   return null;
 }
