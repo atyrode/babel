@@ -1,17 +1,18 @@
 import { defineServerPlugin, type ServerPluginDef } from "@manifold/plugin-kit/server";
 import { PluginManifestSchema } from "@manifold/protocol";
 import manifestJson from "./manifest.json";
+import { SWEEP_ACTIONS, SWEEP_HANDLERS } from "./sweep/doors.ts";
 
 /*
-  THE SERVER HALF OF atyrode.babel.jev, AND IT PUBLISHES NOTHING.
+  THE SERVER HALF OF atyrode.babel.jev, AND THE TWO DOORS THE CORPUS SWEEP NEEDS.
 
   Jev is a part: typed judgement over the records the baseline holds, enabled and removed on its
   own. The whole design constraint is that Babel never depends on it — absent, disabled or out of
-  credit, every door, panel and conductor path answers exactly as it does today — and this file
-  is the cheapest structural proof of that, standing before a single voter exists to complicate
-  the question. So the roster it registers is empty: no door, no lifecycle hook, no store, no
-  tool grant. Each of those arrives with the child that needs it, and one acquired here "because
-  it will be needed" is how an optional part stops being one.
+  credit, every baseline door, panel and conductor path answers exactly as it does today. The
+  sweep changed only the part's OWN roster: nothing inside it can wake itself — it has no cycle,
+  no job and no lifecycle hook — so a driver asks one door what a bounded pass would cost, then
+  asks the other to run one. Neither writes; every suggestion comes back to the caller for
+  delivery, which leaves the baseline unaware of the part and keeps the dependency edge one-way.
 
   IT HOLDS TWO AUTHORITIES, AND EACH ARRIVED WITH THE CHILD THAT SPENDS IT. `services:invoke` is
   the judgement call. The key Jev is reached with is the operator's; the part names the service
@@ -48,17 +49,15 @@ import manifestJson from "./manifest.json";
   only the operator's own principal behind them — which is the opposite of what #360 decided.
   The door itself exists — #412 landed `babel.suggest`, whose allow-list is keyed on PRINCIPAL
   rather than on a capability — and the missing piece is a host mechanism that admits that one
-  write without the rest, open upstream as atyrode/manifold#770. So NOTHING IN THIS BUNDLE
-  CALLS IT: `screen/pass.ts` hands each suggestion to a caller-supplied function and makes no
-  `babel.suggest` call at all, `test/part-ceiling.test.ts` holds the refusal it would meet, and
-  an inert part that computes correct advisories and delivers none of them is Jev's intended
-  state today rather than a gap in it.
+  write without the rest, open upstream as atyrode/manifold#770. So NOTHING IN THIS BUNDLE CALLS
+  IT: `screen/pass.ts` hands each suggestion to a caller-supplied function and `sweep/sweep.ts`
+  hands the resulting rows back to whoever knocked. `test/part-ceiling.test.ts` holds the refusal
+  the part would meet if it tried.
 
-  The id is spelled once in the family's vocabulary (`JEV_PLUGIN_ID`, `babel/contract.ts`)
-  and `test/contract.test.ts` pins this manifest and the service id under it to that name. Nothing
-  here imports that file: the kit inlines every imported module into the bundle, and a part with
-  this little code of its own has no reason to carry the baseline's whole contract for one string
-  it does not use at runtime.
+  The id and the sweep's two door names are spelled once in the family's vocabulary
+  (`JEV_PLUGIN_ID` and `JEV_ACTIONS`, `babel/contract.ts`) and `test/contract.test.ts` pins the
+  manifest and service id to that vocabulary. A part may import that one baseline module
+  (`docs/building.md`); every other reach into Babel is a door.
 */
 
 export {
@@ -95,11 +94,19 @@ export {
   type ScreenSuggestion,
 } from "./screen/screener.ts";
 export { SCREENERS } from "./screen/screeners.ts";
+export {
+  basisFor,
+  sweep,
+  sweepPlan,
+  SWEPT_KINDS,
+  type SweepAsk,
+  type SweepDeps,
+} from "./sweep/sweep.ts";
 
 export const plugin: ServerPluginDef = {
   manifest: PluginManifestSchema.parse(manifestJson),
-  actions: [],
-  handlers: {},
+  actions: SWEEP_ACTIONS,
+  handlers: SWEEP_HANDLERS,
 };
 
 export default plugin;

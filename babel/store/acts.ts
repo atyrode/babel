@@ -3,7 +3,9 @@ import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/p
 import type { INTEREST_STATES } from "../contract.ts";
 import {
   NextActionStandingSchema,
+  RECORD_KINDS,
   RecordIdSchema,
+  RecordKindSchema,
   REFINEMENT_KEY,
   RefinementOutcomeSchema,
   RefinementSchema,
@@ -15,7 +17,9 @@ import {
   type Ruling,
   type Suggested,
   type Suggester,
+  type SuggestionsQuery,
   type SuggestionsResult,
+  type UnjudgedRecord,
 } from "../contract.ts";
 import {
   acceptReviewResult,
@@ -1726,6 +1730,8 @@ export interface SuggestArgs {
   kind: NextAction;
   summary: string;
   rationale: string;
+  /** What the suggester judged under; kept on the row and compared by equality, never parsed. */
+  basis: string;
 }
 
 /**
@@ -1808,6 +1814,9 @@ export async function suggest(
     revision: args.revision,
     suggester,
     supersedes,
+    // The mark's own date: `suggestionsOf` reads it back as an equality, which is what lets a
+    // suggester whose rules moved find its corpus unjudged again without forgetting this row.
+    basis: args.basis,
   });
   // THE UNIQUENESS IS IN THE STATEMENT and not only in the read above, so two calls that raced
   // past the same read cannot both land: the second finds a live sibling it is not superseding
@@ -1861,17 +1870,71 @@ export async function suggest(
   };
 }
 
+/** The one asked when nobody asked: the counts, every kind, any basis, from the start. */
+const EVERY_SUGGESTION: SuggestionsQuery = { pending: 0, basis: "", kinds: [], after: "" };
+
+/**
+ * The rulings that leave a record undecided, taken from the one map that decides it rather than
+ * spelled a second time in SQL: `suggest` refuses a record whose standing is not `new`, so a gap
+ * that offered one would be offering work the door is about to refuse.
+ */
+const OPEN_RULINGS: readonly string[] = Object.entries(STANDING_OF)
+  .filter(([, standing]) => standing === "new")
+  .map(([ruling]) => ruling);
+
+/**
+ * THE GAP, AS ONE PREDICATE: the live, unruled records of these kinds that this suggester has no
+ * mark on under this basis.
+ *
+ * It is built once and used by both the count and the page, because a sweep that was told a
+ * number by one query and handed rows by another could be told the two disagree — and the number
+ * is what an operator authorises spending against.
+ *
+ * A row whose `basis` is not the one asked for counts as UNJUDGED, which is the whole mechanism
+ * behind a moved rule set: it is `pendingVectors`' join on the model (`store/corpus.ts`) in the
+ * other half of the family, and for the same reason — a derived fact computed under something
+ * that has since changed is pending rather than present, and needs no second bookkeeping.
+ */
+function gap(
+  suggester: string,
+  ask: SuggestionsQuery,
+): { readonly sql: string; readonly params: readonly SqlParam[] } {
+  const kinds = ask.kinds.length === 0 ? RECORD_KINDS : ask.kinds;
+  const holes = (values: readonly unknown[]): string => values.map(() => "?").join(", ");
+  return {
+    sql: `FROM records r
+           WHERE r.kind IN (${holes(kinds)})
+             AND NOT EXISTS (SELECT 1 FROM records h WHERE h.supersedes_id = r.id)
+             AND COALESCE((SELECT d.disposition FROM dispositions d
+                            WHERE d.record_id = r.id ORDER BY d.seq DESC LIMIT 1), '')
+                 IN ('', ${holes(OPEN_RULINGS)})
+             AND NOT EXISTS (SELECT 1 FROM next_actions n
+                              WHERE n.record_id = r.id AND n.proposed_by_kind = 'engine'
+                                AND n.proposed_by_id = ?
+                                AND (? = '' OR
+                                     COALESCE(json_extract(n.payload, '$.basis'), '') = ?))`,
+    params: [...kinds, ...OPEN_RULINGS, suggester, ask.basis, ask.basis],
+  };
+}
+
 /**
  * WHAT ONE SUGGESTER'S QUEUE LOOKS LIKE, and what one more sweep would cost.
  *
- * `judged` counts every revision this suggester has ever named, superseded rows included: the
- * mark exists so a sweep does not re-judge what it has judged, and a supersession is a second
- * opinion rather than a reason to forget the first. `unjudged` is the complement over the live
- * revisions — the head of every root — which is exactly the number of rows one more pass adds.
+ * `judged` counts every record this suggester has marked under the basis asked for, superseded
+ * rows included: the mark exists so a sweep does not re-judge what it has judged, and a
+ * supersession is a second opinion rather than a reason to forget the first. `unjudged` is
+ * {@link gap} counted, and `pending` is the same gap's first rows — so the number a pass is
+ * authorised against and the records it would read are one query's two answers.
+ *
+ * `after` walks the gap in `rowid` order, oldest record first. An `after` naming a record this
+ * deployment does not hold starts from the beginning rather than answering nothing: the rows are
+ * the authority on what has been judged, a continuation is only how one sequence of passes walks
+ * them, and a lost one must cost an ordering rather than stall a sweep for ever.
  */
 export async function suggestionsOf(
   store: ActsStore,
   suggester: string,
+  ask: SuggestionsQuery = EVERY_SUGGESTION,
 ): Promise<SuggestionsResult> {
   const live = await first<{ live: number | bigint; outstanding: number | bigint }>(
     store,
@@ -1885,24 +1948,46 @@ export async function suggestionsOf(
                           AND json_extract(s.payload, '$.supersedes') = n.id)`,
     [suggester],
   );
-  const marks = await first<{ judged: number | bigint; unjudged: number | bigint }>(
+  const unjudged = gap(suggester, ask);
+  const kinds = ask.kinds.length === 0 ? RECORD_KINDS : ask.kinds;
+  const marks = await first<{ judged: number | bigint }>(
     store,
-    `SELECT (SELECT COUNT(DISTINCT record_id) FROM next_actions
-              WHERE proposed_by_kind = 'engine' AND proposed_by_id = ?) AS judged,
-            (SELECT COUNT(*) FROM records r
-              WHERE NOT EXISTS (SELECT 1 FROM records h WHERE h.supersedes_id = r.id)
-                AND NOT EXISTS (SELECT 1 FROM next_actions n WHERE n.record_id = r.id
-                                  AND n.proposed_by_kind = 'engine'
-                                  AND n.proposed_by_id = ?)) AS unjudged`,
-    [suggester, suggester],
+    `SELECT COUNT(DISTINCT n.record_id) AS judged
+       FROM next_actions n JOIN records r ON r.id = n.record_id
+      WHERE n.proposed_by_kind = 'engine' AND n.proposed_by_id = ?
+        AND r.kind IN (${kinds.map(() => "?").join(", ")})
+        AND (? = '' OR COALESCE(json_extract(n.payload, '$.basis'), '') = ?)`,
+    [suggester, ...kinds, ask.basis, ask.basis],
   );
+  const counted = await first<{ unjudged: number | bigint }>(
+    store,
+    `SELECT COUNT(*) AS unjudged ${unjudged.sql}`,
+    [...unjudged.params],
+  );
+  const pending: UnjudgedRecord[] = [];
+  if (ask.pending > 0) {
+    const rows = await store.db.query<{ id: string; seq: number | bigint; kind: string }>(
+      `SELECT r.id AS id, r.seq AS seq, r.kind AS kind ${unjudged.sql}
+         AND r.rowid > COALESCE((SELECT a.rowid FROM records a WHERE a.id = ?), 0)
+        ORDER BY r.rowid LIMIT ?`,
+      [...unjudged.params, ask.after, ask.pending],
+    );
+    for (const row of rows) {
+      pending.push({
+        recordId: String(row.id),
+        revision: Number(row.seq),
+        kind: RecordKindSchema.parse(row.kind),
+      });
+    }
+  }
   const outstanding = Number(live?.outstanding ?? 0);
   return {
     suggester,
     outstanding,
     answered: Number(live?.live ?? 0) - outstanding,
     judged: Number(marks?.judged ?? 0),
-    unjudged: Number(marks?.unjudged ?? 0),
+    unjudged: Number(counted?.unjudged ?? 0),
+    pending,
   };
 }
 

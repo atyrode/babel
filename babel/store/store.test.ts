@@ -1147,11 +1147,14 @@ describe("the peel", () => {
     expect(await harness.store.record(ARGUED).then((peeled) => peeled?.plan)).toBeNull();
   });
 
-  // The peel's top row is a `FeedPost`, whose kind is one of the four post kinds, so an
-  // observation could only be served by calling it a hypothesis. It is reached from the records
-  // that cite it instead, and the door refuses it by name rather than mislabelling it.
-  test("an observation is not peelable, because a peel would have to call it something else", async () => {
-    expect(await harness.store.record(OBSERVATION)).toBeNull();
+  test("an observation peels in its own kind without becoming a feed post", async () => {
+    const peeled = await harness.store.record(OBSERVATION);
+    expect(peeled?.post).toMatchObject({
+      id: OBSERVATION,
+      kind: "observation",
+      title: "an observation, which is evidence",
+    });
+    expect(peeled?.claim.statement).toBe("an observation, which is evidence");
   });
 
   test("a record this deployment does not hold is nothing rather than an empty document", async () => {

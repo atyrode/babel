@@ -662,6 +662,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   service and an over-cap record leave a record byte-identical and produce one identical
   report; an admitted row that advises `none` still proposes nothing; and a score of 0.7
   reaches the tally as 0.7, backing a voter that 0.69 does not.
+- **Jev can grade the corpus that was already there, one bounded and resumable pass at a time.**
+  A free `sweepPlan` call states how many live, unruled records are outside the current bank
+  before an operator authorises any model spend; `sweep` then reads at most 24, pays once per
+  readable record and returns suggestions for its caller to deliver. The part still has no write
+  authority: a real-store test serializes the records, claims and ranked feed before and after a
+  pass and requires all three to stay byte-identical.
+
+  The pending set is the gap rather than a stored cursor. Every delivered suggestion carries a
+  basis made from the bank version and that record kind's document version, so moving one
+  threshold makes that kind pending again without rebuying the other three; a short-lived
+  continuation only walks silent voters inside one authorised sequence and losing it can repeat
+  work but can never report unjudged rows as complete. The no-service path proves the invocation
+  count stays zero against a fake that throws if reached, and an out-of-credit pass stops on its
+  first unanswered record with an explicit no-op report instead of failing.
 
 ### Removed
 
