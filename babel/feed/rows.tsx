@@ -4,6 +4,7 @@ import { Cluster, Stack } from "@manifold/ui";
 import { ACTIONS, type Established, type PostKind, type Ruling } from "../contract.ts";
 import { ask, refusal, since, type FeedPost } from "./api.ts";
 import { Votes } from "./votes.tsx";
+import { JevPosition } from "./jev.tsx";
 
 /*
   ONE POST, as a row, and the acts it invites.
@@ -656,6 +657,7 @@ export function FeedRow({
             />
           )}
         </Cluster>
+        <JevPosition host={host} id={post.id} />
         {acted !== undefined && (
           <span className="babel-acted" data-act={acted.act}>
             {acted.done}

@@ -17,6 +17,7 @@
 */
 import { join } from "node:path";
 import { PluginManifestSchema } from "@manifold/protocol";
+import { format, resolveConfig } from "prettier";
 import runtime from "../runtime-tools.json";
 
 /** The owner's reviewed native closure. A managed tool is a dynamically linked binary — bun
@@ -85,7 +86,10 @@ for (const [id, operation] of operations) {
   }
 }
 
-await Bun.write(file, `${JSON.stringify(raw, null, 2)}\n`);
+await Bun.write(
+  file,
+  await format(JSON.stringify(raw), { ...(await resolveConfig(file)), filepath: file }),
+);
 console.log(
   `machine.js ${String(machine.byteLength)} bytes sha256=${sha256}; tools pinned:` +
     ` ${Object.keys(runtime.tools).join(", ")} (bun ${runtime.bunVersion})`,

@@ -27,7 +27,6 @@
   plugin serves. The read is `containers:read`. Neither door touches a slice of the host.
 */
 
-import { z } from "zod";
 import { defineServerAction } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
@@ -35,6 +34,7 @@ import {
   EVENTS,
   SuggestInputSchema,
   SuggestedSchema,
+  SuggestionsQuerySchema,
   SuggestionsResultSchema,
 } from "../contract.ts";
 import { suggest, suggesterFor, suggestionsOf, type ActsStore } from "../store/acts.ts";
@@ -56,12 +56,17 @@ const suggestAction = defineServerAction({
  * The reading half, and it is not decoration: #360 requires the imported corpus to be swept, and
  * a sweep that cannot state how many suggestions it would add before it adds them recreates the
  * one undifferentiated list the desk/queue/shelf split was built to end.
+ *
+ * It also NAMES the records of the gap when asked to (#356), because no other reading door can:
+ * `suggest` requires the revision it judged and `records.seq` is on no peel, so a sweep that
+ * could not read it here could not name one either. Asking for none — the default — is the
+ * sizing call, which costs one query and spends nothing.
  */
 const suggestionsAction = defineServerAction({
   name: ACTIONS.suggestions,
   title: "How many suggestions this caller has outstanding, and what a sweep would add",
   caps: ["containers:read"],
-  input: z.strictObject({}),
+  input: SuggestionsQuerySchema,
   result: SuggestionsResultSchema,
 });
 
@@ -77,8 +82,11 @@ export function suggestDoors(store: ActsStore): readonly Door[] {
               recordId: args.recordId,
               revision: args.revision,
               kind: args.kind,
+              subject: args.subject,
+              aspect: args.aspect,
               summary: args.summary,
               rationale: args.rationale,
+              basis: args.basis,
             },
             ctx.principal.id,
           );
@@ -93,10 +101,10 @@ export function suggestDoors(store: ActsStore): readonly Door[] {
         }),
     ),
 
-    defineDoor(suggestionsAction, async (ctx) =>
+    defineDoor(suggestionsAction, async (ctx, args) =>
       acted(async () => {
         const suggester = await suggesterFor(store, ctx.principal.id);
-        return await suggestionsOf(store, suggester);
+        return await suggestionsOf(store, suggester, args);
       }),
     ),
   ];

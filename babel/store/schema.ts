@@ -1074,3 +1074,22 @@ export function recordTextSql(alias: string): string {
     .join(` || ' ' || `);
   return `CASE WHEN json_valid(${alias}payload) THEN TRIM(${parts}) ELSE '' END`;
 }
+
+/**
+ * WHETHER A ROW'S IDENTIFIER IS ONE A CALLER COULD NAME, AS SQL (#426).
+ *
+ * `contract.ts`'s `isRecordId` is the same question in TypeScript and the two must answer alike;
+ * they are spelled twice because a regular expression is not available to SQLite and a read that
+ * filtered in TypeScript could not keep a COUNT and a LIMIT'd page agreeing about how many rows
+ * there are. `store/acts.test.ts` holds the two to each other over a spread of identifiers.
+ *
+ * The family is the first four characters, the tail is 8 to 64 lowercase hex — so the whole id
+ * is 12 to 68 characters — and `GLOB` is the case-sensitive match SQLite has: `LIKE` would admit
+ * `FND_0000ABCD`, which `RecordIdSchema` refuses.
+ */
+export function nameableRecordSql(column: string): string {
+  return `substr(${column}, 1, 4) IN ('hyp_', 'obs_', 'fnd_', 'pro_', 'qst_')
+          AND length(${column}) BETWEEN 12 AND 68
+          AND length(CAST(${column} AS BLOB)) = length(${column})
+          AND substr(${column}, 5) NOT GLOB '*[^0-9a-f]*'`;
+}

@@ -164,25 +164,6 @@ describe("the parts are parts of the baseline", () => {
     expect(JEV_SERVICE.serviceId.startsWith(`${JEV_PLUGIN_ID}.`)).toBe(true);
   });
 
-  test("the part is removable: nothing of Babel's names it", () => {
-    /*
-      THE EDGE IS ONE-WAY, AND THE HOST IS WHAT ENFORCES IT. `ctx.actions.call` refuses a callee
-      the CALLER's manifest does not declare (`undeclared_dependency`: composition is declared,
-      never discovered), so as long as no manifest of Babel's names the part, no door, cycle or
-      panel of Babel's can reach it — installed or not. That is the whole of the epic's
-      constraint, stated where a future manifest edit has to pass it.
-    */
-    for (const manifest of [babel, feed, watch]) {
-      expect(Object.keys(manifest.dependencies ?? {})).not.toContain(JEV_PLUGIN_ID);
-      expect(manifest.after ?? []).not.toContain(JEV_PLUGIN_ID);
-      for (const cap of manifest.capabilities)
-        expect(cap.startsWith(`${JEV_PLUGIN_ID}:`)).toBe(false);
-    }
-    // And the part's own edge is satisfied by what is left when the part is gone: removing it
-    // removes a plugin, never a dependency.
-    expect(Object.keys(jev.dependencies ?? {})).toEqual([BABEL_PLUGIN_ID]);
-  });
-
   test("the family is four plugins and every panel of it is declared once", () => {
     const declared = [babel, feed, watch, jev].flatMap((manifest) =>
       manifest.contributes.panels.map((panel) => `${manifest.id}.${panel.id}`),

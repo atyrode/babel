@@ -160,6 +160,9 @@ test("a policy the operator replaced is not answered out of the store", async ()
   hosted.at.revision = "r8";
   expect(await judge(hosted.services, request, answers)).toEqual({ gate: 2 });
   expect(hosted.asks).toHaveLength(2);
+  // A sweep sized under r7 may not label an r8 answer as r7, even with both answers cached.
+  expect(await judge(hosted.services, request, answers, "r7")).toBeNull();
+  expect(hosted.asks).toHaveLength(2);
 });
 
 test("an absence is never remembered", async () => {

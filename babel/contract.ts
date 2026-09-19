@@ -120,7 +120,22 @@ export const INTEREST_STATES = ["working", "watching", "not-now", "excluded"] as
 export const InterestStateSchema = z.enum(INTEREST_STATES);
 
 /** A record identifier as the frontier mints them: a three-letter family and a hex tail. */
-export const RecordIdSchema = z.string().regex(/^(hyp|obs|fnd|pro|qst)_[0-9a-f]{8,64}$/);
+const RECORD_ID = /^(hyp|obs|fnd|pro|qst)_[0-9a-f]{8,64}$/;
+export const RecordIdSchema = z.string().regex(RECORD_ID);
+
+/**
+ * WHETHER A STORED IDENTIFIER IS ONE A READER COULD ASK BACK FOR (#426).
+ *
+ * A row imported before the frontier's guard existed carries an id no input schema admits, and
+ * a read whose result names it fails the door's own result — taking the whole answer with it,
+ * for rows nobody could have opened anyway. Reads drop such rows and account for them; they
+ * are never repaired and never deleted, and this predicate is the one place that decides which
+ * they are, so the read side and {@link RecordIdSchema} cannot come to disagree.
+ */
+export function isRecordId(id: string): boolean {
+  return RECORD_ID.test(id);
+}
+
 export const EntityIdSchema = z.string().regex(/^ent_[0-9a-f]{8,64}$/);
 
 /**
@@ -493,9 +508,19 @@ export type FeedResult = z.infer<typeof FeedResultSchema>;
 
 export const RecordQuerySchema = z.strictObject({ id: RecordIdSchema });
 
+/**
+ * The peel's top row, which is a post for every feed row and an OBSERVATION when a reader opens
+ * the evidence record itself. Observations remain absent from `FeedPostSchema` — §4.13 says they
+ * never occupy the feed — while the record door can carry their exact kind instead of calling
+ * one a hypothesis merely to fit a page-shaped projection.
+ */
+export const RecordPeelPostSchema = FeedPostSchema.extend({
+  kind: z.union([PostKindSchema, RecordKindSchema]),
+});
+
 /** The peel (§8.6): five depths, the first three free of identifiers. */
 export const RecordPeelSchema = z.strictObject({
-  post: FeedPostSchema,
+  post: RecordPeelPostSchema,
   claim: z.strictObject({ statement: z.string(), standing: z.string(), act: z.string() }),
   case: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
   evidence: z.array(
@@ -651,6 +676,14 @@ export type SearchQuery = z.infer<typeof SearchQuerySchema>;
  * were read. A vector whose model nobody recorded is a vector nobody can tell is stale, and
  * `stale` counts the rows some earlier model made — they are not compared and not deleted, they
  * are the backfill's remaining work.
+ *
+ * `unnameable` is the other kind of gap and the reason the answer can be trusted to be partial
+ * rather than wrong (#426): rows imported before the frontier's guard carry an id
+ * {@link RecordIdSchema} does not admit, no caller could open one, and a hit naming one would
+ * fail this door's own result and take every other hit with it. They are left out of the hits
+ * and counted here instead. The count is of the store and not of the query, like every other
+ * number in this block, so an operator sees the damage on any answer rather than only on the
+ * queries unlucky enough to rank one.
  */
 export const SearchCoverageSchema = z.strictObject({
   records: z.number().int().min(0),
@@ -659,6 +692,8 @@ export const SearchCoverageSchema = z.strictObject({
   /** Records with no text to embed; they are covered, because they can never be more. */
   empty: z.number().int().min(0),
   stale: z.number().int().min(0),
+  /** Records this hub holds and no answer can name; never repaired and never deleted. */
+  unnameable: z.number().int().min(0),
   model: z.string(),
 });
 
@@ -1067,8 +1102,37 @@ export const SuggestInputSchema = z.strictObject({
   recordId: RecordIdSchema,
   revision: z.number().int().min(0),
   kind: NextActionSchema,
+  /**
+   * THE OTHER RECORD THIS SUGGESTION IS ABOUT, or empty because there is not one.
+   *
+   * A `next_actions` row sits beside ONE record, so a finding about a PAIR — these two claims
+   * cannot both be true, this record is superseded by that one — has to be delivered as a
+   * suggestion on one of them naming the other. Without this field the door's uniqueness is
+   * (suggester, record, revision, kind), so the second pair a record belongs to would supersede
+   * the first and the operator would only ever see one counterpart. Carrying the counterpart
+   * makes the two findings different suggestions, which is what they are.
+   *
+   * Empty is the per-record case and the default, so every existing caller and every row already
+   * written keeps exactly the behaviour it had: one live suggestion per revision and kind. A
+   * non-empty one must name a record this deployment holds — an id nothing resolves would put a
+   * dangling counterpart in front of the operator, and `next_actions` has no foreign key on it.
+   */
+  subject: z.union([RecordIdSchema, z.literal("")]).default(""),
+  /** Independent findings about the same subject; empty preserves existing caller identity. */
+  aspect: z.string().max(64).default(""),
   summary: bounded(400),
   rationale: z.string().max(2000).default(""),
+  /**
+   * WHAT THE SUGGESTER JUDGED UNDER, in its own words and bounded: a version, a fingerprint, the
+   * name of a rule set. Babel never parses it and never orders two of them — it keeps it on the
+   * row and hands it back to `suggestions` as an equality, which is the whole of its job.
+   *
+   * It is what gives "already judged" a date. A suggester whose rules moved has judged nothing
+   * under the new ones, and a mark that could not say so leaves only two bad answers: re-screen
+   * a corpus already paid for on every edit, or never re-screen one and let the version be a
+   * lie. Empty is a suggester whose rules carry no version, and for it this changes nothing.
+   */
+  basis: z.string().max(64).default(""),
 });
 
 export const SuggestedSchema = z.strictObject({
@@ -1076,15 +1140,65 @@ export const SuggestedSchema = z.strictObject({
   recordId: RecordIdSchema,
   revision: z.number().int(),
   kind: NextActionSchema,
+  /** The counterpart the input named, echoed so a caller can tell two pair findings apart. */
+  subject: z.string(),
+  aspect: z.string(),
   /** The plugin it is attributed to, resolved from the principal and never from the input. */
   suggester: z.string(),
-  /** The suggestion this one replaced, or empty: one live suggestion per revision and kind. */
+  /** The replaced row, or empty: one live opinion per revision, kind, subject and aspect. */
   supersedes: z.string(),
   at: z.string(),
   /** How many of this suggester's live suggestions the operator has not answered yet. */
   outstanding: z.number().int().nonnegative(),
 });
 export type Suggested = z.infer<typeof SuggestedSchema>;
+
+/**
+ * ONE RECORD A SWEEP HAS NOT JUDGED, as the reading half names it.
+ *
+ * `revision` is here because no other reading door carries it: the peel serves five depths and
+ * `records.seq` is in none of them, while `suggest` requires it. A caller that had to guess a
+ * revision could only guess the live one, which is the single thing a suggestion may never
+ * inherit. `kind` travels for the same reason — it decides which of a suggester's rules speak
+ * for the record, and a record's kind is the store's fact rather than a reader's inference.
+ *
+ * `suggestible` is whether `suggest` would ACCEPT a suggestion on this row: the gap is every
+ * live record a sweep has not screened, ruled ones included, because a ruling decides what may
+ * be offered rather than whether a screener may read. A caller derives its position for every
+ * row and delivers one only where this is true. It is a boolean rather than a standing because
+ * the alternative is a caller reading the peel's human-facing prose and deciding for itself
+ * which words mean "the operator has ruled" — the store answers the question it owns.
+ */
+export const UnjudgedRecordSchema = z.strictObject({
+  recordId: RecordIdSchema,
+  revision: z.number().int().nonnegative(),
+  kind: RecordKindSchema,
+  suggestible: z.boolean(),
+});
+export type UnjudgedRecord = z.infer<typeof UnjudgedRecordSchema>;
+
+/**
+ * WHAT A SWEEP ASKS THE READING HALF, and every field exists to keep the ROWS the only authority
+ * on what has been judged.
+ *
+ * `basis` is the suggester's own version of the rules it judges by, matched as an equality
+ * against the mark on the row: a row written under another basis is unjudged again, which is how
+ * a moved rule set gives a sweep work without a second mechanism and without forgetting what was
+ * paid for. `pending` is how many of those records to name, and 0 — the default — answers the
+ * counts alone, which is the call that costs nothing and is made before anything is spent.
+ * `kinds` narrows to what a moved document actually speaks for, so an edit to one of four
+ * documents re-opens a quarter of a corpus rather than all of it. `after` is a CONTINUATION and
+ * not a cursor: a record id the last page ended on, held by the caller for the length of one
+ * authorised sequence of passes and stored by nobody, so losing it costs an ordering and never a
+ * wrong answer about what has been judged.
+ */
+export const SuggestionsQuerySchema = z.strictObject({
+  pending: z.number().int().min(0).max(100).default(0),
+  basis: z.string().max(64).default(""),
+  kinds: z.array(RecordKindSchema).max(RECORD_KINDS.length).default([]),
+  after: z.string().max(200).default(""),
+});
+export type SuggestionsQuery = z.infer<typeof SuggestionsQuerySchema>;
 
 /**
  * WHAT ONE SUGGESTER'S QUEUE LOOKS LIKE, so a sweep can state its size before it runs.
@@ -1104,8 +1218,311 @@ export const SuggestionsResultSchema = z.strictObject({
   judged: z.number().int().nonnegative(),
   /** Live record revisions it has not judged: exactly what one more sweep would add. */
   unjudged: z.number().int().nonnegative(),
+  /**
+   * The gap itself, oldest first, and empty unless the query asked for it: exactly the records
+   * one more pass would read, in the order it would read them.
+   */
+  pending: z.array(UnjudgedRecordSchema),
 });
 export type SuggestionsResult = z.infer<typeof SuggestionsResultSchema>;
+
+// --------------------------------------------- what the judgement part's own doors answer
+
+/*
+  THE TWO DOORS THE JUDGEMENT PART PUBLISHES (#356), spelled here because the family holds one
+  vocabulary and not one per plugin.
+
+  `atyrode.babel.jev` registered no door until the corpus had to be swept, and the sweep is why
+  it needs one. 6,038 records were imported from the retired product and none has ever been
+  screened; nothing inside the part can wake itself — it has no cycle, no job and no hook — and
+  the baseline cannot reach in to drive it, because Babel's manifest names no edge to its own
+  part and a call naming one is refused `undeclared_dependency`. That direction is what makes the
+  part removable and `test/optional-part.test.ts` holds it. So a sweep is driven by a knock from
+  OUTSIDE, and these are what a driver knocks on: one door that says what a pass would read and
+  spends nothing, and one that runs a pass and spends at most a batch.
+
+  NEITHER OF THEM WRITES, and the part still declares no authority that would let one. `sweep`
+  answers with the suggestions it computed and its caller delivers them through `babel.suggest`
+  under its own principal — a voter computes, a caller delivers — which is the shape #360 decided
+  and the only one available while a cross-plugin write is graded against the CALLER's ceiling
+  (atyrode/manifold#770).
+*/
+export const JEV_ACTIONS = {
+  /** What one pass would read, and what has already been judged. Reads only; spends nothing. */
+  sweepPlan: "sweepPlan",
+  /** One bounded pass: judge, screen, and hand back what a caller may deliver. */
+  sweep: "sweep",
+  /**
+   * ONE BOUNDED PASS OVER THE PAIRS OF NAMED ANCHORS (#357, #358): propose, judge, detect, and
+   * hand back what a caller may deliver. Reads and spends; writes nothing, like the two above.
+   */
+  pairs: "pairs",
+} as const;
+export type JevActionName = (typeof JEV_ACTIONS)[keyof typeof JEV_ACTIONS];
+
+/**
+ * HOW MANY RECORDS ONE PASS READS BY DEFAULT, which is how many judgements it pays for.
+ *
+ * It is `BACKFILL_BATCH`'s number (`store/corpus.ts`) and its argument: a pass holds the dispatch
+ * that called it, and one that judged a whole corpus would hold it open for minutes. The maximum
+ * is the default as well: a caller cannot turn a bounded duty into a corpus job by filling an
+ * optional field. 6,038 records is real money and was never going to be one job.
+ */
+export const JEV_SWEEP_BATCH = 24;
+
+/** Independent voter coverage is not an operator ruling or a replacement feed rank. */
+export const STANDINGS = [
+  "unjudged",
+  "unheard",
+  "unremarked",
+  "backed",
+  "objected",
+  "contested",
+] as const;
+export type Standing = (typeof STANDINGS)[number];
+
+export const RecordPositionSchema = z.strictObject({
+  recordId: RecordIdSchema,
+  revision: z.number().int().nonnegative(),
+  standing: z.enum(STANDINGS),
+  tally: z.number().int().nullable(),
+  up: z.number().int().nonnegative(),
+  down: z.number().int().nonnegative(),
+  backed: z.array(z.string()).readonly(),
+  objected: z.array(z.string()).readonly(),
+  silent: z.array(z.string()).readonly(),
+  failed: z.array(z.string()).readonly(),
+  roster: z.number().int().nonnegative(),
+  heard: z.number().int().nonnegative(),
+});
+export type RecordPosition = z.infer<typeof RecordPositionSchema>;
+
+/**
+ * WHAT A SWEEP WOULD COST, PER RECORD KIND AND IN TOTAL, before a record is judged.
+ *
+ * The breakdown is per kind because the bank is one document per kind with its own version, so a
+ * reworded threshold re-opens the records of ONE kind and the number that moved says which.
+ * `silent` is the whole of the absent path: no allow-list, no records, nothing to sweep — said in
+ * a sentence rather than raised, because a plan is a question and "nothing" is an answer to it.
+ */
+export const SweepPlanSchema = z.strictObject({
+  kinds: z.array(
+    z.strictObject({
+      kind: RecordKindSchema,
+      /** The basis a pass would judge this kind under: the bank and the document, versioned. */
+      basis: z.string(),
+      judged: z.number().int().nonnegative(),
+      unjudged: z.number().int().nonnegative(),
+    }),
+  ),
+  /** The gap over every kind: records not judged under the bank as this part ships it. */
+  unjudged: z.number().int().nonnegative(),
+  /** Suggestions already written that the operator has not answered yet. */
+  outstanding: z.number().int().nonnegative(),
+  /** Records the bank has a document for but no reading door can serve to this part. */
+  unreadable: z.number().int().nonnegative(),
+  /** What a pass at the limit asked for would read, which is what it would pay for. */
+  batch: z.number().int().nonnegative(),
+  silent: z.string(),
+});
+export type SweepPlan = z.infer<typeof SweepPlanSchema>;
+
+export const SweepInputSchema = z.strictObject({
+  limit: z.number().int().min(1).max(JEV_SWEEP_BATCH).default(JEV_SWEEP_BATCH),
+  kinds: z.array(RecordKindSchema).max(RECORD_KINDS.length).default([]),
+  /** The `kind/id` continuation a previous pass answered with, to walk the gap in order. */
+  after: z.string().max(200).default(""),
+});
+export type SweepInput = z.infer<typeof SweepInputSchema>;
+
+/**
+ * WHAT ONE PASS DID, AND WHAT IT LEFT FOR ITS CALLER TO DELIVER.
+ *
+ * `read`, `judged` and `unjudged` are the pass's own accounting and `judged + unjudged === read`
+ * always, which is what keeps "Jev was off" and "Jev found nothing" from ever reading alike.
+ * `suggestions` is the delivery: every field `babel.suggest` requires, `basis` included, so a
+ * caller hands the row on without composing anything of its own.
+ */
+export const SweptSchema = z.strictObject({
+  read: z.number().int().nonnegative(),
+  judged: z.number().int().nonnegative(),
+  unjudged: z.number().int().nonnegative(),
+  /** Positions derived from this batch's answers; no second judgement or persisted ranking. */
+  positions: z.array(RecordPositionSchema),
+  suggestions: z.array(
+    z.strictObject({
+      recordId: RecordIdSchema,
+      revision: z.number().int().nonnegative(),
+      kind: NextActionSchema,
+      summary: z.string(),
+      rationale: z.string(),
+      /** Which voter proposed it, so a report reads per voter as well as per record. */
+      screener: z.string(),
+      basis: z.string(),
+    }),
+  ),
+  /** Voters that threw, by name and by record: a bug in a pure function, never a lost pass. */
+  failed: z.array(
+    z.strictObject({ screener: z.string(), recordId: z.string(), reason: z.string() }),
+  ),
+  /** The `kind/id` this pass ended on; hand it back as `after` to walk on from there. */
+  continuation: z.string(),
+  /** Why the pass stopped short of its batch, or empty because it did not. */
+  stopped: z.string(),
+});
+export type Swept = z.infer<typeof SweptSchema>;
+
+/*
+  THE PAIR DOOR (#357, #358), AND THE THREE THINGS ITS CALLER HAS TO SAY.
+
+  A relation between two records is not a property of either, so it cannot ride the per-record
+  sweep: it needs candidate PAIRS, and enumerating them over the imported corpus is 18,225,703 of
+  them. `babel/jev/pairs/propose.ts` answers that by retrieving rather than enumerating, and the
+  price of that is that a caller must say where to start. Hence three inputs and no defaults that
+  would guess for him:
+
+  - THE ANCHORS, named. Each is one search over the corpus and up to `neighbours` candidate
+    pairs, so the list is what bounds the reading and — through the pairs it yields — the spend.
+    A door that swept the corpus for anchors by itself would be a door whose cost nobody stated.
+  - THE CUTS, measured. There is no default confidence anywhere in the pair directory and there
+    must not be: the study's numbers were taken on one deployment's imported corpus over a
+    lexically blocked sample, so they are measurements and not thresholds
+    (`docs/jev-case-study-audit.md` §0). A question with no cut is REPORTED as uncalibrated
+    rather than quietly detecting nothing.
+  - HOW MUCH TO PAY FOR, as a count of pair judgements.
+
+  The door reads and spends; it writes nothing, for the reason the sweep doors write nothing —
+  `babel.suggest` declares `containers:write`, a cross-plugin call is graded against the CALLER's
+  own ceiling, and this part holds no such authority. Its suggestions come back for the caller to
+  deliver, and each one names its counterpart in `subject` so the two findings a record can be
+  half of do not supersede one another at the door.
+*/
+
+/** The two questions a pair judgement answers, spelled once for the door and the detectors. */
+export const PAIR_QUESTIONS = {
+  /** Symmetric: do these two records make claims that cannot both be true? */
+  contradicts: "contradicts",
+  /** Directed: does the second record describe a later state of what the first describes? */
+  supersedes: "supersedes",
+} as const;
+export type PairQuestionId = (typeof PAIR_QUESTIONS)[keyof typeof PAIR_QUESTIONS];
+
+/**
+ * HOW MANY ANCHORS ONE PASS MAY NAME. It is `JEV_SWEEP_BATCH`'s argument one unit up: a pass
+ * holds the dispatch that called it, and each anchor is one search plus up to its neighbours'
+ * worth of paid judgements. The maximum is not a default — there is none — because a caller
+ * naming anchors has already said what it wants read.
+ */
+export const JEV_PAIR_ANCHORS = 24;
+
+/**
+ * HOW MANY PAIR JUDGEMENTS ONE PASS MAY PAY FOR, and the ceiling as well as the default.
+ *
+ * Bound service invocations per dispatch independently of the number of retrieved candidates.
+ * This is a call-count ceiling, not a price estimate or a confidence threshold.
+ */
+export const JEV_PAIR_JUDGEMENTS = 64;
+
+/**
+ * ONE ANCHOR: a record to retrieve around, at the revision the caller read it at.
+ *
+ * The three fields are `UnjudgedRecordSchema`'s and the schema is deliberately its own rather
+ * than a reuse, because that one answers a different question — it is what the gap CONTAINS, and
+ * what it contains grows as the reading half learns to say more about a row. An input document
+ * that inherited those additions would make a driver supply, on every anchor, a fact the pair
+ * pass does not read.
+ *
+ * The REVISION travels with the id and is not looked up here: `records.seq` is on no peel, so a
+ * pass that took bare ids could only attach its suggestions to whatever the live revision had
+ * become — the one thing a suggestion may never inherit. The KIND travels for the same reason it
+ * does there: a record's kind is the store's fact, not a reader's inference off the peel, whose
+ * own `post.kind` widens to the post vocabulary.
+ */
+export const PairAnchorSchema = z.strictObject({
+  recordId: RecordIdSchema,
+  revision: z.number().int().nonnegative(),
+  kind: RecordKindSchema,
+});
+export type PairAnchor = z.infer<typeof PairAnchorSchema>;
+
+export const PairsInputSchema = z.strictObject({
+  /**
+   * The records to anchor retrieval on. Naming one twice reads it once.
+   *
+   * The list is the pool as well as the anchors: a neighbour that is not among them is counted
+   * and not paired, because this part cannot read a record nobody named (`pairs/propose.ts`).
+   */
+  anchors: z.array(PairAnchorSchema).min(1).max(JEV_PAIR_ANCHORS),
+  /**
+   * The lines this deployment has measured, by question. An absent one is not zero and not the
+   * study's number: the detector reading it is reported as uncalibrated and never consulted.
+   */
+  cuts: z
+    .strictObject({
+      contradicts: z.number().min(0).max(1).optional(),
+      supersedes: z.number().min(0).max(1).optional(),
+    })
+    .default({}),
+  /** The most pair judgements to pay for in this pass. */
+  judgements: z.number().int().min(1).max(JEV_PAIR_JUDGEMENTS).default(JEV_PAIR_JUDGEMENTS),
+});
+export type PairsInput = z.infer<typeof PairsInputSchema>;
+
+/**
+ * WHAT ONE PAIR PASS DID, AND WHAT IT LEFT FOR ITS CALLER TO DELIVER.
+ *
+ * The four counts are deliberately separate, because collapsing any two of them would hide a
+ * different failure: `candidates` is what retrieval proposed, `attempted` is how many of those
+ * the pass tried to pay for, `judged` is how many came back, and `truncated` says whether a
+ * ceiling — the proposal's or `judgements` — stopped it short. A deployment with no judgement
+ * service reports candidates and zero judged, which reads nothing like a corpus with no
+ * contradictions in it.
+ */
+export const PairsReportSchema = z.strictObject({
+  /** Anchors actually searched: fewer than asked for means a record was textless or unreadable. */
+  anchors: z.number().int().nonnegative(),
+  /** Searches made through `babel.search`. */
+  searches: z.number().int().nonnegative(),
+  /** Candidate pairs the proposal carried, each unordered pair once. */
+  candidates: z.number().int().nonnegative(),
+  /** Pairs a judgement was attempted for. */
+  attempted: z.number().int().nonnegative(),
+  /** Pairs a judgement came back for. `attempted - judged` is what Jev did not answer. */
+  judged: z.number().int().nonnegative(),
+  /** True when a ceiling cut: more candidate pairs exist than this pass looked at. */
+  truncated: z.boolean(),
+  /** The weakest state the meaning half of the index reported over every search made. */
+  meaning: z.enum(["absent", "partial", "full"]),
+  /** Which absence the index met, in its own words; empty when the meaning half answered fully. */
+  absent: z.string(),
+  /** True when a sketch cut a candidate slice, so a nearer neighbour may lie outside it. */
+  approximate: z.boolean(),
+  /** Detectors never consulted because this deployment has stated no line for their question. */
+  uncalibrated: z.array(z.strictObject({ detector: z.string(), question: z.string() })),
+  /** Every field `babel.suggest` requires, `subject` included, so a caller hands the row on. */
+  suggestions: z.array(
+    z.strictObject({
+      recordId: RecordIdSchema,
+      revision: z.number().int().nonnegative(),
+      kind: NextActionSchema,
+      /** The counterpart record: what makes two findings about one record two suggestions. */
+      subject: RecordIdSchema,
+      aspect: z.string(),
+      summary: z.string(),
+      rationale: z.string(),
+      /** Which detector proposed it, so a report reads per relation as well as per record. */
+      detector: z.string(),
+      basis: z.string(),
+    }),
+  ),
+  /** Detectors that threw, by name and by pair: a bug in a pure function, never a lost pass. */
+  failed: z.array(
+    z.strictObject({ detector: z.string(), records: z.array(z.string()), reason: z.string() }),
+  ),
+  /** Why the pass stopped short of what it was asked for, or empty because it did not. */
+  stopped: z.string(),
+});
+export type PairsReport = z.infer<typeof PairsReportSchema>;
 
 // ------------------------------------------------------------------- what a draw answers
 

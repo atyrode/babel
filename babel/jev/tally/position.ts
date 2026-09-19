@@ -1,5 +1,6 @@
+import type { RecordPosition } from "../../contract.ts";
 import { votesFor } from "../bank/bank.ts";
-import { panel, readable, tally, type Vote, type Voter } from "../bank/schema.ts";
+import { panel, readable, tally, type Vote } from "../bank/schema.ts";
 import type { JevAnswerStore, JevServices } from "../server/credential.ts";
 import { judge, requestFor } from "../server/judge.ts";
 import { answersOf, type ScreenedRecord } from "../screen/screener.ts";
@@ -71,60 +72,6 @@ import { answersOf, type ScreenedRecord } from "../screen/screener.ts";
   the same value `positionFor` returns against a hub with no service binding, so "Jev is absent"
   and "Jev was never installed" are one answer and not two code paths.
 */
-
-/**
- * WHERE A RECORD STANDS, in one word. Six, because there are six facts and a number can hold
- * only one of them — see this file's head.
- *
- * The order is from least said to most: nothing was asked, nothing was answered, nothing was
- * remarked on, and then the three things a panel can actually conclude.
- */
-export const STANDINGS = [
-  /** Jev did not judge it: absent, disabled, out of credit, or the record was too large to send. */
-  "unjudged",
-  /** It was judged, and the reply answered not one question the panel for its kind votes on. */
-  "unheard",
-  /** Voters were heard and none of them reached its line. A measured shrug, and a real zero. */
-  "unremarked",
-  /** Every voter that reached a line backed it. */
-  "backed",
-  /** Every voter that reached a line objected. */
-  "objected",
-  /** Voters reached lines on both sides, and `backed` and `objected` say which said what. */
-  "contested",
-] as const;
-export type Standing = (typeof STANDINGS)[number];
-
-/**
- * ONE RECORD'S POSITION WITH THE PANEL, about the wording that was judged.
- *
- * `recordId` and `revision` travel together for the reason a suggestion carries both: a record is
- * immutable and a refinement is a new revision, so a position naming only the id would silently
- * re-attach to a wording the panel never read.
- */
-export interface RecordPosition {
-  readonly recordId: string;
-  readonly revision: number;
-  /** The one word a consumer branches on. */
-  readonly standing: Standing;
-  /** `up - down`, or `null` when no voter was heard: missing data is not a zero. */
-  readonly tally: number | null;
-  /** Voters that backed it, counted in voters and not in rows. */
-  readonly up: number;
-  /** Voters that objected to it, counted the same way. */
-  readonly down: number;
-  readonly backed: readonly Voter[];
-  /** Who disagreed, by name. The point of voters rather than a ranker. */
-  readonly objected: readonly Voter[];
-  /** Voters the reply left with nothing readable to read. Not abstentions. */
-  readonly silent: readonly Voter[];
-  /** Advisory voters that threw on this record, by id. Never agreement, never a vote. */
-  readonly failed: readonly string[];
-  /** The panel the bank admits for this kind: the denominator of everything above. */
-  readonly roster: number;
-  /** How many of that panel were in a position to say anything. `heard + silent.length === roster`. */
-  readonly heard: number;
-}
 
 /**
  * THE POSITION, DERIVED. Pure, total, and the only place a standing is decided.

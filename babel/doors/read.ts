@@ -142,15 +142,6 @@ export function readDoors(store: BabelStore): readonly Door[] {
         result: RecordPeelSchema,
       }),
       async (_ctx, { id }) => {
-        // An observation is evidence rather than a post (§4.13), and the peel's top row is a
-        // `FeedPost` whose kind is one of the four post kinds — so serving one would mean
-        // calling it a hypothesis. It is refused by name and reached from the records that cite
-        // it, until `RecordPeelSchema`'s post can carry a record kind.
-        if (id.startsWith("obs_")) {
-          return {
-            refused: `${id} is an observation: evidence for the records that cite it, not a post`,
-          };
-        }
         const peeled = await store.record(id);
         // A record this deployment does not hold is a refusal naming the identifier rather than
         // an empty document: a peel of nothing renders as a record that says nothing.

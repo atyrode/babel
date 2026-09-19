@@ -677,6 +677,63 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `scope` and `editorial`; boundary tests pin a 2–1 disagreement separately from unanimous backing
   and extend the existing unrounded-score path through to the standing an operator would see.
 
+- **Jev can grade existing records in bounded passes, and Feed can read the result.** A free
+  `sweepPlan` sizes all live record kinds under the bank and service policy revisions; an explicit
+  press walks batches of at most 24 without changing Babel's ranking or the operator's rulings.
+  Contested readings lead with the disagreement, and reception names backers, objectors and
+  silent voters. Observations open from the related-record strip in their own kind, without
+  becoming posts or acquiring ruling controls.
+
+  The part still cannot write. Suggestions are submitted separately by its allow-listed caller,
+  after their count is visible; only those submissions are durable. Readings and the continuation
+  last for the browser session, so a silent record can be offered again after the bounded memo
+  loses it. A refused judgement stops further calls without discarding an earlier batch.
+  Real-store tests preserve the frontier and ranked feed. The installed local preview proves the
+  unbound path and observation navigation; synthetic browser responses exercise contested and
+  unheard readings, partial progress and explicit submission without a paid provider call.
+
+- **Jev can propose which pairs are worth asking about, then report two relations without
+  confusing them.** Comparing the imported 6,038 records outright would be 18,225,703 pairs, so
+  a bounded proposer rides the corpus index instead: each record is one search anchor, each
+  unordered neighbour pair is proposed once, and the answer carries its ceiling, whether the
+  ceiling cut, how many searches ran, and whether meaning was absent, partial or approximate.
+  With no embedding policy it still proposes from FTS5, says that the meaning service did not
+  answer and makes no invocation — the lexical floor the study itself measured, not silent
+  success.
+
+  Contradiction and supersession ride one paid pair judgement but remain different types. A
+  contradiction is canonical and symmetric, is delivered beside both records in identical words
+  and has nowhere to name a preferred side. A supersession names `stale` and `fresh`, carries both
+  instants, reverses when the ordered input reverses, and delivers only beside the stale record,
+  making direction part of the effect rather than a label. Neither invents a bank threshold:
+  the measured 40 contradictions and 36 supersessions were over one lexically blocked
+  2,000-pair sample, not records of a kind, so the caller must state a cut and an absent cut is
+  reported as uncalibrated. Proved by `babel/jev/pairs/`: no-policy invocation count, observable
+  proposal bound, symmetric contradiction delivery and direction-reversing supersession delivery.
+
+  Those two relations are now reachable at runtime rather than only computable. `jev.pairs` is a
+  third door beside the sweep's two: its caller names the anchors and the cuts this deployment
+  has measured, the pass reads each anchor through `babel.record`, retrieves candidates through
+  `babel.search`, and buys ONE judgement per ordered pair through a second service operation —
+  `pair`, which carries two states where the per-record `judge` carries one. Reusing `judge`
+  would have sent half a pair and read a relation off a projection that never names one, so
+  `seed-questions.ts policy` now prints both operations' literals and the pair projection's two
+  leaves. The report separates candidates, attempted, judged and truncation, so a deployment
+  that installed half a policy reads nothing like a corpus with no contradictions in it; the
+  door declares `containers:read` alone and the suggestions come back for the caller to deliver.
+  Every suggestion's basis digests the service policy revision and the stated cuts alongside the
+  question wording, and the revision is re-checked at the call, so an answer can never be filed
+  under a policy that did not produce it.
+
+- **Two findings about one record no longer overwrite each other.** `babel.suggest` kept one live
+  suggestion per suggester, revision and kind, which is right for a per-record voter and a loss
+  for a pair: a record that contradicts two others carried whichever was written second, and
+  nothing said the first had been dropped. Optional `subject` and `aspect` fields distinguish the
+  counterpart and the independent relation in both the live key and the insert guard. The
+  counterpart must exist and cannot be the record itself. Empty defaults preserve existing
+  per-record callers and rows. The door regression proves that different counterparts and
+  different relations about the same counterpart survive in either order, while restating one
+  replaces only that finding.
 
 ### Removed
 
@@ -780,6 +837,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   the door's (atyrode/manifold#749). An owner key is unaffected.
 
 ### Fixed
+
+- **Old malformed identifiers no longer poison a whole search.** Retrieval excludes unnameable
+  records before its candidate limit, reports their count in coverage, and keeps topics and
+  pending-suggestion reads usable without weakening the import guard. The regression includes
+  more malformed matches than the candidate window and an embedded NUL; the installed preview
+  returns valid results while reporting twelve legacy rows it cannot name.
+- **The preview loop discovers this family, not its downloaded dependencies.** After dependency
+  preparation, scanning the repository root tried to install duplicate Code bundles. `bun run dev`
+  now scans `babel/`; the local preview installed all four plugins after the change.
+- **Packing leaves the stamped manifest ready for the same checks as a clean checkout.** The
+  stamper uses the repository's formatter instead of rewriting the file in generic JSON layout;
+  packing followed immediately by the format check now succeeds, rather than failing the next CI
+  run after a successful local gate.
 
 - **A record could be imported that no door would ever open, and nothing could remove it.** Found
   by rendering the feed on a hub rather than in a test document: twelve rows went in through the

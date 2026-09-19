@@ -95,6 +95,7 @@ test("a search answers through the door, with its own account of what it could n
     embedded: 0,
     empty: 0,
     stale: 0,
+    unnameable: 0,
     model: "",
   });
   // With no policy installed the handler reaches the roster and stops: the invocation is not
@@ -111,4 +112,29 @@ test("a query longer than the door admits is refused rather than truncated", asy
   // asked, which is worse than a refusal a caller can see.
   expect(refused["invalid"]).toBeDefined();
   expect(refused["hits"]).toBeUndefined();
+});
+
+test("one record the door cannot name does not take the dispatch with it", async () => {
+  // A row of the shape a store imported before #416's guard holds, seeded straight into the
+  // table because the write path now refuses it and `records_kept` refuses to delete it. It
+  // ranks for this query: before #426 the hit's id failed `SearchResultSchema` on the way out
+  // and the caller got a 500 with a validator dump instead of the record it could have had.
+  await insert(harness.db, "records", {
+    id: "rec_seed_001",
+    kind: "finding",
+    root_id: "rec_seed_001",
+    seq: 0,
+    actor_kind: "run",
+    actor_id: "run_1",
+    title: "The drain stalls at zero and the drain drains nothing",
+    created_at: stamp(NOW),
+    payload: JSON.stringify({ pattern: "the drain never drains", significance: "a lost window" }),
+  });
+  const answer = (await dispatch(ACTIONS.search, { query: "the drain never drains" })) as Record<
+    string,
+    unknown
+  >;
+  const hits = answer["hits"] as readonly Record<string, unknown>[];
+  expect(hits.map((hit) => hit["id"])).toEqual(["fnd_00000001"]);
+  expect((answer["coverage"] as Record<string, unknown>)["unnameable"]).toBe(1);
 });

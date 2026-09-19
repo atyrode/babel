@@ -10,7 +10,13 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, CONDUCTOR_CYCLE_KEY, FeedResultSchema, door } from "../contract.ts";
+import {
+  ACTIONS,
+  CONDUCTOR_CYCLE_KEY,
+  FeedResultSchema,
+  RecordPeelSchema,
+  door,
+} from "../contract.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import { readDoors } from "./read.ts";
@@ -248,11 +254,14 @@ describe("the answers", () => {
     expect(answer).toEqual({ refused: "no record pro_0000dead" });
   });
 
-  test("an observation is refused by name rather than served as a post", async () => {
-    const answer = await dispatch(ACTIONS.record, { id: OBSERVATION });
-    expect(answer).toHaveProperty("refused");
-    expect((answer as { refused: string }).refused).toContain(OBSERVATION);
-    expect((answer as { refused: string }).refused).toContain("evidence");
+  test("an observation opens in its own kind without becoming a feed post", async () => {
+    const answer = RecordPeelSchema.parse(await dispatch(ACTIONS.record, { id: OBSERVATION }));
+    expect(answer.post).toMatchObject({
+      id: OBSERVATION,
+      kind: "observation",
+      title: "an observation",
+    });
+    expect(answer.claim.statement).toBe("an observation");
   });
 
   test("the thread, the topics, one topic and the pulse answer inside their schemas", async () => {
