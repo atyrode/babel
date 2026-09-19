@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { InstanceServiceDescription, ServiceReply } from "@manifold/protocol";
 import { ServicePolicySchema, servicePolicyCredentialRefs } from "@manifold/protocol";
-import { askJev, JEV_SERVICE, type JevServices } from "./credential.ts";
+import { askJev, JEV_CALL_CAP_BYTES, JEV_SERVICE, type JevServices } from "./credential.ts";
 
 /*
   THE THREE ABSENCES ARE ONE ANSWER, AND THE KEY IS NEVER HERE.
@@ -142,6 +142,17 @@ test("a bound and funded service answers, and the ask carries only the caller's 
       input: { state: "a record" },
     },
   ]);
+});
+
+test("an input this part will not pay to send is not sent", async () => {
+  // The cap is on the whole input document as the host measures it rather than on one field, and
+  // it is checked in front of the roster read: an oversized call reads nothing and sends nothing.
+  // It is enforced here because this is the only function in the bundle that can invoke the
+  // service, so a caller cannot route around it by building its own input.
+  const { services, asks } = host({ roster: [READY] });
+  const oversized = { state: "x".repeat(JEV_CALL_CAP_BYTES), note: "and a second field" };
+  expect(await askJev(services, JEV_SERVICE.operations.judge, oversized)).toBeNull();
+  expect(asks).toEqual([]);
 });
 
 test("a projection this cannot read is an absence, not an answer", async () => {

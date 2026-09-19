@@ -11,6 +11,30 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A Jev call has a size the part will pay for, and the same question is asked once.** The
+  policy's ceilings meter spend per cycle and per day; neither bounds how large **one** call may
+  be, and nothing stopped the same record being judged twice for two payments. A call is capped at
+  8,192 bytes of serialized input — measured exactly as the host measures it, against the 65,536
+  the protocol will carry, so the two numbers are comparable — and an oversized call is not sent,
+  returning the same nothing every other absence returns rather than truncating the record being
+  judged into a judgement of something the operator never sees. Bytes rather than tokens because
+  the part holds no tokenizer and needs none: no token is shorter than a byte, so a byte cap
+  bounds the bill from above.
+
+  The memo keys on what actually determines an answer — the operation, the bank **and document**
+  versions, which record kind was asked, the text verbatim, and the policy revision joined where
+  the roster is read. What is *excluded* is the interesting half: not the record's id, its run or
+  its recipe, because none of them is sent and keying on one pays twice for two records that say
+  the same thing; not the clock, because nothing about a judgement decays and a day in the key is
+  a cache that charges daily for one question; not the thresholds, because turning an answer into
+  votes happens after the call and two operators drawing the line differently are asking the same
+  question; and not the voter, because thirteen read one call. **An absence is never cached at
+  all** — every absence is a state of the deployment rather than a fact about the question, and a
+  cached unavailability would make one dry minute last until the process restarts.
+
+  It is a bounded map in one module's scope and not a second store: 256 answers, least recently
+  used evicted, tens of kilobytes however long the half lives. A bank version bump strands its
+  entries unreachable, so the cache cannot outlive the wording it was computed under.
 - **Jev's question bank is a versioned document, drift-checked the way a recipe is.** Four
   documents, one per record kind, with `version:` frontmatter registered in a manifest — the same
   shape `tools/seed-recipes.ts` already enforces for the cookbook, and for the same reason: an

@@ -35,11 +35,30 @@ import type { ServiceInput } from "@manifold/protocol";
 
   AND ABSENCE IS ONE PATH. `askJev` answers `null` for every reason Jev cannot answer: no service
   bound, one bound but unconfigured, disabled, starting, unavailable, its credential revoked, the
-  upstream refusing — which is what "out of credits" is — or an answer that is not a document.
-  There is exactly one of them in the type, so a caller has exactly one branch, and the branch it
-  takes when the operator never installed anything is the branch it takes when the account runs
-  dry. Nothing here throws, so no cycle can refuse because of Jev, and nothing is called at all
-  when there is no binding: the roster read is the first statement and the call is behind it.
+  upstream refusing — which is what "out of credits" is — an input this part will not pay to
+  send, or an answer that is not a document. There is exactly one of them in the type, so a
+  caller has exactly one branch, and the branch it takes when the operator never installed
+  anything is the branch it takes when the account runs dry. Nothing here throws, so no cycle can
+  refuse because of Jev, and nothing is called at all when there is no binding: the size check is
+  the first statement, the roster read the second, and the invocation behind both.
+
+  THE TWO BOUNDS THE CEILINGS DO NOT GIVE (#369) are both here, because both are properties of
+  THE CALL rather than of a budget. Per-cycle and per-day ceilings in micro-dollars meter what a
+  deployment spends over a window; neither says how large one call may be, and neither notices
+  the same record being judged twice for two payments. So:
+
+  - A PER-CALL SIZE CAP, refused before the roster is read. The failure it defends against is
+    not a malicious loop but one call carrying a pasted session — roughly thirty times the
+    intended rate, paid once, with nothing looking wrong. It is on this line rather than in a
+    wrapper because a wrapper is bypassable: this is the only function in the bundle that can
+    invoke the service, so a cap here is a cap on every call the part can make.
+  - AN IDEMPOTENCY MEMO, consulted behind the binding check and before the invocation, which is
+    the one statement here that costs anything. The caller owns the key, because what determines
+    an answer is a fact about the bank and the record and this file knows neither — `judge.ts`
+    spells it — and this file joins the one part of it the caller cannot know: the policy
+    revision the roster just reported. Only an ANSWER is remembered; an absence never is,
+    because a minute of unavailability that stuck would be the part switching itself off until
+    the process restarts.
 */
 
 /**
@@ -82,6 +101,64 @@ export type JevAnswer = Readonly<Record<string, unknown>>;
 export type JevServices = Pick<GuestServices, "listInstances" | "invokeInstance">;
 
 /**
+ * THE MOST ONE CALL MAY CARRY, in the host's own unit.
+ *
+ * `ServiceInputSchema` refines an input to
+ * `new TextEncoder().encode(JSON.stringify(input)).length <= 65536` (manifold's
+ * `packages/protocol/src/services.ts`), and this is that same measure at a lower number so the
+ * two are comparable: 65,536 is the FRAME the host will carry, 8,192 is the SPEND this part will
+ * pay for.
+ *
+ * BYTES RATHER THAN TOKENS, and the part holds no tokenizer because it does not need one: no
+ * token is shorter than a byte, so a cap on bytes bounds the token bill from above. 8,192 bytes
+ * is therefore at most 8,192 tokens — a quarter of Jev's 32k-token frame for a state plus its
+ * longest question, so a call this admits can never be refused upstream for size — and in
+ * practice around two thousand, twice the thousand-token call the study's "thirty times the
+ * intended rate" implies was intended. The bank's own exemplars are records' claims verbatim and
+ * run 400 to 900 bytes, so the cap admits a record several times the largest anyone has written
+ * and refuses a 30,000-token paste by a factor of fifteen.
+ */
+export const JEV_CALL_CAP_BYTES = 8192;
+
+const ENCODER = new TextEncoder();
+
+/**
+ * Whether an input is one this part will pay to send, measured as the host measures it.
+ *
+ * Exported because the cap is the one absence knowable BEFORE the call, so a caller that wants
+ * to say why it did not ask can ask this — rather than `askJev` growing a second return value
+ * and every caller a second branch.
+ */
+export function withinCallCap(input: ServiceInput): boolean {
+  return ENCODER.encode(JSON.stringify(input)).length <= JEV_CALL_CAP_BYTES;
+}
+
+/**
+ * WHERE AN ANSWER ALREADY PAID FOR IS HELD: a `Map`'s two methods and nothing more.
+ *
+ * The transport neither knows nor bounds the store, and that is deliberate — how many answers
+ * are worth holding and when they stop being worth holding is a question about the bank and the
+ * process, which `judge.ts` answers.
+ */
+export interface JevAnswerStore {
+  get(key: string): JevAnswer | undefined;
+  set(key: string, answer: JevAnswer): void;
+}
+
+/**
+ * ONE CALL'S MEMO: the store, and the caller's own statement of what determines the answer.
+ *
+ * `key` is a digest the caller mints, because the facts that decide a judgement — whose text,
+ * which bank, which document version — are not in this file's vocabulary. `askJev` joins the one
+ * part of it the caller cannot know, the policy revision the roster reported, so an answer
+ * computed under a policy the operator has since replaced is never handed back as the new one's.
+ */
+export interface JevMemo {
+  readonly key: string;
+  readonly answers: JevAnswerStore;
+}
+
+/**
  * Jev's answer, or `null` because Jev cannot answer.
  *
  * The caller's whole obligation is the one branch: `null` means do exactly what Babel does
@@ -93,7 +170,14 @@ export async function askJev(
   services: JevServices,
   operationId: JevOperationId,
   input: ServiceInput,
+  memo?: JevMemo,
 ): Promise<JevAnswer | null> {
+  // TOO LARGE IS AN ABSENCE, AND IT IS THE CHEAPEST ONE: no roster is read and no request is
+  // made. It is not a truncation, because a judgement of a record with its middle silently
+  // removed is a judgement of something the operator never sees, and it is not a refusal the
+  // caller has to handle, because the caller's right move is the one it already makes for every
+  // other absence — do what Babel does without this part.
+  if (!withinCallCap(input)) return null;
   try {
     // NO BINDING, NO CALL: the roster is read first, and the invocation is unreachable unless it
     // names a service the operator configured, enabled and got to ready. `listInstances` answers
@@ -105,6 +189,16 @@ export async function askJev(
     // behaviour in all of them is the behaviour it has when the part is not installed at all.
     const configuration = bound?.state === "ready" ? bound.configuration : null;
     if (configuration === null) return null;
+    // THE MEMO IS BEHIND THE BINDING CHECK, so a warm store cannot make an unbound, disabled or
+    // dry part answer — the fallback stays the same single path with a full cache as with none —
+    // and IN FRONT OF THE INVOCATION, which is the only statement here that spends anything.
+    // The revision joins the caller's key because the policy is what carries the wording, the
+    // model and the projection: two identical questions asked under two revisions are two
+    // questions. The key is fixed-length hex, so the pair cannot alias whatever a revision is.
+    const answers = memo?.answers;
+    const held = memo === undefined ? "" : `${memo.key}/${configuration.revision}`;
+    const remembered = answers?.get(held);
+    if (remembered !== undefined) return remembered;
     const reply = await services.invokeInstance({
       serviceId: JEV_SERVICE.serviceId,
       // The revision the roster just reported. A policy edited between these two statements is a
@@ -119,7 +213,12 @@ export async function askJev(
     const answer = reply.result;
     // A projected reply is a document of leaves. An array or a scalar is a policy projecting
     // something this cannot read, which is Jev not answering rather than Jev answering oddly.
-    return typeof answer === "object" && answer !== null && !Array.isArray(answer) ? answer : null;
+    if (typeof answer !== "object" || answer === null || Array.isArray(answer)) return null;
+    // ONLY AN ANSWER IS REMEMBERED. An absence is never stored: every one of them is a state of
+    // the deployment rather than a fact about the question, and a cached unavailability would
+    // make one bad minute last until the process restarts.
+    answers?.set(held, answer);
+    return answer;
   } catch {
     // The host's own conflicts — the configuration moved, the owner went offline, the frame was
     // too large — are Jev being unavailable. They are not Babel's to report and not a caller's to
