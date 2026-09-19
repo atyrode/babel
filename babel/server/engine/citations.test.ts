@@ -5,7 +5,12 @@ import {
   MATERIAL_SESSIONS,
   type MaterialEntry,
 } from "../../contract.ts";
-import { parseExploreResult, type Evidence, type ExploreResult } from "../../machine/results.ts";
+import {
+  EvidenceSchema,
+  exploreSubmission,
+  type Evidence,
+  type ExploreResult,
+} from "../../machine/results.ts";
 import {
   admitCitation,
   checkCitations,
@@ -54,29 +59,41 @@ const SESSION = materialLines(
   ].join("\n"),
 );
 
-/** One parsed answer citing one locator, the way a submission reaches the settlement. */
+/** One parsed answer citing one locator, the way a submission reaches the settlement. The
+ *  scope check runs inside it, so every caller of this one cites a file that WAS served. */
 function cited(locator: Record<string, unknown>): ExploreResult {
-  return parseExploreResult("explore", {
-    candidates: [
-      {
-        ref: "h1",
-        hypothesis: { statement: "the router's retry budget is wrong" },
-        observations: [
-          {
-            ref: "o1",
-            recipe: { id: "code-health", version: 3 },
-            claim: {
-              claim: "the transcript states the retry count",
-              confidence: "high",
-              impact: "moderate",
-              evidence: [{ locator, note: "the retry sentence" }],
-              counter_evidence_absent: true,
+  const submission = exploreSubmission(
+    "explore",
+    {
+      candidates: [
+        {
+          ref: "h1",
+          hypothesis: { statement: "the router's retry budget is wrong" },
+          observations: [
+            {
+              ref: "o1",
+              recipe: { id: "code-health", version: 3 },
+              claim: {
+                claim: "the transcript states the retry count",
+                confidence: "high",
+                impact: "moderate",
+                evidence: [{ locator, note: "the retry sentence" }],
+                counter_evidence_absent: true,
+              },
             },
-          },
-        ],
-      },
-    ],
-  });
+          ],
+        },
+      ],
+    },
+    SERVED,
+  );
+  if (submission.result === null) throw new Error(submission.reason);
+  return submission.result;
+}
+
+/** One claim's citations, which is the unit the scope check is asked about. */
+function citing(locator: Record<string, unknown>): readonly Evidence[] {
+  return [EvidenceSchema.parse({ locator, note: "the retry sentence" })];
 }
 
 function onlyCheck(result: ExploreResult, lines: readonly string[] | null = SESSION) {
@@ -92,7 +109,7 @@ describe("a claim cites the corpus it was served, or it cites nothing", () => {
     expect(admitCitation(FILE, SERVED)?.file).toBe(FILE);
     expect(admitCitation(`${MATERIAL_SESSIONS}/${FILE}`, SERVED)?.file).toBe(FILE);
     expect(admitCitation(`${MATERIAL_ROOT}/${MATERIAL_SESSIONS}/${FILE}`, SERVED)?.file).toBe(FILE);
-    expect(unservedCitation(cited({ path: FILE, line: 1, digest: DIGEST }), SERVED)).toBe("");
+    expect(unservedCitation(citing({ path: FILE, line: 1, digest: DIGEST }), SERVED)).toBe("");
   });
 
   test("a traversal is refused even when it would resolve back inside the material", () => {
@@ -105,7 +122,7 @@ describe("a claim cites the corpus it was served, or it cites nothing", () => {
       `${MATERIAL_SESSIONS}/subdir/../${FILE}`,
     ]) {
       expect(admitCitation(path, SERVED)).toBeNull();
-      expect(unservedCitation(cited({ path, line: 1, digest: DIGEST }), SERVED)).toContain(
+      expect(unservedCitation(citing({ path, line: 1, digest: DIGEST }), SERVED)).toContain(
         "not a file this run was served",
       );
     }
@@ -138,7 +155,7 @@ describe("a claim cites the corpus it was served, or it cites nothing", () => {
 
   test("a retyped digest names both values, so the claim can be seen to be wrong", () => {
     const refusal = unservedCitation(
-      cited({ path: FILE, line: 1, digest: `sha256:${"b".repeat(64)}` }),
+      citing({ path: FILE, line: 1, digest: `sha256:${"b".repeat(64)}` }),
       SERVED,
     );
     expect(refusal).toContain(DIGEST);

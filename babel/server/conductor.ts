@@ -20,7 +20,6 @@ import {
   TallyReasonSchema,
   modelList,
   type GapReason,
-  type MaterialEntry,
   type MaterialIndex,
   type ParkReason,
   type Receipt,
@@ -30,7 +29,7 @@ import {
 } from "../contract.ts";
 import type { Assignment, Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
 import { refuseRow, type RowRefusal } from "../store/acts.ts";
-import { REFUSALS, refusalCode, refusalReason, type RefusalCode } from "../machine/results.ts";
+import { REFUSALS, refusalCode, type RefusalCode, type RefusedItem } from "../machine/results.ts";
 import type { BabelStore } from "../store/store.ts";
 import {
   PROMPT_LIMIT,
@@ -47,7 +46,6 @@ import {
   citationTally,
   citedEvidence,
   materialLines,
-  unservedCitation,
   type SessionLines,
 } from "./engine/citations.ts";
 import { exploreRows, markerReferences } from "./engine/records.ts";
@@ -2871,107 +2869,107 @@ export function conductor(deps: ConductorDeps): Conductor {
     // transcript submitted nothing, and the reason says which of the job's own endings that was
     // rather than inventing a schema refusal about a message that was never written.
     //
-    // A REFUSAL WRITES NOTHING AND STILL COSTS. The rows are built only once the answer parsed,
-    // every locator resolved against the material, and the material itself is readable — and
-    // they are built BEFORE the receipt, because a row the store's own schema refuses is itself
+    // A SUBMISSION IS KEPT IN PART (#231). The items that cleared the contract become rows, the
+    // items that did not are recorded as refused with their reason, and the run is spend either
+    // way — a run that produced nine good records and one bad one used to lose the nine. The
+    // rows are built BEFORE the receipt, because a row the store's own schema refuses is itself
     // a refusal of the answer and has to reach the receipt's `reason` like any other.
     let reason = "";
+    let refusedItems: readonly RefusedItem[] = [];
     const produced: SqlStatement[] = [];
     const counts: Record<string, number> = {};
     // WHAT THE CITATIONS TURNED OUT TO BE, for every answer that got as far as being checked.
     // It is undefined rather than empty on a run that never submitted one, because "this run
     // wrote no citations" and "nobody looked" are different facts about a receipt (#348).
     let citations: Record<string, number> | undefined;
+    const material = session === null ? null : await materialOf(run.prepare_job_id);
     if (session === null) {
       reason =
         `${REFUSALS.empty}: the session closed as ${read.job.state} and sealed no transcript, ` +
         `so it submitted no result`;
     } else if (session.exitCode !== 0) {
       reason = `${REFUSALS.schema}: the session exited ${String(session.exitCode)} and submitted no result`;
+    } else if (material === null) {
+      // The selection is how a claim is checkable at all, so it is read BEFORE the answer and
+      // its absence refuses the whole submission rather than one item of it: a result admitted
+      // against a material nobody can read is an unverifiable claim recorded as a verified one,
+      // and that is true of every item in it.
+      reason =
+        `${REFUSALS.unknownReference}: the material of prepare job ` +
+        `${run.prepare_job_id ?? "(none)"} is not on any settled run of this hub, so this ` +
+        `run's citations cannot be checked against what it was served`;
     } else {
-      const answer = readExploreAnswer("explore", session.finalMessage);
-      if ("refusal" in answer) {
-        reason = refusalReason(answer.refusal);
-      } else {
-        const material = await materialOf(run.prepare_job_id);
-        const served: readonly MaterialEntry[] = material?.sessions ?? [];
-        const unserved = unservedCitation(answer.result, served);
-        if (unserved !== "") {
-          reason = `${REFUSALS.unknownReference}: ${unserved}`;
-        } else if (material === null) {
-          // The selection is how a claim is checkable at all: a result admitted against a
-          // material nobody can read is an unverifiable claim recorded as a verified one.
-          reason =
-            `${REFUSALS.unknownReference}: the material of prepare job ` +
-            `${run.prepare_job_id ?? "(none)"} is not on any settled run of this hub, so this ` +
-            `run's citations cannot be checked against what it was served`;
-        } else {
-          // WHICH OF THE RECORDS THIS ANSWER'S MARKERS NAME THIS HUB ACTUALLY HOLDS (#347). A
-          // record whose text opens `CONTRADICTS hyp_…` gets the edge, and a marker naming
-          // something nobody holds is dropped with a note rather than pointing an edge at
-          // nothing. The rows are built synchronously and the store is not, so the answer is
-          // asked for once, here, instead of the writer reaching for a database.
-          const named = markerReferences(answer.result);
-          const holds = new Set<string>();
-          for (let from = 0; from < named.length; from += MAX_SQL_PARAMS) {
-            const asked = named.slice(from, from + MAX_SQL_PARAMS);
-            const held = await store.db.query<{ id: string }>(
-              `SELECT id FROM records WHERE id IN (${asked.map(() => "?").join(", ")})`,
-              asked,
-            );
-            for (const row of held) holds.add(row.id);
-          }
-          // WHAT THE ANSWER'S QUOTES ACTUALLY SAY (#348). The bytes are read once, for the
-          // sessions a quote names and no others, and a citation nobody could read comes back
-          // `unchecked` rather than accused. The verdicts travel into the payload beside the
-          // citations they belong to; none of them refuses anything.
-          // The file is taken from the ADMITTED ENTRY and never from the cited string: the
-          // path a model wrote selects an index entry or nothing at all, and no byte is ever
-          // opened by a name it chose (`engine/citations.ts`).
-          const quoted = new Set<string>();
-          for (const evidence of citedEvidence(answer.result)) {
-            if (evidence.locator.quote.trim() === "") continue;
-            const entry = admitCitation(evidence.locator.path, served);
-            if (entry !== null) quoted.add(entry.file);
-          }
-          const checks = checkCitations(answer.result, served, await quotedSessions(run, quoted));
-          citations = citationTally(checks);
-          for (const note of citationNotes(checks)) notes.push(`run ${run.id}: ${note}`);
-          const written = exploreRows(answer.result, {
-            runId: run.id,
-            at: new Date(at).toISOString(),
-            sessions: served,
-            holds,
-            checks,
-          });
-          if ("refusal" in written) {
-            reason = refusalReason(written.refusal);
-          } else {
-            // THE SAME INGEST A SEALED OUTPUT GOES THROUGH: one output file per table, each row
-            // in the table's own shape, `INSERT OR IGNORE` keyed by the row's own identifier.
-            // Nothing between the answer and the table reinterprets a row, and a row carrying a
-            // column this build's schema does not have is not written at all.
-            for (const file of INGEST_ORDER) {
-              const ingest = INGEST[file];
-              const rows = written.rows[file] ?? [];
-              if (ingest === undefined || rows.length === 0) continue;
-              for (const row of rows) {
-                const refused = refuseRow(ingest.table, row);
-                const statement = refused === null ? rowStatement(ingest, row) : null;
-                if (refused !== null || statement === null) {
-                  reason =
-                    `${refused?.code ?? REFUSALS.schema}: ` +
-                    `${refused?.message ?? `${file} contains a row outside the store schema`}`;
-                  break;
-                }
-                produced.push(statement);
-                counts[file] = (counts[file] ?? 0) + 1;
-              }
-              if (reason !== "") break;
-            }
-            for (const note of written.notes) notes.push(`run ${run.id}: ${note}`);
-          }
+      const submission = readExploreAnswer("explore", session.finalMessage, material.sessions);
+      reason = submission.reason;
+      refusedItems = submission.refused;
+      if (submission.result !== null) {
+        // WHICH OF THE RECORDS THIS ANSWER'S MARKERS NAME THIS HUB ACTUALLY HOLDS (#347). A
+        // record whose text opens `CONTRADICTS hyp_…` gets the edge, and a marker naming
+        // something nobody holds is dropped with a note rather than pointing an edge at
+        // nothing. The rows are built synchronously and the store is not, so the answer is
+        // asked for once, here, instead of the writer reaching for a database.
+        const named = markerReferences(submission.result);
+        const holds = new Set<string>();
+        for (let from = 0; from < named.length; from += MAX_SQL_PARAMS) {
+          const asked = named.slice(from, from + MAX_SQL_PARAMS);
+          const held = await store.db.query<{ id: string }>(
+            `SELECT id FROM records WHERE id IN (${asked.map(() => "?").join(", ")})`,
+            asked,
+          );
+          for (const row of held) holds.add(row.id);
         }
+        // WHAT THE ANSWER'S QUOTES ACTUALLY SAY (#348), asked of the items that STOOD: a claim
+        // the contract refused is not on the record, so there is nothing for a quote verdict to
+        // travel on. The bytes are read once, for the sessions a quote names and no others, and
+        // a citation nobody could read comes back `unchecked` rather than accused. None of them
+        // refuses anything — the scope half already did its refusing, per item, inside the
+        // submission (`engine/citations.ts`, `machine/results.ts`).
+        // The file is taken from the ADMITTED ENTRY and never from the cited string: the
+        // path a model wrote selects an index entry or nothing at all, and no byte is ever
+        // opened by a name it chose.
+        const quoted = new Set<string>();
+        for (const evidence of citedEvidence(submission.result)) {
+          if (evidence.locator.quote.trim() === "") continue;
+          const entry = admitCitation(evidence.locator.path, material.sessions);
+          if (entry !== null) quoted.add(entry.file);
+        }
+        const checks = checkCitations(
+          submission.result,
+          material.sessions,
+          await quotedSessions(run, quoted),
+        );
+        citations = citationTally(checks);
+        for (const note of citationNotes(checks)) notes.push(`run ${run.id}: ${note}`);
+        const written = exploreRows(submission.result, {
+          runId: run.id,
+          at: new Date(at).toISOString(),
+          sessions: material.sessions,
+          holds,
+          checks,
+        });
+        // THE SAME INGEST A SEALED OUTPUT GOES THROUGH: one output file per table, each row
+        // in the table's own shape, `INSERT OR IGNORE` keyed by the row's own identifier.
+        // Nothing between the answer and the table reinterprets a row, and a row carrying a
+        // column this build's schema does not have is not written at all.
+        for (const file of INGEST_ORDER) {
+          const ingest = INGEST[file];
+          const rows = written.rows[file] ?? [];
+          if (ingest === undefined || rows.length === 0) continue;
+          for (const row of rows) {
+            const refused = refuseRow(ingest.table, row);
+            const statement = refused === null ? rowStatement(ingest, row) : null;
+            if (refused !== null || statement === null) {
+              reason =
+                `${refused?.code ?? REFUSALS.schema}: ` +
+                `${refused?.message ?? `${file} contains a row outside the store schema`}`;
+              break;
+            }
+            produced.push(statement);
+            counts[file] = (counts[file] ?? 0) + 1;
+          }
+          if (reason !== "") break;
+        }
+        for (const note of written.notes) notes.push(`run ${run.id}: ${note}`);
       }
     }
     if (reason !== "") {
@@ -2984,6 +2982,22 @@ export function conductor(deps: ConductorDeps): Conductor {
         refusals,
         refusedCode,
         paidRefusal(inference?.calls ?? null, session !== null && session.exitCode === 0),
+      );
+    }
+    // EVERY ITEM THE CONTRACT REFUSED IS REPORTED, and a run that kept the rest of its answer
+    // is NOT COUNTED AS A REFUSAL OF THE RUN (#231, #424). {@link CycleTally.refusals} answers
+    // one question — which submissions the deployment paid for and got no result from — and an
+    // item dropped out of a run that recorded nine others is not that: counting it there would
+    // put a `paid` refusal against a cycle that produced records, which is the exact misreading
+    // of 2026-09-13 in the other direction. What the measurement rests on instead is durable
+    // per run: `refusedItems` and `counts.itemsRefused` on the receipt, and this note in the
+    // cycle's own report. A submission refused WHOLE is a refusal of the run, and is counted
+    // once, above, by the sentence it failed on.
+    if (reason === "" && refusedItems.length > 0) {
+      notes.push(
+        `run ${run.id}: recorded the answer and refused ` +
+          `${String(refusedItems.length)} of its items: ` +
+          refusedItems.map((dropped) => `${dropped.item} — ${dropped.reason}`).join("; "),
       );
     }
     // WHAT THE PROMPT QUOTED THE OPERATOR AS SAYING (#331), written onto the run row when the
@@ -3013,7 +3027,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       costUsd,
       tokens: usage === null ? 0 : usage.input + usage.output,
       ...(session === null ? {} : { models: [session.model] }),
-      counts,
+      // `counts` itself stays the per-file row count the ingest reports; the refused items are
+      // counted onto the RECEIPT's copy of it, where "how did this run's spend land" is read.
+      counts: refusedItems.length === 0 ? counts : { ...counts, itemsRefused: refusedItems.length },
+      ...(refusedItems.length === 0 ? {} : { refusedItems: [...refusedItems] }),
       ...(citations === undefined ? {} : { citations }),
     };
     /*

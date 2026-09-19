@@ -1189,6 +1189,46 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   freshness, a settled run's models off its receipt, and a fold nobody refreshed coming back
   unheard — and in the panel document.
 
+- **One unusable item no longer discards the whole paid run.** An exploration is one agent session
+  over a large corpus, so by the time anything validates the answer the tokens are gone — and
+  persistence was all-or-nothing, which converted a partly-wrong result into zero value at full
+  price. On 2026-09-12 several runs finished their model work and lost all of it at persistence:
+  one disposition naming a workspace the machine did not have, one objection attacking an id
+  nobody held, one observation that forgot its counter-evidence position. The conductor then
+  parked reporting that the cycles had spent nothing (#231, post-mortem F16). A submission is now
+  partial: the items that clear the contract are recorded, the items that do not are refused by
+  name with their reason on the receipt's `refusedItems` — a JSON Pointer into the document the
+  model submitted, so the item is findable in `rejectedSubmission` beside it — with
+  `counts.itemsRefused` beside them and the cycle's report naming each dropped item and its
+  reason. The cycle's `refusals` tally is untouched by a run that stood: it answers which
+  submissions the deployment paid for and got nothing from, and a run that recorded nine items
+  and dropped one is not one of those.
+
+  **What "kept" means for a result read as a set is the largest subset closed under §4.2's
+  development path**, and the floor is the only judgement in it. A refused item takes with it
+  everything whose support ran through it — a candidate's observations and its remedy, a finding
+  resting on an observation that fell — and nothing else, which answers the objection the code
+  used to make ("half a development path is worse than none"): the half that is worse than none is
+  the half that dangles, and a path-closed subset never does. Below
+  `SUBMISSION_KEPT_FLOOR` — half, because that is where "mostly worked, one item was wrong" flips
+  to "this answer was not written against this contract" — the submission is refused whole, and it
+  is still spend: the refusal, every item of it, and the cost reach the receipt and the claim is
+  finished either way.
+
+  **The same shape is no longer judged in two places.** `machine/results.ts` validated the
+  submission and `server/engine/records.ts` re-judged it on the way to the rows, in its own words
+  and sometimes under a different code — a consolidation resting on a proposal was
+  `development-path` in one and `unknown-reference: no observation f1` in the other, for one
+  submission, depending on which saw it. The second copy is deleted, `exploreRows` can no longer
+  refuse anything, and the locator check is now asked PER ITEM of the one module that states it
+  (`server/engine/citations.ts`, `unservedCitation`) instead of once over the whole result —
+  which is what finally makes the prompt's own promise true: the claim that cited bytes
+  it was never served is refused and its siblings are not. Proved by a run whose retyped digest
+  costs its observation and the finding on it while the candidate and its question are recorded,
+  by a wholly unusable answer that writes nothing and still settles its claim at cost, and by the
+  evaluation half's own scope rule refused under the same code from the engine and from the store
+  (#263, #311).
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed

@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { MATERIAL_INDEX, MATERIAL_ROOT, MATERIAL_SESSIONS, materialFile } from "../../contract.ts";
-import { REFUSALS } from "../../machine/results.ts";
+import {
+  MATERIAL_INDEX,
+  MATERIAL_ROOT,
+  MATERIAL_SESSIONS,
+  materialFile,
+  type MaterialEntry,
+} from "../../contract.ts";
+import { REFUSALS, refusalCode } from "../../machine/results.ts";
 import {
   ANSWER_FENCE,
   PARAM,
@@ -16,10 +22,29 @@ import {
   THE PROMPT AND THE ANSWER, held to the promises the prompt makes.
 
   Babel runs no session and holds no tools in one, so the whole of the answering contract is
-  prose plus a fenced block, and the whole of provenance is a locator checked against the
-  material's index. Both are promises the model is given in writing; these tests are what keeps
-  them true.
+  prose plus a fenced block: these tests are what keeps that promise true. What a locator has
+  to be is `engine/citations.ts`'s, and at what grain a bad one is refused is
+  `machine/results.ts`'s; the material reaches both through this reader, which is why it is
+  handed one.
 */
+
+const DIGEST = "a".repeat(64);
+const FILE = "0001-omp-s1.jsonl";
+
+/** One session as the material's index carries it: what a submission's citations are read
+ *  against, since `readExploreAnswer` now holds every item to the material this run was served. */
+const SERVED: readonly MaterialEntry[] = [
+  {
+    selector: "omp/s1",
+    harness: "omp",
+    sourceId: "s1",
+    captureDigest: "c".repeat(64),
+    sourceDigest: DIGEST,
+    file: FILE,
+    records: 12,
+    bytes: 4096,
+  },
+];
 
 describe("the answer is the last fenced block of the final message", () => {
   test("a correction written after a draft is the one that is taken", () => {
@@ -45,36 +70,42 @@ describe("the answer is the last fenced block of the final message", () => {
 describe("reading one exploration's answer", () => {
   test("a valid submission comes back as the result, parsed for its stage", () => {
     const message = `Done.\n\n${ANSWER_FENCE}\n${JSON.stringify({ candidates: [], questions: [] })}\n\`\`\``;
-    const read = readExploreAnswer("explore", message);
+    const read = readExploreAnswer("explore", message, SERVED);
 
-    expect("result" in read).toBe(true);
-    if (!("result" in read)) return;
-    expect(read.result.candidates).toEqual([]);
+    expect(read.reason).toBe("");
+    expect(read.result?.candidates).toEqual([]);
   });
 
   test("a block that is not JSON is a schema refusal, which is spend and not a crash", () => {
-    const read = readExploreAnswer("explore", `${ANSWER_FENCE}\n{ not json\n\`\`\``);
+    const read = readExploreAnswer("explore", `${ANSWER_FENCE}\n{ not json\n\`\`\``, SERVED);
 
-    expect("refusal" in read).toBe(true);
-    if (!("refusal" in read)) return;
     // A REFUSAL, NOT A THROW: only the code that knows this was a submission can say that the
     // deployment paid for it, and that is what settles the claim at the run's cost.
-    expect(read.refusal.refusal).toBe(REFUSALS.schema);
-    expect(read.refusal.message).toContain(ANSWER_FENCE);
+    expect(read.result).toBeNull();
+    expect(refusalCode(read.reason)).toBe(REFUSALS.schema);
+    expect(read.reason).toContain(ANSWER_FENCE);
   });
 
-  test("a shape the stage has no authority for is refused by the stage's own schema", () => {
+  test("a shape the stage has no authority for costs itself and not the answer", () => {
     // `objections` belong to the challenge stage; an explore that emitted one exceeded its
-    // authority, and the stage schema is the enforcement rather than a comment about it.
-    const payload = { candidates: [], objections: [{ ref: "x" }] };
+    // authority, and the item carrying it is what pays for that (#231).
+    const payload = {
+      candidates: [{ ref: "h1", hypothesis: { statement: "the catalog forgets sessions" } }],
+      objections: [{ ref: "x" }],
+    };
     const read = readExploreAnswer(
       "explore",
       `${ANSWER_FENCE}\n${JSON.stringify(payload)}\n\`\`\``,
+      SERVED,
     );
 
-    expect("refusal" in read).toBe(true);
-    if (!("refusal" in read)) return;
-    expect(read.refusal.refusal).toBe(REFUSALS.schema);
+    expect(read.result?.candidates).toHaveLength(1);
+    expect(read.refused).toEqual([
+      {
+        item: "/objections/0",
+        reason: `${REFUSALS.authority}: an explore result may not carry objections`,
+      },
+    ]);
   });
 });
 

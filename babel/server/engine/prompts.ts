@@ -4,13 +4,13 @@ import {
   MATERIAL_SESSIONS,
   MAX_CITATION_QUOTE,
   MIN_CITATION_QUOTE,
+  type MaterialEntry,
 } from "../../contract.ts";
 import {
   exploreJsonSchema,
-  parseExploreResult,
+  exploreSubmission,
   REFUSALS,
-  ResultRefusal,
-  type ExploreResult,
+  type ExploreSubmission,
   type Stage,
 } from "../../machine/results.ts";
 
@@ -90,37 +90,41 @@ export function answerOf(finalMessage: string): { json: string } | { refused: st
 }
 
 /**
- * One exploration's answer, read off the session's final message and validated for its stage.
+ * ONE EXPLORATION'S ANSWER, read off the session's final message and held to its stage's
+ * contract item by item.
  *
  * It is one function rather than a parse and a validate at the call site because a caller that
  * did them separately would have two chances to report a `schema` refusal as a failure — and a
  * refused submission is SPEND, which only the code that knows it was a submission can say.
+ *
+ * The material is passed in because a citation is admissible exactly against WHAT THIS RUN WAS
+ * SERVED, and that check belongs to the one validator with every other rule about an item
+ * (`machine/results.ts`): it used to live here, over the whole result, so one retyped digest
+ * refused every claim beside it. `INSTRUCTIONS_EVIDENCE` promises the model that the claim is
+ * refused and its siblings are not, and per-item is what makes the promise true.
  */
 export function readExploreAnswer(
   stage: Stage,
   finalMessage: string,
-): { result: ExploreResult } | { refusal: ResultRefusal } {
+  sessions: readonly MaterialEntry[],
+): ExploreSubmission {
   const answer = answerOf(finalMessage);
   if ("refused" in answer) {
-    return { refusal: new ResultRefusal(REFUSALS.schema, answer.refused) };
+    return { result: null, refused: [], reason: `${REFUSALS.schema}: ${answer.refused}` };
   }
   let payload: unknown;
   try {
     payload = JSON.parse(answer.json);
   } catch (error) {
     return {
-      refusal: new ResultRefusal(
-        REFUSALS.schema,
-        `the ${ANSWER_FENCE} block is not JSON: ${error instanceof Error ? error.message : String(error)}`,
-      ),
+      result: null,
+      refused: [],
+      reason:
+        `${REFUSALS.schema}: the ${ANSWER_FENCE} block is not JSON: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  try {
-    return { result: parseExploreResult(stage, payload) };
-  } catch (error) {
-    if (error instanceof ResultRefusal) return { refusal: error };
-    throw error;
-  }
+  return exploreSubmission(stage, payload, sessions);
 }
 
 // ---------------------------------------------------------------------------- parameters
