@@ -41,6 +41,7 @@ import {
   file,
   importLedger,
   interest,
+  machineColumns,
   rule,
   setBudget,
   setPolicy,
@@ -447,12 +448,15 @@ export function actDoors(
           if (!ctx.auth.isRoot) {
             return { refused: "the crossing is the owner's act; this principal is not the owner" };
           }
-          // A MACHINE COLUMN IS CHECKED AGAINST THE HUB BEFORE IT IS WRITTEN. `sessions.host` and
-          // `runs.machine_id` are hub machine ids that everything afterwards hands to `describe`,
-          // `listRuns` and `machines.repository`; a Go host NAME in either is a row no readiness
-          // check, run listing or folder question can ever reach, and 588 of them arrived that way
-          // before anything asked (#310). The hub is the only thing that can tell the difference,
-          // and it is reachable right here.
+          // A MACHINE COLUMN IS CHECKED AGAINST THE HUB BEFORE IT IS WRITTEN, and EVERY machine
+          // column is, because the check's value is being exhaustive. `sessions.host`,
+          // `runs.machine_id`, `drains.machine_id` and `run_calls.transcript_host` are hub
+          // machine ids that everything afterwards hands to `describe`, `listRuns` and
+          // `machines.repository`; a Go host NAME in any of them is a row no readiness check, run
+          // listing or folder question can ever reach, and 588 of them arrived that way before
+          // anything asked (#310). The columns come from the migration rather than from a list
+          // here, so the third and fourth were never a matter of remembering (#379). The hub is
+          // the only thing that can tell the difference, and it is reachable right here.
           const unknown = await unknownMachines(jobs(ctx), args);
           if (unknown.length > 0) {
             return {
@@ -503,12 +507,14 @@ async function unknownMachines(
   jobs: Pick<BabelJobs, "describe">,
   chunk: { table: string; rows: readonly Readonly<Record<string, string | number | null>>[] },
 ): Promise<readonly string[]> {
-  const column = chunk.table === "sessions" ? "host" : chunk.table === "runs" ? "machine_id" : null;
-  if (column === null) return [];
+  const columns = machineColumns()[chunk.table];
+  if (columns === undefined) return [];
   const named = new Set<string>();
   for (const row of chunk.rows) {
-    const value = row[column];
-    if (typeof value === "string" && value !== "") named.add(value);
+    for (const column of columns) {
+      const value = row[column];
+      if (typeof value === "string" && value !== "") named.add(value);
+    }
   }
   const unknown: string[] = [];
   for (const machineId of named) {

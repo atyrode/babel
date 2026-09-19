@@ -27,6 +27,7 @@ import {
   importableTables,
   interest,
   leaseFloor,
+  machineColumns,
   newId,
   refuseRow,
   validateNewPolicy,
@@ -1768,6 +1769,27 @@ test("the importable tables are derived from the migration itself", () => {
     "payload",
   ]);
   expect(tables["sqlite_master"]).toBeUndefined();
+});
+
+test("every machine column of the migration is one the crossing guard covers", () => {
+  // THE PIN IS THE EXHAUSTIVENESS. The guard's worth is that it covers ALL of them: two of three
+  // reads as a statement that the third is fine, which is how `runs.machine_id` went untested
+  // and `drains.machine_id` went unguarded (#378, #379). TypeScript cannot carry this — the
+  // columns live inside SQL text, so no union it can check is anything but a second hand-written
+  // list — and the derivation reads that text, so this is where the schema and the guard are
+  // held to each other. A column added to `SCHEMA_V1` under either machine spelling lands here
+  // and fails this line; one added under a third spelling fails nothing, which is why the rule
+  // is a shape and not a set of table names.
+  expect(machineColumns()).toEqual({
+    sessions: ["host"],
+    runs: ["machine_id"],
+    drains: ["machine_id"],
+    run_calls: ["transcript_host"],
+  });
+  // A count of jobs per machine is not a machine, and the crossing must still be able to carry
+  // an overlay row: `concurrent_per_machine` is in `budgets` and `budgets` is not in the map.
+  expect(importableTables()["budgets"]).toContain("concurrent_per_machine");
+  expect(machineColumns()["budgets"]).toBeUndefined();
 });
 
 test("importing a chunk is idempotent by primary key and keeps its own ledger", async () => {
