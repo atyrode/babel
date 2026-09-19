@@ -1170,6 +1170,31 @@ export const STOP_REASONS = [
 export type StopReason = (typeof STOP_REASONS)[number];
 export const StopReasonSchema = z.enum(STOP_REASONS);
 
+/**
+ * WHY THE LOOP PARKED ITSELF, which is the conductor's own verdict and never a draw's (#265).
+ *
+ * A park is a run of settlements that produced nothing, and THE WORD SAYS WHAT THEY COST,
+ * because the remedy differs and the 2026-09-13 drain could tell the two apart in neither
+ * direction (post-mortem F16, F8):
+ *
+ *   - `barren`: no model was ever reached. A machine whose engine will not launch, a role with
+ *     no recipe, a credential that has lapsed — the lane is broken, and the deployment charged
+ *     a reservation for each attempt and learned nothing.
+ *   - `spent`: a model answered every time and the contract refused every answer. That is
+ *     money out of the day's allowance (§6.5, a refused submission is spend), and the remedy
+ *     is the recipe or the contract rather than the machine.
+ *
+ * Both park, because a fourth draw buys the same nothing either way; neither is permanent —
+ * one answered review, an hour of quiet or a new policy version lifts it. It is a word rather
+ * than the sentence the park used to carry so that a reader can label it and count by it, and
+ * it is a THIRD vocabulary beside {@link GAP_REASONS} and {@link STOP_REASONS} rather than an
+ * extension of either: a park is the loop's verdict about the runs that already happened, not
+ * a reason a draw declined.
+ */
+export const PARK_REASONS = ["barren", "spent"] as const;
+export type ParkReason = (typeof PARK_REASONS)[number];
+export const ParkReasonSchema = z.enum(PARK_REASONS);
+
 // ---------------------------------------------------------------------------- the pulse
 
 /** What the STORE can answer about the pulse: today's counts, off its own tables. */
@@ -1238,6 +1263,32 @@ export const PulseResultSchema = PulseTodaySchema.extend({
  * asking about — the cycle that has already failed to do anything.
  */
 export const CONDUCTOR_CYCLE_KEY = "conductor:cycle";
+
+/**
+ * EVERY WORD A CYCLE MAY COUNT ITSELF UNDER (#265): the two draw vocabularies above, and
+ * nothing besides them.
+ *
+ * The conductor's tally is one map keyed by reason holding the gaps a draw declined and the
+ * stop that ended the cycle at once — that {@link GAP_REASONS} and {@link STOP_REASONS} are
+ * disjoint is what allows it. Keyed by a bare string it held whatever a caller composed, and
+ * the day's half of it is READ BACK out of {@link CONDUCTOR_TALLY_KEY}, which some other build
+ * wrote: a word nobody ever spelled would reach a reader as a reason he cannot act on, and a
+ * misspelling of a real one would read as a second kind of gap beside it. This enum is the key
+ * type of the counter AND the parse of the kept day, so neither half can carry a reason that
+ * is not one of these.
+ */
+export const TALLY_REASONS = [...GAP_REASONS, ...STOP_REASONS] as const;
+export type TallyReason = (typeof TALLY_REASONS)[number];
+export const TallyReasonSchema = z.enum(TALLY_REASONS);
+
+/**
+ * Where the conductor keeps the day's counts between wakes, beside {@link CONDUCTOR_CYCLE_KEY}.
+ *
+ * A cycle is a fresh conductor built over whatever wake caused it, so a running total cannot
+ * live in the loop: it is written here and read back by the next tick. That round trip through
+ * JSON is the only way a reason word ever arrives from outside this build at all.
+ */
+export const CONDUCTOR_TALLY_KEY = "conductor:tally";
 
 // ---------------------------------------------------------------------------- machine operations
 

@@ -1130,6 +1130,32 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   in `docs/sandbox-threat-model.md` residual 9: checking a quote means the hub reads the cited
   member of the sealed material into its own memory, once per quoting answer.
 
+- **A claim died with its worker and nobody said so, and a refusal nobody paid for read as
+  money spent.** Two halves of the same blindness. A claim whose job was over kept its batch
+  slot until its lease ran out — 86 minutes each on 2026-09-13, seventy of them over the
+  top-ranked subjects — because a slot was counted from the claims table alone. The store now
+  counts a slot only while a job is still running behind it, so a closed run frees the slot on
+  the next read rather than on the next settlement, and the conductor's reaper is BOUNDED: at
+  most 128 dead claims a cycle, oldest grant first, with a note saying what it left, because a
+  reap holds the write lock a dispatch is waiting behind. The three orphan kinds are now the
+  query's own `WHERE` clause, so the bound bounds the reap and not the reading.
+
+  The other half is what a refusal cost. The park heuristic cleared itself for any refusal at
+  all, so three answers the deployment bought and the contract threw away looked exactly like
+  three it never paid for, and the loop kept buying. A refusal is now filed by whether a model
+  answered — the hub's own meter where one is attached, the sealed submission where none is —
+  and the two are never added together: the pulse counts `refusals.paid` apart from
+  `refusals.free`, and the park carries `spent` and `barren` as separate counts under a reason
+  word from `babel/contract.ts`, with the sentence naming the remedy each implies (the recipe,
+  or the machine). A streak of paid refusals now parks too, which #265 did not ask for: a lane
+  that buys three answers nobody can use is worth stopping for, and one answered review, an
+  hour of quiet or a new policy version lifts it exactly as it lifts a barren park. The day's
+  tally is parsed back through those enums on every wake, so a word no build has spelled
+  cannot reach a reader at all. Proved by a bounded reap of 130 ghosts across two cycles, a
+  freed slot drawn into by the same cycle that freed it, and one metered call moving the same
+  refusal — same code, same zero cost — from `free` to `paid` and the park from `barren` to
+  `spent`.
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed

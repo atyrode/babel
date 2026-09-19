@@ -6,6 +6,7 @@ import type { CycleReportSchema, IngestibleTable } from "../contract.ts";
 import {
   BABEL_PLUGIN_ID,
   CONDUCTOR_CYCLE_KEY,
+  CONDUCTOR_TALLY_KEY,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
   MATERIAL_OUTPUT,
@@ -15,12 +16,15 @@ import {
   OUTPUT_LOCATION,
   RUN_STAGES,
   ReceiptSchema,
+  TallyReasonSchema,
   type GapReason,
   type MaterialEntry,
   type MaterialIndex,
+  type ParkReason,
   type Receipt,
   type RunCall,
   type RunTrace,
+  type TallyReason,
 } from "../contract.ts";
 import type { Assignment, Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
 import { refuseRow, type RowRefusal } from "../store/acts.ts";
@@ -455,16 +459,24 @@ export interface RefusedDraw {
 /**
  * WHY THE LOOP IS NOT DRAWING, when it is the loop's own verdict rather than the coordinator's.
  *
- * Three settlements in a row that reached no model and produced nothing is a lane that is
- * broken rather than a deployment that is satisfied — a machine whose engine will not launch, a
- * role with no recipe, a credential that has lapsed — and drawing a fourth spends another
- * reservation to learn the same thing. {@link Park} is that verdict, with the sentence an
- * operator acts on and the streak it was reached by.
+ * Three settlements in a row that produced nothing is a lane that is broken rather than a
+ * deployment that is satisfied, and drawing a fourth spends another reservation to learn the
+ * same thing. {@link Park} is that verdict: the streak it was reached by, split by WHAT THOSE
+ * SETTLEMENTS COST — `barren` reached no model at all (a machine whose engine will not launch,
+ * a role with no recipe, a credential that has lapsed), `spent` was paid for and refused (a
+ * recipe or a review contract that no answer can satisfy) — the word the streak is named for,
+ * and the sentence an operator acts on. `parkState` says why both park and why the two are
+ * never one number.
  */
 export interface Park {
-  /** How many settled claims in a row spent nothing and produced nothing. */
+  /** How many of the streak reached no model: spent nothing, produced nothing. */
   readonly barren: number;
-  readonly reason: string;
+  /** How many of the streak a model answered for and the contract then refused. */
+  readonly spent: number;
+  /** Which of the two the streak is named for; a word of {@link PARK_REASONS}, never prose. */
+  readonly reason: ParkReason;
+  /** The sentence an operator acts on, naming the remedy the word implies. */
+  readonly detail: string;
 }
 
 /**
@@ -475,17 +487,24 @@ export interface Park {
  * `daily`, `no-candidates`, …) and every candidate {@link Gap} it declined on the way
  * (`claimed`, `cooling`, `capped`, …). The two vocabularies are disjoint word sets, so one map
  * by reason is unambiguous, and a surface that wants the records rather than the counts reads
- * `gaps` on the report itself.
+ * `gaps` on the report itself. THE KEY IS {@link TallyReason} and never a string a caller
+ * composed: a word nobody has spelled reads to a reader as "no such gap" rather than failing,
+ * and it is the day's half — kept as JSON between wakes — that would carry one in.
  *
  * `refusals` counts the submissions the review contract refused, by the code
- * `machine/results.ts` names — the receipt's own `reason` for a run that was paid for and
- * refused at submit, and the store's verdict on a row it would not write. Those are not
- * failures of the loop: they are money spent on an answer that did not stand, which is what the
- * 2026-09-13 drain could not see (F8, F16).
+ * `machine/results.ts` names, IN TWO MAPS THAT ARE NEVER ADDED TOGETHER. `paid` is a model
+ * that answered and a submission that did not stand: money out of the day's allowance, and
+ * the remedy is the recipe. `free` is a refusal no model was ever reached for: a job that
+ * sealed nothing, and the remedy is the machine. One map for both is exactly what the
+ * 2026-09-13 drain read, and why it relaunched against a burn rate that never happened
+ * (F8, F16).
  */
 export interface CycleTally {
-  readonly gaps: Readonly<Record<string, number>>;
-  readonly refusals: Readonly<Record<string, number>>;
+  readonly gaps: Readonly<Partial<Record<TallyReason, number>>>;
+  readonly refusals: {
+    readonly paid: Readonly<Partial<Record<RefusalCode, number>>>;
+    readonly free: Readonly<Partial<Record<RefusalCode, number>>>;
+  };
 }
 
 /**
@@ -570,6 +589,22 @@ const TERMINAL_STATES: Record<string, true> = {
 const UNREPORTED_CYCLES = 2;
 
 /**
+ * HOW MANY DEAD CLAIMS ONE TICK RELEASES, because a reap with no bound is a cycle with no end.
+ *
+ * Every other sweep a tick makes is bounded — 64 folders identified, 20 beat runs scanned, 250
+ * statements to a batch — and for the same reason: a dispatch is waiting behind the cycle, and
+ * each release is a guarded write that takes the store's lock. A claims table that has gone
+ * wrong holds thousands of open rows, and reaping every one of them in one tick would hold
+ * that lock for as long as it took while nothing was drawn.
+ *
+ * It sits deliberately far above a real ghost storm rather than beside one: 2026-09-13 left
+ * about seventy, and a bound that needed three cycles to clear seventy would be a second
+ * defect of the first one's shape. The oldest grants go first, so what a bounded tick leaves
+ * is the freshest, the next tick continues from where this one stopped, and the note says so.
+ */
+const CLAIMS_REAPED_PER_TICK = 128;
+
+/**
  * WHEN A RUN AT THE MODEL IS CALLED STALLED, and why it is ninety seconds.
  *
  * A brokered call is metered when it ANSWERS, so the gap between saying `at the model` and the
@@ -609,13 +644,14 @@ const InferenceFrameSchema = z.object({
 /**
  * THE PARK, in three numbers and the one rule that made 2026-09-13 worth a document.
  *
- * {@link PARK_AFTER} settlements in a row that reached no model and produced nothing park the
- * loop. WHAT COUNTS AS ONE IS THE WHOLE POINT: a review the model answered and the contract
- * then refused (`schema`, `support`, `empty`) is SPEND — the day's allowance went to it and the
- * remedy is the recipe, not the loop — while a job that died before the first call, or a claim
- * abandoned because its worker never came back, is the free failure a park exists to stop. The
- * Go conductor counted the first as the second, parked after three of them, and the evaluation
- * ladder sat unreviewed while the operator's window drained into nothing (F16, F8).
+ * {@link PARK_AFTER} settlements in a row that produced nothing park the loop, and WHAT THEY
+ * COST IS THE WHOLE POINT — not whether they park, but under which word and against which
+ * remedy. A review the model answered and the contract then refused (`schema`, `support`,
+ * `empty`) is SPEND: the day's allowance went to it and the recipe is what has to change. A
+ * job that died before the first call, or a claim abandoned because its worker never came
+ * back, is BARREN: nothing was learned and the machine is what has to change. The Go
+ * conductor counted the first as the second, said neither word, and the evaluation ladder sat
+ * unreviewed while the operator's window drained into nothing (F16, F8).
  *
  * {@link PARK_WINDOW_MS} is what lifts it without an operator: the streak is only a park while
  * its newest settlement is recent, so an hour of quiet lets a fixed machine be tried again and
@@ -625,9 +661,6 @@ const InferenceFrameSchema = z.object({
  */
 const PARK_AFTER = 3;
 const PARK_WINDOW_MS = 60 * 60 * 1000;
-
-/** Where the day's {@link CycleTally} is kept between wakes ({@link KeysSlice}). */
-const TALLY_KEY = "conductor:tally";
 
 /**
  * How much of a stop's or a gap's sentence the door is given. A dispatch refusal carries
@@ -1570,19 +1603,75 @@ type ClosedClaim = {
   payload: string | null;
 };
 
-/** A tally under construction: one map per vocabulary, counted up as the cycle learns things. */
-type Counter = Map<string, number>;
+/**
+ * A tally under construction: one map per vocabulary, counted up as the cycle learns things.
+ *
+ * The key is the VOCABULARY and never `string` — {@link TallyReason} for a gap,
+ * {@link RefusalCode} for a refusal — so a caller cannot compose a reason and the compiler is
+ * what says so. The only words that arrive from outside this build come through
+ * {@link inherit}, which parses them.
+ */
+type Counter<K extends string> = Map<K, number>;
+
+/**
+ * The cycle's refusal counters: the answers the deployment PAID for, and the refusals no model
+ * was ever reached for. Two maps rather than one keyed by a composed word (`paid:schema`),
+ * because a key a caller builds is a vocabulary nobody can enumerate — and one map for both
+ * was the defect: a refusal that cost money and one that cost nothing read as the same row.
+ */
+interface Refusals {
+  readonly paid: Counter<RefusalCode>;
+  readonly free: Counter<RefusalCode>;
+}
 
 /** One more of whatever this is, whether the cycle has seen one before or not. */
-function count(counter: Counter, key: string): void {
+function count<K extends string>(counter: Counter<K>, key: K): void {
   counter.set(key, (counter.get(key) ?? 0) + 1);
 }
 
+/** One refusal, filed by whether a model answered before the contract said no. */
+function fileRefusal(into: Refusals, code: RefusalCode, paid: boolean): void {
+  count(paid ? into.paid : into.free, code);
+}
+
 /** The counted map as the report carries it, in reason order so two reports compare. */
-function tallied(counter: Counter): Record<string, number> {
-  const out: Record<string, number> = {};
+function tallied<K extends string>(counter: Counter<K>): Readonly<Partial<Record<K, number>>> {
+  const out: Partial<Record<K, number>> = {};
   for (const key of [...counter.keys()].sort()) out[key] = counter.get(key) ?? 0;
   return out;
+}
+
+/** The cycle's counts as the report and the kept day both carry them. */
+function tally(gaps: Counter<TallyReason>, refusals: Refusals): CycleTally {
+  return {
+    gaps: tallied(gaps),
+    refusals: { paid: tallied(refusals.paid), free: tallied(refusals.free) },
+  };
+}
+
+/** The refusal vocabulary as a PARSE rather than as a type, for the one place a code arrives
+ *  as text nobody in this build wrote. `machine/results.ts` owns the words; this reads them. */
+const RefusalCodeSchema = z.enum(REFUSALS);
+
+/**
+ * THE COUNTS THE DAY ALREADY HAD, added to this tick's.
+ *
+ * A word this build cannot spell is DROPPED rather than carried: the vocabulary a reader is
+ * promised has to be true of the day as well as of the tick, and a count no label exists for
+ * and no operator can act on is worse than a count that is short by that much.
+ */
+function inherit<K extends string>(
+  counter: Counter<K>,
+  source: unknown,
+  word: z.ZodType<K, string>,
+): void {
+  if (typeof source !== "object" || source === null) return;
+  for (const [reason, seen] of Object.entries(source as Record<string, unknown>)) {
+    if (typeof seen !== "number" || !Number.isFinite(seen) || seen < 0) continue;
+    const known = word.safeParse(reason);
+    if (!known.success) continue;
+    counter.set(known.data, (counter.get(known.data) ?? 0) + seen);
+  }
 }
 
 /**
@@ -1601,6 +1690,58 @@ function receiptRefusal(payload: string | null): RefusalCode | null {
     return null;
   }
   return typeof reason === "string" ? refusalCode(reason) : null;
+}
+
+/** The hub's own call count for a settled run, off the meter the run row kept beside the
+ *  receipt (`runStatement`), or null where no meter was ever attached. */
+const MeterSchema = z.object({ calls: z.number() });
+function meteredCalls(payload: string | null): number | null {
+  if (payload === null) return null;
+  let held: unknown;
+  try {
+    held = (JSON.parse(payload) as Record<string, unknown>)["inference"];
+  } catch {
+    return null;
+  }
+  const parsed = MeterSchema.safeParse(held);
+  return parsed.success ? parsed.data.calls : null;
+}
+
+/**
+ * WHETHER A MODEL ANSWERED BEFORE THE CONTRACT SAID NO — the one question that tells a refusal
+ * that cost money from a refusal that cost nothing, asked wherever a refusal is counted so
+ * that the two are never counted as one thing (#265, post-mortem F16).
+ *
+ * THE METER IS THE WITNESS WHEREVER THE HUB ATTACHED ONE. `usage.inference` is the owner's own
+ * count against the credential it holds, and it is attached the moment a metered binding
+ * exists — so a metered job that made no call reached no model whatever it went on to submit,
+ * and one that made a call did, whatever its receipt says about money.
+ *
+ * WHERE NOTHING IS METERED there is no such witness, and a receipt that reports no money is
+ * not a receipt that reports no model: the brokered lane meters at the owner (ADR 0038) and a
+ * review's receipt there carries the refusal and nothing about cost. So the question falls
+ * back to whether the run got as far as SUBMITTING something for the contract to refuse — a
+ * sealed transcript, a receipt of its own — because that is an artefact only an answer
+ * produces. A job that died before it submitted anything was refused by this build rather
+ * than by the contract, and it cost nothing.
+ */
+function paidRefusal(calls: number | null, submitted: boolean): boolean {
+  return calls === null ? submitted : calls > 0;
+}
+
+/**
+ * Whether a settled claim's run has money behind it, for the park's two words. Same question
+ * as {@link paidRefusal} and the same order of witnesses, asked of a row rather than of a
+ * settlement in flight: the meter the run row kept, what the run recorded spending, and last
+ * the refused submission that only an answer could have produced.
+ */
+function spentOnClaim(claim: ClosedClaim): boolean {
+  const calls = meteredCalls(claim.payload);
+  if (calls !== null) return calls > 0;
+  if ((claim.cost ?? 0) > 0 || (claim.tokens ?? 0) > 0) return true;
+  // The unmetered fallback {@link paidRefusal} ends on, spelled against the row: a refused
+  // submission is an artefact only an answer produces.
+  return receiptRefusal(claim.payload) !== null;
 }
 
 /**
@@ -1860,7 +2001,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     ingested: IngestedRun[],
     settled: SettledClaim[],
     notes: string[],
-    refusals: Counter,
+    refusals: Refusals,
   ): Promise<void> {
     let result: IngestResult | null = null;
     try {
@@ -1888,12 +2029,15 @@ export function conductor(deps: ConductorDeps): Conductor {
       );
     }
     for (const note of result?.notes ?? []) notes.push(`${target.jobId}: ${note}`);
-    for (const refused of result?.refusals ?? []) count(refusals, refused.code);
     const receipt = result?.receipt ?? null;
     // A receipt whose reason names a refusal code is a model that answered and a submission
-    // that did not stand: the code is the one `results.ts` names, and it is spend.
+    // that did not stand: the code is the one `results.ts` names, and it is spend. WHETHER IT
+    // WAS is the meter's to say where the hub attached one, and the receipt's existence where
+    // it did not — a job that sealed nothing was refused by this build, not by the contract.
     const refusedSubmission = receipt?.reason === undefined ? null : refusalCode(receipt.reason);
-    if (refusedSubmission !== null) count(refusals, refusedSubmission);
+    const paid = paidRefusal(target.inference?.calls ?? null, receipt !== null);
+    for (const refused of result?.refusals ?? []) fileRefusal(refusals, refused.code, paid);
+    if (refusedSubmission !== null) fileRefusal(refusals, refusedSubmission, paid);
     ingested.push({
       runId: result?.runId ?? target.runId ?? `run_${target.jobId}`,
       jobId: target.jobId,
@@ -2172,7 +2316,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     ingested: IngestedRun[],
     settled: SettledClaim[],
     notes: string[],
-    refusals: Counter,
+    refusals: Refusals,
   ): Promise<void> {
     const session = read.session;
     const usage = session?.usage ?? null;
@@ -2362,7 +2506,11 @@ export function conductor(deps: ConductorDeps): Conductor {
     const finalReceipt = authorized ? receipt : staleReceipt;
     const finalCounts = authorized ? counts : {};
     const refusedCode = finalReason === "" ? null : refusalCode(finalReason);
-    if (refusedCode !== null) count(refusals, refusedCode);
+    // Whether a model answered before the contract said no is asked once, here, and again of
+    // every contribution the same answer carried: they are refusals OF ONE SUBMISSION and cost
+    // what that submission cost, so they are filed under the same side of the tally.
+    const paid = paidRefusal(inference?.calls ?? null, session !== null && session.exitCode === 0);
+    if (refusedCode !== null) fileRefusal(refusals, refusedCode, paid);
     await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
     store.touch();
     if (finalReason !== "") notes.push(`run ${run.id}: ${finalReason}`);
@@ -2374,7 +2522,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       // once, above, by the sentence it failed on: the two are never counted for the same defect.
       for (const dropped of refusedContributions) {
         const code = refusalCode(dropped.reason);
-        if (code !== null) count(refusals, code);
+        if (code !== null) fileRefusal(refusals, code, paid);
       }
       notes.push(
         `run ${run.id}: recorded the review and refused ` +
@@ -2467,7 +2615,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     offered: readonly string[],
     ingested: IngestedRun[],
     notes: string[],
-    refusals: Counter,
+    refusals: Refusals,
   ): Promise<void> {
     const session = read.session;
     const usage = session?.usage ?? null;
@@ -2505,7 +2653,13 @@ export function conductor(deps: ConductorDeps): Conductor {
       else answers = answer.titles;
     }
     const refusedCode = reason === "" ? null : refusalCode(reason);
-    if (refusedCode !== null) count(refusals, refusedCode);
+    if (refusedCode !== null) {
+      fileRefusal(
+        refusals,
+        refusedCode,
+        paidRefusal(inference?.calls ?? null, session !== null && session.exitCode === 0),
+      );
+    }
     const written = [
       ...(reason === "" ? answers : declinedTitles(shown, reason)),
       ...declinedTitles(
@@ -2620,7 +2774,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     ingested: IngestedRun[],
     settled: SettledClaim[],
     notes: string[],
-    refusals: Counter,
+    refusals: Refusals,
   ): Promise<void> {
     const preparedReview = reviewPreparation(preparationOf(run.preparation));
     if (preparedReview !== null) {
@@ -2778,7 +2932,13 @@ export function conductor(deps: ConductorDeps): Conductor {
       for (const key of Object.keys(counts)) delete counts[key];
     }
     const refusedCode = reason === "" ? null : refusalCode(reason);
-    if (refusedCode !== null) count(refusals, refusedCode);
+    if (refusedCode !== null) {
+      fileRefusal(
+        refusals,
+        refusedCode,
+        paidRefusal(inference?.calls ?? null, session !== null && session.exitCode === 0),
+      );
+    }
     // WHAT THE PROMPT QUOTED THE OPERATOR AS SAYING (#331), written onto the run row when the
     // session was posted. It is on the receipt so a claim can be read against what the run was
     // told — which remarks, and how many the bound left out.
@@ -2903,7 +3063,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     ingested: IngestedRun[],
     settled: SettledClaim[],
     notes: string[],
-    refusals: Counter,
+    refusals: Refusals,
   ): Promise<{ readonly inFlight: boolean }> {
     const containerId = run.container_id ?? "";
     const answered = await engine.readSession({ containerId, jobId: run.job_id });
@@ -3160,7 +3320,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     ingested: IngestedRun[],
     settled: SettledClaim[],
     notes: string[],
-    refusals: Counter,
+    refusals: Refusals,
   ): Promise<{ inFlight: number; runs: RunsTally }> {
     const pending = await store.db.query<PendingRun>(
       `SELECT id, job_id, machine_id, kind, container_id, prepare_job_id, started_at,
@@ -3308,7 +3468,13 @@ export function conductor(deps: ConductorDeps): Conductor {
    * One function and one query, because a second place that decides what a dead claim is would
    * be a second answer to it. The query asks the claims table what it is holding and the runs
    * table what stands behind each row; the counts are subqueries rather than a join so that a
-   * job with two run rows is one answer rather than two.
+   * job with two run rows is one answer rather than two, and the three kinds are the WHERE
+   * clause rather than a filter over everything open — which is what lets the bound below
+   * bound the reap rather than the reading.
+   *
+   * THE LEASE IS COMPARED AS TEXT because every instant this store writes is one fixed-width
+   * ISO string, so text order is time order (`parkState` leans on the same fact) and a grant
+   * time that is not one sorts below every real one and is taken as old, which is what it is.
    */
   async function reapClaims(
     at: number,
@@ -3316,39 +3482,46 @@ export function conductor(deps: ConductorDeps): Conductor {
     settled: SettledClaim[],
     notes: string[],
   ): Promise<void> {
+    const stale = new Date(at - Math.max(leaseSeconds, 0) * 1000).toISOString();
+    // One more than the bound is read so the note can say whether anything was left, without a
+    // second count over a table that is only ever long when something has gone wrong.
     const orphans = await store.db.query<OrphanClaim>(
-      `SELECT c.id, c.fence, c.job_id, c.granted_at,
-              (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id) AS runs,
-              (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id AND r.closure IS NULL) AS open_runs,
-              (SELECT MAX(r.unreadable) FROM runs r WHERE r.job_id = c.job_id) AS silent
-         FROM claims c
-        WHERE c.finished_at IS NULL
-        ORDER BY c.granted_at`,
+      `SELECT id, fence, job_id, granted_at, runs, open_runs, silent
+         FROM (SELECT c.id AS id, c.fence AS fence, c.job_id AS job_id, c.granted_at AS granted_at,
+                      (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id) AS runs,
+                      (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id
+                        AND r.closure IS NULL) AS open_runs,
+                      (SELECT MAX(r.unreadable) FROM runs r WHERE r.job_id = c.job_id) AS silent
+                 FROM claims c
+                WHERE c.finished_at IS NULL)
+        WHERE (job_id IS NULL AND granted_at <= ?)
+           OR (job_id IS NOT NULL AND runs = 0 AND granted_at <= ?)
+           OR (job_id IS NOT NULL AND runs > 0 AND open_runs = 0)
+           OR (job_id IS NOT NULL AND COALESCE(silent, 0) >= ?)
+        ORDER BY granted_at
+        LIMIT ?`,
+      [stale, stale, UNREPORTED_CYCLES, CLAIMS_REAPED_PER_TICK + 1],
     );
-    const stale = at - Math.max(leaseSeconds, 0) * 1000;
-    for (const orphan of orphans) {
-      const granted = Date.parse(orphan.granted_at);
-      // An unparseable grant time is as old as it gets: it can never become fresh.
-      const overdue = !Number.isFinite(granted) || granted <= stale;
+    for (const orphan of orphans.slice(0, CLAIMS_REAPED_PER_TICK)) {
       const jobId = orphan.job_id;
-      const silent = Number(orphan.silent ?? 0);
       const reason =
         jobId === null
-          ? overdue
-            ? `granted at ${orphan.granted_at} and never posted to a machine`
-            : null
+          ? `granted at ${orphan.granted_at} and never posted to a machine`
           : Number(orphan.runs) === 0
-            ? overdue
-              ? `job ${jobId} has no run row and the lease it was granted under has run out`
-              : null
+            ? `job ${jobId} has no run row and the lease it was granted under has run out`
             : Number(orphan.open_runs) === 0
               ? `job ${jobId} is closed and its claim was left open`
-              : silent >= UNREPORTED_CYCLES
-                ? `the hub has not been able to report job ${jobId} for ${String(silent)} cycles`
-                : null;
-      if (reason === null) continue;
+              : `the hub has not been able to report job ${jobId} for ` +
+                `${String(Number(orphan.silent ?? 0))} cycles`;
       settled.push(await release(orphan, reason));
       notes.push(`claim ${orphan.id} abandoned: ${reason}`);
+    }
+    if (orphans.length > CLAIMS_REAPED_PER_TICK) {
+      notes.push(
+        `${String(CLAIMS_REAPED_PER_TICK)} dead claims were released this cycle and the oldest ` +
+          `of what is left goes next: a reap holds the store's write lock, and a cycle has a ` +
+          `dispatch waiting behind it`,
+      );
     }
   }
 
@@ -3446,18 +3619,34 @@ export function conductor(deps: ConductorDeps): Conductor {
   /**
    * WHETHER THE LOOP IS PARKED, read off the spend ledger rather than counted in a process.
    *
-   * The window is the last {@link PARK_AFTER} claims to close under the policy in force, and
-   * each one is judged by whether A MODEL EVER ANSWERED FOR IT:
+   * The window is the last {@link PARK_AFTER} claims to close under the policy in force. One
+   * that closed as `completed` produced the review it was drawn for and the loop is not
+   * parked, whatever it cost. Every other settlement produced nothing, and WHAT IT COST IS
+   * THE WHOLE OF #265 — the two are counted apart and named apart, because the remedies are
+   * different and a deployment that cannot tell them apart pays for one while fixing the
+   * other (post-mortem F16, F8):
    *
-   *   - a claim that closed as `completed` produced the review it was drawn for. Not barren,
-   *     whatever it cost.
-   *   - a run that spent, or reported tokens, reached the model. Not barren.
-   *   - a receipt whose reason carries a refusal code reached the model and had its submission
-   *     refused: PAID WORK WITH NO RESULT, which is the recipe's problem and not the loop's.
-   *     Not barren, and this one sentence is the whole of #265.
+   *   - a settlement a model answered for — the meter counted a call, the run recorded spend,
+   *     or the receipt carries a refusal code from a lane that meters at the owner — is
+   *     `spent`: money out of the day's allowance for an answer that did not stand.
    *   - anything else — an `abandoned` claim whose job wrote no receipt, a job that failed
-   *     before its first call, a claim whose posting was refused and has no run at all — is
-   *     barren: the deployment paid a reservation and learned nothing.
+   *     before its first call, a metered job the meter says made no call at all — is
+   *     `barren`: the deployment charged a reservation and learned nothing.
+   *
+   * BOTH PARK, and this is where this build parts company with the issue that asked for it.
+   * #265 asked only that a paid refusal stop counting as a free failure, which it no longer
+   * does: it is counted, named and charged as spend, and its claim is finished at cost rather
+   * than abandoned (SPEC §6.5). But a lane that is paid for three answers in a row and has
+   * every one of them refused is burning the allowance on a recipe or a contract that is
+   * wrong, and drawing a fourth buys the same nothing the fourth barren draw would. So it
+   * parks under its OWN word, with the sentence that names the remedy — and, exactly as for a
+   * barren streak, one answered review, an hour of quiet or a new policy version lifts it.
+   * The alternative is the loop paying until the daily ceiling stops it, every day, which is
+   * what the drain of 2026-09-13 did for six hours.
+   *
+   * A streak with any money in it is named for the money: `spent` is the more urgent fact and
+   * its detail carries both counts, so a mixed streak points at the recipe without hiding the
+   * machine.
    *
    * The claims table is the ledger for this because it is where a settlement is durable: the
    * conductor is rebuilt for every wake, so anything the loop "remembers" has to be something
@@ -3475,22 +3664,34 @@ export function conductor(deps: ConductorDeps): Conductor {
       [policy.version, PARK_AFTER],
     );
     if (closed.length < PARK_AFTER) return null;
+    let barren = 0;
+    let spent = 0;
     for (const claim of closed) {
       if (claim.outcome === "completed") return null;
-      if ((claim.cost ?? 0) > 0 || (claim.tokens ?? 0) > 0) return null;
-      if (receiptRefusal(claim.payload) !== null) return null;
+      if (spentOnClaim(claim)) spent += 1;
+      else barren += 1;
     }
     // An unreadable instant is as old as it gets, as it is for a claim's grant in `reapClaims`:
     // a streak nothing recent stands behind is not a park, and the next cycle draws.
     const newest = Date.parse(closed[0]?.finished_at ?? "");
     if (!Number.isFinite(newest) || newest <= at - PARK_WINDOW_MS) return null;
+    const most = closed[0]?.finished_at ?? "";
+    const lifts =
+      `the loop draws nothing until one of them is answered, an hour has passed, or a new ` +
+      `policy is installed`;
     return {
-      barren: closed.length,
-      reason:
-        `the last ${String(closed.length)} reviews under policy ${policy.version} reached no ` +
-        `model and produced nothing, the most recent at ${closed[0]?.finished_at ?? ""}; the ` +
-        `loop draws nothing until one of them is answered, an hour has passed, or a new policy ` +
-        `is installed`,
+      barren,
+      spent,
+      reason: spent > 0 ? "spent" : "barren",
+      detail:
+        spent > 0
+          ? `the last ${String(closed.length)} reviews under policy ${policy.version} produced ` +
+            `nothing and ${String(spent)} of them were paid for and refused` +
+            (barren === 0 ? "" : `, with ${String(barren)} that reached no model`) +
+            `, the most recent at ${most}; the recipe or the review contract is what refused ` +
+            `them, and ${lifts}`
+          : `the last ${String(closed.length)} reviews under policy ${policy.version} reached ` +
+            `no model and produced nothing, the most recent at ${most}; ${lifts}`,
     };
   }
 
@@ -3718,14 +3919,26 @@ export function conductor(deps: ConductorDeps): Conductor {
    * it and a counter in this closure would report zero for every tick of a real day. A key the
    * host refuses, or a value that is not this shape, is not a reason to report nothing: the
    * tick's own counts stand as the day's and the note says the day could not be read.
+   *
+   * THIS IS THE ONE PLACE A REASON WORD ARRIVES FROM OUTSIDE THIS BUILD, so it is the one
+   * place that parses one: what is kept is JSON written by whatever conductor ran before this
+   * one — an older build with a word since renamed, a newer one with a word not invented here,
+   * or another writer's value under the same name. A word this build cannot spell is DROPPED
+   * rather than carried, because the vocabulary a reader is promised has to be true of the day
+   * as well as of the tick, and a count no label exists for is worse than a count short by it.
    */
   async function rollUp(at: number, tick: CycleTally, notes: string[]): Promise<CycleTally> {
     const day = new Date(at).toISOString().slice(0, 10);
-    const gaps = new Map(Object.entries(tick.gaps));
-    const refusals = new Map(Object.entries(tick.refusals));
+    const gaps: Counter<TallyReason> = new Map(
+      Object.entries(tick.gaps) as [TallyReason, number][],
+    );
+    const refusals: Refusals = {
+      paid: new Map(Object.entries(tick.refusals.paid) as [RefusalCode, number][]),
+      free: new Map(Object.entries(tick.refusals.free) as [RefusalCode, number][]),
+    };
     let held: string | null = null;
     try {
-      held = await keys.get(TALLY_KEY);
+      held = await keys.get(CONDUCTOR_TALLY_KEY);
     } catch (error) {
       notes.push(`the day's tally cannot be read: ${message(error)}`);
       return tick;
@@ -3741,21 +3954,15 @@ export function conductor(deps: ConductorDeps): Conductor {
       // Yesterday's tally is not this day's: the key is rewritten, never accumulated across the
       // boundary the spend ledger itself is kept by.
       if (kept !== null && typeof kept === "object" && kept.day === day) {
-        for (const [counter, source] of [
-          [gaps, kept.gaps],
-          [refusals, kept.refusals],
-        ] as const) {
-          if (typeof source !== "object" || source === null) continue;
-          for (const [reason, seen] of Object.entries(source as Record<string, unknown>)) {
-            if (typeof seen !== "number" || !Number.isFinite(seen)) continue;
-            counter.set(reason, (counter.get(reason) ?? 0) + seen);
-          }
-        }
+        const refused = kept.refusals as Partial<{ paid: unknown; free: unknown }> | null;
+        inherit(gaps, kept.gaps, TallyReasonSchema);
+        inherit(refusals.paid, refused?.paid, RefusalCodeSchema);
+        inherit(refusals.free, refused?.free, RefusalCodeSchema);
       }
     }
-    const today = { gaps: tallied(gaps), refusals: tallied(refusals) };
+    const today = tally(gaps, refusals);
     try {
-      await keys.set(TALLY_KEY, JSON.stringify({ day, ...today }));
+      await keys.set(CONDUCTOR_TALLY_KEY, JSON.stringify({ day, ...today }));
     } catch (error) {
       notes.push(`the day's tally cannot be kept: ${message(error)}`);
     }
@@ -3832,15 +4039,15 @@ export function conductor(deps: ConductorDeps): Conductor {
       const ingested: IngestedRun[] = [];
       const settled: SettledClaim[] = [];
       const refused: RefusedDraw[] = [];
-      const refusals: Counter = new Map();
-      const gapsByReason: Counter = new Map();
+      const refusals: Refusals = { paid: new Map(), free: new Map() };
+      const gapsByReason: Counter<TallyReason> = new Map();
 
       if (!policy.enabled) {
         // A disabled policy is the coordinator's own first stop reason, and the cycle never gets
         // as far as being told it: the loop counts it, so "why did nothing happen today" is
         // answered by the tally rather than by the absence of one.
         count(gapsByReason, "disabled");
-        const tick = { gaps: tallied(gapsByReason), refusals: tallied(refusals) };
+        const tick = tally(gapsByReason, refusals);
         await keepCycle(at, DISABLED_STOP, [], notes);
         return {
           at,
@@ -3878,11 +4085,11 @@ export function conductor(deps: ConductorDeps): Conductor {
       // asked here, after the rows exist and before this cycle spends anything.
       await identifyFolders(schedule.machines, notes);
 
-      // WHETHER THE LOOP IS PARKED is still asked, and still recorded, because it is read off
-      // the spend ledger of the runs that did happen — a review that was paid for and refused
-      // is in it too, and the park heuristic is what keeps that from reading as a broken lane.
+      // WHETHER THE LOOP IS PARKED is read off the spend ledger of the runs that did happen: a
+      // review that was paid for and refused is in it too, under its own word, so an operator
+      // reads "the recipe refused three answers I paid for" rather than "the lane is broken".
       const parked = await parkState(policy, at);
-      if (parked !== null) notes.push(`the loop is parked: ${parked.reason}`);
+      if (parked !== null) notes.push(`the loop is parked on ${parked.reason}: ${parked.detail}`);
 
       const dispatched =
         parked === null
@@ -3892,7 +4099,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       const gaps = dispatched.gaps;
       for (const gap of gaps) count(gapsByReason, gap.reason);
       if (stop !== null) count(gapsByReason, stop.reason);
-      const tick = { gaps: tallied(gapsByReason), refusals: tallied(refusals) };
+      const tick = tally(gapsByReason, refusals);
       await keepCycle(at, stop, gaps, notes);
 
       return {

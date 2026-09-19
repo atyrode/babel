@@ -8,6 +8,7 @@ import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/p
 import {
   BABEL_PLUGIN_ID,
   CONDUCTOR_CYCLE_KEY,
+  CONDUCTOR_TALLY_KEY,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
   MATERIAL_OUTPUT,
@@ -58,6 +59,7 @@ import {
   readRunTrace,
   type ScheduleRow,
   type ScheduleTiming,
+  type TickReport,
 } from "./conductor.ts";
 
 /*
@@ -2581,6 +2583,150 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
   expect(draws.abandoned).toHaveLength(1);
 });
 
+test("a reap is bounded per cycle and takes the oldest ghosts first", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  // A CLAIMS TABLE THAT HAS GONE WRONG: 130 grants whose posting never landed, every one of
+  // them older than the lease it was granted under. 2026-09-13 left about seventy; this is
+  // what the cycle after a worse one looks like, and a reaper with no bound would take the
+  // store's write lock for all of them at once while a dispatch waited behind it.
+  const ghosts = 130;
+  const granted = clock - (POLICY.leaseSeconds + 600) * 1000;
+  await db.batch(
+    Array.from({ length: ghosts }, (_unused, index) => ({
+      sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                               reserved_cost, granted_at, expires_at)
+            VALUES (?, ?, 'reception', 'coverage', ?, NULL, 'cyc_ghosts', 1, ?, ?, ?)`,
+      params: [
+        `clm_ghost_${String(index).padStart(3, "0")}`,
+        ASSIGNMENT.recordId,
+        POLICY.version,
+        ASSIGNMENT.reservedCost,
+        // One second apart, so "oldest first" is a fact about this table and not a tie.
+        new Date(granted + index * 1000).toISOString(),
+        new Date(granted + index * 1000 + POLICY.leaseSeconds * 1000).toISOString(),
+      ],
+    })),
+  );
+
+  const first = await loop.tick();
+  expect(first.settled).toHaveLength(128);
+  expect(first.settled[0]?.claimId).toBe("clm_ghost_000");
+  expect(first.settled[127]?.claimId).toBe("clm_ghost_127");
+  // …and the cycle says what it left, so an operator reading one tick is not told the table
+  // is clean when it is two rows short of it.
+  expect(
+    first.notes.some((note) => note.startsWith("128 dead claims were released this cycle")),
+  ).toBe(true);
+
+  // The next cycle continues from where this one stopped, and the one after has nothing left
+  // to say: a bound that left the freshest rows for ever would be the ghost defect again.
+  clock += 60_000;
+  const second = await loop.tick();
+  expect(second.settled.map((row) => row.claimId)).toEqual(["clm_ghost_128", "clm_ghost_129"]);
+  expect(second.notes.some((note) => note.includes("dead claims were released"))).toBe(false);
+  const third = await loop.tick();
+  expect(third.settled).toEqual([]);
+  expect(await db.query(`SELECT COUNT(*) AS open FROM claims WHERE finished_at IS NULL`)).toEqual([
+    { open: 0n },
+  ]);
+  clock = started;
+});
+
+test("a batch every slot of which a dead job holds is drawn into the same cycle that reaps it", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.review = ROUTE;
+  draws.pending = [{ ...ASSIGNMENT }];
+  // Four reviews holding the whole batch, and every one of their jobs is over: the run rows
+  // are closed and nothing polls them, so no settlement will ever reach these claims. This is
+  // the 12:42 shape of 2026-09-13 — "held by another worker until 14:08" for workers that had
+  // been killed at 12:07.
+  for (const slot of [1, 2, 3, 4]) {
+    const jobId = `job_dead_${String(slot)}`;
+    await db.batch([
+      {
+        sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, finished_at, closure,
+                               records, payload)
+              VALUES (?, ?, ?, ?, ?, ?, 'failed', 0, '{}')`,
+        params: [
+          `run_dead_${String(slot)}`,
+          OPERATIONS.evaluate,
+          MACHINE,
+          jobId,
+          new Date(clock).toISOString(),
+          new Date(clock).toISOString(),
+        ],
+      },
+      {
+        sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                                 reserved_cost, granted_at, expires_at)
+              VALUES (?, ?, 'reception', 'coverage', ?, ?, 'cyc_dead', 1, ?, ?, ?)`,
+        params: [
+          `clm_dead_${String(slot)}`,
+          ASSIGNMENT.recordId,
+          // Under the policy the operator replaced at 12:45 to escape this very wedge: the
+          // park is read per version and these settlements are not this version's, while the
+          // BATCH is not — a ghost from yesterday's policy holds a slot today all the same,
+          // which is why the reap and not the version is what frees it.
+          "pol_0",
+          jobId,
+          ASSIGNMENT.reservedCost,
+          new Date(clock).toISOString(),
+          // The lease still has hours to run: what frees the slot is the reap, not expiry.
+          new Date(clock + POLICY.leaseSeconds * 1000).toISOString(),
+        ],
+      },
+    ]);
+  }
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const reaping = await loop.tick();
+  expect(reaping.settled.slice(0, 4).map((row) => [row.claimId, row.outcome])).toEqual([
+    ["clm_dead_1", "abandoned"],
+    ["clm_dead_2", "abandoned"],
+    ["clm_dead_3", "abandoned"],
+    ["clm_dead_4", "abandoned"],
+  ]);
+  // THE SLOT IS REUSABLE IN THE SAME CYCLE THAT FREED IT. The reap runs before the cycle asks
+  // what it may draw, so the batch the coordinator is asked about holds four free slots, the
+  // cycle draws instead of stopping on `batch`, and the work it drew TOOK ONE OF THEM: the
+  // fifth settlement is the assignment this cycle claimed and then released when there was no
+  // engine to post it to. A cycle stopped on a full batch never claims anything, which is
+  // what a ghost used to cost for as long as the lease it was granted under.
+  expect(reaping.stop?.reason).not.toBe("batch");
+  expect(reaping.pulse.tick.gaps["batch"]).toBeUndefined();
+  expect(draws.draws).toBe(1);
+  expect(reaping.settled[4]?.claimId).toBe(ASSIGNMENT.id);
+  clock = started;
+});
+
 // ----------------------------------------------------------------------- drawn Code reviews
 
 test("an enabled policy without a review route reserves nothing", async () => {
@@ -2874,7 +3020,7 @@ test("a review with one refused contribution records the rest, and its receipt c
     },
   ]);
   expect((receipt["counts"] as Record<string, number>)["contributionsRefused"]).toBe(1);
-  expect(settled.pulse.tick.refusals).toEqual({ schema: 1 });
+  expect(settled.pulse.tick.refusals.paid).toEqual({ schema: 1 });
   expect(settled.notes.join(" | ")).toContain("may not name alternatives");
 
   // AND THE JUDGEMENT IS DURABLE, minus the contribution the contract refused: the assessment
@@ -3025,8 +3171,8 @@ async function threeInFlight(
  * What a review the model answered and the contract then refused seals: a receipt with the
  * refusal's own code in its `reason`, and NO COST — the brokered lane meters at the owner
  * (ADR 0038), so a receipt that reports nothing about money is not a receipt that reports no
- * model. The refusal code is the evidence a model answered, and it is what keeps this run out
- * of the park's streak.
+ * model. Where nothing metered the job, the refusal code is the only evidence a model
+ * answered, and it is what files this run under the park's `spent` rather than its `barren`.
  */
 function refusedReview(runId: string): Record<string, unknown> {
   return {
@@ -3047,7 +3193,7 @@ function refusedReview(runId: string): Record<string, unknown> {
   };
 }
 
-test("three reviews the model answered and the contract refused are spend, not a parked loop", async () => {
+test("three reviews paid for and refused park the loop on spend, with their claims settled", async () => {
   const started = clock;
   const db = openDatabase();
   await seed(db);
@@ -3073,26 +3219,94 @@ test("three reviews the model answered and the contract refused are spend, not a
   for (const flight of flights) fleet.finish(flight.jobId, 0, refusedReview(flight.runId));
 
   const settling = await loop.tick();
+  // THE CLAIMS ARE FINISHED AND NOT ABANDONED, at what the receipt says they cost: a refused
+  // submission is spend, and the reservation is not charged over it (§6.5).
   expect(settling.settled.map((row) => [row.outcome, row.cost])).toEqual([
     ["failed", 0],
     ["failed", 0],
     ["failed", 0],
   ]);
-  // The loop is not parked and drew again: three refusals are three answers Babel paid for.
-  expect(settling.parked).toBe(null);
-  expect(settling.notes.some((note) => note.includes("parked"))).toBe(false);
-  // …and the cycle's one reason for spending nothing is the door that is not there, not a lane
-  // that is broken.
-  expect(settling.stop?.reason).toBe("unrouted");
-  // …and the pulse says what they were, by the code `results.ts` names.
-  expect(settling.pulse.tick.refusals).toEqual({ schema: 3 });
-  expect(settling.pulse.today.refusals).toEqual({ schema: 3 });
+  // …and the pulse says what they were, by the code `results.ts` names, under PAID: the
+  // deployment bought three answers and the contract threw all three away.
+  expect(settling.pulse.tick.refusals).toEqual({ paid: { schema: 3 }, free: {} });
+  expect(settling.pulse.today.refusals).toEqual({ paid: { schema: 3 }, free: {} });
+  // …so the loop parks, under the word that names the remedy. It is NOT the barren park: no
+  // machine here is broken, and an operator sent to look at one would find nothing. This is
+  // where the build goes beyond #265 — the issue asked only that a paid refusal stop reading
+  // as a free failure, and a lane that burns three reservations on answers nobody can use is
+  // worth stopping for the recipe as much as a dead machine is worth stopping for the machine.
+  expect(settling.parked?.reason).toBe("spent");
+  expect(settling.parked?.spent).toBe(3);
+  expect(settling.parked?.barren).toBe(0);
+  expect(settling.parked?.detail).toContain("paid for and refused");
+  expect(settling.notes.some((note) => note.startsWith("the loop is parked on spent:"))).toBe(true);
+  expect(settling.requested).toEqual([]);
 
-  // A fourth cycle with nothing to draw still does not park: the window holds three refusals.
-  const after = await loop.tick();
-  expect(after.parked).toBe(null);
-  expect(after.pulse.tick.refusals).toEqual({});
-  expect(after.pulse.today.refusals).toEqual({ schema: 3 });
+  // An hour of quiet lifts a spend park exactly as it lifts a barren one: a recipe that has
+  // been fixed is tried again without an operator having to say so.
+  clock += 61 * 60_000;
+  const resumed = await loop.tick();
+  expect(resumed.parked).toBe(null);
+  expect(resumed.stop?.reason).toBe("unrouted");
+  expect(resumed.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
+  expect(resumed.pulse.today.refusals).toEqual({ paid: { schema: 3 }, free: {} });
+  clock = started;
+});
+
+/**
+ * Three reviews the contract refused, settled under a meter that says how many calls the
+ * owner counted for them. THE MONEY IS ZERO IN BOTH DIRECTIONS — a brokered call is priced at
+ * the owner and this receipt never sees it — so the meter is the only thing separating the
+ * two runs, which is the point: it is the hub's own witness and the receipt is not.
+ */
+async function refusedUnderMeter(calls: number): Promise<TickReport> {
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  const flights = await threeInFlight(db, fleet);
+  clock += 60_000;
+  for (const flight of flights) {
+    fleet.metered(flight.jobId, {
+      calls,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      costMicros: 0,
+    });
+    fleet.finish(flight.jobId, 0, refusedReview(flight.runId));
+  }
+  return await loop.tick();
+}
+
+test("a refusal the meter says reached no model is free, and one call makes the same refusal spend", async () => {
+  const started = clock;
+
+  // Same code, same zero cost, same receipt: a job the owner metered and counted no call for
+  // submitted something no model produced. Nothing was bought, so nothing is filed as bought.
+  const free = await refusedUnderMeter(0);
+  expect(free.pulse.tick.refusals).toEqual({ paid: {}, free: { schema: 3 } });
+  expect(free.parked?.reason).toBe("barren");
+  expect(free.parked?.barren).toBe(3);
+  expect(free.parked?.spent).toBe(0);
+
+  // One call moves every one of those counts to the other side of the tally and renames the
+  // park, on evidence the receipt never carried.
+  const paid = await refusedUnderMeter(1);
+  expect(paid.pulse.tick.refusals).toEqual({ paid: { schema: 3 }, free: {} });
+  expect(paid.parked?.reason).toBe("spent");
+  expect(paid.parked?.spent).toBe(3);
+  expect(paid.parked?.barren).toBe(0);
   clock = started;
 });
 
@@ -3127,9 +3341,14 @@ test("three jobs that never reached the model park the loop, and an hour of quie
     ["abandoned", 0.1],
     ["abandoned", 0.1],
   ]);
+  expect(parking.parked?.reason).toBe("barren");
   expect(parking.parked?.barren).toBe(3);
-  expect(parking.parked?.reason).toContain("reached no model and produced nothing");
-  expect(parking.notes.some((note) => note.startsWith("the loop is parked:"))).toBe(true);
+  expect(parking.parked?.spent).toBe(0);
+  expect(parking.parked?.detail).toContain("reached no model and produced nothing");
+  expect(parking.notes.some((note) => note.startsWith("the loop is parked on barren:"))).toBe(true);
+  // Nothing was refused, either: a machine that killed the job bought no answer for anybody to
+  // refuse, and a tally that counted one here is the free-failure-as-spend defect inverted.
+  expect(parking.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
   // The park is the loop's own verdict and is reported BESIDE the cycle's stop rather than
   // instead of it: nothing is drawn either way today, and an operator reading "parked" is
   // reading that the lane is broken rather than that the door is missing.
@@ -3141,7 +3360,7 @@ test("three jobs that never reached the model park the loop, and an hour of quie
   clock += 61 * 60_000;
   const resumed = await loop.tick();
   expect(resumed.parked).toBe(null);
-  expect(resumed.notes.some((note) => note.startsWith("the loop is parked:"))).toBe(false);
+  expect(resumed.notes.some((note) => note.startsWith("the loop is parked"))).toBe(false);
   clock = started;
 });
 
@@ -3248,6 +3467,51 @@ test("the pulse counts why a cycle did not spend, and the day accumulates across
   expect(off.enabled).toBe(false);
   expect(off.pulse.tick.gaps).toEqual({ disabled: 1 });
   expect(off.pulse.today.gaps).toEqual({ unrouted: 1, disabled: 1 });
+  clock = started;
+});
+
+test("a day kept under a word this build cannot spell is read without it", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const draws = new Draws(db);
+  const keys = new Keys();
+  // WHAT SOME OTHER BUILD LEFT UNDER THE KEY. A cycle is a fresh conductor over the wake that
+  // caused it, so the day's counts make a round trip through JSON and come back as whatever
+  // is there: a word since renamed, a word not invented here, a misspelling of a real one, a
+  // count that is not a count. Every one of them would otherwise reach a reader as a reason
+  // he has no label for and cannot act on.
+  keys.held[CONDUCTOR_TALLY_KEY] = JSON.stringify({
+    day: new Date(clock).toISOString().slice(0, 10),
+    gaps: { unrouted: 2, "no-such-reason": 7, clamied: 4, daily: -1 },
+    refusals: { paid: { schema: 3, "not-a-code": 9 }, free: { "unknown-reference": 1 } },
+  });
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys,
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const tick = await loop.tick();
+  // The words this build spells are carried and added to; the rest are gone, and so is the
+  // count that arrived negative. `unrouted` is 2 from the kept day plus this cycle's own one.
+  expect(tick.pulse.today.gaps).toEqual({ unrouted: 3 });
+  expect(tick.pulse.today.refusals).toEqual({
+    paid: { schema: 3 },
+    free: { "unknown-reference": 1 },
+  });
+  // …and what is written back holds only what a reader can be promised, so the next wake
+  // cannot re-inherit it.
+  expect(JSON.parse(keys.held[CONDUCTOR_TALLY_KEY] ?? "null")).toEqual({
+    day: new Date(clock).toISOString().slice(0, 10),
+    gaps: { unrouted: 3 },
+    refusals: { paid: { schema: 3 }, free: { "unknown-reference": 1 } },
+  });
   clock = started;
 });
 
@@ -3538,7 +3802,7 @@ test("a finished Code session whose citations the material served writes its rec
   expect(report.settled).toEqual([
     { claimId, outcome: "completed", cost: 0.31, overrun: false, refused: null, reason: null },
   ]);
-  expect(report.pulse.tick.refusals).toEqual({});
+  expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
 });
 
 test("the receipt names the remarks this run was quoted, and how many the bound left out", async () => {
@@ -3635,7 +3899,7 @@ test("a citation the material never served is refused, and the refusal is spend 
     { claimId, outcome: "failed", cost: 0.31, overrun: false, refused: null, reason: null },
   ]);
   // …and it is counted by the code the contract refused with, not as a failure of the loop.
-  expect(report.pulse.tick.refusals).toEqual({ "unknown-reference": 1 });
+  expect(report.pulse.tick.refusals.paid).toEqual({ "unknown-reference": 1 });
 });
 
 /** The material as `prepare` sealed it: one canonical record per line, twelve of them, and the
@@ -3988,7 +4252,7 @@ test("an accepted answer becomes the records, edges, statuses and questions it c
   const { runId } = await sessionInFlight(db);
 
   const report = await wakeOn(store, draws, code).tick();
-  expect(report.pulse.tick.refusals).toEqual({});
+  expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
 
   // FOUR RECORDS AND THE PATH BETWEEN THEM. Every one is this run's, written as a run and not
   // as an operator, and each is its own root at sequence zero: a correction supersedes.
@@ -4106,7 +4370,7 @@ test("a record whose own text names what it contradicts gets the edge, and a mis
   const { runId } = await sessionInFlight(db);
 
   const report = await wakeOn(store, draws, code).tick();
-  expect(report.pulse.tick.refusals).toEqual({});
+  expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
   expect(
     await db.query(`SELECT to_id FROM edges WHERE kind = 'contradicts' AND actor_id = ?`, [runId]),
   ).toEqual([{ to_id: "hyp_00000001" }]);
@@ -4158,7 +4422,7 @@ test("a refused answer writes no record at all, and the receipt is still written
   expect(String(receipt["reason"])).toStartWith("unknown-reference:");
   expect(receipt["counts"]).toEqual({});
   expect(run["cost_usd"]).toBeCloseTo(0.31, 6);
-  expect(report.pulse.tick.refusals).toEqual({ "unknown-reference": 1 });
+  expect(report.pulse.tick.refusals.paid).toEqual({ "unknown-reference": 1 });
 });
 
 test("a consolidation resting on a candidate is the development path skipped, and writes nothing", async () => {
@@ -4197,7 +4461,7 @@ test("a consolidation resting on a candidate is the development path skipped, an
   expect(run["closure"]).toBe("failed");
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
   expect(String(receipt["reason"])).toStartWith("development-path:");
-  expect(report.pulse.tick.refusals).toEqual({ "development-path": 1 });
+  expect(report.pulse.tick.refusals.paid).toEqual({ "development-path": 1 });
 });
 
 test("settling the same run twice writes the rows once: the identifiers are the run's own", async () => {
