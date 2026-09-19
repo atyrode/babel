@@ -692,6 +692,25 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   count stays zero against a fake that throws if reached, and an out-of-credit pass stops on its
   first unanswered record with an explicit no-op report instead of failing.
 
+- **Jev can propose which pairs are worth asking about, then report two relations without
+  confusing them.** Comparing the imported 6,038 records outright would be 18,225,703 pairs, so
+  a bounded proposer rides the corpus index instead: each record is one search anchor, each
+  unordered neighbour pair is proposed once, and the answer carries its ceiling, whether the
+  ceiling cut, how many searches ran, and whether meaning was absent, partial or approximate.
+  With no embedding policy it still proposes from FTS5, says that the meaning service did not
+  answer and makes no invocation — the lexical floor the study itself measured, not silent
+  success.
+
+  Contradiction and supersession ride one paid pair judgement but remain different types. A
+  contradiction is canonical and symmetric, is delivered beside both records in identical words
+  and has nowhere to name a preferred side. A supersession names `stale` and `fresh`, carries both
+  instants, reverses when the ordered input reverses, and delivers only beside the stale record,
+  making direction part of the effect rather than a label. Neither invents a bank threshold:
+  the measured 40 contradictions and 36 supersessions were over one lexically blocked
+  2,000-pair sample, not records of a kind, so the caller must state a cut and an absent cut is
+  reported as uncalibrated. Proved by `babel/jev/pairs/`: no-policy invocation count, observable
+  proposal bound, symmetric contradiction delivery and direction-reversing supersession delivery.
+
 ### Removed
 
 - **The standalone Go product is gone.** `cmd/`, `internal/`, `web/`, `test/`, `cookbook/`,
