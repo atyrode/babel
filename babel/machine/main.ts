@@ -98,11 +98,16 @@ const DISPATCH: Record<
     });
   },
   prepare: async (raw, out, progress, material) => {
-    const { PrepareInputSchema, prepare, digests, modifiedAt } = await import("./prepare.ts");
+    const { PREPARE_ENV, PrepareInputSchema, prepare, digests, observe } =
+      await import("./prepare.ts");
     return prepare(PrepareInputSchema.parse(raw), out, {
       discover,
       digests,
-      modifiedAt,
+      observe,
+      // Inside a job this is a declared, managed, writable location every `prepare` on this
+      // machine shares, which is what lets the second preparation over a scope skip the read
+      // (#236); outside one — a hand-run, the tests — nothing is kept.
+      cacheDir: process.env[PREPARE_ENV.cacheDir]?.trim() ?? "",
       material,
       progress,
     });

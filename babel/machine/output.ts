@@ -69,10 +69,41 @@ export function directorySink(dir: string): OutputSink {
 
 /** Where one session's normalized record stream is written while its digests are computed. */
 export interface RecordSink {
-  /** One normalized record, newline-terminated, exactly as the source digest covered it. */
-  write(record: string): void;
-  /** How many records were written; the index records it so a prompt can say the size. */
-  close(): Promise<number>;
+  /**
+   * One normalized record, newline-terminated, exactly as the source digest covered it — or a
+   * chunk of an already-normalized stream being replayed byte for byte, which is what a reused
+   * reading hands it (`machine/cache.ts`, #236). The sink appends; the caller owns the
+   * structure, and both forms are the same bytes in the same order.
+   */
+  write(record: string | Uint8Array): void;
+  /** Closes the stream. What was written is what the source digest covered, so nothing is
+   *  counted here: the record count comes from the pass that produced it. */
+  close(): Promise<void>;
+}
+
+/**
+ * ONE STREAM, TWO SINKS: the material lease a run reads, and the reading this machine keeps for
+ * the next preparation (#236). Null for either, and the other is used alone; null for both, and
+ * the pass writes nowhere and only digests.
+ *
+ * It is here rather than in the cache because the sink is this file's shape, and because the
+ * property it has to have belongs beside the one consumer of it: the two sinks are written the
+ * SAME bytes in the SAME order, so a reading kept beside a material is a reading of exactly the
+ * material that was sealed.
+ */
+export function teeRecords(a: RecordSink | null, b: RecordSink | null): RecordSink | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return {
+    write: (record) => {
+      a.write(record);
+      b.write(record);
+    },
+    close: async () => {
+      await a.close();
+      await b.close();
+    },
+  };
 }
 
 export interface MaterialSink {
@@ -104,15 +135,12 @@ export function materialSink(dir: string): MaterialSink {
     session: async (file) => {
       await ready();
       const writer = Bun.file(join(sessions, file)).writer();
-      let records = 0;
       return {
         write: (record) => {
-          records += 1;
           writer.write(record);
         },
         close: async () => {
           await writer.end();
-          return records;
         },
       };
     },

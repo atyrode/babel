@@ -1043,6 +1043,30 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   an age cross a minute while the hub answers the same thing, one answers a question and then
   watches the list let the world back in, one pages a topic and changes subject.
 
+- **A preparation no longer re-reads a corpus it has already read.** Reading logs is the whole
+  cost of `prepare`, and the answer never depended on which run asked: on 2026-09-12 twenty
+  concurrent explorations over overlapping scopes read and hashed the same sessions twenty times
+  — ~12 GB per draw, load 41 on twelve cores with not one model call in flight, and an OOM that
+  took the operator's own editor with it. A machine now keeps its reading of each settled log —
+  both digests, the record count, the preflight's report and the normalized, redacted record
+  stream itself — in the managed `atyrode.babel.cache` location the job already declares,
+  written in the same single pass that seals the material. An entry is a claim about an
+  OBSERVATION and not about the corpus: the path, the size, the mtime, the normalization
+  schema, the detector set and the preflight mode are all re-observed before it is used, so a
+  log that moved is not invalidated, it simply fails to match, and #337's refusal of a stored
+  position applies unchanged — there is no second authority here to disagree with the
+  filesystem. One entry per session, so the cache is bounded by the corpus rather than by how
+  often it is prepared. What makes it admissible at all is the exclusion beside it: a log whose
+  bytes could still be moving is never in a scope, so size and mtime are only ever asked about a
+  file that settled minutes ago. And the stream is verified rather than trusted — it is
+  re-hashed as it is replayed into the material, and bytes that do not digest to what they were
+  kept as refuse the scope and drop the entry, so the source digest a citation carries is always
+  a digest of what was actually sealed. The suites prove the observable rather than a duration: a
+  second preparation over an unchanged scope opens **no** session log, produces the same
+  preparation id, the same preflight report and byte-identical material; a log that moved is the
+  only one read again; a stream kept unscanned is never served to a preparation that redacts;
+  and a corrupted entry costs one refusal and not a machine that can no longer prepare.
+
 ## [0.4.0] - 2026-09-14
 
 ### Removed
