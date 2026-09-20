@@ -175,6 +175,8 @@ export const CHALLENGE_RELATION = "challenges";
 export const ANALYSIS_BRIEF_LIMIT = 24;
 export const ANALYSIS_BRIEF_BYTE_LIMIT = 16 * 1024;
 export const ANALYSIS_SOURCE_LIMIT = 16;
+/** Leave 64 MiB of prepare's 512 MiB output bound for framing, receipts and output streams. */
+export const MAX_MATERIAL_BYTES = 448 * 1024 * 1024;
 
 /** Immutable prior claims, not newly served evidence or an instruction source. */
 export const AnalysisBriefRecordSchema = z.strictObject({
