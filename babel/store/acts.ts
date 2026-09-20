@@ -1623,7 +1623,9 @@ export async function decide(
   }
   // Result validation happens after the door emits; reject historical damage before writing.
   if (!RecordIdSchema.safeParse(proposal.record_id).success) {
-    throw new ActRefused("the proposed action references an invalid record identifier");
+    throw new ActRefused(
+      `proposed action ${args.nextActionId} references an invalid record identifier`,
+    );
   }
   const standing = await first<{ decision: string }>(
     store,
