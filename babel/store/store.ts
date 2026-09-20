@@ -66,7 +66,7 @@ import {
   type FeedIndex,
   type IndexEntry,
 } from "./feedindex.ts";
-import { FEED_FRESHNESS_MS, sortFeed } from "./rank.ts";
+import { FEED_FRESHNESS_MS, feedOrdering, feedQueryForSurface, sortFeed } from "./rank.ts";
 
 /**
  * THE STORE'S HALF OF THE PULSE: what today's tables say. The door answers a wider shape — it
@@ -873,6 +873,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       desk: current.desk,
       builtAt: stamp(current.builtAt),
       notice: "",
+      ordering: feedOrdering(query),
       groups: [],
     };
   };
@@ -940,21 +941,23 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       desk: current.desk,
       builtAt: stamp(current.builtAt),
       notice: "",
+      ordering: feedOrdering(query),
       groups,
     };
   };
 
   const feed = async (query: FeedQuery): Promise<FeedResult> => {
     const current = await index();
+    const ordered = feedQueryForSurface(query);
     const eligible = filterFeed(
       current.posts,
-      { ...query, topic: query.topic ?? "" },
+      { ...ordered, topic: ordered.topic ?? "" },
       current.builtAt,
     );
-    sortFeed(eligible, query.sort, current.builtAt);
-    return query.group === "none"
-      ? page(eligible, query, current)
-      : grouped(eligible, query, current);
+    sortFeed(eligible, ordered.sort, current.builtAt);
+    return ordered.group === "none"
+      ? page(eligible, ordered, current)
+      : grouped(eligible, ordered, current);
   };
 
   /**
@@ -1289,6 +1292,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       // survives it: what was judged is the revision that stands in its place.
       established: "settled",
       createdAt,
+      attention: current.attention.records.get(text(row["root_id"])) ?? { at: null, basis: null },
       author: runId === "" ? null : { runId },
       topics: [],
       score: support - oppose,

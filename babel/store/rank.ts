@@ -13,7 +13,15 @@
   constant nobody can check.
 */
 
-import type { Established, FeedSort, FeedWindow, PostKind, PostSurface } from "../contract.ts";
+import type {
+  Established,
+  FeedQuery,
+  FeedSort,
+  FeedWindow,
+  PostAttention,
+  PostKind,
+  PostSurface,
+} from "../contract.ts";
 
 /**
  * The fixed origin the hot rank measures age from. A decay origin that moved — the
@@ -135,6 +143,8 @@ export interface Ranked {
   readonly post: {
     readonly id: string;
     readonly kind: PostKind;
+    readonly surface: PostSurface;
+    readonly attention: PostAttention;
     readonly score: number;
     readonly awaiting: boolean;
     /**
@@ -277,30 +287,47 @@ export function rankOf(sort: FeedSort, entry: Ranked, nowMs: number): number {
 }
 
 /**
- * §8.5's reading order, which §8.7 puts on the sort bar as `next`: urgency first, then the
- * kind, then the oldest wait.
- *
- * Three keys and their order are the whole rule. Urgency, because a question Babel has stopped
- * on costs more to leave than a candidate it is still developing. The kind at equal urgency,
- * because a proposal is a remedy addressed to the operator and a candidate is not addressed to
- * him at all. The oldest first inside a kind, on the ordinary grounds that a queue nobody
- * drains from the bottom has a permanent bottom — the one place this order inverts every other
- * sort here.
- *
- * A post that awaits nothing sorts after every post that does, newest first, so `next` is a
- * complete order over the corpus rather than a filter wearing a sort's name.
+ * Desk attention, not evidence strength: existing urgency and kind supply a positive base,
+ * which fades over days since the last qualifying citation or explicit act. A two-day grace
+ * and HN's 1.8 gravity keep the curve finite without imposing a disappearance threshold.
+ * Unknown history receives no invented age or fresh arrival bonus.
  */
-export function nextBefore(left: Ranked, right: Ranked): number {
-  if (left.post.awaiting !== right.post.awaiting) return left.post.awaiting ? -1 : 1;
-  if (!left.post.awaiting) {
-    if (left.createdAt !== right.createdAt) return right.createdAt - left.createdAt;
-    return compareId(left.post.id, right.post.id);
+export function deskAttentionRank(entry: Ranked, nowMs: number): number {
+  if (entry.post.surface !== "desk" || entry.post.attention.at === null) return 0;
+  const renewed = Date.parse(entry.post.attention.at);
+  if (!Number.isFinite(renewed) || renewed > nowMs) return 0;
+  const priority =
+    (URGENCY.asked + 1 - entry.urgency) * (KIND_WEIGHT.question + 1) - KIND_WEIGHT[entry.post.kind];
+  return priority / Math.pow(2 + (nowMs - renewed) / DAY_MS, 1.8);
+}
+
+/** Desk first in a mixed list; its decaying weights never compare with another surface's tiers. */
+export function nextBefore(left: Ranked, right: Ranked, nowMs: number): number {
+  return compareNext(left, right, deskAttentionRank(left, nowMs), deskAttentionRank(right, nowMs));
+}
+
+function compareNext(
+  left: Ranked,
+  right: Ranked,
+  leftAttention: number,
+  rightAttention: number,
+): number {
+  const desk = left.post.surface === "desk";
+  if (desk !== (right.post.surface === "desk")) return desk ? -1 : 1;
+  if (desk) {
+    if (leftAttention !== rightAttention) return rightAttention - leftAttention;
+  } else {
+    if (left.post.awaiting !== right.post.awaiting) return left.post.awaiting ? -1 : 1;
+    if (!left.post.awaiting) {
+      if (left.createdAt !== right.createdAt) return right.createdAt - left.createdAt;
+      return compareId(left.post.id, right.post.id);
+    }
   }
   if (left.urgency !== right.urgency) return left.urgency - right.urgency;
   const leftWeight = KIND_WEIGHT[left.post.kind];
   const rightWeight = KIND_WEIGHT[right.post.kind];
   if (leftWeight !== rightWeight) return leftWeight - rightWeight;
-  if (left.createdAt !== right.createdAt) return left.createdAt - right.createdAt;
+  if (!desk && left.createdAt !== right.createdAt) return left.createdAt - right.createdAt;
   return compareId(left.post.id, right.post.id);
 }
 
@@ -310,9 +337,9 @@ function compareId(left: string, right: string): number {
 }
 
 /**
- * Orders the eligible set in place. Ties resolve newer first everywhere and then by identifier,
- * so one corpus has one order rather than a different one per rebuild — except under `next`,
- * which is about a wait rather than a reception and therefore drains from the bottom.
+ * Orders the eligible set in place. Desk Next uses renewal-aware attention and a stable id
+ * tie-break; the other surfaces retain their non-decaying priority. Explicit browsing sorts
+ * keep their own documented comparison and deterministic creation/id ties.
  *
  * The ranks are computed once per post rather than once per comparison, which is the difference
  * between n and n log n calls to a `Math.pow`.
@@ -323,7 +350,11 @@ export function sortFeed<T extends Ranked>(posts: T[], sort: FeedSort, nowMs: nu
   const order = new Array<number>(count);
   for (let i = 0; i < count; i++) order[i] = i;
   if (sort === "next") {
-    order.sort((a, b) => nextBefore(posts[a] as T, posts[b] as T));
+    const attention = new Float64Array(count);
+    for (let i = 0; i < count; i++) attention[i] = deskAttentionRank(posts[i] as T, nowMs);
+    order.sort((a, b) =>
+      compareNext(posts[a] as T, posts[b] as T, attention[a] as number, attention[b] as number),
+    );
   } else {
     const ranked = sort !== "new";
     const rank = new Float64Array(count);
@@ -343,29 +374,33 @@ export function sortFeed<T extends Ranked>(posts: T[], sort: FeedSort, nowMs: nu
   for (let i = 0; i < count; i++) posts[i] = sorted[i] as T;
 }
 
-/**
- * How long ago something happened, in one word.
- *
- * One word rather than "3 days" is what keeps §8.7's five-word budget spendable on the reason:
- * "never ruled on · waiting 3d" is five words and says both halves, where the same sentence
- * with the unit spelled out is six and says no more. A future instant reads as `now`: "waiting
- * -4m" is not a fact about anything.
- */
-export function ageWord(elapsedMs: number): string {
-  const minutes = elapsedMs / 60_000;
-  if (minutes < 1) return "now";
-  const hours = elapsedMs / HOUR_MS;
-  if (hours < 1) return `${String(Math.trunc(minutes))}m`;
-  if (hours < 24) return `${String(Math.trunc(hours))}h`;
-  if (hours < 7 * 24) return `${String(Math.trunc(hours / 24))}d`;
-  if (hours < 30 * 24) return `${String(Math.trunc(hours / (24 * 7)))}w`;
-  if (hours < 365 * 24) return `${String(Math.trunc(hours / (24 * 30)))}mo`;
-  return `${String(Math.trunc(hours / (24 * 365)))}y`;
+/** Older callers may still request Hot/Rising on the shelf; serve its non-decaying order. */
+export function feedQueryForSurface(query: FeedQuery): FeedQuery {
+  return query.surface === "shelf" && (query.sort === "hot" || query.sort === "rising")
+    ? { ...query, sort: "top", window: "all" }
+    : query;
 }
 
-/** Joins the two halves of a why with §8.6's separator, dropping an absent half. */
-export function feedWhy(head: string, tail: string): string {
-  if (head === "") return tail;
-  if (tail === "") return head;
-  return `${head} · ${tail}`;
+/** The rule actually used travels with the answer instead of being inferred by a panel. */
+export function feedOrdering(query: FeedQuery): string {
+  if (query.sort === "next") {
+    if (query.surface === "desk")
+      return "Desk: renewal-aware urgency from independent-source citations, question dates and explicit acts. Unknown dates last.";
+    if (query.surface === "all")
+      return "Desk first, with renewal-aware urgency; other surfaces keep non-decaying priority.";
+    return `${query.surface === "shelf" ? "Shelf" : "Agent queue"}: existing priority; no attention decay.`;
+  }
+  const prefix = query.surface === "shelf" ? "Shelf: no attention decay; " : "Browsing by ";
+  switch (query.sort) {
+    case "hot":
+      return `${prefix}reception score and record arrival.`;
+    case "new":
+      return `${prefix}record chronology, newest first.`;
+    case "top":
+      return `${prefix}reception score, ${query.window === "all" ? "all time" : `within the ${query.window} window`}.`;
+    case "controversial":
+      return `${prefix}split reviewer reception within the selected window.`;
+    case "rising":
+      return `${prefix}recent reviewer activity, not evidence renewal.`;
+  }
 }

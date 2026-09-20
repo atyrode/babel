@@ -9,10 +9,8 @@
 import { describe, expect, test } from "bun:test";
 import { FEED_SORTS, type FeedSort, type PostKind } from "../contract.ts";
 import {
-  ageWord,
   controversialRank,
   FEED_EPOCH_MS,
-  feedWhy,
   hotRank,
   nextBefore,
   risingRank,
@@ -32,6 +30,8 @@ interface Entry extends Ranked {
   post: {
     id: string;
     kind: PostKind;
+    surface: Ranked["post"]["surface"];
+    attention: Ranked["post"]["attention"];
     score: number;
     awaiting: boolean;
     votes: RankedVote[];
@@ -59,12 +59,22 @@ function entry(
     awaiting: boolean;
     urgency: number;
     activity: number[];
+    surface: Ranked["post"]["surface"];
+    attention: Ranked["post"]["attention"];
   }> = {},
 ): Entry {
   return {
     post: {
       id,
       kind: extra.kind ?? "proposal",
+      surface:
+        extra.surface ??
+        surfaceOf(
+          extra.kind ?? "proposal",
+          extra.awaiting ? "new" : "accepted",
+          extra.awaiting ?? false,
+        ),
+      attention: extra.attention ?? { at: new Date(createdAt).toISOString(), basis: "evidence" },
       score,
       awaiting: extra.awaiting ?? false,
       votes: votes(extra.votes ?? []),
@@ -260,11 +270,9 @@ describe("every sort", () => {
   });
 });
 
-// §8.5's reading order: urgency first, then the kind, then the longest wait. A post that awaits
-// nothing sorts after every post that does, newest first, so that turning the queue filter off
-// keeps the same list and adds to it.
+// Desk attention ages without changing a record's standing or the shelf's ordering.
 describe("next", () => {
-  test("orders by urgency, then kind, then the longest wait", () => {
+  test("keeps existing priority for similarly renewed desk items, ahead of other surfaces", () => {
     const blocked = entry("qst_block", NOW - 60_000, 0, {
       kind: "question",
       awaiting: true,
@@ -304,60 +312,79 @@ describe("next", () => {
       "fnd_reopened",
       "pro_new",
       "fnd_new",
-      "hyp_new",
       "qst_idle",
+      "hyp_new",
       "pro_done",
     ]);
   });
 
-  // The one place the order inverts every other sort: a queue nobody drains from the bottom has
-  // a permanent bottom.
-  test("drains the oldest wait first inside one kind and urgency", () => {
+  test("prefers recently renewed desk work without changing non-desk chronology", () => {
     const older = entry("pro_older", NOW - 5 * HOUR, 0, {
       awaiting: true,
       urgency: URGENCY.unruled,
     });
     const newer = entry("pro_newer", NOW - HOUR, 0, { awaiting: true, urgency: URGENCY.unruled });
-    expect(nextBefore(older, newer)).toBeLessThan(0);
-    // …while a post awaiting nothing keeps the newest-first order of every other sort.
+    expect(nextBefore(newer, older, NOW)).toBeLessThan(0);
+    // Non-desk chronology remains a stable browsing order, not a decaying weight.
     const idleOld = entry("pro_idle_old", NOW - 5 * HOUR, 0);
     const idleNew = entry("pro_idle_new", NOW - HOUR, 0);
-    expect(nextBefore(idleNew, idleOld)).toBeLessThan(0);
+    expect(nextBefore(idleNew, idleOld, NOW)).toBeLessThan(0);
   });
-});
 
-// One word rather than "3 days" is what keeps §8.7's five-word budget spendable on the reason.
-// The tiers are measured, so they are asserted at their own boundaries.
-describe("the age word", () => {
-  const cases: readonly [number, string][] = [
-    [0, "now"],
-    [59_000, "now"],
-    [-4 * 60_000, "now"],
-    [60_000, "1m"],
-    [59 * 60_000, "59m"],
-    [HOUR, "1h"],
-    [23 * HOUR, "23h"],
-    [DAY, "1d"],
-    [6 * DAY, "6d"],
-    [7 * DAY, "1w"],
-    [29 * DAY, "4w"],
-    [30 * DAY, "1mo"],
-    [364 * DAY, "12mo"],
-    [365 * DAY, "1y"],
-    [800 * DAY, "2y"],
-  ];
-  for (const [elapsed, word] of cases) {
-    test(`${String(elapsed)} ms reads as ${word}`, () => {
-      expect(ageWord(elapsed)).toBe(word);
+  test("stale high urgency can yield to a fresh lower-priority item without mixed-surface cycles", () => {
+    const stale = entry("qst_stale", NOW - 180 * DAY, 0, {
+      kind: "question",
+      awaiting: true,
+      urgency: URGENCY.blocked,
     });
-  }
-});
+    const fresh = entry("pro_fresh", NOW - HOUR, 0, {
+      awaiting: true,
+      urgency: URGENCY.unruled,
+    });
+    const shelf = entry("hyp_reopened", NOW - DAY, 0, {
+      kind: "hypothesis",
+      awaiting: true,
+      urgency: URGENCY.reopened,
+    });
+    expect(nextBefore(fresh, stale, NOW)).toBeLessThan(0);
+    expect(nextBefore(stale, shelf, NOW)).toBeLessThan(0);
+    expect(nextBefore(fresh, shelf, NOW)).toBeLessThan(0);
+    const posts = [stale, shelf, fresh];
+    sortFeed(posts, "next", NOW);
+    expect(ids(posts)).toEqual(["pro_fresh", "qst_stale", "hyp_reopened"]);
+  });
 
-describe("the why", () => {
-  test("joins both halves and drops an absent one rather than rendering a gap", () => {
-    expect(feedWhy("never ruled on", "waiting 3d")).toBe("never ruled on · waiting 3d");
-    expect(feedWhy("", "waiting 3d")).toBe("waiting 3d");
-    expect(feedWhy("reopened", "")).toBe("reopened");
-    expect(feedWhy("", "")).toBe("");
+  test("unknown history gets no freshness from a recent record creation date", () => {
+    const unknown = entry("pro_unknown", NOW, 0, {
+      awaiting: true,
+      urgency: URGENCY.unruled,
+      attention: { at: null, basis: null },
+    });
+    const dated = entry("pro_dated", NOW - 180 * DAY, 0, {
+      awaiting: true,
+      urgency: URGENCY.unruled,
+    });
+    const posts = [unknown, dated];
+    sortFeed(posts, "next", NOW);
+    expect(ids(posts)).toEqual(["pro_dated", "pro_unknown"]);
+  });
+
+  test("elapsed time and a later attention act do not decay or reorder the shelf", () => {
+    const old = entry("hyp_old", NOW - 180 * DAY, 0, {
+      kind: "hypothesis",
+      awaiting: true,
+      urgency: URGENCY.unruled,
+    });
+    const recent = entry("hyp_recent", NOW - HOUR, 0, {
+      kind: "hypothesis",
+      awaiting: true,
+      urgency: URGENCY.unruled,
+    });
+    const posts = [recent, old];
+    sortFeed(posts, "next", NOW);
+    expect(ids(posts)).toEqual(["hyp_old", "hyp_recent"]);
+    recent.post.attention = { at: new Date(NOW + 365 * DAY).toISOString(), basis: "operator" };
+    sortFeed(posts, "next", NOW + 365 * DAY);
+    expect(ids(posts)).toEqual(["hyp_old", "hyp_recent"]);
   });
 });

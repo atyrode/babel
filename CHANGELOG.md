@@ -11,6 +11,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Waiting is not a reason to keep an idea at the front.** Desk Next now fades from the first
+  citation of independently sourced evidence or an explicit operator act. Repeated analysis,
+  copied links, changed digests and passive reading buy no fresh attention; missing history is
+  visibly unknown instead of borrowing an import date. The shelf keeps its evidence and opens
+  at Top over all time, with no attention decay, and every list states the rule it used.
+
+  Real-store regressions and a connected SQLite exercise prove that new sources and explicit
+  acts renew attention without changing standing. Rendered preview interaction opens an old
+  record without moving it, posts a comment that does move it, and returns to the unchanged
+  shelf. Repair sweeps and copied correction links cannot manufacture renewal. Cursor paging
+  keeps the full history: a 65,818-record synthetic rebuild fell from a median 872 ms to 369 ms,
+  without dropping old citations. No provider call or production install is part of this proof
+  (#353).
+
 - **Challenge and synthesis get their own turns, not a tax on every exploration.** The conductor
   draws review, explore, challenge and synthesize by explicit relative weights, with the existing
   claims, ceilings and per-machine slots paying for all of them. Preparation keeps the same fenced

@@ -45,7 +45,12 @@ export const FeedSortSchema = z.enum(FEED_SORTS);
 export type FeedSort = z.infer<typeof FeedSortSchema>;
 
 /** Shelf ordering never applies the time-decaying Hot or Rising rules. */
-export const SHELF_SORTS = ["next", "new", "top", "controversial"] as const satisfies readonly FeedSort[];
+export const SHELF_SORTS = [
+  "next",
+  "new",
+  "top",
+  "controversial",
+] as const satisfies readonly FeedSort[];
 
 export const FEED_WINDOWS = ["hour", "day", "week", "month", "year", "all"] as const;
 export const FeedWindowSchema = z.enum(FEED_WINDOWS);

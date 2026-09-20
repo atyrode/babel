@@ -491,6 +491,7 @@ export function FeedListing({
         now={now}
         heading={heading !== undefined}
       />
+      {answer !== null && <p className="babel-ordering">{answer.ordering}</p>}
       <p className="babel-said" role="status" aria-live="polite">
         {announcement}
       </p>
