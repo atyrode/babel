@@ -136,6 +136,86 @@ export function isRecordId(id: string): boolean {
   return RECORD_ID.test(id);
 }
 
+/** Analysis jobs have stage authority; a challenge review vote is a different activity. */
+export const STAGES = ["explore", "challenge", "synthesize"] as const;
+export const StageSchema = z.enum(STAGES);
+export type Stage = z.infer<typeof StageSchema>;
+export const ACTIVITIES = ["review", ...STAGES] as const;
+export const ActivitySchema = z.enum(ACTIVITIES);
+export type Activity = z.infer<typeof ActivitySchema>;
+export const ANALYSIS_ROLES = {
+  explore: "analysis:explore",
+  challenge: "analysis:challenge",
+  synthesize: "analysis:synthesize",
+} as const;
+export type AnalysisRole = (typeof ANALYSIS_ROLES)[Stage];
+
+/** Relative weights, not reservations. Existing deployments retain only their review loop. */
+export const DEFAULT_ACTIVITY_WEIGHTS = {
+  review: 1,
+  explore: 0,
+  challenge: 0,
+  synthesize: 0,
+} as const;
+const activityWeight = z.number().min(0).max(1);
+export const ActivityWeightsSchema = z
+  .strictObject({
+    review: activityWeight,
+    explore: activityWeight,
+    challenge: activityWeight,
+    synthesize: activityWeight,
+  })
+  .default(DEFAULT_ACTIVITY_WEIGHTS);
+export type ActivityWeights = z.infer<typeof ActivityWeightsSchema>;
+
+export const OBJECTION_GROUNDS = ["evidence", "consequence", "missing-check", "alternative"] as const;
+export const ObjectionGroundSchema = z.enum(OBJECTION_GROUNDS);
+/** From the objection record to its target, with its ground in the edge's note. */
+export const CHALLENGE_RELATION = "challenges";
+export const ANALYSIS_BRIEF_LIMIT = 24;
+export const ANALYSIS_BRIEF_BYTE_LIMIT = 16 * 1024;
+export const ANALYSIS_SOURCE_LIMIT = 16;
+
+/** Immutable prior claims, not newly served evidence or an instruction source. */
+export const AnalysisBriefRecordSchema = z.strictObject({
+  id: RecordIdSchema,
+  kind: RecordKindSchema,
+  runId: z.string().nullable(),
+  summary: z.string(),
+  payload: z.record(z.string(), z.unknown()),
+  objectionTo: z.array(RecordIdSchema),
+});
+export type AnalysisBriefRecord = z.infer<typeof AnalysisBriefRecordSchema>;
+
+/** The same fenced reservation spans material preparation and the later Code session. */
+export const AnalysisClaimSchema = z.strictObject({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  fence: z.number().int().positive(),
+});
+export const AnalysisWorkSchema = z.strictObject({
+  stage: StageSchema,
+  selectors: z.array(z.string().min(1)).min(1).max(ANALYSIS_SOURCE_LIMIT),
+  brief: z.array(AnalysisBriefRecordSchema).max(ANALYSIS_BRIEF_LIMIT),
+  claim: AnalysisClaimSchema,
+});
+export type AnalysisWork = Omit<z.infer<typeof AnalysisWorkSchema>, "selectors" | "brief"> & {
+  readonly selectors: readonly string[];
+  readonly brief: readonly AnalysisBriefRecord[];
+};
+
+export const ChallengeSummarySchema = z.strictObject({
+  objections: z.number().int().nonnegative(),
+  distinctRuns: z.number().int().nonnegative(),
+});
+export const ChallengeRecordSchema = z.strictObject({
+  id: RecordIdSchema,
+  kind: RecordKindSchema,
+  runId: z.string(),
+  grounds: ObjectionGroundSchema,
+  summary: z.string(),
+});
+
 export const EntityIdSchema = z.string().regex(/^ent_[0-9a-f]{8,64}$/);
 
 /**
@@ -457,6 +537,8 @@ export const FeedPostSchema = z.strictObject({
   votes: z.array(FeedVoteSchema),
   contested: z.boolean(),
   reviewing: z.boolean(),
+  /** Grounded objections from analysis runs, never the challenge review role's votes. */
+  challenges: ChallengeSummarySchema,
   comments: z.number().int(),
   awaiting: z.boolean(),
   why: z.string(),
@@ -596,6 +678,7 @@ export const RecordPeelSchema = z.strictObject({
       z.strictObject({ stance: z.string(), reason: z.string(), at: z.string() }),
     ),
   }),
+  challenges: z.array(ChallengeRecordSchema).max(20),
   machinery: z.record(z.string(), z.string()),
   related: z.array(
     z.strictObject({
@@ -2651,6 +2734,7 @@ export const PolicyResultSchema = z.strictObject({
   }),
   spentTodayUsd: z.number(),
   lanes: z.array(z.strictObject({ lane: z.string(), role: z.string(), share: z.number() })),
+  activityWeights: ActivityWeightsSchema,
   recipes: z.array(RecipeRowSchema),
   /** Null when nothing is overlaid: the standing numbers are the numbers. */
   overlay: BudgetOverlaySchema.nullable(),
@@ -2830,6 +2914,7 @@ export const ReceiptSchema = z.strictObject({
   machineId: z.string(),
   recipeId: z.string().optional(),
   role: RoleSchema.optional(),
+  stage: StageSchema.optional(),
   profile: z.record(z.string(), z.unknown()).optional(),
   /**
    * WHOSE WINDOW THIS RUN SPENT, and WHICH MODEL IT ASKED FOR (#267, #279).

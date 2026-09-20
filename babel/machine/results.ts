@@ -29,10 +29,11 @@
 */
 
 import { z } from "zod";
-import type { MaterialEntry, ROLES } from "../contract.ts";
+import type { MaterialEntry, ROLES, Stage } from "../contract.ts";
 import {
   MAX_CITATION_QUOTE,
   NextActionSchema,
+  ObjectionGroundSchema,
   SUBMISSION_KEPT_FLOOR,
   VOTES,
   normalizeRemote,
@@ -348,13 +349,10 @@ export type Observation = z.infer<typeof ObservationSchema>;
 const RemedySchema = z.strictObject({ ref: z.string().min(1), proposal: ProposalPayloadSchema });
 export type Remedy = z.infer<typeof RemedySchema>;
 
-/** The four grounds §5.4 admits. An objection naming none is refused rather than stored. */
-const GROUNDS = ["evidence", "consequence", "missing-check", "alternative"] as const;
-
 const ObjectionSchema = z.strictObject({
   ref: z.string().min(1),
   hypothesis: z.string().min(1),
-  grounds: z.enum(GROUNDS),
+  grounds: ObjectionGroundSchema,
   recipe: RECIPE_REF,
   claim: ObservationPayloadSchema.or(
     // A criticism resting on a consequence, a missing check or an alternative carries no locator,
@@ -408,10 +406,6 @@ const candidateShape = {
 };
 const CandidateSchema = z.strictObject(candidateShape);
 export type Candidate = z.infer<typeof CandidateSchema>;
-
-/** The stages of one run. Each is a unit of authority as much as of sequencing (§5.4). */
-export const STAGES = ["explore", "challenge", "synthesize"] as const;
-export type Stage = (typeof STAGES)[number];
 
 /** What a stage's result may contain. The table is the enforcement, not a comment about it. */
 interface StageAuthority {

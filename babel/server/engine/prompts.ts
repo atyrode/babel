@@ -5,13 +5,13 @@ import {
   MAX_CITATION_QUOTE,
   MIN_CITATION_QUOTE,
   type MaterialEntry,
+  type Stage,
 } from "../../contract.ts";
 import {
   exploreJsonSchema,
   exploreSubmission,
   REFUSALS,
   type ExploreSubmission,
-  type Stage,
 } from "../../machine/results.ts";
 
 /*

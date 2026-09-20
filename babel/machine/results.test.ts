@@ -6,7 +6,7 @@
 */
 
 import { expect, test } from "bun:test";
-import { ROLES, type MaterialEntry } from "../contract.ts";
+import { ROLES, type MaterialEntry, type Stage } from "../contract.ts";
 import {
   acceptReviewResult,
   exploreJsonSchema,
@@ -20,7 +20,6 @@ import {
   type ExploreResult,
   type ExploreSubmission,
   type Role,
-  type Stage,
 } from "./results.ts";
 
 const LOCATOR = { path: "omp/session-1.jsonl", line: 12, byte_offset: 480, digest: "sha256:abc" };
