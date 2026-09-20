@@ -11,6 +11,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A refused next-action decision leaves no ruling behind.** A malformed historical record
+  reference is rejected before the append or its event, rather than failing response validation
+  after the decision was already written. Strict identifiers and historical rows stay unchanged.
+  A real-store door regression catches the old ordering; an isolated exercise proves both first
+  decisions and reconsiderations refuse without mutation while valid decisions still append (#437).
+
 - **Preparation can choose what a session says, not only when it happened.** An opt-in content
   query on the existing machine operation selects bounded lexical matches from a local session
   index, then seals their exact selectors and digests into ordinary material. Indexing is paid

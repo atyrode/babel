@@ -1621,6 +1621,12 @@ export async function decide(
   if (proposal === null) {
     throw new ActRefused(`no proposed action ${args.nextActionId}`);
   }
+  // Result validation happens after the door emits; reject historical damage before writing.
+  if (!RecordIdSchema.safeParse(proposal.record_id).success) {
+    throw new ActRefused(
+      `proposed action ${args.nextActionId} references an invalid record identifier`,
+    );
+  }
   const standing = await first<{ decision: string }>(
     store,
     `SELECT decision FROM next_action_rulings WHERE next_action_id = ? ORDER BY seq DESC LIMIT 1`,

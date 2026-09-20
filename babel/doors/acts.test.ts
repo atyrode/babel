@@ -218,6 +218,33 @@ test("a decision on a proposed action is attributed to the principal, and never 
   ).toMatch(/no proposed action nxt_ffffffff/);
 });
 
+test("a decision on a malformed stored record refuses without changing history or emitting", async () => {
+  const harness = openHarness();
+  await migrate(harness.store);
+  // Historical damage predates the import guard; the public crossing cannot create this row.
+  await seedRecord(harness.store, "legacy-record", "finding");
+  await harness.store.db.run(
+    `INSERT INTO next_actions(id, record_id, kind, proposed_by_kind, proposed_by_id, summary,
+       created_at, payload)
+     VALUES('nxt_00000006', 'legacy-record', 'draft-issue', 'run', 'run_1', 'draft the issue', ?,
+       '{}')`,
+    [stamp(harness.store.now())],
+  );
+  const records = await harness.store.db.query(`SELECT * FROM records`);
+  const actions = await harness.store.db.query(`SELECT * FROM next_actions`);
+
+  expect(
+    await refusal(harness, ACTIONS.decide, {
+      nextActionId: "nxt_00000006",
+      decision: "accepted",
+    }),
+  ).toBeTypeOf("string");
+  expect(await harness.store.db.query(`SELECT * FROM next_action_rulings`)).toEqual([]);
+  expect(harness.emitted).toEqual([]);
+  expect(await harness.store.db.query(`SELECT * FROM records`)).toEqual(records);
+  expect(await harness.store.db.query(`SELECT * FROM next_actions`)).toEqual(actions);
+});
+
 test("accepting a topic proposal through the door emits the plan event with the entity it created", async () => {
   const harness = openHarness();
   await migrate(harness.store);
