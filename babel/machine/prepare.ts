@@ -62,18 +62,21 @@ import { stat } from "node:fs/promises";
 import { z } from "zod";
 import {
   MATERIAL_SCHEMA,
+  MAX_MATERIAL_BYTES,
   PREFLIGHT_SCHEMA,
   PreflightModeSchema,
   RUN_STAGES,
+  SessionContentQuerySchema,
   materialFile,
   type MaterialEntry,
   type MaterialIndex,
   type PreflightMode,
   type PreflightReport,
   type Receipt,
+  type SessionRetrieval,
 } from "../contract.ts";
 import { LIVE_GRACE_MS, babelOwnLog, type SessionRef } from "./adapters/index.ts";
-import { readingCache, type Observation } from "./cache.ts";
+import { readingCache, type Observation, type ReadingContext } from "./cache.ts";
 import { teeRecords, type MaterialSink, type OutputSink, type RecordSink } from "./output.ts";
 import {
   PREFLIGHT_DETECTORS,
@@ -83,6 +86,7 @@ import {
   type SecretScan,
 } from "./preflight.ts";
 import { SILENT, type ProgressChannel } from "./progress.ts";
+import { sessionIndex, SessionIndexError, type IndexedSession, type SessionIndex } from "./session-index.ts";
 
 /**
  * The one binding this operation reads from the environment, for the reason `VERIFY_ENV`'s is a
@@ -105,6 +109,8 @@ export const PrepareInputSchema = z.strictObject({
   /** `HARNESS/SOURCE-ID`, or any unambiguous suffix of one. Empty scopes every session this
    *  machine can see, which is what a scheduled preparation wants. */
   selectors: z.array(z.string().trim().min(1).max(400)).max(500).default([]),
+  /** Literal lexical selection over settled, redacted session content, instead of selectors. */
+  query: SessionContentQuerySchema.optional(),
   /**
    * Whether sessions of BABEL'S OWN runs may be in the scope (`kind` `agent`, scan.ts).
    *
@@ -534,6 +540,19 @@ export async function prepare(
   let preparation: Preparation | null = null;
   let closure: Receipt["closure"] = "completed";
   let reason = "";
+  const retrieval: SessionRetrieval | undefined =
+    input.query === undefined
+      ? undefined
+      : {
+          query: input.query,
+          status: "complete",
+          eligible: 0,
+          indexed: 0,
+          reused: 0,
+          unavailable: 0,
+          matches: null,
+          overBound: 0,
+        };
   const progress = deps.progress ?? SILENT;
   progress.report({
     stage: RUN_STAGES.preparing,
@@ -555,7 +574,11 @@ export async function prepare(
 
   const discovered = await deps.discover();
   counts.discovered = discovered.length;
-  const chosen = choose(discovered, input.selectors);
+  const queried =
+    retrieval === undefined
+      ? null
+      : await contentSelection(discovered, input, deps, retrieval, counts);
+  const chosen = queried ?? choose(discovered, input.selectors);
   if (chosen.failure !== "") {
     // A selector that matches nothing, or matches two sessions, is a rejected invocation
     // rather than a silently smaller scope: a preparation records what was meant to be
@@ -564,16 +587,19 @@ export async function prepare(
     reason = chosen.failure;
   } else if (chosen.chosen.length === 0) {
     closure = "skipped";
-    reason = "no session on this machine to prepare";
+    reason = retrieval === undefined
+      ? "no session on this machine to prepare"
+      : "no eligible session matches the content query within the material bounds";
   } else {
     const seenAt = new Date().toISOString();
     const selection: PreparationEntry[] = [];
-    const named = input.selectors.length > 0;
+    const named = input.selectors.length > 0 || queried !== null;
     const at = Date.now();
     // The loop already counts, so the fraction costs nothing and is the honest one: a digest
     // over a large log is where the minutes go, and "3/927" is what the operator wanted to see
     // on 2026-09-13 instead of silence.
     let examined = 0;
+    try {
     for (const session of chosen.chosen) {
       examined += 1;
       progress.report({
@@ -582,6 +608,15 @@ export async function prepare(
         fraction: examined / chosen.chosen.length,
       });
       const seen = await deps.observe(session);
+      if (queried !== null && !sameObservation(queried.observations.get(session.primaryPath), seen)) {
+        closure = "failed";
+        reason = "content selection refused: a selected session changed or disappeared before sealing";
+        if (retrieval !== undefined) {
+          retrieval.status = "unavailable";
+          retrieval.unavailable++;
+        }
+        break;
+      }
       const left = excluded(session, input, seen, at);
       if (left !== null) {
         if (named) {
@@ -631,6 +666,10 @@ export async function prepare(
           reason =
             `the reading kept for ${session.selector} does not digest to what it was kept ` +
             `as; it has been dropped, and the next preparation reads the log`;
+          if (retrieval !== undefined) {
+            retrieval.status = "unavailable";
+            retrieval.unavailable++;
+          }
           break;
         }
         measured = {
@@ -662,12 +701,27 @@ export async function prepare(
           await into?.close();
           await kept?.abandon();
           closure = "failed";
-          reason = `read ${session.selector}: ${err instanceof Error ? err.message : String(err)}`;
+          reason = retrieval === undefined
+            ? `read ${session.selector}: ${err instanceof Error ? err.message : String(err)}`
+            : "content selection refused: a selected session could not be read";
+          if (retrieval !== undefined) {
+            retrieval.status = "unavailable";
+            retrieval.unavailable++;
+          }
           break;
         }
         await into?.close();
         found = scan === null ? null : scan.report();
         await kept?.commit({ ...measured, report: found });
+      }
+      if (queried !== null && !sameObservation(seen, await deps.observe(session))) {
+        closure = "failed";
+        reason = "content selection refused: a selected session changed while sealing";
+        if (retrieval !== undefined) {
+          retrieval.status = "unavailable";
+          retrieval.unavailable++;
+        }
+        break;
       }
       if (found !== null) {
         scans.push({ selector: session.selector, report: found });
@@ -709,6 +763,13 @@ export async function prepare(
         size: measured.bytes,
         seen_at: seenAt,
       });
+    }
+    } catch (error) {
+      if (retrieval === undefined) throw error;
+      closure = "failed";
+      reason = "content selection refused: a selected session or its reading is unavailable";
+      retrieval.status = "unavailable";
+      retrieval.unavailable++;
     }
     if (closure === "completed" && selection.length === 0) {
       // Every session there was, excluded. It is `skipped` rather than failed for the same
@@ -765,10 +826,153 @@ export async function prepare(
     ...(preparation === null ? {} : { preparation }),
     ...(index === null ? {} : { material: index }),
     preflight,
+    ...(retrieval === undefined ? {} : { retrieval }),
     ...(reason === "" ? {} : { reason }),
   };
   await out.receipt(receipt);
   return receipt;
+}
+
+/** Observation equality is deliberately stricter than size: an unknown mtime proves nothing. */
+function sameObservation(before: Observation | undefined, after: Observation): boolean {
+  return before !== undefined && before.modifiedAt > 0 &&
+    before.modifiedAt === after.modifiedAt && before.size === after.size;
+}
+
+/**
+ * Pays for lexical coverage before choosing material. Only the ordinary redacted reading is
+ * indexed; the final selection still passes through prepare's existing sealing and preflight.
+ * Failure is whole-scope, never a partial search presented as complete coverage.
+ */
+async function contentSelection(
+  discovered: readonly SessionRef[],
+  input: PrepareInput,
+  deps: PrepareDeps,
+  retrieval: SessionRetrieval,
+  counts: { live: number; agent: number },
+): Promise<{
+  readonly chosen: readonly SessionRef[];
+  readonly failure: string;
+  readonly observations: ReadonlyMap<string, Observation>;
+}> {
+  const observations = new Map<string, Observation>();
+  const refuse = (reason: string) => ({ chosen: [], failure: reason, observations });
+  if (input.selectors.length > 0) {
+    retrieval.status = "unavailable";
+    return refuse("content selection refused: a query cannot be combined with explicit selectors");
+  }
+  if ((deps.cacheDir ?? "") === "") {
+    retrieval.status = "unavailable";
+    return refuse("content selection refused: a managed preparation cache is required");
+  }
+  const context: ReadingContext = {
+    schema: PREPARATION_SCHEMA,
+    detectors: PREFLIGHT_DETECTORS,
+    mode: "redact",
+  };
+  const cache = readingCache(deps.cacheDir ?? "", context);
+  const eligible: IndexedSession[] = [];
+  let index: SessionIndex | null = null;
+  try {
+    const at = Date.now();
+    for (const session of discovered) {
+      const seen = await deps.observe(session);
+      const left = excluded(session, input, seen, at);
+      if (left !== null) {
+        if (left.kind === "live") counts.live++;
+        else counts.agent++;
+        continue;
+      }
+      eligible.push({ session, seen });
+      observations.set(session.primaryPath, seen);
+    }
+    retrieval.eligible = eligible.length;
+    index = await sessionIndex(deps.cacheDir ?? "", context);
+    for (const candidate of eligible) {
+      if (index.holds(candidate)) {
+        retrieval.reused++;
+        continue;
+      }
+      const { session, seen } = candidate;
+      const result = await index.build(candidate, async (sink) => {
+        // The SQLite builder may have waited for a lock since discovery. Exclude before even
+        // replaying a kept reading, not merely after the expensive read has already happened.
+        const before = await deps.observe(session);
+        if (!sameObservation(seen, before) || excluded(session, input, before, Date.now()) !== null) {
+          throw new Error("eligible session changed before indexing");
+        }
+        const reused = await cache.reuse(session, seen);
+        if (reused !== null) {
+          const digest = await cache.replay(reused, sink);
+          await sink.close();
+          if (digest !== reused.sourceDigest) {
+            await cache.forget(session);
+            throw new Error("redacted reading failed verification");
+          }
+          return { reading: reused, after: await deps.observe(session) };
+        }
+        const kept = await cache.keep(session, seen);
+        if (kept === null) throw new Error("redacted reading cannot be kept");
+        const scan = secretScan();
+        const into = teeRecords(sink, kept.sink);
+        let closed = false;
+        try {
+          const measured = await deps.digests(session, into ?? undefined, scan);
+          await into?.close();
+          closed = true;
+          const reading = { ...measured, report: scan.report() };
+          const after = await deps.observe(session);
+          if (sameObservation(seen, after) && measured.bytes === seen.size) {
+            await kept.commit(reading);
+            if (await cache.reuse(session, seen) === null) {
+              throw new Error("redacted reading could not be kept");
+            }
+          } else {
+            await kept.abandon();
+          }
+          return { reading, after };
+        } catch (error) {
+          try {
+            if (!closed) await into?.close();
+          } finally {
+            await kept.abandon();
+          }
+          throw error;
+        }
+      });
+      if (result === "busy" || result === "changed") {
+        retrieval.status = result === "busy" ? "busy" : "unavailable";
+        retrieval.unavailable = eligible.length - retrieval.indexed - retrieval.reused;
+        return refuse(result === "busy"
+          ? "content selection refused: the session index is busy"
+          : "content selection refused: an eligible session changed while indexing");
+      }
+      if (result === "indexed") retrieval.indexed++;
+      else retrieval.reused++;
+    }
+    // A covered session can change while another is read. Do not run a knowingly partial or
+    // stale query; checking every eligible observation is cheap beside opening every log.
+    for (const { session, seen } of eligible) {
+      const after = await deps.observe(session);
+      if (!sameObservation(seen, after) || excluded(session, input, after, Date.now()) !== null) {
+        retrieval.status = "unavailable";
+        retrieval.unavailable++;
+        return refuse("content selection refused: an eligible session changed before selection");
+      }
+    }
+    const found = index.search(retrieval.query.text, eligible, retrieval.query.limit, MAX_MATERIAL_BYTES);
+    retrieval.matches = found.matches;
+    retrieval.overBound = found.overBound;
+    return { chosen: found.selection, failure: "", observations };
+  } catch (error) {
+    retrieval.status = error instanceof SessionIndexError ? error.kind : "unavailable";
+    retrieval.unavailable = Math.max(1, eligible.length - retrieval.indexed - retrieval.reused);
+    return refuse(retrieval.status === "busy"
+      ? "content selection refused: the session index is busy"
+      : "content selection refused: eligible session content or its index is unavailable");
+  } finally {
+    index?.close();
+  }
 }
 
 /** How many sites one receipt carries. The class counts above them are complete, and every
