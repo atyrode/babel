@@ -336,7 +336,8 @@ async function cycle(
     this is the wake that turns it into a Code session. It runs AFTER the conductor, because
     the conductor is what settled that preparation and wrote the index this reads.
   */
-  for (const posted of await machinery.postPrepared(jobs, codeEngine(actions), plan)) {
+  const engine = codeEngine(actions);
+  for (const posted of await machinery.postPrepared(jobs, engine, plan)) {
     if ("refused" in posted) {
       console.warn(`${BABEL_PLUGIN_ID}: run ${posted.runId}: ${posted.refused}`);
     }
@@ -348,7 +349,7 @@ async function cycle(
     conductor has drawn and dispatched, so the ceilings it is admitted against already include
     everything this cycle committed to reviewing.
   */
-  const named = await machinery.inferTitles(jobs, report.cycleRunId);
+  const named = await machinery.inferTitles(jobs, engine, report.cycleRunId);
   if (named !== null && "refused" in named) {
     console.warn(`${BABEL_PLUGIN_ID}: no session was named this cycle: ${named.refused}`);
   }

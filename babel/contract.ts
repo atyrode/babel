@@ -2136,27 +2136,29 @@ export const MAX_CITATION_QUOTE = 2048;
 export const MIN_CITATION_QUOTE = 12;
 
 /**
- * THE FOUR NAMES BABEL GIVES AN ENGINE REFUSAL, because the operator acts differently on each.
+ * Babel's engine refusals, distinguished by the operator's remedy.
  *
- * A call into Code refuses in two shapes and they arrive by different roads (ADR 0041): the
- * HOST's own refusal is a rejection whose sentence starts with its class
- * (`undeclared_dependency`, `dependency_unavailable`, `unknown_action`, `caller_ceiling`,
- * `capability`, `refused`, `dispatch_cycle`, `dispatch_depth`), and CODE's own refusal is a
- * resolved `{ refused: "code_…" }` value. Both are folded onto these four:
+ * Code and host refusals arrive as host rejections (ADR 0041). The rejection names the host
+ * class and carries Code's own refusal token in its detail. Babel also refuses a profile
+ * whose resolved account selection is positively empty before preparing or posting a run.
  *
  *   `engine_unavailable`  — there is no Code to ask: not declared, not installed, not enabled,
  *                           or too old to publish the door. The operator installs or upgrades.
  *   `engine_forbidden`    — Code's door demands authority this caller or this install does not
  *                           hold. The operator consents, or reinstalls Babel with the grant.
- *   `engine_stale_profile`— the profile moved between the read and the press. Re-read the list
- *                           and press again; the panel does exactly that.
+ *   `engine_stale_profile`— the revision moved, or the profile is absent from this caller's
+ *                           configured, readable roster. Check configuration/access and re-read.
  *   `engine_refused`      — Code said no, in its own word, which rides the detail.
+ *   `engine_no_account`   — Code resolved this revision's saved account selection and found none.
+ *                           Choose an account in Code; Babel holds no provider credential of
+ *                           its own. An unresolved observation is not this refusal (#255).
  */
 export const ENGINE_REFUSALS = {
   unavailable: "engine_unavailable",
   forbidden: "engine_forbidden",
   staleProfile: "engine_stale_profile",
   refused: "engine_refused",
+  noAccount: "engine_no_account",
 } as const;
 export type EngineRefusalCode = (typeof ENGINE_REFUSALS)[keyof typeof ENGINE_REFUSALS];
 

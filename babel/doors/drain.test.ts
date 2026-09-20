@@ -90,6 +90,7 @@ const code: CodeEngine & {
   cancelled: [],
   cancelRefusal: "",
   profiles: async () => await Promise.resolve({ ok: true, value: [code.listed] }),
+  checkProfile: async () => await Promise.resolve({ ok: true, value: null }),
   runSession: async (request) => {
     const parsed = actionSchemas.runSession.input.safeParse({
       containerId: request.profile.containerId,

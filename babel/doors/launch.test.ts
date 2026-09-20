@@ -5,14 +5,10 @@
   input, run the handler, parse what it produced against the action's own result — and then
   asks the STORE and the FLEET what happened.
 
-  WHAT A LAUNCH DOES IS FIVE STEPS AND STOPS AT THE FIFTH (#279). A Babel run is a Code
-  session: the operator names a saved Code profile, Babel chooses the sessions, posts its OWN
-  `prepare` job to seal them as the material, composes the prompt around `/inputs/material` —
-  and then asks `atyrode.code.runSession` to post the session. That last call is what
-  `MATERIAL_INPUT_PENDING` still refuses, because Manifold cannot yet bind one job's sealed
-  output into another plugin's job. So the tests below pin the four steps that DO happen, the
-  refusal that ends the fifth, and the fact that the preparation is real work left behind
-  rather than a ghost.
+  A launch names a Code profile, selects sessions and posts a preparation to seal the material.
+  `postPrepared` waits for that job to settle before asking Code to post a session with the
+  material bound. These tests distinguish a refused launch, a preparation in flight and the
+  later session posting; none may be recorded as another.
 
   `stop` is unchanged and still fully exercised: a run this deployment already started can be
   running when the plugin is upgraded, and ending it releases what it reserved.
@@ -127,10 +123,8 @@ function refusedByCode<T>(code: string, detail: string): EngineAnswer<T> {
 }
 
 /**
- * CODE, as this door reaches it. `runSession` is the one verb that cannot be called yet:
- * `codeEngine` refuses it `material_input_pending` before the call is made, so a fake that
- * ACCEPTED it would be testing a door against a world that does not exist. This one throws if
- * it is ever reached, which is how the refusal's position in the sequence is pinned.
+ * CODE, as this door reaches it. A launch must not post a session before preparation settles;
+ * tests of `postPrepared` explicitly supply the posting response for that later transition.
  */
 class Code implements CodeEngine {
   saved: ProfileRow[] = [
@@ -151,6 +145,12 @@ class Code implements CodeEngine {
       return await Promise.resolve(refusedByCode("engine_unavailable", this.unavailable));
     }
     return await Promise.resolve({ ok: true, value: this.saved });
+  }
+
+  checkResult: EngineAnswer<null> = { ok: true, value: null };
+
+  async checkProfile(): Promise<EngineAnswer<null>> {
+    return await Promise.resolve(this.checkResult);
   }
 
   /**
@@ -416,16 +416,40 @@ test("a model preset naming no Code profile is refused by name, and nothing is p
   expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
 });
 
-test("a hub holding no cookbook recipe refuses an explore rather than posting one with no method", async () => {
-  cookbook = {};
+/*
+  NOTHING IS SEALED FOR A PROFILE THAT CANNOT PAY FOR THE SESSION (#255).
+
+  The session this press leads to is posted two wakes later and is gated there too — every
+  posting in this bundle goes through `codeEngine.runSession`. What this pins is the PRESS: an
+  `atyrode.babel.prepare` job is half a gigabyte and thirty minutes of a real machine's time,
+  and a deployment that never installed an account must not spend it to be told so afterwards.
+  The assertion is therefore what the FLEET was asked to run, not what the door returned.
+*/
+test("an account-check refusal prevents preparation and creates no run", async () => {
+  code.checkResult = refusedByCode("engine_no_account", "ctr_workbench has no resolved account");
+
   const answer = await start({
     preset: "read-whats-new",
     sinceDays: 1,
     profile: { containerId: "ctr_workbench", expectedRevision: 7 },
   });
-  expect(answer["refused"]).toBe(
-    "no cookbook recipe is installed on this hub, so an explore has no method to run",
-  );
+
+  expect(fleet.executed).toEqual([]);
+  expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+  expect(String(answer["refused"])).toStartWith("engine_no_account:");
+  expect(String(answer["refused"])).toContain("ctr_workbench");
+});
+
+test("a hub holding no cookbook recipe refuses an explore rather than posting one with no method", async () => {
+  cookbook = {};
+  code.checkProfile = () =>
+    Promise.reject(new Error("local eligibility must be checked before querying Code"));
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+  expect(answer).toHaveProperty("refused");
   expect(fleet.executed).toEqual([]);
 });
 
@@ -1064,6 +1088,28 @@ async function nameless(sourceId: string, over: Record<string, unknown> = {}): P
 /** The launch path the cycle drives, over the same deps the doors were built with. */
 let machinery: LaunchMachinery;
 
+test("a refused titling profile leaves the batch unprepared and available after correction", async () => {
+  await route();
+  await nameless("retry");
+  code.checkResult = refusedByCode("engine_no_account", "no account selected");
+
+  const refused = await machinery.inferTitles(fleet, code, "cyc_1");
+  expect(refused).toMatchObject({ refused: expect.stringMatching(/^engine_no_account:/u) });
+  expect(fleet.executed).toEqual([]);
+  expect(await harness.db.query(`SELECT id FROM runs WHERE kind = ?`, [OPERATIONS.title])).toEqual(
+    [],
+  );
+  expect(await harness.db.query(`SELECT selector FROM session_titles`)).toEqual([]);
+
+  code.checkResult = { ok: true, value: null };
+  await machinery.inferTitles(fleet, code, "cyc_2");
+  expect(fleet.executed).toHaveLength(1);
+  expect(fleet.executed[0]?.operationId).toBe(OPERATIONS.prepare);
+  expect(JSON.parse(String(fleet.executed[0]?.input?.["input"] ?? "null"))).toMatchObject({
+    selectors: ["codex/retry"],
+  });
+});
+
 test("the untitled sessions are prepared once, as one bounded batch charged to the cycle", async () => {
   await route();
   await nameless("a");
@@ -1073,7 +1119,7 @@ test("the untitled sessions are prepared once, as one bounded batch charged to t
   await nameless("moving", { live: 1 });
   await nameless("babels-own", { kind: "agent" });
 
-  const posted = await machinery.inferTitles(fleet, "cyc_1");
+  const posted = await machinery.inferTitles(fleet, code, "cyc_1");
 
   // ONE `prepare`, over exactly the two, and nothing posted to a model yet: a job input binds
   // a SETTLED output, so the session belongs to the wake this preparation's settlement causes.
@@ -1098,7 +1144,7 @@ test("the untitled sessions are prepared once, as one bounded batch charged to t
 
   // AND ONE AT A TIME. A second wake finds the batch still in flight and posts nothing, so a
   // cycle that fires every few seconds cannot fan the corpus out across the whole fleet.
-  expect(await machinery.inferTitles(fleet, "cyc_2")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
   expect(fleet.executed).toHaveLength(1);
 });
 
@@ -1121,7 +1167,7 @@ test("a deployment at its ceiling names nothing", async () => {
     expires_at: stamp(NOW + HOUR),
   });
 
-  const refused = await machinery.inferTitles(fleet, "cyc_1");
+  const refused = await machinery.inferTitles(fleet, code, "cyc_1");
 
   expect(refused).toMatchObject({ refused: expect.stringContaining("daily ceiling 2.0000") });
   expect(fleet.executed).toEqual([]);
@@ -1148,14 +1194,14 @@ test("a cycle that has already committed its own allowance to reviews names noth
     });
   }
 
-  expect(await machinery.inferTitles(fleet, "cyc_1")).toMatchObject({
+  expect(await machinery.inferTitles(fleet, code, "cyc_1")).toMatchObject({
     refused: expect.stringContaining("per-cycle ceiling 0.2500"),
   });
   expect(fleet.executed).toEqual([]);
 
   // The NEXT cycle has its own allowance under a daily ceiling that still has room, so the
   // lane is deferred rather than closed.
-  expect(await machinery.inferTitles(fleet, "cyc_2")).toMatchObject({
+  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toMatchObject({
     jobId: expect.stringContaining("_material"),
   });
 });
@@ -1181,7 +1227,7 @@ test("a session already answered is never offered again, and a policy with no ro
     inferred_at: stamp(NOW - HOUR),
   });
 
-  expect(await machinery.inferTitles(fleet, "cyc_1")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_1")).toBeNull();
   expect(fleet.executed).toEqual([]);
 
   // AND A DEPLOYMENT THAT NAMED NO PROFILE NAMES NO SESSION. There is one road to a model and
@@ -1196,7 +1242,7 @@ test("a session already answered is never offered again, and a policy with no ro
     payload: JSON.stringify({ enabled: true, perCycleCost: 0.25, dailyCost: 2, batchSize: 4 }),
     recorded_at: stamp(NOW - 60_000),
   });
-  expect(await machinery.inferTitles(fleet, "cyc_2")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
   expect(fleet.executed).toEqual([]);
 });
 
@@ -1317,6 +1363,6 @@ test("a titling preparation that failed answers its sessions rather than leaving
   ]);
   // AND SO THE NEXT CYCLE ASKS FOR NOTHING. Without the row above this lane would post another
   // preparation over the same session on every wake, for ever.
-  expect(await machinery.inferTitles(fleet, "cyc_2")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
   expect(fleet.executed).toEqual([]);
 });

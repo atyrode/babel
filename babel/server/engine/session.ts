@@ -20,10 +20,10 @@ import {
 
   `atyrode.babel` depends on `atyrode.code`, which depends on `atyrode.omp`. Code owns the
   profiles — the model, the thinking level, the account — and Code posts the omp job. This file
-  is the whole of Babel's side of that: three doors called through `ctx.actions.call` on the
+  is the whole of Babel's side of that: Code's doors called through `ctx.actions.call` on the
   hardened GuestCtx (ADR 0041, atyrode/manifold#576), and one translation of the refusals that
   come back. Babel launches nothing and composes no session; what it supplies is a profile, a
-  destination, a prompt and — once Manifold can bind one — the material.
+  destination, a prompt and a binding to the sealed material.
 
   THE SCHEMAS ARE CODE'S OWN, IMPORTED AND NEVER MIRRORED. `@atyrode/manifold-code` publishes
   `actionSchemas` with an input and a result apiece, which is the same arrangement Code itself
@@ -32,21 +32,14 @@ import {
   parsed with Code's schema before the call and the reply with Code's schema after it: a door
   whose answer does not match its own published result is a fault, not a value to pass on.
 
-  REFUSALS ARRIVE BY TWO ROADS AND THIS IS THE ONE PLACE THAT KNOWS IT.
+  Refusals reach this adapter as host rejections, including Code's `code_…` token in the
+  rejection's detail. Hardened and in-realm callers receive different error classes carrying
+  the same sentence; successful replies must match Code's published result schema.
 
-  - THE HOST refuses the EDGE, as a REJECTION whose message is the class and then the plugins it
-    names, caller first: `undeclared_dependency: atyrode.babel -> atyrode.code`, or
-    `refused: atyrode.babel -> atyrode.code.runSession (code_catalog_missing)`. A hardened row
-    catches {@link ActionCallError} and an in-realm row the engine's own `ActionCallRefused`, and
-    the kit's contract is that both carry the SAME sentence — so the class is read off the
-    message and one function answers both boundaries.
-  - CODE refuses the REQUEST, and that is a RESOLVED value: `{ refused: "code_…" }`, published on
-    `RefusalSchema`, the way an omp refusal reaches Code as `omp_…`. So the reply is checked for a
-    refusal BEFORE it is parsed as a result, exactly as Code's own client does it.
-
-  Both are folded onto {@link ENGINE_REFUSALS}'s four names, because those are the four things an
-  operator does differently: install or upgrade Code, consent to what its door demands, re-read a
-  profile that moved, or read the word Code said no with.
+  The profile preflight (#255) rejects a positively resolved empty account selection before
+  preparation or posting. An unresolved observation is not evidence of absence, and success
+  is not spend authority: Code still validates the current profile and accounts when posting.
+  Babel receives account references, never the credentials the machine broker resolves.
 */
 
 /**
@@ -185,6 +178,11 @@ export interface CodeEngine {
    * posted, so a stop that raced a settlement is not an error to report.
    */
   cancelSession(args: { containerId: string; jobId: string }): Promise<EngineAnswer<CodeJob>>;
+  /**
+   * Reject a stale profile or a positively resolved empty account selection before preparation.
+   * Unresolved observations pass through; Code remains authoritative when posting the session.
+   */
+  checkProfile(profile: CodeProfile): Promise<EngineAnswer<null>>;
 }
 
 /**
@@ -258,8 +256,7 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
     const matched = isRefusal ? REFUSAL_SENTENCE.exec(text) : null;
     const host = matched === null ? undefined : HOST_CLASSES[matched[1] ?? ""];
     if (matched !== null && host !== undefined) {
-      // A refusal AT the callee carries Code's own word inside the host's detail, so
-      // `code_stale_preferences` is read here as well as on the resolved path below.
+      // Code's own refusal token travels inside the host rejection's detail.
       const detail = matched[2] ?? "";
       const token = CODE_TOKEN.exec(detail)?.[0] ?? "";
       return refuse(CODE_TOKENS[token] ?? host, detail);
@@ -312,46 +309,91 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
     return { ok: true, value: parsed.data as ActionResult<K> };
   }
 
-  return {
-    profiles: async (): Promise<EngineAnswer<readonly ProfileRow[]>> => {
-      const answered = await call("listProfiles", {});
-      if (!answered.ok) return answered;
-      return {
-        ok: true,
-        // A profile whose saved selection no longer reviews against its catalog answers
-        // `selected: null` — a profile to open in Code, which the panel says rather than hides.
-        //
-        // `accounts` AND `resolved` ARE CODE'S FACTS AND BABEL HAS NO OTHER SOURCE FOR THEM:
-        // the accounts belong to the profile, Code resolves the container's saved choices
-        // against the live observation, and this plugin has no broker to ask. Code's choices
-        // are stored as EXCLUSIONS, so without an observation there is no list to give —
-        // `resolved: false` with an empty list means ASK AGAIN and never "spends nothing",
-        // and every reader of these rows says which of the two it is looking at.
-        value: answered.value.profiles.map((profile) => ({
-          containerId: profile.containerId,
-          revision: profile.revision,
-          model: profile.selected?.model ?? "",
-          thinking: profile.selected?.thinking ?? "",
-          lastMachineId: profile.machineId ?? "",
-          // `identityKey` is null for an API-key slot, which has a credential and no login.
-          accounts: profile.accounts.map((account) => ({
-            provider: account.provider,
-            identityKey: account.identityKey ?? "",
-            label: account.label ?? "",
-          })),
-          resolved: profile.resolved,
-        })),
-      };
-    },
+  // Cache only within this adapter instance, not across wakes. Code revalidates on posting.
+  let roster: Promise<EngineAnswer<ActionResult<"listProfiles">>> | undefined;
 
-    runSession: async (request: SessionRequest): Promise<EngineAnswer<CodeJob>> =>
-      await call("runSession", {
+  /** Every saved profile, which is both what the door offers and what the authority read is. */
+  async function readProfiles(): Promise<EngineAnswer<readonly ProfileRow[]>> {
+    const answered = await (roster ??= call("listProfiles", {}));
+    if (!answered.ok) return answered;
+    return {
+      ok: true,
+      // A profile whose saved selection no longer reviews against its catalog answers
+      // `selected: null` — a profile to open in Code, which the panel says rather than hides.
+      //
+      // `accounts` AND `resolved` ARE CODE'S FACTS AND BABEL HAS NO OTHER SOURCE FOR THEM:
+      // the accounts belong to the profile, Code resolves the container's saved choices
+      // against the live observation, and this plugin has no broker to ask. Code's choices
+      // are stored as EXCLUSIONS, so without an observation there is no list to give —
+      // `resolved: false` with an empty list means ASK AGAIN and never "spends nothing",
+      // and every reader of these rows says which of the two it is looking at.
+      value: answered.value.profiles.map((profile) => ({
+        containerId: profile.containerId,
+        revision: profile.revision,
+        model: profile.selected?.model ?? "",
+        thinking: profile.selected?.thinking ?? "",
+        lastMachineId: profile.machineId ?? "",
+        // `identityKey` is null for an API-key slot, which has a credential and no login.
+        accounts: profile.accounts.map((account) => ({
+          provider: account.provider,
+          identityKey: account.identityKey ?? "",
+          label: account.label ?? "",
+        })),
+        resolved: profile.resolved,
+      })),
+    };
+  }
+
+  async function checkProfile(profile: CodeProfile): Promise<EngineAnswer<null>> {
+    roster ??= call("listProfiles", {});
+    const listed = await roster;
+    if (!listed.ok) return listed;
+    const held = listed.value.profiles.find((row) => row.containerId === profile.containerId);
+    if (held === undefined) {
+      return refuse(
+        ENGINE_REFUSALS.staleProfile,
+        `the Code profile ${profile.containerId} is absent from this caller's readable, ` +
+          `configured profiles. It may have been removed, need configuration in Code, or be ` +
+          `outside the caller's access. Check the workspace and access, then re-read the profiles.`,
+      );
+    }
+    if (held.revision !== profile.expectedRevision) {
+      return refuse(
+        ENGINE_REFUSALS.staleProfile,
+        `the Code profile ${profile.containerId} moved from revision ` +
+          `${String(profile.expectedRevision)} to ${String(held.revision)}. ` +
+          `Re-read the profiles and start it again.`,
+      );
+    }
+    // Account choices are exclusions: without a live observation, empty means unknown.
+    if (held.resolved && held.accounts.length === 0) {
+      return refuse(
+        ENGINE_REFUSALS.noAccount,
+        `the Code profile ${profile.containerId} spends no account: Code resolved its saved ` +
+          `choices against the live observation and found none. Open that workspace in Code ` +
+          `and choose an account. Babel holds no provider credential of its own.`,
+      );
+    }
+    return { ok: true, value: null };
+  }
+
+  return {
+    profiles: readProfiles,
+
+    checkProfile,
+
+    // Guard every posting path, including conductor reviews and prepared explorations.
+    runSession: async (request: SessionRequest): Promise<EngineAnswer<CodeJob>> => {
+      const may = await checkProfile(request.profile);
+      if (!may.ok) return may;
+      return await call("runSession", {
         containerId: request.profile.containerId,
         machineId: request.machineId,
         expectedRevision: request.profile.expectedRevision,
         prompt: request.prompt,
         ...(request.prepareJobId === undefined ? {} : materialInput(request.prepareJobId)),
-      }),
+      });
+    },
 
     readSession: async (args: {
       containerId: string;

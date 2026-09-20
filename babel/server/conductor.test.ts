@@ -1170,6 +1170,8 @@ function refusedByCode<T>(code: string, detail: string): EngineAnswer<T> {
  */
 const NO_CODE: CodeEngine = {
   profiles: async () => await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
+  checkProfile: async () =>
+    await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
   runSession: async () =>
     await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
   readSession: async () => {
@@ -1232,6 +1234,9 @@ class ReviewCode implements CodeEngine {
   async profiles(): Promise<EngineAnswer<readonly never[]>> {
     return await Promise.resolve({ ok: true, value: [] });
   }
+  async checkProfile(): Promise<EngineAnswer<null>> {
+    return await Promise.resolve({ ok: true, value: null });
+  }
 
   async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
     this.posted.push(request);
@@ -1264,6 +1269,8 @@ function codeAnswering(
   return {
     asked,
     profiles: async () =>
+      await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
+    checkProfile: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
     runSession: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
@@ -4817,6 +4824,8 @@ function codeReplying(
   return {
     asked,
     profiles: async () =>
+      await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
+    checkProfile: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
     runSession: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),

@@ -2,29 +2,74 @@ import { describe, expect, test } from "bun:test";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { ENGINE_REFUSALS, MATERIAL_OUTPUT } from "../../contract.ts";
-import { ENGINE_WITHOUT_ACTIONS, codeEngine, materialInput, type ActionsSlice } from "./session.ts";
+import { ENGINE_WITHOUT_ACTIONS, codeEngine, type ActionsSlice } from "./session.ts";
 
 /*
-  BABEL'S SIDE OF CODE'S DOORS, held to the two roads a refusal arrives by (ADR 0041).
-
-  The HOST refuses the EDGE as a REJECTION whose message is `<class>: <offenders>`; CODE refuses
-  the REQUEST as a RESOLVED `{ refused: "code_…" }`. Every test here uses the REAL sentences —
-  the ones the kit and Code publish — because the whole of this module is a translation of
-  them, and a fake that invented its own wording would be testing the translation against
-  itself.
+  Babel translates the host's rejection sentences, including Code's own refusal token.
+  Successful replies are checked against Code's published result schemas.
 */
 
 /** An `actions` slice that throws whatever the host would, or resolves whatever Code would. */
-function actions(answer: () => unknown): ActionsSlice & { readonly calls: unknown[] } {
-  const calls: unknown[] = [];
+function actions(
+  answer: (args: { plugin: string; action: string; input: unknown }) => unknown,
+): ActionsSlice & { readonly calls: { plugin: string; action: string; input: unknown }[] } {
+  const calls: { plugin: string; action: string; input: unknown }[] = [];
   return {
     calls,
     call: async (args) => {
       calls.push(args);
-      return await Promise.resolve(answer());
+      return await Promise.resolve(answer(args));
     },
   };
 }
+
+/**
+ * ONE PROFILE AS CODE PUBLISHES ONE, so a test states what the deployment installed and nothing
+ * else. `accounts: []` with `resolved: true` is the deployment that installed NOTHING — Code
+ * looked and this profile pays for no model — and it is the state every test of the gate is
+ * built on.
+ */
+function profile(over: {
+  readonly containerId?: string;
+  readonly accounts?: readonly { provider: string; identityKey: string | null }[];
+  readonly resolved?: boolean;
+}): unknown {
+  return {
+    containerId: over.containerId ?? "ctr_a",
+    revision: 4,
+    selected: {
+      model: "anthropic/claude-opus-4-1",
+      thinking: "high",
+      capability: 4,
+      advisor: "review",
+    },
+    machineId: "m-dev-01",
+    accounts: over.accounts ?? [{ provider: "anthropic", identityKey: "victorballu@gmail.com" }],
+    resolved: over.resolved ?? true,
+  };
+}
+
+/** The job Code answers a posted session with, in the shape its own result schema takes. */
+const POSTED = {
+  jobId: "omp_7",
+  machineId: "m-dev-01",
+  operationId: "atyrode.omp.session",
+  pluginId: "atyrode.omp",
+  installationRevision: "1",
+  artifactSha256: "a".repeat(64),
+  inputDigest: "b".repeat(64),
+  resourceBindingDigest: "c".repeat(64),
+  inputs: [],
+  state: "queued",
+  nextInputSeq: null,
+  result: null,
+  authority: {
+    origin: { kind: "action", traceId: "t1", door: null },
+    requester: "operator",
+    executor: null,
+    decision: null,
+  },
+};
 
 /** The host's rejection, in the class the hardened row raises it as. */
 function hostRefusal(sentence: string): () => never {
@@ -185,26 +230,16 @@ test("a caller with no actions slice is told nobody was asked, and nothing is ca
 });
 
 test("a session is posted with its material bound, and Code's own schema takes the request", async () => {
-  const slice = actions(() => ({
-    jobId: "omp_7",
-    machineId: "m-dev-01",
-    operationId: "atyrode.omp.session",
-    pluginId: "atyrode.omp",
-    installationRevision: "1",
-    artifactSha256: "a".repeat(64),
-    inputDigest: "b".repeat(64),
-    resourceBindingDigest: "c".repeat(64),
-    inputs: [{ name: MATERIAL_OUTPUT, from: { jobId: "job_1_material", output: MATERIAL_OUTPUT } }],
-    state: "queued",
-    nextInputSeq: null,
-    result: null,
-    authority: {
-      origin: { kind: "action", traceId: "t1", door: null },
-      requester: "operator",
-      executor: null,
-      decision: null,
-    },
-  }));
+  const slice = actions((args) =>
+    args.action === "listProfiles"
+      ? { profiles: [profile({})] }
+      : {
+          ...POSTED,
+          inputs: [
+            { name: MATERIAL_OUTPUT, from: { jobId: "job_1_material", output: MATERIAL_OUTPUT } },
+          ],
+        },
+  );
 
   const answered = await codeEngine(slice).runSession({
     profile: { containerId: "ctr_a", expectedRevision: 4 },
@@ -223,10 +258,12 @@ test("a session is posted with its material bound, and Code's own schema takes t
     directory and have Babel record the answer as evidence-backed analysis. The input went
     through CODE'S OWN schema on the way out — `codeEngine` parses with it before calling — so
     a shape Code would refuse is this plugin's bug and is caught here, not on a machine.
+
+    AND THE AUTHORITY READ CAME FIRST, which is the order the whole of #255 is: two calls, the
+    free one in front of the one that spends.
   */
-  expect(slice.calls).toHaveLength(1);
-  const sent = slice.calls[0];
-  expect(sent !== null && typeof sent === "object" && "input" in sent ? sent.input : null).toEqual({
+  expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
+  expect(slice.calls[1]?.input).toEqual({
     containerId: "ctr_a",
     machineId: "m-dev-01",
     expectedRevision: 4,
@@ -235,8 +272,113 @@ test("a session is posted with its material bound, and Code's own schema takes t
   });
 });
 
-test("the material input names one binding: prepare's own sealed output", () => {
-  expect(materialInput("job_7_material")).toEqual({
-    inputs: [{ name: MATERIAL_OUTPUT, from: { jobId: "job_7_material", output: MATERIAL_OUTPUT } }],
+/*
+  THE SPEND GATE (#255).
+
+  A run spends a model; the model is paid for by an account on the Code profile; the key behind
+  that account is the machine broker's and has never been in this process. What these pin is the
+  half that was missing — that a deployment which installed no account cannot reach the call that
+  spends — and they pin it by COUNTING THE INVOCATION rather than by reading a return value,
+  because "refused with a good message" and "refused after it already reached Code" are the same
+  value and only one of them is the property.
+*/
+describe("what a profile may spend, asked before anything is posted", () => {
+  test("a profile Code resolved with no account refuses, and the session door is never reached", async () => {
+    const slice = actions((args) => {
+      if (args.action === "listProfiles") return { profiles: [profile({ accounts: [] })] };
+      throw new Error("the spend must be unreachable when the deployment installed no account");
+    });
+
+    const answered = await codeEngine(slice).runSession({
+      profile: { containerId: "ctr_a", expectedRevision: 4 },
+      machineId: "m-dev-01",
+      prompt: "read the material",
+    });
+
+    // THE ASSERTION IS THE COUNT. Code was asked what the profile spends and was never asked to
+    // post: one call, and it is the free one.
+    expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles"]);
+    expect(answered.ok).toBe(false);
+    if (answered.ok) return;
+    expect(answered.code).toBe(ENGINE_REFUSALS.noAccount);
+    // A sentence a person acts on: which profile, what is missing, and where to go and fix it.
+    expect(answered.refused).toContain("ctr_a");
+  });
+
+  test("a container the roster does not hold is a stale profile, and still posts nothing", async () => {
+    const slice = actions((args) => {
+      if (args.action === "listProfiles") return { profiles: [profile({ containerId: "ctr_b" })] };
+      throw new Error("a container Code does not publish must never be posted for");
+    });
+
+    const answered = await codeEngine(slice).runSession({
+      profile: { containerId: "ctr_a", expectedRevision: 4 },
+      machineId: "m-dev-01",
+      prompt: "read the material",
+    });
+
+    expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles"]);
+    expect(answered.ok).toBe(false);
+    if (answered.ok) return;
+    // The panel's own remedy, which is the one `engine_stale_profile` already names.
+    expect(answered.code).toBe(ENGINE_REFUSALS.staleProfile);
+  });
+
+  test("a moved revision is stale, not evidence that the requested profile has no account", async () => {
+    const slice = actions((args) => {
+      if (args.action === "listProfiles") return { profiles: [profile({ accounts: [] })] };
+      throw new Error("a stale profile must not post a session");
+    });
+
+    const answered = await codeEngine(slice).runSession({
+      profile: { containerId: "ctr_a", expectedRevision: 3 },
+      machineId: "m-dev-01",
+      prompt: "read the material",
+    });
+
+    expect(answered.ok).toBe(false);
+    if (answered.ok) return;
+    expect(answered.code).toBe(ENGINE_REFUSALS.staleProfile);
+    expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles"]);
+  });
+
+  test("an account observed during preflight does not override Code's later refusal", async () => {
+    const slice = actions((args) => {
+      if (args.action === "listProfiles") return { profiles: [profile({})] };
+      return hostRefusal(
+        "refused: atyrode.babel -> atyrode.code.runSession (code_stale_preferences)",
+      )();
+    });
+
+    const answered = await codeEngine(slice).runSession({
+      profile: { containerId: "ctr_a", expectedRevision: 4 },
+      machineId: "m-dev-01",
+      prompt: "read the material",
+    });
+
+    expect(answered.ok).toBe(false);
+    if (answered.ok) return;
+    expect(answered.code).toBe(ENGINE_REFUSALS.staleProfile);
+    expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
+  });
+
+  test("an unresolved profile is posted, because an empty list Code could not resolve is not 'spends nothing'", async () => {
+    const slice = actions((args) =>
+      args.action === "listProfiles"
+        ? { profiles: [profile({ accounts: [], resolved: false })] }
+        : POSTED,
+    );
+
+    const answered = await codeEngine(slice).runSession({
+      profile: { containerId: "ctr_a", expectedRevision: 4 },
+      machineId: "m-dev-01",
+      prompt: "read the material",
+    });
+
+    // Code stores account choices as EXCLUSIONS, so with no live observation there is no list to
+    // give. Refusing here would be Babel inferring an account from Code's silence, which is the
+    // one thing the profile contract says a caller may never do — Code decides, as it always did.
+    expect(answered.ok).toBe(true);
+    expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
   });
 });

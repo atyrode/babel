@@ -145,6 +145,24 @@ The first of those two is the one worth stating as security rather than as corre
 cannot cite its way to a file it was not given, and it cannot quietly substitute different bytes
 for the ones a reviewer will later read.
 
+**Account preflight is not spend authority** (`babel/server/engine/session.ts`; #255).
+`CodeEngine.checkProfile` asks Code about the selected profile revision. A changed revision or
+absence from this caller's configured, readable roster is stale; a matching revision with
+`resolved: true` and no accounts is refused as `engine_no_account`. Exploration and automatic
+titling check this after local eligibility and before preparation, and the adapter checks every
+session posting, including conductor reviews. Refused titling leaves its batch available for a
+later cycle rather than recording the sessions as declined.
+
+An unresolved observation is not evidence that no account exists. It passes through to Code,
+which remains authoritative about the current profile, account selection and provider when it
+posts a session. The adapter caches the roster only within its own instance, not across wakes;
+the preflight neither authorizes a spend nor guarantees that a provider will honour it.
+
+Babel names a container and revision, not a provider credential. Code composes account references
+([plugins/atyrode.code/session.ts:43–62 at `c6a9c264`](https://github.com/atyrode/code/blob/c6a9c264bfcb37934b5814b0943989fa78f7dd05/plugins/atyrode.code/session.ts#L43-L62));
+the machine broker owns the credentials. A revoked key, an exhausted window, a changed selection
+or an unavailable broker can still make Code refuse after preflight succeeds.
+
 ## 5. Residuals, ranked by reachability
 
 Most reachable first. A residual discovered in the system belongs in this list in the same change.
@@ -162,9 +180,9 @@ Most reachable first. A residual discovered in the system belongs in this list i
    schema, every citation must resolve against the material's index, and a run's output becomes
    records only after that check. What Babel cannot mitigate is what the session does with its own
    tools while it reads; that boundary is Code's.
-3. **The provider credential is Code's, and Babel never sees it.** This removes a residual rather
-   than adding one, but it relocates it: a compromise of the session reaches whatever credential
-   Code placed there, and Babel's receipt cannot tell a reviewer what that was.
+3. **Model-account access remains outside Babel's boundary.** Code selects accounts by reference;
+   the machine broker owns their credentials. A compromised session has whatever account access
+   its runtime grants it, which Babel's receipt does not establish or constrain.
 4. **An installed embedding policy sends every record's prose to one more provider.** The corpus
    index's meaning half is the second place Babel's content leaves the hub, and it differs from
    the first in scope rather than in kind: an analysis sends the selection an operator chose, and
@@ -216,6 +234,8 @@ Most reachable first. A residual discovered in the system belongs in this list i
   installing none means the corpus index answers by keyword and reaches nothing.
 - Running an analysis means accepting that a credential in a format the preflight's rules do not
   name travels with the material.
+- A profile Code positively resolves with no account is refused before preparation or posting.
+  An unresolved observation leaves that decision to Code; Babel supplies no credential fallback.
 
 ## 7. What would invalidate this document
 
@@ -251,3 +271,8 @@ Most reachable first. A residual discovered in the system belongs in this list i
   turns a whitelist into a traversal question; and letting the quote check refuse a claim,
   which would make the accuracy finding into a second gate and put the all-or-nothing waste
   back where #231 and #311 found it.
+- **Babel binding or resolving an inference provider credential of its own** — an environment
+  entry, an argv literal, a model service binding or credential configuration passed to
+  `runSession`. §4's account boundary depends on Code and the machine broker owning that
+  configuration. This is distinct from a credential appearing in corpus material, which
+  residuals 1 and 6 already cover.
