@@ -6,6 +6,7 @@ import {
   BABEL_PLUGIN_ID,
   RecordQuerySchema,
   SuggestionsQuerySchema,
+  type RecordPeel,
   type Swept,
   type UnjudgedRecord,
 } from "../babel/contract.ts";
@@ -138,6 +139,7 @@ function memoryActions(rows: readonly UnjudgedRecord[]): GuestActions {
             standing: "new",
             established: "unsettled",
             createdAt: new Date(NOW).toISOString(),
+            attention: { at: null, basis: null },
             author: null,
             topics: [],
             score: 0,
@@ -164,7 +166,7 @@ function memoryActions(rows: readonly UnjudgedRecord[]): GuestActions {
           related: [],
           plan: null,
           nextActions: [],
-        };
+        } satisfies RecordPeel;
       }
       throw new Error(`unexpected action ${action}`);
     },
