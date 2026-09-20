@@ -11,6 +11,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Challenge and synthesis get their own turns, not a tax on every exploration.** The conductor
+  draws review, explore, challenge and synthesize by explicit relative weights, with the existing
+  claims, ceilings and per-machine slots paying for all of them. Preparation keeps the same fenced
+  claim through the Code session; a failed bind cannot turn uncertain live work into a free slot,
+  and terminal cost is accounted once. Every new activity defaults to zero.
+
+  A challenger writes objections with named grounds, and the candidate shows the objection count,
+  distinct source runs and links to the objection and receipt rather than treating a review vote
+  as criticism. Synthesis receives a bounded connected brief from multiple known source runs and
+  keeps the original observation ids in its support edges. Invented or unoffered durable references
+  are refused; neither stage writes rulings. The stage, lease and scope regressions and a connected
+  synthetic SQLite-frontier exercise prove those boundaries. The rendered preview follows an
+  objection to its record and source receipt; Watch's lower sections, including the weights, are
+  reachable by ordinary scrolling inside their tile. No provider call or production install is
+  part of that proof (#434).
+
 - **Babel can find its own records.** Nothing indexed the corpus, so nothing retrieved against it:
   a preparation selected sessions by recency, the feed enumerated structured columns and accepted
   no text query at all, and the audit's own verdict — that the binding constraint is not ranking

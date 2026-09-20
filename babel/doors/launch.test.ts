@@ -16,14 +16,18 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
+import { HostCallError } from "@manifold/plugin-kit/errors";
 import {
   ACTIONS,
   MACHINE_OPERATIONS,
   MATERIAL_OUTPUT,
   OPERATIONS,
+  MAX_MATERIAL_BYTES,
   OUTPUT_BINDING,
   PRESET_OPERATIONS,
+  type AnalysisWork,
   type ProfileRow,
+  ENGINE_REFUSALS,
 } from "../contract.ts";
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
@@ -40,7 +44,6 @@ import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
 import {
   DRAW_MANAGED,
-  MAX_MATERIAL_BYTES,
   launchDoors,
   launchMachinery,
   type LaunchDeps,
@@ -735,6 +738,14 @@ test("stop cancels the job, closes the run and releases what it reserved", async
     granted_at: stamp(NOW - HOUR),
     expires_at: stamp(NOW + HOUR),
   });
+  await insert(db, "run_progress", {
+    run_id: "run_live",
+    job_id: "job_live",
+    stage: "reading",
+    message: "Still reading material",
+    since: stamp(NOW - HOUR),
+    updated_at: stamp(NOW),
+  });
 
   const answer = await halt(
     "run_live",
@@ -753,6 +764,7 @@ test("stop cancels the job, closes the run and releases what it reserved", async
   ]);
   const run = await store.run("run_live");
   expect(run.run).toMatchObject({ state: "stopped", freshness: "ended" });
+  expect(run.run?.progress).toBeNull();
   expect(run.receipt).toMatchObject({
     closure: "stopped",
     stoppedBy: "operator",
@@ -1366,3 +1378,544 @@ test("a titling preparation that failed answers its sessions rather than leaving
   expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
   expect(fleet.executed).toEqual([]);
 });
+
+const ANALYSIS_PLAN = {
+  metered: {},
+  limits: {
+    timeoutMs: 900000,
+    memoryBytes: 1024 * 1024 * 1024,
+    processes: 64,
+    outputBytes: 512 * 1024 * 1024,
+  },
+};
+
+async function stageLaunch(
+  stage: "challenge" | "synthesize" = "challenge",
+  extraBrief: AnalysisWork["brief"] = [],
+) {
+  await insert(harness.db, "policies", {
+    version: "p_stage",
+    seq: 3,
+    actor_id: "operator",
+    reason: "stage authorization",
+    payload: JSON.stringify({
+      ...ROUTED,
+      activityWeights: { review: 0, explore: 0, challenge: 1, synthesize: 1 },
+      review: {
+        ...ROUTED.review,
+        stageRecipes: { challenge: "code-health", synthesize: "code-health" },
+      },
+    }),
+    recorded_at: stamp(NOW),
+  });
+  await insert(harness.db, "claims", {
+    id: "asg_stage",
+    record_id: "hyp_00000001",
+    role: `analysis:${stage}`,
+    lane: "exploration",
+    policy_version: "p_stage",
+    run_id: "cyc_stage",
+    job_id: "job_stage_material",
+    fence: 1,
+    reserved_cost: 0.05,
+    granted_at: stamp(NOW),
+    expires_at: stamp(NOW + HOUR),
+  });
+  const analysis: AnalysisWork = {
+    stage,
+    selectors: ["omp/s1"],
+    claim: { id: "asg_stage", runId: "cyc_stage", fence: 1 },
+    brief: [
+      {
+        id: "hyp_00000001",
+        kind: "hypothesis",
+        runId: null,
+        summary: "A prior claim",
+        payload: { statement: "Preserve the full prior claim", limits: ["Still unverified"] },
+        objectionTo: [],
+      },
+      ...extraBrief,
+    ],
+  };
+  const start = () =>
+    machinery.startExplore(
+      {
+        runId: "run_stage",
+        jobId: "job_stage",
+        materialJobId: "job_stage_material",
+        authorityId: "cyc_stage",
+      },
+      fleet,
+      code,
+      {
+        preset: "read-whats-new",
+        machineId: MACHINE,
+        profile: ROUTED.review.profile,
+        recipes: ["code-health"],
+      },
+      ANALYSIS_PLAN,
+      analysis,
+    );
+  return { analysis, start };
+}
+
+async function sealStage(closure = "completed") {
+  await harness.db.run(
+    `UPDATE runs SET closure = ?, finished_at = ?, payload = ? WHERE job_id = 'job_stage_material'`,
+    [
+      closure,
+      stamp(NOW),
+      JSON.stringify({
+        closure,
+        material: {
+          schema: "babel.material/1",
+          preparationId: "prep-stage",
+          preparedAt: stamp(NOW),
+          machineId: MACHINE,
+          sessions: [
+            {
+              selector: "omp/s1",
+              harness: "omp",
+              sourceId: "s1",
+              captureDigest: "c".repeat(64),
+              sourceDigest: "d".repeat(64),
+              file: "0001-omp-s1.jsonl",
+              records: 12,
+              bytes: 1024,
+            },
+          ],
+        },
+      }),
+    ],
+  );
+}
+
+function stageJob(): EngineAnswer<CodeJob> {
+  return {
+    ok: true,
+    value: {
+      jobId: "job_stage_code",
+      machineId: MACHINE,
+      operationId: "atyrode.omp.session",
+      pluginId: "atyrode.omp",
+      state: "started",
+    },
+  };
+}
+
+test.each(["challenge", "synthesize"] as const)(
+  "a %s retains its one claim and exact scope across preparation and Code",
+  async (stage) => {
+    const { start, analysis } = await stageLaunch(stage);
+    await nameless("not-offered");
+    await harness.db.run(`UPDATE sessions SET seen_at = ? WHERE selector = 'omp/s1'`, [
+      stamp(NOW - 30 * 24 * HOUR),
+    ]);
+    expect(await start()).toEqual({ runId: "run_stage", jobId: "job_stage_material" });
+    const document = fleet.executed[0]?.input["input"];
+    if (typeof document !== "string") throw new Error("the preparation has no input document");
+    expect(JSON.parse(document)["selectors"]).toEqual(["omp/s1"]);
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+    await sealStage();
+    const governor = coordinator(harness.store, () => NOW, 16);
+    expect((await governor.open(NOW)).byMachine[MACHINE]).toBe(1);
+    let prompt = "";
+    code.posting = (request) => {
+      prompt = request.prompt;
+      return stageJob();
+    };
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([
+      { runId: "run_stage", jobId: "job_stage_code" },
+    ]);
+    expect((await governor.open(NOW)).byMachine[MACHINE]).toBe(1);
+    expect(
+      await harness.db.query(`SELECT job_id, finished_at FROM claims WHERE id = 'asg_stage'`),
+    ).toEqual([{ job_id: "job_stage_code", finished_at: null }]);
+    expect((await harness.store.run("run_stage")).run?.progress?.unheard).not.toBe(true);
+    const rows = await harness.db.query<{ preparation: string; authority_kind: string }>(
+      `SELECT preparation, authority_kind FROM runs WHERE id = 'run_stage'`,
+    );
+    expect(JSON.parse(rows[0]!.preparation)["analysis"]).toEqual(analysis);
+    expect(rows[0]!.authority_kind).toBe("conductor");
+    expect(prompt).toContain(`babel.stage = ${stage}`);
+    expect(prompt).toContain("Preserve the full prior claim");
+    expect(prompt).toContain("Still unverified");
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+  },
+);
+
+test.each(["disabled", "expired", "taken-over", "profile", "preparation", "malformed"] as const)(
+  "%s analysis authority cannot post a paid continuation",
+  async (boundary) => {
+    const { start } = await stageLaunch();
+    await start();
+    await sealStage(boundary === "preparation" ? "failed" : "completed");
+    if (boundary === "disabled")
+      await harness.db.run(
+        `UPDATE policies SET payload = json_set(payload, '$.enabled', json('false')) WHERE version = 'p_stage'`,
+      );
+    if (boundary === "expired")
+      await harness.db.run(`UPDATE claims SET expires_at = ? WHERE id = 'asg_stage'`, [stamp(NOW)]);
+    if (boundary === "taken-over")
+      await harness.db.run(
+        `UPDATE claims SET fence = 2, run_id = 'cyc_other' WHERE id = 'asg_stage'`,
+      );
+    if (boundary === "profile")
+      code.checkResult = refusedByCode("engine_unavailable", "profile changed");
+    if (boundary === "malformed")
+      await harness.db.run(
+        `UPDATE runs SET preparation = json_set(preparation, '$.analysis.stage', 'ruling') WHERE id = 'run_stage'`,
+      );
+    let posts = 0;
+    code.posting = () => {
+      posts += 1;
+      return stageJob();
+    };
+    const result = await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+    expect(result[0]).toHaveProperty("refused");
+    expect(posts).toBe(0);
+    expect(await harness.db.query(`SELECT closure FROM runs WHERE id = 'run_stage'`)).toEqual([
+      { closure: "failed" },
+    ]);
+    const claim = (
+      await harness.db.query<{ finished_at: string | null; fence: bigint }>(
+        `SELECT finished_at, fence FROM claims WHERE id = 'asg_stage'`,
+      )
+    )[0]!;
+    if (boundary === "taken-over") expect(claim.finished_at).toBeNull();
+    else expect(claim.finished_at).not.toBeNull();
+  },
+);
+
+test("a takeover during Code posting cancels the new session without finishing the newer fence", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  code.runSession = async () => {
+    await harness.db.run(
+      `UPDATE claims SET fence = 2, run_id = 'cyc_other' WHERE id = 'asg_stage'`,
+    );
+    return stageJob();
+  };
+  expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+  expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_stage_code" }]);
+  expect(await harness.db.query(`SELECT finished_at FROM claims WHERE id = 'asg_stage'`)).toEqual([
+    { finished_at: null },
+  ]);
+});
+
+test("failure retaining the posted continuation cancels it and accounts its reservation", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  code.posting = stageJob;
+  const run = harness.db.run.bind(harness.db);
+  harness.db.run = async (sql, params) => {
+    if (sql.startsWith("UPDATE runs SET job_id")) throw new Error("retention unavailable");
+    return await run(sql, params);
+  };
+  try {
+    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+  } finally {
+    harness.db.run = run;
+  }
+  expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_stage_code" }]);
+  expect(
+    await harness.db.query(`SELECT outcome, actual_cost FROM claims WHERE id = 'asg_stage'`),
+  ).toEqual([{ outcome: "abandoned", actual_cost: 0.05 }]);
+});
+
+test("an unconfirmed Code cancellation keeps the parent pollable and the reservation occupied", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  code.posting = stageJob;
+  code.cancelSession = async () => refusedByCode("engine_unavailable", "cancellation unavailable");
+  const run = harness.db.run.bind(harness.db);
+  harness.db.run = async (sql, params) => {
+    if (sql.startsWith("UPDATE runs SET job_id")) throw new Error("retention unavailable");
+    return await run(sql, params);
+  };
+  try {
+    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+  } finally {
+    harness.db.run = run;
+  }
+  expect(await harness.db.query(`SELECT closure, job_id FROM runs WHERE id = 'run_stage'`)).toEqual(
+    [{ closure: null, job_id: "job_stage_code" }],
+  );
+  expect(
+    await harness.db.query(`SELECT finished_at, actual_cost FROM claims WHERE id = 'asg_stage'`),
+  ).toEqual([{ finished_at: null, actual_cost: null }]);
+  expect((await coordinator(harness.store, () => NOW, 16).open(NOW)).byMachine[MACHINE]).toBe(1);
+  expect((await harness.store.run("run_stage")).run?.progress).toBeNull();
+});
+
+test("multiple brief ids carry record-scoped operator steering into the prompt and receipt intent", async () => {
+  const { start, analysis } = await stageLaunch("challenge", [
+    {
+      id: "hyp_00000002",
+      kind: "hypothesis",
+      runId: null,
+      summary: "Another prior claim",
+      payload: { statement: "A distinct operator concern" },
+      objectionTo: [],
+    },
+  ]);
+  for (const [index, record] of analysis.brief.entries()) {
+    await insert(harness.db, "steering", {
+      id: `stg_brief_${index}`,
+      root_id: `stg_brief_${index}`,
+      seq: 0,
+      actor_kind: "operator",
+      actor_id: "operator",
+      target_kind: "record",
+      target_id: record.id,
+      text: `Check the operator concern about ${record.id}`,
+      recorded_at: stamp(NOW),
+    });
+  }
+  await start();
+  await sealStage();
+  let prompt = "";
+  code.posting = (request) => {
+    prompt = request.prompt;
+    return stageJob();
+  };
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  const rows = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE id = 'run_stage'`,
+  );
+  const carried = JSON.parse(rows[0]!.preparation).steering.carried;
+  expect(carried.map((remark: { id: string }) => remark.id).sort()).toEqual([
+    "stg_brief_0",
+    "stg_brief_1",
+  ]);
+  for (const record of analysis.brief)
+    expect(prompt).toContain(`Check the operator concern about ${record.id}`);
+});
+
+test("overlapping preparation continuations post only one session and cannot close its bound winner", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  let entered!: () => void;
+  const posting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let resume!: () => void;
+  const held = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  let posts = 0;
+  code.runSession = async () => {
+    posts += 1;
+    entered();
+    if (posts === 1) await held;
+    return stageJob();
+  };
+  const first = machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  await posting;
+  try {
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+  } finally {
+    resume();
+    await first;
+  }
+  expect(posts).toBe(1);
+  expect(code.cancelled).toEqual([]);
+  expect(await harness.db.query(`SELECT job_id, closure FROM runs WHERE id = 'run_stage'`)).toEqual(
+    [{ job_id: "job_stage_code", closure: null }],
+  );
+  expect(
+    await harness.db.query(`SELECT job_id, finished_at FROM claims WHERE id = 'asg_stage'`),
+  ).toEqual([{ job_id: "job_stage_code", finished_at: null }]);
+  expect((await coordinator(harness.store, () => NOW, 16).open(NOW)).byMachine[MACHINE]).toBe(1);
+});
+
+test.each(["finish-first", "parent-first"] as const)(
+  "%s atomically decides whether an expired analysis claim ever authorizes native posting",
+  async (order) => {
+    const { start, analysis } = await stageLaunch();
+    const governor = coordinator(harness.store, () => NOW, 16);
+    const run = harness.db.run.bind(harness.db);
+    let outcome = "";
+    harness.db.run = async (sql, params) => {
+      if (!sql.startsWith("INSERT INTO runs(id, kind, machine_id, container_id"))
+        return await run(sql, params);
+      const inserted = order === "parent-first" ? await run(sql, params) : null;
+      await run(`UPDATE claims SET expires_at = ? WHERE id = 'asg_stage'`, [stamp(NOW)]);
+      const finished = await governor.finish({
+        ...analysis.claim,
+        unpostedJobId: "job_stage_material",
+        cost: 0,
+        outcome: "failed",
+        now: NOW,
+      });
+      outcome = finished.outcome;
+      return inserted ?? (await run(sql, params));
+    };
+    try {
+      await start();
+    } finally {
+      harness.db.run = run;
+    }
+    expect(outcome).toBe(order === "finish-first" ? "finished" : "refused");
+    expect(fleet.executed.map((job) => job.jobId)).toEqual(
+      order === "finish-first" ? [] : ["job_stage_material"],
+    );
+    expect(
+      await harness.db.query(`SELECT outcome, actual_cost FROM claims WHERE id = 'asg_stage'`),
+    ).toEqual(
+      order === "finish-first"
+        ? [{ outcome: "failed", actual_cost: 0 }]
+        : [{ outcome: null, actual_cost: null }],
+    );
+  },
+);
+
+test.each(["throw", "refused"] as const)(
+  "an unconfirmed Code posting (%s) remains visible and reserved without buying another session",
+  async (failure) => {
+    const { start } = await stageLaunch();
+    await start();
+    await sealStage();
+    let posts = 0;
+    code.runSession = async () => {
+      posts += 1;
+      if (failure === "throw") throw new Error("response transport interrupted");
+      return refusedByCode(ENGINE_REFUSALS.unconfirmed, "response transport interrupted");
+    };
+    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+    await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+    expect(posts).toBe(1);
+    expect(
+      await harness.db.query(
+        `SELECT closure, json_extract(payload, '$.posting') AS posting FROM runs WHERE id = 'run_stage'`,
+      ),
+    ).toEqual([{ closure: null, posting: 1n }]);
+    expect(await harness.db.query(`SELECT finished_at FROM claims WHERE id = 'asg_stage'`)).toEqual(
+      [{ finished_at: null }],
+    );
+    const visible = (await harness.store.run("run_stage")).run;
+    expect(visible?.progress?.unheard).toBe(true);
+    expect(visible?.progress?.message).toContain("response transport interrupted");
+    expect((await coordinator(harness.store, () => NOW, 16).open(NOW)).byMachine[MACHINE]).toBe(1);
+  },
+);
+
+test("a definite pre-dispatch refusal closes an analysis parent instead of claiming an unknown posting", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  let posts = 0;
+  code.runSession = async () => {
+    posts += 1;
+    return refusedByCode(ENGINE_REFUSALS.refused, "the local request failed validation");
+  };
+  expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  expect(posts).toBe(1);
+  expect(await harness.db.query(`SELECT closure FROM runs WHERE id = 'run_stage'`)).toEqual([
+    { closure: "failed" },
+  ]);
+  expect((await harness.store.run("run_stage")).run?.progress?.unheard).not.toBe(true);
+});
+
+test("a native titling admission refusal leaves no retained material or parent to poll", async () => {
+  await route();
+  await nameless("refused");
+  fleet.execute = () => {
+    throw new HostCallError("jobs.execute", "installation_changed");
+  };
+  fleet.status = () => {
+    throw new HostCallError("jobs.status", "job_not_started");
+  };
+  expect(await machinery.inferTitles(fleet, code, "cyc_title")).toHaveProperty("refused");
+  expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+  expect(fleet.executed).toEqual([]);
+});
+
+test("an unresolved posting cannot be stopped or reported as closed on a later refusal", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  code.runSession = async () =>
+    refusedByCode(ENGINE_REFUSALS.unconfirmed, "response transport interrupted");
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  expect(
+    await halt("run_stage", { operationId: OPERATIONS.prepare, jobId: "job_stage_material" }),
+  ).toHaveProperty("refused");
+  expect(fleet.cancelled).toEqual([]);
+  await harness.db.run(
+    `UPDATE policies SET payload = json_set(payload, '$.enabled', json('false'))`,
+  );
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+  expect(await harness.db.query(`SELECT closure FROM runs WHERE id = 'run_stage'`)).toEqual([
+    { closure: null },
+  ]);
+  expect((await harness.store.run("run_stage")).run?.progress?.unheard).toBe(true);
+  expect(await harness.db.query(`SELECT finished_at FROM claims WHERE id = 'asg_stage'`)).toEqual([
+    { finished_at: null },
+  ]);
+});
+
+test.each(["posting", "bound"] as const)(
+  "Stop's preparing snapshot cannot close a parent that becomes %s while cancellation is awaited",
+  async (boundary) => {
+    const { start, analysis } = await stageLaunch();
+    await start();
+    await sealStage();
+    const cancelling = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    fleet.cancel = async () => {
+      cancelling.resolve();
+      await cancelled.promise;
+    };
+    const posting = Promise.withResolvers<void>();
+    const posted = Promise.withResolvers<void>();
+    code.runSession = async () => {
+      posting.resolve();
+      await posted.promise;
+      return stageJob();
+    };
+    const stopping = halt("run_stage", {
+      operationId: OPERATIONS.prepare,
+      jobId: "job_stage_material",
+    });
+    await cancelling.promise;
+    const continuation = machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+    await posting.promise;
+    try {
+      if (boundary === "bound") {
+        posted.resolve();
+        await continuation;
+      }
+      cancelled.resolve();
+      expect(await stopping).toHaveProperty("refused");
+      expect(await harness.db.query(`SELECT closure FROM runs WHERE id = 'run_stage'`)).toEqual([
+        { closure: null },
+      ]);
+    } finally {
+      cancelled.resolve();
+      posted.resolve();
+      await stopping;
+      await continuation;
+    }
+    expect(code.cancelled).toEqual([]);
+    expect(
+      await harness.db.query(`SELECT job_id, closure FROM runs WHERE id = 'run_stage'`),
+    ).toEqual([{ job_id: "job_stage_code", closure: null }]);
+    const governor = coordinator(harness.store, () => NOW, 16);
+    expect(
+      await governor.finish({
+        ...analysis.claim,
+        unpostedJobId: "job_stage_code",
+        outcome: "failed",
+        cost: 0,
+        now: NOW + 2 * HOUR,
+      }),
+    ).toHaveProperty("outcome", "refused");
+    expect((await governor.open(NOW)).byMachine[MACHINE]).toBe(1);
+  },
+);

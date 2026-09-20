@@ -13,6 +13,7 @@ import {
   JEV_PLUGIN_ID,
   MATERIAL_EXPORT,
   MATERIAL_OUTPUT,
+  MAX_MATERIAL_BYTES,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
@@ -29,7 +30,6 @@ import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { ADAPTERS } from "../babel/machine/adapters/index.ts";
 import { STORE_DATA_VERSION } from "../babel/store/schema.ts";
 import { importableTables } from "../babel/store/acts.ts";
-import { MAX_MATERIAL_BYTES } from "../babel/doors/launch.ts";
 import { plugin } from "../babel/server.ts";
 import babelManifest from "../babel/manifest.json";
 import feedManifest from "../babel/feed/manifest.json";

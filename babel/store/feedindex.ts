@@ -32,6 +32,10 @@ import type { PluginDatabase, SqlParam, SqlRow } from "@manifold/plugin";
 import {
   POST_KINDS,
   ROLES,
+  CHALLENGE_RELATION,
+  ChallengeRecordSchema,
+  isRecordId,
+  type RecordPeel,
   type FeedPost,
   type FeedQuery,
   type FeedSort,
@@ -231,6 +235,7 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
   const standings = await readStandings(db);
   const tallies = await readTallies(db);
   const reviewing = await readOpenClaims(db, nowMs);
+  const challenges = await readChallenges(db);
 
   const posts: IndexEntry[] = [];
   await scan<SqlRow>(
@@ -245,6 +250,12 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
     [],
     (row) => {
       const entry = recordEntry(row, membership, standings, tallies, reviewing, nowMs);
+      if (entry !== null) {
+        entry.post.challenges = challenges.get(entry.post.id)?.summary ?? {
+          objections: 0,
+          distinctRuns: 0,
+        };
+      }
       // A row whose line this build could not read is an identifier in a list, which is the
       // surface §8.6 replaced.
       if (entry !== null) posts.push(entry);
@@ -271,6 +282,69 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
     if (entry.post.surface === "desk") desk++;
   }
   return { builtAt: nowMs, posts, topics, unfiled, desk, reviewing };
+}
+
+/**
+ * Grounded objections are record edges, never review votes. Check both held endpoints and
+ * the source record's provenance before counting; older malformed IDs must not break a page.
+ * The index needs totals only. A named record also gets its latest twenty distinct objections.
+ */
+export async function readChallenges(
+  db: PluginDatabase,
+  target?: string,
+): Promise<Map<string, { summary: FeedPost["challenges"]; details: RecordPeel["challenges"] }>> {
+  const out = new Map<
+    string,
+    { summary: FeedPost["challenges"]; details: RecordPeel["challenges"] }
+  >();
+  const records = new Map<string, Set<string>>();
+  const runs = new Map<string, Set<string>>();
+  await scan<SqlRow>(
+    db,
+    `SELECT e.to_id AS target, r.id, r.kind, r.run_id, r.title, e.note
+       FROM edges e
+       JOIN records r ON r.id = e.from_id AND r.kind = e.from_kind
+       JOIN records h ON h.id = e.to_id AND h.kind = e.to_kind
+      WHERE e.kind = ? AND h.kind = 'hypothesis'
+        AND e.from_id <> e.to_id
+        AND r.kind IN ('observation', 'hypothesis')
+        AND e.actor_kind = 'run' AND e.actor_id = r.run_id AND r.run_id <> ''
+        ${target === undefined ? "" : "AND e.to_id = ?"}
+      ORDER BY r.created_at DESC, r.id DESC, e.id DESC`,
+    target === undefined ? [CHALLENGE_RELATION] : [CHALLENGE_RELATION, target],
+    (row) => {
+      const id = text(row["target"]);
+      if (!isRecordId(id)) return;
+      const parsed = ChallengeRecordSchema.safeParse({
+        id: text(row["id"]),
+        kind: text(row["kind"]),
+        runId: text(row["run_id"]),
+        grounds: text(row["note"]),
+        summary: text(row["title"]),
+      });
+      if (!parsed.success) return;
+      const objection = parsed.data;
+      if (objection.kind === "hypothesis" && objection.grounds === "evidence") return;
+      let seen = records.get(id);
+      let sources = runs.get(id);
+      let held = out.get(id);
+      if (seen === undefined || sources === undefined || held === undefined) {
+        seen = new Set();
+        sources = new Set();
+        held = { summary: { objections: 0, distinctRuns: 0 }, details: [] };
+        records.set(id, seen);
+        runs.set(id, sources);
+        out.set(id, held);
+      }
+      if (seen.has(objection.id)) return;
+      seen.add(objection.id);
+      sources.add(objection.runId);
+      held.summary.objections = seen.size;
+      held.summary.distinctRuns = sources.size;
+      if (target !== undefined && held.details.length < 20) held.details.push(objection);
+    },
+  );
+  return out;
 }
 
 /**
@@ -752,6 +826,7 @@ function recordEntry(
     unsure: tally?.unsure ?? 0,
     votes: tally?.votes ?? [],
     contested: tally?.contested ?? false,
+    challenges: { objections: 0, distinctRuns: 0 },
     reviewing: reviewing.has(id),
     comments: tally?.comments ?? 0,
     awaiting,
@@ -820,6 +895,7 @@ function questionEntry(
     unsure: 0,
     votes: [],
     contested: false,
+    challenges: { objections: 0, distinctRuns: 0 },
     reviewing: reviewing.has(id),
     comments: count(row["answers"]),
     awaiting,

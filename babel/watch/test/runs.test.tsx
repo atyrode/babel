@@ -402,7 +402,6 @@ test("the ceilings section states both ceilings, the concurrency and today's spe
   expect(stats[1]).toContain("$4.50 spent since midnight UTC.");
   expect(stats[2]).toContain("3");
   expect(root.querySelector("[role='meter']")?.getAttribute("aria-valuenow")).toBe("4.5");
-  expect(root.textContent).toContain("40% coverage · evidence-checker");
   expect(root.textContent).toContain("Policy pol_7 recorded");
 });
 

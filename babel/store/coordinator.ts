@@ -1,11 +1,11 @@
 /*
-  THE EVALUATION COORDINATOR (SPEC §4.12, §5.8): which review of which
-  record in which role is worth spending authorized attention on next, who is entitled to do
-  it, and what it cost. It is the port of v0.4.0:internal/evaluation's `policy.go`, `selection.go` and
-  `coordination.go` onto the plugin's own tables, and it is one file because those three
-  answered one question in three places: a draw that could not see the claims would hand the
-  same work to two workers, and a claim that could not see the policy would spend against a
-  ceiling nobody installed.
+  THE ATTENTION COORDINATOR (SPEC §4.12, §5.8): which review or analysis stage is worth
+  spending authorized attention on next, who is entitled to do it, and what it cost.
+  Review lanes retain the port of v0.4.0:internal/evaluation's policy and sampling rules.
+  Explicit, default-off activity weights admit analysis alongside them; `analysis.ts` assembles
+  bounded source/claim offers, but every activity uses this same claim, fence and spend ledger.
+  A draw that could not see claims would hand the same work to two workers, and a claim that
+  could not see policy would spend against a ceiling nobody installed.
 
   What crossed unchanged:
   - the measured constants. Every number here is the number the Go policy carried, with the
@@ -41,8 +41,24 @@
 
 import { z } from "zod";
 import type { GuestDatabase, GuestSqlParam, GuestSqlRow } from "@manifold/plugin-kit";
-import type { GapReason, INTEREST_STATES, StopReason } from "../contract.ts";
-import { CodeProfileSchema, ROLES, SuggesterSchema } from "../contract.ts";
+import type {
+  AnalysisBriefRecord,
+  AnalysisRole,
+  GapReason,
+  INTEREST_STATES,
+  Stage,
+  StopReason,
+} from "../contract.ts";
+import {
+  ACTIVITIES,
+  ActivityWeightsSchema,
+  ANALYSIS_ROLES,
+  CodeProfileSchema,
+  ROLES,
+  STAGES,
+  SuggesterSchema,
+} from "../contract.ts";
+import { analysisOffers, type AnalysisOffer } from "./analysis.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
 export interface CoordinatorStore {
@@ -178,6 +194,7 @@ export const ReviewDispatchSchema = z.strictObject({
   machineId: z.string().trim().min(1).max(128),
   profile: CodeProfileSchema,
   roleRecipes: z.record(z.enum(ROLES), z.string().trim().min(1).max(200)),
+  stageRecipes: z.partialRecord(z.enum(STAGES), z.string().trim().min(1).max(200)).default({}),
   recipes: z.array(PolicyRecipeSchema).min(1).max(32),
   /** How many generations of first-class refinement proposals may recursively be proposed. */
   maxRefinementDepth: z.number().int().min(0).max(8).optional(),
@@ -187,6 +204,7 @@ export type ReviewDispatch = z.infer<typeof ReviewDispatchSchema>;
 export const PolicySchema = z.strictObject({
   version: z.string().trim().min(1).default(DEFAULT_POLICY_VERSION),
   enabled: z.boolean().default(false),
+  activityWeights: ActivityWeightsSchema,
   cadenceSeconds: z.number().int().default(MEASURED.cadenceSeconds),
   overdueSeconds: z.number().int().default(MEASURED.overdueSeconds),
   initialReviews: z.number().int().default(MEASURED.initialReviews),
@@ -316,6 +334,18 @@ export function validatePolicy(policy: Policy, concurrentJobs: number | null): s
       `the hub refuses the rest at execute, and a refused posting costs its reservation and ` +
       `produces no review`
     );
+  }
+  const weights = ActivityWeightsSchema.safeParse(policy.activityWeights);
+  if (!weights.success) return "activity weights must be finite numbers in [0,1]";
+  for (const stage of STAGES) {
+    if (policy.activityWeights[stage] <= 0) continue;
+    const recipeId = policy.review?.stageRecipes[stage];
+    if (
+      recipeId === undefined ||
+      !policy.review?.recipes.some((recipe) => recipe.id === recipeId && recipe.enabled !== false)
+    ) {
+      return `analysis stage ${stage} requires an installed stage recipe`;
+    }
   }
   if (policy.review !== undefined) {
     const ids = new Set<string>();
@@ -519,19 +549,17 @@ export interface Stop {
 }
 
 /**
- * One unit of authorized work, before anything is reserved. The id is a digest of the record,
- * the role, the policy version and the sample ordinal — and deliberately NOT of the run that
- * drew it: two conductors that independently decide the same review is next derive the same id,
- * contend for one claim, and exactly one wins. An id containing the run would give each its own
- * assignment for one review and spend the shared allowance twice on one vote.
+ * One unit of authorized work, before anything is reserved. Review identities digest the
+ * revision, role, policy version and ordinal. Analysis identities digest the stage's exact
+ * source/brief fingerprint, so a new cycle or policy revision cannot repay unchanged context.
+ * Neither includes the drawing run: independent conductors contend for one claim.
  */
-export interface Assignment {
+interface AssignmentBase {
   readonly id: string;
-  /** The exact revision drawn. */
+  /** The exact revision drawn, or the catalogued selector for exploration. */
   readonly recordId: string;
   readonly rootId: string;
   readonly kind: string;
-  readonly role: Role;
   readonly lane: Lane;
   readonly policyVersion: string;
   readonly ordinal: number;
@@ -544,6 +572,20 @@ export interface Assignment {
   /** The entities the record is filed under, whose stance decided it was drawable at all. */
   readonly topics: readonly string[];
 }
+
+export interface ReviewAssignment extends AssignmentBase {
+  readonly activity: "review";
+  readonly role: Role;
+}
+
+export interface AnalysisAssignment extends AssignmentBase {
+  readonly activity: Stage;
+  readonly role: AnalysisRole;
+  readonly selectors: readonly string[];
+  readonly brief: readonly AnalysisBriefRecord[];
+}
+
+export type Assignment = ReviewAssignment | AnalysisAssignment;
 
 export type DrawResult =
   | {
@@ -618,6 +660,8 @@ export interface BindRequest {
   readonly runId: string;
   readonly fence: Fence;
   readonly jobId: string;
+  readonly previousJobId?: string;
+  readonly now?: number;
 }
 
 export type BindResult =
@@ -658,6 +702,13 @@ export interface FinishRequest {
   readonly cost: number;
   readonly outcome: Closure;
   readonly now?: number;
+  /** Account a terminal Code job whose live preparation-to-session bind could not complete. */
+  readonly terminalJob?: {
+    readonly jobId: string;
+    readonly previousJobId: string;
+  };
+  /** Release only an expired analysis claim with no durable native or parent posting intent. */
+  readonly unpostedJobId?: string;
 }
 
 export type FinishResult =
@@ -830,6 +881,7 @@ interface ClaimFacts {
   readonly active: number;
   readonly setbacks: number;
   readonly completed: number;
+  readonly latest: number | null;
 }
 
 interface Candidate {
@@ -850,6 +902,37 @@ interface Candidate {
   readonly deferredAt: number;
   readonly topics: readonly string[];
 }
+
+interface AnalysisCandidate extends AnalysisOffer {
+  readonly role: AnalysisRole;
+  readonly head: Head;
+  readonly topics: readonly string[];
+  readonly weight: number;
+  readonly ordinal: number;
+  readonly retry: number;
+  readonly lane: Lane;
+}
+
+type WorkCandidate = Candidate | AnalysisCandidate;
+
+/**
+ * A closed native preparation is not a closed parent; expiry is not job termination.
+ * An analysis post whose retention and cancellation both failed may have no run row at all.
+ * Its known job remains unconfirmed work until the native reaper establishes termination.
+ */
+const RUNNING_CLAIM = `(EXISTS (
+  SELECT 1 FROM runs live
+   WHERE (live.job_id = c.job_id OR live.prepare_job_id = c.job_id)
+     AND live.closure IS NULL
+) OR (c.role LIKE 'analysis:%' AND c.job_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM runs known WHERE known.job_id = c.job_id OR known.prepare_job_id = c.job_id
+)))`;
+const OCCUPIED_CLAIM = `c.finished_at IS NULL AND c.job_id IS NOT NULL AND (
+  ${RUNNING_CLAIM}
+  OR (c.expires_at > ? AND NOT EXISTS (
+    SELECT 1 FROM runs closed WHERE closed.job_id = c.job_id AND closed.closure IS NOT NULL
+  ))
+)`;
 
 // ---------------------------------------------------------------------------- row helpers
 
@@ -1059,37 +1142,20 @@ export function coordinator(
   }
 
   /**
-   * The batch slots held right now, and WHERE. A claim is a slot only while a JOB IS STILL
-   * RUNNING BEHIND IT, which rules out two rows the table still calls open:
-   *
-   *   - a row whose `job_id` is NULL is a grant whose posting never landed (`claim` reserves
-   *     before the conductor calls `jobs.execute`), and a grant with no worker is not work in
-   *     progress. Counting it would let a refused posting hold a quarter of the cycle's batch
-   *     for a whole lease — the ghost of F3, arriving through the one door the settle path
-   *     cannot see.
-   *   - a row whose job HAS A CLOSED RUN is a job that is over: whatever settles the claim has
-   *     not got to it yet, and until it does the slot is held by nobody. The conductor's
-   *     reaper releases those, but a reap is bounded per cycle and a settlement is a write
-   *     that can fail, while this is a read that cannot: a dead job must not be able to hold a
-   *     slot for a lease merely because the row that releases it is queued behind others.
-   *
-   * Releasing them is the conductor reaper's job (`server/conductor.ts`); refusing to count
-   * them is this one's, and the two answers agree because both ask the runs table.
-   *
-   * The machine is the claim's job's run row, read as a scalar subquery rather than a join: one
-   * machine per claim whatever the `runs` table holds, where a join could fan one claim out
-   * across two rows and report a batch twice its size.
+   * One slot per bound claim, including a known preparation not yet posted. A native prepare
+   * closing does not release the unfinished parent that references it. A running job likewise
+   * outlives its lease: expiry revokes permission to continue, not the work already in flight.
+   * Scalar machine lookup prevents the preparation and parent from doubling one slot.
    */
   async function openClaims(moment: number): Promise<OpenClaims> {
     const rows = await db.query(
       `SELECT COALESCE((SELECT r.machine_id FROM runs r
-                         WHERE r.job_id = c.job_id AND r.machine_id IS NOT NULL
+                         WHERE (r.job_id = c.job_id OR r.prepare_job_id = c.job_id)
+                           AND r.machine_id IS NOT NULL
                          ORDER BY r.started_at DESC LIMIT 1), '') AS machine,
               COUNT(*) AS open
          FROM claims c
-        WHERE c.finished_at IS NULL AND c.expires_at > ? AND c.job_id IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM runs r
-                           WHERE r.job_id = c.job_id AND r.closure IS NOT NULL)
+        WHERE ${OCCUPIED_CLAIM}
         GROUP BY machine`,
       [iso(moment)],
     );
@@ -1388,9 +1454,10 @@ export function coordinator(
     const rows = await scan(
       `SELECT COALESCE(r.root_id, c.record_id) AS root, c.role AS role,
               SUM(CASE WHEN COALESCE(c.outcome, '') <> 'abandoned' THEN 1 ELSE 0 END) AS total,
-              SUM(CASE WHEN c.finished_at IS NULL AND c.expires_at > ? THEN 1 ELSE 0 END) AS active,
+              SUM(CASE WHEN c.finished_at IS NULL AND (c.expires_at > ? OR ${RUNNING_CLAIM}) THEN 1 ELSE 0 END) AS active,
               SUM(CASE WHEN COALESCE(c.outcome, '') IN ('skipped','failed') THEN 1 ELSE 0 END) AS setbacks,
-              SUM(CASE WHEN COALESCE(c.outcome, '') = 'completed' THEN 1 ELSE 0 END) AS completed
+              SUM(CASE WHEN COALESCE(c.outcome, '') = 'completed' THEN 1 ELSE 0 END) AS completed,
+              MAX(COALESCE(c.finished_at, c.granted_at)) AS latest
          FROM claims c LEFT JOIN records r ON r.id = c.record_id
         GROUP BY COALESCE(r.root_id, c.record_id), c.role`,
       "root, role",
@@ -1403,12 +1470,13 @@ export function coordinator(
         active: count(row["active"]),
         setbacks: count(row["setbacks"]),
         completed: count(row["completed"]),
+        latest: maybeAt(row["latest"]),
       });
     }
     return out;
   }
 
-  const NO_CLAIMS: ClaimFacts = { total: 0, active: 0, setbacks: 0, completed: 0 };
+  const NO_CLAIMS: ClaimFacts = { total: 0, active: 0, setbacks: 0, completed: 0, latest: null };
   const NO_REVIEWS: RoleFacts = {
     reviews: 0,
     lastReviewed: null,
@@ -1937,9 +2005,184 @@ export function coordinator(
    */
   const handedOut = new Map<string, { readonly runId: string; readonly at: number }>();
 
+  async function buildAnalysis(
+    policy: Policy,
+    moment: number,
+    target?: { readonly id: string; readonly stage: Stage },
+  ): Promise<{ candidates: AnalysisCandidate[]; gaps: Gap[] }> {
+    const stages = STAGES.filter(
+      (stage) =>
+        policy.activityWeights[stage] > 0 && (target === undefined || target.stage === stage),
+    );
+    const route = policy.review;
+    if (stages.length === 0 || route === undefined) return { candidates: [], gaps: [] };
+    const [records, filed, stance, status, ruling, claims, reviews] = await Promise.all([
+      heads(),
+      filings(),
+      stances(moment),
+      statuses(),
+      rulings(),
+      claimFacts(moment),
+      roleFacts(),
+    ]);
+    const recordsById = new Map(records.map((head) => [head.id, head]));
+    const eligible = new Set<string>();
+    const gaps: Gap[] = [];
+    const attention = new Map<string, number>();
+    for (const head of records) {
+      const topics = filed.get(head.rootId)?.topics ?? [];
+      const blocked = topics.find(
+        (topic) => WITHHOLDING[stance.get(topic) ?? "working"] !== undefined,
+      );
+      if (blocked !== undefined) {
+        gaps.push({
+          recordId: head.id,
+          role: "",
+          reason: WITHHOLDING[stance.get(blocked)!]!,
+          detail: `${blocked} withholds analysis under its recorded stance`,
+        });
+        continue;
+      }
+      const lifecycle = status.get(head.rootId)?.status;
+      if (
+        lifecycle === "retired" ||
+        lifecycle === "superseded" ||
+        lifecycle === "rejected" ||
+        ["accept", "reject", "duplicate"].includes(ruling.get(head.rootId) ?? "")
+      )
+        continue;
+      eligible.add(head.rootId);
+      attention.set(
+        head.rootId,
+        topics.reduce(
+          (weight, topic) => Math.min(weight, STANCE_WEIGHT[stance.get(topic) ?? "working"]),
+          1,
+        ),
+      );
+    }
+    const candidates: AnalysisCandidate[] = [];
+    const offeredStages = new Set<Stage>();
+    const admitted = new Map<Stage, number>();
+    for await (const offer of analysisOffers(
+      db,
+      route.machineId,
+      stages,
+      eligible,
+      filed,
+      new Set([...stance].filter(([, state]) => state === "working").map(([topic]) => topic)),
+      (stage) => target !== undefined || (admitted.get(stage) ?? 0) < 64,
+    )) {
+      if ("missing" in offer) {
+        gaps.push({
+          recordId: offer.missing,
+          role: "",
+          reason: "unsupported",
+          detail: "no settled non-agent material on the routed machine fits this analysis",
+        });
+        continue;
+      }
+      offeredStages.add(offer.stage);
+      // Only draw bounds retained candidates. Claim refresh searches for its exact fingerprint,
+      // even if newly eligible offers have moved it beyond the draw's admitted window.
+      const role = ANALYSIS_ROLES[offer.stage];
+      const held = claims.get(`${offer.rootId}\u001f${role}`) ?? NO_CLAIMS;
+      const head = recordsById.get(offer.recordId) ?? {
+        id: offer.recordId,
+        rootId: offer.rootId,
+        kind: offer.kind,
+        createdAt: moment,
+      };
+      const topics = [
+        ...new Set(
+          offer.brief.flatMap(
+            (record) => filed.get(recordsById.get(record.id)?.rootId ?? record.id)?.topics ?? [],
+          ),
+        ),
+      ];
+      let candidate: AnalysisCandidate = {
+        ...offer,
+        role,
+        head,
+        topics,
+        ordinal: held.total + 1,
+        retry: 0,
+        weight: topics.reduce(
+          (weight, topic) => Math.min(weight, STANCE_WEIGHT[stance.get(topic) ?? "working"]),
+          attention.get(offer.rootId) ?? 1,
+        ),
+        lane:
+          offer.stage === "challenge"
+            ? "challenge"
+            : offer.stage === "explore"
+              ? "exploration"
+              : "weighted",
+      };
+      let previous = await readClaim(assignmentIdOf(candidate, policy.version));
+      // Retain the original fingerprint identity for attempt zero (including existing claims).
+      // Only proven free failures may move to a fresh identity; unknown or paid work never does.
+      while (
+        previous?.finishedAt != null &&
+        previous.actualCost === 0 &&
+        (previous.outcome === "failed" || previous.outcome === "skipped") &&
+        candidate.retry < MAX_SETBACKS
+      ) {
+        candidate = { ...candidate, retry: candidate.retry + 1 };
+        previous = await readClaim(assignmentIdOf(candidate, policy.version));
+      }
+      let total = 0;
+      let latest = -Infinity;
+      for (const stage of STAGES) {
+        const facts = claims.get(`${offer.rootId}\u001f${ANALYSIS_ROLES[stage]}`);
+        total += facts?.total ?? 0;
+        latest = Math.max(latest, facts?.latest ?? -Infinity);
+      }
+      for (const reviewRole of ROLES)
+        total += reviews.get(`${offer.rootId}\u001f${reviewRole}`)?.reviews ?? 0;
+      let reason: GapReason | null = null;
+      if (previous?.finishedAt != null) reason = "settled";
+      else if (held.active > 0) reason = "claimed";
+      else if (total >= policy.maxItemReviews) reason = "capped";
+      else if (held.setbacks >= MAX_SETBACKS) reason = "exhausted";
+      else if (latest + policy.cooldownSeconds * 1000 > moment) reason = "cooling";
+      if (reason !== null) {
+        gaps.push({
+          recordId: offer.recordId,
+          role,
+          reason,
+          detail: `analysis is ${reason}; unchanged context never receives another paid sample`,
+        });
+        continue;
+      }
+      if (target !== undefined && assignmentIdOf(candidate, policy.version) !== target.id) continue;
+      candidates.push(candidate);
+      if (target !== undefined) return { candidates, gaps };
+      admitted.set(offer.stage, (admitted.get(offer.stage) ?? 0) + 1);
+      if (stages.every((stage) => (admitted.get(stage) ?? 0) >= 64)) break;
+    }
+    for (const stage of stages) {
+      if (!offeredStages.has(stage))
+        gaps.push({
+          recordId: "",
+          role: ANALYSIS_ROLES[stage],
+          reason: "empty",
+          detail:
+            stage === "synthesize"
+              ? "no connected observations from two known source runs have eligible material"
+              : "no eligible claims and settled non-agent material are available on the routed machine",
+        });
+    }
+    return { candidates, gaps };
+  }
+
   /** The assignment id a candidate would be handed out as, named once so the contention check
    *  and the assignment it hands back cannot disagree about which claim is which. */
-  function assignmentIdOf(candidate: Candidate, version: string): string {
+  function assignmentIdOf(candidate: WorkCandidate, version: string): string {
+    if ("stage" in candidate)
+      return `asg_${digest([
+        candidate.role,
+        candidate.fingerprint,
+        ...(candidate.retry === 0 ? [] : ["retry", String(candidate.retry)]),
+      ])}`;
     return `asg_${digest([candidate.head.id, candidate.role, version, String(candidate.ordinal)])}`;
   }
 
@@ -1950,12 +2193,13 @@ export function coordinator(
    * case rather than the unlucky one, and the draw that acts on the stale set is the one whose
    * claim is refused.
    */
-  async function claimedNow(moment: number): Promise<ReadonlySet<string>> {
-    // `claims_open` is a partial index over the unfinished rows (`store/schema.ts`), so this
-    // reads the open claims rather than the ledger's whole history of them.
+  async function claimedNow(moment: number, pickedId: string): Promise<ReadonlySet<string>> {
+    // Read open claims plus only the selected identity's terminal receipt: a finish landing
+    // during selection must still defeat the stale draw, without scanning finished history.
     const rows = await db.query(
-      `SELECT id FROM claims WHERE finished_at IS NULL AND expires_at > ?`,
-      [iso(moment)],
+      `SELECT c.id FROM claims c WHERE c.finished_at IS NULL AND (c.expires_at > ? OR ${RUNNING_CLAIM})
+       UNION SELECT c.id FROM claims c WHERE c.id = ? AND c.finished_at IS NOT NULL`,
+      [iso(moment), pickedId],
     );
     return new Set(rows.map((row) => text(row["id"])));
   }
@@ -1998,28 +2242,36 @@ export function coordinator(
       active,
       spent.byRun[request.runId] ?? 0,
       spent.total,
-      request.machines ?? [],
+      policy.review === undefined ? (request.machines ?? []) : [policy.review.machineId],
     );
     if (overspent !== null) return { outcome: "gap", gap: overspent, gaps: [] };
 
-    const { candidates, gaps } = await buildCandidates(policy, moment);
-    if (candidates.length === 0) {
+    const [review, analysis] = await Promise.all([
+      policy.activityWeights.review > 0
+        ? buildCandidates(policy, moment)
+        : Promise.resolve({ candidates: [] as Candidate[], gaps: [] as Gap[] }),
+      buildAnalysis(policy, moment),
+    ]);
+    const candidates = review.candidates;
+    const gaps = [...review.gaps, ...analysis.gaps];
+    if (candidates.length === 0 && analysis.candidates.length === 0) {
       return {
         outcome: "gap",
         gap: {
           reason: "no-candidates",
           detail:
-            "no eligible review remains: every obligation is satisfied, in cooldown, capped, or withheld by a recorded stance",
+            "no eligible activity remains: work is satisfied, lacks material, in cooldown, capped, or withheld",
         },
         gaps,
       };
     }
 
-    const inputDigest = digest(
-      candidates.map(
+    const inputDigest = digest([
+      ...candidates.map(
         (candidate) => `${candidate.head.id}:${candidate.role}:${String(candidate.ordinal)}`,
       ),
-    );
+      ...analysis.candidates.map((candidate) => `${candidate.role}:${candidate.fingerprint}`),
+    ]);
     const seed =
       request.seed ?? BigInt(`0x${digest([request.runId, String(moment), inputDigest])}`);
 
@@ -2030,8 +2282,8 @@ export function coordinator(
     // the candidate set cost it, and the rounds are bounded: past `DRAW_ATTEMPTS` the top pick
     // is handed out unchanged and the claim refuses it exactly as it always did, because a
     // conflict the caller already handles is better than a draw that will not terminate.
-    const ids = new Map<Candidate, string>();
-    const identify = (candidate: Candidate): string => {
+    const ids = new Map<WorkCandidate, string>();
+    const identify = (candidate: WorkCandidate): string => {
       const known = ids.get(candidate);
       if (known !== undefined) return known;
       const minted = assignmentIdOf(candidate, standing.version);
@@ -2043,11 +2295,55 @@ export function coordinator(
       if (held.at + HANDOUT_GRACE_MS <= moment) handedOut.delete(id);
       else if (held.runId !== request.runId) taken.add(id);
     }
-    const contended = (candidate: Candidate): boolean => taken.has(identify(candidate));
-    let top: { lane: Lane; chosen: Candidate } | null = null;
-    let sampled: { lane: Lane; chosen: Candidate } | null = null;
+    const contended = (candidate: WorkCandidate): boolean => {
+      const handout = handedOut.get(identify(candidate));
+      return (
+        taken.has(identify(candidate)) ||
+        (handout !== undefined &&
+          handout.runId !== request.runId &&
+          handout.at + HANDOUT_GRACE_MS > moment)
+      );
+    };
+    const chooseActivity = (stream: Stream): { lane: Lane; chosen: WorkCandidate } | null => {
+      const eligible = ACTIVITIES.filter(
+        (activity) =>
+          policy.activityWeights[activity] > 0 &&
+          (activity === "review"
+            ? candidates.some((candidate) => !contended(candidate))
+            : analysis.candidates.some(
+                (candidate) => candidate.stage === activity && !contended(candidate),
+              )),
+      );
+      if (eligible.length === 0) return null;
+      // Preserve the old stream exactly when review is the only enabled/eligible activity.
+      let activity = eligible[0]!;
+      if (eligible.length > 1) {
+        let target =
+          stream.float() *
+          eligible.reduce((sum, activity) => sum + policy.activityWeights[activity], 0);
+        for (const choice of eligible) {
+          target -= policy.activityWeights[choice];
+          if (target <= 0) {
+            activity = choice;
+            break;
+          }
+        }
+      }
+      if (activity === "review") return sample(candidates, policy, stream, contended);
+      const offered = analysis.candidates.filter(
+        (candidate) => candidate.stage === activity && !contended(candidate),
+      );
+      let target = stream.float() * offered.reduce((sum, candidate) => sum + candidate.weight, 0);
+      for (const chosen of offered) {
+        target -= chosen.weight;
+        if (target <= 0) return { lane: chosen.lane, chosen };
+      }
+      return null;
+    };
+    let top: { lane: Lane; chosen: WorkCandidate } | null = null;
+    let sampled: { lane: Lane; chosen: WorkCandidate } | null = null;
     for (let attempt = 1; attempt <= DRAW_ATTEMPTS; attempt += 1) {
-      const picked = sample(candidates, policy, new Stream(seed), contended);
+      const picked = chooseActivity(new Stream(seed));
       if (picked === null) break;
       top ??= picked;
       // THE HAND-OUT IS TAKEN IN THE SAME TICK AS THE SELECTION, before the refresh below is
@@ -2056,7 +2352,7 @@ export function coordinator(
       // is the bug one storey down from #233's.
       const pickedId = identify(picked.chosen);
       handedOut.set(pickedId, { runId: request.runId, at: moment });
-      const claimed = await claimedNow(moment);
+      const claimed = await claimedNow(moment, pickedId);
       if (!claimed.has(pickedId)) {
         sampled = picked;
         break;
@@ -2100,7 +2396,14 @@ export function coordinator(
         recordId: chosen.head.id,
         rootId: chosen.head.rootId,
         kind: chosen.head.kind,
-        role: chosen.role,
+        ...("stage" in chosen
+          ? {
+              activity: chosen.stage,
+              role: chosen.role,
+              selectors: chosen.selectors,
+              brief: chosen.brief,
+            }
+          : { activity: "review" as const, role: chosen.role }),
         lane,
         policyVersion: standing.version,
         ordinal: chosen.ordinal,
@@ -2171,6 +2474,17 @@ export function coordinator(
         },
       };
     }
+    if (
+      !policy.enabled ||
+      policy.activityWeights[assignment.activity] <= 0 ||
+      !Number.isFinite(assignment.reservedCost) ||
+      assignment.reservedCost <= 0
+    ) {
+      return {
+        outcome: "refused",
+        refusal: { reason: "invalid", detail: "the assignment has no current spend authority" },
+      };
+    }
     // From here the ledger answers for this assignment, whichever way the claim goes: a grant
     // withholds it through `claims`, and a refusal means this run is not taking it. Either way
     // the draw's note about having handed it out has nothing left to say.
@@ -2207,6 +2521,47 @@ export function coordinator(
           },
         };
       }
+      const running = await db.query(
+        `SELECT c.id FROM claims c WHERE c.id = ? AND ${RUNNING_CLAIM}`,
+        [existing.id],
+      );
+      if (running.length > 0) {
+        return {
+          outcome: "refused",
+          refusal: {
+            reason: "conflict",
+            detail: "the expired authority still owns running work; it cannot be duplicated",
+          },
+        };
+      }
+    }
+    if (assignment.activity !== "review") {
+      if (request.jobId === undefined || request.jobId === "") {
+        return {
+          outcome: "refused",
+          refusal: {
+            reason: "invalid",
+            detail: "analysis must reserve its known preparation job before posting",
+          },
+        };
+      }
+      const refreshed = await buildAnalysis(policy, moment, {
+        id: assignment.id,
+        stage: assignment.activity,
+      });
+      if (
+        !refreshed.candidates.some(
+          (candidate) =>
+            assignmentIdOf(candidate, policy.version) === assignment.id &&
+            candidate.recordId === assignment.recordId &&
+            candidate.role === assignment.role,
+        )
+      ) {
+        return {
+          outcome: "refused",
+          refusal: { reason: "conflict", detail: "the offered analysis is no longer eligible" },
+        };
+      }
     }
 
     // The day's charge is read before the fence advances, and it includes every reservation that
@@ -2232,11 +2587,72 @@ export function coordinator(
       };
     }
 
+    const admission = admitSpend(
+      policy,
+      await openClaims(moment),
+      cycle,
+      spent.total,
+      policy.review === undefined ? [] : [policy.review.machineId],
+    );
+    if (admission !== null)
+      return { outcome: "refused", refusal: { reason: "budget", detail: admission.detail } };
+
+    // The read above explains refusals; these predicates enforce them in the same transaction
+    // as the grant. Independent coordinators cannot both spend the last dollar or machine slot.
+    const [, from, until] = dayWindow(moment);
+    const machine = policy.review?.machineId ?? "";
+    const machineOf = `COALESCE((SELECT r.machine_id FROM runs r
+      WHERE (r.job_id = c.job_id OR r.prepare_job_id = c.job_id) AND r.machine_id IS NOT NULL
+      ORDER BY r.started_at DESC LIMIT 1), '')`;
+    let admissionSql = `
+      (SELECT COALESCE(SUM(COALESCE(actual_cost, reserved_cost)), 0) FROM claims
+        WHERE granted_at >= ? AND granted_at < ?) + ? <= ?
+      AND (SELECT COALESCE(SUM(COALESCE(actual_cost, reserved_cost)), 0) FROM claims
+        WHERE granted_at >= ? AND granted_at < ? AND run_id = ?) + ? <= ?
+      AND (SELECT COUNT(*) FROM claims c WHERE ${OCCUPIED_CLAIM}
+        AND (? = '' OR ${machineOf} IN ('', ?))) < ?`;
+    const admissionParams: GuestSqlParam[] = [
+      from,
+      until,
+      assignment.reservedCost,
+      policy.dailyCost,
+      from,
+      until,
+      request.runId,
+      assignment.reservedCost,
+      policy.perCycleCost,
+      iso(moment),
+      machine,
+      machine,
+      perMachineBound(policy),
+    ];
+    if (assignment.activity !== "review") {
+      admissionSql += `
+        AND NOT EXISTS (SELECT 1 FROM claims c LEFT JOIN records r ON r.id = c.record_id
+          WHERE COALESCE(r.root_id, c.record_id) = ? AND c.role LIKE 'analysis:%' AND c.id <> ?
+            AND ((c.finished_at IS NULL AND (c.expires_at > ? OR ${RUNNING_CLAIM}))
+              OR COALESCE(c.finished_at, c.granted_at) > ?))
+        AND (SELECT COUNT(*) FROM claims c LEFT JOIN records r ON r.id = c.record_id
+          WHERE COALESCE(r.root_id, c.record_id) = ? AND c.role LIKE 'analysis:%'
+            AND COALESCE(c.outcome, '') <> 'abandoned')
+          + (SELECT COUNT(*) FROM assessments a JOIN records r ON r.id = a.record_id
+              WHERE r.root_id = ? AND NOT EXISTS (SELECT 1 FROM assessments newer WHERE newer.supersedes_id = a.id)) < ?`;
+      admissionParams.push(
+        assignment.rootId,
+        assignment.id,
+        iso(moment),
+        iso(moment - policy.cooldownSeconds * 1000),
+        assignment.rootId,
+        assignment.rootId,
+        policy.maxItemReviews,
+      );
+    }
     const jobId: string | null = request.jobId ?? null;
     if (existing === null) {
       const rows = await db.batch([
         {
-          sql: `INSERT INTO claims(${CLAIM_COLUMNS}) VALUES(?,?,?,?,?,?,?,1,?,NULL,?,?,NULL,NULL)
+          sql: `INSERT INTO claims(${CLAIM_COLUMNS}) SELECT ?,?,?,?,?,?,?,1,?,NULL,?,?,NULL,NULL
+                WHERE ${admissionSql}
                 ON CONFLICT(id) DO NOTHING RETURNING ${CLAIM_COLUMNS}`,
           params: [
             assignment.id,
@@ -2249,6 +2665,7 @@ export function coordinator(
             assignment.reservedCost,
             iso(moment),
             iso(expires),
+            ...admissionParams,
           ],
         },
       ]);
@@ -2258,7 +2675,7 @@ export function coordinator(
           outcome: "refused",
           refusal: {
             reason: "conflict",
-            detail: `assignment ${assignment.id} was claimed by another worker first`,
+            detail: `assignment ${assignment.id} lost claim or spend admission to another worker`,
           },
         };
       }
@@ -2275,15 +2692,19 @@ export function coordinator(
                      c.policy_version, c.job_id, c.run_id, c.fence, c.reserved_cost,
                      c.reserved_cost, c.granted_at, c.expires_at, ?, 'abandoned'
                 FROM claims c
-               WHERE c.id = ? AND c.fence = ? AND c.finished_at IS NULL
+               WHERE c.id = ? AND c.fence = ? AND c.finished_at IS NULL AND c.expires_at <= ?
+                 AND NOT (${RUNNING_CLAIM}) AND ${admissionSql}
               ON CONFLICT(id) DO NOTHING`,
-        params: [iso(moment), assignment.id, existing.fence],
+        params: [iso(moment), assignment.id, existing.fence, iso(moment), ...admissionParams],
       },
       {
         sql: `UPDATE claims SET run_id = ?, job_id = ?, lane = ?, policy_version = ?,
                  fence = fence + 1, reserved_cost = ?, actual_cost = NULL, granted_at = ?,
                  expires_at = ?, finished_at = NULL, outcome = NULL
                WHERE id = ? AND fence = ? AND finished_at IS NULL AND expires_at <= ?
+                 AND EXISTS (SELECT 1 FROM claims archived
+                   WHERE archived.id = claims.id || '~' || CAST(claims.fence AS TEXT)
+                     AND archived.finished_at = ?)
                RETURNING ${CLAIM_COLUMNS}`,
         params: [
           request.runId,
@@ -2295,6 +2716,7 @@ export function coordinator(
           iso(expires),
           assignment.id,
           existing.fence,
+          iso(moment),
           iso(moment),
         ],
       },
@@ -2326,13 +2748,24 @@ export function coordinator(
       };
     }
     const fence = count(request.fence);
+    const moment = request.now ?? now();
     const rows = await db.batch([
       {
         sql: `UPDATE claims SET job_id = ?
                WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL
-                 AND (job_id IS NULL OR job_id = ?)
+                 AND expires_at > ?
+                 AND (job_id = ? OR (job_id IS NULL AND ? IS NULL) OR job_id = ?)
                RETURNING ${CLAIM_COLUMNS}`,
-        params: [request.jobId, request.id, request.runId, fence, request.jobId],
+        params: [
+          request.jobId,
+          request.id,
+          request.runId,
+          fence,
+          iso(moment),
+          request.jobId,
+          request.previousJobId ?? null,
+          request.previousJobId ?? null,
+        ],
       },
     ]);
     const bound = rows[0]?.[0];
@@ -2351,6 +2784,12 @@ export function coordinator(
           reason: "finished",
           detail: `assignment ${request.id} was already finished at fence ${String(held.fence)}`,
         },
+      };
+    }
+    if (held.runId === request.runId && held.fence === fence && held.expiresAt <= moment) {
+      return {
+        outcome: "refused",
+        refusal: { reason: "expired", detail: `assignment ${request.id} has expired authority` },
       };
     }
     if (held.runId === request.runId && held.fence === fence && held.jobId !== null) {
@@ -2473,6 +2912,29 @@ export function coordinator(
         },
       };
     }
+    const terminal = request.terminalJob;
+    const unposted = request.unpostedJobId;
+    if (
+      unposted !== undefined &&
+      (unposted === "" ||
+        terminal !== undefined ||
+        request.cost !== 0 ||
+        request.outcome !== "failed")
+    ) {
+      return {
+        outcome: "refused",
+        refusal: {
+          reason: "invalid",
+          detail: "unposted accounting requires only an exact job and a zero-cost failure",
+        },
+      };
+    }
+    if (terminal !== undefined && (terminal.jobId === "" || terminal.previousJobId === "")) {
+      return {
+        outcome: "refused",
+        refusal: { reason: "invalid", detail: "terminal accounting needs both job identifiers" },
+      };
+    }
     const held = await readClaim(request.id);
     if (held === null) {
       return {
@@ -2482,9 +2944,11 @@ export function coordinator(
     }
     if (held.finishedAt !== null) {
       if (
+        unposted === undefined &&
         held.runId === request.runId &&
         held.fence === fence &&
-        held.actualCost === request.cost
+        held.actualCost === request.cost &&
+        (terminal === undefined || held.jobId === terminal.jobId)
       ) {
         return {
           outcome: "finished",
@@ -2510,12 +2974,55 @@ export function coordinator(
         },
       };
     }
+    // This is earned-spend accounting, not renewed authority. An expired unchanged fence may
+    // finish, but only a durable terminal parent can identify the Code job that replaces its
+    // preparation. Rebinding and charging are one write so spendOn cannot count both.
+    const document = "CASE WHEN json_valid(r.preparation) THEN r.preparation ELSE '{}' END";
+    const terminalGuard =
+      terminal === undefined
+        ? ""
+        : `
+                 AND claims.role LIKE 'analysis:%'
+                 AND job_id IN (?, ?)
+                 AND EXISTS (
+                   SELECT 1 FROM runs r
+                    WHERE r.job_id = ? AND r.prepare_job_id = ?
+                      AND r.closure IS NOT NULL
+                      AND r.authority_kind = 'conductor' AND r.authority_id = claims.run_id
+                      AND json_extract(${document}, '$.analysis.claim.id') = claims.id
+                      AND json_extract(${document}, '$.analysis.claim.runId') = claims.run_id
+                      AND json_extract(${document}, '$.analysis.claim.fence') = claims.fence
+                 )`;
+    const unpostedGuard =
+      unposted === undefined
+        ? ""
+        : `
+                 AND claims.role LIKE 'analysis:%' AND job_id = ? AND expires_at <= ?
+                 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.job_id = ? OR r.prepare_job_id = ?)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM runs r
+                    WHERE json_extract(${document}, '$.analysis.claim.id') = claims.id
+                      AND json_extract(${document}, '$.analysis.claim.runId') = claims.run_id
+                      AND json_extract(${document}, '$.analysis.claim.fence') = claims.fence
+                 )`;
     const rows = await db.batch([
       {
-        sql: `UPDATE claims SET finished_at = ?, actual_cost = ?, outcome = ?
-               WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL
+        sql: `UPDATE claims SET finished_at = ?, actual_cost = ?, outcome = ?${terminal === undefined ? "" : ", job_id = ?"}
+               WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL${terminalGuard}${unpostedGuard}
                RETURNING reserved_cost`,
-        params: [iso(moment), request.cost, request.outcome, request.id, request.runId, fence],
+        params: [
+          iso(moment),
+          request.cost,
+          request.outcome,
+          ...(terminal === undefined ? [] : [terminal.jobId]),
+          request.id,
+          request.runId,
+          fence,
+          ...(terminal === undefined
+            ? []
+            : [terminal.previousJobId, terminal.jobId, terminal.jobId, terminal.previousJobId]),
+          ...(unposted === undefined ? [] : [unposted, iso(moment), unposted, unposted]),
+        ],
       },
     ]);
     const row = rows[0]?.[0];
@@ -2523,8 +3030,13 @@ export function coordinator(
       return {
         outcome: "refused",
         refusal: {
-          reason: "taken-over",
-          detail: `assignment ${request.id} moved before the finish landed`,
+          reason: terminal === undefined && unposted === undefined ? "taken-over" : "conflict",
+          detail:
+            unposted !== undefined
+              ? `assignment ${request.id} moved, is not expired analysis, or has a durable posting intent`
+              : terminal === undefined
+                ? `assignment ${request.id} moved before the finish landed`
+                : `assignment ${request.id} moved or its terminal Code job is not attributed to this preparation`,
         },
       };
     }

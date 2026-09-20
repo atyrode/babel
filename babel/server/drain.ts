@@ -39,7 +39,7 @@ import {
 } from "../store/corpus.ts";
 import type { BabelStore } from "../store/store.ts";
 import { materialJobId, type LaunchIdentity, type Started } from "../doors/launch.ts";
-import type { JobsSlice, RunPlan } from "./conductor.ts";
+import type { RunPlan } from "./conductor.ts";
 import type { CodeEngine } from "./engine/session.ts";
 import type { BabelJobs } from "./plan.ts";
 
@@ -111,14 +111,14 @@ export interface DrainReport {
 export interface DrainLaunch {
   startExplore(
     identity: LaunchIdentity,
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     engine: CodeEngine,
     input: LaunchInput,
     plan: RunPlan,
   ): Promise<Started>;
   startBeat(
     identity: LaunchIdentity,
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     input: LaunchInput,
     plan: RunPlan,
   ): Promise<Started>;

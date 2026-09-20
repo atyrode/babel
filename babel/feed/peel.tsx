@@ -2,8 +2,17 @@ import { useState, type ReactElement, type ReactNode } from "react";
 import type { HostServices } from "@manifold/plugin";
 import { Chip, Cluster, Disclosure, Stack } from "@manifold/ui";
 import { ACTIONS, FeedPostSchema } from "../contract.ts";
-import { ask, NO_SEAT, openRecord, refusal, since, type RecordPeel } from "./api.ts";
 import {
+  ask,
+  NO_SEAT,
+  openRecord,
+  refusal,
+  since,
+  type DoorResult,
+  type RecordPeel,
+} from "./api.ts";
+import {
+  ChallengeSummary,
   KIND_LABELS,
   KIND_TONES,
   POST_ACTS,
@@ -76,6 +85,55 @@ function corroboration(of: { supports: number; distinctRuns: number }): string {
   const supports = `${counted(of.supports)} support${of.supports === 1 ? "" : "s"}`;
   const runs = `${counted(of.distinctRuns)} run${of.distinctRuns === 1 ? "" : "s"}`;
   return `${supports}, from ${runs}`;
+}
+
+/** The stored run identity opens its existing reading door, never a reconstructed receipt. */
+function ChallengeRun({ host, runId }: { host: HostServices; runId: string }): ReactElement {
+  const [open, setOpen] = useState(false);
+  const [answer, setAnswer] = useState<DoorResult<"run"> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState("");
+  const load = async (): Promise<void> => {
+    setBusy(true);
+    setFailure("");
+    try {
+      setAnswer(await ask(host, ACTIONS.run, { id: runId }));
+    } catch (reason) {
+      setFailure(refusal(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Disclosure
+      className="babel-challenge-run"
+      header={`Source run: ${runId}`}
+      open={open}
+      onOpenChange={() => {
+        setOpen(!open);
+        if (!open && answer === null && !busy) void load();
+      }}
+    >
+      {busy && <p role="status">Reading source run…</p>}
+      {failure !== "" && <p role="status">{failure}</p>}
+      {answer !== null && (
+        <Stack gap="var(--babel-space-2)">
+          <p className="babel-note">
+            {answer.run === null
+              ? "No historical run row is held for this source."
+              : `${answer.run.id} · ${answer.run.kind} · ${answer.run.state} · ${answer.run.machineId}`}
+          </p>
+          {answer.receipt === null ? (
+            <p className="babel-note">No receipt is held for this source run.</p>
+          ) : (
+            <pre className="babel-receipt babel-mono">
+              {JSON.stringify(answer.receipt, null, 2)}
+            </pre>
+          )}
+        </Stack>
+      )}
+    </Disclosure>
+  );
 }
 
 /**
@@ -305,6 +363,7 @@ export function Peel({
               )}
               {post.author !== null && <span className="babel-note">by {post.author.runId}</span>}
             </Cluster>
+            {post.kind === "hypothesis" && <ChallengeSummary challenges={post.challenges} />}
           </Stack>
         </Cluster>
       </header>
@@ -331,6 +390,35 @@ export function Peel({
           ))}
         </Stack>
       </Depth>
+
+      {peel.challenges.length > 0 && (
+        <Stack gap="var(--babel-space-2)">
+          <h2 className="babel-peel-title">Analysis challenges</h2>
+          <p className="babel-note">Grounded objections, not rulings on this candidate.</p>
+          {post.challenges.objections > peel.challenges.length && (
+            <p className="babel-note">
+              Latest {peel.challenges.length} of {post.challenges.objections} objections.
+            </p>
+          )}
+          <ul className="babel-field-list">
+            {peel.challenges.map((challenge) => (
+              <li key={challenge.id}>
+                <button
+                  type="button"
+                  className="babel-link"
+                  onClick={() =>
+                    setNavigation(openRecord(host, challenge.id) === "no_tile" ? NO_SEAT : "")
+                  }
+                >
+                  {challenge.summary === "" ? challenge.id : challenge.summary}
+                </button>
+                <p className="babel-note">Ground: {challenge.grounds}</p>
+                <ChallengeRun host={host} runId={challenge.runId} />
+              </li>
+            ))}
+          </ul>
+        </Stack>
+      )}
 
       {fields.length > 0 && (
         <Depth index={1} title="The case" open={open} onToggle={toggle}>

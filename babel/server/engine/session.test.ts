@@ -382,3 +382,45 @@ describe("what a profile may spend, asked before anything is posted", () => {
     expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
   });
 });
+
+test.each([
+  [
+    "transport loss",
+    () => {
+      throw new Error("posting response lost");
+    },
+  ],
+  ["malformed reply", () => ({ jobId: POSTED.jobId })],
+  [
+    "post-handler refusal",
+    hostRefusal("refused: atyrode.babel -> atyrode.code.runSession (code_omp_review_changed)"),
+  ],
+] as const)("a %s after dispatch leaves spending unconfirmed", async (_name, post) => {
+  const engine = codeEngine(
+    actions((args) => (args.action === "listProfiles" ? { profiles: [profile({})] } : post())),
+  );
+  const answer = await engine.runSession({
+    profile: { containerId: "ctr_a", expectedRevision: 4 },
+    machineId: "m-dev-01",
+    prompt: "read the material",
+  });
+  expect(answer).toMatchObject({ ok: false, code: ENGINE_REFUSALS.unconfirmed });
+});
+
+test("a locally invalid posting request is refused without pretending its spending is unknown", async () => {
+  let posts = 0;
+  const engine = codeEngine(
+    actions((args) => {
+      if (args.action === "listProfiles") return { profiles: [profile({})] };
+      posts += 1;
+      return POSTED;
+    }),
+  );
+  const answer = await engine.runSession({
+    profile: { containerId: "ctr_a", expectedRevision: 4 },
+    machineId: "",
+    prompt: "read the material",
+  });
+  expect(answer).toMatchObject({ ok: false, code: ENGINE_REFUSALS.refused });
+  expect(posts).toBe(0);
+});

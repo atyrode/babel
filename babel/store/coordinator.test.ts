@@ -19,6 +19,18 @@ import type {
   GuestSqlStatement,
 } from "@manifold/plugin-kit";
 import { SCHEMA_V1 } from "./schema.ts";
+import { analysisOffers } from "./analysis.ts";
+import {
+  ANALYSIS_BRIEF_BYTE_LIMIT,
+  ANALYSIS_BRIEF_LIMIT,
+  ANALYSIS_SOURCE_LIMIT,
+  CHALLENGE_RELATION,
+  MATERIAL_SCHEMA,
+  MAX_MATERIAL_BYTES,
+  OPERATIONS,
+  ROLES,
+  type Stage,
+} from "../contract.ts";
 import {
   applyBudget,
   budgetChanges,
@@ -1558,4 +1570,1051 @@ test("the overlay's own validator refuses what a policy being installed would be
   expect(budgetChanges(bounded, { ...drain, concurrentPerMachine: 16 })).toEqual([
     { field: "concurrentPerMachine", standing: 2, overlaid: 16 },
   ]);
+});
+
+// ---------------------------------------------------------------------------- weighted analysis
+
+function stagePolicy(stage: Stage, over: Partial<Policy> = {}): Policy {
+  return PolicySchema.parse({
+    ...DEFAULT_POLICY,
+    enabled: true,
+    activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0, [stage]: 1 },
+    review: {
+      machineId: "dev-01",
+      profile: { containerId: "ctr_stage", expectedRevision: 1 },
+      roleRecipes: Object.fromEntries(ROLES.map((role) => [role, "installed"])),
+      stageRecipes: { [stage]: "installed" },
+      recipes: [{ id: "installed", version: 1, body: "Read the offered evidence and report." }],
+    },
+    ...over,
+  });
+}
+
+async function catalog(
+  db: GuestDatabase,
+  selector: string,
+  over: {
+    machine?: string;
+    live?: number;
+    kind?: string;
+    bytes?: number;
+  } = {},
+): Promise<void> {
+  await db.run(
+    `INSERT INTO sessions(selector, host, harness, source_id, live, kind, size, content_digest, seen_at)
+     VALUES(?,?,'omp',?,?,?,?,?,?)`,
+    [
+      selector,
+      over.machine ?? "dev-01",
+      selector,
+      over.live ?? 0,
+      over.kind ?? "operator",
+      over.bytes ?? 100,
+      `digest-${selector}`,
+      ago(1),
+    ],
+  );
+}
+
+async function analysisRecord(
+  db: GuestDatabase,
+  id: string,
+  runId: string | null,
+  parent: string | null = null,
+  payload: Record<string, unknown> = {},
+  ageDays = 1,
+): Promise<void> {
+  await db.run(
+    `INSERT INTO records(id, root_id, kind, parent_id, run_id, seq, actor_kind, actor_id, title, created_at, payload)
+     VALUES(?,?,?,?,?,0,'run','fixture',?,?,?)`,
+    [
+      id,
+      id,
+      id.startsWith("obs_") ? "observation" : "hypothesis",
+      parent,
+      runId,
+      id,
+      ago(ageDays),
+      JSON.stringify(payload),
+    ],
+  );
+}
+
+async function citation(db: GuestDatabase, recordId: string, selector: string): Promise<void> {
+  await db.run(
+    `INSERT INTO edges(id, kind, from_kind, from_id, to_kind, to_id, actor_kind, actor_id, created_at)
+     VALUES(?,'cites',?,?,'session',?,'run','fixture',?)`,
+    [
+      `edg_${recordId}_${selector}`,
+      recordId.startsWith("obs_") ? "observation" : "hypothesis",
+      recordId,
+      selector,
+      ago(1),
+    ],
+  );
+}
+
+test("legacy policies select only review and all-zero activities never fall back to analysis", async () => {
+  const { db, coord, assignment } = await oneAssignment();
+  await catalog(db, "omp/new");
+  expect(assignment.activity).toBe("review");
+  expect(drawn(await coord.draw({ runId: "cycle_1", seed: 3n })).activity).toBe("review");
+  await db.run(
+    `INSERT INTO policies(version, seq, actor_id, reason, payload, recorded_at)
+    VALUES('zero',2,'operator','',?,?)`,
+    [
+      JSON.stringify({
+        enabled: true,
+        activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0 },
+      }),
+      ago(0),
+    ],
+  );
+  expect((await coord.draw({ runId: "zero" })).outcome).toBe("gap");
+});
+
+test("analysis weights authorize only installed stage recipes", async () => {
+  const policy = stagePolicy("challenge");
+  expect(validatePolicy(policy, CONCURRENT_JOBS)).toBeNull();
+  expect(validatePolicy({ ...policy, review: undefined }, CONCURRENT_JOBS)).not.toBeNull();
+  expect(
+    validatePolicy({ ...policy, review: { ...policy.review!, stageRecipes: {} } }, CONCURRENT_JOBS),
+  ).not.toBeNull();
+  expect(
+    validatePolicy(
+      { ...policy, activityWeights: { ...policy.activityWeights, explore: 1 } },
+      CONCURRENT_JOBS,
+    ),
+  ).not.toBeNull();
+  const { db, coord } = await deployment({
+    ...policy,
+    review: { ...policy.review!, stageRecipes: {} },
+  });
+  await catalog(db, "omp/a");
+  const refused = await coord.draw({ runId: "cycle" });
+  if (refused.outcome !== "gap") throw new Error("missing method launched");
+  expect(refused.gap.reason).toBe("invalid-policy");
+});
+
+test("exploration consumes eligible material once, including across conductors and policy revisions", async () => {
+  const { db, coord } = await deployment(stagePolicy("explore", { cooldownSeconds: 0 }));
+  await catalog(db, "omp/live", { live: 1 });
+  await catalog(db, "omp/agent", { kind: "agent" });
+  await catalog(db, "omp/elsewhere", { machine: "dev-02" });
+  await catalog(db, "omp/huge", { bytes: MAX_MATERIAL_BYTES + 1 });
+  await catalog(db, "omp/real");
+  const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
+  const one = drawn(await coord.draw({ runId: "a", seed: 1n }));
+  const two = drawn(await other.draw({ runId: "b", seed: 99n }));
+  if (one.activity === "review") throw new Error("review escaped zero weight");
+  expect(one.selectors).toEqual(["omp/real"]);
+  expect(two.id).toBe(one.id);
+  const claims = await Promise.all([
+    coord.claim({ assignment: one, runId: "a", jobId: "prepare_a" }),
+    other.claim({ assignment: two, runId: "b", jobId: "prepare_b" }),
+  ]);
+  expect(claims.filter((result) => result.outcome === "granted")).toHaveLength(1);
+  const granted = claims.find((result) => result.outcome === "granted");
+  if (granted?.outcome !== "granted") throw new Error("no grant");
+  await coord.finish({
+    id: one.id,
+    runId: granted.claim.runId,
+    fence: granted.claim.fence,
+    outcome: "completed",
+    cost: 0.01,
+  });
+  await db.run(
+    `INSERT INTO policies(version, seq, actor_id, reason, payload, recorded_at)
+    VALUES('renamed',2,'operator','',?,?)`,
+    [JSON.stringify(stagePolicy("explore", { version: "renamed", cooldownSeconds: 0 })), ago(0)],
+  );
+  expect((await other.draw({ runId: "c" })).outcome).toBe("gap");
+  await db.run(
+    `UPDATE sessions SET seen_at = ?, snapshot_id = 'new-archive' WHERE selector = 'omp/real'`,
+    [ago(0)],
+  );
+  expect((await other.draw({ runId: "d" })).outcome).toBe("gap");
+  await db.run(`UPDATE sessions SET content_digest = 'changed' WHERE selector = 'omp/real'`);
+  const changed = drawn(await other.draw({ runId: "e" }));
+  expect(changed.id).not.toBe(one.id);
+  expect(changed.inputDigest).not.toBe(one.inputDigest);
+});
+
+test("challenge carries whole prior claims and recovers selectors from the native material receipt", async () => {
+  const { db, coord } = await deployment(stagePolicy("challenge"));
+  await catalog(db, "omp/served");
+  await catalog(db, "omp/unrelated");
+  await analysisRecord(db, "hyp_00000001", "source", null, {
+    statement: "bounded claim",
+    limits: ["do not generalize"],
+  });
+  await analysisRecord(db, "obs_00000001", "source", "hyp_00000001", {
+    evidence: [{ quote: "original" }],
+    limits: "one case",
+  });
+  await analysisRecord(db, "obs_00000002", null, "hyp_00000001", {
+    claim: "prior objection",
+    evidence: [],
+  });
+  await db.run(
+    `INSERT INTO edges(id,kind,from_kind,from_id,to_kind,to_id,note,actor_kind,actor_id,created_at)
+    VALUES('edg_objection',?,'observation','obs_00000002','hypothesis','hyp_00000001','missing-check','run','prior',?)`,
+    [CHALLENGE_RELATION, ago(1)],
+  );
+  const material = {
+    schema: MATERIAL_SCHEMA,
+    preparationId: "prepare_source",
+    preparedAt: ago(1),
+    machineId: "dev-01",
+    sessions: [
+      {
+        selector: "omp/served",
+        harness: "omp",
+        sourceId: "served",
+        captureDigest: "capture",
+        sourceDigest: "source",
+        file: "served.jsonl",
+        records: 2,
+        bytes: 100,
+      },
+    ],
+  };
+  await db.run(
+    `INSERT INTO runs(id,kind,job_id,closure,started_at,records,payload)
+    VALUES('native',?,'prepare_source','completed',?,0,?)`,
+    [OPERATIONS.prepare, ago(1), JSON.stringify({ material })],
+  );
+  await db.run(
+    `INSERT INTO runs(id,kind,prepare_job_id,closure,started_at,records,payload)
+    VALUES('source',?,'prepare_source','completed',?,3,'{}')`,
+    [OPERATIONS.explore, ago(1)],
+  );
+  const assignment = drawn(await coord.draw({ runId: "challenge" }));
+  if (assignment.activity !== "challenge") throw new Error("wrong activity");
+  expect(assignment.selectors).toEqual(["omp/served"]);
+  expect(assignment.brief.map((record) => record.id)).toEqual([
+    "hyp_00000001",
+    "obs_00000001",
+    "obs_00000002",
+  ]);
+  expect(assignment.brief[0]?.payload).toEqual({
+    statement: "bounded claim",
+    limits: ["do not generalize"],
+  });
+  expect(assignment.brief[1]?.payload).toEqual({
+    evidence: [{ quote: "original" }],
+    limits: "one case",
+  });
+  expect(assignment.brief[2]?.runId).toBeNull();
+  expect(assignment.brief[2]?.objectionTo).toEqual(["hyp_00000001"]);
+  await db.run(`UPDATE sessions SET live = 1 WHERE selector = 'omp/served'`);
+  expect((await coord.draw({ runId: "no-material" })).outcome).toBe("gap");
+});
+
+test("synthesis needs two known source runs connected by the actual candidate", async () => {
+  const { db, coord } = await deployment(stagePolicy("synthesize"));
+  await catalog(db, "omp/a");
+  await catalog(db, "omp/unrelated");
+  await analysisRecord(db, "hyp_00000001", null);
+  await analysisRecord(db, "obs_00000001", "source-a", "hyp_00000001");
+  await analysisRecord(db, "obs_00000002", "source-a", "hyp_00000001");
+  await analysisRecord(db, "obs_00000003", null, "hyp_00000001");
+  await analysisRecord(db, "obs_00000004", "source-b");
+  await citation(db, "obs_00000001", "omp/a");
+  await citation(db, "obs_00000004", "omp/unrelated");
+  expect((await coord.draw({ runId: "insufficient" })).outcome).toBe("gap");
+  await analysisRecord(db, "obs_00000005", "source-b", "hyp_00000001");
+  const assignment = drawn(await coord.draw({ runId: "sufficient" }));
+  if (assignment.activity !== "synthesize") throw new Error("wrong activity");
+  expect(
+    new Set(
+      assignment.brief
+        .filter((record) => record.kind === "observation")
+        .map((record) => record.runId),
+    ),
+  ).toEqual(new Set(["source-a", "source-b"]));
+  expect(assignment.brief.some((record) => record.id === "obs_00000004")).toBe(false);
+  expect(assignment.selectors).toEqual(["omp/a"]);
+});
+
+test("a shared active topic or cited session joins synthesis, but excluded topics cannot spend", async () => {
+  for (const join of ["topic", "session"] as const) {
+    const { db, coord } = await deployment(stagePolicy("synthesize"));
+    await catalog(db, "omp/a");
+    await analysisRecord(db, "obs_00000001", "source-a");
+    await analysisRecord(db, "obs_00000002", "source-b");
+    await citation(db, "obs_00000001", "omp/a");
+    if (join === "session") await citation(db, "obs_00000002", "omp/a");
+    else {
+      await filing(db, "obs_00000001", "ent_00000001");
+      await filing(db, "obs_00000002", "ent_00000001");
+      expect((await coord.draw({ runId: "not-active" })).outcome).toBe("gap");
+      await fact(db, "ent_00000001", "lifecycle", "active");
+    }
+    const assignment = drawn(await coord.draw({ runId: "joined" }));
+    expect(assignment.activity).toBe("synthesize");
+    if (join === "topic") {
+      await fact(db, "ent_00000001", "analysis-policy", "excluded");
+      const refused = await coord.claim({ assignment, runId: "joined", jobId: "prepare_joined" });
+      expect(refused.outcome).toBe("refused");
+      expect((await coord.spend()).total).toBe(0);
+      expect((await coord.draw({ runId: "excluded" })).outcome).toBe("gap");
+    }
+  }
+});
+
+test("analysis bounds whole records and exact source selectors without truncating claim payloads", async () => {
+  const { db, coord } = await deployment(stagePolicy("challenge"));
+  await analysisRecord(db, "hyp_00000001", "run_a", null, {
+    statement: "target",
+    limits: "l".repeat(500),
+  });
+  for (let n = 1; n <= 30; n += 1) {
+    const id = `obs_${n.toString(16).padStart(8, "0")}`;
+    await analysisRecord(db, id, "run_a", "hyp_00000001", {
+      claim: "x".repeat(1000),
+      limits: ["whole"],
+    });
+    await catalog(db, `omp/${String(n)}`, { bytes: 30 * 1024 * 1024 });
+    await citation(db, id, `omp/${String(n)}`);
+  }
+  const assignment = drawn(await coord.draw({ runId: "bounded" }));
+  if (assignment.activity !== "challenge") throw new Error("wrong activity");
+  expect(assignment.brief.length).toBeLessThanOrEqual(ANALYSIS_BRIEF_LIMIT);
+  expect(new TextEncoder().encode(JSON.stringify(assignment.brief)).byteLength).toBeLessThanOrEqual(
+    ANALYSIS_BRIEF_BYTE_LIMIT,
+  );
+  expect(assignment.selectors.length).toBeLessThanOrEqual(ANALYSIS_SOURCE_LIMIT);
+  expect(assignment.selectors.length * 30 * 1024 * 1024).toBeLessThanOrEqual(MAX_MATERIAL_BYTES);
+  for (const record of assignment.brief.filter((record) => record.kind === "observation")) {
+    expect(record.payload).toEqual({ claim: "x".repeat(1000), limits: ["whole"] });
+  }
+});
+
+test("changed analysis inputs still obey cooldown and per-item caps", async () => {
+  const { db, coord } = await deployment(
+    stagePolicy("explore", { cooldownSeconds: 60, initialReviews: 1, maxItemReviews: 1 }),
+  );
+  await catalog(db, "omp/a");
+  const assignment = drawn(await coord.draw({ runId: "first" }));
+  const claimed = await coord.claim({ assignment, runId: "first", jobId: "prepare_first" });
+  if (claimed.outcome !== "granted") throw new Error(claimed.refusal.detail);
+  await coord.finish({
+    id: assignment.id,
+    runId: "first",
+    fence: claimed.claim.fence,
+    outcome: "completed",
+    cost: 0.01,
+  });
+  await db.run(`UPDATE sessions SET content_digest = 'changed' WHERE selector = 'omp/a'`);
+  const capped = await coord.draw({ runId: "changed", now: NOW + 61_000 });
+  expect(capped.outcome).toBe("gap");
+  expect(capped.gaps.some((gap) => gap.reason === "capped")).toBe(true);
+  await db.run(
+    `INSERT INTO policies(version, seq, actor_id, reason, payload, recorded_at)
+    VALUES('more',2,'operator','',?,?)`,
+    [JSON.stringify(stagePolicy("explore", { version: "more", cooldownSeconds: 60 })), ago(0)],
+  );
+  const cooling = await coord.draw({ runId: "cooling", now: NOW + 1_000 });
+  expect(cooling.outcome).toBe("gap");
+  expect(cooling.gaps.some((gap) => gap.reason === "cooling")).toBe(true);
+  expect(drawn(await coord.draw({ runId: "rested", now: NOW + 61_000 })).id).not.toBe(
+    assignment.id,
+  );
+});
+
+test("a preparation keeps one slot through native closure and lease expiry until its parent closes", async () => {
+  const { db, coord } = await deployment(
+    stagePolicy("explore", { concurrentPerMachine: 1, cooldownSeconds: 0 }),
+  );
+  await catalog(db, "omp/a");
+  await catalog(db, "omp/b");
+  const assignment = drawn(await coord.draw({ runId: "first", seed: 1n }));
+  const first = await coord.claim({ assignment, runId: "first", jobId: "prepare_first" });
+  if (first.outcome !== "granted") throw new Error(first.refusal.detail);
+  // Before native posting, the known job already occupies an unplaced slot.
+  expect(await coord.open()).toEqual({ total: 1, byMachine: {} });
+  // Missing retention and failed cancellation leave the native worker's termination unknown.
+  expect(await coord.open(first.claim.expiresAt + 1)).toEqual({ total: 1, byMachine: {} });
+  expect(
+    (
+      await coord.claim({
+        assignment,
+        runId: "unconfirmed-takeover",
+        jobId: "duplicate",
+        now: first.claim.expiresAt + 1,
+      })
+    ).outcome,
+  ).toBe("refused");
+  await runOn(db, "prepare_first", "dev-01");
+  await db.run(
+    `UPDATE runs SET closure = 'completed', finished_at = ? WHERE job_id = 'prepare_first'`,
+    [ago(0)],
+  );
+  await db.run(
+    `INSERT INTO runs(id,kind,machine_id,prepare_job_id,started_at,records,payload)
+    VALUES('parent',?,'dev-01','prepare_first',?,0,'{}')`,
+    [OPERATIONS.explore, ago(0)],
+  );
+  const expired = first.claim.expiresAt + 1;
+  expect(await coord.open(expired)).toEqual({ total: 1, byMachine: { "dev-01": 1 } });
+  const takeover = await coord.claim({
+    assignment,
+    runId: "second",
+    jobId: "prepare_second",
+    now: expired,
+  });
+  expect(takeover.outcome).toBe("refused");
+  const blocked = await coord.draw({ runId: "other", now: expired });
+  if (blocked.outcome !== "gap") throw new Error("a live parent freed its slot");
+  expect(blocked.gap.reason).toBe("batch");
+  await db.run(`UPDATE runs SET closure = 'stopped' WHERE id = 'parent'`);
+  expect(await coord.open(expired)).toEqual({ total: 0, byMachine: {} });
+});
+
+test("concurrent distinct preparation grants cannot oversubscribe a machine or the daily budget", async () => {
+  for (const bound of ["machine", "daily"] as const) {
+    const { db, coord } = await deployment(
+      stagePolicy(
+        "explore",
+        bound === "machine" ? { concurrentPerMachine: 1 } : { perCycleCost: 0.2, dailyCost: 0.2 },
+      ),
+    );
+    await catalog(db, "omp/a");
+    await catalog(db, "omp/b");
+    if (bound === "daily") await claimRow(db, "asg_spent", "old", 0.15, 0.15);
+    const assignments = await Promise.all([
+      coord.draw({ runId: "a", seed: 1n }),
+      coord.draw({ runId: "b", seed: 1n }),
+    ]);
+    const one = drawn(assignments[0]!);
+    const two = drawn(assignments[1]!);
+    expect(one.id).not.toBe(two.id);
+    const granted = await Promise.all([
+      coord.claim({ assignment: one, runId: "a", jobId: "prepare_a" }),
+      coord.claim({ assignment: two, runId: "b", jobId: "prepare_b" }),
+    ]);
+    expect(granted.filter((result) => result.outcome === "granted")).toHaveLength(1);
+    expect((await coord.open()).total).toBe(1);
+    expect((await coord.spend()).total).toBeLessThanOrEqual(
+      (await coord.policy()).policy.dailyCost,
+    );
+  }
+});
+
+test("prepare-to-Code binding requires live exact ownership and the expected previous job", async () => {
+  const { coord, assignment } = await oneAssignment();
+  const first = await coord.claim({ assignment, runId: "owner", jobId: "prepare" });
+  if (first.outcome !== "granted") throw new Error(first.refusal.detail);
+  const fence = first.claim.fence;
+  for (const over of [
+    { previousJobId: "unexpected" },
+    { runId: "stranger" },
+    { fence: fence + 1 },
+    { now: first.claim.expiresAt },
+  ]) {
+    expect(
+      (
+        await coord.bind({
+          id: assignment.id,
+          runId: "owner",
+          fence,
+          jobId: "code",
+          previousJobId: "prepare",
+          ...over,
+        })
+      ).outcome,
+    ).toBe("refused");
+  }
+  expect(
+    (await coord.bind({ id: assignment.id, runId: "owner", fence, jobId: "code" })).outcome,
+  ).toBe("refused");
+  const bound = await coord.bind({
+    id: assignment.id,
+    runId: "owner",
+    fence,
+    jobId: "code",
+    previousJobId: "prepare",
+  });
+  if (bound.outcome !== "bound") throw new Error(bound.refusal.detail);
+  expect(bound.claim.jobId).toBe("code");
+  expect(
+    (
+      await coord.bind({
+        id: assignment.id,
+        runId: "owner",
+        fence,
+        jobId: "code",
+        previousJobId: "prepare",
+      })
+    ).outcome,
+  ).toBe("bound");
+  expect(
+    (
+      await coord.bind({
+        id: assignment.id,
+        runId: "owner",
+        fence,
+        jobId: "different",
+        previousJobId: "prepare",
+      })
+    ).outcome,
+  ).toBe("refused");
+  await coord.finish({
+    id: assignment.id,
+    runId: "owner",
+    fence,
+    outcome: "completed",
+    cost: 0.01,
+  });
+  expect(
+    (
+      await coord.bind({
+        id: assignment.id,
+        runId: "owner",
+        fence,
+        jobId: "after",
+        previousJobId: "code",
+      })
+    ).outcome,
+  ).toBe("refused");
+});
+
+test("activity weights, not the number of review lanes, determine the stage share", async () => {
+  const { db, coord } = await deployment(
+    stagePolicy("challenge", {
+      activityWeights: { review: 0.1, explore: 0, challenge: 1, synthesize: 0 },
+    }),
+  );
+  await catalog(db, "omp/a");
+  await analysisRecord(db, "hyp_00000001", "source");
+  await citation(db, "hyp_00000001", "omp/a");
+  const samples = await sampleDraws(coord, 100);
+  expect(
+    samples.filter((assignment) => assignment.activity === "challenge").length,
+  ).toBeGreaterThan(75);
+  expect(samples.some((assignment) => assignment.activity === "review")).toBe(true);
+  expect(
+    samples.every(
+      (assignment) => assignment.activity === "review" || assignment.activity === "challenge",
+    ),
+  ).toBe(true);
+  const replay = drawn(await coord.draw({ runId: "cycle_1", seed: 17n }));
+  expect(samples[16]).toEqual(replay);
+});
+
+test("an expired Code lease neither frees running work nor permits a second worker", async () => {
+  const { db, coord, assignment } = await oneAssignment();
+  const first = await coord.claim({ assignment, runId: "first", jobId: "code_first" });
+  if (first.outcome !== "granted") throw new Error(first.refusal.detail);
+  await runOn(db, "code_first", "dev-01");
+  const expired = first.claim.expiresAt + 1;
+  expect(await coord.open(expired)).toEqual({ total: 1, byMachine: { "dev-01": 1 } });
+  expect(
+    (await coord.claim({ assignment, runId: "second", jobId: "code_second", now: expired }))
+      .outcome,
+  ).toBe("refused");
+  // Late settlement can still charge the actual owner: expiry never changes its fence.
+  expect(
+    (
+      await coord.finish({
+        id: assignment.id,
+        runId: "first",
+        fence: first.claim.fence,
+        cost: 0.01,
+        outcome: "completed",
+        now: expired,
+      })
+    ).outcome,
+  ).toBe("finished");
+});
+
+test("terminal recovery requires a settled attributed parent and accounts its Code cost once", async () => {
+  const { db, coord } = await deployment(stagePolicy("explore"));
+  await catalog(db, "omp/recovery");
+  const assignment = drawn(await coord.draw({ runId: "recovery" }));
+  const grant = await coord.claim({
+    assignment,
+    runId: "recovery",
+    jobId: "prepare_recovery",
+  });
+  if (grant.outcome !== "granted") throw new Error(grant.refusal.detail);
+  await runOn(db, "prepare_recovery", "dev-01");
+  await db.run(`UPDATE runs SET closure = 'completed' WHERE job_id = 'prepare_recovery'`);
+  const analysis = {
+    stage: "explore",
+    selectors: ["omp/recovery"],
+    brief: [],
+    claim: { id: assignment.id, runId: "recovery", fence: grant.claim.fence },
+  };
+  await db.run(
+    `INSERT INTO runs(id,kind,machine_id,job_id,prepare_job_id,authority_kind,authority_id,
+                      preparation,started_at,records,cost_usd,payload)
+     VALUES('recovery_parent',?,'dev-01','code_recovery','prepare_recovery','conductor',
+            'recovery',?,?,0,0.02,'{}')`,
+    [OPERATIONS.explore, JSON.stringify({ analysis }), ago(0)],
+  );
+  const request = {
+    id: assignment.id,
+    runId: "recovery",
+    fence: grant.claim.fence,
+    cost: 0.02,
+    outcome: "failed" as const,
+    now: grant.claim.expiresAt + 1,
+    terminalJob: { jobId: "code_recovery", previousJobId: "prepare_recovery" },
+  };
+  // A live worker is not a terminal receipt, even when the permission to continue expired.
+  expect((await coord.finish(request)).outcome).toBe("refused");
+  expect((await coord.open(request.now)).total).toBe(1);
+  await db.run(
+    `UPDATE runs SET closure = 'failed', finished_at = ?, preparation = ? WHERE id = 'recovery_parent'`,
+    [
+      new Date(request.now).toISOString(),
+      JSON.stringify({
+        analysis: { ...analysis, claim: { ...analysis.claim, fence: grant.claim.fence + 1 } },
+      }),
+    ],
+  );
+  expect((await coord.finish(request)).outcome).toBe("refused");
+  await db.run(`UPDATE runs SET preparation = ? WHERE id = 'recovery_parent'`, [
+    JSON.stringify({ analysis }),
+  ]);
+  expect(
+    (
+      await coord.finish({
+        ...request,
+        terminalJob: { ...request.terminalJob, previousJobId: "unrelated" },
+      })
+    ).outcome,
+  ).toBe("refused");
+  expect((await coord.finish(request)).outcome).toBe("finished");
+  expect((await coord.spend(request.now)).total).toBeCloseTo(0.02);
+  expect((await coord.finish(request)).outcome).toBe("finished");
+  expect((await coord.spend(request.now)).total).toBeCloseTo(0.02);
+  expect((await coord.open(request.now)).total).toBe(0);
+});
+
+test("exploration reaches sources beyond 256 capped catalog entries", async () => {
+  const { db, coord } = await deployment(
+    stagePolicy("explore", { initialReviews: 1, maxItemReviews: 1, cooldownSeconds: 0 }),
+  );
+  for (let n = 0; n < 256; n++) {
+    const selector = `omp/${String(n).padStart(4, "0")}`;
+    await catalog(db, selector);
+    await db.run(
+      `INSERT INTO claims(id,record_id,role,lane,policy_version,run_id,fence,
+                          reserved_cost,actual_cost,granted_at,expires_at,finished_at,outcome)
+       VALUES(?,?,'analysis:explore','exploration','1','past',1,0.01,0.01,?,?,?,'completed')`,
+      [`old_${n}`, selector, ago(2), ago(1), ago(1)],
+    );
+  }
+  await catalog(db, "omp/older");
+  const assignment = drawn(await coord.draw({ runId: "after-window" }));
+  if (assignment.activity !== "explore") throw new Error("wrong activity");
+  expect(assignment.selectors).toEqual(["omp/older"]);
+});
+
+test("challenge reaches an older eligible head beyond 64 capped heads", async () => {
+  const { db, coord } = await deployment(
+    stagePolicy("challenge", { initialReviews: 1, maxItemReviews: 1, cooldownSeconds: 0 }),
+  );
+  await catalog(db, "omp/shared");
+  for (let n = 1; n <= 65; n++) {
+    const id = `hyp_${n.toString(16).padStart(8, "0")}`;
+    await analysisRecord(db, id, "source", null, {}, n === 65 ? 10 : 1);
+    await citation(db, id, "omp/shared");
+    if (n === 65) continue;
+    await db.run(
+      `INSERT INTO claims(id,record_id,role,lane,policy_version,run_id,fence,
+                          reserved_cost,actual_cost,granted_at,expires_at,finished_at,outcome)
+       VALUES(?,?,'analysis:challenge','challenge','1','past',1,0.01,0.01,?,?,?,'completed')`,
+      [`old_${n}`, id, ago(2), ago(1), ago(1)],
+    );
+  }
+  expect(drawn(await coord.draw({ runId: "after-window" })).recordId).toBe("hyp_00000041");
+});
+
+test("claim refresh finds its drawn analysis after one new offer shifts the draw cap", async () => {
+  const { db, coord } = await deployment(stagePolicy("explore"));
+  for (let n = 0; n < 63; n++) await catalog(db, `omp/a-${String(n).padStart(3, "0")}`);
+  await catalog(db, "omp/z-drawn");
+  // Separate hand-outs exhaust the admitted window without reserving or settling any offer.
+  let selected: { assignment: Assignment; runId: string } | undefined;
+  for (let n = 0; n < 64; n++) {
+    const runId = `owner_${n}`;
+    const assignment = drawn(await coord.draw({ runId, seed: 1n }));
+    if (assignment.recordId === "omp/z-drawn") {
+      selected = { assignment, runId };
+      break;
+    }
+  }
+  if (selected === undefined) throw new Error("the last admitted source was not drawn");
+  await catalog(db, "omp/0-new");
+  const grant = await coord.claim({ ...selected, jobId: "prepare_drawn" });
+  if (grant.outcome !== "granted") throw new Error(grant.refusal.detail);
+  expect(grant.claim.id).toBe(selected.assignment.id);
+  expect(grant.claim.recordId).toBe("omp/z-drawn");
+});
+
+test("a full offer stage stops independently while challenge and synthesis remain reachable", async () => {
+  const { db } = await deployment(stagePolicy("explore"));
+  for (let n = 0; n < 65; n++) await catalog(db, `omp/${String(n).padStart(3, "0")}`);
+  const ids = ["hyp_00000001", "obs_00000001", "obs_00000002"];
+  for (const [n, id] of ids.entries()) {
+    await analysisRecord(db, id, `source_${n}`, n === 0 ? null : ids[0]!);
+    await citation(db, id, "omp/000");
+  }
+  const full = new Set<Stage>();
+  const offers = analysisOffers(
+    db,
+    "dev-01",
+    ["explore", "challenge", "synthesize"],
+    new Set(ids),
+    new Map(),
+    new Set(),
+    (stage) => !full.has(stage),
+  );
+  try {
+    for (let n = 0; n < 64; n++) {
+      const next = await offers.next();
+      expect(next.done).toBe(false);
+      if (next.done || "missing" in next.value) throw new Error("expected an explore offer");
+      expect(next.value.stage).toBe("explore");
+    }
+    full.add("explore");
+    const challenge = await offers.next();
+    if (challenge.done || "missing" in challenge.value) throw new Error("expected challenge");
+    expect(challenge.value.stage).toBe("challenge");
+    full.add("challenge");
+    const synthesis = await offers.next();
+    if (synthesis.done || "missing" in synthesis.value) throw new Error("expected synthesis");
+    expect(synthesis.value.stage).toBe("synthesize");
+    expect(new Set(synthesis.value.brief.map((row) => row.runId))).toContain("source_2");
+    full.add("synthesize");
+    expect((await offers.next()).done).toBe(true);
+  } finally {
+    await offers.return(undefined);
+  }
+});
+
+test("synthesis joins original runs across record pages and keeps provisional critique", async () => {
+  const { db, coord } = await deployment(stagePolicy("synthesize"));
+  await catalog(db, "omp/shared");
+  await analysisRecord(db, "hyp_00000001", null, null, {}, 11);
+  const objection = { statement: "An alternative cause remains plausible", limits: ["untested"] };
+  await analysisRecord(db, "hyp_00000002", "critic", null, objection);
+  await db.run(
+    `INSERT INTO edges(id,kind,from_kind,from_id,to_kind,to_id,actor_kind,actor_id,created_at)
+     VALUES('edg_critique',?,'hypothesis','hyp_00000002','hypothesis','hyp_00000001','run','critic',?)`,
+    [CHALLENGE_RELATION, ago(1)],
+  );
+  for (let n = 1; n <= 70; n++) {
+    const id = `obs_${n.toString(16).padStart(8, "0")}`;
+    await analysisRecord(
+      db,
+      id,
+      n === 70 ? "source-b" : "source-a",
+      "hyp_00000001",
+      { claim: `whole observation ${n}`, limits: "l".repeat(600) },
+      n === 70 ? 10 : 1,
+    );
+    await citation(db, id, "omp/shared");
+  }
+  const assignment = drawn(await coord.draw({ runId: "cross-page" }));
+  if (assignment.activity !== "synthesize") throw new Error("wrong activity");
+  expect(
+    new Set(assignment.brief.filter((row) => row.kind === "observation").map((row) => row.runId)),
+  ).toEqual(new Set(["source-a", "source-b"]));
+  expect(assignment.brief.find((row) => row.id === "hyp_00000002")?.payload).toEqual(objection);
+  expect(assignment.brief.some((row) => row.id === "hyp_00000001")).toBe(true);
+  expect(assignment.brief.length).toBeLessThanOrEqual(ANALYSIS_BRIEF_LIMIT);
+  expect(new TextEncoder().encode(JSON.stringify(assignment.brief)).byteLength).toBeLessThanOrEqual(
+    ANALYSIS_BRIEF_BYTE_LIMIT,
+  );
+});
+
+test("synthesis carries hypothesis objections and their targets through a shared session", async () => {
+  const { db, coord } = await deployment(stagePolicy("synthesize"));
+  await catalog(db, "omp/shared");
+  await analysisRecord(db, "hyp_00000001", null);
+  await analysisRecord(db, "hyp_00000002", "critic", null, {
+    alternative: "unmeasured confounder",
+  });
+  await analysisRecord(db, "obs_00000001", "source-a", "hyp_00000001");
+  await analysisRecord(db, "obs_00000002", "source-b");
+  await citation(db, "obs_00000001", "omp/shared");
+  await citation(db, "obs_00000002", "omp/shared");
+  await db.run(
+    `INSERT INTO edges(id,kind,from_kind,from_id,to_kind,to_id,actor_kind,actor_id,created_at)
+     VALUES('edg_critique',?,'hypothesis','hyp_00000002','hypothesis','hyp_00000001','run','critic',?)`,
+    [CHALLENGE_RELATION, ago(1)],
+  );
+  const assignment = drawn(await coord.draw({ runId: "session-critique" }));
+  if (assignment.activity !== "synthesize") throw new Error("wrong activity");
+  expect(assignment.brief.map((row) => row.id)).toEqual([
+    "hyp_00000001",
+    "hyp_00000002",
+    "obs_00000001",
+    "obs_00000002",
+  ]);
+  expect(assignment.brief.find((row) => row.id === "hyp_00000002")?.objectionTo).toEqual([
+    "hyp_00000001",
+  ]);
+});
+
+test("zero-cost analysis failures retry after cooldown with fresh identities and bounded setbacks", async () => {
+  const { db, coord } = await deployment(stagePolicy("explore", { cooldownSeconds: 60 }));
+  await catalog(db, "omp/retry");
+  const ids = new Set<string>();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const moment = NOW + attempt * 61_000;
+    const runId = `attempt_${attempt}`;
+    const assignment = drawn(await coord.draw({ runId, now: moment }));
+    expect(ids.has(assignment.id)).toBe(false);
+    ids.add(assignment.id);
+    const grant = await coord.claim({
+      assignment,
+      runId,
+      jobId: `prepare_${attempt}`,
+      now: moment,
+    });
+    if (grant.outcome !== "granted") throw new Error(grant.refusal.detail);
+    await coord.finish({
+      id: assignment.id,
+      runId,
+      fence: grant.claim.fence,
+      cost: 0,
+      outcome: "failed",
+      now: moment,
+    });
+    const immediate = await coord.draw({ runId: "not-yet", now: moment + 1 });
+    expect(immediate.outcome).toBe("gap");
+    expect(
+      immediate.gaps.some((gap) => gap.reason === (attempt === 2 ? "exhausted" : "cooling")),
+    ).toBe(true);
+  }
+  const exhausted = await coord.draw({ runId: "exhausted", now: NOW + 4 * 61_000 });
+  expect(exhausted.outcome).toBe("gap");
+  expect(exhausted.gaps.some((gap) => gap.reason === "exhausted")).toBe(true);
+});
+
+test("completed free analysis and paid failures remain settled across policy revisions", async () => {
+  for (const receipt of [
+    { cost: 0, outcome: "completed" },
+    { cost: 0.01, outcome: "failed" },
+  ] as const) {
+    const { db, coord } = await deployment(stagePolicy("explore", { cooldownSeconds: 0 }));
+    await catalog(db, "omp/settled");
+    const assignment = drawn(await coord.draw({ runId: "first" }));
+    const grant = await coord.claim({ assignment, runId: "first", jobId: "prepare_first" });
+    if (grant.outcome !== "granted") throw new Error(grant.refusal.detail);
+    await coord.finish({ id: assignment.id, runId: "first", fence: grant.claim.fence, ...receipt });
+    await db.run(
+      `INSERT INTO policies(version,seq,actor_id,reason,payload,recorded_at)
+       VALUES('renamed',2,'operator','',?,?)`,
+      [JSON.stringify(stagePolicy("explore", { version: "renamed", cooldownSeconds: 0 })), ago(0)],
+    );
+    const refused = await coord.draw({ runId: "second" });
+    expect(refused.outcome).toBe("gap");
+    expect(refused.gaps.some((gap) => gap.reason === "settled")).toBe(true);
+  }
+});
+
+test("unposted finish requires expired exact analysis ownership and zero-cost failure", async () => {
+  const { db, coord } = await deployment(stagePolicy("explore"));
+  await catalog(db, "omp/unposted");
+  const assignment = drawn(await coord.draw({ runId: "owner" }));
+  const grant = await coord.claim({ assignment, runId: "owner", jobId: "prepare_unposted" });
+  if (grant.outcome !== "granted") throw new Error(grant.refusal.detail);
+  const request = {
+    id: assignment.id,
+    runId: "owner",
+    fence: grant.claim.fence,
+    cost: 0,
+    outcome: "failed" as const,
+    unpostedJobId: "prepare_unposted",
+    now: grant.claim.expiresAt + 1,
+  };
+  for (const changed of [
+    { now: NOW },
+    { runId: "other" },
+    { fence: grant.claim.fence + 1 },
+    { unpostedJobId: "wrong" },
+    { cost: 0.01 },
+    { outcome: "completed" as const },
+    { terminalJob: { jobId: "code", previousJobId: "prepare_unposted" } },
+  ])
+    expect((await coord.finish({ ...request, ...changed })).outcome).toBe("refused");
+  expect((await coord.open(request.now)).total).toBe(1);
+  expect((await coord.finish(request)).outcome).toBe("finished");
+  expect((await coord.open(request.now)).total).toBe(0);
+  expect((await coord.spend(request.now)).total).toBe(0);
+
+  const review = await oneAssignment();
+  const reviewGrant = await review.coord.claim({
+    assignment: review.assignment,
+    runId: "owner",
+    jobId: "review_job",
+  });
+  if (reviewGrant.outcome !== "granted") throw new Error(reviewGrant.refusal.detail);
+  expect(
+    (
+      await review.coord.finish({
+        ...request,
+        id: review.assignment.id,
+        fence: reviewGrant.claim.fence,
+        unpostedJobId: "review_job",
+        now: reviewGrant.claim.expiresAt + 1,
+      })
+    ).outcome,
+  ).toBe("refused");
+});
+
+test("unposted finish atomically refuses a native run or parent inserted after its read", async () => {
+  for (const column of ["job_id", "prepare_job_id"] as const) {
+    const { db, coord } = await deployment(stagePolicy("explore"));
+    await catalog(db, "omp/unposted");
+    const assignment = drawn(await coord.draw({ runId: "owner" }));
+    const grant = await coord.claim({ assignment, runId: "owner", jobId: "prepare_race" });
+    if (grant.outcome !== "granted") throw new Error(grant.refusal.detail);
+    let inserted = false;
+    const raced = coordinator(
+      {
+        db: {
+          ...db,
+          batch: async (statements) => {
+            if (!inserted) {
+              inserted = true;
+              await db.run(
+                `INSERT INTO runs(id,kind,machine_id,${column},started_at,records,payload)
+             VALUES('durable_intent',?,'dev-01','prepare_race',?,0,'{}')`,
+                [OPERATIONS.explore, ago(0)],
+              );
+            }
+            return db.batch(statements);
+          },
+        },
+      },
+      () => NOW,
+      CONCURRENT_JOBS,
+    );
+    expect(
+      (
+        await raced.finish({
+          id: assignment.id,
+          runId: "owner",
+          fence: grant.claim.fence,
+          cost: 0,
+          outcome: "failed",
+          unpostedJobId: "prepare_race",
+          now: grant.claim.expiresAt + 1,
+        })
+      ).outcome,
+    ).toBe("refused");
+    const held = await db.query(`SELECT finished_at, actual_cost FROM claims WHERE id = ?`, [
+      assignment.id,
+    ]);
+    expect(held[0]?.["finished_at"]).toBeNull();
+    expect(held[0]?.["actual_cost"]).toBeNull();
+  }
+});
+
+test("unposted finish refuses retained parent authority even after closure and Code rebinding", async () => {
+  for (const closure of [null, "failed"]) {
+    const { db, coord } = await deployment(stagePolicy("explore"));
+    await catalog(db, "omp/intent");
+    const assignment = drawn(await coord.draw({ runId: "owner" }));
+    const grant = await coord.claim({ assignment, runId: "owner", jobId: "prepare_intent" });
+    if (grant.outcome !== "granted") throw new Error(grant.refusal.detail);
+    const bound = await coord.bind({
+      id: assignment.id,
+      runId: "owner",
+      fence: grant.claim.fence,
+      previousJobId: "prepare_intent",
+      jobId: "code_unretained",
+    });
+    if (bound.outcome !== "bound") throw new Error(bound.refusal.detail);
+    const raced = coordinator(
+      {
+        db: {
+          ...db,
+          batch: async (statements) => {
+            // The parent still carries the prepare id, not the claim's newly bound Code id.
+            // Insert after finish reads ownership to exercise the atomic guard as well.
+            await db.run(
+              `INSERT INTO runs(id,kind,machine_id,prepare_job_id,authority_kind,authority_id,
+                                preparation,closure,started_at,records,payload)
+               VALUES('retained_parent',?,'dev-01','prepare_intent','conductor','owner',?,?,?,0,'{}')`,
+              [
+                OPERATIONS.explore,
+                JSON.stringify({
+                  analysis: {
+                    claim: { id: assignment.id, runId: "owner", fence: grant.claim.fence },
+                  },
+                }),
+                closure,
+                ago(0),
+              ],
+            );
+            return db.batch(statements);
+          },
+        },
+      },
+      () => NOW,
+      CONCURRENT_JOBS,
+    );
+    const expired = grant.claim.expiresAt + 1;
+    expect(
+      (
+        await raced.finish({
+          id: assignment.id,
+          runId: "owner",
+          fence: grant.claim.fence,
+          cost: 0,
+          outcome: "failed",
+          unpostedJobId: "code_unretained",
+          now: expired,
+        })
+      ).outcome,
+    ).toBe("refused");
+    const held = await db.query(`SELECT finished_at, actual_cost FROM claims WHERE id = ?`, [
+      assignment.id,
+    ]);
+    expect(held[0]?.["finished_at"]).toBeNull();
+    expect(held[0]?.["actual_cost"]).toBeNull();
+    expect((await coord.open(expired)).total).toBe(1);
+  }
+});
+
+test("synthesis reaches a later bounded brief after the earlier window is completed", async () => {
+  const { db, coord } = await deployment(stagePolicy("synthesize", { cooldownSeconds: 0 }));
+  await catalog(db, "omp/shared");
+  await analysisRecord(db, "hyp_00000001", null);
+  for (let n = 1; n <= 30; n++) {
+    const id = `obs_${n.toString(16).padStart(8, "0")}`;
+    await analysisRecord(db, id, n === 30 ? "source-b" : "source-a", "hyp_00000001");
+    await citation(db, id, "omp/shared");
+  }
+  const first = drawn(await coord.draw({ runId: "first-window", seed: 1n }));
+  if (first.activity !== "synthesize") throw new Error("wrong activity");
+  const grant = await coord.claim({
+    assignment: first,
+    runId: "first-window",
+    jobId: "prepare_first",
+  });
+  if (grant.outcome !== "granted") throw new Error(grant.refusal.detail);
+  await coord.finish({
+    id: first.id,
+    runId: "first-window",
+    fence: grant.claim.fence,
+    cost: 0.01,
+    outcome: "completed",
+  });
+  const next = drawn(await coord.draw({ runId: "next-window", seed: 1n }));
+  if (next.activity !== "synthesize") throw new Error("wrong activity");
+  const previous = new Set(first.brief.map((row) => row.id));
+  expect(next.brief.some((row) => row.kind === "observation" && !previous.has(row.id))).toBe(true);
+  expect(
+    new Set(next.brief.filter((row) => row.kind === "observation").map((row) => row.runId)),
+  ).toEqual(new Set(["source-a", "source-b"]));
 });

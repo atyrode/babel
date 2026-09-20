@@ -1368,6 +1368,34 @@ describe("runs and the policy", () => {
     expect(answer.spentTodayUsd).toBe(0.25);
   });
 
+  test("legacy activity weights keep analysis off, while explicit weights stay separate from review lanes", async () => {
+    expect((await harness.store.policy()).activityWeights).toEqual({
+      review: 1,
+      explore: 0,
+      challenge: 0,
+      synthesize: 0,
+    });
+    const activityWeights = { review: 0, explore: 0.2, challenge: 0.6, synthesize: 0.3 };
+    await insert(harness.db, "policies", {
+      version: "pol-4",
+      seq: 4,
+      actor_id: "operator",
+      reason: "analysis allocation",
+      payload: JSON.stringify({
+        activityWeights,
+        explorationShare: 0,
+        exploration_share: 0.8,
+        coverageShare: 0.4,
+      }),
+      recorded_at: stamp(NOW),
+    });
+    const policy = await harness.store.policy();
+    expect(policy.activityWeights).toEqual(activityWeights);
+    expect(policy.lanes.map(({ lane, share }) => ({ lane, share }))).toEqual([
+      { lane: "coverage", share: 0.4 },
+    ]);
+  });
+
   test("the overlay in force is reported against the bound admission reads, never a second one", async () => {
     // `pol-3` is a Go-era row: it spells its numbers with underscores and names no per-machine
     // bound, so the bound in force is the batch it was written with — four. The strip's "from"
@@ -1477,6 +1505,134 @@ describe("corroboration", () => {
     // quoted anything look corroborated.
     const peel = await harness.store.record(FINDING);
     expect(peel?.corroboration.supports).toBe(1);
+  });
+});
+
+describe("grounded analysis challenges", () => {
+  const objection = async (id: string, runId: string, ground = "missing-check") => {
+    await insert(harness.db, "records", {
+      id,
+      kind: "hypothesis",
+      root_id: id,
+      seq: 1,
+      run_id: runId,
+      actor_kind: "run",
+      actor_id: runId,
+      title: `An unchecked boundary from ${runId}`,
+      created_at: stamp(NOW - HOUR),
+      payload: JSON.stringify({ statement: "The boundary was never checked." }),
+    });
+    await edge(`edg_${id}`, id, runId, ground);
+  };
+  const edge = async (
+    id: string,
+    source: string,
+    actor: string,
+    ground: string,
+    target = CANDIDATE,
+    kind = "hypothesis",
+  ) => {
+    await insert(harness.db, "edges", {
+      id,
+      kind: "challenges",
+      from_kind: kind,
+      from_id: source,
+      to_kind: "hypothesis",
+      to_id: target,
+      position: 0,
+      note: ground,
+      actor_kind: "run",
+      actor_id: actor,
+      created_at: stamp(NOW - HOUR),
+    });
+  };
+
+  test("counts distinct objections and their actual source runs without changing support or standing", async () => {
+    await objection("hyp_00000201", "challenger-a");
+    await objection("hyp_00000202", "challenger-a", "consequence");
+    await objection("hyp_00000203", "challenger-b", "alternative");
+    await edge("edg_duplicate", "hyp_00000201", "challenger-a", "missing-check");
+    const expected = { objections: 3, distinctRuns: 2 };
+    const listed = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
+    expect(listed.posts.find((post) => post.id === CANDIDATE)?.challenges).toEqual(expected);
+    const opened = await harness.store.record(CANDIDATE);
+    expect(opened?.post.challenges).toEqual(expected);
+    expect(opened?.challenges).toEqual([
+      {
+        id: "hyp_00000203",
+        kind: "hypothesis",
+        runId: "challenger-b",
+        grounds: "alternative",
+        summary: "An unchecked boundary from challenger-b",
+      },
+      {
+        id: "hyp_00000202",
+        kind: "hypothesis",
+        runId: "challenger-a",
+        grounds: "consequence",
+        summary: "An unchecked boundary from challenger-a",
+      },
+      {
+        id: "hyp_00000201",
+        kind: "hypothesis",
+        runId: "challenger-a",
+        grounds: "missing-check",
+        summary: "An unchecked boundary from challenger-a",
+      },
+    ]);
+    expect(opened?.corroboration).toEqual({ supports: 0, distinctRuns: 0 });
+    expect(opened?.claim.standing).toBe("new");
+  });
+
+  test("imported self-challenge edges count in neither the feed nor the opened record", async () => {
+    await edge("edg_self_challenge", CANDIDATE, "run-a", "consequence");
+    const listed = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
+    expect(listed.posts.find((post) => post.id === CANDIDATE)?.challenges).toEqual({
+      objections: 0,
+      distinctRuns: 0,
+    });
+    const opened = await harness.store.record(CANDIDATE);
+    expect(opened?.post.challenges).toEqual({ objections: 0, distinctRuns: 0 });
+    expect(opened?.challenges).toEqual([]);
+  });
+
+  test("ignores review-role opposition and malformed or falsely attributed challenge edges", async () => {
+    await edge("edg_no_source", "hyp_ffffffff", "run-a", "alternative");
+    await edge("edg_bad_ground", CANDIDATE, "run-a", "oppose");
+    await edge("edg_bad_actor", CANDIDATE, "another-run", "alternative");
+    await edge("edg_bad_kind", OBSERVATION, "run-a", "evidence");
+    await edge("edg_no_evidence", CANDIDATE, "run-a", "evidence");
+    await objection("old-hypothesis", "run-a");
+    await insert(harness.db, "assessments", {
+      id: "asm_challenge_vote",
+      record_id: CANDIDATE,
+      revision_id: CANDIDATE,
+      run_id: "reviewer",
+      role: "challenge",
+      vote: "oppose",
+      recorded_at: stamp(NOW),
+      payload: "{}",
+    });
+    const opened = await harness.store.record(CANDIDATE);
+    expect(opened?.post.challenges).toEqual({ objections: 0, distinctRuns: 0 });
+    expect(opened?.challenges).toEqual([]);
+    expect(opened?.post.oppose).toBe(1);
+    // A real evidence-bearing objection is still valid under a non-evidence ground.
+    await edge("edg_evidence", OBSERVATION, "run-a", "consequence", CANDIDATE, "observation");
+    expect((await harness.store.record(CANDIDATE))?.challenges).toEqual([
+      expect.objectContaining({ id: OBSERVATION, runId: "run-a", grounds: "consequence" }),
+    ]);
+  });
+
+  test("bounds the detail list but not the objection or independent run totals", async () => {
+    for (let index = 0; index < 22; index++) {
+      await objection(`hyp_${(0x300 + index).toString(16).padStart(8, "0")}`, `source-${index}`);
+    }
+    const opened = await harness.store.record(CANDIDATE);
+    expect(opened?.post.challenges).toEqual({ objections: 22, distinctRuns: 22 });
+    expect(opened?.challenges).toHaveLength(20);
+    expect(opened?.challenges[0]?.id).toBe("hyp_00000315");
+    expect(opened?.challenges.at(-1)?.id).toBe("hyp_00000302");
   });
 });
 

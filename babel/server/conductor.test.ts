@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
+import { HostCallError } from "@manifold/plugin-kit/errors";
 import {
   BABEL_PLUGIN_ID,
   CONDUCTOR_CYCLE_KEY,
@@ -22,6 +23,8 @@ import {
   type MaterialIndex,
   type RunTrace,
 } from "../contract.ts";
+import { launchMachinery } from "../doors/launch.ts";
+import { coordinator as governed } from "../store/coordinator.ts";
 import type {
   CodeEngine,
   CodeJob,
@@ -332,6 +335,10 @@ class Fleet implements JobsSlice {
     return this.status({ jobId: args.jobId });
   }
 
+  cancel(node: { jobId: string }): void {
+    this.kill(node.jobId, "cancelled");
+  }
+
   /** A job the hub is already reporting as started: what a posting used to leave behind. */
   running(jobId: string, machineId: string, operationId: string): void {
     this.jobs.set(jobId, {
@@ -637,6 +644,7 @@ const POLICY = {
   explorationShare: 0.2,
   discoveryShare: 0.2,
   filingShare: 0.1,
+  activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0 },
   backlogShare: 0.1,
   maxItemReviews: 6,
   perCycleCost: 0.5,
@@ -655,6 +663,7 @@ const POLICY = {
 const FIXTURE_MODEL = "fixture/model-under-test";
 
 const ASSIGNMENT = {
+  activity: "review",
   id: "asg_a1b2",
   recordId: "hyp_00000001",
   rootId: "hyp_00000001",
@@ -697,6 +706,7 @@ const HOST_NAME = "dev-01";
 const ROUTE: NonNullable<Policy["review"]> = {
   machineId: MACHINE,
   profile: { containerId: "ctr_union", expectedRevision: 1 },
+  stageRecipes: {},
   roleRecipes: {
     reception: "babel-triages-the-queue",
     evidence: "babel-triages-the-queue",
@@ -2836,6 +2846,7 @@ test("a drawn review is blinded, fenced, settled, and promotes granular refineme
   draws.review = {
     machineId: MACHINE,
     profile: { containerId: "ctr_union", expectedRevision: 1 },
+    stageRecipes: {},
     roleRecipes: {
       reception: recipeId,
       evidence: recipeId,
@@ -2977,6 +2988,7 @@ test("a review with one refused contribution records the rest, and its receipt c
   draws.review = {
     machineId: MACHINE,
     profile: { containerId: "ctr_union", expectedRevision: 1 },
+    stageRecipes: {},
     roleRecipes: {
       reception: recipeId,
       evidence: recipeId,
@@ -3087,6 +3099,7 @@ test("a submission the one validator refuses is recorded nowhere and still settl
   draws.review = {
     machineId: MACHINE,
     profile: { containerId: "ctr_union", expectedRevision: 1 },
+    stageRecipes: {},
     roleRecipes: {
       reception: recipeId,
       evidence: recipeId,
@@ -3160,6 +3173,7 @@ test("a stale review completion retains usage without writing or settling the ne
   draws.review = {
     machineId: MACHINE,
     profile: { containerId: "ctr_union", expectedRevision: 1 },
+    stageRecipes: {},
     roleRecipes: {
       reception: recipeId,
       evidence: recipeId,
@@ -4612,14 +4626,12 @@ test("an accepted answer becomes the records, edges, statuses and questions it c
   expect(await db.query(`SELECT COUNT(*) AS n FROM dispositions`, [])).toEqual([{ n: 0n }]);
 });
 
-test("a record whose own text names what it contradicts gets the edge, and a miss gets a note", async () => {
+test("a record whose own text names what it contradicts gets the edge only for an existing target", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
   const draws = new Draws(db);
-  // `seed` already holds `hyp_00000001`. The answer contradicts it and one identifier nobody
-  // has: the first is the repair, the second is the run "referring to something since removed",
-  // which must cost the answer nothing.
+  // Correction markers retain their existing semantics, but never link to dangling targets.
   const missing = `hyp_${"f".repeat(32)}`;
   const code = codeAnswering(() => ({
     ok: true,
@@ -4639,9 +4651,7 @@ test("a record whose own text names what it contradicts gets the edge, and a mis
   expect(
     await db.query(`SELECT to_id FROM edges WHERE kind = 'contradicts' AND actor_id = ?`, [runId]),
   ).toEqual([{ to_id: "hyp_00000001" }]);
-  expect(report.notes.join("\n")).toContain(`${missing}, which this hub does not hold`);
-  // THE ANSWER STILL STANDS. A marker is a claim about the corpus, not about this answer's
-  // integrity, so all four records landed beside the one dropped reference.
+  // The ungrounded marker does not discard the independently valid local result.
   expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId])).toEqual([
     { n: 4n },
   ]);
@@ -5571,4 +5581,595 @@ test("a read title that landed while the run was in flight is not overwritten by
   expect(
     await db.query(`SELECT title FROM session_titles WHERE selector = 'codex/untitled-a'`),
   ).toEqual([{ title: "What the model called it" }]);
+});
+
+async function weightedCycle(stage: "challenge" | "synthesize") {
+  const db = openDatabase();
+  await seed(db);
+  await db.run(
+    `UPDATE sessions SET host = ?, live = 0, kind = 'operator', size = 4096 WHERE selector = 'omp/s1'`,
+    [MACHINE],
+  );
+  for (const [id, runId] of [
+    ["obs_00000001", "run_source_a"],
+    ["obs_00000002", "run_source_b"],
+  ]) {
+    await db.run(
+      `INSERT INTO records(id, kind, root_id, seq, parent_id, actor_kind, actor_id, run_id, title, created_at, payload)
+       VALUES (?, 'observation', ?, 0, 'hyp_00000001', 'run', ?, ?, 'Source observation', ?, ?)`,
+      [
+        id!,
+        id!,
+        runId!,
+        runId!,
+        new Date(clock).toISOString(),
+        JSON.stringify({
+          claim: "The rescan loses a snapshot",
+          evidence: [],
+          limits: ["Only one local example"],
+        }),
+      ],
+    );
+  }
+  const route = { ...ROUTE, stageRecipes: { [stage]: ROUTE.recipes[0]!.id } };
+  const policy = {
+    ...POLICY,
+    batchSize: 1,
+    review: route,
+    activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0, [stage]: 1 },
+  };
+  await db.run(
+    `INSERT INTO policies(version, seq, actor_id, reason, payload, recorded_at) VALUES (?, 1, 'operator', 'weighted analysis', ?, ?)`,
+    [POLICY.version, JSON.stringify(policy), new Date(clock).toISOString()],
+  );
+  if (stage === "synthesize") {
+    for (const id of ["obs_00000001", "obs_00000002"]) {
+      await db.run(
+        `INSERT INTO steering(id, root_id, seq, actor_kind, actor_id, target_kind, target_id, text, recorded_at)
+         VALUES (?, ?, 0, 'operator', 'operator', 'record', ?, ?, ?)`,
+        [
+          `stg_${id}`,
+          `stg_${id}`,
+          id,
+          `Preserve the operator concern for ${id}`,
+          new Date(clock).toISOString(),
+        ],
+      );
+    }
+  }
+  const store = openReadStore(db, () => clock);
+  const coordinator = governed(store, () => clock, 16);
+  const fleet = new Fleet();
+  const code = new ReviewCode();
+  const cookbook = Object.fromEntries(route.recipes.map((recipe) => [recipe.id, recipe]));
+  const launch = launchMachinery(store, {
+    coordinator,
+    jobs: () => fleet,
+    engine: () => code,
+    cookbook: async () => cookbook,
+    plan: () => PLAN,
+    now: () => clock,
+  });
+  const loop = conductor({
+    store,
+    coordinator,
+    jobs: fleet,
+    engine: code,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+    dispatchAnalysis: async (assignment, claim, owner, identity) =>
+      await launch.startExplore(
+        identity,
+        fleet,
+        code,
+        {
+          preset: "read-whats-new",
+          machineId: MACHINE,
+          profile: route.profile,
+          recipes: [route.recipes[0]!.id],
+        },
+        PLAN,
+        {
+          stage: assignment.activity,
+          selectors: assignment.selectors,
+          brief: assignment.brief,
+          claim: { id: claim.id, runId: owner, fence: claim.fence },
+        },
+      ),
+  });
+  return { db, store, coordinator, fleet, code, launch, loop };
+}
+
+test.each(["challenge", "synthesize"] as const)(
+  "standing %s work keeps its reservation through both wakes and settles under its own stage",
+  async (stage) => {
+    const { db, coordinator, fleet, code, launch, loop } = await weightedCycle(stage);
+    const first = await loop.tick();
+    expect(first.requested).toHaveLength(1);
+    const requested = first.requested[0]!;
+    expect(requested.role).toBe(`analysis:${stage}`);
+    expect(fleet.launched.map((job) => job.operationId)).toEqual([OPERATIONS.prepare]);
+    expect(code.posted).toEqual([]);
+    const material = { ...materialIndex(SERVED_FILE, SERVED_DIGEST), machineId: MACHINE };
+    fleet.finish(requested.jobId, 0, {
+      [JOB_OUTPUT_FILES.receipt]: {
+        runId: `${requested.runId}_material`,
+        kind: "prepare",
+        machineId: MACHINE,
+        startedAt: new Date(clock).toISOString(),
+        finishedAt: new Date(clock).toISOString(),
+        closure: "completed",
+        costUsd: 0,
+        tokens: 0,
+        counts: {},
+        material,
+      },
+    });
+    const second = await loop.tick();
+    expect(second.requested).toEqual([]);
+    expect(second.settled).toEqual([]);
+    expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
+    expect(await launch.postPrepared(fleet, code, PLAN)).toEqual([
+      { runId: requested.runId, jobId: "job_code_review" },
+    ]);
+    expect(code.posted[0]!.prompt).toContain(`babel.stage = ${stage}`);
+    if (stage === "synthesize")
+      for (const id of ["obs_00000001", "obs_00000002"])
+        expect(code.posted[0]!.prompt).toContain(`Preserve the operator concern for ${id}`);
+    expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
+    const result =
+      stage === "challenge"
+        ? {
+            objections: [
+              {
+                ref: "objection",
+                hypothesis: "hyp_00000001",
+                grounds: "missing-check",
+                recipe: { id: ROUTE.recipes[0]!.id, version: 2 },
+                claim: {
+                  claim: "Check whether the restore still finds this snapshot",
+                  confidence: "high",
+                  impact: "moderate",
+                  evidence: [],
+                },
+              },
+            ],
+          }
+        : {
+            consolidations: [
+              {
+                ref: "finding",
+                observations: ["obs_00000001", "obs_00000002"],
+                finding: {
+                  title: "Rescan drops snapshots",
+                  pattern: "Independent rescans lose their saved snapshot",
+                  significance: "Restore cannot use the catalog",
+                  counter_evidence_absent: true,
+                },
+              },
+            ],
+          };
+    code.read = sessionRead({
+      jobId: "job_code_review",
+      state: "exited",
+      finalMessage: `\`\`\`json\n${JSON.stringify(result)}\n\`\`\``,
+    });
+    const third = await loop.tick();
+    expect(
+      third.settled.some(
+        (claim) => claim.claimId === requested.claimId && claim.outcome === "completed",
+      ),
+    ).toBe(true);
+    const run = (
+      await db.query<{ payload: string; closure: string }>(
+        `SELECT payload, closure FROM runs WHERE id = ?`,
+        [requested.runId],
+      )
+    )[0]!;
+    expect(run.closure).toBe("completed");
+    expect(JSON.parse(run.payload)["stage"]).toBe(stage);
+    if (stage === "synthesize")
+      expect(
+        JSON.parse(run.payload)
+          .steering.carried.map((remark: { id: string }) => remark.id)
+          .sort(),
+      ).toEqual(["stg_obs_00000001", "stg_obs_00000002"]);
+    if (stage === "challenge") {
+      expect(
+        await db.query(
+          `SELECT to_id, note, actor_id FROM edges WHERE kind = 'challenges' AND actor_id = ?`,
+          [requested.runId],
+        ),
+      ).toEqual([{ to_id: "hyp_00000001", note: "missing-check", actor_id: requested.runId }]);
+    } else {
+      expect(
+        await db.query(`SELECT kind FROM records WHERE run_id = ?`, [requested.runId]),
+      ).toEqual([{ kind: "finding" }]);
+    }
+  },
+);
+
+test("an unusable analysis profile refuses before a claim or material job exists", async () => {
+  const { db, code, fleet, loop } = await weightedCycle("challenge");
+  code.checkProfile = async () => refusedByCode("engine_unavailable", "no authorized profile");
+  const report = await loop.tick();
+  expect(report.requested).toEqual([]);
+  expect(fleet.launched).toEqual([]);
+  expect(await db.query(`SELECT id FROM claims`)).toEqual([]);
+});
+
+test.each([
+  "stale-fence",
+  "wrong-owner",
+  "wrong-kind",
+  "wrong-source",
+  "unoffered",
+  "malformed",
+] as const)(
+  "analysis settlement rejects %s without writing the requested cross-run objection",
+  async (boundary) => {
+    const db = openDatabase();
+    await seed(db);
+    const { runId, jobId, claimId } = await sessionInFlight(db);
+    const brief =
+      boundary === "unoffered"
+        ? []
+        : [
+            {
+              id: "hyp_00000001",
+              kind: boundary === "wrong-kind" ? "observation" : "hypothesis",
+              runId: boundary === "wrong-source" ? "invented_source" : null,
+              summary: "A held hypothesis",
+              payload: { statement: "The catalog forgets archived sessions" },
+              objectionTo: [],
+            },
+          ];
+    await db.run(`UPDATE runs SET preparation = ? WHERE id = ?`, [
+      JSON.stringify({
+        analysis: {
+          stage: boundary === "malformed" ? "ruling" : "challenge",
+          selectors: ["omp/s1"],
+          brief,
+          claim: {
+            id: claimId,
+            runId: boundary === "wrong-owner" ? "cyc_other" : SEEDED_CYCLE,
+            fence: boundary === "stale-fence" ? 2 : 1,
+          },
+        },
+      }),
+      runId,
+    ]);
+    const coordinator = governed(
+      openReadStore(db, () => clock),
+      () => clock,
+      16,
+    );
+    const draws = new Draws(db);
+    const result = {
+      objections: [
+        {
+          ref: "o",
+          hypothesis: "hyp_00000001",
+          grounds: "missing-check",
+          recipe: { id: "r", version: 1 },
+          claim: {
+            claim: "A check is missing",
+            confidence: "high",
+            impact: "moderate",
+            evidence: [],
+          },
+        },
+      ],
+    };
+    const code = codeAnswering(() => ({
+      ok: true,
+      value: sessionRead({
+        jobId,
+        state: "exited",
+        finalMessage: `\`\`\`json\n${JSON.stringify(result)}\n\`\`\``,
+      }),
+    }));
+    await conductor({
+      store: openReadStore(db, () => clock),
+      coordinator: { ...coordinator, policy: draws.policy.bind(draws) } as unknown as Coordinator,
+      jobs: new Fleet(),
+      engine: code,
+      machines: new Folders(),
+      keys: new Keys(),
+      plan: PLAN,
+      now: () => clock,
+    }).tick();
+    expect(await db.query(`SELECT id FROM records WHERE run_id = ?`, [runId])).toEqual([]);
+    expect(
+      await db.query(`SELECT id FROM edges WHERE kind = 'challenges' AND actor_id = ?`, [runId]),
+    ).toEqual([]);
+    expect(await db.query(`SELECT closure FROM runs WHERE id = ?`, [runId])).toEqual([
+      { closure: "failed" },
+    ]);
+  },
+);
+
+test("an interrupted native analysis posting retains its reservation and reconciles the accepted job", async () => {
+  const { db, coordinator, code, fleet, launch, loop } = await weightedCycle("challenge");
+  const execute = fleet.execute.bind(fleet);
+  fleet.execute = (request) => {
+    execute(request);
+    throw new Error("native response transport interrupted");
+  };
+  const report = await loop.tick();
+  expect(report.requested).toEqual([]);
+  expect(code.posted).toEqual([]);
+  const jobId = fleet.launched[0]!.jobId;
+  expect(await db.query(`SELECT closure, job_id FROM runs ORDER BY job_id`)).toEqual([
+    { closure: null, job_id: null },
+    { closure: null, job_id: jobId },
+  ]);
+  expect(await db.query(`SELECT outcome, actual_cost FROM claims`)).toEqual([
+    { outcome: null, actual_cost: null },
+  ]);
+  expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
+  const materialRun = (
+    await db.query<{ id: string }>(`SELECT id FROM runs WHERE job_id = ?`, [jobId])
+  )[0]!.id;
+  fleet.finish(jobId, 0, {
+    [JOB_OUTPUT_FILES.receipt]: {
+      runId: materialRun,
+      kind: "prepare",
+      machineId: MACHINE,
+      startedAt: new Date(clock).toISOString(),
+      finishedAt: new Date(clock).toISOString(),
+      closure: "completed",
+      costUsd: 0,
+      tokens: 0,
+      counts: {},
+      material: { ...materialIndex(SERVED_FILE, SERVED_DIGEST), machineId: MACHINE },
+    },
+  });
+  await loop.tick();
+  expect(await launch.postPrepared(fleet, code, PLAN)).toEqual([
+    {
+      runId: (
+        await db.query<{ id: string }>(`SELECT id FROM runs WHERE prepare_job_id = ?`, [jobId])
+      )[0]!.id,
+      jobId: "job_code_review",
+    },
+  ]);
+  expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
+});
+
+test("a terminal Code job whose cancellation failed accounts the unchanged preparation grant exactly once", async () => {
+  const { db, coordinator, fleet, code, launch, loop } = await weightedCycle("challenge");
+  const first = await loop.tick();
+  const requested = first.requested[0]!;
+  fleet.finish(requested.jobId, 0, {
+    [JOB_OUTPUT_FILES.receipt]: {
+      runId: `${requested.runId}_material`,
+      kind: "prepare",
+      machineId: MACHINE,
+      startedAt: new Date(clock).toISOString(),
+      finishedAt: new Date(clock).toISOString(),
+      closure: "completed",
+      costUsd: 0,
+      tokens: 0,
+      counts: {},
+      material: { ...materialIndex(SERVED_FILE, SERVED_DIGEST), machineId: MACHINE },
+    },
+  });
+  await loop.tick();
+  const post = code.runSession.bind(code);
+  code.runSession = async (request) => {
+    const answered = await post(request);
+    await db.run(`UPDATE claims SET expires_at = ? WHERE id = ?`, [
+      new Date(clock - 1).toISOString(),
+      requested.claimId,
+    ]);
+    return answered;
+  };
+  code.cancelSession = async () => refusedByCode("engine_unavailable", "cancellation unavailable");
+  expect((await launch.postPrepared(fleet, code, PLAN))[0]).toHaveProperty("refused");
+  expect(
+    await db.query(`SELECT job_id, finished_at FROM claims WHERE id = ?`, [requested.claimId]),
+  ).toEqual([{ job_id: requested.jobId, finished_at: null }]);
+  const read = code.readSession.bind(code);
+  code.readSession = async () => refusedByCode("engine_unavailable", "transport interrupted");
+  await loop.tick();
+  await loop.tick();
+  expect(
+    await db.query(`SELECT finished_at FROM claims WHERE id = ?`, [requested.claimId]),
+  ).toEqual([{ finished_at: null }]);
+  expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
+  code.readSession = read;
+  code.read = sessionRead({
+    jobId: "job_code_review",
+    state: "exited",
+    usage: { input: 100, output: 40, cacheRead: 0, cacheWrite: 0, cost: 0.12 },
+    finalMessage: "```json\n{}\n```",
+  });
+  await loop.tick();
+  expect(
+    await db.query(`SELECT job_id, outcome, actual_cost FROM claims WHERE id = ?`, [
+      requested.claimId,
+    ]),
+  ).toEqual([{ job_id: "job_code_review", outcome: "failed", actual_cost: 0.12 }]);
+  expect(await db.query(`SELECT id FROM records WHERE run_id = ?`, [requested.runId])).toEqual([]);
+  expect((await coordinator.spend(clock)).total).toBeCloseTo(0.12, 8);
+});
+
+test.each(["missing", "known", "retained"] as const)(
+  "the analysis reaper recovers only a provably unposted expired claim: %s",
+  async (boundary) => {
+    const { db, coordinator, fleet, loop } = await weightedCycle("challenge");
+    await db.run(`UPDATE policies SET payload = json_set(payload, '$.activityWeights', json(?))`, [
+      JSON.stringify({ review: 0, explore: 0, challenge: 0, synthesize: 0 }),
+    ]);
+    const old = new Date(clock - 24 * 60 * 60 * 1000).toISOString();
+    await db.run(
+      `INSERT INTO claims(id, record_id, role, lane, policy_version, run_id, job_id, fence,
+                          reserved_cost, granted_at, expires_at)
+       VALUES ('asg_unposted', 'hyp_00000001', 'analysis:challenge', 'exploration', ?, 'cyc_lost',
+               'job_unposted', 1, 0.05, ?, ?)`,
+      [POLICY.version, old, old],
+    );
+    if (boundary === "known") fleet.running("job_unposted", MACHINE, OPERATIONS.prepare);
+    if (boundary === "retained") {
+      await db.run(
+        `INSERT INTO runs(id, kind, machine_id, container_id, prepare_job_id, started_at, records, payload)
+         VALUES ('run_uncertain', ?, ?, 'ctr_union', 'job_unposted', ?, 0, ?)`,
+        [OPERATIONS.explore, MACHINE, old, JSON.stringify({ closure: null, posting: true })],
+      );
+    }
+    const report = await loop.tick();
+    expect(
+      await db.query(`SELECT outcome, actual_cost FROM claims WHERE id = 'asg_unposted'`),
+    ).toEqual(
+      boundary === "missing"
+        ? [{ outcome: "failed", actual_cost: 0 }]
+        : [{ outcome: null, actual_cost: null }],
+    );
+    expect(report.settled.filter((claim) => claim.claimId === "asg_unposted")).toHaveLength(
+      boundary === "missing" ? 1 : 0,
+    );
+    expect((await coordinator.open(clock)).total).toBe(boundary === "missing" ? 0 : 1);
+  },
+);
+
+test("a retained analysis preparation remains occupied through repeated transport silence", async () => {
+  const { db, coordinator, fleet, loop } = await weightedCycle("challenge");
+  const first = await loop.tick();
+  const requested = first.requested[0]!;
+  fleet.silent.add(requested.jobId);
+  await db.run(`UPDATE policies SET payload = json_set(payload, '$.activityWeights', json(?))`, [
+    JSON.stringify({ review: 0, explore: 0, challenge: 0, synthesize: 0 }),
+  ]);
+  await db.run(`UPDATE claims SET expires_at = ?`, [new Date(clock - 1).toISOString()]);
+  await loop.tick();
+  await loop.tick();
+  expect(
+    await db.query(`SELECT finished_at FROM claims WHERE id = ?`, [requested.claimId]),
+  ).toEqual([{ finished_at: null }]);
+  expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
+});
+
+test.each(["hardened", "in-realm"] as const)(
+  "a typed native admission refusal releases failed/0 and retries only after cooldown: %s",
+  async (loader) => {
+    const { db, coordinator, fleet, loop } = await weightedCycle("challenge");
+    const execute = fleet.execute.bind(fleet);
+    const status = fleet.status.bind(fleet);
+    const refusal = (method: string, token: string) =>
+      loader === "hardened"
+        ? new HostCallError(method, token)
+        : Object.assign(new Error(token), { name: "ServiceError", code: "forbidden" });
+    fleet.execute = () => {
+      throw refusal("jobs.execute", "installation_changed");
+    };
+    fleet.status = () => {
+      throw refusal("jobs.status", "job_not_started");
+    };
+    const first = await loop.tick();
+    expect(first.settled).toMatchObject([{ outcome: "failed", cost: 0, refused: null }]);
+    expect(fleet.launched).toEqual([]);
+    expect(await db.query(`SELECT closure FROM runs ORDER BY id`)).toEqual([
+      { closure: "failed" },
+      { closure: "failed" },
+    ]);
+    expect(await db.query(`SELECT outcome, actual_cost FROM claims`)).toEqual([
+      { outcome: "failed", actual_cost: 0 },
+    ]);
+    expect((await coordinator.open(clock)).total).toBe(0);
+    expect((await coordinator.spend(clock)).total).toBe(0);
+    expect((await loop.tick()).requested).toEqual([]);
+    expect(await db.query(`SELECT COUNT(*) AS n FROM claims`)).toEqual([{ n: 1n }]);
+    clock += POLICY.cooldownSeconds * 1000 + 1;
+    fleet.execute = execute;
+    fleet.status = status;
+    const retry = await loop.tick();
+    expect(retry.requested).toHaveLength(1);
+    expect(retry.requested[0]!.claimId).not.toBe(first.settled[0]!.claimId);
+    expect((await coordinator.open(clock)).total).toBe(1);
+  },
+);
+
+test.each([
+  "transport-absent",
+  "untyped-refusal-absent",
+  "refusal-unreadable",
+  "host-error-absent",
+  "refusal-known",
+] as const)(
+  "native analysis uncertainty stays reserved across later cycles: %s",
+  async (boundary) => {
+    const { db, coordinator, fleet, loop } = await weightedCycle("challenge");
+    fleet.execute = (request) => {
+      if (boundary === "refusal-known")
+        fleet.running(request.jobId, request.machineId, request.operationId);
+      if (boundary === "transport-absent") throw new Error("response transport interrupted");
+      if (boundary === "untyped-refusal-absent") throw new Error("installation_changed");
+      throw new HostCallError(
+        "jobs.execute",
+        boundary === "host-error-absent" ? "dispatch unavailable" : "installation_changed",
+      );
+    };
+    const jobs: JobsSlice = fleet;
+    if (boundary !== "refusal-known") {
+      jobs.status = () => {
+        if (boundary === "refusal-unreadable") throw new Error("status transport interrupted");
+        throw new HostCallError("jobs.status", "job_not_started");
+      };
+    }
+    const first = await loop.tick();
+    expect(first.settled).toEqual([]);
+    await loop.tick();
+    await loop.tick();
+    expect(await db.query(`SELECT closure FROM runs ORDER BY id`)).toEqual([
+      { closure: null },
+      { closure: null },
+    ]);
+    expect(await db.query(`SELECT outcome, actual_cost FROM claims`)).toEqual([
+      { outcome: null, actual_cost: null },
+    ]);
+    expect((await coordinator.open(clock)).total).toBe(1);
+  },
+);
+
+test("retained analysis claims do not hide a real orphan behind the reaper work bound", async () => {
+  const { db, loop } = await weightedCycle("challenge");
+  await db.run(`UPDATE policies SET payload = json_set(payload, '$.activityWeights', json(?))`, [
+    JSON.stringify({ review: 0, explore: 0, challenge: 0, synthesize: 0 }),
+  ]);
+  const old = new Date(clock - 48 * 60 * 60 * 1000).toISOString();
+  for (let index = 0; index < 128; index += 1) {
+    const id = `retained_${index}`;
+    await db.run(
+      `INSERT INTO claims(id, record_id, role, lane, policy_version, run_id, job_id, fence,
+                          reserved_cost, granted_at, expires_at)
+       VALUES (?, 'hyp_00000001', 'analysis:challenge', 'exploration', ?, 'cyc_old', ?, 1, 0.05, ?, ?)`,
+      [id, POLICY.version, id, old, old],
+    );
+    await db.run(
+      `INSERT INTO runs(id, kind, machine_id, job_id, started_at, records, unreadable, payload)
+       VALUES (?, ?, ?, ?, ?, 0, 2, '{}')`,
+      [id, OPERATIONS.prepare, MACHINE, id, old],
+    );
+  }
+  const newer = new Date(clock - 24 * 60 * 60 * 1000).toISOString();
+  await db.run(
+    `INSERT INTO claims(id, record_id, role, lane, policy_version, run_id, fence,
+                        reserved_cost, granted_at, expires_at)
+     VALUES ('orphan', 'hyp_00000001', 'reception', 'coverage', ?, 'cyc_old', 1, 0.05, ?, ?)`,
+    [POLICY.version, newer, newer],
+  );
+  const report = await loop.tick();
+  expect(report.settled).toMatchObject([
+    { claimId: "orphan", outcome: "abandoned", cost: 0.05, refused: null },
+  ]);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM claims WHERE finished_at IS NULL`)).toEqual([
+    { n: 128n },
+  ]);
+  expect(await db.query(`SELECT outcome, actual_cost FROM claims WHERE id = 'orphan'`)).toEqual([
+    { outcome: "abandoned", actual_cost: 0.05 },
+  ]);
+  expect(report.notes.some((note) => note.includes("dead claims were released"))).toBe(false);
 });

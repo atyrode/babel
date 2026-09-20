@@ -15,6 +15,7 @@ import {
   PulseResultSchema,
   RecordPeelSchema,
   RuleResultSchema,
+  RunResultSchema,
   ThreadResultSchema,
   TopicResultSchema,
   TopicsResultSchema,
@@ -52,6 +53,7 @@ const AcceptedSchema = z.unknown();
 const RESULTS = {
   feed: FeedResultSchema,
   record: RecordPeelSchema,
+  run: RunResultSchema,
   thread: ThreadResultSchema,
   topics: TopicsResultSchema,
   topic: TopicResultSchema,

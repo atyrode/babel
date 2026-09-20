@@ -26,6 +26,9 @@ import type { PluginDatabase, SqlParam, SqlRow } from "@manifold/plugin";
 import type { PulseTodaySchema } from "../contract.ts";
 import {
   FEED_SORTS,
+  ActivityWeightsSchema,
+  DEFAULT_ACTIVITY_WEIGHTS,
+  type ActivityWeights,
   POST_KINDS,
   NextActionDecisionSchema,
   UNHEARD_AFTER_MS,
@@ -56,6 +59,7 @@ import {
   instant,
   interestOf,
   readInterests,
+  readChallenges,
   stamp,
   STANDING_REOPENED,
   TOPIC_UNFILED,
@@ -239,6 +243,7 @@ export interface PolicyResult {
   ceilings: { perRunUsd: number; perDayUsd: number; concurrent: number };
   spentTodayUsd: number;
   lanes: { lane: string; role: string; share: number }[];
+  activityWeights: ActivityWeights;
   recipes: RecipeRow[];
   /** The bounded exception in force over the standing numbers (#260), or null: there is none. */
   overlay: BudgetOverlay | null;
@@ -997,12 +1002,14 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       reviewable && (standing === "new" || standing === STANDING_REOPENED) ? "Rule on this" : "";
 
     const repository = await repositoryOf(id);
+    const challenges = (await readChallenges(db, id)).get(id);
     return {
-      post,
+      post: { ...post, challenges: challenges?.summary ?? { objections: 0, distinctRuns: 0 } },
       claim: { statement: claimOf(kind, payload, text(row["title"])), standing, act },
       case: caseOf(kind, payload),
       evidence: await evidenceOf(kind, payload),
       corroboration: await corroborationOf(id),
+      challenges: challenges?.details ?? [],
       repository,
       reception: await receptionOf(id),
       machinery: await machineryOf(row, payload, repository),
@@ -1229,6 +1236,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       // A question rests on nothing: it is the corpus failing to settle something, and the
       // number is zero rather than absent so the shape is one shape for every peel.
       corroboration: { supports: 0, distinctRuns: 0 },
+      challenges: [],
       // And it concerns no codebase: a question is a gap in what Babel knows, so there is no
       // evidence under it to have read a repository in.
       repository: [],
@@ -1290,6 +1298,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       votes: [],
       contested: false,
       reviewing: current.reviewing.has(id),
+      challenges: { objections: 0, distinctRuns: 0 },
       comments: 0,
       awaiting: false,
       why: "",
@@ -1981,7 +1990,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       backlog_share: "backlog",
     };
     for (const [key, role] of Object.entries(shares)) {
-      const share = numberField(payload, key);
+      const camel = key.replace("_share", "Share");
+      const share = numberField(payload, typeof payload[camel] === "number" ? camel : key);
       if (share > 0) lanes.push({ lane: key.replace("_share", ""), role, share });
     }
     // THE STANDING NUMBERS, in whichever spelling the row holds: the payload is a `Policy`
@@ -2017,6 +2027,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         WHERE actor_kind = 'operator'
         ORDER BY recorded_at DESC, id DESC LIMIT 20`,
     );
+    const activityWeights = ActivityWeightsSchema.safeParse(payload["activityWeights"]);
     return {
       version: text(row?.["version"]),
       seq: count(row?.["seq"]),
@@ -2026,6 +2037,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       ceilings,
       spentTodayUsd: count(spent?.["spent"]),
       lanes,
+      activityWeights: activityWeights.success ? activityWeights.data : DEFAULT_ACTIVITY_WEIGHTS,
       recipes,
       overlay: await overlayInForce(at, ceilings),
       steering: told.map((entry) => ({

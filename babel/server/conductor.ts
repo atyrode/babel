@@ -5,6 +5,8 @@ import { z } from "zod";
 import type { CycleReportSchema, IngestibleTable } from "../contract.ts";
 import {
   BABEL_PLUGIN_ID,
+  AnalysisWorkSchema,
+  type AnalysisBriefRecord,
   CONDUCTOR_CYCLE_KEY,
   CONDUCTOR_TALLY_KEY,
   INPUT_FIELD,
@@ -27,7 +29,17 @@ import {
   type RunTrace,
   type TallyReason,
 } from "../contract.ts";
-import type { Assignment, Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
+import type {
+  AnalysisAssignment,
+  Assignment,
+  Claim,
+  Coordinator,
+  Fence,
+  Gap,
+  Policy,
+  Stop,
+} from "../store/coordinator.ts";
+import { materialJobId, type LaunchIdentity, type Started } from "../doors/launch.ts";
 import { refuseRow, type RowRefusal } from "../store/acts.ts";
 import { REFUSALS, refusalCode, type RefusalCode, type RefusedItem } from "../machine/results.ts";
 import type { BabelStore } from "../store/store.ts";
@@ -407,6 +419,12 @@ export interface ConductorDeps {
    * reason this dependency is here, and it is why `reconcileRuns` has two halves.
    */
   readonly engine: CodeEngine;
+  readonly dispatchAnalysis?: (
+    assignment: AnalysisAssignment,
+    claim: Claim,
+    cycleRunId: string,
+    identity: LaunchIdentity,
+  ) => Promise<Started>;
   /** Where the day's tally is kept between wakes; see {@link KeysSlice}. */
   readonly keys: KeysSlice;
   readonly plan: RunPlan;
@@ -1599,6 +1617,7 @@ type OpenClaim = { id: string; run_id: string; fence: Fence; reserved_cost: numb
 /** One open claim and what the runs table knows about the job behind it, for the reaper. */
 type OrphanClaim = {
   id: string;
+  run_id: string;
   fence: Fence;
   job_id: string | null;
   granted_at: string;
@@ -1607,6 +1626,7 @@ type OrphanClaim = {
   open_runs: number | bigint;
   /** The run row's own consecutive-silence count; NULL when no run row stands behind it. */
   silent: number | bigint | null;
+  role: string;
 };
 type Existing = { id: string };
 /** One distinct `sessions.host` value; a machine id only when an id is what was catalogued. */
@@ -2069,6 +2089,14 @@ export function conductor(deps: ConductorDeps): Conductor {
       rows: result?.rows ?? {},
       skipped: result?.skipped ?? 0,
     });
+    // Native preparation seals evidence, not an analysis result. Its parent retains the grant.
+    if (target.operationId === OPERATIONS.prepare) {
+      const parents = await store.db.query<{ id: string }>(
+        `SELECT id FROM runs WHERE prepare_job_id = ? AND closure IS NULL AND job_id IS NULL`,
+        [target.jobId],
+      );
+      if (parents.length > 0) return;
+    }
 
     // WHAT A CLAIM IS WORTH WHEN ITS JOB IS OVER, in two cases that look alike and are not.
     //
@@ -2117,21 +2145,31 @@ export function conductor(deps: ConductorDeps): Conductor {
    */
   async function settleClaims(
     jobId: string,
-    cost: number,
+    cost: number | null,
     outcome: "completed" | "failed" | "skipped",
     settled: SettledClaim[],
+    authority?: { readonly id: string; readonly runId: string; readonly fence: number },
+    terminalJob?: { readonly jobId: string; readonly previousJobId: string },
   ): Promise<void> {
     const open = await store.db.query<OpenClaim>(
-      `SELECT id, run_id, fence, reserved_cost FROM claims WHERE job_id = ? AND finished_at IS NULL`,
-      [jobId],
+      `SELECT id, run_id, fence, reserved_cost FROM claims
+         WHERE (job_id = ? ${terminalJob === undefined ? "" : "OR job_id = ?"}) AND finished_at IS NULL
+       ${authority === undefined ? "" : "AND id = ? AND run_id = ? AND fence = ?"}`,
+      [
+        jobId,
+        ...(terminalJob === undefined ? [] : [terminalJob.previousJobId]),
+        ...(authority === undefined ? [] : [authority.id, authority.runId, authority.fence]),
+      ],
     );
     for (const claim of open) {
+      const charged = cost ?? Number(claim.reserved_cost);
       const finished = await coordinator.finish({
         id: claim.id,
         runId: claim.run_id,
         fence: claim.fence,
-        cost,
+        cost: charged,
         outcome,
+        ...(terminalJob === undefined ? {} : { terminalJob }),
       });
       settled.push(
         finished.outcome === "finished"
@@ -2146,7 +2184,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           : {
               claimId: claim.id,
               outcome,
-              cost,
+              cost: charged,
               overrun: false,
               refused: finished.refusal.reason,
               reason: null,
@@ -2836,6 +2874,38 @@ export function conductor(deps: ConductorDeps): Conductor {
       );
       return;
     }
+    const intent = preparationOf(run.preparation);
+    const analysisParse =
+      intent?.["analysis"] === undefined
+        ? undefined
+        : AnalysisWorkSchema.safeParse(intent["analysis"]);
+    const analysis = analysisParse?.success ? analysisParse.data : undefined;
+    const stage = analysis?.stage ?? "explore";
+    const brief: AnalysisBriefRecord[] = [];
+    if (analysis !== undefined) {
+      const records = await store.db.query<{ id: string; kind: string; run_id: string | null }>(
+        `SELECT id, kind, run_id FROM records WHERE id IN (${analysis.brief.map(() => "?").join(", ") || "NULL"})`,
+        analysis.brief.map((record) => record.id),
+      );
+      for (const offered of analysis.brief) {
+        if (
+          records.some(
+            (record) =>
+              record.id === offered.id &&
+              record.kind === offered.kind &&
+              record.run_id === offered.runId,
+          )
+        )
+          brief.push(offered);
+      }
+    }
+    const authority: SqlCondition | undefined =
+      analysis === undefined
+        ? undefined
+        : {
+            sql: `EXISTS (SELECT 1 FROM claims WHERE id = ? AND run_id = ? AND fence = ? AND job_id = ? AND finished_at IS NULL)`,
+            params: [analysis.claim.id, analysis.claim.runId, analysis.claim.fence, run.job_id],
+          };
     const offered = offeredSelectors(preparationOf(run.preparation));
     if (offered.length > 0) {
       await settleTitleSession(at, run, read, closure, offered, ingested, notes, refusals);
@@ -2883,7 +2953,9 @@ export function conductor(deps: ConductorDeps): Conductor {
     // wrote no citations" and "nobody looked" are different facts about a receipt (#348).
     let citations: Record<string, number> | undefined;
     const material = session === null ? null : await materialOf(run.prepare_job_id);
-    if (session === null) {
+    if (analysisParse !== undefined && !analysisParse.success) {
+      reason = `${REFUSALS.authority}: malformed persisted analysis authority`;
+    } else if (session === null) {
       reason =
         `${REFUSALS.empty}: the session closed as ${read.job.state} and sealed no transcript, ` +
         `so it submitted no result`;
@@ -2899,17 +2971,13 @@ export function conductor(deps: ConductorDeps): Conductor {
         `${run.prepare_job_id ?? "(none)"} is not on any settled run of this hub, so this ` +
         `run's citations cannot be checked against what it was served`;
     } else {
-      const submission = readExploreAnswer("explore", session.finalMessage, material.sessions);
+      const submission = readExploreAnswer(stage, session.finalMessage, material.sessions, brief);
       reason = submission.reason;
       refusedItems = submission.refused;
       if (submission.result !== null) {
-        // WHICH OF THE RECORDS THIS ANSWER'S MARKERS NAME THIS HUB ACTUALLY HOLDS (#347). A
-        // record whose text opens `CONTRADICTS hyp_…` gets the edge, and a marker naming
-        // something nobody holds is dropped with a note rather than pointing an edge at
-        // nothing. The rows are built synchronously and the store is not, so the answer is
-        // asked for once, here, instead of the writer reaching for a database.
+        // Structured targets come from the verified brief; correction markers still check store existence.
+        const holds = new Set<string>(brief.map((record) => record.id));
         const named = markerReferences(submission.result);
-        const holds = new Set<string>();
         for (let from = 0; from < named.length; from += MAX_SQL_PARAMS) {
           const asked = named.slice(from, from + MAX_SQL_PARAMS);
           const held = await store.db.query<{ id: string }>(
@@ -2957,7 +3025,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           if (ingest === undefined || rows.length === 0) continue;
           for (const row of rows) {
             const refused = refuseRow(ingest.table, row);
-            const statement = refused === null ? rowStatement(ingest, row) : null;
+            const statement = refused === null ? rowStatement(ingest, row, authority) : null;
             if (refused !== null || statement === null) {
               reason =
                 `${refused?.code ?? REFUSALS.schema}: ` +
@@ -3007,9 +3075,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       preparationOf(run.preparation)?.["steering"],
     );
 
-    const receipt: Receipt = {
+    let receipt: Receipt = {
       runId: run.id,
       kind: "explore",
+      stage,
       machineId: run.machine_id,
       ...(namedAccount(run.profile) === undefined ? {} : { account: namedAccount(run.profile) }),
       ...(askedModel(run.profile) === undefined ? {} : { model: askedModel(run.profile) }),
@@ -3049,39 +3118,74 @@ export function conductor(deps: ConductorDeps): Conductor {
       result becomes are not in a sealed lease here — the transcript is Code's job's `session`
       output, read on demand — and `inference` is what the meter said.
     */
+    const guard: SqlStatement[] =
+      authority === undefined
+        ? []
+        : [
+            {
+              sql: `UPDATE claims SET job_id = job_id WHERE ${authority.sql} AND id = ? RETURNING run_id`,
+              params: [...authority.params, analysis!.claim.id],
+            },
+          ];
     for (let from = 0; from < produced.length; from += STATEMENTS_PER_BATCH) {
-      await store.db.batch(produced.slice(from, from + STATEMENTS_PER_BATCH));
+      await store.db.batch([...guard, ...produced.slice(from, from + STATEMENTS_PER_BATCH)]);
     }
-    await store.db.batch([
-      runStatement(
-        run.id,
-        {
-          runId: run.id,
-          jobId: run.job_id,
-          machineId: run.machine_id,
-          operationId: run.kind,
-          outputs: [],
-          closure: receipt.closure,
-          inference,
-        },
-        receipt,
-        counts,
-      ),
-      // IN THE RUN ROW'S OWN TRANSACTION, and after it, so the call cannot reference a run that
-      // is not there and cannot survive a settlement that rolled back. It is written whether or
-      // not the answer stood: a refused submission is paid work, and its refusal code is on the
-      // row beside what it cost.
-      callStatement(
-        sessionCall({
-          runId: run.id,
-          at,
-          machineId: run.machine_id,
-          session,
-          closure: receipt.closure,
-          reason,
-        }),
-      ),
-    ]);
+    const target: IngestTarget = {
+      runId: run.id,
+      jobId: run.job_id,
+      machineId: run.machine_id,
+      operationId: run.kind,
+      outputs: [],
+      closure: receipt.closure,
+      inference,
+    };
+    const call = {
+      runId: run.id,
+      at,
+      machineId: run.machine_id,
+      session,
+      closure: receipt.closure,
+      reason,
+    };
+    const staleReason = `${REFUSALS.authority}: the analysis grant no longer belongs to this run and session`;
+    const staleReceipt: Receipt = {
+      ...receipt,
+      closure: "failed",
+      reason: staleReason,
+      counts: {},
+    };
+    const staleAuthority =
+      authority === undefined
+        ? undefined
+        : { sql: `NOT (${authority.sql})`, params: authority.params };
+    const terminal = [
+      ...guard,
+      runStatement(run.id, target, receipt, counts, authority),
+      callStatement(sessionCall(call), authority),
+      ...(staleAuthority === undefined
+        ? []
+        : [
+            runStatement(
+              run.id,
+              { ...target, closure: "failed" },
+              staleReceipt,
+              {},
+              staleAuthority,
+            ),
+            callStatement(
+              sessionCall({ ...call, closure: "failed", reason: staleReason }),
+              staleAuthority,
+            ),
+          ]),
+    ];
+    const saved = await store.db.batch(terminal);
+    const authorized = authority === undefined || typeof saved[0]?.[0]?.["run_id"] === "string";
+    if (!authorized) {
+      receipt = staleReceipt;
+      reason = staleReason;
+      for (const key of Object.keys(counts)) delete counts[key];
+      fileRefusal(refusals, REFUSALS.authority, session !== null);
+    }
     await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
     store.touch();
     if (reason !== "") notes.push(`run ${run.id}: ${reason}`);
@@ -3099,11 +3203,20 @@ export function conductor(deps: ConductorDeps): Conductor {
       was submitted, and calling it a failure would feed the park heuristic a streak that is
       really an operator pressing Stop.
     */
+    if (analysisParse !== undefined && !analysisParse.success) return;
+    if (!authorized && analysis === undefined) return;
+    // A rejected bind followed by failed cancellation can leave the same grant on
+    // preparation while its actual Code job has now ended. The coordinator alone
+    // verifies and transfers that terminal ledger binding; this grants no result authority.
     await settleClaims(
       run.job_id,
-      costUsd,
+      analysis !== undefined && session === null ? null : costUsd,
       reason === "" ? "completed" : session === null ? "skipped" : "failed",
       settled,
+      analysis?.claim,
+      analysis === undefined || run.prepare_job_id === null
+        ? undefined
+        : { jobId: run.job_id, previousJobId: run.prepare_job_id },
     );
   }
 
@@ -3115,6 +3228,8 @@ export function conductor(deps: ConductorDeps): Conductor {
    * a consent that lapsed, a Code that is no longer installed.
    *
    * THE REFUSAL IS BOUNDED THE WAY THE REAPER BOUNDS AN UNREADABLE JOB, and by the same counter.
+   * Analysis is the exception: its parent and reservation survive silence until a terminal
+   * Code response accounts the job. Transport failure never proves paid work stopped.
    * One refusal is a hiccup and the note says so; {@link UNREPORTED_CYCLES} in a row is a run
    * nobody will ever be able to read, and retrying it on every wake for ever is how a dead run
    * holds a batch slot and a panel row until someone notices. So the sentence is recorded ON THE
@@ -3135,7 +3250,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       const silent = await silence(run.id, Number(run.unreadable), false);
       const note = `session ${run.job_id} in ${containerId} cannot be read: ${answered.refused}`;
       notes.push(note);
-      if (silent < UNREPORTED_CYCLES) {
+      const analysis = AnalysisWorkSchema.safeParse(preparationOf(run.preparation)?.["analysis"]);
+      if (silent < UNREPORTED_CYCLES || analysis.success) {
         // Still hoped for: the sentence is on the row so a reader sees it without the journal,
         // and the run stays open for the next wake to ask again.
         await store.db.run(`UPDATE runs SET payload = ? WHERE id = ?`, [
@@ -3386,6 +3502,31 @@ export function conductor(deps: ConductorDeps): Conductor {
     );
     return { stage: folded.stage, stalled };
   }
+  /** Keep the same reservation through native preparation and its Code continuation. */
+  async function renewAnalysis(jobId: string, at: number): Promise<void> {
+    const policy = (await coordinator.policy(at)).policy;
+    if (!policy.enabled) return;
+    const parents = await store.db.query<{ preparation: string | null }>(
+      `SELECT preparation FROM runs WHERE closure IS NULL AND (job_id = ? OR prepare_job_id = ?)`,
+      [jobId, jobId],
+    );
+    for (const parent of parents) {
+      const parsed = AnalysisWorkSchema.safeParse(preparationOf(parent.preparation)?.["analysis"]);
+      if (parsed.success && policy.activityWeights[parsed.data.stage] > 0) {
+        const held = await store.db.query<{ id: string }>(
+          `SELECT id FROM claims WHERE id = ? AND run_id = ? AND fence = ? AND job_id = ? AND finished_at IS NULL AND expires_at > ?`,
+          [
+            parsed.data.claim.id,
+            parsed.data.claim.runId,
+            parsed.data.claim.fence,
+            jobId,
+            new Date(at).toISOString(),
+          ],
+        );
+        if (held.length > 0) await coordinator.renew({ ...parsed.data.claim, now: at });
+      }
+    }
+  }
 
   /**
    * Every job the hub is waiting on, plus the beat's own, which nobody requested.
@@ -3416,6 +3557,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     // The count of silent cycles is on the row now, so nothing is pruned here: a run that is
     // no longer waited on is not selected, and one that answers is set back to zero in place.
     for (const run of pending) {
+      await renewAnalysis(run.job_id, at);
       // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
       // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it
       // answers nothing useful at best; Code is asked instead, through the door that owns it.
@@ -3576,24 +3718,68 @@ export function conductor(deps: ConductorDeps): Conductor {
     // One more than the bound is read so the note can say whether anything was left, without a
     // second count over a table that is only ever long when something has gone wrong.
     const orphans = await store.db.query<OrphanClaim>(
-      `SELECT id, fence, job_id, granted_at, runs, open_runs, silent
-         FROM (SELECT c.id AS id, c.fence AS fence, c.job_id AS job_id, c.granted_at AS granted_at,
-                      (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id) AS runs,
-                      (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id
+      `SELECT id, run_id, fence, job_id, granted_at, role, runs, open_runs, silent
+         FROM (SELECT c.id AS id, c.run_id AS run_id, c.fence AS fence, c.job_id AS job_id, c.granted_at AS granted_at, c.role AS role,
+                      (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id OR r.prepare_job_id = c.job_id) AS runs,
+                      (SELECT COUNT(*) FROM runs r WHERE (r.job_id = c.job_id OR r.prepare_job_id = c.job_id)
                         AND r.closure IS NULL) AS open_runs,
                       (SELECT MAX(r.unreadable) FROM runs r WHERE r.job_id = c.job_id) AS silent
                  FROM claims c
                 WHERE c.finished_at IS NULL)
-        WHERE (job_id IS NULL AND granted_at <= ?)
+        WHERE NOT (role LIKE 'analysis:%' AND open_runs > 0)
+          AND ((job_id IS NULL AND granted_at <= ?)
            OR (job_id IS NOT NULL AND runs = 0 AND granted_at <= ?)
            OR (job_id IS NOT NULL AND runs > 0 AND open_runs = 0)
-           OR (job_id IS NOT NULL AND COALESCE(silent, 0) >= ?)
+           OR (job_id IS NOT NULL AND COALESCE(silent, 0) >= ?))
         ORDER BY granted_at
         LIMIT ?`,
       [stale, stale, UNREPORTED_CYCLES, CLAIMS_REAPED_PER_TICK + 1],
     );
+    let released = 0;
     for (const orphan of orphans.slice(0, CLAIMS_REAPED_PER_TICK)) {
       const jobId = orphan.job_id;
+      if (jobId !== null && Number(orphan.runs) === 0 && orphan.role.startsWith("analysis:")) {
+        const route = (await coordinator.policy(at)).policy.review;
+        if (route !== undefined) {
+          try {
+            const state = await jobs.status({
+              kind: "job",
+              machineId: route.machineId,
+              operationId: OPERATIONS.prepare,
+              jobId,
+            });
+            // Even a terminal known job belongs to native settlement, not an unposted
+            // zero-cost finish. Never discard a positively observed job.
+            if (state !== null) continue;
+          } catch {
+            // This is NOT proof of termination. The guarded finish below proves that no
+            // post was authorized: analysis now persists its parent before native execute.
+          }
+        }
+        const finished = await coordinator.finish({
+          id: orphan.id,
+          runId: orphan.run_id,
+          fence: orphan.fence,
+          unpostedJobId: jobId,
+          cost: 0,
+          outcome: "failed",
+          now: at,
+        });
+        if (finished.outcome === "finished") {
+          released += 1;
+          const reason = `expired analysis job ${jobId} was never authorized by a parent intent`;
+          settled.push({
+            claimId: orphan.id,
+            outcome: "failed",
+            cost: 0,
+            overrun: false,
+            refused: null,
+            reason,
+          });
+          notes.push(`claim ${orphan.id} released without spend: ${reason}`);
+        }
+        continue;
+      }
       const reason =
         jobId === null
           ? `granted at ${orphan.granted_at} and never posted to a machine`
@@ -3603,12 +3789,20 @@ export function conductor(deps: ConductorDeps): Conductor {
               ? `job ${jobId} is closed and its claim was left open`
               : `the hub has not been able to report job ${jobId} for ` +
                 `${String(Number(orphan.silent ?? 0))} cycles`;
-      settled.push(await release(orphan, reason));
+      const abandoned = await release(orphan, reason);
+      settled.push(abandoned);
+      if (abandoned.refused !== null) continue;
+      released += 1;
+      await store.db.run(
+        `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ?
+         WHERE prepare_job_id = ? AND job_id IS NULL AND closure IS NULL`,
+        [new Date(at).toISOString(), JSON.stringify({ closure: "failed", reason }), jobId],
+      );
       notes.push(`claim ${orphan.id} abandoned: ${reason}`);
     }
     if (orphans.length > CLAIMS_REAPED_PER_TICK) {
       notes.push(
-        `${String(CLAIMS_REAPED_PER_TICK)} dead claims were released this cycle and the oldest ` +
+        `${String(released)} dead claims were released this cycle and the oldest ` +
           `of what is left goes next: a reap holds the store's write lock, and a cycle has a ` +
           `dispatch waiting behind it`,
       );
@@ -3823,7 +4017,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       gaps.push(...drawn.gaps);
       if (drawn.outcome === "gap") return { stop: drawn.gap, gaps };
       const assignment: Assignment = drawn.assignment;
-      const recipeId = route.roleRecipes[assignment.role];
+      const recipeId =
+        assignment.activity === "review"
+          ? route.roleRecipes[assignment.role]
+          : route.stageRecipes[assignment.activity];
       const recipe = route.recipes.find((candidate) => candidate.id === recipeId) as
         Recipe | undefined;
       if (recipe === undefined) {
@@ -3835,6 +4032,69 @@ export function conductor(deps: ConductorDeps): Conductor {
           detail,
         });
         return { stop: { reason: "dispatch-refused", detail }, gaps };
+      }
+      if (assignment.activity !== "review") {
+        const checked = await engine.checkProfile(route.profile);
+        if (!checked.ok || deps.dispatchAnalysis === undefined) {
+          const detail = !checked.ok ? checked.refused : "analysis launch is unavailable";
+          refused.push({
+            assignmentId: assignment.id,
+            recordId: assignment.recordId,
+            reason: "analysis",
+            detail,
+          });
+          return { stop: { reason: "dispatch-refused", detail }, gaps };
+        }
+        const jobId = `job_${assignment.id}_${cycleRunId}`;
+        const prepareJobId = materialJobId(jobId);
+        const claimed = await coordinator.claim({
+          assignment,
+          runId: cycleRunId,
+          jobId: prepareJobId,
+          now: at,
+        });
+        if (claimed.outcome === "refused") {
+          refused.push({
+            assignmentId: assignment.id,
+            recordId: assignment.recordId,
+            reason: claimed.refusal.reason,
+            detail: claimed.refusal.detail,
+          });
+          return { stop: { reason: "dispatch-refused", detail: claimed.refusal.detail }, gaps };
+        }
+        const identity: LaunchIdentity = {
+          runId: `run_${assignment.id}_${String(claimed.claim.fence)}`,
+          jobId,
+          materialJobId: prepareJobId,
+          authorityId: cycleRunId,
+        };
+        let started: Started;
+        try {
+          started = await deps.dispatchAnalysis(assignment, claimed.claim, cycleRunId, identity);
+        } catch (error) {
+          started = { refused: message(error) };
+        }
+        if ("refused" in started) {
+          if (started.pending !== true)
+            await settleClaims(prepareJobId, 0, "failed", settled, claimed.claim);
+          refused.push({
+            assignmentId: assignment.id,
+            recordId: assignment.recordId,
+            reason: "analysis",
+            detail: started.refused,
+          });
+          return { stop: { reason: "dispatch-refused", detail: started.refused }, gaps };
+        }
+        requested.push({
+          runId: started.runId,
+          jobId: started.jobId,
+          machineId,
+          claimId: assignment.id,
+          recordId: assignment.recordId,
+          role: assignment.role,
+          lane: assignment.lane,
+        });
+        continue;
       }
       const projection = await project(assignment.recordId);
       const leak = projection === null ? "" : blindedLeak(projection.target);
@@ -4131,6 +4391,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       const refused: RefusedDraw[] = [];
       const refusals: Refusals = { paid: new Map(), free: new Map() };
       const gapsByReason: Counter<TallyReason> = new Map();
+      // Reconcile earned completion even after disablement, but never renew disabled authority.
+      if (!policy.enabled)
+        await reconcileRuns(at, schedule.machines, ingested, settled, notes, refusals);
 
       if (!policy.enabled) {
         // A disabled policy is the coordinator's own first stop reason, and the cycle never gets

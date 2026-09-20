@@ -480,6 +480,7 @@ export const SCHEMA_V1: readonly string[] = [
   // spelled. What a writer may spell today is `cites`, `consolidates`, `addresses`,
   // `contradicts` (an evidence-free challenger objection, and a record whose own text opens
   // CONTRADICTS), `corrects` (a record whose own text opens CORRECTION or CORRECTS),
+  // `challenges` (each grounded objection to its hypothesis, note=ground, actor=challenger run),
   // `supersedes`, `refines` and `about`. A new word costs nothing at the table and everything
   // at the reader, so it is added here in prose before it is written anywhere.
   `CREATE TABLE edges(
