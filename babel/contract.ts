@@ -758,6 +758,27 @@ export type RecordPeel = z.infer<typeof RecordPeelSchema>;
 // ---------------------------------------------------------------------------- searching (#337)
 
 /**
+ * The FTS5 query one line of operator prose becomes.
+ *
+ * EVERY TERM IS QUOTED AND THE TERMS ARE OR-ED. Quoting is what makes the input text rather than
+ * syntax: `NEAR`, `*`, `-` and a stray double quote are FTS5 operators, and a search box that
+ * raised `fts5: syntax error` at a hyphen would be a search box nobody uses twice.
+ *
+ * OR rather than FTS5's implicit AND, because bm25 already does the work AND would do badly: it
+ * sums a per-term contribution weighted by how rare the term is, so a record matching four terms
+ * of five outranks one matching two, while AND answers NOTHING for a five-word question. A
+ * corpus whose measured problem is that retrieval loses to chance cannot afford a zero-recall
+ * default.
+ */
+export function termsQuery(query: string): string {
+  const terms = query
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((term) => term.length > 1)
+    .slice(0, 32);
+  return terms.map((term) => `"${term}"`).join(" OR ");
+}
+/**
  * WHAT A SEARCH IS ASKED, and it is one line of prose plus two bounds.
  *
  * There is no field for an operator, a filter grammar or a page: the corpus is one hub's and the
@@ -2177,6 +2198,29 @@ export const MaterialEntrySchema = z.strictObject({
 });
 export type MaterialEntry = z.infer<typeof MaterialEntrySchema>;
 
+/** Opt-in lexical selection by the prepare machine operation; no provider or live-file bypass. */
+export const SessionContentQuerySchema = z.strictObject({
+  text: bounded(512).refine((text) => termsQuery(text) !== "", {
+    message: "a content query needs at least one searchable term",
+  }),
+  limit: z.number().int().min(1).max(120).default(24),
+});
+export type SessionContentQuery = z.infer<typeof SessionContentQuerySchema>;
+
+/** Coverage belongs to the query, not to a claim that an unavailable index found nothing. */
+export const SessionRetrievalSchema = z.strictObject({
+  query: SessionContentQuerySchema,
+  status: z.enum(["complete", "busy", "unavailable"]),
+  eligible: z.number().int().nonnegative(),
+  indexed: z.number().int().nonnegative(),
+  reused: z.number().int().nonnegative(),
+  unavailable: z.number().int().nonnegative(),
+  /** Null means the query was not run, rather than that no session matched. */
+  matches: z.number().int().nonnegative().nullable(),
+  overBound: z.number().int().nonnegative(),
+});
+export type SessionRetrieval = z.infer<typeof SessionRetrievalSchema>;
+
 export const MaterialIndexSchema = z.strictObject({
   schema: z.literal(MATERIAL_SCHEMA),
   preparationId: z.string(),
@@ -2972,6 +3016,8 @@ export const ReceiptSchema = z.strictObject({
    * hub to read the twenty lines at the front of it.
    */
   material: MaterialIndexSchema.optional(),
+  /** Present only for content-selected preparations; the material still names the served bytes. */
+  retrieval: SessionRetrievalSchema.optional(),
   /**
    * WHETHER THIS PREPARATION WAS SCANNED FOR SECRETS, AND WHAT THE SCAN FOUND (#339).
    *
