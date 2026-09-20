@@ -44,6 +44,9 @@ export const FEED_SORTS = ["next", "hot", "new", "top", "controversial", "rising
 export const FeedSortSchema = z.enum(FEED_SORTS);
 export type FeedSort = z.infer<typeof FeedSortSchema>;
 
+/** Shelf ordering never applies the time-decaying Hot or Rising rules. */
+export const SHELF_SORTS = ["next", "new", "top", "controversial"] as const satisfies readonly FeedSort[];
+
 export const FEED_WINDOWS = ["hour", "day", "week", "month", "year", "all"] as const;
 export const FeedWindowSchema = z.enum(FEED_WINDOWS);
 export type FeedWindow = z.infer<typeof FeedWindowSchema>;
@@ -525,6 +528,16 @@ export const FeedVoteSchema = z.strictObject({
   vote: VoteSchema,
 });
 
+/** Attention chronology is a projection, not evidence strength or an operator ruling. */
+export const PostAttentionSchema = z.union([
+  z.strictObject({
+    at: z.string(),
+    basis: z.enum(["evidence", "operator", "question"]),
+  }),
+  z.strictObject({ at: z.null(), basis: z.null() }),
+]);
+export type PostAttention = z.infer<typeof PostAttentionSchema>;
+
 export const FeedPostSchema = z.strictObject({
   id: z.string(),
   kind: PostKindSchema,
@@ -535,6 +548,8 @@ export const FeedPostSchema = z.strictObject({
   /** How well established it is: the fold of its standing and its reception (#354). */
   established: EstablishedSchema,
   createdAt: z.string(),
+  /** First independent-source citation or explicit act; unknown dates remain null. */
+  attention: PostAttentionSchema,
   author: z.strictObject({ runId: z.string() }).nullable(),
   topics: z.array(z.strictObject({ id: EntityIdSchema, name: z.string() })),
   score: z.number().int(),
@@ -588,6 +603,8 @@ export const FeedResultSchema = z.strictObject({
   desk: z.number().int(),
   builtAt: z.string(),
   notice: z.string(),
+  /** The ordering actually applied, including the shelf's non-decaying rule. */
+  ordering: z.string(),
   /** Empty when nothing was grouped; otherwise one entry per group this page carries. */
   groups: z.array(FeedGroupSchema),
 });
