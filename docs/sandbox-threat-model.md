@@ -146,19 +146,22 @@ cannot cite its way to a file it was not given, and it cannot quietly substitute
 for the ones a reviewer will later read.
 
 **Account preflight is not spend authority** (`babel/server/engine/session.ts`; #255).
-`CodeEngine.checkProfile` asks Code about the selected profile revision. A missing or changed
-profile is stale; a matching revision with `resolved: true` and no accounts is refused as
-`engine_no_account`. The press checks this after local eligibility and before preparation, and
-the adapter checks every session posting, including conductor reviews.
+`CodeEngine.checkProfile` asks Code about the selected profile revision. A changed revision or
+absence from this caller's configured, readable roster is stale; a matching revision with
+`resolved: true` and no accounts is refused as `engine_no_account`. Exploration and automatic
+titling check this after local eligibility and before preparation, and the adapter checks every
+session posting, including conductor reviews. Refused titling leaves its batch available for a
+later cycle rather than recording the sessions as declined.
 
 An unresolved observation is not evidence that no account exists. It passes through to Code,
 which remains authoritative about the current profile, account selection and provider when it
 posts a session. The adapter caches the roster only within its own instance, not across wakes;
 the preflight neither authorizes a spend nor guarantees that a provider will honour it.
 
-Babel names a container and revision, not a provider credential. The account's credential stays
-with the machine broker and is resolved by Code. A revoked key, an exhausted window, a changed
-selection or an unavailable broker can still make Code refuse after preflight succeeds.
+Babel names a container and revision, not a provider credential. Code composes account references
+([plugins/atyrode.code/session.ts:43–62 at `c6a9c264`](https://github.com/atyrode/code/blob/c6a9c264bfcb37934b5814b0943989fa78f7dd05/plugins/atyrode.code/session.ts#L43-L62));
+the machine broker owns the credentials. A revoked key, an exhausted window, a changed selection
+or an unavailable broker can still make Code refuse after preflight succeeds.
 
 ## 5. Residuals, ranked by reachability
 
@@ -177,9 +180,9 @@ Most reachable first. A residual discovered in the system belongs in this list i
    schema, every citation must resolve against the material's index, and a run's output becomes
    records only after that check. What Babel cannot mitigate is what the session does with its own
    tools while it reads; that boundary is Code's.
-3. **The provider credential is Code's, and Babel never sees it.** This removes a residual rather
-   than adding one, but it relocates it: a compromise of the session reaches whatever credential
-   Code placed there, and Babel's receipt cannot tell a reviewer what that was.
+3. **Model-account access remains outside Babel's boundary.** Code selects accounts by reference;
+   the machine broker owns their credentials. A compromised session has whatever account access
+   its runtime grants it, which Babel's receipt does not establish or constrain.
 4. **An installed embedding policy sends every record's prose to one more provider.** The corpus
    index's meaning half is the second place Babel's content leaves the hub, and it differs from
    the first in scope rather than in kind: an analysis sends the selection an operator chose, and

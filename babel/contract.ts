@@ -2146,8 +2146,8 @@ export const MIN_CITATION_QUOTE = 12;
  *                           or too old to publish the door. The operator installs or upgrades.
  *   `engine_forbidden`    — Code's door demands authority this caller or this install does not
  *                           hold. The operator consents, or reinstalls Babel with the grant.
- *   `engine_stale_profile`— the profile moved between the read and the press. Re-read the list
- *                           and press again; the panel does exactly that.
+ *   `engine_stale_profile`— the revision moved, or the profile is absent from this caller's
+ *                           configured, readable roster. Check configuration/access and re-read.
  *   `engine_refused`      — Code said no, in its own word, which rides the detail.
  *   `engine_no_account`   — Code resolved this revision's saved account selection and found none.
  *                           Choose an account in Code; Babel holds no provider credential of

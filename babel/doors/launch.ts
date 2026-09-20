@@ -379,7 +379,7 @@ export interface LaunchMachinery {
    * It answers null far more often than not: no route, no untitled session, one already in
    * flight, or no allowance left. Those are the normal states and none of them is a note.
    */
-  inferTitles(jobs: JobsSlice, cycleRunId: string): Promise<Posted | null>;
+  inferTitles(jobs: JobsSlice, engine: CodeEngine, cycleRunId: string): Promise<Posted | null>;
 }
 
 export interface LaunchDeps {
@@ -842,7 +842,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * time, deployment-wide, because concurrency here buys nothing an operator asked for; the
    * ceilings; and finally a session that actually needs a name.
    */
-  async function inferTitles(jobs: JobsSlice, cycleRunId: string): Promise<Posted | null> {
+  async function inferTitles(
+    jobs: JobsSlice,
+    engine: CodeEngine,
+    cycleRunId: string,
+  ): Promise<Posted | null> {
     const policy = (await deps.coordinator.policy()).policy;
     const route = policy.review;
     if (!policy.enabled || route === undefined) return null;
@@ -860,9 +864,6 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
 
     const runId = `run_title_${String(at)}`;
     const prepareJobId = materialJobId(`job_title_${String(at)}`);
-    const ready = await describeHost(jobs, route.machineId, OPERATIONS.prepare);
-    if ("refused" in ready) return { runId, refused: ready.refused };
-    const installation = ready.readiness.installation;
     const selectors = candidates.map((row) => row.selector);
     const built = document({
       runId: `${runId}_material`,
@@ -870,6 +871,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       selectors,
     });
     if ("refused" in built) return { runId, refused: built.refused };
+    const checked = await engine.checkProfile(route.profile);
+    if (!checked.ok) return { runId: "", refused: checked.refused };
+    const ready = await describeHost(jobs, route.machineId, OPERATIONS.prepare);
+    if ("refused" in ready) return { runId, refused: ready.refused };
+    const installation = ready.readiness.installation;
     const sealed = await post(
       jobs,
       {

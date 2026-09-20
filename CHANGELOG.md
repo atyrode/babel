@@ -1150,9 +1150,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   watches the list let the world back in, one pages a topic and changes subject.
 
 - **An empty account selection is caught before preparation, not afterwards.** Babel asks Code
-  about the selected profile revision after checking local eligibility and before sealing the
-  material, and every session posting uses the same guard. A positively resolved empty selection
-  returns `engine_no_account`; a moved revision is stale, not evidence of account absence.
+  about the selected profile revision after checking local eligibility and before sealing either
+  exploration or automatic-titling material, and every session posting uses the same guard.
+  Refused titling leaves the batch eligible for a later cycle. A positively resolved empty
+  selection returns `engine_no_account`; a moved revision is stale, not account absence.
   An unresolved observation still leaves the decision to Code, which revalidates when posting.
   No provider credential or new capability enters Babel. The regressions prove that refusal
   posts neither preparation nor session, that local rejection needs no Code call, and that

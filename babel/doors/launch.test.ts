@@ -1088,6 +1088,28 @@ async function nameless(sourceId: string, over: Record<string, unknown> = {}): P
 /** The launch path the cycle drives, over the same deps the doors were built with. */
 let machinery: LaunchMachinery;
 
+test("a refused titling profile leaves the batch unprepared and available after correction", async () => {
+  await route();
+  await nameless("retry");
+  code.checkResult = refusedByCode("engine_no_account", "no account selected");
+
+  const refused = await machinery.inferTitles(fleet, code, "cyc_1");
+  expect(refused).toMatchObject({ refused: expect.stringMatching(/^engine_no_account:/u) });
+  expect(fleet.executed).toEqual([]);
+  expect(await harness.db.query(`SELECT id FROM runs WHERE kind = ?`, [OPERATIONS.title])).toEqual(
+    [],
+  );
+  expect(await harness.db.query(`SELECT selector FROM session_titles`)).toEqual([]);
+
+  code.checkResult = { ok: true, value: null };
+  await machinery.inferTitles(fleet, code, "cyc_2");
+  expect(fleet.executed).toHaveLength(1);
+  expect(fleet.executed[0]?.operationId).toBe(OPERATIONS.prepare);
+  expect(JSON.parse(String(fleet.executed[0]?.input?.["input"] ?? "null"))).toMatchObject({
+    selectors: ["codex/retry"],
+  });
+});
+
 test("the untitled sessions are prepared once, as one bounded batch charged to the cycle", async () => {
   await route();
   await nameless("a");
@@ -1097,7 +1119,7 @@ test("the untitled sessions are prepared once, as one bounded batch charged to t
   await nameless("moving", { live: 1 });
   await nameless("babels-own", { kind: "agent" });
 
-  const posted = await machinery.inferTitles(fleet, "cyc_1");
+  const posted = await machinery.inferTitles(fleet, code, "cyc_1");
 
   // ONE `prepare`, over exactly the two, and nothing posted to a model yet: a job input binds
   // a SETTLED output, so the session belongs to the wake this preparation's settlement causes.
@@ -1122,7 +1144,7 @@ test("the untitled sessions are prepared once, as one bounded batch charged to t
 
   // AND ONE AT A TIME. A second wake finds the batch still in flight and posts nothing, so a
   // cycle that fires every few seconds cannot fan the corpus out across the whole fleet.
-  expect(await machinery.inferTitles(fleet, "cyc_2")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
   expect(fleet.executed).toHaveLength(1);
 });
 
@@ -1145,7 +1167,7 @@ test("a deployment at its ceiling names nothing", async () => {
     expires_at: stamp(NOW + HOUR),
   });
 
-  const refused = await machinery.inferTitles(fleet, "cyc_1");
+  const refused = await machinery.inferTitles(fleet, code, "cyc_1");
 
   expect(refused).toMatchObject({ refused: expect.stringContaining("daily ceiling 2.0000") });
   expect(fleet.executed).toEqual([]);
@@ -1172,14 +1194,14 @@ test("a cycle that has already committed its own allowance to reviews names noth
     });
   }
 
-  expect(await machinery.inferTitles(fleet, "cyc_1")).toMatchObject({
+  expect(await machinery.inferTitles(fleet, code, "cyc_1")).toMatchObject({
     refused: expect.stringContaining("per-cycle ceiling 0.2500"),
   });
   expect(fleet.executed).toEqual([]);
 
   // The NEXT cycle has its own allowance under a daily ceiling that still has room, so the
   // lane is deferred rather than closed.
-  expect(await machinery.inferTitles(fleet, "cyc_2")).toMatchObject({
+  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toMatchObject({
     jobId: expect.stringContaining("_material"),
   });
 });
@@ -1205,7 +1227,7 @@ test("a session already answered is never offered again, and a policy with no ro
     inferred_at: stamp(NOW - HOUR),
   });
 
-  expect(await machinery.inferTitles(fleet, "cyc_1")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_1")).toBeNull();
   expect(fleet.executed).toEqual([]);
 
   // AND A DEPLOYMENT THAT NAMED NO PROFILE NAMES NO SESSION. There is one road to a model and
@@ -1220,7 +1242,7 @@ test("a session already answered is never offered again, and a policy with no ro
     payload: JSON.stringify({ enabled: true, perCycleCost: 0.25, dailyCost: 2, batchSize: 4 }),
     recorded_at: stamp(NOW - 60_000),
   });
-  expect(await machinery.inferTitles(fleet, "cyc_2")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
   expect(fleet.executed).toEqual([]);
 });
 
@@ -1341,6 +1363,6 @@ test("a titling preparation that failed answers its sessions rather than leaving
   ]);
   // AND SO THE NEXT CYCLE ASKS FOR NOTHING. Without the row above this lane would post another
   // preparation over the same session on every wake, for ever.
-  expect(await machinery.inferTitles(fleet, "cyc_2")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
   expect(fleet.executed).toEqual([]);
 });

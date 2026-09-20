@@ -309,9 +309,12 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
     return { ok: true, value: parsed.data as ActionResult<K> };
   }
 
+  // Cache only within this adapter instance, not across wakes. Code revalidates on posting.
+  let roster: Promise<EngineAnswer<ActionResult<"listProfiles">>> | undefined;
+
   /** Every saved profile, which is both what the door offers and what the authority read is. */
   async function readProfiles(): Promise<EngineAnswer<readonly ProfileRow[]>> {
-    const answered = await call("listProfiles", {});
+    const answered = await (roster ??= call("listProfiles", {}));
     if (!answered.ok) return answered;
     return {
       ok: true,
@@ -341,9 +344,6 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
     };
   }
 
-  // Cache only within this adapter instance, not across wakes. Code revalidates on posting.
-  let roster: Promise<EngineAnswer<ActionResult<"listProfiles">>> | undefined;
-
   async function checkProfile(profile: CodeProfile): Promise<EngineAnswer<null>> {
     roster ??= call("listProfiles", {});
     const listed = await roster;
@@ -352,8 +352,9 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
     if (held === undefined) {
       return refuse(
         ENGINE_REFUSALS.staleProfile,
-        `${CODE_PLUGIN_ID} holds no profile for container ${profile.containerId}. ` +
-          `Re-read the profiles and start it again.`,
+        `the Code profile ${profile.containerId} is absent from this caller's readable, ` +
+          `configured profiles. It may have been removed, need configuration in Code, or be ` +
+          `outside the caller's access. Check the workspace and access, then re-read the profiles.`,
       );
     }
     if (held.revision !== profile.expectedRevision) {
