@@ -707,6 +707,8 @@ export interface FinishRequest {
     readonly jobId: string;
     readonly previousJobId: string;
   };
+  /** Release only an expired analysis claim with no durable native or parent posting intent. */
+  readonly unpostedJobId?: string;
 }
 
 export type FinishResult =
@@ -906,6 +908,7 @@ interface AnalysisCandidate extends AnalysisOffer {
   readonly topics: readonly string[];
   readonly weight: number;
   readonly ordinal: number;
+  readonly retry: number;
   readonly lane: Lane;
 }
 
@@ -2049,36 +2052,29 @@ export function coordinator(
         ),
       );
     }
-    const offered = await analysisOffers(
+    const candidates: AnalysisCandidate[] = [];
+    const offeredStages = new Set<Stage>();
+    for await (const offer of analysisOffers(
       db,
       route.machineId,
       stages,
       eligible,
       filed,
       new Set([...stance].filter(([, state]) => state === "working").map(([topic]) => topic)),
-    );
-    for (const recordId of offered.missing) {
-      gaps.push({
-        recordId,
-        role: "",
-        reason: "unsupported",
-        detail: "no settled non-agent material on the routed machine fits this analysis",
-      });
-    }
-    for (const stage of stages) {
-      if (!offered.offers.some((offer) => offer.stage === stage))
+    )) {
+      if ("missing" in offer) {
         gaps.push({
-          recordId: "",
-          role: ANALYSIS_ROLES[stage],
-          reason: "empty",
-          detail:
-            stage === "synthesize"
-              ? "no connected observations from two known source runs have eligible material"
-              : "no eligible claims and settled non-agent material are available on the routed machine",
+          recordId: offer.missing,
+          role: "",
+          reason: "unsupported",
+          detail: "no settled non-agent material on the routed machine fits this analysis",
         });
-    }
-    const candidates: AnalysisCandidate[] = [];
-    for (const offer of offered.offers) {
+        continue;
+      }
+      offeredStages.add(offer.stage);
+      // Bound retained payloads only AFTER eligibility and claim governance. Once these
+      // candidates settle or are withheld, scanning reaches the next eligible page.
+      if (candidates.filter((candidate) => candidate.stage === offer.stage).length >= 64) continue;
       const role = ANALYSIS_ROLES[offer.stage];
       const held = claims.get(`${offer.rootId}\u001f${role}`) ?? NO_CLAIMS;
       const head = records.find((record) => record.id === offer.recordId) ?? {
@@ -2096,12 +2092,13 @@ export function coordinator(
           ),
         ),
       ];
-      const candidate: AnalysisCandidate = {
+      let candidate: AnalysisCandidate = {
         ...offer,
         role,
         head,
         topics,
         ordinal: held.total + 1,
+        retry: 0,
         weight: topics.reduce(
           (weight, topic) => Math.min(weight, STANCE_WEIGHT[stance.get(topic) ?? "working"]),
           attention.get(offer.rootId) ?? 1,
@@ -2113,7 +2110,18 @@ export function coordinator(
               ? "exploration"
               : "weighted",
       };
-      const previous = await readClaim(assignmentIdOf(candidate, policy.version));
+      let previous = await readClaim(assignmentIdOf(candidate, policy.version));
+      // Retain the original fingerprint identity for attempt zero (including existing claims).
+      // Only proven free failures may move to a fresh identity; unknown or paid work never does.
+      while (
+        previous?.finishedAt != null &&
+        previous.actualCost === 0 &&
+        (previous.outcome === "failed" || previous.outcome === "skipped") &&
+        candidate.retry < MAX_SETBACKS
+      ) {
+        candidate = { ...candidate, retry: candidate.retry + 1 };
+        previous = await readClaim(assignmentIdOf(candidate, policy.version));
+      }
       const recent = await db.query(
         `SELECT MAX(COALESCE(c.finished_at, c.granted_at)) AS latest
            FROM claims c LEFT JOIN records r ON r.id = c.record_id
@@ -2146,13 +2154,30 @@ export function coordinator(
       }
       candidates.push(candidate);
     }
+    for (const stage of stages) {
+      if (!offeredStages.has(stage))
+        gaps.push({
+          recordId: "",
+          role: ANALYSIS_ROLES[stage],
+          reason: "empty",
+          detail:
+            stage === "synthesize"
+              ? "no connected observations from two known source runs have eligible material"
+              : "no eligible claims and settled non-agent material are available on the routed machine",
+        });
+    }
     return { candidates, gaps };
   }
 
   /** The assignment id a candidate would be handed out as, named once so the contention check
    *  and the assignment it hands back cannot disagree about which claim is which. */
   function assignmentIdOf(candidate: WorkCandidate, version: string): string {
-    if ("stage" in candidate) return `asg_${digest([candidate.role, candidate.fingerprint])}`;
+    if ("stage" in candidate)
+      return `asg_${digest([
+        candidate.role,
+        candidate.fingerprint,
+        ...(candidate.retry === 0 ? [] : ["retry", String(candidate.retry)]),
+      ])}`;
     return `asg_${digest([candidate.head.id, candidate.role, version, String(candidate.ordinal)])}`;
   }
 
@@ -2163,13 +2188,13 @@ export function coordinator(
    * case rather than the unlucky one, and the draw that acts on the stale set is the one whose
    * claim is refused.
    */
-  async function claimedNow(moment: number): Promise<ReadonlySet<string>> {
-    // `claims_open` is a partial index over the unfinished rows (`store/schema.ts`), so this
-    // reads the open claims rather than the ledger's whole history of them.
+  async function claimedNow(moment: number, pickedId: string): Promise<ReadonlySet<string>> {
+    // Read open claims plus only the selected identity's terminal receipt: a finish landing
+    // during selection must still defeat the stale draw, without scanning finished history.
     const rows = await db.query(
       `SELECT c.id FROM claims c WHERE c.finished_at IS NULL AND (c.expires_at > ? OR ${RUNNING_CLAIM})
-       OR (c.role LIKE 'analysis:%' AND c.finished_at IS NOT NULL)`,
-      [iso(moment)],
+       UNION SELECT c.id FROM claims c WHERE c.id = ? AND c.finished_at IS NOT NULL`,
+      [iso(moment), pickedId],
     );
     return new Set(rows.map((row) => text(row["id"])));
   }
@@ -2322,7 +2347,7 @@ export function coordinator(
       // is the bug one storey down from #233's.
       const pickedId = identify(picked.chosen);
       handedOut.set(pickedId, { runId: request.runId, at: moment });
-      const claimed = await claimedNow(moment);
+      const claimed = await claimedNow(moment, pickedId);
       if (!claimed.has(pickedId)) {
         sampled = picked;
         break;
@@ -2880,6 +2905,22 @@ export function coordinator(
       };
     }
     const terminal = request.terminalJob;
+    const unposted = request.unpostedJobId;
+    if (
+      unposted !== undefined &&
+      (unposted === "" ||
+        terminal !== undefined ||
+        request.cost !== 0 ||
+        request.outcome !== "failed")
+    ) {
+      return {
+        outcome: "refused",
+        refusal: {
+          reason: "invalid",
+          detail: "unposted accounting requires only an exact job and a zero-cost failure",
+        },
+      };
+    }
     if (terminal !== undefined && (terminal.jobId === "" || terminal.previousJobId === "")) {
       return {
         outcome: "refused",
@@ -2895,6 +2936,7 @@ export function coordinator(
     }
     if (held.finishedAt !== null) {
       if (
+        unposted === undefined &&
         held.runId === request.runId &&
         held.fence === fence &&
         held.actualCost === request.cost &&
@@ -2943,10 +2985,16 @@ export function coordinator(
                       AND json_extract(${document}, '$.analysis.claim.runId') = claims.run_id
                       AND json_extract(${document}, '$.analysis.claim.fence') = claims.fence
                  )`;
+    const unpostedGuard =
+      unposted === undefined
+        ? ""
+        : `
+                 AND claims.role LIKE 'analysis:%' AND job_id = ? AND expires_at <= ?
+                 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.job_id = ? OR r.prepare_job_id = ?)`;
     const rows = await db.batch([
       {
         sql: `UPDATE claims SET finished_at = ?, actual_cost = ?, outcome = ?${terminal === undefined ? "" : ", job_id = ?"}
-               WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL${terminalGuard}
+               WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL${terminalGuard}${unpostedGuard}
                RETURNING reserved_cost`,
         params: [
           iso(moment),
@@ -2959,6 +3007,7 @@ export function coordinator(
           ...(terminal === undefined
             ? []
             : [terminal.previousJobId, terminal.jobId, terminal.jobId, terminal.previousJobId]),
+          ...(unposted === undefined ? [] : [unposted, iso(moment), unposted, unposted]),
         ],
       },
     ]);
@@ -2967,11 +3016,13 @@ export function coordinator(
       return {
         outcome: "refused",
         refusal: {
-          reason: terminal === undefined ? "taken-over" : "conflict",
+          reason: terminal === undefined && unposted === undefined ? "taken-over" : "conflict",
           detail:
-            terminal === undefined
-              ? `assignment ${request.id} moved before the finish landed`
-              : `assignment ${request.id} moved or its terminal Code job is not attributed to this preparation`,
+            unposted !== undefined
+              ? `assignment ${request.id} moved, is not expired analysis, or has a durable posting intent`
+              : terminal === undefined
+                ? `assignment ${request.id} moved before the finish landed`
+                : `assignment ${request.id} moved or its terminal Code job is not attributed to this preparation`,
         },
       };
     }

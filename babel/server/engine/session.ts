@@ -52,7 +52,7 @@ export interface ActionsSlice {
   call(args: { plugin: string; action: string; input: unknown }): Promise<unknown>;
 }
 
-/** Every name a refusal from this file carries, which is {@link ENGINE_REFUSALS}'s four. */
+/** Every name a refusal from this file carries, as declared by {@link ENGINE_REFUSALS}. */
 export type EngineCode = EngineRefusalCode;
 
 /** What the engine answered, or the named refusal — never an exception across this boundary. */
@@ -195,7 +195,7 @@ export const ENGINE_WITHOUT_ACTIONS =
   "this hook is served no actions slice: GuestLifecycleCtx carries it only while the " +
   "installer's credential can be restored, and this one's could not";
 
-/** The host's own refusal classes, folded onto the four names an operator acts on. */
+/** The host's refusal classes; only `refused` may have entered Code's posting handler. */
 const HOST_CLASSES: Readonly<Record<string, EngineRefusalCode>> = {
   // There is no Code to ask: Babel's manifest does not declare the edge, the roster has no
   // enabled row for it, or the Code that is installed publishes no such door.
@@ -205,19 +205,16 @@ const HOST_CLASSES: Readonly<Record<string, EngineRefusalCode>> = {
   // Authority: what the principal this dispatch serves holds, or Babel's own installed ceiling.
   capability: ENGINE_REFUSALS.forbidden,
   caller_ceiling: ENGINE_REFUSALS.forbidden,
-  // Code answered no, or the composition graph itself is wrong. Neither is something an
-  // operator installs his way out of, and both carry the sentence that says which.
+  // Composition-graph refusals precede dispatch. A handler refusal does not establish
+  // whether a posting side effect happened; translate preserves that distinction.
   refused: ENGINE_REFUSALS.refused,
   dispatch_cycle: ENGINE_REFUSALS.refused,
   dispatch_depth: ENGINE_REFUSALS.refused,
 };
 
 /**
- * CODE'S OWN WORDS THAT BABEL ACTS ON. Exactly one of them is not `engine_refused`: a profile
- * that moved between the read and the press is what the panel re-reads and presses again for,
- * and folding it into the generic refusal would send an operator looking for a fault that is a
- * stale list. Every other `code_…` — a missing catalog, an unavailable account, omp's own word
- * carried through as `code_omp_…` — is Code saying no, and the word rides the detail.
+ * Code's stale-preferences refusal precedes posting. Other handler refusals are not assumed
+ * to do so: Code can reject a posted job's provenance or fail while retaining its session.
  */
 const CODE_TOKENS: Readonly<Record<string, EngineRefusalCode>> = {
   code_stale_preferences: ENGINE_REFUSALS.staleProfile,
@@ -259,10 +256,12 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
       // Code's own refusal token travels inside the host rejection's detail.
       const detail = matched[2] ?? "";
       const token = CODE_TOKEN.exec(detail)?.[0] ?? "";
-      return refuse(CODE_TOKENS[token] ?? host, detail);
+      const known = CODE_TOKENS[token];
+      const uncertain = door === "runSession" && matched[1] === "refused" && known === undefined;
+      return refuse(uncertain ? ENGINE_REFUSALS.unconfirmed : (known ?? host), detail);
     }
     return refuse(
-      ENGINE_REFUSALS.refused,
+      door === "runSession" ? ENGINE_REFUSALS.unconfirmed : ENGINE_REFUSALS.refused,
       `${CODE_PLUGIN_ID}.${door} raised something that is not a refusal: ${text}`,
     );
   }
@@ -302,7 +301,7 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
     const parsed = schemas.result.safeParse(reply);
     if (!parsed.success) {
       return refuse(
-        ENGINE_REFUSALS.refused,
+        action === "runSession" ? ENGINE_REFUSALS.unconfirmed : ENGINE_REFUSALS.refused,
         `${CODE_PLUGIN_ID}.${action} answered outside its own published result`,
       );
     }

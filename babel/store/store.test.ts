@@ -1584,6 +1584,18 @@ describe("grounded analysis challenges", () => {
     expect(opened?.claim.standing).toBe("new");
   });
 
+  test("imported self-challenge edges count in neither the feed nor the opened record", async () => {
+    await edge("edg_self_challenge", CANDIDATE, "run-a", "consequence");
+    const listed = await feed({ sort: "new", window: "all", surface: "all", limit: 100 });
+    expect(listed.posts.find((post) => post.id === CANDIDATE)?.challenges).toEqual({
+      objections: 0,
+      distinctRuns: 0,
+    });
+    const opened = await harness.store.record(CANDIDATE);
+    expect(opened?.post.challenges).toEqual({ objections: 0, distinctRuns: 0 });
+    expect(opened?.challenges).toEqual([]);
+  });
+
   test("ignores review-role opposition and malformed or falsely attributed challenge edges", async () => {
     await edge("edg_no_source", "hyp_ffffffff", "run-a", "alternative");
     await edge("edg_bad_ground", CANDIDATE, "run-a", "oppose");

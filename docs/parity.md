@@ -66,10 +66,16 @@ assumed from that row alone.
   brief and fenced ownership across preparation and Code; settlement reads that stage and refuses
   unoffered durable references. Challenge writes attributed objections, which the candidate's feed
   entry and opened record expose. Synthesis connects observations from multiple known source runs
-  without replacing their original provenance. Regression suites and a synthetic SQLite-frontier
-  exercise prove dispatch, terminal accounting and record projection; no paid stage run has been
-  exercised on a live deployment. New stage weights default to zero, so installing the plugin
-  enables no new paid activity. Issue: [#332](https://github.com/atyrode/babel/issues/332).
+  without replacing their original provenance. Regression suites and a connected synthetic
+  SQLite-frontier exercise prove dispatch, terminal accounting and record projection. Rendered
+  preview interaction follows the objection and source receipt and reaches Watch's weights by
+  native scrolling; no paid stage run has been exercised on a live deployment. New stage weights
+  default to zero, so installing the plugin enables no new paid activity.
+  An unconfirmed Code posting stays visible and reserved rather than being bought twice:
+  atyrode/code at c6a9c264bfcb37934b5814b0943989fa78f7dd05,
+  [plugins/atyrode.code/session.ts:209–248](https://github.com/atyrode/code/blob/c6a9c264bfcb37934b5814b0943989fa78f7dd05/plugins/atyrode.code/session.ts#L209-L248),
+  can refuse after posting and retains sessions by the returned job id. Issue:
+  [#332](https://github.com/atyrode/babel/issues/332).
 - **A drawn review dispatches, and no live one has ever run.** `dispatchReviews`
   (`server/conductor.ts`) draws an assignment from the coordinator, claims it under a fence,
   refuses a projection that leaks withheld review state, composes the review prompt around the

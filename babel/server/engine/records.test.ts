@@ -646,6 +646,100 @@ test("every grounded objection records challenge provenance without becoming a r
   }
 });
 
+test("the writer never emits self-targeted challenge or contradiction edges", () => {
+  const result = shaped(
+    {
+      candidates: [{ ref: "h1", hypothesis: { statement: "an unrelated target" } }],
+      objections: [
+        {
+          ...observed("j1", "a queue would avoid drops"),
+          hypothesis: "h1",
+          grounds: "alternative",
+          claim: { ...observed("unused", "a queue would avoid drops").claim, evidence: [] },
+        },
+        { ...observed("j2", "the receipt records a drop"), hypothesis: "h1", grounds: "evidence" },
+      ],
+    },
+    [],
+    "challenge",
+  );
+  // Exercise the writer's defensive boundary independently of submission validation.
+  const written = settle({
+    ...result,
+    objections: result.objections.map((objection) =>
+      objection.ref === "j1" ? { ...objection, hypothesis: objection.ref } : objection,
+    ),
+  });
+  const target = recordsOf(written.rows).find(
+    (record) => record["title"] === "an unrelated target",
+  );
+  const source = recordsOf(written.rows).find(
+    (record) => record["title"] === "the receipt records a drop",
+  );
+  expect(edgesOf(written.rows).filter((edge) => edge["from_id"] === edge["to_id"])).toEqual([]);
+  expect(edgesOf(written.rows).filter((edge) => edge["kind"] === "contradicts")).toEqual([]);
+  expect(edgesOf(written.rows).filter((edge) => edge["kind"] === CHALLENGE_RELATION)).toEqual([
+    expect.objectContaining({ from_id: source?.["id"], to_id: target?.["id"] }),
+  ]);
+});
+
+test("a synthetic consolidation proposal never steals a candidate handle used by questions and actions", () => {
+  const result = shaped({
+    candidates: [
+      {
+        ref: "f1/proposal",
+        hypothesis: { statement: "the candidate with a slash handle" },
+        observations: [observed("o1", "the receipt records a drop")],
+      },
+    ],
+    consolidations: [
+      {
+        ref: "f1",
+        observations: ["o1"],
+        finding: {
+          title: "silent drops",
+          pattern: "nothing records exhausted retries",
+          counter_evidence_absent: true,
+        },
+        proposal: {
+          title: "log the drop",
+          problem: "the drop is invisible",
+          outcome: "the drop is logged",
+          impact: "moderate",
+          classification: "private",
+        },
+      },
+    ],
+    questions: [
+      {
+        ref: "q1",
+        hypothesis: "f1/proposal",
+        subjects: ["router"],
+        prompt: "Which queue?",
+        why_asked: "the candidate depends on it",
+      },
+    ],
+    next_actions: [
+      { record: "f1/proposal", kind: "develop-further", summary: "check the candidate" },
+    ],
+  });
+  const written = settle(result);
+  const candidate = recordsOf(written.rows).find((record) => record["kind"] === "hypothesis");
+  const proposal = recordsOf(written.rows).find((record) => record["kind"] === "proposal");
+  expect(proposal?.["id"]).not.toBe(candidate?.["id"]);
+  expect(written.rows[JOB_OUTPUT_FILES.questions]).toHaveLength(1);
+  expect(payloadOf(written.rows[JOB_OUTPUT_FILES.questions]?.[0])["work"]).toEqual([
+    { kind: "hypothesis", id: candidate?.["id"], blocking: true },
+  ]);
+  expect(written.rows[JOB_OUTPUT_FILES.nextActions]?.map((action) => action["record_id"])).toEqual([
+    candidate?.["id"],
+  ]);
+  expect(edgesOf(written.rows).filter((edge) => edge["kind"] === "addresses")).toEqual([
+    expect.objectContaining({ from_id: proposal?.["id"], to_id: findingIn(written.rows)?.["id"] }),
+  ]);
+  expect(written.notes).toEqual([]);
+});
+
 test("missing held targets drop objections and questions without dangling rows", () => {
   const target = prior("hyp_00000011", "hypothesis");
   const result = shaped(

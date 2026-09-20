@@ -306,6 +306,7 @@ export async function readChallenges(
        JOIN records r ON r.id = e.from_id AND r.kind = e.from_kind
        JOIN records h ON h.id = e.to_id AND h.kind = e.to_kind
       WHERE e.kind = ? AND h.kind = 'hypothesis'
+        AND e.from_id <> e.to_id
         AND r.kind IN ('observation', 'hypothesis')
         AND e.actor_kind = 'run' AND e.actor_id = r.run_id AND r.run_id <> ''
         ${target === undefined ? "" : "AND e.to_id = ?"}

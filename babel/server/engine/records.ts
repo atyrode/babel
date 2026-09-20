@@ -446,7 +446,7 @@ class Writer {
     }
     const proposal = consolidation.proposal;
     if (proposal === undefined) return;
-    const proposalId = this.mint("pro", `${consolidation.ref}/proposal`);
+    const proposalId = mintId("pro", this.settlement.runId, `${consolidation.ref}/proposal`);
     this.record(proposalId, "proposal", proposal.title, proposal, { supports: [id] });
     this.edge("addresses", proposalId, "proposal", id, "finding", 0, "");
   }
@@ -781,6 +781,7 @@ class Writer {
     position: number,
     note: string,
   ): void {
+    if (fromId === toId) return;
     // ONE RELATION IS ONE ROW, however many ways the answer reached it. An objection that also
     // opens CONTRADICTS against the hypothesis it attacks asks for the same edge twice, and the
     // identifier is a digest of the relation rather than of the path taken to it — so the

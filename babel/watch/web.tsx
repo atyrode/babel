@@ -1,7 +1,7 @@
 import type { PanelProps } from "@manifold/plugin";
 import { usePolledResource } from "@manifold/plugin/hooks";
 import type { MachineSummary } from "@manifold/protocol";
-import { Stack } from "@manifold/ui";
+import { ScrollRegion, Stack } from "@manifold/ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { z } from "zod";
 import {
@@ -426,90 +426,92 @@ export function Watch({ host }: PanelProps) {
   }, [host, onServiceCheck, serviceDrafts, serviceMachine, servicePreview]);
 
   return (
-    <Stack gap="var(--babel-space-6)" className="plugin-atyrode_babel_watch">
-      {/*
+    <ScrollRegion className="plugin-atyrode_babel_watch" aria-label="Watch">
+      <Stack gap="var(--babel-space-6)">
+        {/*
         A FAILED READ IS THE SAME SENTENCE AS A REFUSED ONE: `profiles` answers `unavailable`
         when Code refused, and when the DOOR refused the read threw and the note holds it. Both
         reach the two sections in one field rather than as two differently-shaped absences,
         because the operator's remedy is the same kind of thing either way.
       */}
-      <Start
-        draft={draft}
-        machines={machines.value}
-        topics={topics.value.topics}
-        recipes={policy.value?.recipes ?? []}
-        profiles={drainProfiles}
-        starting={starting}
-        note={startNote}
-        onDraft={setDraft}
-        onStart={onStart}
-        onOpen={(uri) => host.navigate(uri)}
-      />
-      <Runs
-        runs={runs.value.runs}
-        total={runs.value.total}
-        now={now}
-        stopping={stopping}
-        note={runsNote === "" ? stopNote : runsNote}
-        onStop={onStop}
-        onMore={() => setLimit((current) => current + RUNS_PAGE)}
-      />
-      {/*
+        <Start
+          draft={draft}
+          machines={machines.value}
+          topics={topics.value.topics}
+          recipes={policy.value?.recipes ?? []}
+          profiles={drainProfiles}
+          starting={starting}
+          note={startNote}
+          onDraft={setDraft}
+          onStart={onStart}
+          onOpen={(uri) => host.navigate(uri)}
+        />
+        <Runs
+          runs={runs.value.runs}
+          total={runs.value.total}
+          now={now}
+          stopping={stopping}
+          note={runsNote === "" ? stopNote : runsNote}
+          onStop={onStop}
+          onMore={() => setLimit((current) => current + RUNS_PAGE)}
+        />
+        {/*
         UNDER THE RUNS, because it explains their absence: an operator reads an empty table and
         the next thing on the page is why it is empty. It renders nothing at all when the last
         cycle spent normally.
       */}
-      <Cycle cycle={cycle.value} now={now} note={cycleNote} />
-      <Drain
-        draft={drainDraft}
-        drains={drains.value}
-        machines={machines.value}
-        topics={topics.value.topics}
-        profiles={drainProfiles}
-        now={now}
-        starting={draining}
-        stopping={drainStopping}
-        note={drainNote === "" ? drainRead : drainNote}
-        onDraft={setDrainDraft}
-        onStart={onDrainStart}
-        onStop={onDrainStop}
-      />
-      <Recipes recipes={policy.value?.recipes ?? []} now={now} note={policyNote} />
-      <Ceilings policy={policy.value} now={now} note={policyNote} />
-      {/*
+        <Cycle cycle={cycle.value} now={now} note={cycleNote} />
+        <Drain
+          draft={drainDraft}
+          drains={drains.value}
+          machines={machines.value}
+          topics={topics.value.topics}
+          profiles={drainProfiles}
+          now={now}
+          starting={draining}
+          stopping={drainStopping}
+          note={drainNote === "" ? drainRead : drainNote}
+          onDraft={setDrainDraft}
+          onStart={onDrainStart}
+          onStop={onDrainStop}
+        />
+        <Recipes recipes={policy.value?.recipes ?? []} now={now} note={policyNote} />
+        <Ceilings policy={policy.value} now={now} note={policyNote} />
+        {/*
         LAST, under the ceilings, because it is the least frequent thing an operator does here:
         a service policy is installed once per machine and then re-read only when something has
         stopped working. It is on this panel rather than a settings page of its own for the
         reason the archive's own steps are — what it configures is what the machines run.
       */}
-      <Services
-        preview={servicePreview}
-        drafts={serviceDrafts}
-        machines={machines.value}
-        machineId={serviceMachine}
-        checking={checking}
-        installing={installing}
-        note={serviceNote === "" ? serviceRead : serviceNote}
-        onMachine={(machineId) => {
-          setServiceMachine(machineId);
-          // A preview belongs to one machine; keeping it while the picker moved would show one
-          // machine's readiness under another's name.
-          setServicePreview(null);
-          setServiceNote("");
-          setServiceRead("");
-        }}
-        onDraft={(serviceId, origin) =>
-          setServiceDrafts((held) => ({ ...held, [serviceId]: origin }))
-        }
-        onCheck={() => {
-          // A read the OPERATOR asked for clears what the last act said; the read the install
-          // makes for itself does not, which is why this is here and not inside `onServiceCheck`.
-          setServiceNote("");
-          void onServiceCheck();
-        }}
-        onInstall={onServiceInstall}
-      />
-    </Stack>
+        <Services
+          preview={servicePreview}
+          drafts={serviceDrafts}
+          machines={machines.value}
+          machineId={serviceMachine}
+          checking={checking}
+          installing={installing}
+          note={serviceNote === "" ? serviceRead : serviceNote}
+          onMachine={(machineId) => {
+            setServiceMachine(machineId);
+            // A preview belongs to one machine; keeping it while the picker moved would show one
+            // machine's readiness under another's name.
+            setServicePreview(null);
+            setServiceNote("");
+            setServiceRead("");
+          }}
+          onDraft={(serviceId, origin) =>
+            setServiceDrafts((held) => ({ ...held, [serviceId]: origin }))
+          }
+          onCheck={() => {
+            // A read the OPERATOR asked for clears what the last act said; the read the install
+            // makes for itself does not, which is why this is here and not inside `onServiceCheck`.
+            setServiceNote("");
+            void onServiceCheck();
+          }}
+          onInstall={onServiceInstall}
+        />
+      </Stack>
+    </ScrollRegion>
   );
 }
 

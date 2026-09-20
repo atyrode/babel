@@ -21,9 +21,11 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   distinct source runs and links to the objection and receipt rather than treating a review vote
   as criticism. Synthesis receives a bounded connected brief from multiple known source runs and
   keeps the original observation ids in its support edges. Invented or unoffered durable references
-  are refused; neither stage writes rulings. The stage, lease and scope regressions and a synthetic
-  SQLite-frontier exercise prove those boundaries without a provider call or production install
-  (#434).
+  are refused; neither stage writes rulings. The stage, lease and scope regressions and a connected
+  synthetic SQLite-frontier exercise prove those boundaries. The rendered preview follows an
+  objection to its record and source receipt; Watch's lower sections, including the weights, are
+  reachable by ordinary scrolling inside their tile. No provider call or production install is
+  part of that proof (#434).
 
 - **Babel can find its own records.** Nothing indexed the corpus, so nothing retrieved against it:
   a preparation selected sessions by recency, the feed enumerated structured columns and accepted

@@ -760,6 +760,10 @@ needs an installed stage recipe, a usable Code profile and eligible material. It
 the same budget, item cooldown and fenced claim as review; preparation and the subsequent Code
 session occupy one claim rather than opening a second spending loop. A completed unchanged brief
 is not bought again merely because the policy version changes.
+An unsuccessful attempt known to cost nothing may retry within those same cooldowns and setback
+bounds; paid or completed unchanged work may not. If Code's posting response is lost or cannot be
+interpreted, Watch reports the run as unconfirmed and its reservation remains held. An absent job
+id is not proof that no session was bought, so that uncertain posting is never retried.
 
 The run's budget is the hard stopping condition. Policy supplies bounded per-item spending,
 cooldowns, and a response to repeated skips, so unreachable items and persistent disagreement

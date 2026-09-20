@@ -2242,6 +2242,8 @@ export const MIN_CITATION_QUOTE = 12;
  *   `engine_no_account`   — Code resolved this revision's saved account selection and found none.
  *                           Choose an account in Code; Babel holds no provider credential of
  *                           its own. An unresolved observation is not this refusal (#255).
+ *   `engine_unconfirmed`  — Code may have posted a session, but no usable job id returned.
+ *                           Retain its reservation; absence of a reply is not spending proof.
  */
 export const ENGINE_REFUSALS = {
   unavailable: "engine_unavailable",
@@ -2249,6 +2251,7 @@ export const ENGINE_REFUSALS = {
   staleProfile: "engine_stale_profile",
   refused: "engine_refused",
   noAccount: "engine_no_account",
+  unconfirmed: "engine_unconfirmed",
 } as const;
 export type EngineRefusalCode = (typeof ENGINE_REFUSALS)[keyof typeof ENGINE_REFUSALS];
 

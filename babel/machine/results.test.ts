@@ -156,6 +156,89 @@ test("durable IDs authorize nothing unless the brief offers their exact record f
   }
 });
 
+test("self-targeted objections and their dependents are refused while unrelated output survives", () => {
+  const submission = submit("challenge", {
+    candidates: ["h1", "h2", "h3"].map((ref) => ({ ref, hypothesis: { statement: ref } })),
+    objections: [
+      {
+        ref: "j1",
+        hypothesis: "j1",
+        grounds: "consequence",
+        recipe: RECIPE,
+        claim: { ...CLAIM, evidence: [] },
+      },
+    ],
+    questions: [
+      {
+        ref: "q1",
+        hypothesis: "j1",
+        subjects: ["router"],
+        prompt: "Which guarantee?",
+        why_asked: "the objection depends on it",
+      },
+    ],
+  });
+  expect(kept(submission).candidates.map((candidate) => candidate.ref)).toEqual(["h1", "h2", "h3"]);
+  expect(kept(submission).objections).toEqual([]);
+  expect(kept(submission).questions).toEqual([]);
+  expect(submission.refused.map(({ item, reason }) => [item, refusalCode(reason)])).toEqual([
+    ["/objections/0", REFUSALS.unknownReference],
+    ["/questions/0", REFUSALS.unknownReference],
+  ]);
+});
+
+test("a refused durable-name declaration cannot shadow references to the offered record", () => {
+  const target = prior("hyp_00000011", "hypothesis");
+  const submission = submit(
+    "challenge",
+    {
+      candidates: [
+        {
+          ref: target.id,
+          hypothesis: { statement: "a new claim trying to borrow the offered name" },
+        },
+        { ref: "h1", hypothesis: { statement: "an unrelated local claim" } },
+      ],
+      objections: [
+        { ref: "j1", hypothesis: target.id, grounds: "evidence", recipe: RECIPE, claim: CLAIM },
+      ],
+      questions: [
+        {
+          ref: "q1",
+          hypothesis: target.id,
+          subjects: ["router"],
+          prompt: "Which guarantee?",
+          why_asked: "the offered claim depends on it",
+        },
+      ],
+    },
+    [target],
+  );
+  const result = kept(submission);
+  expect(result.candidates.map((candidate) => candidate.ref)).toEqual(["h1"]);
+  expect(result.objections.map((objection) => objection.hypothesis)).toEqual([target.id]);
+  expect(result.questions.map((question) => question.hypothesis)).toEqual([target.id]);
+  expect(submission.refused.map(({ item, reason }) => [item, refusalCode(reason)])).toEqual([
+    ["/candidates/0", REFUSALS.schema],
+  ]);
+});
+
+test("an unoffered durable identifier cannot become a local handle or authorize dependent output", () => {
+  const submission = submit("explore", {
+    candidates: ["hyp_ffffffff", "h1", "h2", "h3"].map((ref) => ({
+      ref,
+      hypothesis: { statement: ref },
+    })),
+    next_actions: [{ record: "hyp_ffffffff", kind: "develop-further", summary: "check it" }],
+  });
+  expect(kept(submission).candidates.map((candidate) => candidate.ref)).toEqual(["h1", "h2", "h3"]);
+  expect(kept(submission).next_actions).toEqual([]);
+  expect(submission.refused.map(({ item, reason }) => [item, refusalCode(reason)])).toEqual([
+    ["/candidates/0", REFUSALS.schema],
+    ["/next_actions/0", REFUSALS.unknownReference],
+  ]);
+});
+
 test("a refused durable support closes dependent actions without losing unrelated candidates", () => {
   const submission = submit("synthesize", {
     candidates: ["h1", "h2", "h3"].map((ref) => ({ ref, hypothesis: { statement: ref } })),

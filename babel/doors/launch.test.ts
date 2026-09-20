@@ -26,6 +26,7 @@ import {
   PRESET_OPERATIONS,
   type AnalysisWork,
   type ProfileRow,
+  ENGINE_REFUSALS,
 } from "../contract.ts";
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
@@ -1378,7 +1379,10 @@ const ANALYSIS_PLAN = {
   },
 };
 
-async function stageLaunch(stage: "challenge" | "synthesize" = "challenge") {
+async function stageLaunch(
+  stage: "challenge" | "synthesize" = "challenge",
+  extraBrief: AnalysisWork["brief"] = [],
+) {
   await insert(harness.db, "policies", {
     version: "p_stage",
     seq: 3,
@@ -1420,6 +1424,7 @@ async function stageLaunch(stage: "challenge" | "synthesize" = "challenge") {
         payload: { statement: "Preserve the full prior claim", limits: ["Still unverified"] },
         objectionTo: [],
       },
+      ...extraBrief,
     ],
   };
   const start = () =>
@@ -1516,6 +1521,7 @@ test.each(["challenge", "synthesize"] as const)(
     expect(
       await harness.db.query(`SELECT job_id, finished_at FROM claims WHERE id = 'asg_stage'`),
     ).toEqual([{ job_id: "job_stage_code", finished_at: null }]);
+    expect((await harness.store.run("run_stage")).run?.progress?.unheard).not.toBe(true);
     const rows = await harness.db.query<{ preparation: string; authority_kind: string }>(
       `SELECT preparation, authority_kind FROM runs WHERE id = 'run_stage'`,
     );
@@ -1632,4 +1638,175 @@ test("an unconfirmed Code cancellation keeps the parent pollable and the reserva
     await harness.db.query(`SELECT finished_at, actual_cost FROM claims WHERE id = 'asg_stage'`),
   ).toEqual([{ finished_at: null, actual_cost: null }]);
   expect((await coordinator(harness.store, () => NOW, 16).open(NOW)).byMachine[MACHINE]).toBe(1);
+});
+
+test("multiple brief ids carry record-scoped operator steering into the prompt and receipt intent", async () => {
+  const { start, analysis } = await stageLaunch("challenge", [
+    {
+      id: "hyp_00000002",
+      kind: "hypothesis",
+      runId: null,
+      summary: "Another prior claim",
+      payload: { statement: "A distinct operator concern" },
+      objectionTo: [],
+    },
+  ]);
+  for (const [index, record] of analysis.brief.entries()) {
+    await insert(harness.db, "steering", {
+      id: `stg_brief_${index}`,
+      root_id: `stg_brief_${index}`,
+      seq: 0,
+      actor_kind: "operator",
+      actor_id: "operator",
+      target_kind: "record",
+      target_id: record.id,
+      text: `Check the operator concern about ${record.id}`,
+      recorded_at: stamp(NOW),
+    });
+  }
+  await start();
+  await sealStage();
+  let prompt = "";
+  code.posting = (request) => {
+    prompt = request.prompt;
+    return stageJob();
+  };
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  const rows = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE id = 'run_stage'`,
+  );
+  const carried = JSON.parse(rows[0]!.preparation).steering.carried;
+  expect(carried.map((remark: { id: string }) => remark.id).sort()).toEqual([
+    "stg_brief_0",
+    "stg_brief_1",
+  ]);
+  for (const record of analysis.brief)
+    expect(prompt).toContain(`Check the operator concern about ${record.id}`);
+});
+
+test("overlapping preparation continuations post only one session and cannot close its bound winner", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  let entered!: () => void;
+  const posting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let resume!: () => void;
+  const held = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  let posts = 0;
+  code.runSession = async () => {
+    posts += 1;
+    entered();
+    if (posts === 1) await held;
+    return stageJob();
+  };
+  const first = machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  await posting;
+  try {
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+  } finally {
+    resume();
+    await first;
+  }
+  expect(posts).toBe(1);
+  expect(code.cancelled).toEqual([]);
+  expect(await harness.db.query(`SELECT job_id, closure FROM runs WHERE id = 'run_stage'`)).toEqual(
+    [{ job_id: "job_stage_code", closure: null }],
+  );
+  expect(
+    await harness.db.query(`SELECT job_id, finished_at FROM claims WHERE id = 'asg_stage'`),
+  ).toEqual([{ job_id: "job_stage_code", finished_at: null }]);
+  expect((await coordinator(harness.store, () => NOW, 16).open(NOW)).byMachine[MACHINE]).toBe(1);
+});
+
+test.each(["finish-first", "parent-first"] as const)(
+  "%s atomically decides whether an expired analysis claim ever authorizes native posting",
+  async (order) => {
+    const { start, analysis } = await stageLaunch();
+    const governor = coordinator(harness.store, () => NOW, 16);
+    const run = harness.db.run.bind(harness.db);
+    let outcome = "";
+    harness.db.run = async (sql, params) => {
+      if (!sql.startsWith("INSERT INTO runs(id, kind, machine_id, container_id"))
+        return await run(sql, params);
+      const inserted = order === "parent-first" ? await run(sql, params) : null;
+      await run(`UPDATE claims SET expires_at = ? WHERE id = 'asg_stage'`, [stamp(NOW)]);
+      const finished = await governor.finish({
+        ...analysis.claim,
+        unpostedJobId: "job_stage_material",
+        cost: 0,
+        outcome: "failed",
+        now: NOW,
+      });
+      outcome = finished.outcome;
+      return inserted ?? (await run(sql, params));
+    };
+    try {
+      await start();
+    } finally {
+      harness.db.run = run;
+    }
+    expect(outcome).toBe(order === "finish-first" ? "finished" : "refused");
+    expect(fleet.executed.map((job) => job.jobId)).toEqual(
+      order === "finish-first" ? [] : ["job_stage_material"],
+    );
+    expect(
+      await harness.db.query(`SELECT outcome, actual_cost FROM claims WHERE id = 'asg_stage'`),
+    ).toEqual(
+      order === "finish-first"
+        ? [{ outcome: "failed", actual_cost: 0 }]
+        : [{ outcome: null, actual_cost: null }],
+    );
+  },
+);
+
+test.each(["throw", "refused"] as const)(
+  "an unconfirmed Code posting (%s) remains visible and reserved without buying another session",
+  async (failure) => {
+    const { start } = await stageLaunch();
+    await start();
+    await sealStage();
+    let posts = 0;
+    code.runSession = async () => {
+      posts += 1;
+      if (failure === "throw") throw new Error("response transport interrupted");
+      return refusedByCode(ENGINE_REFUSALS.unconfirmed, "response transport interrupted");
+    };
+    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+    await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+    expect(posts).toBe(1);
+    expect(
+      await harness.db.query(
+        `SELECT closure, json_extract(payload, '$.posting') AS posting FROM runs WHERE id = 'run_stage'`,
+      ),
+    ).toEqual([{ closure: null, posting: 1n }]);
+    expect(await harness.db.query(`SELECT finished_at FROM claims WHERE id = 'asg_stage'`)).toEqual(
+      [{ finished_at: null }],
+    );
+    const visible = (await harness.store.run("run_stage")).run;
+    expect(visible?.progress?.unheard).toBe(true);
+    expect(visible?.progress?.message).toContain("response transport interrupted");
+    expect((await coordinator(harness.store, () => NOW, 16).open(NOW)).byMachine[MACHINE]).toBe(1);
+  },
+);
+
+test("a definite pre-dispatch refusal closes an analysis parent instead of claiming an unknown posting", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  let posts = 0;
+  code.runSession = async () => {
+    posts += 1;
+    return refusedByCode(ENGINE_REFUSALS.refused, "the local request failed validation");
+  };
+  expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  expect(posts).toBe(1);
+  expect(await harness.db.query(`SELECT closure FROM runs WHERE id = 'run_stage'`)).toEqual([
+    { closure: "failed" },
+  ]);
+  expect((await harness.store.run("run_stage")).run?.progress?.unheard).not.toBe(true);
 });

@@ -718,6 +718,15 @@ export function exploreSubmission(
     const dropped = new Set<string>();
     for (const item of items) {
       if (item.declares === "" || item.family === null) continue;
+      if (DURABLE_RECORD.test(item.declares) || offered.has(item.declares)) {
+        if (item.reason === "") {
+          item.reason = `${REFUSALS.schema}: ref ${JSON.stringify(item.declares)} is a durable identifier, not a local handle`;
+          settling = true;
+        }
+        // A refused declaration cannot hide an offered record of the same name, including
+        // through the dropped-dependency set on subsequent passes.
+        continue;
+      }
       if (item.reason !== "") {
         dropped.add(item.declares);
         continue;
@@ -1043,6 +1052,12 @@ function itemRefusal(item: Item, scope: Scope): ResultRefusal | null {
       const objection = item.value;
       const named = JSON.stringify(objection.ref);
       const attacked = JSON.stringify(objection.hypothesis);
+      if (objection.hypothesis === objection.ref) {
+        return new ResultRefusal(
+          REFUSALS.unknownReference,
+          `objection ${named} cannot attack itself`,
+        );
+      }
       const target = scope.refs.get(objection.hypothesis);
       if (target === undefined) {
         if (scope.dropped.has(objection.hypothesis)) {

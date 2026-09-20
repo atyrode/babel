@@ -1617,6 +1617,7 @@ type OpenClaim = { id: string; run_id: string; fence: Fence; reserved_cost: numb
 /** One open claim and what the runs table knows about the job behind it, for the reaper. */
 type OrphanClaim = {
   id: string;
+  run_id: string;
   fence: Fence;
   job_id: string | null;
   granted_at: string;
@@ -3227,6 +3228,8 @@ export function conductor(deps: ConductorDeps): Conductor {
    * a consent that lapsed, a Code that is no longer installed.
    *
    * THE REFUSAL IS BOUNDED THE WAY THE REAPER BOUNDS AN UNREADABLE JOB, and by the same counter.
+   * Analysis is the exception: its parent and reservation survive silence until a terminal
+   * Code response accounts the job. Transport failure never proves paid work stopped.
    * One refusal is a hiccup and the note says so; {@link UNREPORTED_CYCLES} in a row is a run
    * nobody will ever be able to read, and retrying it on every wake for ever is how a dead run
    * holds a batch slot and a panel row until someone notices. So the sentence is recorded ON THE
@@ -3247,7 +3250,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       const silent = await silence(run.id, Number(run.unreadable), false);
       const note = `session ${run.job_id} in ${containerId} cannot be read: ${answered.refused}`;
       notes.push(note);
-      if (silent < UNREPORTED_CYCLES) {
+      const analysis = AnalysisWorkSchema.safeParse(preparationOf(run.preparation)?.["analysis"]);
+      if (silent < UNREPORTED_CYCLES || analysis.success) {
         // Still hoped for: the sentence is on the row so a reader sees it without the journal,
         // and the run stays open for the next wake to ask again.
         await store.db.run(`UPDATE runs SET payload = ? WHERE id = ?`, [
@@ -3714,8 +3718,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     // One more than the bound is read so the note can say whether anything was left, without a
     // second count over a table that is only ever long when something has gone wrong.
     const orphans = await store.db.query<OrphanClaim>(
-      `SELECT id, fence, job_id, granted_at, role, runs, open_runs, silent
-         FROM (SELECT c.id AS id, c.fence AS fence, c.job_id AS job_id, c.granted_at AS granted_at, c.role AS role,
+      `SELECT id, run_id, fence, job_id, granted_at, role, runs, open_runs, silent
+         FROM (SELECT c.id AS id, c.run_id AS run_id, c.fence AS fence, c.job_id AS job_id, c.granted_at AS granted_at, c.role AS role,
                       (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id OR r.prepare_job_id = c.job_id) AS runs,
                       (SELECT COUNT(*) FROM runs r WHERE (r.job_id = c.job_id OR r.prepare_job_id = c.job_id)
                         AND r.closure IS NULL) AS open_runs,
@@ -3732,24 +3736,51 @@ export function conductor(deps: ConductorDeps): Conductor {
     );
     for (const orphan of orphans.slice(0, CLAIMS_REAPED_PER_TICK)) {
       const jobId = orphan.job_id;
+      if (orphan.role.startsWith("analysis:") && Number(orphan.open_runs) > 0) {
+        // Silence never proves a retained native or Code job stopped. In particular, a
+        // posting-marked parent may have lost its response after the machine accepted it.
+        continue;
+      }
       if (jobId !== null && Number(orphan.runs) === 0 && orphan.role.startsWith("analysis:")) {
-        // A failed retention/cancel pair is not proof the native job stopped.
         const route = (await coordinator.policy(at)).policy.review;
-        if (route === undefined) continue;
-        try {
-          const state = await jobs.status({
-            kind: "job",
-            machineId: route.machineId,
-            operationId: OPERATIONS.prepare,
-            jobId,
-          });
-          if (state === null || TERMINAL_STATES[state.state] !== true) continue;
-        } catch (error) {
-          notes.push(
-            `claim ${orphan.id} remains reserved: its preparation is unconfirmed: ${message(error)}`,
-          );
-          continue;
+        if (route !== undefined) {
+          try {
+            const state = await jobs.status({
+              kind: "job",
+              machineId: route.machineId,
+              operationId: OPERATIONS.prepare,
+              jobId,
+            });
+            // Even a terminal known job belongs to native settlement, not an unposted
+            // zero-cost finish. Never discard a positively observed job.
+            if (state !== null) continue;
+          } catch {
+            // This is NOT proof of termination. The guarded finish below proves that no
+            // post was authorized: analysis now persists its parent before native execute.
+          }
         }
+        const finished = await coordinator.finish({
+          id: orphan.id,
+          runId: orphan.run_id,
+          fence: orphan.fence,
+          unpostedJobId: jobId,
+          cost: 0,
+          outcome: "failed",
+          now: at,
+        });
+        if (finished.outcome === "finished") {
+          const reason = `expired analysis job ${jobId} was never authorized by a parent intent`;
+          settled.push({
+            claimId: orphan.id,
+            outcome: "failed",
+            cost: 0,
+            overrun: false,
+            refused: null,
+            reason,
+          });
+          notes.push(`claim ${orphan.id} released without spend: ${reason}`);
+        }
+        continue;
       }
       const reason =
         jobId === null

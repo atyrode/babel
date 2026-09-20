@@ -5621,6 +5621,21 @@ async function weightedCycle(stage: "challenge" | "synthesize") {
     `INSERT INTO policies(version, seq, actor_id, reason, payload, recorded_at) VALUES (?, 1, 'operator', 'weighted analysis', ?, ?)`,
     [POLICY.version, JSON.stringify(policy), new Date(clock).toISOString()],
   );
+  if (stage === "synthesize") {
+    for (const id of ["obs_00000001", "obs_00000002"]) {
+      await db.run(
+        `INSERT INTO steering(id, root_id, seq, actor_kind, actor_id, target_kind, target_id, text, recorded_at)
+         VALUES (?, ?, 0, 'operator', 'operator', 'record', ?, ?, ?)`,
+        [
+          `stg_${id}`,
+          `stg_${id}`,
+          id,
+          `Preserve the operator concern for ${id}`,
+          new Date(clock).toISOString(),
+        ],
+      );
+    }
+  }
   const store = openReadStore(db, () => clock);
   const coordinator = governed(store, () => clock, 16);
   const fleet = new Fleet();
@@ -5699,6 +5714,9 @@ test.each(["challenge", "synthesize"] as const)(
       { runId: requested.runId, jobId: "job_code_review" },
     ]);
     expect(code.posted[0]!.prompt).toContain(`babel.stage = ${stage}`);
+    if (stage === "synthesize")
+      for (const id of ["obs_00000001", "obs_00000002"])
+        expect(code.posted[0]!.prompt).toContain(`Preserve the operator concern for ${id}`);
     expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
     const result =
       stage === "challenge"
@@ -5751,6 +5769,12 @@ test.each(["challenge", "synthesize"] as const)(
     )[0]!;
     expect(run.closure).toBe("completed");
     expect(JSON.parse(run.payload)["stage"]).toBe(stage);
+    if (stage === "synthesize")
+      expect(
+        JSON.parse(run.payload)
+          .steering.carried.map((remark: { id: string }) => remark.id)
+          .sort(),
+      ).toEqual(["stg_obs_00000001", "stg_obs_00000002"]);
     if (stage === "challenge") {
       expect(
         await db.query(
@@ -5866,18 +5890,52 @@ test.each([
   },
 );
 
-test("a refused native analysis preparation releases its reservation without a parent or model spend", async () => {
-  const { db, code, fleet, loop } = await weightedCycle("challenge");
-  fleet.execute = () => {
-    throw new Error("native admission refused");
+test("an interrupted native analysis posting retains its reservation and reconciles the accepted job", async () => {
+  const { db, coordinator, code, fleet, launch, loop } = await weightedCycle("challenge");
+  const execute = fleet.execute.bind(fleet);
+  fleet.execute = (request) => {
+    execute(request);
+    throw new Error("native response transport interrupted");
   };
   const report = await loop.tick();
   expect(report.requested).toEqual([]);
   expect(code.posted).toEqual([]);
-  expect(await db.query(`SELECT id FROM runs`)).toEqual([]);
-  expect(await db.query(`SELECT outcome, actual_cost FROM claims`)).toEqual([
-    { outcome: "failed", actual_cost: 0 },
+  const jobId = fleet.launched[0]!.jobId;
+  expect(await db.query(`SELECT closure, job_id FROM runs ORDER BY job_id`)).toEqual([
+    { closure: null, job_id: null },
+    { closure: null, job_id: jobId },
   ]);
+  expect(await db.query(`SELECT outcome, actual_cost FROM claims`)).toEqual([
+    { outcome: null, actual_cost: null },
+  ]);
+  expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
+  const materialRun = (
+    await db.query<{ id: string }>(`SELECT id FROM runs WHERE job_id = ?`, [jobId])
+  )[0]!.id;
+  fleet.finish(jobId, 0, {
+    [JOB_OUTPUT_FILES.receipt]: {
+      runId: materialRun,
+      kind: "prepare",
+      machineId: MACHINE,
+      startedAt: new Date(clock).toISOString(),
+      finishedAt: new Date(clock).toISOString(),
+      closure: "completed",
+      costUsd: 0,
+      tokens: 0,
+      counts: {},
+      material: { ...materialIndex(SERVED_FILE, SERVED_DIGEST), machineId: MACHINE },
+    },
+  });
+  await loop.tick();
+  expect(await launch.postPrepared(fleet, code, PLAN)).toEqual([
+    {
+      runId: (
+        await db.query<{ id: string }>(`SELECT id FROM runs WHERE prepare_job_id = ?`, [jobId])
+      )[0]!.id,
+      jobId: "job_code_review",
+    },
+  ]);
+  expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
 });
 
 test("a terminal Code job whose cancellation failed accounts the unchanged preparation grant exactly once", async () => {
@@ -5913,6 +5971,15 @@ test("a terminal Code job whose cancellation failed accounts the unchanged prepa
   expect(
     await db.query(`SELECT job_id, finished_at FROM claims WHERE id = ?`, [requested.claimId]),
   ).toEqual([{ job_id: requested.jobId, finished_at: null }]);
+  const read = code.readSession.bind(code);
+  code.readSession = async () => refusedByCode("engine_unavailable", "transport interrupted");
+  await loop.tick();
+  await loop.tick();
+  expect(
+    await db.query(`SELECT finished_at FROM claims WHERE id = ?`, [requested.claimId]),
+  ).toEqual([{ finished_at: null }]);
+  expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
+  code.readSession = read;
   code.read = sessionRead({
     jobId: "job_code_review",
     state: "exited",
@@ -5927,4 +5994,59 @@ test("a terminal Code job whose cancellation failed accounts the unchanged prepa
   ).toEqual([{ job_id: "job_code_review", outcome: "failed", actual_cost: 0.12 }]);
   expect(await db.query(`SELECT id FROM records WHERE run_id = ?`, [requested.runId])).toEqual([]);
   expect((await coordinator.spend(clock)).total).toBeCloseTo(0.12, 8);
+});
+
+test.each(["missing", "known", "retained"] as const)(
+  "the analysis reaper recovers only a provably unposted expired claim: %s",
+  async (boundary) => {
+    const { db, coordinator, fleet, loop } = await weightedCycle("challenge");
+    await db.run(`UPDATE policies SET payload = json_set(payload, '$.activityWeights', json(?))`, [
+      JSON.stringify({ review: 0, explore: 0, challenge: 0, synthesize: 0 }),
+    ]);
+    const old = new Date(clock - 24 * 60 * 60 * 1000).toISOString();
+    await db.run(
+      `INSERT INTO claims(id, record_id, role, lane, policy_version, run_id, job_id, fence,
+                          reserved_cost, granted_at, expires_at)
+       VALUES ('asg_unposted', 'hyp_00000001', 'analysis:challenge', 'exploration', ?, 'cyc_lost',
+               'job_unposted', 1, 0.05, ?, ?)`,
+      [POLICY.version, old, old],
+    );
+    if (boundary === "known") fleet.running("job_unposted", MACHINE, OPERATIONS.prepare);
+    if (boundary === "retained") {
+      await db.run(
+        `INSERT INTO runs(id, kind, machine_id, container_id, prepare_job_id, started_at, records, payload)
+         VALUES ('run_uncertain', ?, ?, 'ctr_union', 'job_unposted', ?, 0, ?)`,
+        [OPERATIONS.explore, MACHINE, old, JSON.stringify({ closure: null, posting: true })],
+      );
+    }
+    const report = await loop.tick();
+    expect(
+      await db.query(`SELECT outcome, actual_cost FROM claims WHERE id = 'asg_unposted'`),
+    ).toEqual(
+      boundary === "missing"
+        ? [{ outcome: "failed", actual_cost: 0 }]
+        : [{ outcome: null, actual_cost: null }],
+    );
+    expect(report.settled.filter((claim) => claim.claimId === "asg_unposted")).toHaveLength(
+      boundary === "missing" ? 1 : 0,
+    );
+    expect((await coordinator.open(clock)).total).toBe(boundary === "missing" ? 0 : 1);
+  },
+);
+
+test("a retained analysis preparation remains occupied through repeated transport silence", async () => {
+  const { db, coordinator, fleet, loop } = await weightedCycle("challenge");
+  const first = await loop.tick();
+  const requested = first.requested[0]!;
+  fleet.silent.add(requested.jobId);
+  await db.run(`UPDATE policies SET payload = json_set(payload, '$.activityWeights', json(?))`, [
+    JSON.stringify({ review: 0, explore: 0, challenge: 0, synthesize: 0 }),
+  ]);
+  await db.run(`UPDATE claims SET expires_at = ?`, [new Date(clock - 1).toISOString()]);
+  await loop.tick();
+  await loop.tick();
+  expect(
+    await db.query(`SELECT finished_at FROM claims WHERE id = ?`, [requested.claimId]),
+  ).toEqual([{ finished_at: null }]);
+  expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
 });
