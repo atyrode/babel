@@ -23,7 +23,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   shelf. Repair sweeps and copied correction links cannot manufacture renewal. Cursor paging
   keeps the full history: a 65,818-record synthetic rebuild fell from a median 872 ms to 369 ms,
   without dropping old citations. No provider call or production install is part of this proof
-  (#353).
+  (#435).
 
 - **Challenge and synthesis get their own turns, not a tax on every exploration.** The conductor
   draws review, explore, challenge and synthesize by explicit relative weights, with the existing
