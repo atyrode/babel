@@ -8,16 +8,18 @@ import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/p
 import {
   BABEL_PLUGIN_ID,
   CONDUCTOR_CYCLE_KEY,
+  CONDUCTOR_TALLY_KEY,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
+  MATERIAL_OUTPUT,
   MATERIAL_SCHEMA,
+  MATERIAL_SESSIONS,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   RUN_STAGES,
   diffRunTraces,
   type MaterialIndex,
-  type ProfileAccount,
   type RunTrace,
 } from "../contract.ts";
 import type {
@@ -57,6 +59,7 @@ import {
   readRunTrace,
   type ScheduleRow,
   type ScheduleTiming,
+  type TickReport,
 } from "./conductor.ts";
 
 /*
@@ -162,11 +165,20 @@ async function snapshot(db: PluginDatabase): Promise<string> {
 
 // ---------------------------------------------------------------------------- a ustar archive
 
-/** The archive shape the agent seals an output as: regular files, mode 0600, no extensions. */
+/**
+ * The archive shape the agent seals an output as: regular files, mode 0600, no extensions.
+ *
+ * A string member is written verbatim, which is what the MATERIAL is: one canonical JSON
+ * record per line rather than one JSON document, and a citation's quote is checked against
+ * exactly those bytes.
+ */
 function tar(files: Readonly<Record<string, unknown>>): Buffer {
   const blocks: Buffer[] = [];
   for (const [name, document] of Object.entries(files)) {
-    const body = Buffer.from(JSON.stringify(document), "utf8");
+    const body = Buffer.from(
+      typeof document === "string" ? document : JSON.stringify(document),
+      "utf8",
+    );
     const header = Buffer.alloc(512);
     header.write(name, 0, 100, "utf8");
     header.write("0000600\0", 100, 8, "ascii");
@@ -195,6 +207,9 @@ interface FakeJob {
   machineId: string;
   operationId: string;
   archive: Buffer | null;
+  /** The `material` output a `prepare` job seals beside its receipt: the bytes a citation's
+   *  quote is checked against. */
+  material: Buffer | null;
   /** What the hub's replay ring holds for this job, in sequence; the fold reads it whole. */
   journal: FollowEvent[];
   /** What the OWNER metered, as `usage.inference` on the result of a settled job. */
@@ -325,6 +340,7 @@ class Fleet implements JobsSlice {
       machineId,
       operationId,
       archive: null,
+      material: null,
       journal: [],
       inference: null,
     });
@@ -334,17 +350,23 @@ class Fleet implements JobsSlice {
     const job = this.jobs.get(node.jobId);
     if (job === undefined) throw new Error(`unknown job ${node.jobId}`);
     if (this.silent.has(node.jobId)) throw new Error(`the machine holding ${node.jobId} is gone`);
-    const outputs: JobOutput[] =
-      job.archive === null
-        ? []
-        : [
-            {
-              outputId: `out_${node.jobId}`,
-              name: OUTPUT_BINDING,
-              bytes: job.archive.byteLength,
-              files: 1,
-            },
-          ];
+    const outputs: JobOutput[] = [];
+    if (job.archive !== null) {
+      outputs.push({
+        outputId: `out_${node.jobId}`,
+        name: OUTPUT_BINDING,
+        bytes: job.archive.byteLength,
+        files: 1,
+      });
+    }
+    if (job.material !== null) {
+      outputs.push({
+        outputId: `mat_${node.jobId}`,
+        name: MATERIAL_OUTPUT,
+        bytes: job.material.byteLength,
+        files: 1,
+      });
+    }
     return {
       jobId: node.jobId,
       machineId: job.machineId,
@@ -378,16 +400,19 @@ class Fleet implements JobsSlice {
     return { runs };
   }
 
-  output(args: { node: { jobId: string }; offset: number; maxBytes: number }): {
+  output(args: { node: { jobId: string; outputId: string }; offset: number; maxBytes: number }): {
     data: string;
     eof: boolean;
   } {
     const job = this.jobs.get(args.node.jobId);
-    if (job?.archive == null) throw new Error(`job ${args.node.jobId} sealed no output`);
-    const end = Math.min(job.archive.byteLength, args.offset + args.maxBytes);
+    // WHICH SEALED OUTPUT WAS ASKED FOR, because a `prepare` job has two and they are read by
+    // different readers: the receipt by the ingest, the material by the citation check.
+    const sealed = args.node.outputId.startsWith("mat_") ? job?.material : job?.archive;
+    if (sealed == null) throw new Error(`job ${args.node.jobId} sealed no output`);
+    const end = Math.min(sealed.byteLength, args.offset + args.maxBytes);
     return {
-      data: job.archive.subarray(args.offset, end).toString("base64"),
-      eof: end === job.archive.byteLength,
+      data: sealed.subarray(args.offset, end).toString("base64"),
+      eof: end === sealed.byteLength,
     };
   }
 
@@ -490,10 +515,30 @@ class Fleet implements JobsSlice {
       machineId,
       operationId: BEAT_OPERATION,
       archive: tar(files),
+      material: null,
       journal: [],
       inference: null,
     });
     this.beats.add(jobId);
+  }
+
+  /**
+   * A `prepare` job this machine finished, with the material it sealed: one file per session,
+   * verbatim, under the names the index gives them. It is what a citation's quote is checked
+   * against, and a run whose preparation the fake does not hold is how "the bytes could not be
+   * read" is exercised.
+   */
+  prepared(jobId: string, machineId: string, sessions: Readonly<Record<string, string>>): void {
+    this.jobs.set(jobId, {
+      state: "exited",
+      exitCode: 0,
+      machineId,
+      operationId: OPERATIONS.prepare,
+      archive: null,
+      material: tar(sessions),
+      journal: [],
+      inference: null,
+    });
   }
 
   /** What this job's replay ring holds, as the owner would have emitted it. */
@@ -1125,7 +1170,7 @@ function refusedByCode<T>(code: string, detail: string): EngineAnswer<T> {
  */
 const NO_CODE: CodeEngine = {
   profiles: async () => await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
-  spendAuthority: async () =>
+  checkProfile: async () =>
     await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
   runSession: async () =>
     await Promise.resolve(refusedByCode("engine_unavailable", "no Code here")),
@@ -1189,12 +1234,8 @@ class ReviewCode implements CodeEngine {
   async profiles(): Promise<EngineAnswer<readonly never[]>> {
     return await Promise.resolve({ ok: true, value: [] });
   }
-  /** The profile a drawn review is dispatched on spends one account, as Code reports it. */
-  async spendAuthority(): Promise<EngineAnswer<readonly ProfileAccount[]>> {
-    return await Promise.resolve({
-      ok: true,
-      value: [{ provider: "anthropic", identityKey: "the-review-account", label: "" }],
-    });
+  async checkProfile(): Promise<EngineAnswer<null>> {
+    return await Promise.resolve({ ok: true, value: null });
   }
 
   async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
@@ -1229,7 +1270,7 @@ function codeAnswering(
     asked,
     profiles: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
-    spendAuthority: async () =>
+    checkProfile: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
     runSession: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
@@ -1311,7 +1352,7 @@ test("a running job's stage and spend are folded out of its replay ring, and the
 
   const row = (
     await db.query(`SELECT stage, message, since, calls, input_tokens, output_tokens, cache_tokens,
-                           cost_usd, last_model, stalled
+                           cost_usd, last_model, models, stalled
                       FROM run_progress WHERE run_id = 'run_asg_a1b2'`)
   )[0];
   expect(row).toMatchObject({
@@ -1327,6 +1368,10 @@ test("a running job's stage and spend are folded out of its replay ring, and the
     last_model: "claude-sonnet-4",
     stalled: 0n,
   });
+  // WHICH MODELS ANSWERED, AND NOT ONLY THE NEWEST (#169). The second call was served by a
+  // different model; before this the row kept `last_model` alone and the run read as though
+  // sonnet had answered both, which is how a fallback became invisible.
+  expect(row?.["models"]).toBe(JSON.stringify(["claude-opus-4", "claude-sonnet-4"]));
   expect(Number(row?.["cost_usd"])).toBeCloseTo(0.28, 6);
   // Every subscription this cycle opened was closed in the same turn.
   expect(fleet.followed).toEqual(["job_asg_a1b2"]);
@@ -1361,6 +1406,14 @@ test("a running job's stage and spend are folded out of its replay ring, and the
       costMicros: 30_000,
     }),
     progressed(11, started + 72_000, RUN_STAGES.atModel, "challenge"),
+    // The run comes BACK to the model it opened on. A list that appended every call would
+    // grow without bound and read as a three-model run; first-heard order, kept once.
+    called(13, {
+      inputTokens: 300,
+      outputTokens: 80,
+      cachedInputTokens: 0,
+      costMicros: 20_000,
+    }),
   ]);
   clock = started + 75_000;
   const turning = await loop.tick();
@@ -1370,6 +1423,9 @@ test("a running job's stage and spend are folded out of its replay ring, and the
     message: "challenge",
     since: new Date(started + 72_000).toISOString(),
   });
+  expect((await db.query(`SELECT models FROM run_progress`))[0]?.["models"]).toBe(
+    JSON.stringify(["claude-opus-4", "claude-sonnet-4"]),
+  );
 
   // The job ends and the OWNER's meter — not the receipt's own numbers — fills the run row.
   fleet.metered("job_asg_a1b2", {
@@ -1400,6 +1456,10 @@ test("a running job's stage and spend are folded out of its replay ring, and the
     cachedInputTokens: 400,
     costMicros: 410_000,
   });
+  // …AND SO ARE THE MODELS. `usage.inference` is five numbers and no name, and the row that
+  // heard the names is deleted one statement later, so without this the answer to "what
+  // answered this run" died with the run (#169).
+  expect(kept["models"]).toEqual(["claude-opus-4", "claude-sonnet-4"]);
   // …and the in-flight row is gone: the receipt is the record of a run that ended.
   expect(await db.query(`SELECT run_id FROM run_progress`)).toEqual([]);
   clock = started;
@@ -2549,6 +2609,150 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
   expect(draws.abandoned).toHaveLength(1);
 });
 
+test("a reap is bounded per cycle and takes the oldest ghosts first", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  // A CLAIMS TABLE THAT HAS GONE WRONG: 130 grants whose posting never landed, every one of
+  // them older than the lease it was granted under. 2026-09-13 left about seventy; this is
+  // what the cycle after a worse one looks like, and a reaper with no bound would take the
+  // store's write lock for all of them at once while a dispatch waited behind it.
+  const ghosts = 130;
+  const granted = clock - (POLICY.leaseSeconds + 600) * 1000;
+  await db.batch(
+    Array.from({ length: ghosts }, (_unused, index) => ({
+      sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                               reserved_cost, granted_at, expires_at)
+            VALUES (?, ?, 'reception', 'coverage', ?, NULL, 'cyc_ghosts', 1, ?, ?, ?)`,
+      params: [
+        `clm_ghost_${String(index).padStart(3, "0")}`,
+        ASSIGNMENT.recordId,
+        POLICY.version,
+        ASSIGNMENT.reservedCost,
+        // One second apart, so "oldest first" is a fact about this table and not a tie.
+        new Date(granted + index * 1000).toISOString(),
+        new Date(granted + index * 1000 + POLICY.leaseSeconds * 1000).toISOString(),
+      ],
+    })),
+  );
+
+  const first = await loop.tick();
+  expect(first.settled).toHaveLength(128);
+  expect(first.settled[0]?.claimId).toBe("clm_ghost_000");
+  expect(first.settled[127]?.claimId).toBe("clm_ghost_127");
+  // …and the cycle says what it left, so an operator reading one tick is not told the table
+  // is clean when it is two rows short of it.
+  expect(
+    first.notes.some((note) => note.startsWith("128 dead claims were released this cycle")),
+  ).toBe(true);
+
+  // The next cycle continues from where this one stopped, and the one after has nothing left
+  // to say: a bound that left the freshest rows for ever would be the ghost defect again.
+  clock += 60_000;
+  const second = await loop.tick();
+  expect(second.settled.map((row) => row.claimId)).toEqual(["clm_ghost_128", "clm_ghost_129"]);
+  expect(second.notes.some((note) => note.includes("dead claims were released"))).toBe(false);
+  const third = await loop.tick();
+  expect(third.settled).toEqual([]);
+  expect(await db.query(`SELECT COUNT(*) AS open FROM claims WHERE finished_at IS NULL`)).toEqual([
+    { open: 0n },
+  ]);
+  clock = started;
+});
+
+test("a batch every slot of which a dead job holds is drawn into the same cycle that reaps it", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.review = ROUTE;
+  draws.pending = [{ ...ASSIGNMENT }];
+  // Four reviews holding the whole batch, and every one of their jobs is over: the run rows
+  // are closed and nothing polls them, so no settlement will ever reach these claims. This is
+  // the 12:42 shape of 2026-09-13 — "held by another worker until 14:08" for workers that had
+  // been killed at 12:07.
+  for (const slot of [1, 2, 3, 4]) {
+    const jobId = `job_dead_${String(slot)}`;
+    await db.batch([
+      {
+        sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, finished_at, closure,
+                               records, payload)
+              VALUES (?, ?, ?, ?, ?, ?, 'failed', 0, '{}')`,
+        params: [
+          `run_dead_${String(slot)}`,
+          OPERATIONS.evaluate,
+          MACHINE,
+          jobId,
+          new Date(clock).toISOString(),
+          new Date(clock).toISOString(),
+        ],
+      },
+      {
+        sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                                 reserved_cost, granted_at, expires_at)
+              VALUES (?, ?, 'reception', 'coverage', ?, ?, 'cyc_dead', 1, ?, ?, ?)`,
+        params: [
+          `clm_dead_${String(slot)}`,
+          ASSIGNMENT.recordId,
+          // Under the policy the operator replaced at 12:45 to escape this very wedge: the
+          // park is read per version and these settlements are not this version's, while the
+          // BATCH is not — a ghost from yesterday's policy holds a slot today all the same,
+          // which is why the reap and not the version is what frees it.
+          "pol_0",
+          jobId,
+          ASSIGNMENT.reservedCost,
+          new Date(clock).toISOString(),
+          // The lease still has hours to run: what frees the slot is the reap, not expiry.
+          new Date(clock + POLICY.leaseSeconds * 1000).toISOString(),
+        ],
+      },
+    ]);
+  }
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const reaping = await loop.tick();
+  expect(reaping.settled.slice(0, 4).map((row) => [row.claimId, row.outcome])).toEqual([
+    ["clm_dead_1", "abandoned"],
+    ["clm_dead_2", "abandoned"],
+    ["clm_dead_3", "abandoned"],
+    ["clm_dead_4", "abandoned"],
+  ]);
+  // THE SLOT IS REUSABLE IN THE SAME CYCLE THAT FREED IT. The reap runs before the cycle asks
+  // what it may draw, so the batch the coordinator is asked about holds four free slots, the
+  // cycle draws instead of stopping on `batch`, and the work it drew TOOK ONE OF THEM: the
+  // fifth settlement is the assignment this cycle claimed and then released when there was no
+  // engine to post it to. A cycle stopped on a full batch never claims anything, which is
+  // what a ghost used to cost for as long as the lease it was granted under.
+  expect(reaping.stop?.reason).not.toBe("batch");
+  expect(reaping.pulse.tick.gaps["batch"]).toBeUndefined();
+  expect(draws.draws).toBe(1);
+  expect(reaping.settled[4]?.claimId).toBe(ASSIGNMENT.id);
+  clock = started;
+});
+
 // ----------------------------------------------------------------------- drawn Code reviews
 
 test("an enabled policy without a review route reserves nothing", async () => {
@@ -2842,7 +3046,7 @@ test("a review with one refused contribution records the rest, and its receipt c
     },
   ]);
   expect((receipt["counts"] as Record<string, number>)["contributionsRefused"]).toBe(1);
-  expect(settled.pulse.tick.refusals).toEqual({ schema: 1 });
+  expect(settled.pulse.tick.refusals.paid).toEqual({ schema: 1 });
   expect(settled.notes.join(" | ")).toContain("may not name alternatives");
 
   // AND THE JUDGEMENT IS DURABLE, minus the contribution the contract refused: the assessment
@@ -2862,6 +3066,89 @@ test("a review with one refused contribution records the rest, and its receipt c
     }),
   ]);
   expect(assessments[0]?.payload).not.toContain("hyp_other");
+});
+
+test("a submission the one validator refuses is recorded nowhere and still settles the claim at cost", async () => {
+  /*
+    F8 (#263), through the hub's own review path. A contribution beside an `environment` that
+    scopes nothing is the shape the Go tree stated in three places and enforced inconsistently:
+    the review contract required an environment on criterion results, the store refused any
+    environment without an outcome, and a results-only assessment counted as empty — so an
+    evidence review was paid for and then refused at submit. It is one function now, and
+    `store/acts.test.ts` asserts that this same shape is refused under this same code from the
+    store's side. What this pins is the OTHER half of the acceptance: the refusal is the row's,
+    never the run's, so the claim is finished with what the model was paid.
+  */
+  const db = openDatabase();
+  await seed(db);
+  const store = openReadStore(db, () => clock);
+  const draws = new Draws(db);
+  const recipeId = "babel-triages-the-queue";
+  draws.review = {
+    machineId: MACHINE,
+    profile: { containerId: "ctr_union", expectedRevision: 1 },
+    roleRecipes: {
+      reception: recipeId,
+      evidence: recipeId,
+      challenge: recipeId,
+      comparison: recipeId,
+      outcome: recipeId,
+      relevance: recipeId,
+      filing: recipeId,
+      backlog: recipeId,
+    },
+    recipes: [
+      { id: recipeId, version: 2, body: "Assess the assigned record under the role contract." },
+    ],
+  };
+  draws.pending = [{ ...ASSIGNMENT, role: "evidence" }];
+  const code = new ReviewCode();
+  const loop = conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  await loop.tick();
+
+  code.read = sessionRead({
+    jobId: "job_code_review",
+    state: "exited",
+    model: FIXTURE_MODEL,
+    finalMessage:
+      "```json\n" +
+      JSON.stringify({
+        contributions: [{ kind: "comment", text: "the criteria are not stated" }],
+        environment: "dev-01",
+      }) +
+      "\n```",
+  });
+  const settled = await loop.tick();
+
+  // NOTHING WAS RECORDED: the scope rule is about the review as a whole, so there is no subset
+  // of it to keep — which is the line between this and a refused contribution.
+  expect(
+    await db.query(`SELECT id FROM assessments WHERE record_id = ?`, [ASSIGNMENT.recordId]),
+  ).toEqual([]);
+  const run = (
+    await db.query<{ closure: string; cost_usd: number; payload: string }>(
+      `SELECT closure, cost_usd, payload FROM runs WHERE id = ?`,
+      [`run_${ASSIGNMENT.id}_1`],
+    )
+  )[0]!;
+  expect(run.closure).toBe("failed");
+  const receipt = JSON.parse(run.payload) as Record<string, unknown>;
+  expect(String(receipt["reason"])).toStartWith("schema:");
+  expect(String(receipt["reason"])).toContain("environment");
+  // AND IT IS SPEND: the claim is finished at the cost of the session that earned the refusal,
+  // which is what stops the park heuristic reading a paid refusal as a free failure (#265).
+  expect(run.cost_usd).toBeCloseTo(0.31, 6);
+  expect(settled.settled.map((row) => [row.outcome, row.cost])).toEqual([["failed", 0.31]]);
+  expect(settled.pulse.tick.refusals.paid).toEqual({ schema: 1 });
 });
 
 test("a stale review completion retains usage without writing or settling the newer epoch", async () => {
@@ -2993,8 +3280,8 @@ async function threeInFlight(
  * What a review the model answered and the contract then refused seals: a receipt with the
  * refusal's own code in its `reason`, and NO COST — the brokered lane meters at the owner
  * (ADR 0038), so a receipt that reports nothing about money is not a receipt that reports no
- * model. The refusal code is the evidence a model answered, and it is what keeps this run out
- * of the park's streak.
+ * model. Where nothing metered the job, the refusal code is the only evidence a model
+ * answered, and it is what files this run under the park's `spent` rather than its `barren`.
  */
 function refusedReview(runId: string): Record<string, unknown> {
   return {
@@ -3015,7 +3302,7 @@ function refusedReview(runId: string): Record<string, unknown> {
   };
 }
 
-test("three reviews the model answered and the contract refused are spend, not a parked loop", async () => {
+test("three reviews paid for and refused park the loop on spend, with their claims settled", async () => {
   const started = clock;
   const db = openDatabase();
   await seed(db);
@@ -3041,26 +3328,94 @@ test("three reviews the model answered and the contract refused are spend, not a
   for (const flight of flights) fleet.finish(flight.jobId, 0, refusedReview(flight.runId));
 
   const settling = await loop.tick();
+  // THE CLAIMS ARE FINISHED AND NOT ABANDONED, at what the receipt says they cost: a refused
+  // submission is spend, and the reservation is not charged over it (§6.5).
   expect(settling.settled.map((row) => [row.outcome, row.cost])).toEqual([
     ["failed", 0],
     ["failed", 0],
     ["failed", 0],
   ]);
-  // The loop is not parked and drew again: three refusals are three answers Babel paid for.
-  expect(settling.parked).toBe(null);
-  expect(settling.notes.some((note) => note.includes("parked"))).toBe(false);
-  // …and the cycle's one reason for spending nothing is the door that is not there, not a lane
-  // that is broken.
-  expect(settling.stop?.reason).toBe("unrouted");
-  // …and the pulse says what they were, by the code `results.ts` names.
-  expect(settling.pulse.tick.refusals).toEqual({ schema: 3 });
-  expect(settling.pulse.today.refusals).toEqual({ schema: 3 });
+  // …and the pulse says what they were, by the code `results.ts` names, under PAID: the
+  // deployment bought three answers and the contract threw all three away.
+  expect(settling.pulse.tick.refusals).toEqual({ paid: { schema: 3 }, free: {} });
+  expect(settling.pulse.today.refusals).toEqual({ paid: { schema: 3 }, free: {} });
+  // …so the loop parks, under the word that names the remedy. It is NOT the barren park: no
+  // machine here is broken, and an operator sent to look at one would find nothing. This is
+  // where the build goes beyond #265 — the issue asked only that a paid refusal stop reading
+  // as a free failure, and a lane that burns three reservations on answers nobody can use is
+  // worth stopping for the recipe as much as a dead machine is worth stopping for the machine.
+  expect(settling.parked?.reason).toBe("spent");
+  expect(settling.parked?.spent).toBe(3);
+  expect(settling.parked?.barren).toBe(0);
+  expect(settling.parked?.detail).toContain("paid for and refused");
+  expect(settling.notes.some((note) => note.startsWith("the loop is parked on spent:"))).toBe(true);
+  expect(settling.requested).toEqual([]);
 
-  // A fourth cycle with nothing to draw still does not park: the window holds three refusals.
-  const after = await loop.tick();
-  expect(after.parked).toBe(null);
-  expect(after.pulse.tick.refusals).toEqual({});
-  expect(after.pulse.today.refusals).toEqual({ schema: 3 });
+  // An hour of quiet lifts a spend park exactly as it lifts a barren one: a recipe that has
+  // been fixed is tried again without an operator having to say so.
+  clock += 61 * 60_000;
+  const resumed = await loop.tick();
+  expect(resumed.parked).toBe(null);
+  expect(resumed.stop?.reason).toBe("unrouted");
+  expect(resumed.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
+  expect(resumed.pulse.today.refusals).toEqual({ paid: { schema: 3 }, free: {} });
+  clock = started;
+});
+
+/**
+ * Three reviews the contract refused, settled under a meter that says how many calls the
+ * owner counted for them. THE MONEY IS ZERO IN BOTH DIRECTIONS — a brokered call is priced at
+ * the owner and this receipt never sees it — so the meter is the only thing separating the
+ * two runs, which is the point: it is the hub's own witness and the receipt is not.
+ */
+async function refusedUnderMeter(calls: number): Promise<TickReport> {
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  const flights = await threeInFlight(db, fleet);
+  clock += 60_000;
+  for (const flight of flights) {
+    fleet.metered(flight.jobId, {
+      calls,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      costMicros: 0,
+    });
+    fleet.finish(flight.jobId, 0, refusedReview(flight.runId));
+  }
+  return await loop.tick();
+}
+
+test("a refusal the meter says reached no model is free, and one call makes the same refusal spend", async () => {
+  const started = clock;
+
+  // Same code, same zero cost, same receipt: a job the owner metered and counted no call for
+  // submitted something no model produced. Nothing was bought, so nothing is filed as bought.
+  const free = await refusedUnderMeter(0);
+  expect(free.pulse.tick.refusals).toEqual({ paid: {}, free: { schema: 3 } });
+  expect(free.parked?.reason).toBe("barren");
+  expect(free.parked?.barren).toBe(3);
+  expect(free.parked?.spent).toBe(0);
+
+  // One call moves every one of those counts to the other side of the tally and renames the
+  // park, on evidence the receipt never carried.
+  const paid = await refusedUnderMeter(1);
+  expect(paid.pulse.tick.refusals).toEqual({ paid: { schema: 3 }, free: {} });
+  expect(paid.parked?.reason).toBe("spent");
+  expect(paid.parked?.spent).toBe(3);
+  expect(paid.parked?.barren).toBe(0);
   clock = started;
 });
 
@@ -3095,9 +3450,14 @@ test("three jobs that never reached the model park the loop, and an hour of quie
     ["abandoned", 0.1],
     ["abandoned", 0.1],
   ]);
+  expect(parking.parked?.reason).toBe("barren");
   expect(parking.parked?.barren).toBe(3);
-  expect(parking.parked?.reason).toContain("reached no model and produced nothing");
-  expect(parking.notes.some((note) => note.startsWith("the loop is parked:"))).toBe(true);
+  expect(parking.parked?.spent).toBe(0);
+  expect(parking.parked?.detail).toContain("reached no model and produced nothing");
+  expect(parking.notes.some((note) => note.startsWith("the loop is parked on barren:"))).toBe(true);
+  // Nothing was refused, either: a machine that killed the job bought no answer for anybody to
+  // refuse, and a tally that counted one here is the free-failure-as-spend defect inverted.
+  expect(parking.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
   // The park is the loop's own verdict and is reported BESIDE the cycle's stop rather than
   // instead of it: nothing is drawn either way today, and an operator reading "parked" is
   // reading that the lane is broken rather than that the door is missing.
@@ -3109,7 +3469,7 @@ test("three jobs that never reached the model park the loop, and an hour of quie
   clock += 61 * 60_000;
   const resumed = await loop.tick();
   expect(resumed.parked).toBe(null);
-  expect(resumed.notes.some((note) => note.startsWith("the loop is parked:"))).toBe(false);
+  expect(resumed.notes.some((note) => note.startsWith("the loop is parked"))).toBe(false);
   clock = started;
 });
 
@@ -3219,6 +3579,51 @@ test("the pulse counts why a cycle did not spend, and the day accumulates across
   clock = started;
 });
 
+test("a day kept under a word this build cannot spell is read without it", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const draws = new Draws(db);
+  const keys = new Keys();
+  // WHAT SOME OTHER BUILD LEFT UNDER THE KEY. A cycle is a fresh conductor over the wake that
+  // caused it, so the day's counts make a round trip through JSON and come back as whatever
+  // is there: a word since renamed, a word not invented here, a misspelling of a real one, a
+  // count that is not a count. Every one of them would otherwise reach a reader as a reason
+  // he has no label for and cannot act on.
+  keys.held[CONDUCTOR_TALLY_KEY] = JSON.stringify({
+    day: new Date(clock).toISOString().slice(0, 10),
+    gaps: { unrouted: 2, "no-such-reason": 7, clamied: 4, daily: -1 },
+    refusals: { paid: { schema: 3, "not-a-code": 9 }, free: { "unknown-reference": 1 } },
+  });
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys,
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const tick = await loop.tick();
+  // The words this build spells are carried and added to; the rest are gone, and so is the
+  // count that arrived negative. `unrouted` is 2 from the kept day plus this cycle's own one.
+  expect(tick.pulse.today.gaps).toEqual({ unrouted: 3 });
+  expect(tick.pulse.today.refusals).toEqual({
+    paid: { schema: 3 },
+    free: { "unknown-reference": 1 },
+  });
+  // …and what is written back holds only what a reader can be promised, so the next wake
+  // cannot re-inherit it.
+  expect(JSON.parse(keys.held[CONDUCTOR_TALLY_KEY] ?? "null")).toEqual({
+    day: new Date(clock).toISOString().slice(0, 10),
+    gaps: { unrouted: 3 },
+    refusals: { paid: { schema: 3 }, free: { "unknown-reference": 1 } },
+  });
+  clock = started;
+});
+
 test("the cycle leaves its stop and its gaps, folded by reason, where the pulse door reads them", async () => {
   const started = clock;
   const db = openDatabase();
@@ -3316,7 +3721,7 @@ const SERVED_DIGEST = "a".repeat(64);
  * and one question the corpus could not settle — because the settlement's job is to turn all of
  * it into rows and a fixture with only a candidate would prove nothing about the edges.
  */
-function answered(path: string, digest: string, statement?: string): string {
+function answered(path: string, digest: string, statement?: string, quote = ""): string {
   const result = {
     candidates: [
       {
@@ -3331,7 +3736,16 @@ function answered(path: string, digest: string, statement?: string): string {
               confidence: "high",
               impact: "moderate",
               evidence: [
-                { locator: { path, line: 12, byte_offset: 0, digest }, note: "the rescan's row" },
+                {
+                  locator: {
+                    path,
+                    line: 12,
+                    byte_offset: 0,
+                    digest,
+                    ...(quote === "" ? {} : { quote }),
+                  },
+                  note: "the rescan's row",
+                },
               ],
               counter_evidence_absent: true,
             },
@@ -3374,6 +3788,18 @@ function answered(path: string, digest: string, statement?: string): string {
 }
 
 /**
+ * AN ANSWER NOTHING IN WHICH CAN BE RECORDED: its one candidate states no claim at all.
+ *
+ * A submission is kept in part, so "refused" has to be tested at the limit as well as in the
+ * middle: with every item refused there is no path-closed subset to keep, and the run is spend
+ * with a receipt that says what it refused (#231).
+ */
+function unusable(): string {
+  const result = { candidates: [{ ref: "h1", hypothesis: { statement: "" } }], questions: [] };
+  return `Here is what I found.\n\n\`\`\`json\n${JSON.stringify(result)}\n\`\`\`\n`;
+}
+
+/**
  * A CODE SESSION ALREADY IN FLIGHT: the run row `startExplore` writes after Code accepts the
  * job, plus the settled `prepare` run whose receipt carries the material this session read.
  *
@@ -3401,6 +3827,9 @@ async function sessionInFlight(
           containerId: "ctr_workbench",
           expectedRevision: 7,
           account: { provider: "anthropic", identityKey: "victorballu@gmail.com" },
+          // What the launch door writes when a launch names a model (#169): the model ASKED
+          // for, which is the only thing on this row a fallback can be read against.
+          askedModel: "anthropic/claude-opus-4-1",
         }),
         JSON.stringify({ preset: "read-whats-new", selected: 1 }),
         new Date(clock).toISOString(),
@@ -3497,7 +3926,7 @@ test("a finished Code session whose citations the material served writes its rec
   expect(report.settled).toEqual([
     { claimId, outcome: "completed", cost: 0.31, overrun: false, refused: null, reason: null },
   ]);
-  expect(report.pulse.tick.refusals).toEqual({});
+  expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
 });
 
 test("the receipt names the remarks this run was quoted, and how many the bound left out", async () => {
@@ -3554,7 +3983,7 @@ test("the receipt names the remarks this run was quoted, and how many the bound 
   expect(receipt["steering"]).toEqual(quoted);
 });
 
-test("a citation the material never served is refused, and the refusal is spend with its claim settled", async () => {
+test("a citation the material never served costs the claim and what rested on it, and the rest of the paid run stands", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
@@ -3562,7 +3991,8 @@ test("a citation the material never served is refused, and the refusal is spend 
   const code = codeAnswering(() => ({
     ok: true,
     // The path is one the index names; the digest is not the one it was served at, which is a
-    // retyped digest and exactly what `unservedLocator` exists to catch.
+    // retyped digest and exactly what the per-item locator check exists to catch: the rule is
+    // `engine/citations.ts`'s and the grain is `itemRefusal`'s.
     value: sessionRead({
       state: "exited",
       finalMessage: answered(`sessions/${SERVED_FILE}`, "b".repeat(64)),
@@ -3581,20 +4011,332 @@ test("a citation the material never served is refused, and the refusal is spend 
     now: () => clock,
   }).tick();
 
+  /*
+    WHAT A RETYPED DIGEST COSTS (#231). The observation cited bytes this run was never served,
+    so that claim is refused; the finding consolidating it would then rest on a record nobody
+    wrote, so it falls with it. The candidate rests on nothing and the question authorizes
+    nothing, and both were paid for — before this they were thrown away with the claim.
+  */
+  const records = await db.query<{ kind: string }>(
+    `SELECT kind FROM records WHERE run_id = ? ORDER BY kind`,
+    [runId],
+  );
+  expect(records.map((row) => row.kind)).toEqual(["hypothesis"]);
+  expect(
+    await db.query(`SELECT COUNT(*) AS n FROM questions WHERE raised_by_id = ?`, [runId]),
+  ).toEqual([{ n: 1n }]);
+
   const run = (
     await db.query(`SELECT closure, cost_usd, payload FROM runs WHERE id = ?`, [runId])
   )[0]!;
-  expect(run["closure"]).toBe("failed");
+  expect(run["closure"]).toBe("completed");
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
-  expect(String(receipt["reason"])).toStartWith("unknown-reference:");
+  expect(receipt["reason"]).toBeUndefined();
+  expect(receipt["refusedItems"]).toEqual([
+    {
+      item: "/candidates/0/observations/0",
+      reason: expect.stringContaining("unknown-reference:") as unknown,
+    },
+    {
+      item: "/consolidations/0",
+      reason: `development-path: consolidation "f1" rests on "o1", which this submission refused`,
+    },
+  ]);
+  expect((receipt["counts"] as Record<string, number>)["itemsRefused"]).toBe(2);
   // THE MONEY IS STILL SPENT. The model answered and the deployment paid for it; a refusal
   // recorded at zero is how a fan reads a refused lane as free and relaunches into it.
   expect(run["cost_usd"]).toBeCloseTo(0.31, 6);
   expect(report.settled).toEqual([
-    { claimId, outcome: "failed", cost: 0.31, overrun: false, refused: null, reason: null },
+    { claimId, outcome: "completed", cost: 0.31, overrun: false, refused: null, reason: null },
   ]);
-  // …and it is counted by the code the contract refused with, not as a failure of the loop.
-  expect(report.pulse.tick.refusals).toEqual({ "unknown-reference": 1 });
+  // …AND THE RUN IS NOT A REFUSAL. `refusals` answers "which submissions did the deployment
+  // pay for and get no result from"; this one produced records, so counting its dropped items
+  // there would put a paid refusal against a cycle that delivered (#424). The measurement of
+  // what was dropped is on the receipt above and in the cycle's notes.
+  expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
+  expect(
+    report.notes.some((note) => note.includes("recorded the answer and refused 2 of its items")),
+  ).toBe(true);
+});
+
+/** The material as `prepare` sealed it: one canonical record per line, twelve of them, and the
+ *  twelfth is the one the fixture's locator names. */
+const SERVED_SESSION = [
+  ...Array.from({ length: 11 }, (_, index) =>
+    JSON.stringify({ type: "message", text: `record ${String(index + 1)} says nothing useful` }),
+  ),
+  JSON.stringify({
+    type: "message",
+    text: "the rescan wrote no snapshot_id at all, so the column was cleared",
+  }),
+  "",
+].join("\n");
+
+/** One prepare job holding that material, under the job id `sessionInFlight` points its run at. */
+function withMaterial(): Fleet {
+  const fleet = new Fleet();
+  fleet.prepared("job_prep_1", "dev-01", {
+    [`${MATERIAL_SESSIONS}/${SERVED_FILE}`]: SERVED_SESSION,
+  });
+  return fleet;
+}
+
+/** The verdict the settlement wrote beside the first citation of the first record. */
+async function verdictOf(db: PluginDatabase): Promise<Record<string, unknown> | undefined> {
+  const rows = await db.query(
+    `SELECT payload FROM records WHERE kind = 'observation' ORDER BY id LIMIT 1`,
+  );
+  const payload = JSON.parse(String(rows[0]?.["payload"] ?? "{}")) as {
+    evidence?: { verification?: Record<string, unknown> }[];
+  };
+  return payload.evidence?.[0]?.verification;
+}
+
+test("a quote that is at the line it cites is verified, and the record carries the verdict", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(
+        `sessions/${SERVED_FILE}`,
+        SERVED_DIGEST,
+        undefined,
+        "the rescan wrote no snapshot_id at all",
+      ),
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: withMaterial(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBe("completed");
+  // THE HUB OPENED THE BYTES. Without the read this would be `unchecked`, which is why this
+  // test exists beside the one below: a check that never reaches a corpus accuses nothing and
+  // proves nothing.
+  expect(await verdictOf(db)).toEqual({ outcome: "verified", detail: "" });
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(receipt["citations"]).toEqual({
+    verified: 1,
+    moved: 0,
+    absent: 0,
+    unquoted: 0,
+    unchecked: 0,
+  });
+});
+
+test("a quote that is nowhere in the session it cites marks the record and refuses nothing", async () => {
+  /*
+    THE DECISION THIS TEST PINS (#348). A fabricated quote is recorded, not refused: the claim
+    is the model's and the run is paid for either way, and discarding the whole answer over one
+    citation is the all-or-nothing waste #231 and #311 measured. What must not happen is the
+    verdict living only in a log — a reader of the record has to see it, so it is on the
+    record's own evidence and counted on the receipt.
+  */
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(
+        `sessions/${SERVED_FILE}`,
+        SERVED_DIGEST,
+        undefined,
+        "the rescan deleted the snapshot and logged the deletion",
+      ),
+    }),
+  }));
+  const { runId, claimId } = await sessionInFlight(db);
+
+  const report = await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: withMaterial(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBe("completed");
+  const written = await db.query(`SELECT count(*) AS held FROM records`);
+  expect(Number(written[0]?.["held"])).toBeGreaterThan(0);
+  const verdict = await verdictOf(db);
+  expect(verdict?.["outcome"]).toBe("absent");
+  expect(String(verdict?.["detail"])).toContain("nowhere in the session");
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(receipt["reason"]).toBeUndefined();
+  expect(receipt["citations"]).toEqual({
+    verified: 0,
+    moved: 0,
+    absent: 1,
+    unquoted: 0,
+    unchecked: 0,
+  });
+  expect(report.settled).toEqual([
+    { claimId, outcome: "completed", cost: 0.31, overrun: false, refused: null, reason: null },
+  ]);
+  expect(report.notes.some((note) => note.includes("nowhere in the session named"))).toBe(true);
+});
+
+test("a preparation this hub can no longer read leaves the quote unchecked, not accused", async () => {
+  // The material's lease is gone — the fake holds no `job_prep_1` at all — and the index is
+  // still on the run row, so the citation is admissible and uncheckable at the same time. A
+  // hub that called that a fabrication would be reporting its own reach as the model's fault.
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answered(
+        `sessions/${SERVED_FILE}`,
+        SERVED_DIGEST,
+        undefined,
+        "the rescan wrote no snapshot_id at all",
+      ),
+    }),
+  }));
+  const { runId } = await sessionInFlight(db);
+
+  await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBe("completed");
+  expect((await verdictOf(db))?.["outcome"]).toBe("unchecked");
+});
+
+/**
+ * ONE ANSWER THAT IS BOTH: a claim whose locator was served and whose quote is really at the
+ * line it names, and beside it a claim citing a file nobody served.
+ *
+ * The two halves of a citation answer differently — the scope half refuses the item, the quote
+ * half marks the record — and this fixture is the only place they meet in one submission.
+ */
+function answeredWithOneUnservedClaim(quote: string): string {
+  const observation = (ref: string, path: string) => ({
+    ref,
+    recipe: { id: "catalog-integrity", version: 3 },
+    claim: {
+      claim: "the archive wrote a snapshot the rescan did not carry",
+      confidence: "high",
+      impact: "moderate",
+      evidence: [
+        { locator: { path, line: 12, byte_offset: 0, digest: SERVED_DIGEST, quote }, note: "row" },
+      ],
+      counter_evidence_absent: true,
+    },
+  });
+  const result = {
+    candidates: [
+      {
+        ref: "h1",
+        hypothesis: { statement: "the catalog forgets archived sessions" },
+        observations: [observation("o1", `${MATERIAL_SESSIONS}/${SERVED_FILE}`)],
+      },
+      {
+        ref: "h2",
+        hypothesis: { statement: "the reaper reads a sealed session twice" },
+        observations: [observation("o2", `${MATERIAL_SESSIONS}/0002-never-served.jsonl`)],
+      },
+    ],
+  };
+  return `Here is what I found.\n\n\`\`\`json\n${JSON.stringify(result)}\n\`\`\`\n`;
+}
+
+test("one unserved claim is dropped and the claim beside it still has its quote checked", async () => {
+  /*
+    THE TWO PROPERTIES HELD TOGETHER, because a merge is exactly where one of them goes quiet.
+    The scope check and the quote check are one module (`engine/citations.ts`) asked at two
+    grains: per item, by the contract's one validator, where it REFUSES; and over the kept
+    result, by the settlement, where it MARKS. An answer carrying one of each has to come out
+    with the bad claim named on the receipt, the good claim recorded, and the good claim's
+    verdict on its own evidence.
+  */
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "exited",
+      finalMessage: answeredWithOneUnservedClaim("the rescan wrote no snapshot_id at all"),
+    }),
+  }));
+  const { runId, claimId } = await sessionInFlight(db);
+
+  const report = await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: withMaterial(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  // BOTH CANDIDATES STAND — a hypothesis rests on nothing — and only the claim that cited
+  // bytes nobody served is gone, so one observation is recorded and not two.
+  const records = await db.query<{ kind: string }>(
+    `SELECT kind FROM records WHERE run_id = ? ORDER BY kind`,
+    [runId],
+  );
+  expect(records.map((row) => row.kind)).toEqual(["hypothesis", "hypothesis", "observation"]);
+
+  const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  expect(run["closure"]).toBe("completed");
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(receipt["reason"]).toBeUndefined();
+  expect(receipt["refusedItems"]).toEqual([
+    {
+      item: "/candidates/1/observations/0",
+      reason: expect.stringContaining("0002-never-served.jsonl") as unknown,
+    },
+  ]);
+  // AND THE SURVIVOR'S QUOTE WAS ACTUALLY OPENED: the verdict is on the record's own evidence,
+  // and the receipt counts the one citation that reached the check rather than both.
+  expect(await verdictOf(db)).toEqual({ outcome: "verified", detail: "" });
+  expect(receipt["citations"]).toEqual({
+    verified: 1,
+    moved: 0,
+    absent: 0,
+    unquoted: 0,
+    unchecked: 0,
+  });
+  expect(report.settled).toEqual([
+    { claimId, outcome: "completed", cost: 0.31, overrun: false, refused: null, reason: null },
+  ]);
 });
 
 test("a Code session still running leaves its run open and settles nothing", async () => {
@@ -3666,7 +4408,11 @@ test("a session Code cancelled closes as stopped with no receipt, and its claim 
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
   expect(String(receipt["reason"])).toStartWith("empty:");
   expect(String(receipt["reason"])).toContain("cancelled");
-  expect(receipt["model"]).toBeUndefined();
+  // WHAT IT ASKED FOR SURVIVES A SESSION THAT ANSWERED NOTHING, and what answered does not
+  // exist to record: `model` is the launch's own word, `models` is the transcript's, and a
+  // cancelled session sealed no transcript (#169).
+  expect(receipt["model"]).toBe("anthropic/claude-opus-4-1");
+  expect(receipt["models"]).toBeUndefined();
   expect(run["cost_usd"]).toBe(0);
   // …and the claim is SKIPPED rather than failed: nobody answered, so there is no paid
   // refusal here and the park heuristic must not read a streak of operator stops as a lane
@@ -3771,7 +4517,7 @@ test("an accepted answer becomes the records, edges, statuses and questions it c
   const { runId } = await sessionInFlight(db);
 
   const report = await wakeOn(store, draws, code).tick();
-  expect(report.pulse.tick.refusals).toEqual({});
+  expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
 
   // FOUR RECORDS AND THE PATH BETWEEN THEM. Every one is this run's, written as a run and not
   // as an operator, and each is its own root at sequence zero: a correction supersedes.
@@ -3889,7 +4635,7 @@ test("a record whose own text names what it contradicts gets the edge, and a mis
   const { runId } = await sessionInFlight(db);
 
   const report = await wakeOn(store, draws, code).tick();
-  expect(report.pulse.tick.refusals).toEqual({});
+  expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
   expect(
     await db.query(`SELECT to_id FROM edges WHERE kind = 'contradicts' AND actor_id = ?`, [runId]),
   ).toEqual([{ to_id: "hyp_00000001" }]);
@@ -3901,24 +4647,21 @@ test("a record whose own text names what it contradicts gets the edge, and a mis
   ]);
 });
 
-test("a refused answer writes no record at all, and the receipt is still written at cost", async () => {
+test("a wholly unusable answer writes no record at all, and is still settled as spend", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
   const draws = new Draws(db);
   const code = codeAnswering(() => ({
     ok: true,
-    value: sessionRead({
-      state: "exited",
-      finalMessage: answered(`sessions/${SERVED_FILE}`, "b".repeat(64)),
-    }),
+    value: sessionRead({ state: "exited", finalMessage: unusable() }),
   }));
-  const { runId } = await sessionInFlight(db);
+  const { runId, claimId } = await sessionInFlight(db);
 
   const report = await wakeOn(store, draws, code).tick();
 
-  // NOTHING LANDED. A partial development path is worse than none: a finding consolidating
-  // observations nobody holds is exactly the shape §4.2 forbids.
+  // NOTHING LANDED, because there was nothing to land: every item this answer carried was
+  // refused, so the path-closed subset is empty and the floor is moot.
   expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId])).toEqual([
     { n: 0n },
   ]);
@@ -3938,13 +4681,24 @@ test("a refused answer writes no record at all, and the receipt is still written
   expect(run["closure"]).toBe("failed");
   expect(Number(run["records"])).toBe(0);
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
-  expect(String(receipt["reason"])).toStartWith("unknown-reference:");
-  expect(receipt["counts"]).toEqual({});
+  expect(String(receipt["reason"])).toStartWith("schema:");
+  // THE REFUSED ITEMS ARE ON THE RECEIPT EVEN HERE. They are what the whole refusal was made
+  // of, and they are the only measurement the spend bought.
+  expect(receipt["refusedItems"]).toEqual([
+    { item: "/candidates/0", reason: expect.stringContaining("schema:") as unknown },
+  ]);
+  expect(receipt["counts"]).toEqual({ itemsRefused: 1 });
+  // AND IT IS STILL SPEND, with the claim finished at what the model was paid.
   expect(run["cost_usd"]).toBeCloseTo(0.31, 6);
-  expect(report.pulse.tick.refusals).toEqual({ "unknown-reference": 1 });
+  expect(report.settled).toEqual([
+    { claimId, outcome: "failed", cost: 0.31, overrun: false, refused: null, reason: null },
+  ]);
+  // A WHOLLY REFUSED SUBMISSION IS A REFUSAL OF THE RUN, and a PAID one: the hub's meter
+  // attached a call to this job, so the money left the day's allowance (#424, `paidRefusal`).
+  expect(report.pulse.tick.refusals).toEqual({ paid: { schema: 1 }, free: {} });
 });
 
-test("a consolidation resting on a candidate is the development path skipped, and writes nothing", async () => {
+test("a consolidation resting on a candidate skips the development path, and the candidate still stands", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
@@ -3973,14 +4727,24 @@ test("a consolidation resting on a candidate is the development path skipped, an
 
   const report = await wakeOn(store, draws, code).tick();
 
-  expect(await db.query(`SELECT COUNT(*) AS n FROM records WHERE run_id = ?`, [runId])).toEqual([
-    { n: 0n },
+  // The candidate is a record this run produced and the finding is not one it could have: one
+  // of the two is refused, and the store now holds the other instead of neither.
+  const records = await db.query<{ kind: string }>(`SELECT kind FROM records WHERE run_id = ?`, [
+    runId,
   ]);
+  expect(records.map((row) => row.kind)).toEqual(["hypothesis"]);
   const run = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
-  expect(run["closure"]).toBe("failed");
+  expect(run["closure"]).toBe("completed");
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
-  expect(String(receipt["reason"])).toStartWith("development-path:");
-  expect(report.pulse.tick.refusals).toEqual({ "development-path": 1 });
+  expect(receipt["reason"]).toBeUndefined();
+  expect(receipt["refusedItems"]).toEqual([
+    {
+      item: "/consolidations/0",
+      reason: expect.stringContaining("hypothesis rather than an observation") as unknown,
+    },
+  ]);
+  // One item dropped out of a run that recorded the rest is not a refusal of the run.
+  expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
 });
 
 test("settling the same run twice writes the rows once: the identifiers are the run's own", async () => {
@@ -4061,7 +4825,7 @@ function codeReplying(
     asked,
     profiles: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
-    spendAuthority: async () =>
+    checkProfile: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
     runSession: async () =>
       await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
@@ -4088,6 +4852,7 @@ async function anotherSession(
   db: PluginDatabase,
   suffix: string,
   identityKey = "victorballu@gmail.com",
+  askedModel = "anthropic/claude-opus-4-1",
 ): Promise<{ runId: string; jobId: string }> {
   const runId = `run_session_${suffix}`;
   const jobId = `job_code_${suffix}`;
@@ -4103,6 +4868,7 @@ async function anotherSession(
         containerId: "ctr_workbench",
         expectedRevision: 7,
         account: { provider: "anthropic", identityKey },
+        askedModel,
       }),
       JSON.stringify({ preset: "read-whats-new", selected: 1 }),
       new Date(clock).toISOString(),
@@ -4239,11 +5005,8 @@ test("a refused answer leaves a call row carrying the refusal and what it cost",
   const draws = new Draws(db);
   const code = codeAnswering(() => ({
     ok: true,
-    // A locator the material never served: the answer parses and is refused on its citation.
-    value: sessionRead({
-      state: "exited",
-      finalMessage: answered("sessions/never.jsonl", "b".repeat(64)),
-    }),
+    // An answer with nothing in it the store may hold: the submission is refused whole.
+    value: sessionRead({ state: "exited", finalMessage: unusable() }),
   }));
   const { runId } = await sessionInFlight(db);
 
@@ -4259,7 +5022,7 @@ test("a refused answer leaves a call row carrying the refusal and what it cost",
     )
   )[0]!;
   expect(call["closure"]).toBe("failed");
-  expect(call["refusal"]).toBe("unknown-reference");
+  expect(call["refusal"]).toBe("schema");
   expect(call["cost_micros"]).toBe(310_000n);
   expect(call["response_digest"]).not.toBe("");
   expect(await db.query(`SELECT id FROM records WHERE run_id = ?`, [runId])).toEqual([]);
@@ -4364,6 +5127,61 @@ test("two runs that sealed no transcript agreed about nothing, and the verdict s
   // NOT `same-answer`: neither run answered, and two silences are not an agreement.
   expect(diff.verdict).toBe("unanswered");
   expect(diff.differed).toEqual([]);
+});
+
+/*
+  THE MODEL THAT ANSWERED IS NOT THE MODEL THAT WAS ASKED FOR (#169).
+
+  Both runs asked for opus, as the launch door records on the run row; one of them was served
+  by sonnet and said so in the transcript it sealed. Before this the receipt's `model` was
+  written from the transcript, so the fallback was recorded as an intent nobody had — and the
+  two runs, which asked for exactly the same thing, compared as `different-request`, a verdict
+  that disqualifies every other field of the comparison.
+*/
+test("a fallback records the model that answered, and the request stays the one that was asked", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const same = answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST);
+  const fell = await sessionInFlight(db);
+  const held = await anotherSession(db, "2");
+  const code = codeReplying({
+    [fell.jobId]: sessionRead({
+      state: "exited",
+      finalMessage: same,
+      sessionId: "ses_fell",
+      model: "anthropic/claude-sonnet-4",
+    }),
+    [held.jobId]: sessionRead({ state: "exited", finalMessage: same, sessionId: "ses_held" }),
+  });
+
+  await wakeOn(store, draws, code).tick();
+
+  const receipt = JSON.parse(
+    String((await db.query(`SELECT payload FROM runs WHERE id = ?`, [fell.runId]))[0]?.["payload"]),
+  ) as Record<string, unknown>;
+  // ASKED on the left, ANSWERED on the right, and they disagree — which is the whole fact.
+  expect(receipt["model"]).toBe("anthropic/claude-opus-4-1");
+  expect(receipt["models"]).toEqual(["anthropic/claude-sonnet-4"]);
+  // The call row is the per-call account of the same thing: what ANSWERED this call.
+  expect(
+    (await db.query(`SELECT model FROM run_calls WHERE run_id = ?`, [fell.runId]))[0]?.["model"],
+  ).toBe("anthropic/claude-sonnet-4");
+
+  const diff = diffRunTraces(await traceOf(db, fell.runId), await traceOf(db, held.runId));
+  // THE SAME REQUEST. Two identical asks, answered with identical bytes — and the one field
+  // that moved is on the ANSWER side and names both models, so the substitution is readable
+  // instead of being charged to the request.
+  expect(diff.verdict).toBe("same-answer");
+  expect(diff.differed).toEqual([
+    {
+      field: "answered",
+      side: "answer",
+      a: "anthropic/claude-sonnet-4",
+      b: "anthropic/claude-opus-4-1",
+    },
+  ]);
 });
 
 // ---------------------------------------------- a run that names untitled sessions (#342)

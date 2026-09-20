@@ -29,8 +29,20 @@
 */
 
 import { z } from "zod";
-import type { ROLES } from "../contract.ts";
-import { NextActionSchema, VOTES, normalizeRemote } from "../contract.ts";
+import type { MaterialEntry, ROLES } from "../contract.ts";
+import {
+  MAX_CITATION_QUOTE,
+  NextActionSchema,
+  SUBMISSION_KEPT_FLOOR,
+  VOTES,
+  normalizeRemote,
+} from "../contract.ts";
+// THE SCOPE HALF OF A CITATION IS SPELLED ONCE, in `server/engine/citations.ts`, and this file
+// asks it rather than restating it (#422, #231). The module is pure — it reads no file, no
+// database and no job, the bytes of the quote half arrive as a function its own caller supplies
+// — so asking it here costs this contract nothing it did not already have, and the alternative
+// is the second copy of a security boundary that #263 was opened about.
+import { unservedCitation } from "../server/engine/citations.ts";
 
 // ---------------------------------------------------------------------------- versions
 
@@ -107,12 +119,23 @@ export function refusalCode(reason: string): RefusalCode | null {
 
 // ---------------------------------------------------------------------------- shared payloads
 
-/** Where cited bytes live. Path and digest identify them and prove they have not changed. */
+/**
+ * Where cited bytes live, and what they say. Path and digest identify them and prove they have
+ * not changed; `quote` is the span of the record itself that supports the claim, and it is the
+ * only field here anybody can check against the bytes rather than against an index (#348).
+ *
+ * It is OPTIONAL and it is not a refusal to omit it. A citation without a quote is recorded as
+ * `unquoted` and stands: the corpus that exists was produced under a contract that never asked
+ * for one, and a rule that refused every claim written before it would delete history rather
+ * than improve it. What the field buys is that a quote, once written, is checkable — and a run
+ * that stops writing them becomes visible in the receipt's own tally instead of invisible.
+ */
 export const LocatorSchema = z.strictObject({
   path: z.string().min(1),
   line: z.number().int().min(0).default(0),
   byte_offset: z.number().int().min(0).default(0),
   digest: z.string().min(1),
+  quote: z.string().max(MAX_CITATION_QUOTE).default(""),
 });
 
 /**
@@ -443,27 +466,59 @@ export interface ExploreResult {
   next_actions: NextActionDraft[];
 }
 
-function exploreSchema(stage: Stage): z.ZodType {
+/**
+ * THE SEVEN LISTS A SUBMISSION CARRIES, EACH WITH ITS ITEM SCHEMA AND ITS AUTHORITY.
+ *
+ * One table, read two ways. {@link exploreSchema} composes it into the strict per-stage document
+ * the prompt prints, and {@link exploreSubmission} walks it item by item to decide what one
+ * submission keeps — so the shape a model is shown and the shape a settlement enforces cannot
+ * be two declarations that drift. `authority` names the {@link StageAuthority} field a list
+ * answers to, and null is the two every stage has: a candidate is what an exploration is for,
+ * and a question authorizes nothing (§4.8).
+ */
+const LISTS = {
+  candidates: { schema: CandidateSchema, item: "candidate", authority: null },
+  consolidations: { schema: ConsolidationSchema, item: "consolidation", authority: "consolidate" },
+  objections: { schema: ObjectionSchema, item: "objection", authority: "objections" },
+  deferred: { schema: DisposalSchema, item: "disposal", authority: "schedule" },
+  rejected: { schema: DisposalSchema, item: "disposal", authority: "schedule" },
+  next_actions: { schema: NextActionDraftSchema, item: "next-action", authority: "nextActions" },
+  questions: { schema: QuestionDraftSchema, item: "question", authority: null },
+} as const satisfies Record<
+  string,
+  { schema: z.ZodType; item: string; authority: keyof StageAuthority | null }
+>;
+
+/** One of the seven, as the pointer in a refusal spells it. */
+type ExploreList = keyof typeof LISTS;
+const EXPLORE_LISTS = Object.keys(LISTS) as readonly ExploreList[];
+
+/** Whether this stage may fill this list at all. */
+function admits(stage: Stage, list: ExploreList): boolean {
+  const authority = LISTS[list].authority;
+  return authority === null || STAGE_AUTHORITY[stage][authority];
+}
+
+/** The candidate shape a stage is offered: its claim, and what its authority admits beneath it. */
+function candidateSchema(stage: Stage): z.ZodType {
   const authority = STAGE_AUTHORITY[stage];
-  const candidate = z.strictObject({
+  return z.strictObject({
     ref: candidateShape.ref,
     hypothesis: candidateShape.hypothesis,
     ...(authority.observations ? { observations: candidateShape.observations } : {}),
     ...(authority.remedies ? { remedy: candidateShape.remedy } : {}),
   });
-  return z.strictObject({
-    candidates: z.array(candidate).default([]),
-    ...(authority.consolidate ? { consolidations: z.array(ConsolidationSchema).default([]) } : {}),
-    ...(authority.objections ? { objections: z.array(ObjectionSchema).default([]) } : {}),
-    ...(authority.schedule
-      ? {
-          deferred: z.array(DisposalSchema).default([]),
-          rejected: z.array(DisposalSchema).default([]),
-        }
-      : {}),
-    ...(authority.nextActions ? { next_actions: z.array(NextActionDraftSchema).default([]) } : {}),
-    questions: z.array(QuestionDraftSchema).default([]),
-  });
+}
+
+function exploreSchema(stage: Stage): z.ZodType {
+  const shape: Record<string, z.ZodType> = {};
+  for (const list of EXPLORE_LISTS) {
+    if (!admits(stage, list)) continue;
+    shape[list] = z
+      .array(list === "candidates" ? candidateSchema(stage) : LISTS[list].schema)
+      .default([]);
+  }
+  return z.strictObject(shape);
 }
 
 const exploreSchemas: Record<Stage, z.ZodType> = {
@@ -477,171 +532,678 @@ export function exploreJsonSchema(stage: Stage): unknown {
   return z.toJSONSchema(exploreSchemas[stage], { io: "input", target: "draft-2020-12" });
 }
 
-/**
- * Decodes and structurally validates one exploration submission. It checks shape, provenance and
- * the development path within the result, and nothing about whether a claim is true.
- */
-export function parseExploreResult(stage: Stage, payload: unknown): ExploreResult {
-  const parsed = exploreSchemas[stage].safeParse(payload);
-  if (!parsed.success) {
-    throw new ResultRefusal(
-      REFUSALS.schema,
-      `the ${stage} result does not match its schema: ${issues(parsed.error)}`,
-    );
-  }
-  const shaped = ExploreResultShape.parse(parsed.data);
-  const result: ExploreResult = {
-    candidates: shaped.candidates,
-    consolidations: shaped.consolidations,
-    objections: shaped.objections,
-    deferred: shaped.deferred,
-    rejected: shaped.rejected,
-    questions: shaped.questions,
-    next_actions: shaped.next_actions,
-  };
+/*
+  A SUBMISSION IS PARTIAL, NOT ATOMIC (#231, #311).
 
-  const refs: Record<string, "hypothesis" | "observation" | "finding" | "proposal"> = {};
-  for (const candidate of result.candidates) {
-    if (refs[candidate.ref] !== undefined) {
-      throw new ResultRefusal(
-        REFUSALS.schema,
-        `ref ${JSON.stringify(candidate.ref)} is used twice`,
-      );
-    }
-    refs[candidate.ref] = "hypothesis";
-    for (const observation of candidate.observations) {
-      if (refs[observation.ref] !== undefined) {
-        throw new ResultRefusal(
-          REFUSALS.schema,
-          `ref ${JSON.stringify(observation.ref)} is used twice`,
-        );
-      }
-      refs[observation.ref] = "observation";
-    }
-    if (candidate.remedy !== undefined) {
-      if (refs[candidate.remedy.ref] !== undefined) {
-        throw new ResultRefusal(
-          REFUSALS.schema,
-          `ref ${JSON.stringify(candidate.remedy.ref)} is used twice`,
-        );
-      }
-      refs[candidate.remedy.ref] = "proposal";
-    }
+  A run is one agent session over a large corpus, and by the time anything here reads its answer
+  the tokens are gone. All-or-nothing persistence turned a partly-wrong answer into zero value at
+  full price: on 2026-09-12 several runs finished their model work and lost ALL of it at
+  persistence — one disposition naming a workspace the machine did not have, one objection
+  attacking an id nobody held, one observation that forgot its counter-evidence position — and
+  the conductor then parked reporting that the cycles had spent nothing (post-mortem F16, #231).
+  Each of those is ONE unusable item. The items that validate are kept, the items that do not are
+  refused BY NAME with the reason, and the run is spend either way.
+
+  WHAT "KEPT" MEANS FOR A RESULT MEANT TO BE READ AS A SET. The items are not independent:
+  §4.2's development path is the structure, so what is kept is the largest subset CLOSED UNDER
+  THAT PATH. A refused item takes with it everything whose support ran through it — a candidate's
+  observations and its remedy, a consolidation resting on an observation that fell, an objection
+  attacking a candidate that fell — and nothing else. That answers the objection this file used
+  to make ("half a development path is worse than none"): the half that is worse than none is the
+  half that DANGLES, and a path-closed subset never dangles. A finding whose observations were
+  refused is refused with them; a finding whose observations stood is a finding.
+
+  THE ITEM IS THE RECORD OR THE ROW, which is why an observation inside a candidate is its own
+  item and not part of one: a hypothesis rests on nothing, so it does not fall because one of the
+  claims developing it did, and #231's third cause was exactly a single observation failing one
+  schema obligation. A refusal names its item by JSON Pointer into the submitted document,
+  because the receipt carries that document beside it (`rejectedSubmission`) and "which one" has
+  to be findable in it.
+
+  THE FLOOR IS {@link SUBMISSION_KEPT_FLOOR}: below it the submission is refused whole, and that
+  constant carries the reasoning. Everything else here is a consequence rather than a judgement.
+
+  ONE VALIDATOR, and {@link itemRefusal} is it. Every rule about an item is stated there once;
+  `server/engine/records.ts` turns the kept items into rows and states none of them a second
+  time, which is the whole reason it can no longer refuse anything. The two used to disagree in
+  the open — a consolidation resting on a proposal was `development-path` here and
+  `unknown-reference: no observation f1` there, for one submission, depending on which of the two
+  saw it — and the Go tree's worst evaluation bug was one rule stated three times (F8).
+*/
+
+/** One item of a submission the contract refused, as a receipt records it (#231). */
+export interface RefusedItem {
+  /** JSON Pointer into the submitted document: `/candidates/0/observations/1`. */
+  readonly item: string;
+  /** `<code>: <sentence>` — the validator's own words, in the shape a `reason` already has. */
+  readonly reason: string;
+}
+
+/** What one submission amounts to: what stands, what was dropped, and why nothing stood. */
+export interface ExploreSubmission {
+  /** The path-closed subset to record, or null when the submission is refused whole. */
+  readonly result: ExploreResult | null;
+  /** Every item dropped so the rest could stand, whether or not the rest did. */
+  readonly refused: readonly RefusedItem[];
+  /** `<code>: <sentence>` when nothing is recorded, and "" when something is. */
+  readonly reason: string;
+}
+
+/** What a handle declared in one submission becomes: §4.2's path is checked over these. */
+type RefKind = "hypothesis" | "observation" | "finding" | "proposal";
+
+/**
+ * One item with its shape already decided: the kind is what decides the rules it is held to,
+ * and `refused` is an item whose own schema turned it down, which nothing can rest on.
+ */
+type Shaped =
+  | { readonly kind: "candidate"; readonly value: z.infer<typeof CandidateEnvelope> }
+  | { readonly kind: "observation"; readonly value: Observation }
+  | { readonly kind: "remedy"; readonly value: Remedy }
+  | { readonly kind: "consolidation"; readonly value: Consolidation }
+  | { readonly kind: "objection"; readonly value: Objection }
+  | { readonly kind: "disposal"; readonly value: Disposal }
+  | { readonly kind: "question"; readonly value: QuestionDraft }
+  | { readonly kind: "next-action"; readonly value: NextActionDraft }
+  | { readonly kind: "refused" };
+
+/** One item as the partition holds it: where it is, what it parsed to, and its fate. */
+type Item = Shaped & {
+  /** The JSON Pointer a refusal names it by. */
+  readonly at: string;
+  /** The list it goes back into when it stands. */
+  readonly list: ExploreList;
+  /** The candidate this observation or remedy hangs off; null for every top-level item. */
+  readonly parent: Item | null;
+  /** The handle it declares, or "" when it declares none. */
+  readonly declares: string;
+  /** The record that handle becomes, or null when it declares none. */
+  readonly family: RefKind | null;
+  /** `<code>: <sentence>` once refused, and "" while it stands. */
+  reason: string;
+};
+
+/** What one item is checked against beyond itself. */
+interface Scope {
+  /** Every handle that still stands, by the record it becomes. */
+  readonly refs: ReadonlyMap<string, RefKind>;
+  /** Every handle whose own item was refused: what a dangling reference names. */
+  readonly dropped: ReadonlySet<string>;
+  /** The material this run was served: what {@link unservedCitation} admits a locator against. */
+  readonly served: readonly MaterialEntry[];
+}
+
+/** A durable identifier of one family, as `RecordIdSchema` spells the four. */
+const HYPOTHESIS_REF = /^hyp_[0-9a-f]{8,64}$/u;
+const OBSERVATION_REF = /^obs_[0-9a-f]{8,64}$/u;
+
+/**
+ * The candidate as an envelope: its own claim strictly, its observations and its remedy unread.
+ *
+ * The two steps are what makes one bad observation cost one observation. A candidate parsed
+ * whole fails whole, and #231's third cause was exactly that — `persist finding "con3":
+ * counter-evidence must be listed or explicitly declared absent`, one obligation missed on one
+ * item, and the whole paid run was gone.
+ */
+const CandidateEnvelope = z.strictObject({
+  ref: candidateShape.ref,
+  hypothesis: candidateShape.hypothesis,
+  observations: z.array(z.unknown()).default([]),
+  remedy: z.unknown().optional(),
+});
+
+/**
+ * What hangs off a candidate, read without judging the candidate: the harvest that lets an
+ * observation under an unreadable candidate still be an item with a name and a handle.
+ */
+const HangingOff = z.looseObject({
+  observations: z.array(z.unknown()).default([]),
+  remedy: z.unknown().optional(),
+});
+
+/**
+ * The submission as seven lists of unread items: strict in its keys, and in nothing else.
+ *
+ * Every list is admitted here whatever the stage, and a list the stage has no authority for is
+ * refused ITEM BY ITEM below under {@link REFUSALS.authority}. Authority is still enforced by
+ * absence where absence is what the model sees — {@link exploreSchema} never offers a challenger
+ * a `consolidations` field — but on the refusing side a field filled without authority is the
+ * same accident as any other bad item, and taking the candidates down with it is the defect this
+ * path exists to stop. An UNKNOWN key is refused whole: it is not an item, so there is nothing
+ * to keep and nothing to count.
+ */
+const ExploreEnvelope = z.strictObject({
+  candidates: z.array(z.unknown()).default([]),
+  consolidations: z.array(z.unknown()).default([]),
+  objections: z.array(z.unknown()).default([]),
+  deferred: z.array(z.unknown()).default([]),
+  rejected: z.array(z.unknown()).default([]),
+  next_actions: z.array(z.unknown()).default([]),
+  questions: z.array(z.unknown()).default([]),
+});
+
+/**
+ * ONE EXPLORATION SUBMISSION, KEPT IN PART.
+ *
+ * The reference table is rebuilt after every round because a refusal removes the handles its own
+ * item declared, and an item resting on one of those is refused in the next round: the loop is
+ * the transitive closure of §4.2's path, and it settles because a reason is only ever set.
+ */
+export function exploreSubmission(
+  stage: Stage,
+  payload: unknown,
+  sessions: readonly MaterialEntry[],
+): ExploreSubmission {
+  const envelope = ExploreEnvelope.safeParse(payload);
+  if (!envelope.success) {
+    return {
+      result: null,
+      refused: [],
+      reason:
+        `${REFUSALS.schema}: the ${stage} result does not match its schema: ` +
+        issues(envelope.error),
+    };
   }
-  for (const consolidation of result.consolidations) {
-    if (refs[consolidation.ref] !== undefined) {
-      throw new ResultRefusal(
-        REFUSALS.schema,
-        `ref ${JSON.stringify(consolidation.ref)} is used twice`,
-      );
-    }
-    refs[consolidation.ref] = "finding";
-  }
-  // §4.2's path is mandatory: a consolidation rests on locator-backed observations that exist.
-  // A name that is neither a ref from this result nor a durable identifier the brief listed is a
-  // refusal, never a repair — the repair would be Babel inventing the evidence step.
-  for (const consolidation of result.consolidations) {
-    for (const name of consolidation.observations) {
-      const within = refs[name];
-      if (within === undefined) {
-        if (!/^obs_[0-9a-f]{8,64}$/.test(name)) {
-          throw new ResultRefusal(
-            REFUSALS.developmentPath,
-            `consolidation ${JSON.stringify(consolidation.ref)} rests on ${JSON.stringify(name)}, which is neither a ref in this result nor an observation identifier`,
-          );
-        }
+  const items = shapeItems(stage, envelope.data);
+  for (let settling = true; settling;) {
+    settling = false;
+    const refs = new Map<string, RefKind>();
+    const dropped = new Set<string>();
+    for (const item of items) {
+      if (item.declares === "" || item.family === null) continue;
+      if (item.reason !== "") {
+        dropped.add(item.declares);
         continue;
       }
-      if (within !== "observation") {
-        throw new ResultRefusal(
-          REFUSALS.developmentPath,
-          `consolidation ${JSON.stringify(consolidation.ref)} rests on ${JSON.stringify(name)}, which is a ${within} rather than an observation`,
+      if (refs.has(item.declares)) {
+        // The LATER item loses: the first declaration is the one every reference in the answer
+        // was written against, and minting both would have collapsed two claims into one row at
+        // the ingest's `INSERT OR IGNORE` with nothing saying so.
+        item.reason = `${REFUSALS.schema}: ref ${JSON.stringify(item.declares)} is used twice`;
+        dropped.add(item.declares);
+        settling = true;
+        continue;
+      }
+      refs.set(item.declares, item.family);
+    }
+    const scope: Scope = { refs, dropped, served: sessions };
+    for (const item of items) {
+      if (item.reason !== "") continue;
+      if (item.parent !== null && item.parent.reason !== "") {
+        item.reason =
+          `${REFUSALS.developmentPath}: the candidate this ${item.kind} ` +
+          `${item.kind === "remedy" ? "addresses" : "develops"} was refused`;
+        settling = true;
+        continue;
+      }
+      const refusal = itemRefusal(item, scope);
+      if (refusal === null) continue;
+      item.reason = refusalReason(refusal);
+      settling = true;
+    }
+  }
+  const refused: RefusedItem[] = [];
+  for (const item of items) {
+    if (item.reason !== "") refused.push({ item: item.at, reason: item.reason });
+  }
+  const first = refused[0];
+  if (first !== undefined && items.length - refused.length < items.length * SUBMISSION_KEPT_FLOOR) {
+    return {
+      result: null,
+      refused,
+      // THE DEFECT, NOT ITS CONSEQUENCE, leads the sentence: an operator reading a failed run
+      // needs the rule that was broken, and `refusalCode` reads the class off the front of it.
+      // The count follows, because "one item was wrong" and "this answer was not written against
+      // this contract" are different findings and a receipt has to tell them apart.
+      reason:
+        `${first.reason} — and ${String(refused.length)} of this submission's ` +
+        `${String(items.length)} items were refused, which keeps less than the ` +
+        `${String(SUBMISSION_KEPT_FLOOR * 100)}% a submission must, so none of it was recorded`,
+    };
+  }
+  return { result: keptResult(items), refused, reason: "" };
+}
+
+/**
+ * Every item of one submission, shaped against its own schema and its stage's authority.
+ *
+ * Neither a shape refusal nor an authority refusal stops the walk: the point of the walk is that
+ * the rest of the answer survives whatever one item did.
+ */
+function shapeItems(stage: Stage, envelope: Record<ExploreList, readonly unknown[]>): Item[] {
+  const items: Item[] = [];
+  for (const list of EXPLORE_LISTS) {
+    const authority = LISTS[list].authority;
+    const allowed = authority === null || STAGE_AUTHORITY[stage][authority];
+    for (const [index, raw] of envelope[list].entries()) {
+      const at = `/${list}/${String(index)}`;
+      if (!allowed) {
+        items.push(
+          refusedItem(
+            at,
+            list,
+            REFUSALS.authority,
+            `${article(stage)} ${stage} result may not carry ${list}`,
+          ),
+        );
+        continue;
+      }
+      if (list === "candidates") {
+        items.push(...candidateItems(stage, at, raw));
+        continue;
+      }
+      const parsed = LISTS[list].schema.safeParse(raw);
+      if (!parsed.success) {
+        items.push(
+          refusedItem(
+            at,
+            list,
+            REFUSALS.schema,
+            `this ${LISTS[list].item} does not match its schema: ${issues(parsed.error)}`,
+          ),
+        );
+        continue;
+      }
+      items.push({ at, list, parent: null, reason: "", ...shapedItem(list, parsed.data) });
+    }
+  }
+  return items;
+}
+
+/**
+ * One shaped top-level item: its kind, its value, and the handle it declares.
+ *
+ * A parsed list item is typed by the schema that admitted it, and the schema is chosen by the
+ * list, so this is where the two are tied together — once, rather than at each of the seven
+ * branches that would otherwise have to say which shape its own list holds.
+ */
+function shapedItem(
+  list: Exclude<ExploreList, "candidates">,
+  value: unknown,
+): Shaped & { declares: string; family: RefKind | null } {
+  switch (list) {
+    case "consolidations": {
+      const consolidation = value as Consolidation;
+      return {
+        kind: "consolidation",
+        value: consolidation,
+        declares: consolidation.ref,
+        family: "finding",
+      };
+    }
+    case "objections": {
+      // An objection carrying locators becomes the observation §4.3 admits, and one carrying
+      // none becomes a contradicting candidate. `records.ts` mints it on the same branch, so the
+      // handle is registered under the family it will actually have — without that, an objection
+      // and a candidate sharing a handle mint one row identifier and two claims collapse into
+      // one at the ingest with nothing saying so.
+      const objection = value as Objection;
+      return {
+        kind: "objection",
+        value: objection,
+        declares: objection.ref,
+        family: objection.claim.evidence.length > 0 ? "observation" : "hypothesis",
+      };
+    }
+    case "deferred":
+    case "rejected":
+      return { kind: "disposal", value: value as Disposal, declares: "", family: null };
+    case "next_actions":
+      return { kind: "next-action", value: value as NextActionDraft, declares: "", family: null };
+    case "questions":
+      return { kind: "question", value: value as QuestionDraft, declares: "", family: null };
+  }
+}
+
+/** One candidate, its observations and its remedy: three kinds of item under one pointer. */
+function candidateItems(stage: Stage, at: string, raw: unknown): Item[] {
+  const parsed = CandidateEnvelope.safeParse(raw);
+  const authority = STAGE_AUTHORITY[stage];
+  // WHAT HANGS OFF IT IS READ EVEN WHEN THE CANDIDATE ITSELF IS NOT. A candidate whose own
+  // claim is unreadable still submitted observations, and they have to become items or the
+  // receipt cannot name them and a consolidation resting on one would be refused for a handle
+  // "nobody emitted" rather than for the candidate that fell. This harvests; the strict parse
+  // above is what judges.
+  const hanging = HangingOff.safeParse(raw);
+  const candidate: Item = parsed.success
+    ? {
+        at,
+        list: "candidates",
+        kind: "candidate",
+        value: parsed.data,
+        parent: null,
+        declares: parsed.data.ref,
+        family: "hypothesis",
+        reason: "",
+      }
+    : refusedItem(
+        at,
+        "candidates",
+        REFUSALS.schema,
+        `this candidate does not match its schema: ${issues(parsed.error)}`,
+      );
+  const items: Item[] = [candidate];
+  const submitted = hanging.success ? hanging.data : { observations: [], remedy: undefined };
+  for (const [index, observed] of submitted.observations.entries()) {
+    const where = `${at}/observations/${String(index)}`;
+    if (!authority.observations) {
+      items.push(
+        refusedItem(
+          where,
+          "candidates",
+          REFUSALS.authority,
+          `${article(stage)} ${stage} candidate may not carry observations`,
+        ),
+      );
+      continue;
+    }
+    const observation = ObservationSchema.safeParse(observed);
+    if (!observation.success) {
+      items.push(
+        refusedItem(
+          where,
+          "candidates",
+          REFUSALS.schema,
+          `this observation does not match its schema: ${issues(observation.error)}`,
+        ),
+      );
+      continue;
+    }
+    items.push({
+      at: where,
+      list: "candidates",
+      kind: "observation",
+      value: observation.data,
+      parent: candidate,
+      declares: observation.data.ref,
+      family: "observation",
+      reason: "",
+    });
+  }
+  if (submitted.remedy === undefined) return items;
+  const where = `${at}/remedy`;
+  if (!authority.remedies) {
+    items.push(
+      refusedItem(
+        where,
+        "candidates",
+        REFUSALS.authority,
+        `${article(stage)} ${stage} candidate may not carry a remedy`,
+      ),
+    );
+    return items;
+  }
+  const remedy = RemedySchema.safeParse(submitted.remedy);
+  items.push(
+    remedy.success
+      ? {
+          at: where,
+          list: "candidates",
+          kind: "remedy",
+          value: remedy.data,
+          parent: candidate,
+          declares: remedy.data.ref,
+          family: "proposal",
+          reason: "",
+        }
+      : refusedItem(
+          where,
+          "candidates",
+          REFUSALS.schema,
+          `this remedy does not match its schema: ${issues(remedy.error)}`,
+        ),
+  );
+  return items;
+}
+
+/** An item refused before it had a shape: it declares no handle, so nothing may rest on it. */
+function refusedItem(at: string, list: ExploreList, code: RefusalCode, sentence: string): Item {
+  return {
+    at,
+    list,
+    kind: "refused",
+    parent: null,
+    declares: "",
+    family: null,
+    // The pointer is `item`'s job; the reason is the sentence, in the shape every other one has.
+    reason: `${code}: ${sentence}`,
+  };
+}
+
+/**
+ * WHAT THE CONTRACT REFUSES ABOUT ONE ITEM, or null when it admits it.
+ *
+ * This is the one statement of every rule an item is held to: its references resolve, its
+ * citations were served, and its authority covers what it asks for. It says nothing about
+ * whether a claim is true. `server/engine/records.ts` turns the kept items into rows and
+ * re-states none of this, which is what makes the two impossible to drift apart (#263).
+ */
+function itemRefusal(item: Item, scope: Scope): ResultRefusal | null {
+  switch (item.kind) {
+    // A candidate rests on nothing and cites nothing: the statement is the whole of it. A
+    // `refused` item has already failed its own schema and nothing more is asked of it.
+    case "candidate":
+    case "refused":
+      return null;
+    case "observation":
+      return unservedEvidence(`observation ${JSON.stringify(item.value.ref)}`, scope, [
+        ...item.value.claim.evidence,
+        ...item.value.claim.counter_evidence,
+      ]);
+    case "remedy":
+      return unservedEvidence(`proposal ${JSON.stringify(item.value.ref)}`, scope, [
+        ...item.value.proposal.supporting,
+        ...item.value.proposal.conflicting,
+      ]);
+    case "consolidation": {
+      const consolidation = item.value;
+      const named = JSON.stringify(consolidation.ref);
+      // §4.2's path is mandatory: a consolidation rests on locator-backed observations that
+      // exist. A name that is neither a surviving ref of this result nor a durable identifier
+      // the brief listed is a refusal, never a repair — the repair would be Babel inventing the
+      // evidence step.
+      for (const name of consolidation.observations) {
+        const within = scope.refs.get(name);
+        if (within === undefined) {
+          if (scope.dropped.has(name)) {
+            return new ResultRefusal(
+              REFUSALS.developmentPath,
+              `consolidation ${named} rests on ${JSON.stringify(name)}, which this submission refused`,
+            );
+          }
+          if (!OBSERVATION_REF.test(name)) {
+            return new ResultRefusal(
+              REFUSALS.developmentPath,
+              `consolidation ${named} rests on ${JSON.stringify(name)}, which is neither a ref in this result nor an observation identifier`,
+            );
+          }
+          continue;
+        }
+        if (within !== "observation") {
+          return new ResultRefusal(
+            REFUSALS.developmentPath,
+            `consolidation ${named} rests on ${JSON.stringify(name)}, which is a ${within} rather than an observation`,
+          );
+        }
+      }
+      const proposal = consolidation.proposal;
+      return unservedEvidence(`finding ${named}`, scope, [
+        ...consolidation.finding.counter_evidence,
+        ...(proposal === undefined ? [] : [...proposal.supporting, ...proposal.conflicting]),
+      ]);
+    }
+    case "objection": {
+      const objection = item.value;
+      const named = JSON.stringify(objection.ref);
+      const attacked = JSON.stringify(objection.hypothesis);
+      const target = scope.refs.get(objection.hypothesis);
+      if (target === undefined) {
+        if (scope.dropped.has(objection.hypothesis)) {
+          return new ResultRefusal(
+            REFUSALS.unknownReference,
+            `objection ${named} attacks ${attacked}, which this submission refused`,
+          );
+        }
+        if (!HYPOTHESIS_REF.test(objection.hypothesis)) {
+          return new ResultRefusal(
+            REFUSALS.unknownReference,
+            `objection ${named} attacks ${attacked}, which this result did not emit and no brief listed`,
+          );
+        }
+      } else if (target !== "hypothesis") {
+        return new ResultRefusal(
+          REFUSALS.unknownReference,
+          `objection ${named} attacks a ${target}; §5.4 criticism names a hypothesis`,
         );
       }
+      if (objection.grounds === "evidence" && objection.claim.evidence.length === 0) {
+        return new ResultRefusal(
+          REFUSALS.support,
+          `objection ${named} rests on evidence and cites none`,
+        );
+      }
+      return unservedEvidence(`objection ${named}`, scope, [
+        ...objection.claim.evidence,
+        ...objection.claim.counter_evidence,
+      ]);
+    }
+    case "disposal": {
+      const named = JSON.stringify(item.value.hypothesis);
+      if (scope.refs.has(item.value.hypothesis) || HYPOTHESIS_REF.test(item.value.hypothesis)) {
+        return null;
+      }
+      return new ResultRefusal(
+        REFUSALS.unknownReference,
+        scope.dropped.has(item.value.hypothesis)
+          ? `${named} was set down and this submission refused it`
+          : `${named} was set down and is not a candidate this result or the brief named`,
+      );
+    }
+    case "question": {
+      const question = item.value;
+      if (question.hypothesis === "" || scope.refs.has(question.hypothesis)) return null;
+      if (HYPOTHESIS_REF.test(question.hypothesis)) return null;
+      return new ResultRefusal(
+        REFUSALS.unknownReference,
+        `question ${JSON.stringify(question.ref)} blocks ${JSON.stringify(question.hypothesis)}, ` +
+          (scope.dropped.has(question.hypothesis)
+            ? "which this submission refused"
+            : "which is not a candidate it named"),
+      );
+    }
+    case "next-action": {
+      // A PROPOSED ACTION NAMES A RECORD THAT WILL EXIST. `next_actions.record_id` references
+      // `records(id)`, so a proposal about a handle this result never declared could not be
+      // inserted at all; refusing it says so in the model's own vocabulary. An observation is
+      // admitted: §4.13 makes it evidence rather than a post, but it is a record, and "develop
+      // this further" about one is a coherent thing to ask for.
+      const action = item.value;
+      const named = JSON.stringify(action.record);
+      if (!scope.refs.has(action.record) && !DURABLE_RECORD.test(action.record)) {
+        return new ResultRefusal(
+          REFUSALS.unknownReference,
+          scope.dropped.has(action.record)
+            ? `a ${action.kind} is proposed on ${named}, which this submission refused`
+            : `a ${action.kind} is proposed on ${named}, which this result did not emit and no brief listed`,
+        );
+      }
+      // THE DISPOSITION NOBODY HERE CAN ACT ON (#231, cause 1). `draft-issue` is the one kind
+      // bound to a checkout, and one naming no workspace is a change proposed to nothing. It
+      // costs itself now: the records the run produced are not a suggestion's fault.
+      if (action.kind === "draft-issue" && action.workspace === "") {
+        return new ResultRefusal(
+          REFUSALS.support,
+          `the draft-issue proposed on ${named} names no workspace, so the issue would be about no repository`,
+        );
+      }
+      if (action.kind !== "draft-issue" && action.workspace !== "") {
+        return new ResultRefusal(
+          REFUSALS.authority,
+          `a ${action.kind} binds to no repository, and the one on ${named} names a workspace`,
+        );
+      }
+      return null;
     }
   }
-  for (const objection of result.objections) {
-    const target = refs[objection.hypothesis];
-    if (target === undefined && !/^hyp_[0-9a-f]{8,64}$/.test(objection.hypothesis)) {
-      throw new ResultRefusal(
-        REFUSALS.unknownReference,
-        `objection ${JSON.stringify(objection.ref)} attacks ${JSON.stringify(objection.hypothesis)}, which this result did not emit and no brief listed`,
-      );
-    }
-    if (target !== undefined && target !== "hypothesis") {
-      throw new ResultRefusal(
-        REFUSALS.unknownReference,
-        `objection ${JSON.stringify(objection.ref)} attacks a ${target}; §5.4 criticism names a hypothesis`,
-      );
-    }
-    if (objection.grounds === "evidence" && objection.claim.evidence.length === 0) {
-      throw new ResultRefusal(
-        REFUSALS.support,
-        `objection ${JSON.stringify(objection.ref)} rests on evidence and cites none`,
-      );
-    }
+}
+
+/**
+ * WHAT ONE ITEM'S CITATIONS COST IT, or null when every one of them is admissible.
+ *
+ * The RULE is not here. `server/engine/citations.ts` is the single spelling of what a locator
+ * has to be — the index entry it names, the source digest it was served at, and every shape
+ * that tries to leave the material — and this asks it. What is here is the GRAIN: the question
+ * is put to one observation, one proposal, one finding or one objection at a time, so a retyped
+ * digest costs the claim that carries it and nothing beside it, which is the sentence
+ * `INSTRUCTIONS_EVIDENCE` promises the model. The whole-result form this replaced refused every
+ * sibling of the broken claim (#231), and the copy of the rule that used to sit beside it here
+ * is the second declaration #263 was opened about.
+ */
+function unservedEvidence(
+  what: string,
+  scope: Scope,
+  evidence: readonly Evidence[],
+): ResultRefusal | null {
+  const unserved = unservedCitation(evidence, scope.served);
+  if (unserved === "") return null;
+  return new ResultRefusal(REFUSALS.unknownReference, `${what} cites ${unserved}`);
+}
+
+/** The kept items back in their lists, every list present so no consumer has to ask. */
+function keptResult(items: readonly Item[]): ExploreResult {
+  const result: ExploreResult = {
+    candidates: [],
+    consolidations: [],
+    objections: [],
+    deferred: [],
+    rejected: [],
+    questions: [],
+    next_actions: [],
+  };
+  const observations = new Map<Item, Observation[]>();
+  const remedies = new Map<Item, Remedy>();
+  for (const item of items) {
+    if (item.reason !== "" || item.parent === null) continue;
+    if (item.kind === "observation") {
+      const kept = observations.get(item.parent);
+      if (kept === undefined) observations.set(item.parent, [item.value]);
+      else kept.push(item.value);
+    } else if (item.kind === "remedy") remedies.set(item.parent, item.value);
   }
-  for (const disposal of [...result.deferred, ...result.rejected]) {
-    if (
-      refs[disposal.hypothesis] === undefined &&
-      !/^hyp_[0-9a-f]{8,64}$/.test(disposal.hypothesis)
-    ) {
-      throw new ResultRefusal(
-        REFUSALS.unknownReference,
-        `${JSON.stringify(disposal.hypothesis)} was set down and is not a candidate this result or the brief named`,
-      );
-    }
-  }
-  for (const question of result.questions) {
-    if (
-      question.hypothesis !== "" &&
-      refs[question.hypothesis] === undefined &&
-      !/^hyp_/.test(question.hypothesis)
-    ) {
-      throw new ResultRefusal(
-        REFUSALS.unknownReference,
-        `question ${JSON.stringify(question.ref)} blocks ${JSON.stringify(question.hypothesis)}, which is not a candidate it named`,
-      );
-    }
-  }
-  // A PROPOSED ACTION NAMES A RECORD THAT WILL EXIST. `next_actions.record_id` references
-  // `records(id)`, so a proposal about a handle this result never declared could not be inserted
-  // at all; refusing it here says so in the model's own vocabulary instead of failing a batch.
-  // An observation is admitted: §4.13 makes it evidence rather than a post, but it is a record,
-  // and "develop this further" about one is a coherent thing to ask for.
-  for (const action of result.next_actions) {
-    if (refs[action.record] === undefined && !DURABLE_RECORD.test(action.record)) {
-      throw new ResultRefusal(
-        REFUSALS.unknownReference,
-        `a ${action.kind} is proposed on ${JSON.stringify(action.record)}, which this result did not emit and no brief listed`,
-      );
-    }
-    if (action.kind === "draft-issue" && action.workspace === "") {
-      throw new ResultRefusal(
-        REFUSALS.support,
-        `the draft-issue proposed on ${JSON.stringify(action.record)} names no workspace, so the issue would be about no repository`,
-      );
-    }
-    if (action.kind !== "draft-issue" && action.workspace !== "") {
-      throw new ResultRefusal(
-        REFUSALS.authority,
-        `a ${action.kind} binds to no repository, and the one on ${JSON.stringify(action.record)} names a workspace`,
-      );
+  for (const item of items) {
+    if (item.reason !== "" || item.parent !== null) continue;
+    switch (item.kind) {
+      case "candidate": {
+        const remedy = remedies.get(item);
+        result.candidates.push({
+          ref: item.value.ref,
+          hypothesis: item.value.hypothesis,
+          observations: observations.get(item) ?? [],
+          ...(remedy === undefined ? {} : { remedy }),
+        });
+        break;
+      }
+      case "consolidation":
+        result.consolidations.push(item.value);
+        break;
+      case "objection":
+        result.objections.push(item.value);
+        break;
+      case "disposal":
+        (item.list === "deferred" ? result.deferred : result.rejected).push(item.value);
+        break;
+      case "next-action":
+        result.next_actions.push(item.value);
+        break;
+      case "question":
+        result.questions.push(item.value);
+        break;
+      default:
+        break;
     }
   }
   return result;
 }
-
-/** The normalizer: every list present, so a consumer never asks whether a stage could emit one. */
-const ExploreResultShape = z.looseObject({
-  candidates: z.array(CandidateSchema).default([]),
-  consolidations: z.array(ConsolidationSchema).default([]),
-  objections: z.array(ObjectionSchema).default([]),
-  deferred: z.array(DisposalSchema).default([]),
-  rejected: z.array(DisposalSchema).default([]),
-  questions: z.array(QuestionDraftSchema).default([]),
-  next_actions: z.array(NextActionDraftSchema).default([]),
-});
 
 // ---------------------------------------------------------------------------- the review
 

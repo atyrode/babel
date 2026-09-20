@@ -1,8 +1,8 @@
 import { useState, type ReactElement, type ReactNode } from "react";
 import type { HostServices } from "@manifold/plugin";
 import { Chip, Cluster, Disclosure, Stack } from "@manifold/ui";
-import { ACTIONS } from "../contract.ts";
-import { ask, refusal, since, type RecordPeel } from "./api.ts";
+import { ACTIONS, FeedPostSchema } from "../contract.ts";
+import { ask, NO_SEAT, openRecord, refusal, since, type RecordPeel } from "./api.ts";
 import {
   KIND_LABELS,
   KIND_TONES,
@@ -13,6 +13,7 @@ import {
 } from "./rows.tsx";
 import { Votes } from "./votes.tsx";
 
+import { JevPosition } from "./jev.tsx";
 /*
   ONE RECORD, PEELED (§8.6).
 
@@ -44,6 +45,19 @@ function label(key: string): string {
 }
 
 const COUNTED = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+
+/**
+ * WHAT A CITATION'S VERDICT SAYS TO A READER (#348), in the words a person acts on rather than
+ * the vocabulary the record stores. `unquoted` has no entry: a citation that quoted nothing is
+ * rendered as a citation without a pull-quote, and telling a reader what was not checked about
+ * a quote that does not exist is noise.
+ */
+const VERDICTS: Record<string, string> = {
+  verified: "found at this line",
+  moved: "found elsewhere in this session",
+  absent: "not found in this session",
+  unchecked: "not checked",
+};
 
 /** A count as a word up to nine, because a sentence reads and a numeral tallies. */
 function counted(value: number): string {
@@ -248,9 +262,14 @@ export function Peel({
   now: number;
 }): ReactElement {
   const [open, setOpen] = useState<readonly boolean[]>(INITIAL);
+  const [navigation, setNavigation] = useState("");
   const toggle = (index: number): void =>
     setOpen((current) => current.map((value, at) => (at === index ? !value : value)));
   const post = peel.post;
+  // An observation is a record the peel can open and the feed never lists. Every other top row
+  // is still the exact FeedPost the votes strip reads; parsing after the discriminant keeps the
+  // wider record-door contract out of the feed component.
+  const feedPost = post.kind === "observation" ? null : FeedPostSchema.parse(post);
   const fields = Object.entries(peel.case);
   const machinery = Object.entries(peel.machinery);
   const age = since(post.createdAt, now);
@@ -259,14 +278,17 @@ export function Peel({
     <Stack className="babel-record" gap="var(--babel-space-4)">
       <header className="babel-record-head">
         <Cluster gap="var(--babel-space-3)" align="start">
-          <Votes post={post} ticked={false} />
+          {feedPost !== null && <Votes post={feedPost} ticked={false} />}
           <Stack gap="var(--babel-space-2)">
             <h1 className="babel-record-claim">
               {post.title === "" ? peel.claim.statement : post.title}
             </h1>
             <Cluster className="babel-facts" gap="var(--babel-space-2)" align="baseline">
-              <span className="babel-kind" data-tone={KIND_TONES[post.kind]}>
-                {KIND_LABELS[post.kind]}
+              <span
+                className="babel-kind"
+                data-tone={post.kind === "observation" ? "quiet" : KIND_TONES[post.kind]}
+              >
+                {post.kind === "observation" ? "Observation" : KIND_LABELS[post.kind]}
               </span>
               <Chip className="babel-standing" data-standing={peel.claim.standing}>
                 {peel.claim.standing}
@@ -298,7 +320,7 @@ export function Peel({
           )}
           {post.kind === "question" ? (
             <RowAnswer host={host} id={post.id} onActed={onActed} />
-          ) : (
+          ) : post.kind === "observation" ? null : (
             <RuleActs host={host} id={post.id} acts={POST_ACTS} onActed={onActed} />
           )}
           {/* WHAT A RUN PROPOSED BE DONE, under the ruling and never above it: the record's
@@ -359,9 +381,14 @@ export function Peel({
             {peel.evidence.map((item, index) => (
               <figure
                 className="babel-evidence"
+                data-verification={item.verification === "" ? undefined : item.verification}
                 key={`${item.excerpt.slice(0, 24)}-${String(index)}`}
               >
-                <blockquote className="babel-quote">{item.excerpt}</blockquote>
+                {/* A CITATION THAT QUOTED NOTHING SHOWS NO PULL-QUOTE. An empty one reads as a
+                    person who said nothing, and most of the imported corpus quoted nothing. */}
+                {item.excerpt !== "" && (
+                  <blockquote className="babel-quote">{item.excerpt}</blockquote>
+                )}
                 <figcaption className="babel-note">
                   {item.speaker}
                   {item.session !== null && (
@@ -371,6 +398,13 @@ export function Peel({
                     </>
                   )}
                   {item.line !== null && <> · line {item.line}</>}
+                  {/* WHAT BABEL FOUND WHEN IT LOOKED (#348). It is beside the line because it
+                      is a fact about the locator, and it is words rather than a badge: badges
+                      are rationed to standing and kind, and "not found in this session" is a
+                      sentence a reader has to actually read. */}
+                  {VERDICTS[item.verification] !== undefined && (
+                    <> · {VERDICTS[item.verification]}</>
+                  )}
                 </figcaption>
                 {item.note !== "" && <p className="babel-evidence-note">{item.note}</p>}
               </figure>
@@ -385,14 +419,25 @@ export function Peel({
         <Cluster className="babel-related" gap="var(--babel-space-2)">
           {peel.related.map((related) => (
             <span className="babel-related-row" key={`${related.relation}-${related.id}`}>
-              <span className="babel-related-word">{related.relation}</span> {related.title}
+              <span className="babel-related-word">{related.relation}</span>{" "}
+              <button
+                type="button"
+                className="babel-link"
+                onClick={() =>
+                  setNavigation(openRecord(host, related.id) === "no_tile" ? NO_SEAT : "")
+                }
+              >
+                {related.title}
+              </button>
             </span>
           ))}
         </Cluster>
       )}
+      {navigation !== "" && <p role="status">{navigation}</p>}
 
       <Depth index={3} title="The reception" open={open} onToggle={toggle}>
         <Stack gap="var(--babel-space-3)">
+          <JevPosition host={host} id={post.id} detail />
           {peel.reception.contested && (
             <p className="babel-contested-note">Babel&apos;s reviewers are split on this.</p>
           )}

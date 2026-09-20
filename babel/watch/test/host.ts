@@ -104,6 +104,7 @@ export function runRow(
     records: 0,
     freshness: "fresh",
     progress: null,
+    models: [],
     ...row,
   };
 }
@@ -122,6 +123,7 @@ export function runProgress(
     costUsd: 0,
     lastModel: "",
     stalled: false,
+    unheard: false,
     updatedAt: over.since,
     ...over,
   };

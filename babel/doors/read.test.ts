@@ -10,7 +10,13 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, CONDUCTOR_CYCLE_KEY, FeedResultSchema, door } from "../contract.ts";
+import {
+  ACTIONS,
+  CONDUCTOR_CYCLE_KEY,
+  FeedResultSchema,
+  RecordPeelSchema,
+  door,
+} from "../contract.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import { readDoors } from "./read.ts";
@@ -248,11 +254,14 @@ describe("the answers", () => {
     expect(answer).toEqual({ refused: "no record pro_0000dead" });
   });
 
-  test("an observation is refused by name rather than served as a post", async () => {
-    const answer = await dispatch(ACTIONS.record, { id: OBSERVATION });
-    expect(answer).toHaveProperty("refused");
-    expect((answer as { refused: string }).refused).toContain(OBSERVATION);
-    expect((answer as { refused: string }).refused).toContain("evidence");
+  test("an observation opens in its own kind without becoming a feed post", async () => {
+    const answer = RecordPeelSchema.parse(await dispatch(ACTIONS.record, { id: OBSERVATION }));
+    expect(answer.post).toMatchObject({
+      id: OBSERVATION,
+      kind: "observation",
+      title: "an observation",
+    });
+    expect(answer.claim.statement).toBe("an observation");
   });
 
   test("the thread, the topics, one topic and the pulse answer inside their schemas", async () => {
@@ -325,5 +334,142 @@ describe("the answers", () => {
       ceilings: { perRunUsd: 0, perDayUsd: 0, concurrent: 0 },
       recipes: [{ id: "outcome-integrity", runs: 1, lastRunId: "run-a" }],
     });
+  });
+
+  /*
+    WHAT A PANEL LEARNS ABOUT A JOB THAT HAS NOT FINISHED (#261, #169).
+
+    Through `runs` and nothing else: it is the door Watch's live table calls, and before this
+    the only thing it could say about a running job was that it existed. The row below is one
+    the conductor's fold would have written — a job eleven minutes at the model, three calls
+    metered, and a SECOND model on the newest of them.
+  */
+  test("a running job's stage, spend and the models that answered come back through `runs`", async () => {
+    const { db } = harness;
+    await insert(db, "runs", {
+      id: "run-live",
+      kind: "explore",
+      machine_id: "dev-01",
+      job_id: "job-live",
+      recipe_id: "outcome-integrity",
+      started_at: stamp(NOW - HOUR),
+      records: 0,
+      payload: "{}",
+    });
+    await insert(db, "run_progress", {
+      run_id: "run-live",
+      job_id: "job-live",
+      stage: "at the model",
+      message: "reading the corpus",
+      since: stamp(NOW - 11 * 60_000),
+      calls: 3,
+      input_tokens: 12_000,
+      output_tokens: 900,
+      cache_tokens: 400,
+      cost_usd: 0.31,
+      last_model: "anthropic/claude-sonnet-4",
+      last_call_at: stamp(NOW - 20_000),
+      seq: 40,
+      models: JSON.stringify(["anthropic/claude-opus-4-1", "anthropic/claude-sonnet-4"]),
+      stalled: 0,
+      updated_at: stamp(NOW - 20_000),
+    });
+    harness.store.touch();
+
+    const answer = (await dispatch(ACTIONS.runs, {})) as {
+      runs: readonly {
+        id: string;
+        models: readonly string[];
+        progress: Record<string, unknown> | null;
+      }[];
+    };
+    const live = answer.runs.find((row) => row.id === "run-live");
+    expect(live?.progress).toEqual({
+      stage: "at the model",
+      message: "reading the corpus",
+      fraction: null,
+      since: stamp(NOW - 11 * 60_000),
+      calls: 3,
+      inputTokens: 12_000,
+      outputTokens: 900,
+      cacheTokens: 400,
+      costUsd: 0.31,
+      lastModel: "anthropic/claude-sonnet-4",
+      stalled: false,
+      updatedAt: stamp(NOW - 20_000),
+      unheard: false,
+    });
+    // THE FALLBACK IS THE POINT. `lastModel` is what answered the newest call and would have
+    // been the whole record; both models are here, in the order this run first heard them, so
+    // a reader can see that it did not start on the one that is answering now.
+    expect(live?.models).toEqual(["anthropic/claude-opus-4-1", "anthropic/claude-sonnet-4"]);
+  });
+
+  test("the models a settled run was answered by are read off its receipt", async () => {
+    await harness.db.run(`UPDATE runs SET payload = ? WHERE id = 'run-a'`, [
+      JSON.stringify({
+        runId: "run-a",
+        counts: { records: 1 },
+        model: "anthropic/claude-opus-4-1",
+        models: ["anthropic/claude-sonnet-4"],
+      }),
+    ]);
+    harness.store.touch();
+    const answer = (await dispatch(ACTIONS.runs, {})) as {
+      runs: readonly { id: string; models: readonly string[] }[];
+    };
+    // ONE FIELD, BOTH HALVES OF A RUN'S LIFE: the fold's row is gone, and the same `models` a
+    // live row answered from is now the receipt's. What it ASKED for stays `model` on the
+    // receipt the `run` door hands back whole, so the two are never one sentence again.
+    expect(answer.runs.find((row) => row.id === "run-a")?.models).toEqual([
+      "anthropic/claude-sonnet-4",
+    ]);
+    expect(await dispatch(ACTIONS.run, { id: "run-a" })).toMatchObject({
+      receipt: { model: "anthropic/claude-opus-4-1", models: ["anthropic/claude-sonnet-4"] },
+    });
+  });
+
+  /*
+    A JOB THAT DIED BETWEEN TWO FOLDS (#261).
+
+    Nothing deletes a progress row but a settlement, so a job whose hub stopped answering — or
+    whose loop stopped waking — leaves its last fold standing for ever. The row is still shown,
+    because it is the last true thing anyone observed, but it is marked: the stage is a reading
+    taken at `updatedAt` and not a claim about now.
+  */
+  test("a fold nobody has refreshed is reported unheard rather than as the present", async () => {
+    const { db } = harness;
+    await insert(db, "runs", {
+      id: "run-gone",
+      kind: "explore",
+      machine_id: "dev-01",
+      job_id: "job-gone",
+      started_at: stamp(NOW - HOUR),
+      records: 0,
+      payload: "{}",
+    });
+    await insert(db, "run_progress", {
+      run_id: "run-gone",
+      job_id: "job-gone",
+      stage: "at the model",
+      since: stamp(NOW - 40 * 60_000),
+      calls: 1,
+      last_model: "anthropic/claude-opus-4-1",
+      last_call_at: stamp(NOW - 35 * 60_000),
+      seq: 12,
+      models: JSON.stringify(["anthropic/claude-opus-4-1"]),
+      stalled: 0,
+      updated_at: stamp(NOW - 6 * 60_000),
+    });
+    harness.store.touch();
+
+    const answer = (await dispatch(ACTIONS.runs, {})) as {
+      runs: readonly { id: string; progress: { stage: string; unheard: boolean } | null }[];
+    };
+    const gone = answer.runs.find((row) => row.id === "run-gone");
+    expect(gone?.progress?.unheard).toBe(true);
+    // The stage is NOT erased: "nobody has confirmed this since" is a different sentence from
+    // "this job is nowhere", and only the first one is true.
+    expect(gone?.progress?.stage).toBe("at the model");
   });
 });

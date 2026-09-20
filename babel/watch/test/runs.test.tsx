@@ -141,6 +141,85 @@ test("a run at the model that has gone quiet is marked stalled, and says that is
   expect(root.querySelector(STALLED)?.getAttribute("title")).toContain("not a death");
 });
 
+test("a running row names the model answering now and says it is not the only one", async () => {
+  const base = Date.now();
+  const fake = fakeHost(
+    watchDoors({
+      runs: () =>
+        runsResult([
+          runRow({
+            id: "run_fell_back",
+            state: "running",
+            startedAt: new Date(base - 600_000).toISOString(),
+            lastWord: new Date(base - 4_000).toISOString(),
+            models: ["anthropic/claude-opus-4-1", "anthropic/claude-sonnet-4"],
+            progress: runProgress({
+              stage: "at the model",
+              since: new Date(base - 70_000).toISOString(),
+              calls: 4,
+              lastModel: "anthropic/claude-sonnet-4",
+            }),
+          }),
+        ]),
+    }),
+    MACHINES,
+  );
+  const root = await mount(<Watch host={fake.host} />);
+  await settle();
+
+  // The cell says what is answering NOW and that something else answered before it. A cell
+  // holding only `lastModel` read as "this run is a sonnet run", which is the sentence
+  // 2026-09-13 believed about runs that had been launched on something else (#169).
+  const row = root.querySelector(".plugin-atyrode_babel_watch__live-row")?.textContent ?? "";
+  expect(row).toContain("anthropic/claude-sonnet-4 (+1 earlier)");
+  const marked = [...root.querySelectorAll("tbody td")].find((cell) =>
+    (cell.getAttribute("title") ?? "").includes("More than one model"),
+  );
+  expect(marked).toBeDefined();
+});
+
+test("a job nobody has confirmed lately shows its last reading, not a running clock", async () => {
+  const base = Date.now();
+  const fake = fakeHost(
+    watchDoors({
+      runs: () =>
+        runsResult([
+          runRow({
+            id: "run_vanished",
+            state: "running",
+            startedAt: new Date(base - 3_600_000).toISOString(),
+            lastWord: new Date(base - 3_600_000).toISOString(),
+            freshness: "lost",
+            progress: runProgress({
+              stage: "at the model",
+              since: new Date(base - 3_000_000).toISOString(),
+              updatedAt: new Date(base - 600_000).toISOString(),
+              calls: 1,
+              lastModel: "anthropic/claude-opus-4-1",
+              unheard: true,
+            }),
+          }),
+        ]),
+    }),
+    MACHINES,
+  );
+  const root = await mount(<Watch host={fake.host} />);
+  await settle();
+
+  // THE STAGE IS STILL THERE: it is the last true thing anyone observed, and hiding it would
+  // take away exactly what an operator goes looking for when a job stops answering.
+  const row = root.querySelector(".plugin-atyrode_babel_watch__live-row")?.textContent ?? "";
+  expect(row).toContain("at the model");
+  // …and it is not ticking. A clock counting up from `since` would render a job that died
+  // fifty minutes ago as one that has been working for fifty minutes.
+  expect(root.querySelector(STAGE)).toBeNull();
+  expect(root.querySelector(STALLED)?.textContent).toBe("last heard 10m 00s ago");
+  expect(root.querySelector(STALLED)?.getAttribute("title")).toContain("last reading anyone took");
+  // The header does not count it at the model either: one unconfirmed row is how a header
+  // that says "all fine" gets built out of rows that are each individually honest.
+  expect(root.textContent).toContain("1 in flight, 0 at the model, 1 not confirmed lately");
+});
+
 test("stop asks the door for that run and says what stopping means", async () => {
   const base = Date.now();
   const fake = fakeHost(
@@ -223,6 +302,9 @@ test("an ended run is a receipt: what it took, wrote, spent and how it closed", 
               tokens: 21_500,
               calls: 3,
               costUsd: 1.25,
+              // TWO MODELS ON ONE RECEIPT: the run was answered by a second one partway
+              // through, which is the fact a settled row could not carry before (#169).
+              models: ["anthropic/claude-opus-4-1", "anthropic/claude-sonnet-4"],
             }),
           ],
           9,
@@ -243,7 +325,14 @@ test("an ended run is a receipt: what it took, wrote, spent and how it closed", 
   // calls and the tokens are the hub's own numbers, kept with the receipt so that they outlive
   // the in-flight row the conductor drops when a run settles.
   const cells = [...root.querySelectorAll("tbody tr td")].map((cell) => cell.textContent ?? "");
-  expect(cells.slice(4)).toEqual(["40", "3", "21,500", "$1.25", "finished"]);
+  expect(cells.slice(4)).toEqual([
+    "40",
+    "3",
+    "21,500",
+    "$1.25",
+    "anthropic/claude-opus-4-1 → anthropic/claude-sonnet-4",
+    "finished",
+  ]);
   expect(root.textContent).toContain("8 older runs in the store.");
 });
 

@@ -90,9 +90,7 @@ const code: CodeEngine & {
   cancelled: [],
   cancelRefusal: "",
   profiles: async () => await Promise.resolve({ ok: true, value: [code.listed] }),
-  // The authority read the press and the posting both stand behind (#255): this drain's
-  // profile has the account it was started to spend, which is the whole of what it answers.
-  spendAuthority: async () => await Promise.resolve({ ok: true, value: code.listed.accounts }),
+  checkProfile: async () => await Promise.resolve({ ok: true, value: null }),
   runSession: async (request) => {
     const parsed = actionSchemas.runSession.input.safeParse({
       containerId: request.profile.containerId,

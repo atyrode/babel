@@ -414,6 +414,9 @@ export function peel(overrides: Partial<RecordPeel> = {}): RecordPeel {
         },
         note: "Read as a requirement on the launch form.",
         line: 412,
+        // The excerpt above was found at the line this citation names, which is the state a
+        // reader should see most often and the one a mark has to be distinguishable from.
+        verification: "verified",
       },
     ],
     // Three supports from one run: the 84.5% case, and the one the prose has to read correctly.

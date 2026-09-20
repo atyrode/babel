@@ -77,11 +77,37 @@ export const JEV_SERVICE = {
   serviceId: "atyrode.babel.jev.typesafe",
   credentialRef: "typesafe-api",
   origin: "https://api.typesafe.ai",
-  /** The operations the part may name. A policy may declare more; the part calls these. */
-  operations: { judge: "judge" },
+  /**
+   * The operations the part may name. A policy may declare more; the part calls these.
+   *
+   * `pair` is a SECOND operation rather than a second question on the first, because the first
+   * carries ONE state and a relation is asked of two. `bun babel/jev/tools/seed-questions.ts
+   * policy` prints the literals and the projection for both; a deployment whose policy declares
+   * only `judge` reaches nothing here — the host refuses an operation the policy does not
+   * declare, which lands in `askJev`'s one absence like every other.
+   */
+  operations: { judge: "judge", pair: "pair" },
   /** Jev's own word for the material a question is asked of, and the one field a caller fills. */
   stateField: "state",
+  /**
+   * The two states an ORDERED pair is asked about. The order is the question's subject, not
+   * decoration: `supersedes` asks whether the second describes a later state of the first, so a
+   * policy that mapped these two literals to one another's leaves would invert every direction
+   * it reported.
+   */
+  pairFields: { a: "state_a", b: "state_b" },
 } as const;
+
+/** Pin a pass to a ready policy without invoking it. Guest RPCs need only be awaitable. */
+export async function jevPolicyRevision(services: JevServices): Promise<string | null> {
+  try {
+    const roster = await services.listInstances({});
+    const bound = roster.services.find((service) => service.serviceId === JEV_SERVICE.serviceId);
+    return bound?.state === "ready" ? (bound.configuration?.revision ?? null) : null;
+  } catch {
+    return null;
+  }
+}
 
 /** An operation id the part may ask for. A string the policy does not declare is refused by the
  *  host, but it is also a typo, and this keeps it from compiling. */
@@ -156,6 +182,8 @@ export interface JevAnswerStore {
 export interface JevMemo {
   readonly key: string;
   readonly answers: JevAnswerStore;
+  /** A sweep pins the policy it used to size and label this work. */
+  readonly expectedRevision?: string;
 }
 
 /**
@@ -189,6 +217,9 @@ export async function askJev(
     // behaviour in all of them is the behaviour it has when the part is not installed at all.
     const configuration = bound?.state === "ready" ? bound.configuration : null;
     if (configuration === null) return null;
+    if (memo?.expectedRevision !== undefined && memo.expectedRevision !== configuration.revision) {
+      return null;
+    }
     // THE MEMO IS BEHIND THE BINDING CHECK, so a warm store cannot make an unbound, disabled or
     // dry part answer — the fallback stays the same single path with a full cache as with none —
     // and IN FRONT OF THE INVOCATION, which is the only statement here that spends anything.

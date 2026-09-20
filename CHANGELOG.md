@@ -641,6 +641,99 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   with its own votes and challenges, while a policy depth bound prevents recursive refinement
   from becoming an unbounded obligation. The routed conductor lifecycle, claim binding,
   granular validation and bounded refinement persistence are covered by the plugin tests.
+- **Jev now screens a record and proposes work beside it, and can do nothing else to it.** An
+  intake pass judges each record once for the whole document and asks every voter what that
+  judgement means; the only thing a voter may return is a next action from the closed
+  vocabulary, so no code path exists by which one could refuse, hide or demote a record. Every
+  absence — the part removed, no service binding, no credit, a record too large to send — is one
+  `null` and the record is reported NOT JUDGED YET rather than judged and found wanting, and a
+  voter that throws is reported `failed` by voter and record while the sweep finishes. Three
+  voters ship on it, each a line in a reviewable bank document rather than a constant: whether a
+  record's confidence outruns its evidence (a score, because the yes/no form answered the same
+  way for 92.4% of the corpus), what kind of check would settle its claim (a choice over six,
+  the study's most robust axis at 37.5% settleable from Babel's own tables), and whether it says
+  what to do at all (a score whose lower two levels hold 54.9% of the corpus). The part computes
+  and does not deliver: `babel.suggest` (#412) declares `containers:write`, a cross-plugin call
+  is graded against the caller's own ceiling, and declaring that capability to reach one door
+  would open every ruling door at the same stroke, so the pass hands its suggestions to a
+  caller-supplied function and makes no door call but the one that sizes a sweep. The host
+  mechanism that would admit the single write is open as atyrode/manifold#770. Proved by
+  `babel/jev/screen/pass.test.ts` and the three voter suites: an unbound host, a refused
+  service and an over-cap record leave a record byte-identical and produce one identical
+  report; an admitted row that advises `none` still proposes nothing; and a score of 0.7
+  reaches the tally as 0.7, backing a voter that 0.69 does not.
+- **Jev's independent votes are now a position a consumer can read, rather than one net number.**
+  The bank already held the thirteen calibrated voters and a weightless `tally()`; nothing said
+  what that sum meant when two voters backed a record and one objected, when a reply left a voter
+  silent, or when Jev did not judge the record at all. A derived position now names `backed`,
+  `objected` or `contested` before giving the sum, carries both sides by voter, and states the
+  admitted roster, who was heard and who was silent. Missing judgement has no number; a measured
+  abstention is a real zero; a voter handed an answer of the wrong shape is silent rather than
+  agreement; and a voter that throws is reported beside the position and never counted into it.
+  The position is recomputed from the record revision, bank and judgement and is never stored, so
+  there is no second authority to disagree with those rows. A pass reports the count at every
+  standing, and one-record reads return the same `unjudged` position whether Jev is unbound or was
+  never installed. The measured corpus row still reproduces seven back, two object, naming
+  `scope` and `editorial`; boundary tests pin a 2–1 disagreement separately from unanimous backing
+  and extend the existing unrounded-score path through to the standing an operator would see.
+
+- **Jev can grade existing records in bounded passes, and Feed can read the result.** A free
+  `sweepPlan` sizes all live record kinds under the bank and service policy revisions; an explicit
+  press walks batches of at most 24 without changing Babel's ranking or the operator's rulings.
+  Contested readings lead with the disagreement, and reception names backers, objectors and
+  silent voters. Observations open from the related-record strip in their own kind, without
+  becoming posts or acquiring ruling controls.
+
+  The part still cannot write. Suggestions are submitted separately by its allow-listed caller,
+  after their count is visible; only those submissions are durable. Readings and the continuation
+  last for the browser session, so a silent record can be offered again after the bounded memo
+  loses it. A refused judgement stops further calls without discarding an earlier batch.
+  Real-store tests preserve the frontier and ranked feed. The installed local preview proves the
+  unbound path and observation navigation; synthetic browser responses exercise contested and
+  unheard readings, partial progress and explicit submission without a paid provider call.
+
+- **Jev can propose which pairs are worth asking about, then report two relations without
+  confusing them.** Comparing the imported 6,038 records outright would be 18,225,703 pairs, so
+  a bounded proposer rides the corpus index instead: each record is one search anchor, each
+  unordered neighbour pair is proposed once, and the answer carries its ceiling, whether the
+  ceiling cut, how many searches ran, and whether meaning was absent, partial or approximate.
+  With no embedding policy it still proposes from FTS5, says that the meaning service did not
+  answer and makes no invocation — the lexical floor the study itself measured, not silent
+  success.
+
+  Contradiction and supersession ride one paid pair judgement but remain different types. A
+  contradiction is canonical and symmetric, is delivered beside both records in identical words
+  and has nowhere to name a preferred side. A supersession names `stale` and `fresh`, carries both
+  instants, reverses when the ordered input reverses, and delivers only beside the stale record,
+  making direction part of the effect rather than a label. Neither invents a bank threshold:
+  the measured 40 contradictions and 36 supersessions were over one lexically blocked
+  2,000-pair sample, not records of a kind, so the caller must state a cut and an absent cut is
+  reported as uncalibrated. Proved by `babel/jev/pairs/`: no-policy invocation count, observable
+  proposal bound, symmetric contradiction delivery and direction-reversing supersession delivery.
+
+  Those two relations are now reachable at runtime rather than only computable. `jev.pairs` is a
+  third door beside the sweep's two: its caller names the anchors and the cuts this deployment
+  has measured, the pass reads each anchor through `babel.record`, retrieves candidates through
+  `babel.search`, and buys ONE judgement per ordered pair through a second service operation —
+  `pair`, which carries two states where the per-record `judge` carries one. Reusing `judge`
+  would have sent half a pair and read a relation off a projection that never names one, so
+  `seed-questions.ts policy` now prints both operations' literals and the pair projection's two
+  leaves. The report separates candidates, attempted, judged and truncation, so a deployment
+  that installed half a policy reads nothing like a corpus with no contradictions in it; the
+  door declares `containers:read` alone and the suggestions come back for the caller to deliver.
+  Every suggestion's basis digests the service policy revision and the stated cuts alongside the
+  question wording, and the revision is re-checked at the call, so an answer can never be filed
+  under a policy that did not produce it.
+
+- **Two findings about one record no longer overwrite each other.** `babel.suggest` kept one live
+  suggestion per suggester, revision and kind, which is right for a per-record voter and a loss
+  for a pair: a record that contradicts two others carried whichever was written second, and
+  nothing said the first had been dropped. Optional `subject` and `aspect` fields distinguish the
+  counterpart and the independent relation in both the live key and the insert guard. The
+  counterpart must exist and cannot be the record itself. Empty defaults preserve existing
+  per-record callers and rows. The door regression proves that different counterparts and
+  different relations about the same counterpart survive in either order, while restating one
+  replaces only that finding.
 
 ### Removed
 
@@ -744,6 +837,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   the door's (atyrode/manifold#749). An owner key is unaffected.
 
 ### Fixed
+
+- **Old malformed identifiers no longer poison a whole search.** Retrieval excludes unnameable
+  records before its candidate limit, reports their count in coverage, and keeps topics and
+  pending-suggestion reads usable without weakening the import guard. The regression includes
+  more malformed matches than the candidate window and an embedded NUL; the installed preview
+  returns valid results while reporting twelve legacy rows it cannot name.
+- **The preview loop discovers this family, not its downloaded dependencies.** After dependency
+  preparation, scanning the repository root tried to install duplicate Code bundles. `bun run dev`
+  now scans `babel/`; the local preview installed all four plugins after the change.
+- **Packing leaves the stamped manifest ready for the same checks as a clean checkout.** The
+  stamper uses the repository's formatter instead of rewriting the file in generic JSON layout;
+  packing followed immediately by the format check now succeeds, rather than failing the next CI
+  run after a successful local gate.
 
 - **A record could be imported that no door would ever open, and nothing could remove it.** Found
   by rendering the feed on a hub rather than in a test document: twelve rows went in through the
@@ -1043,26 +1149,180 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   an age cross a minute while the hub answers the same thing, one answers a question and then
   watches the list let the world back in, one pages a topic and changes subject.
 
-- **A run was posted without anyone asking whether the deployment could pay for it.** A Babel run
-  is a Code session, the account that pays for it belongs to the Code profile, and the key behind
-  that account is the machine broker's — Babel names a container and holds nothing. What was
-  missing is the other half of that arrangement: the plugin posted the spend blind. A press
-  against a profile with no account sealed its material first — an `atyrode.babel.prepare` job
-  with thirty minutes and half a gigabyte in its ceiling — and was told `code_…` two wakes later,
-  and the conductor re-dispatched a review every wake for ever against the same absence.
-  `CodeEngine.spendAuthority` now asks Code what the named profile spends, and `runSession` sits
-  behind it, so the one call that costs money is unreachable where the operator installed
-  nothing: the refusal is `engine_no_account` and it names the profile, says what is missing and
-  says that no install of Babel's own can supply it. The gate is in the ADAPTER and not at the
-  two call sites, so a third caller inherits it by existing. **With no account installed no
-  session is posted at all**, which the tests assert by counting the invocations of Code's door
-  rather than by reading a return value, and the press refuses before it posts the preparation.
-  An unresolved profile is still posted, because Code stores account choices as exclusions and an
-  empty list it could not resolve means ask again, never "spends nothing". **No capability is
-  added or widened and the manifest does not move**: the authority read is `containers:read`,
-  which Babel already held. And the absence is now pinned — `test/contract.test.ts` fails if the
-  contract ever names a third host service, which is the shape a model credential of Babel's own
-  would arrive in (#255).
+- **An empty account selection is caught before preparation, not afterwards.** Babel asks Code
+  about the selected profile revision after checking local eligibility and before sealing the
+  material, and every session posting uses the same guard. A positively resolved empty selection
+  returns `engine_no_account`; a moved revision is stale, not evidence of account absence.
+  An unresolved observation still leaves the decision to Code, which revalidates when posting.
+  No provider credential or new capability enters Babel. The regressions prove that refusal
+  posts neither preparation nor session, that local rejection needs no Code call, and that
+  Code's later refusal remains authoritative. A read-only smoke against the preview's actual
+  Code door also exercised the pinned profile schema and stale-revision rejection (#255).
+
+- **A preparation no longer re-reads a corpus it has already read.** Reading logs is the whole
+  cost of `prepare`, and the answer never depended on which run asked: on 2026-09-12 twenty
+  concurrent explorations over overlapping scopes read and hashed the same sessions twenty times
+  — ~12 GB per draw, load 41 on twelve cores with not one model call in flight, and an OOM that
+  took the operator's own editor with it. A machine now keeps its reading of each settled log —
+  both digests, the record count, the preflight's report and the normalized, redacted record
+  stream itself — in the managed `atyrode.babel.cache` location the job already declares,
+  written in the same single pass that seals the material. An entry is a claim about an
+  OBSERVATION and not about the corpus: the path, the size, the mtime, the normalization
+  schema, the detector set and the preflight mode are all re-observed before it is used, so a
+  log that moved is not invalidated, it simply fails to match, and #337's refusal of a stored
+  position applies unchanged — there is no second authority here to disagree with the
+  filesystem. One entry per session, so the cache is bounded by the corpus rather than by how
+  often it is prepared. What makes it admissible at all is the exclusion beside it: a log whose
+  bytes could still be moving is never in a scope, so size and mtime are only ever asked about a
+  file that settled minutes ago. And the stream is verified rather than trusted — it is
+  re-hashed as it is replayed into the material, and bytes that do not digest to what they were
+  kept as refuse the scope and drop the entry, so the source digest a citation carries is always
+  a digest of what was actually sealed. The suites prove the observable rather than a duration: a
+  second preparation over an unchanged scope opens **no** session log, produces the same
+  preparation id, the same preflight report and byte-identical material; a log that moved is the
+  only one read again; a stream kept unscanned is never served to a preparation that redacts;
+  and a corrupted entry costs one refusal and not a machine that can no longer prepare.
+
+- **The specification described work Babel no longer does, and did not describe work it does.**
+  Four behaviours had landed without `SPEC.md` saying so — the drain (its target, its allocation,
+  its controller, its four endings and the one record every ending leaves), the claim that dies
+  with its job, what a run reports while it is still running, and the fact that a review reads its
+  assignment and the sealed material rather than the corpus — so a conformant implementation could
+  still have digested the corpus once per review, which is the design that cost a whole drain day.
+  Two statements had also gone false: §4.10 said nothing indexes the corpus, and `docs/parity.md`'s
+  `index/` row named a closed issue, while an index over Babel's own **records** now exists behind
+  the `search` door. Both now say which half exists and which does not — the session corpus is
+  still unindexed, which is #415 — because "retrieval is built" would be wrong by the larger half.
+  `SPEC.md` §7.1 is new; §4.10, §4.12, §5.7, §6.3, §6.4, §7 and §9 gained a paragraph each, and
+  §6.4 no longer says nothing recognizes an input it has already prepared, because a machine now
+  keeps its reading of a settled log.
+
+- **A citation's quoted text is now checked against the line it cites, and a claim still cannot
+  cite outside the corpus it was served.** Until now a locator was checked only against the
+  material's index — the path was served, the digest matches — which says nothing about whether
+  the quoted span is actually there, so a fabricated quote and a real one were the same row. Of
+  300 digest-verified citations in the imported corpus, 86 carried a quote of twelve characters
+  or more; 53 matched the cited line, 57 matched somewhere else in the right file and 29 matched
+  nowhere in it, and a model asked to judge the same 86 scored 60.5% against a 62% majority
+  baseline. It is string matching, so code does it: a locator now carries `quote`, the
+  settlement reads the cited member of the sealed material back and writes what it found —
+  `verified`, `moved`, `absent`, `unquoted` or `unchecked` — onto the record's own evidence,
+  where the peel renders it beside the words and the receipt counts all five so a deployment can
+  measure its own rate rather than argue from someone else's.
+
+  **The two halves refuse differently, deliberately.** A path outside the selection still refuses
+  the whole answer as `unknown-reference`: it is a claim about bytes nobody served and nothing
+  later can check it. A quote that is not where it says it is MARKS and refuses nothing — it is a
+  claim about real bytes that is wrong about where they are, and discarding a paid run over one
+  is the all-or-nothing waste #231 and #311 measured. The admission is a whitelist of the exact
+  spellings the index carries rather than a resolver, so `sessions/../sessions/<file>` is refused
+  even though it would resolve back inside the material, and bytes are only ever reached through
+  the index entry and never through the string the model wrote. The normalisation is written into
+  `babel/server/engine/citations.ts`'s header and biased one way: whitespace, line endings,
+  Unicode composition and the JSON escaping of a canonical record are not content, so a
+  re-wrapped quote is not an accusation, while case and punctuation are content and a span under
+  twelve characters is `unchecked` rather than verified. The cost an owner should read twice is
+  in `docs/sandbox-threat-model.md` residual 9: checking a quote means the hub reads the cited
+  member of the sealed material into its own memory, once per quoting answer.
+
+- **A claim died with its worker and nobody said so, and a refusal nobody paid for read as
+  money spent.** Two halves of the same blindness. A claim whose job was over kept its batch
+  slot until its lease ran out — 86 minutes each on 2026-09-13, seventy of them over the
+  top-ranked subjects — because a slot was counted from the claims table alone. The store now
+  counts a slot only while a job is still running behind it, so a closed run frees the slot on
+  the next read rather than on the next settlement, and the conductor's reaper is BOUNDED: at
+  most 128 dead claims a cycle, oldest grant first, with a note saying what it left, because a
+  reap holds the write lock a dispatch is waiting behind. The three orphan kinds are now the
+  query's own `WHERE` clause, so the bound bounds the reap and not the reading.
+
+  The other half is what a refusal cost. The park heuristic cleared itself for any refusal at
+  all, so three answers the deployment bought and the contract threw away looked exactly like
+  three it never paid for, and the loop kept buying. A refusal is now filed by whether a model
+  answered — the hub's own meter where one is attached, the sealed submission where none is —
+  and the two are never added together: the pulse counts `refusals.paid` apart from
+  `refusals.free`, and the park carries `spent` and `barren` as separate counts under a reason
+  word from `babel/contract.ts`, with the sentence naming the remedy each implies (the recipe,
+  or the machine). A streak of paid refusals now parks too, which #265 did not ask for: a lane
+  that buys three answers nobody can use is worth stopping for, and one answered review, an
+  hour of quiet or a new policy version lifts it exactly as it lifts a barren park. The day's
+  tally is parsed back through those enums on every wake, so a word no build has spelled
+  cannot reach a reader at all. Proved by a bounded reap of 130 ghosts across two cycles, a
+  freed slot drawn into by the same cycle that freed it, and one metered call moving the same
+  refusal — same code, same zero cost — from `free` to `paid` and the park from `barren` to
+  `spent`.
+
+- **The model a receipt named was the one that answered last, filed under the field that means
+  "what it asked for".** A run reaches a model through a Code profile and the transcript names
+  whatever actually served the turn, so a fallback, a retry or a steer moved it silently and
+  `receipt.model` — documented as the ASK, read as the ask by `RunTrace` and diffed on the
+  request side — was quietly a statement of fact wearing a statement of intent. Two runs of one
+  identical request, one of them served by a substitute, therefore compared as
+  `different-request`, a verdict that disqualifies every other field of the comparison and
+  destroys exactly the same-request-twice measurement the trace exists for. `model` is now the
+  launch's own `askedModel` and nothing else — absent for a conductor-dispatched review, which
+  names a profile and never a model, because absent is the truth about it — `models` is what
+  answered, and a new answer-side diff field `answered` names the models call by call.
+
+  **And on the metered lane nothing recorded what answered at all.** The fold saw a model on
+  every `inference_call` and kept only the newest; `usage.inference` is five numbers and no
+  name; the row holding the newest was deleted by the settlement. So `run_progress` now keeps
+  the distinct models in first-heard order, bounded at eight, the settlement reads them one last
+  time before dropping the row and keeps them in the receipt, and one `models` field on a run
+  answers for both halves of its life — the fold's list while it runs, the receipt's after.
+  Watch shows `sonnet (+1 earlier)` on a live row and the whole chain on a settled one.
+
+  **A progress row also stopped being read as the present.** Nothing deletes one but a
+  settlement, so a job whose hub went quiet — or whose loop stopped waking — left its last fold
+  standing and the panel rendered `at the model since T` over a clock still ticking for a job
+  that died an hour before, which is the 2026-09-13 header in miniature. A fold older than five
+  minutes is now `unheard`, judged at read time against the reader's own clock: the stage is
+  still shown, because it is the last true thing anybody observed, but as `last heard 10m ago`,
+  and the header stops counting it "at the model". The word is deliberately not `stale`, which
+  §4.13 gives to a record and defines as the one judgement no clock makes; unheard is a
+  statement about the report and not about the run, and a job may be perfectly alive and
+  unheard. Proven through the `runs` door a panel calls — a live row's stage, spend, models and
+  freshness, a settled run's models off its receipt, and a fold nobody refreshed coming back
+  unheard — and in the panel document.
+
+- **One unusable item no longer discards the whole paid run.** An exploration is one agent session
+  over a large corpus, so by the time anything validates the answer the tokens are gone — and
+  persistence was all-or-nothing, which converted a partly-wrong result into zero value at full
+  price. On 2026-09-12 several runs finished their model work and lost all of it at persistence:
+  one disposition naming a workspace the machine did not have, one objection attacking an id
+  nobody held, one observation that forgot its counter-evidence position. The conductor then
+  parked reporting that the cycles had spent nothing (#231, post-mortem F16). A submission is now
+  partial: the items that clear the contract are recorded, the items that do not are refused by
+  name with their reason on the receipt's `refusedItems` — a JSON Pointer into the document the
+  model submitted, so the item is findable in `rejectedSubmission` beside it — with
+  `counts.itemsRefused` beside them and the cycle's report naming each dropped item and its
+  reason. The cycle's `refusals` tally is untouched by a run that stood: it answers which
+  submissions the deployment paid for and got nothing from, and a run that recorded nine items
+  and dropped one is not one of those.
+
+  **What "kept" means for a result read as a set is the largest subset closed under §4.2's
+  development path**, and the floor is the only judgement in it. A refused item takes with it
+  everything whose support ran through it — a candidate's observations and its remedy, a finding
+  resting on an observation that fell — and nothing else, which answers the objection the code
+  used to make ("half a development path is worse than none"): the half that is worse than none is
+  the half that dangles, and a path-closed subset never does. Below
+  `SUBMISSION_KEPT_FLOOR` — half, because that is where "mostly worked, one item was wrong" flips
+  to "this answer was not written against this contract" — the submission is refused whole, and it
+  is still spend: the refusal, every item of it, and the cost reach the receipt and the claim is
+  finished either way.
+
+  **The same shape is no longer judged in two places.** `machine/results.ts` validated the
+  submission and `server/engine/records.ts` re-judged it on the way to the rows, in its own words
+  and sometimes under a different code — a consolidation resting on a proposal was
+  `development-path` in one and `unknown-reference: no observation f1` in the other, for one
+  submission, depending on which saw it. The second copy is deleted, `exploreRows` can no longer
+  refuse anything, and the locator check is now asked PER ITEM of the one module that states it
+  (`server/engine/citations.ts`, `unservedCitation`) instead of once over the whole result —
+  which is what finally makes the prompt's own promise true: the claim that cited bytes
+  it was never served is refused and its siblings are not. Proved by a run whose retyped digest
+  costs its observation and the finding on it while the candidate and its question are recorded,
+  by a wholly unusable answer that writes nothing and still settles its claim at cost, and by the
+  evaluation half's own scope rule refused under the same code from the engine and from the store
+  (#263, #311).
 
 ## [0.4.0] - 2026-09-14
 

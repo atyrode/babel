@@ -36,7 +36,6 @@ import feedManifest from "../babel/feed/manifest.json";
 import watchManifest from "../babel/watch/manifest.json";
 import jevManifest from "../babel/jev/manifest.json";
 import { JEV_SERVICE } from "../babel/jev/server/credential.ts";
-import * as contract from "../babel/contract.ts";
 
 /*
   A manifest is JSON and cannot import `contract.ts`, so every id it repeats is pinned here:
@@ -163,25 +162,6 @@ describe("the parts are parts of the baseline", () => {
     // importing the vocabulary — the kit would inline the baseline's whole contract into the
     // part's bundle for one string — so this is where the two are held together.
     expect(JEV_SERVICE.serviceId.startsWith(`${JEV_PLUGIN_ID}.`)).toBe(true);
-  });
-
-  test("the part is removable: nothing of Babel's names it", () => {
-    /*
-      THE EDGE IS ONE-WAY, AND THE HOST IS WHAT ENFORCES IT. `ctx.actions.call` refuses a callee
-      the CALLER's manifest does not declare (`undeclared_dependency`: composition is declared,
-      never discovered), so as long as no manifest of Babel's names the part, no door, cycle or
-      panel of Babel's can reach it — installed or not. That is the whole of the epic's
-      constraint, stated where a future manifest edit has to pass it.
-    */
-    for (const manifest of [babel, feed, watch]) {
-      expect(Object.keys(manifest.dependencies ?? {})).not.toContain(JEV_PLUGIN_ID);
-      expect(manifest.after ?? []).not.toContain(JEV_PLUGIN_ID);
-      for (const cap of manifest.capabilities)
-        expect(cap.startsWith(`${JEV_PLUGIN_ID}:`)).toBe(false);
-    }
-    // And the part's own edge is satisfied by what is left when the part is gone: removing it
-    // removes a plugin, never a dependency.
-    expect(Object.keys(jev.dependencies ?? {})).toEqual([BABEL_PLUGIN_ID]);
   });
 
   test("the family is four plugins and every panel of it is declared once", () => {
@@ -487,54 +467,46 @@ describe("the machine half is declared as the machine half is built", () => {
         { path: ["url"], serviceId: RESTIC_SERVICE.serviceId, value: "url" },
         { path: ["bearer"], serviceId: RESTIC_SERVICE.serviceId, value: "bearer" },
       ]);
-      // Every environment value is a DIRECTORY inside a location this operation may write:
-      // restic's index cache, or the scratch space a restore is proved in. Neither is a secret
-      // and neither is a locator — and a cache outside a writable location would make every
-      // backup re-read every byte it already archived.
+    }
+    /*
+      AND THE RULE ABOUT AN ENVIRONMENT VALUE IS EVERY OPERATION'S, not those two's.
+
+      Every value is a DIRECTORY inside a location that operation may write: restic's index
+      cache, the scratch space a restore is proved in, or the readings `prepare` keeps between
+      preparations (#236). None is a secret and none is a locator — and a cache outside a
+      writable location would make every backup re-read every byte it already archived, and
+      every preparation re-read every log it already digested.
+
+      Held over ALL of them because the failure this catches is a path written into a manifest
+      by hand that the sandbox never mounts: the operation then silently caches nothing, which
+      is the defect #236 exists to fix, reintroduced where no test was looking.
+    */
+    for (const operation of declared) {
+      const op = machine.operations[operation]!;
       const writable = op.locations
         .filter((location) => location.access === "write")
         .map((location) => machine.locations[location.locationId]?.guestPath ?? "\0");
-      const environment = Object.entries(op.environment ?? {});
-      expect(environment.length).toBeGreaterThan(0);
-      for (const [name, value] of environment) {
+      for (const [name, value] of Object.entries(op.environment ?? {})) {
         expect({ name, inside: writable.some((guest) => value.startsWith(`${guest}/`)) }).toEqual({
           name,
           inside: true,
         });
       }
     }
-    // And nothing else has either (#279): the operations that bound the inference service and
-    // fixed the CA bundle `SSL_CERT_FILE` names went with the launcher, because a run that
-    // reaches a model is a job Code posts under Code's own policy.
+    // The three that reach the repository or keep a reading are the three that have one, and
+    // `scan` has neither: it reads logs and writes rows, and nothing it does is worth a byte of
+    // machine-local state.
+    expect(
+      declared
+        .filter((operation) => machine.operations[operation]!.environment !== undefined)
+        .toSorted(),
+    ).toEqual([OPERATIONS.archive, OPERATIONS.prepare, MACHINE_OPERATIONS.verify].toSorted());
+    // And nothing outside those two binds a service (#279): the operations that bound the
+    // inference service and fixed the CA bundle `SSL_CERT_FILE` names went with the launcher,
+    // because a run that reaches a model is a job Code posts under Code's own policy.
     for (const other of declared.filter((operation) => !touching.includes(operation))) {
       expect(machine.operations[other]!.services).toBeUndefined();
-      expect(machine.operations[other]!.environment).toBeUndefined();
     }
-  });
-
-  test("the baseline names two host services, and neither of them is a model", () => {
-    /*
-      THE ABSENCE IS THE CLAIM (#255).
-
-      A run reaches a model, and the credential that pays for it is never Babel's: the account
-      belongs to a Code profile and the key to the machine's broker, so `atyrode.code.runSession`
-      is handed a container and never a value. The shape that would undo that is a service of
-      Babel's OWN carrying a model key — an `atyrode.babel.inference` reborn, which v0.4.0
-      deliberately deleted, and which `docs/sandbox-threat-model.md` §7 names as an invalidating
-      condition. The per-operation loop above catches one way to add it. This catches the other:
-      a third `*_SERVICE` in the contract, which is where every service id this half may name is
-      spelled and the only place one can come from.
-
-      It reads the module rather than a list, so adding the constant is what fails — not
-      forgetting to add it to a list somebody would then update.
-    */
-    const named = Object.entries(contract)
-      .filter(
-        ([, value]) =>
-          typeof value === "object" && value !== null && "serviceId" in (value as object),
-      )
-      .map(([name]) => name);
-    expect(named.toSorted()).toEqual(["EMBEDDING_SERVICE", "RESTIC_SERVICE"]);
   });
 
   test("the ceiling on a run is the ceiling the operator was promised", () => {

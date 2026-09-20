@@ -434,6 +434,32 @@ test("the budget refuses before any candidate is built", async () => {
   expect(held.gap.reason).toBe("batch");
 });
 
+test("a claim whose job is over holds no batch slot, whatever its lease still says", async () => {
+  const { db, coord } = await deployment({ enabled: true, batchSize: 1 });
+  await record(db, "hyp_00000001", "hypothesis", 40);
+  // The one slot this deployment has, held by a claim whose job is still running. The draw is
+  // refused, and that is the bound doing exactly what it is for.
+  await claimRow(db, "asg_live", "cycle_0", 0.01, null, 0, "job_live");
+  await runOn(db, "job_live", "dev-01");
+  expect(await coord.open(NOW)).toEqual({ total: 1, byMachine: { "dev-01": 1 } });
+  const wedged = await coord.draw({ runId: "cycle_1", now: NOW });
+  if (wedged.outcome !== "gap") throw new Error("the batch bound did not refuse");
+  expect(wedged.gap.reason).toBe("batch");
+
+  // Now the job ends and nothing settles the claim: an ingestion that could not write it, a
+  // hub that restarted between the two, an operator who killed the worker. THE LEASE STILL
+  // HAS FIFTEEN MINUTES TO RUN, and on 2026-09-13 a lease raised to 5200 seconds is what
+  // seventy of these held the top-ranked subjects with for 86 minutes each (F3). A slot is
+  // work in progress, and there is no work here: the deployment draws again at once, without
+  // waiting for the conductor's reaper to get to the row.
+  await db.run(`UPDATE runs SET closure = 'failed', finished_at = ? WHERE job_id = ?`, [
+    new Date(NOW).toISOString(),
+    "job_live",
+  ]);
+  expect(await coord.open(NOW)).toEqual({ total: 0, byMachine: {} });
+  expect(drawn(await coord.draw({ runId: "cycle_1", now: NOW })).recordId).toBe("hyp_00000001");
+});
+
 test("a day with nothing to review says so, and says why each candidate was declined", async () => {
   const { db, coord } = await deployment({ enabled: true });
   const id = await record(db, "hyp_00000001", "hypothesis", 40);

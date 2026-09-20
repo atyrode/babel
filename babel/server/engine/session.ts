@@ -12,7 +12,6 @@ import {
   MATERIAL_OUTPUT,
   type CodeProfile,
   type EngineRefusalCode,
-  type ProfileAccount,
   type ProfileRow,
 } from "../../contract.ts";
 
@@ -21,10 +20,10 @@ import {
 
   `atyrode.babel` depends on `atyrode.code`, which depends on `atyrode.omp`. Code owns the
   profiles — the model, the thinking level, the account — and Code posts the omp job. This file
-  is the whole of Babel's side of that: three doors called through `ctx.actions.call` on the
+  is the whole of Babel's side of that: Code's doors called through `ctx.actions.call` on the
   hardened GuestCtx (ADR 0041, atyrode/manifold#576), and one translation of the refusals that
   come back. Babel launches nothing and composes no session; what it supplies is a profile, a
-  destination, a prompt and — once Manifold can bind one — the material.
+  destination, a prompt and a binding to the sealed material.
 
   THE SCHEMAS ARE CODE'S OWN, IMPORTED AND NEVER MIRRORED. `@atyrode/manifold-code` publishes
   `actionSchemas` with an input and a result apiece, which is the same arrangement Code itself
@@ -33,30 +32,14 @@ import {
   parsed with Code's schema before the call and the reply with Code's schema after it: a door
   whose answer does not match its own published result is a fault, not a value to pass on.
 
-  REFUSALS ARRIVE BY TWO ROADS AND THIS IS THE ONE PLACE THAT KNOWS IT.
+  Refusals reach this adapter as host rejections, including Code's `code_…` token in the
+  rejection's detail. Hardened and in-realm callers receive different error classes carrying
+  the same sentence; successful replies must match Code's published result schema.
 
-  - THE HOST refuses the EDGE, as a REJECTION whose message is the class and then the plugins it
-    names, caller first: `undeclared_dependency: atyrode.babel -> atyrode.code`, or
-    `refused: atyrode.babel -> atyrode.code.runSession (code_catalog_missing)`. A hardened row
-    catches {@link ActionCallError} and an in-realm row the engine's own `ActionCallRefused`, and
-    the kit's contract is that both carry the SAME sentence — so the class is read off the
-    message and one function answers both boundaries.
-  - CODE refuses the REQUEST, and that is a RESOLVED value: `{ refused: "code_…" }`, published on
-    `RefusalSchema`, the way an omp refusal reaches Code as `omp_…`. So the reply is checked for a
-    refusal BEFORE it is parsed as a result, exactly as Code's own client does it.
-
-  Both are folded onto {@link ENGINE_REFUSALS}'s names, because those are the things an operator
-  does differently: install or upgrade Code, consent to what its door demands, re-read a profile
-  that moved, read the word Code said no with — or install the account a run spends.
-
-  THAT LAST ONE IS THIS FILE'S OWN, AND IT IS A GATE RATHER THAN A TRANSLATION (#255). A run
-  spends a model, a model is paid for by an account on the Code profile, and the key behind that
-  account is the machine broker's: Babel names a container and has never held, and must never
-  hold, the value. What was missing was the other half of that arrangement — Babel posted the
-  spend without ever asking whether the deployment had one. {@link CodeEngine.spendAuthority}
-  asks, {@link CodeEngine.runSession} cannot be reached around it, and a deployment that
-  installed nothing is refused by name instead of paying a thirty-minute preparation to be told
-  `code_…` two wakes later.
+  The profile preflight (#255) rejects a positively resolved empty account selection before
+  preparation or posting. An unresolved observation is not evidence of absence, and success
+  is not spend authority: Code still validates the current profile and accounts when posting.
+  Babel receives account references, never the credentials the machine broker resolves.
 */
 
 /**
@@ -196,23 +179,10 @@ export interface CodeEngine {
    */
   cancelSession(args: { containerId: string; jobId: string }): Promise<EngineAnswer<CodeJob>>;
   /**
-   * WHAT THE PROFILE A RUN NAMES MAY SPEND, which is the one authority question on this side of
-   * the line (#255).
-   *
-   * THE CREDENTIAL IS NEVER HERE AND NEVER CAN BE. A model is paid for by an account, the
-   * account belongs to the Code profile, and the key behind it is held by the machine's own
-   * broker — Babel names a container and Code resolves the rest, exactly as `embed.ts` names a
-   * service and the host resolves its credential by reference. `SessionRunInputSchema` is a
-   * STRICT object of a container, a destination, a revision, a prompt and its inputs: there is
-   * no field on the wire a key could travel in even if this bundle held one. What comes back
-   * here is therefore the half a repository may hold — a provider and an identity NAME — and
-   * `contract.ts`'s own `SessionChoiceSchema` says why that half is safe to carry.
-   *
-   * It is published rather than kept private because the PRESS asks it two wakes before the
-   * posting does: `doors/launch.ts` seals the material first, and a preparation is a
-   * thirty-minute job on a real machine. Asking here costs one container read and saves that.
+   * Reject a stale profile or a positively resolved empty account selection before preparation.
+   * Unresolved observations pass through; Code remains authoritative when posting the session.
    */
-  spendAuthority(containerId: string): Promise<EngineAnswer<readonly ProfileAccount[]>>;
+  checkProfile(profile: CodeProfile): Promise<EngineAnswer<null>>;
 }
 
 /**
@@ -286,8 +256,7 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
     const matched = isRefusal ? REFUSAL_SENTENCE.exec(text) : null;
     const host = matched === null ? undefined : HOST_CLASSES[matched[1] ?? ""];
     if (matched !== null && host !== undefined) {
-      // A refusal AT the callee carries Code's own word inside the host's detail, so
-      // `code_stale_preferences` is read here as well as on the resolved path below.
+      // Code's own refusal token travels inside the host rejection's detail.
       const detail = matched[2] ?? "";
       const token = CODE_TOKEN.exec(detail)?.[0] ?? "";
       return refuse(CODE_TOKENS[token] ?? host, detail);
@@ -372,77 +341,49 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
     };
   }
 
-  /*
-    ONE ROSTER READ PER ENGINE, held here rather than by a caller.
+  // Cache only within this adapter instance, not across wakes. Code revalidates on posting.
+  let roster: Promise<EngineAnswer<ActionResult<"listProfiles">>> | undefined;
 
-    An engine is constructed per dispatch, so this is once per wake however many sessions that
-    wake posts — the conductor dispatches every drawn review through one of these, and an
-    authority read per assignment would be an N+1 on another plugin's door for an answer that
-    cannot change inside one cycle. A profile that gains its account mid-cycle is seen by the
-    next wake, which is the same granularity every other thing the cycle reads has.
-  */
-  let roster: Promise<EngineAnswer<readonly ProfileRow[]>> | undefined;
-
-  /**
-   * Whether the named profile may spend, as Code answers it, and the accounts by name if so.
-   *
-   * The absences are three and they are three different moves, which is why they are not one
-   * `null` the way `embed.ts`'s are: an embedding nobody installed is a feature that does not
-   * happen, and a run nobody can pay for is a press that has to say why.
-   */
-  async function spendAuthority(
-    containerId: string,
-  ): Promise<EngineAnswer<readonly ProfileAccount[]>> {
-    roster ??= readProfiles();
+  async function checkProfile(profile: CodeProfile): Promise<EngineAnswer<null>> {
+    roster ??= call("listProfiles", {});
     const listed = await roster;
     if (!listed.ok) return listed;
-    const held = listed.value.find((profile) => profile.containerId === containerId);
+    const held = listed.value.profiles.find((row) => row.containerId === profile.containerId);
     if (held === undefined) {
       return refuse(
         ENGINE_REFUSALS.staleProfile,
-        `${CODE_PLUGIN_ID} holds no profile for container ${containerId}; the list this run ` +
-          `was started from no longer has it. Re-read the profiles and start it again.`,
+        `${CODE_PLUGIN_ID} holds no profile for container ${profile.containerId}. ` +
+          `Re-read the profiles and start it again.`,
       );
     }
-    // `resolved: false` IS NOT AN ANSWER TO THIS QUESTION. Code stores account choices as
-    // EXCLUSIONS, so with no live observation there is no list to give and an empty one means
-    // ASK AGAIN — reading it as "spends nothing" would be Babel inferring an account, which is
-    // the one thing the profile contract says a caller may never do. So an unresolved profile
-    // is posted and Code decides, exactly as it did before this gate existed.
+    if (held.revision !== profile.expectedRevision) {
+      return refuse(
+        ENGINE_REFUSALS.staleProfile,
+        `the Code profile ${profile.containerId} moved from revision ` +
+          `${String(profile.expectedRevision)} to ${String(held.revision)}. ` +
+          `Re-read the profiles and start it again.`,
+      );
+    }
+    // Account choices are exclusions: without a live observation, empty means unknown.
     if (held.resolved && held.accounts.length === 0) {
       return refuse(
         ENGINE_REFUSALS.noAccount,
-        `the Code profile ${containerId} spends no account: Code resolved its saved choices ` +
-          `against the live observation and found none, so a session posted for it would reach ` +
-          `no model. Open that workspace in Code and choose the account this deployment pays ` +
-          `with. Babel holds no key of its own and cannot install one for you.`,
+        `the Code profile ${profile.containerId} spends no account: Code resolved its saved ` +
+          `choices against the live observation and found none. Open that workspace in Code ` +
+          `and choose an account. Babel holds no provider credential of its own.`,
       );
     }
-    return { ok: true, value: held.accounts };
+    return { ok: true, value: null };
   }
 
   return {
     profiles: readProfiles,
 
-    spendAuthority,
+    checkProfile,
 
-    /*
-      THE AUTHORITY READ IS THE FIRST STATEMENT AND THE SPEND IS BEHIND IT (#255), which is the
-      order `server/embed.ts` argues for the baseline's other call out: the free question first,
-      the one that costs money second, and no way to reach the second without the first.
-
-      IT IS HERE AND NOT AT THE CALL SITES because there are two of them — the press's own
-      `postPrepared` and the conductor's review dispatch — and a rule a caller has to remember
-      is a rule the caller nobody is watching will forget. Every session this bundle can post
-      passes through this function; a third caller inherits the gate by existing.
-
-      NOTHING OF THE CREDENTIAL TRAVELS. What the gate learns is a provider and an identity
-      name, and what it puts on the wire is the five fields below — Code's own strict schema
-      has no sixth. The key stays where it has always been: with the machine's broker, resolved
-      by Code from the container this names.
-    */
+    // Guard every posting path, including conductor reviews and prepared explorations.
     runSession: async (request: SessionRequest): Promise<EngineAnswer<CodeJob>> => {
-      const may = await spendAuthority(request.profile.containerId);
+      const may = await checkProfile(request.profile);
       if (!may.ok) return may;
       return await call("runSession", {
         containerId: request.profile.containerId,

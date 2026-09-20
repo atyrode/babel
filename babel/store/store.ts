@@ -28,11 +28,14 @@ import {
   FEED_SORTS,
   POST_KINDS,
   NextActionDecisionSchema,
+  UNHEARD_AFTER_MS,
   NextActionSchema,
   REPOSITORY_PROVENANCES,
   ROLES,
   RULINGS,
+  isRecordId,
   normalizeRemote,
+  modelList,
   type BudgetOverlay,
   type Comment,
   type FeedGroup,
@@ -40,7 +43,6 @@ import {
   type FeedPost,
   type FeedQuery,
   type FeedResult,
-  type PostKind,
   type RecordPeel,
   type RunProgress,
   type Ruling,
@@ -84,21 +86,18 @@ function isRuling(value: string): value is Ruling {
   return RULING_NAMES.includes(value);
 }
 
-/**
- * A stored record kind as a post kind. An observation is refused before it reaches here — the
- * peel's top row is a `FeedPost` and cannot carry one — so a kind outside the four is a store
- * holding a value its own CHECK forbids, and saying so is better than picking a label.
- */
-function postKind(value: string): PostKind {
+/** A stored record kind as the peel's top-row kind, including evidence and operator questions. */
+function peelKind(value: string): RecordPeel["post"]["kind"] {
   if (
     value === "hypothesis" ||
+    value === "observation" ||
     value === "finding" ||
     value === "proposal" ||
     value === "question"
   ) {
     return value;
   }
-  throw new Error(`a record of kind ${value} is not a post`);
+  throw new Error(`a record of kind ${value} is not readable`);
 }
 
 // ---------------------------------------------------------------------------- shapes
@@ -193,6 +192,12 @@ export interface RunRow {
   lastWord: string;
   /** Where the run is and what it has spent, folded from its replay ring; null before any. */
   progress: RunProgress | null;
+  /**
+   * The models that answered this run, in the order it first heard from each (#169): the
+   * fold's list while it runs, the receipt's once it settled. Empty for a run nothing metered
+   * and no receipt named a model for.
+   */
+  models: string[];
 }
 
 export interface RunsQuery {
@@ -406,6 +411,12 @@ interface Citation {
   line: number;
   path: string;
   counter: boolean;
+  /** The span of the record the claim rests on, as the citation copied it; "" when it quoted
+   *  nothing, which is most of the imported corpus. */
+  quote: string;
+  /** What the settlement found when it looked for that span in the bytes (#348), or "" for a
+   *  record written before anything looked. */
+  verification: string;
 }
 
 /**
@@ -424,11 +435,17 @@ function citations(kind: string, payload: Record<string, unknown>): Citation[] {
         typeof item["locator"] === "object" && item["locator"] !== null
           ? (item["locator"] as Record<string, unknown>)
           : {};
+      const verification =
+        typeof item["verification"] === "object" && item["verification"] !== null
+          ? (item["verification"] as Record<string, unknown>)
+          : {};
       out.push({
         note: stringField(item, "note"),
         line: numberField(locator, "line"),
         path: stringField(locator, "path"),
         counter,
+        quote: stringField(locator, "quote"),
+        verification: stringField(verification, "outcome"),
       });
     }
   };
@@ -583,11 +600,23 @@ function runFreshness(
  * `since` is what makes the row worth reading — "at the model since T", not "at the model" —
  * and the only judgement in it is `stalled`, which the loop decides against its own clock so
  * that two readers of the same row never disagree about it (#261).
+ *
+ * `unheard` IS THE SECOND CLOCK AND IT IS THIS READ'S, not the loop's. The loop writes
+ * `updated_at` once per cycle for every running job, so the row says when a cycle last
+ * CONFIRMED the job with the hub; nothing deletes it when the confirmations stop, because the
+ * only thing that deletes it is a settlement. A job that died between two writes therefore
+ * leaves its last fold behind for ever, and a reader shown it without this flag reads a
+ * corpse's stage over a clock still ticking. Judged here rather than written by the loop for
+ * the reason the flag exists: the fold that should have moved it is the one that did not run.
+ * It is not called `stale` because §4.13 gives that word to a record and defines it as the
+ * one judgement no clock makes.
  */
-function runProgress(row: SqlRow): RunProgress | null {
+function runProgress(row: SqlRow, nowMs: number): RunProgress | null {
   const since = text(row["progress_since"]);
   if (since === "") return null;
   const fraction = row["progress_fraction"];
+  const updatedAt = text(row["progress_updated_at"]);
+  const confirmed = instant(updatedAt);
   return {
     stage: text(row["progress_stage"]),
     message: text(row["progress_message"]),
@@ -600,7 +629,11 @@ function runProgress(row: SqlRow): RunProgress | null {
     costUsd: count(row["progress_cost_usd"]),
     lastModel: text(row["progress_last_model"]),
     stalled: count(row["progress_stalled"]) === 1,
-    updatedAt: text(row["progress_updated_at"]),
+    updatedAt,
+    // An instant that cannot be parsed has not been heard from: a row whose own stamp is
+    // unreadable says nothing about when it was confirmed, and reading that as "just now" is
+    // the error this flag exists to stop.
+    unheard: confirmed === null || nowMs - confirmed >= UNHEARD_AFTER_MS,
   };
 }
 
@@ -632,7 +665,12 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
     records: count(row["records"]),
     freshness: runFreshness(state, instant(lastWord), nowMs),
     lastWord,
-    progress: runProgress(row),
+    progress: runProgress(row, nowMs),
+    // ONE FIELD FOR BOTH HALVES OF A RUN'S LIFE (#169): the fold's list while it runs, the
+    // receipt's after it settles. The two are never both there — the fold's row is deleted by
+    // the settlement that writes the receipt — so `COALESCE` reads whichever half this run is
+    // in, and an empty list is a run nothing metered and no receipt named a model for.
+    models: [...modelList(row["models"])],
   };
 }
 
@@ -653,6 +691,8 @@ const RUN_COLUMNS = `r.id AS id, r.kind AS kind, r.machine_id AS machine_id, r.j
   p.output_tokens AS progress_output_tokens, p.cache_tokens AS progress_cache_tokens,
   p.cost_usd AS progress_cost_usd, p.last_model AS progress_last_model,
   p.stalled AS progress_stalled, p.updated_at AS progress_updated_at,
+  COALESCE(NULLIF(p.models, ''),
+           CASE WHEN json_valid(r.payload) THEN json_extract(r.payload, '$.models') END) AS models,
   MAX(r.started_at, COALESCE(r.finished_at, ''),
       COALESCE((SELECT MAX(created_at) FROM records WHERE run_id = r.id), ''),
       COALESCE((SELECT MAX(recorded_at) FROM assessments WHERE run_id = r.id), '')) AS last_word`;
@@ -776,6 +816,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       const proposalId = text(row["subject_id"]);
       const title = titles[proposalId];
       if (title === undefined) continue;
+      // A proposal whose record id this deployment cannot name is dropped for the same reason
+      // one it does not hold is (#426): the rail is a shortcut into the feed, a reader cannot
+      // open a record no input schema admits, and naming it would fail this door's own result.
+      if (!isRecordId(proposalId)) continue;
       const payload = document(row["payload"]);
       let posts = 0;
       for (const named of objectsField(payload, "records")) {
@@ -931,7 +975,6 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     );
     if (row === null) return await questionPeel(id);
     const kind = text(row["kind"]);
-    if (kind === "observation") return null;
     const payload = document(row["payload"]);
     const current = await index();
     const post =
@@ -1204,12 +1247,13 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   /**
-   * A record the front page does not carry — a wording a later revision replaced — as a row.
+   * A record the front page does not carry — a wording a later revision replaced, or an
+   * observation whose place is under the record that cites it — as a row.
    *
-   * It carries the record's own kind, never a default: the four post kinds are the only ones
-   * that reach here, because an observation is refused above rather than relabelled.
+   * It carries the record's own kind, never a default. The peel admits an observation even though
+   * the feed does not, which is what lets a corpus reader judge evidence without relabelling it.
    */
-  const soloPost = async (row: SqlRow, current: FeedIndex): Promise<FeedPost> => {
+  const soloPost = async (row: SqlRow, current: FeedIndex): Promise<RecordPeel["post"]> => {
     const id = text(row["id"]);
     const createdAt = text(row["created_at"]);
     const tally = await one(
@@ -1226,7 +1270,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     const runId = text(row["run_id"]);
     return {
       id,
-      kind: postKind(text(row["kind"])),
+      kind: peelKind(text(row["kind"])),
       // A wording a later revision replaced is kept and not shown, which is the shelf. It is
       // stated rather than routed because `surfaceOf` reads a standing, and a superseded row
       // carries none: the ruling belongs to the revision that replaced it.
@@ -1258,10 +1302,14 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * about it and the session it names where this hub still holds the row.
    *
    * The session is matched the way the record pages always have: the cited file's own name is
-   * the lookup, and the catalog row's full source id checked against the path is the proof. The
-   * excerpt is empty here and that is the hub being honest — the bytes live in a session log on
-   * a machine, and a blank pull-quote reads as a person who said nothing, so nothing is
-   * invented for it.
+   * the lookup, and the catalog row's full source id checked against the path is the proof.
+   *
+   * THE EXCERPT IS THE CITATION'S OWN QUOTE, AND IT COMES WITH WHAT WAS FOUND (#348). It used
+   * to be empty always, and that was the hub being honest: the bytes live in a session log on
+   * a machine and a blank pull-quote reads as a person who said nothing. A citation that
+   * quotes now carries the span, and the settlement has already looked for it in those bytes,
+   * so the page can show the words AND whether they were there. A record whose citation quoted
+   * nothing still renders no pull-quote, and its `verification` is empty rather than clean.
    */
   const evidenceOf = async (
     kind: string,
@@ -1303,7 +1351,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
           : null;
       const event = item.line > 0 ? item.line - 1 : 0;
       return {
-        excerpt: "",
+        excerpt: item.quote,
         speaker: "",
         session:
           matched === null
@@ -1319,6 +1367,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         // side is said in the note rather than dropped.
         note: item.counter ? `counter-evidence · ${item.note}` : item.note,
         line: item.line > 0 ? item.line : null,
+        verification: item.verification,
       };
     });
   };

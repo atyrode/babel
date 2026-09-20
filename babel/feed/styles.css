@@ -964,3 +964,18 @@
     opacity: 0;
   }
 }
+
+.plugin-atyrode_babel_feed .babel-jev-sweep {
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius-sm);
+  padding: var(--babel-space-3);
+}
+
+.plugin-atyrode_babel_feed .babel-jev-position {
+  color: var(--babel-ink-muted);
+  font-size: 0.85em;
+}
+
+.plugin-atyrode_babel_feed .babel-jev-position[data-standing="contested"] strong {
+  color: var(--babel-warn-ink);
+}

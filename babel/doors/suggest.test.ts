@@ -352,6 +352,86 @@ test("the mark is per suggester, revision and kind: a second kind is a second su
   expect(other.outstanding).toBe(2);
 });
 
+test("distinct counterparts and relations coexist in either order; repeating one replaces only it", async () => {
+  const left = { subject: "fnd_00000002", aspect: "contradiction" };
+  const right = { subject: "fnd_00000003", aspect: "contradiction" };
+  const later = { subject: "fnd_00000002", aspect: "supersession" };
+  for (const order of [
+    [left, right],
+    [right, left],
+    [left, later],
+    [later, left],
+  ]) {
+    const harness = openHarness();
+    await migrate(harness.store);
+    await allow(harness.store, [{ principalId: JEV_PRINCIPAL, pluginId: JEV }]);
+    await seedRecord(harness.store, SUGGESTION.recordId);
+    await seedRecord(harness.store, "fnd_00000002");
+    await seedRecord(harness.store, "fnd_00000003");
+
+    const first = (await knock(harness, ACTIONS.suggest, {
+      ...SUGGESTION,
+      kind: "ask-question",
+      ...order[0],
+      summary: "first independent finding",
+    })) as { id: string; subject: string; supersedes: string };
+    const second = (await knock(harness, ACTIONS.suggest, {
+      ...SUGGESTION,
+      kind: "ask-question",
+      ...order[1],
+      summary: "second independent finding",
+    })) as { id: string; subject: string; supersedes: string; outstanding: number };
+
+    // Neither replaced the other, whichever arrived first, and the operator is shown both.
+    expect(first.supersedes).toBe("");
+    expect(second.supersedes).toBe("");
+    expect(second.outstanding).toBe(2);
+    const peel = await peeled(harness);
+    expect(peel.nextActions.map((action) => action.id).sort()).toEqual(
+      [first.id, second.id].sort(),
+    );
+
+    // The key still deduplicates where it must: the SAME counterpart said again is one opinion
+    // restated, not a third live row.
+    const again = (await knock(harness, ACTIONS.suggest, {
+      ...SUGGESTION,
+      kind: "ask-question",
+      ...order[0],
+      summary: "restated first finding",
+    })) as { supersedes: string; outstanding: number };
+    expect(again.supersedes).toBe(first.id);
+    expect(again.outstanding).toBe(2);
+  }
+});
+
+test("a per-record suggestion keeps the key it had, and an unknown counterpart is refused", async () => {
+  const harness = openHarness();
+  await migrate(harness.store);
+  await allow(harness.store, [{ principalId: JEV_PRINCIPAL, pluginId: JEV }]);
+  await seedRecord(harness.store, SUGGESTION.recordId);
+
+  // A caller that names no counterpart is every caller that existed before #432, and for it the
+  // live-uniqueness key is unchanged: the second call supersedes the first.
+  const first = (await knock(harness, ACTIONS.suggest, SUGGESTION)) as { id: string };
+  const second = (await knock(harness, ACTIONS.suggest, {
+    ...SUGGESTION,
+    summary: "restated",
+  })) as { supersedes: string; subject: string; outstanding: number };
+  expect(second.supersedes).toBe(first.id);
+  expect(second.subject).toBe("");
+  expect(second.outstanding).toBe(1);
+
+  // `next_actions` has no foreign key on the counterpart, so nothing but the door refuses an id
+  // that resolves to nothing — and a pair finding whose other half cannot be opened is worse
+  // than no finding.
+  expect(await refusal(harness, ACTIONS.suggest, { ...SUGGESTION, subject: "fnd_0000dead" })).toBe(
+    "no counterpart record fnd_0000dead",
+  );
+  expect(
+    await refusal(harness, ACTIONS.suggest, { ...SUGGESTION, subject: SUGGESTION.recordId }),
+  ).toBe("fnd_00000001 cannot be its own counterpart");
+});
+
 test("a sweep can state its size before it runs", async () => {
   const harness = openHarness();
   await migrate(harness.store);
@@ -380,6 +460,56 @@ test("a sweep can state its size before it runs", async () => {
     outstanding: number;
   };
   expect([after.judged, after.unjudged, after.outstanding]).toEqual([1, 2, 1]);
+});
+
+test("the gap names exact revisions, and a moved basis makes only that kind pending again", async () => {
+  const harness = openHarness();
+  await migrate(harness.store);
+  await allow(harness.store, [{ principalId: JEV_PRINCIPAL, pluginId: JEV }]);
+  await seedRecord(harness.store, "fnd_00000001");
+  await seedRecord(harness.store, "fnd_00000002");
+  await seedRecord(harness.store, "fnd_00000003");
+  const basis = "bank/2/finding/2";
+
+  const before = (await knock(harness, ACTIONS.suggestions, {
+    basis,
+    kinds: ["finding"],
+    pending: 2,
+  })) as {
+    judged: number;
+    unjudged: number;
+    pending: readonly {
+      recordId: string;
+      revision: number;
+      kind: string;
+      suggestible: boolean;
+    }[];
+  };
+  expect(before).toMatchObject({ judged: 0, unjudged: 3 });
+  expect(before.pending).toEqual([
+    { recordId: "fnd_00000001", revision: 0, kind: "finding", suggestible: true },
+    { recordId: "fnd_00000002", revision: 0, kind: "finding", suggestible: true },
+  ]);
+
+  await knock(harness, ACTIONS.suggest, { ...SUGGESTION, basis });
+  const marked = (await knock(harness, ACTIONS.suggestions, {
+    basis,
+    kinds: ["finding"],
+    pending: 3,
+  })) as typeof before;
+  expect(marked).toMatchObject({ judged: 1, unjudged: 2 });
+  expect(marked.pending.map((row) => row.recordId)).toEqual(["fnd_00000002", "fnd_00000003"]);
+
+  const moved = (await knock(harness, ACTIONS.suggestions, {
+    basis: "bank/2/finding/3",
+    kinds: ["finding"],
+    pending: 3,
+    after: "fnd_00000002",
+  })) as typeof before;
+  expect(moved).toMatchObject({ judged: 0, unjudged: 3 });
+  expect(moved.pending).toEqual([
+    { recordId: "fnd_00000003", revision: 0, kind: "finding", suggestible: true },
+  ]);
 });
 
 test("the frontier is untouched: the only table this door writes is next_actions", async () => {

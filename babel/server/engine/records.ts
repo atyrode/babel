@@ -5,9 +5,7 @@ import {
   type MaterialEntry,
 } from "../../contract.ts";
 import {
-  REFUSALS,
   RESULT_SCHEMA,
-  ResultRefusal,
   type Candidate,
   type Consolidation,
   type Evidence,
@@ -15,6 +13,7 @@ import {
   type Objection,
   type QuestionDraft,
 } from "../../machine/results.ts";
+import type { CitationCheck } from "./citations.ts";
 import { mintId, recordRow, titleCell, type RecordKind, type Row } from "./rows.ts";
 
 /*
@@ -52,6 +51,13 @@ import { mintId, recordRow, titleCell, type RecordKind, type Row } from "./rows.
 /** The payload shape a record's own JSON declares, as {@link RESULT_SCHEMA}'s version. */
 const PAYLOAD_SCHEMA = Number(RESULT_SCHEMA.slice(RESULT_SCHEMA.lastIndexOf("/") + 1));
 
+/**
+ * The four keys a claim payload carries citations under: an observation's own evidence and its
+ * counter-evidence, and a proposal's supporting and conflicting material. A finding's is
+ * `counter_evidence` too — it rests on observations and has no evidence of its own.
+ */
+const CITED_FIELDS = ["evidence", "counter_evidence", "supporting", "conflicting"] as const;
+
 /** What a settlement needs to know about the run whose answer it is writing. */
 export interface ExploreSettlement {
   readonly runId: string;
@@ -66,6 +72,16 @@ export interface ExploreSettlement {
    * are built synchronously and the store is not.
    */
   readonly holds: ReadonlySet<string>;
+  /**
+   * WHAT BECAME OF EACH CITATION'S QUOTED TEXT (`./citations.ts`, `checkCitations`), keyed on
+   * the evidence object the answer carries.
+   *
+   * It is here rather than on the evidence itself because a run may not mint its own verdict:
+   * the submitted shape has no field for one, and the map is built by the settlement out of
+   * bytes the model never touched. The Writer copies each verdict into the payload beside the
+   * citation it belongs to, which is where a reader of the record finds it.
+   */
+  readonly checks: ReadonlyMap<Evidence, CitationCheck>;
 }
 
 /** The rows one answer becomes, keyed by the output file the ingest binds to each table. */
@@ -82,18 +98,23 @@ export interface ExploreWrite {
 }
 
 /**
- * Every row one accepted exploration claimed, or the refusal that stops the whole answer.
+ * Every row one accepted exploration claimed.
  *
- * A refusal here is the same kind of event as a schema refusal: the model answered, the
- * deployment paid, and the answer did not stand — so the caller writes the receipt at cost and
- * inserts NOTHING. It is all-or-nothing on purpose. A finding whose observations were dropped is
- * a consolidation of records that do not exist, which is exactly the shape §4.2 forbids, and
- * half a development path is worse than none: nobody can tell later which half is missing.
+ * NOTHING HERE REFUSES, and that is a property to keep rather than an omission. Every rule about
+ * an item — a reference that resolves, a citation that was served, §4.2's path — is stated once,
+ * in `machine/results.ts`'s `itemRefusal`, and what reaches here is the subset that already
+ * cleared it. This file used to re-judge the same shapes on the way to the rows and answer
+ * DIFFERENTLY: a consolidation resting on a proposal was `development-path` there and
+ * `unknown-reference: no observation f1` here, for one submission, depending on which of the two
+ * saw it. The Go tree's worst evaluation bug was one rule stated three times (F8), so the second
+ * copy is gone and the caller has no refusal branch left to write.
+ *
+ * What is still here is RESOLUTION: a handle becomes the identifier this settlement minted for
+ * it, and a durable identifier stays itself. A handle the validator admitted resolves to one or
+ * the other by construction — and the subset it admitted is closed under the development path,
+ * so a finding whose observations were refused never arrives here without them.
  */
-export function exploreRows(
-  result: ExploreResult,
-  settlement: ExploreSettlement,
-): ExploreWrite | { refusal: ResultRefusal } {
+export function exploreRows(result: ExploreResult, settlement: ExploreSettlement): ExploreWrite {
   const rows: Record<string, Row[]> = {
     [JOB_OUTPUT_FILES.records]: [],
     [JOB_OUTPUT_FILES.edges]: [],
@@ -103,18 +124,13 @@ export function exploreRows(
   };
   const notes: string[] = [];
   const writer = new Writer(rows, notes, settlement);
-  try {
-    for (const candidate of result.candidates) writer.candidate(candidate);
-    for (const objection of result.objections) writer.objection(objection);
-    for (const consolidation of result.consolidations) writer.consolidation(consolidation);
-    writer.schedule(result);
-    for (const question of result.questions) writer.question(question);
-    writer.corrections();
-    writer.nextActions(result);
-  } catch (error) {
-    if (error instanceof ResultRefusal) return { refusal: error };
-    throw error;
-  }
+  for (const candidate of result.candidates) writer.candidate(candidate);
+  for (const objection of result.objections) writer.objection(objection);
+  for (const consolidation of result.consolidations) writer.consolidation(consolidation);
+  writer.schedule(result);
+  for (const question of result.questions) writer.question(question);
+  writer.corrections();
+  writer.nextActions(result);
   return { rows, notes };
 }
 
@@ -135,17 +151,6 @@ function selectors(sessions: readonly MaterialEntry[]): Map<string, string> {
   }
   return out;
 }
-
-/**
- * A durable identifier of one record family, as `RecordIdSchema` shapes them.
- *
- * A handle is resolved BY FAMILY rather than by looking like an identifier: a consolidation
- * citing `hyp_…` from the brief has skipped the development path just as surely as one citing a
- * candidate this result declared, and a check that admitted any record id would let it through.
- */
-const recordId = (family: string): RegExp => new RegExp(`^${family}_[0-9a-f]{8,64}$`, "u");
-const HYPOTHESIS_ID = recordId("hyp");
-const OBSERVATION_ID = recordId("obs");
 
 /*
   WHAT A RECORD SAYS ABOUT ANOTHER RECORD IN ITS OWN FIRST WORDS (#347).
@@ -362,7 +367,9 @@ class Writer {
    * investigate rather than a claim established by being asserted.
    */
   objection(objection: Objection): void {
-    const target = this.hypothesis(objection.hypothesis, "objection");
+    // The candidate it attacks: the row this settlement minted, or the durable identifier the
+    // brief named. `machine/results.ts` has already refused anything that is neither.
+    const target = this.hypotheses.get(objection.hypothesis) ?? objection.hypothesis;
     if (objection.claim.evidence.length > 0) {
       const id = this.mint("obs", objection.ref);
       this.observations.set(objection.ref, id);
@@ -406,7 +413,7 @@ class Writer {
 
   /** One consolidation: what recurs across observations, and the change it asks for. */
   consolidation(consolidation: Consolidation): void {
-    const supports = consolidation.observations.map((ref) => this.observation(ref));
+    const supports = consolidation.observations.map((ref) => this.observations.get(ref) ?? ref);
     const id = this.mint("fnd", consolidation.ref);
     this.record(id, "finding", consolidation.finding.title, consolidation.finding, { supports });
     for (const [position, support] of supports.entries()) {
@@ -611,36 +618,14 @@ class Writer {
     return id;
   }
 
-  /** A handle naming a candidate: one this result declared, or a durable id the brief named. */
-  private hypothesis(ref: string, what: string): string {
-    const local = this.hypotheses.get(ref);
-    if (local !== undefined) return local;
-    if (HYPOTHESIS_ID.test(ref)) return ref;
-    throw new ResultRefusal(
-      REFUSALS.unknownReference,
-      `the ${what} names ${ref}, which is neither a candidate this result declared nor a hypothesis identifier`,
-    );
-  }
-
-  /**
-   * A handle naming an observation, with §4.2's path enforced.
-   *
-   * A consolidation resting on a CANDIDATE is the mandatory path skipped rather than a missing
-   * reference, and the two are separate refusals because they are separate mistakes: one says
-   * the synthesizer cited a guess as if it were evidence, the other says it cited nothing at all.
-   */
-  private observation(ref: string): string {
-    const local = this.observations.get(ref);
-    if (local !== undefined) return local;
-    if (this.hypotheses.has(ref) || HYPOTHESIS_ID.test(ref)) {
-      throw new ResultRefusal(
-        REFUSALS.developmentPath,
-        `${ref} is a candidate hypothesis, not a locator-backed observation`,
-      );
-    }
-    if (OBSERVATION_ID.test(ref)) return ref;
-    throw new ResultRefusal(REFUSALS.unknownReference, `no observation ${ref}`);
-  }
+  /*
+    A HANDLE BECOMES WHAT THIS SETTLEMENT MINTED FOR IT, and a durable identifier stays itself.
+    Both resolutions used to be guarded here by a refusal of their own — "neither a candidate
+    this result declared nor a hypothesis identifier", "no observation f1" — over shapes
+    `machine/results.ts` had already judged, in its own words and sometimes under a different
+    code. The guards are gone with the second copy: what arrives here is the subset the one
+    validator admitted, closed under the development path.
+  */
 
   /** A handle a disposal named, or the empty string with the note saying it was dropped. */
   private scheduled(ref: string, what: string): string {
@@ -677,7 +662,10 @@ class Writer {
         runId: this.settlement.runId,
         at: this.settlement.at,
         title,
-        payload: { schema: PAYLOAD_SCHEMA, ...(payload as Record<string, unknown>) },
+        payload: {
+          schema: PAYLOAD_SCHEMA,
+          ...this.checked(payload as Record<string, unknown>),
+        },
         supports: of.supports,
         ownRecords: this.ownRecords,
         parentId: of.parentId ?? null,
@@ -691,6 +679,34 @@ class Writer {
     // characters and a marker that fell across that boundary would be read as prose, so what
     // is parsed is the text the model wrote and not the cell the table holds.
     this.marked.push({ id, kind, text: title });
+  }
+
+  /**
+   * THE PAYLOAD WITH EACH CITATION'S VERDICT BESIDE IT (#348).
+   *
+   * The four keys are the four places a claim shape carries citations, and they are listed
+   * rather than walked for the same reason {@link markedTexts} is a list: a shape added later
+   * must come here and say whether its citations are checked, and a reflective walk would
+   * answer "yes" for a field nobody had thought about.
+   *
+   * A verdict is written only where the settlement made one, so an imported record and a
+   * record whose citations nothing could read keep the shape they had — and `verified` is
+   * never implied by absence.
+   */
+  private checked(payload: Record<string, unknown>): Record<string, unknown> {
+    if (this.settlement.checks.size === 0) return payload;
+    let out = payload;
+    for (const field of CITED_FIELDS) {
+      const held = payload[field];
+      if (!Array.isArray(held)) continue;
+      const written = held.map((item: unknown) => {
+        const check = this.settlement.checks.get(item as Evidence);
+        return check === undefined ? item : { ...(item as object), verification: check };
+      });
+      if (out === payload) out = { ...payload };
+      out[field] = written;
+    }
+    return out;
   }
 
   private status(recordId: string, seq: number, status: string, reason: string): void {

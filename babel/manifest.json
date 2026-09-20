@@ -22,13 +22,8 @@
       "reason": "a Babel run is a Code session: Code owns the profile (model, thinking level, account) and posts the omp job through its runSession door, which Babel calls with ctx.actions.call"
     }
   },
-  "dataVersion": {
-    "major": 1,
-    "minor": 10
-  },
-  "database": {
-    "maxBytes": 1073741824
-  },
+  "dataVersion": { "major": 1, "minor": 10 },
+  "database": { "maxBytes": 1073741824 },
   "purges": ["storage"],
   "contributes": {
     "panels": [],
@@ -36,46 +31,31 @@
     "elements": [],
     "tools": [],
     "events": [
-      {
-        "id": "record_written",
-        "title": "Record written"
-      },
-      {
-        "id": "ruled",
-        "title": "Operator ruled"
-      },
-      {
-        "id": "assessed",
-        "title": "Reviewer voted"
-      },
-      {
-        "id": "plan_applied",
-        "title": "Plan applied"
-      },
-      {
-        "id": "babel_run_changed",
-        "title": "Run changed"
-      }
+      { "id": "record_written", "title": "Record written" },
+      { "id": "ruled", "title": "Operator ruled" },
+      { "id": "assessed", "title": "Reviewer voted" },
+      { "id": "plan_applied", "title": "Plan applied" },
+      { "id": "babel_run_changed", "title": "Run changed" }
     ]
   },
   "machine": {
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "4b1418af463e0e7721e8166712faa629a3c7e7298632fe6e74f8266393ac3577",
+        "sha256": "b413929e89ce5ddd165507353f1a9dbd32f2500f50a6105c374adff3b7fc7160",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "4b1418af463e0e7721e8166712faa629a3c7e7298632fe6e74f8266393ac3577",
+        "entrySha256": "b413929e89ce5ddd165507353f1a9dbd32f2500f50a6105c374adff3b7fc7160",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "4b1418af463e0e7721e8166712faa629a3c7e7298632fe6e74f8266393ac3577",
+        "sha256": "b413929e89ce5ddd165507353f1a9dbd32f2500f50a6105c374adff3b7fc7160",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "4b1418af463e0e7721e8166712faa629a3c7e7298632fe6e74f8266393ac3577",
+        "entrySha256": "b413929e89ce5ddd165507353f1a9dbd32f2500f50a6105c374adff3b7fc7160",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -145,58 +125,22 @@
     "operations": {
       "atyrode.babel.scan": {
         "argv": [
-          {
-            "literal": "/job/artifact"
-          },
-          {
-            "literal": "scan"
-          },
-          {
-            "literal": "--input"
-          },
-          {
-            "literal": "/inputs/input"
-          },
-          {
-            "literal": "--out"
-          },
-          {
-            "literal": "/outputs/outputs"
-          }
+          { "literal": "/job/artifact" },
+          { "literal": "scan" },
+          { "literal": "--input" },
+          { "literal": "/inputs/input" },
+          { "literal": "--out" },
+          { "literal": "/outputs/outputs" }
         ],
-        "input": {
-          "input": {
-            "type": "string",
-            "required": true,
-            "maxLength": 65536
-          }
-        },
-        "inputFiles": {
-          "input": {
-            "input": "input"
-          }
-        },
+        "input": { "input": { "type": "string", "required": true, "maxLength": 65536 } },
+        "inputFiles": { "input": { "input": "input" } },
         "runtimeTools": ["bun", "development", "system"],
-        "executable": {
-          "runtimeTool": "bun"
-        },
+        "executable": { "runtimeTool": "bun" },
         "locations": [
-          {
-            "locationId": "atyrode.babel.outputs",
-            "access": "write"
-          },
-          {
-            "locationId": "atyrode.babel.omp",
-            "access": "read"
-          },
-          {
-            "locationId": "atyrode.babel.codex",
-            "access": "read"
-          },
-          {
-            "locationId": "atyrode.babel.claude",
-            "access": "read"
-          }
+          { "locationId": "atyrode.babel.outputs", "access": "write" },
+          { "locationId": "atyrode.babel.omp", "access": "read" },
+          { "locationId": "atyrode.babel.codex", "access": "read" },
+          { "locationId": "atyrode.babel.claude", "access": "read" }
         ],
         "outputs": ["outputs"],
         "network": "none",
@@ -210,87 +154,36 @@
       },
       "atyrode.babel.archive": {
         "argv": [
-          {
-            "literal": "/job/artifact"
-          },
-          {
-            "literal": "archive"
-          },
-          {
-            "literal": "--input"
-          },
-          {
-            "literal": "/inputs/input"
-          },
-          {
-            "literal": "--out"
-          },
-          {
-            "literal": "/outputs/outputs"
-          }
+          { "literal": "/job/artifact" },
+          { "literal": "archive" },
+          { "literal": "--input" },
+          { "literal": "/inputs/input" },
+          { "literal": "--out" },
+          { "literal": "/outputs/outputs" }
         ],
-        "input": {
-          "input": {
-            "type": "string",
-            "required": true,
-            "maxLength": 65536
-          }
-        },
+        "input": { "input": { "type": "string", "required": true, "maxLength": 65536 } },
         "inputFiles": {
-          "input": {
-            "input": "input"
-          },
+          "input": { "input": "input" },
           "restic": {
             "literal": "{\"url\":\"\",\"bearer\":\"\"}",
             "jsonValues": [
-              {
-                "path": ["url"],
-                "serviceId": "atyrode.babel.restic",
-                "value": "url"
-              },
-              {
-                "path": ["bearer"],
-                "serviceId": "atyrode.babel.restic",
-                "value": "bearer"
-              }
+              { "path": ["url"], "serviceId": "atyrode.babel.restic", "value": "url" },
+              { "path": ["bearer"], "serviceId": "atyrode.babel.restic", "value": "bearer" }
             ]
           }
         },
         "services": [
-          {
-            "serviceId": "atyrode.babel.restic",
-            "revision": "1",
-            "operationIds": ["storage"]
-          }
+          { "serviceId": "atyrode.babel.restic", "revision": "1", "operationIds": ["storage"] }
         ],
-        "environment": {
-          "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic"
-        },
+        "environment": { "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic" },
         "runtimeTools": ["bun", "restic", "system"],
-        "executable": {
-          "runtimeTool": "bun"
-        },
+        "executable": { "runtimeTool": "bun" },
         "locations": [
-          {
-            "locationId": "atyrode.babel.outputs",
-            "access": "write"
-          },
-          {
-            "locationId": "atyrode.babel.cache",
-            "access": "write"
-          },
-          {
-            "locationId": "atyrode.babel.omp",
-            "access": "read"
-          },
-          {
-            "locationId": "atyrode.babel.codex",
-            "access": "read"
-          },
-          {
-            "locationId": "atyrode.babel.claude",
-            "access": "read"
-          }
+          { "locationId": "atyrode.babel.outputs", "access": "write" },
+          { "locationId": "atyrode.babel.cache", "access": "write" },
+          { "locationId": "atyrode.babel.omp", "access": "read" },
+          { "locationId": "atyrode.babel.codex", "access": "read" },
+          { "locationId": "atyrode.babel.claude", "access": "read" }
         ],
         "outputs": ["outputs"],
         "network": "host",
@@ -304,64 +197,26 @@
       },
       "atyrode.babel.prepare": {
         "argv": [
-          {
-            "literal": "/job/artifact"
-          },
-          {
-            "literal": "prepare"
-          },
-          {
-            "literal": "--input"
-          },
-          {
-            "literal": "/inputs/input"
-          },
-          {
-            "literal": "--out"
-          },
-          {
-            "literal": "/outputs/outputs"
-          },
-          {
-            "literal": "--material"
-          },
-          {
-            "literal": "/outputs/material"
-          }
+          { "literal": "/job/artifact" },
+          { "literal": "prepare" },
+          { "literal": "--input" },
+          { "literal": "/inputs/input" },
+          { "literal": "--out" },
+          { "literal": "/outputs/outputs" },
+          { "literal": "--material" },
+          { "literal": "/outputs/material" }
         ],
-        "input": {
-          "input": {
-            "type": "string",
-            "required": true,
-            "maxLength": 65536
-          }
-        },
-        "inputFiles": {
-          "input": {
-            "input": "input"
-          }
-        },
+        "input": { "input": { "type": "string", "required": true, "maxLength": 65536 } },
+        "inputFiles": { "input": { "input": "input" } },
+        "environment": { "BABEL_PREPARE_CACHE_DIR": "/home/job/.cache/prepare" },
         "runtimeTools": ["bun", "development", "system"],
-        "executable": {
-          "runtimeTool": "bun"
-        },
+        "executable": { "runtimeTool": "bun" },
         "locations": [
-          {
-            "locationId": "atyrode.babel.outputs",
-            "access": "write"
-          },
-          {
-            "locationId": "atyrode.babel.omp",
-            "access": "read"
-          },
-          {
-            "locationId": "atyrode.babel.codex",
-            "access": "read"
-          },
-          {
-            "locationId": "atyrode.babel.claude",
-            "access": "read"
-          }
+          { "locationId": "atyrode.babel.outputs", "access": "write" },
+          { "locationId": "atyrode.babel.cache", "access": "write" },
+          { "locationId": "atyrode.babel.omp", "access": "read" },
+          { "locationId": "atyrode.babel.codex", "access": "read" },
+          { "locationId": "atyrode.babel.claude", "access": "read" }
         ],
         "outputs": ["outputs", "material"],
         "exports": ["material"],
@@ -376,76 +231,36 @@
       },
       "atyrode.babel.verify": {
         "argv": [
-          {
-            "literal": "/job/artifact"
-          },
-          {
-            "literal": "verify"
-          },
-          {
-            "literal": "--input"
-          },
-          {
-            "literal": "/inputs/input"
-          },
-          {
-            "literal": "--out"
-          },
-          {
-            "literal": "/outputs/outputs"
-          }
+          { "literal": "/job/artifact" },
+          { "literal": "verify" },
+          { "literal": "--input" },
+          { "literal": "/inputs/input" },
+          { "literal": "--out" },
+          { "literal": "/outputs/outputs" }
         ],
-        "input": {
-          "input": {
-            "type": "string",
-            "required": true,
-            "maxLength": 65536
-          }
-        },
+        "input": { "input": { "type": "string", "required": true, "maxLength": 65536 } },
         "inputFiles": {
-          "input": {
-            "input": "input"
-          },
+          "input": { "input": "input" },
           "restic": {
             "literal": "{\"url\":\"\",\"bearer\":\"\"}",
             "jsonValues": [
-              {
-                "path": ["url"],
-                "serviceId": "atyrode.babel.restic",
-                "value": "url"
-              },
-              {
-                "path": ["bearer"],
-                "serviceId": "atyrode.babel.restic",
-                "value": "bearer"
-              }
+              { "path": ["url"], "serviceId": "atyrode.babel.restic", "value": "url" },
+              { "path": ["bearer"], "serviceId": "atyrode.babel.restic", "value": "bearer" }
             ]
           }
         },
         "services": [
-          {
-            "serviceId": "atyrode.babel.restic",
-            "revision": "1",
-            "operationIds": ["storage"]
-          }
+          { "serviceId": "atyrode.babel.restic", "revision": "1", "operationIds": ["storage"] }
         ],
         "environment": {
           "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic",
           "BABEL_VERIFY_SCRATCH_DIR": "/home/job/.cache/verify"
         },
         "runtimeTools": ["bun", "restic", "system"],
-        "executable": {
-          "runtimeTool": "bun"
-        },
+        "executable": { "runtimeTool": "bun" },
         "locations": [
-          {
-            "locationId": "atyrode.babel.outputs",
-            "access": "write"
-          },
-          {
-            "locationId": "atyrode.babel.cache",
-            "access": "write"
-          }
+          { "locationId": "atyrode.babel.outputs", "access": "write" },
+          { "locationId": "atyrode.babel.cache", "access": "write" }
         ],
         "outputs": ["outputs"],
         "network": "host",
@@ -459,10 +274,7 @@
       }
     }
   },
-  "entry": {
-    "server": true,
-    "web": "web.js"
-  },
+  "entry": { "server": true, "web": "web.js" },
   "links": {
     "repository": "https://github.com/atyrode/babel",
     "changelog": "https://github.com/atyrode/babel/blob/main/CHANGELOG.md"

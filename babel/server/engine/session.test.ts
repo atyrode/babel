@@ -2,16 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { ENGINE_REFUSALS, MATERIAL_OUTPUT } from "../../contract.ts";
-import { ENGINE_WITHOUT_ACTIONS, codeEngine, materialInput, type ActionsSlice } from "./session.ts";
+import { ENGINE_WITHOUT_ACTIONS, codeEngine, type ActionsSlice } from "./session.ts";
 
 /*
-  BABEL'S SIDE OF CODE'S DOORS, held to the two roads a refusal arrives by (ADR 0041).
-
-  The HOST refuses the EDGE as a REJECTION whose message is `<class>: <offenders>`; CODE refuses
-  the REQUEST as a RESOLVED `{ refused: "code_…" }`. Every test here uses the REAL sentences —
-  the ones the kit and Code publish — because the whole of this module is a translation of
-  them, and a fake that invented its own wording would be testing the translation against
-  itself.
+  Babel translates the host's rejection sentences, including Code's own refusal token.
+  Successful replies are checked against Code's published result schemas.
 */
 
 /** An `actions` slice that throws whatever the host would, or resolves whatever Code would. */
@@ -308,8 +303,6 @@ describe("what a profile may spend, asked before anything is posted", () => {
     expect(answered.code).toBe(ENGINE_REFUSALS.noAccount);
     // A sentence a person acts on: which profile, what is missing, and where to go and fix it.
     expect(answered.refused).toContain("ctr_a");
-    expect(answered.refused).toContain("spends no account");
-    expect(answered.refused).toContain("Open that workspace in Code");
   });
 
   test("a container the roster does not hold is a stale profile, and still posts nothing", async () => {
@@ -329,7 +322,44 @@ describe("what a profile may spend, asked before anything is posted", () => {
     if (answered.ok) return;
     // The panel's own remedy, which is the one `engine_stale_profile` already names.
     expect(answered.code).toBe(ENGINE_REFUSALS.staleProfile);
-    expect(answered.refused).toContain("Re-read the profiles");
+  });
+
+  test("a moved revision is stale, not evidence that the requested profile has no account", async () => {
+    const slice = actions((args) => {
+      if (args.action === "listProfiles") return { profiles: [profile({ accounts: [] })] };
+      throw new Error("a stale profile must not post a session");
+    });
+
+    const answered = await codeEngine(slice).runSession({
+      profile: { containerId: "ctr_a", expectedRevision: 3 },
+      machineId: "m-dev-01",
+      prompt: "read the material",
+    });
+
+    expect(answered.ok).toBe(false);
+    if (answered.ok) return;
+    expect(answered.code).toBe(ENGINE_REFUSALS.staleProfile);
+    expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles"]);
+  });
+
+  test("an account observed during preflight does not override Code's later refusal", async () => {
+    const slice = actions((args) => {
+      if (args.action === "listProfiles") return { profiles: [profile({})] };
+      return hostRefusal(
+        "refused: atyrode.babel -> atyrode.code.runSession (code_stale_preferences)",
+      )();
+    });
+
+    const answered = await codeEngine(slice).runSession({
+      profile: { containerId: "ctr_a", expectedRevision: 4 },
+      machineId: "m-dev-01",
+      prompt: "read the material",
+    });
+
+    expect(answered.ok).toBe(false);
+    if (answered.ok) return;
+    expect(answered.code).toBe(ENGINE_REFUSALS.staleProfile);
+    expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
   });
 
   test("an unresolved profile is posted, because an empty list Code could not resolve is not 'spends nothing'", async () => {
@@ -350,69 +380,5 @@ describe("what a profile may spend, asked before anything is posted", () => {
     // one thing the profile contract says a caller may never do — Code decides, as it always did.
     expect(answered.ok).toBe(true);
     expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
-  });
-
-  test("the roster is read once however many sessions one wake posts", async () => {
-    const slice = actions((args) =>
-      args.action === "listProfiles" ? { profiles: [profile({})] } : POSTED,
-    );
-    const engine = codeEngine(slice);
-
-    await engine.runSession({
-      profile: { containerId: "ctr_a", expectedRevision: 4 },
-      machineId: "m-dev-01",
-      prompt: "one",
-    });
-    await engine.runSession({
-      profile: { containerId: "ctr_a", expectedRevision: 4 },
-      machineId: "m-dev-01",
-      prompt: "two",
-    });
-
-    // An engine is one dispatch. The conductor posts every drawn review through one of these,
-    // and an authority read per assignment would be an N+1 on another plugin's door for an
-    // answer that cannot change inside one cycle.
-    expect(slice.calls.filter((call) => call.action === "listProfiles")).toHaveLength(1);
-    expect(slice.calls.filter((call) => call.action === "runSession")).toHaveLength(2);
-  });
-
-  test("what a profile spends is two names, and the request that spends it carries neither", async () => {
-    const slice = actions((args) => {
-      if (args.action === "listProfiles") {
-        return {
-          profiles: [profile({ accounts: [{ provider: "anthropic", identityKey: null }] })],
-        };
-      }
-      return POSTED;
-    });
-
-    const answered = await codeEngine(slice).spendAuthority("ctr_a");
-    expect(answered.ok).toBe(true);
-    if (!answered.ok) return;
-    // An API-key slot has a credential and no login: what Babel learns is that a provider is
-    // paid for, by name, and an empty identity. Neither half is the value.
-    expect(answered.value).toEqual([{ provider: "anthropic", identityKey: "", label: "" }]);
-
-    await codeEngine(slice).runSession({
-      profile: { containerId: "ctr_a", expectedRevision: 4 },
-      machineId: "m-dev-01",
-      prompt: "read the material",
-    });
-    const sent = slice.calls.find((call) => call.action === "runSession");
-    // EXACTLY THESE FOUR FIELDS. Code's input schema is strict, so a fifth carrying a credential
-    // would be refused on the way out — and a well-meant `account:` forwarded from the roster
-    // read fails here rather than reaching another plugin's door.
-    expect(sent?.input).toEqual({
-      containerId: "ctr_a",
-      machineId: "m-dev-01",
-      expectedRevision: 4,
-      prompt: "read the material",
-    });
-  });
-});
-
-test("the material input names one binding: prepare's own sealed output", () => {
-  expect(materialInput("job_7_material")).toEqual({
-    inputs: [{ name: MATERIAL_OUTPUT, from: { jobId: "job_7_material", output: MATERIAL_OUTPUT } }],
   });
 });

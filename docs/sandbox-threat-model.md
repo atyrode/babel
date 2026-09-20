@@ -130,28 +130,35 @@ side of the line (`SPEC.md` §2.6; `babel/machine/prepare.ts`):
   scope instead, and either way the receipt carries what was found by class and never by value.
 - The index records, per session, the selector, the file and the digest it was served at. Every
   citation is checked against it, and a path the material does not name or a digest that does not
-  match refuses the whole answer as `unknown-reference`.
+  match refuses the whole answer as `unknown-reference`. The check is a whitelist of the exact
+  spellings the index carries, never a resolver: a locator containing a `..` segment is refused
+  even where resolving it would land back inside the material, and the bytes of a session are
+  reached through the index entry rather than through the string the model wrote
+  (`babel/server/engine/citations.ts`).
+- A citation's quoted text is checked against the bytes at the line it names, and what was found
+  is recorded on the record's own evidence: at that line, elsewhere in that session, or nowhere
+  in it. This one MARKS and does not refuse — it is an accuracy finding about real bytes rather
+  than a claim about bytes nobody served — and the hub reads the cited member of the sealed
+  material back to make it, which is residual 9.
 
-That last property is the one worth stating as security rather than as correctness: a model cannot
-cite its way to a file it was not given, and it cannot quietly substitute different bytes for the
-ones a reviewer will later read.
+The first of those two is the one worth stating as security rather than as correctness: a model
+cannot cite its way to a file it was not given, and it cannot quietly substitute different bytes
+for the ones a reviewer will later read.
 
-**And Babel will not post one it has no authority to pay for** (`babel/server/engine/session.ts`;
-#255). A model is paid for by an account on the Code profile a run names, and the key behind that
-account is held by the machine's own broker — Babel names a container and Code resolves the rest,
-the same arrangement as §1's embedding service with Code in the host's place. What was missing was
-the other half of it: the plugin posted the spend without asking whether the deployment had an
-account at all. `CodeEngine.spendAuthority` asks Code, and `runSession` is behind it, so the call
-that spends is unreachable where the operator installed nothing. The order is §1's order and the
-property is §1's property: the free question first, the paid one second, and a deployment with no
-account makes no posting rather than a posting that fails. What the answer carries back is a
-provider and an identity NAME — the half of a credential a repository may hold — and Code's own
-`SessionRunInputSchema` is a strict object of a container, a destination, a revision, a prompt and
-its inputs, so there is no field on the wire a key could travel in even if this bundle held one.
+**Account preflight is not spend authority** (`babel/server/engine/session.ts`; #255).
+`CodeEngine.checkProfile` asks Code about the selected profile revision. A missing or changed
+profile is stale; a matching revision with `resolved: true` and no accounts is refused as
+`engine_no_account`. The press checks this after local eligibility and before preparation, and
+the adapter checks every session posting, including conductor reviews.
 
-The gate answers whether an account EXISTS, not whether the provider will honour it: a revoked
-key, an exhausted window or a broker that is down are all Code refusing a posted session, and
-they reach an operator as they always did.
+An unresolved observation is not evidence that no account exists. It passes through to Code,
+which remains authoritative about the current profile, account selection and provider when it
+posts a session. The adapter caches the roster only within its own instance, not across wakes;
+the preflight neither authorizes a spend nor guarantees that a provider will honour it.
+
+Babel names a container and revision, not a provider credential. The account's credential stays
+with the machine broker and is resolved by Code. A revoked key, an exhausted window, a changed
+selection or an unavailable broker can still make Code refuse after preflight succeeds.
 
 ## 5. Residuals, ranked by reachability
 
@@ -203,6 +210,14 @@ Most reachable first. A residual discovered in the system belongs in this list i
    closure; Code confines the session. Babel audits none of the three and depends on all of them.
 8. **A shared kernel shares microarchitecture.** No claim is made against timing or
    speculative-execution side channels, and none is implied.
+9. **Checking a quote puts corpus bytes in the hub's own memory.** Verifying that a citation's
+   quoted text is where it says it is cannot be done from an index — a digest covers a whole
+   file and says nothing about a span inside it — so the settlement reads the cited member of
+   the sealed material back through the hub. It is transient, bounded by the ceiling the hub
+   already reads every sealed output under, decoded only for the sessions a quote actually
+   names, and it happens only where an answer carried a quote. It is still one more place the
+   corpus exists, in a process that also holds the store, so it belongs here: residual 5 counts
+   the copies, and this is the fourth.
 
 ## 6. What the operator is asked to accept, in one sentence each
 
@@ -216,8 +231,8 @@ Most reachable first. A residual discovered in the system belongs in this list i
   installing none means the corpus index answers by keyword and reaches nothing.
 - Running an analysis means accepting that a credential in a format the preflight's rules do not
   name travels with the material.
-- Installing no account on the Code profile a preset names means no analysis of that preset runs
-  at all, and says so at the press; it never means one runs and pays with something of Babel's.
+- A profile Code positively resolves with no account is refused before preparation or posting.
+  An unresolved observation leaves that decision to Code; Babel supplies no credential fallback.
 
 ## 7. What would invalidate this document
 
@@ -247,13 +262,14 @@ Most reachable first. A residual discovered in the system belongs in this list i
 - **A detector class leaving the preflight's rule table, or the scan ceasing to run before the
   material is sealed.** §4's third property and residual 6 are written against that table and
   that ordering; a rule removed or a scan moved after the seal is a different disclosure boundary.
-- **Citations ceasing to be checked against the material index**, which is the only mechanism that
-  makes a model's claim about the corpus verifiable.
-- **A model credential reaching this repository by any path at all** — an `environment` entry, an
-  argv literal, a service of Babel's own carrying a provider key, or a field added to what
-  `runSession` is handed. §4's last paragraph is the claim, and its enforcement is three things
-  that must stay together: `test/contract.test.ts` pins that the contract names exactly two host
-  services and that no operation but `archive` and `verify` declares one, and
-  `babel/server/engine/session.ts` is the only module that can post a session. v0.4.0 removed an
-  `atyrode.babel.inference` service that did hold one, so this is a condition with a precedent
-  rather than a hypothetical.
+- **Citations ceasing to be checked against the material index**, which is the mechanism that
+  makes a model's claim about the corpus verifiable at all. Two shapes of loosening count as
+  the same condition: admitting a path by resolving it rather than by matching the index, which
+  turns a whitelist into a traversal question; and letting the quote check refuse a claim,
+  which would make the accuracy finding into a second gate and put the all-or-nothing waste
+  back where #231 and #311 found it.
+- **Babel binding or resolving an inference provider credential of its own** — an environment
+  entry, an argv literal, a model service binding or credential configuration passed to
+  `runSession`. §4's account boundary depends on Code and the machine broker owning that
+  configuration. This is distinct from a credential appearing in corpus material, which
+  residuals 1 and 6 already cover.

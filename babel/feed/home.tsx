@@ -20,6 +20,7 @@ import {
 import { Pulse, TopicRail } from "./rail.tsx";
 import { FeedRow, RULE_KEYS, type Acted, type ActedKind } from "./rows.tsx";
 import { Sentence, type PickName } from "./sentence.tsx";
+import { JevSweep } from "./jev.tsx";
 
 /*
   HOME (§8.7), and there are three surfaces over one order.
@@ -619,6 +620,7 @@ export function HomePanel({ host }: PanelProps): ReactElement {
     <ScrollRegion className={`plugin-${FEED_PLUGIN_ID.replaceAll(".", "_")}`} aria-label="Home">
       <Stack className="babel-panel" gap="var(--babel-space-4)">
         <Pulse host={host} />
+        <JevSweep host={host} />
         <Sidebar side="end" sideWidth="15rem" contentMin="60%" gap="var(--babel-space-6)">
           <FeedListing host={host} query={query} onQuery={setQuery} said={railNote?.said ?? ""} />
           <TopicRail

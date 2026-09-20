@@ -967,24 +967,6 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           `launch carries its container and the revision you were shown.`,
       };
     }
-    /*
-      AND NOTHING IS SEALED FOR A PROFILE THAT CANNOT PAY FOR THE SESSION (#255).
-
-      The session itself is posted two wakes from here and is gated there as well — every
-      posting in this bundle goes through `codeEngine.runSession`, which asks this same question
-      first. This one is the PRESS's, and it is worth one container read because of what sits
-      between the two: a press that got this far posts `atyrode.babel.prepare`, a job with half
-      a gigabyte and thirty minutes of a real machine's time in its ceiling, which reads every
-      selected log and seals it. Learning at the far end of that that the deployment never had
-      an account is the expensive way to be told, and the operator is standing here NOW — which
-      is the only moment the sentence is one he can act on.
-
-      The refusal carries the engine's own sentence verbatim, as every other refusal from
-      across that boundary does. It names the container and what to do with it, and it cannot
-      name a key: there is none in this process to name.
-    */
-    const spend = await engine.spendAuthority(profile.containerId);
-    if (!spend.ok) return { refused: spend.refused };
     // An explore performs a method, and the method is a cookbook recipe's body.
     const asked = input.recipes;
     const recipes = Object.values(await deps.cookbook()).filter(
@@ -1032,8 +1014,6 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     // from. Its id is DERIVED from the run's so a retried start posts the same preparation
     // rather than a second one over the same sessions.
     const prepareJobId = materialJobId(identity.jobId);
-    const admitted = await ready(jobs, input.machineId, OPERATIONS.prepare);
-    if ("refused" in admitted) return admitted;
     const built = document({
       runId: `${identity.runId}_material`,
       machineId: input.machineId,
@@ -1041,6 +1021,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       ...(input.agentSessions === undefined ? {} : { agentSessions: input.agentSessions }),
     });
     if ("refused" in built) return built;
+    // Check locally eligible work before spending time sealing its material (#255).
+    const checked = await engine.checkProfile(profile);
+    if (!checked.ok) return { refused: checked.refused };
+    const admitted = await ready(jobs, input.machineId, OPERATIONS.prepare);
+    if ("refused" in admitted) return admitted;
     const sealed = await post(
       jobs,
       {

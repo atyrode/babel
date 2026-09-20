@@ -315,7 +315,9 @@ async function cycle(
     );
   if (report.parked !== null)
     console.warn(
-      `${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} parked after ${String(report.parked.barren)} barren: ${report.parked.reason}`,
+      `${BABEL_PLUGIN_ID}: cycle ${report.cycleRunId} parked on ${report.parked.reason} ` +
+        `(${String(report.parked.barren)} barren, ${String(report.parked.spent)} paid for and ` +
+        `refused): ${report.parked.detail}`,
     );
   for (const gap of report.gaps.slice(0, 8))
     console.warn(

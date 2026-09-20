@@ -6,22 +6,51 @@
 */
 
 import { expect, test } from "bun:test";
-import { ROLES } from "../contract.ts";
+import { ROLES, type MaterialEntry } from "../contract.ts";
 import {
   acceptReviewResult,
   exploreJsonSchema,
-  parseExploreResult,
+  exploreSubmission,
   parseReviewResult,
+  refusalCode,
   REFUSALS,
   REVIEW_SCOPE_RULE,
   ResultRefusal,
   reviewJsonSchema,
+  type ExploreResult,
+  type ExploreSubmission,
   type Role,
+  type Stage,
 } from "./results.ts";
 
 const LOCATOR = { path: "omp/session-1.jsonl", line: 12, byte_offset: 480, digest: "sha256:abc" };
 const EVIDENCE = { locator: LOCATOR, note: "the transcript says the router retries twice" };
 const RECIPE = { id: "read-whats-new", version: 3 };
+
+/** The one session every citation below is served from, at the digest {@link LOCATOR} names. */
+const SERVED: readonly MaterialEntry[] = [
+  {
+    selector: "omp/s1",
+    harness: "omp",
+    sourceId: "s1",
+    captureDigest: "sha256:capture",
+    sourceDigest: "sha256:abc",
+    file: "omp/session-1.jsonl",
+    records: 1,
+    bytes: 10,
+  },
+];
+
+/** One submission against the material above: what it kept, what it refused, and never a throw. */
+function submit(stage: Stage, payload: unknown): ExploreSubmission {
+  return exploreSubmission(stage, payload, SERVED);
+}
+
+/** The subset a submission kept, or the failure that it kept none. */
+function kept(submission: ExploreSubmission): ExploreResult {
+  if (submission.result === null) throw new Error(`refused whole: ${submission.reason}`);
+  return submission.result;
+}
 
 const CLAIM = {
   claim: "the router retries a failed publish twice and then drops it",
@@ -98,7 +127,7 @@ test("a stage is offered exactly the fields its authority admits", () => {
 });
 
 test("a developed candidate with a remedy and a consolidation parses whole", () => {
-  const result = parseExploreResult("explore", {
+  const submission = submit("explore", {
     candidates: [
       {
         ref: "c1",
@@ -143,6 +172,9 @@ test("a developed candidate with a remedy and a consolidation parses whole", () 
     ],
   });
 
+  expect(submission.refused).toEqual([]);
+  expect(submission.reason).toBe("");
+  const result = kept(submission);
   expect(result.candidates).toHaveLength(1);
   expect(result.candidates[0]?.observations[0]?.claim.evidence[0]?.locator.digest).toBe(
     "sha256:abc",
@@ -163,28 +195,30 @@ test("an observation states the repository its evidence recorded, in one spellin
     against `github.com/atyrode/babel` would report a repository Babel probed as one a
     transcript merely mentioned.
   */
-  const result = parseExploreResult("explore", {
-    candidates: [
-      {
-        ref: "c1",
-        hypothesis: { statement: "the drain over-commits a cycle" },
-        observations: [
-          {
-            ref: "o1",
-            recipe: RECIPE,
-            claim: {
-              ...CLAIM,
-              repository: {
-                remote: "git@github.com:atyrode/babel.git",
-                commit: "9C44AAF1AB3C4D5E6F7089ABCDEF0123456789AB",
-                reference: "https://github.com/atyrode/babel/pull/377",
+  const result = kept(
+    submit("explore", {
+      candidates: [
+        {
+          ref: "c1",
+          hypothesis: { statement: "the drain over-commits a cycle" },
+          observations: [
+            {
+              ref: "o1",
+              recipe: RECIPE,
+              claim: {
+                ...CLAIM,
+                repository: {
+                  remote: "git@github.com:atyrode/babel.git",
+                  commit: "9C44AAF1AB3C4D5E6F7089ABCDEF0123456789AB",
+                  reference: "https://github.com/atyrode/babel/pull/377",
+                },
               },
             },
-          },
-        ],
-      },
-    ],
-  });
+          ],
+        },
+      ],
+    }),
+  );
 
   expect(result.candidates[0]?.observations[0]?.claim.repository).toEqual({
     remote: "github.com/atyrode/babel",
@@ -194,8 +228,8 @@ test("an observation states the repository its evidence recorded, in one spellin
 });
 
 test("a repository claim naming a directory, or a commit that is not one, is not a repository", () => {
-  const stated = (repository: unknown): unknown =>
-    parseExploreResult("explore", {
+  const stated = (repository: unknown): ExploreSubmission =>
+    submit("explore", {
       candidates: [
         {
           ref: "c1",
@@ -203,177 +237,371 @@ test("a repository claim naming a directory, or a commit that is not one, is not
           observations: [{ ref: "o1", recipe: RECIPE, claim: { ...CLAIM, repository } }],
         },
       ],
-    }).candidates[0]?.observations[0]?.claim.repository;
+    });
 
   // A path remote names a directory on one machine, which is a locator and not a project; it
   // empties rather than refusing the answer, and the reader reads an empty remote as absent.
-  expect(stated({ remote: "/srv/git/thing" })).toEqual({ remote: "", commit: "", reference: "" });
-  // A commit is checkable on its face, so a value that cannot be one is refused rather than
-  // stored: an unreadable sha would be shown to a reader as the position the run read.
   expect(
-    refusal(() => stated({ remote: "github.com/atyrode/babel", commit: "HEAD~2" })).refusal,
-  ).toBe(REFUSALS.schema);
+    kept(stated({ remote: "/srv/git/thing" })).candidates[0]?.observations[0]?.claim.repository,
+  ).toEqual({ remote: "", commit: "", reference: "" });
+  // A commit is checkable on its face, so a value that cannot be one is refused rather than
+  // stored: an unreadable sha would be shown to a reader as the position the run read. The
+  // CANDIDATE still stands — the claim that misread its own provenance is the item at fault.
+  const unreadable = stated({ remote: "github.com/atyrode/babel", commit: "HEAD~2" });
+  expect(kept(unreadable).candidates[0]?.observations).toEqual([]);
+  expect(unreadable.refused).toEqual([
+    { item: "/candidates/0/observations/0", reason: expect.stringContaining(REFUSALS.schema) },
+  ]);
   // And a bare issue number names a number in whatever project the reader assumes.
   expect(
-    refusal(() => stated({ remote: "github.com/atyrode/babel", reference: "#312" })).refusal,
-  ).toBe(REFUSALS.schema);
+    stated({ remote: "github.com/atyrode/babel", reference: "#312" }).refused[0]?.reason,
+  ).toStartWith(`${REFUSALS.schema}:`);
 });
 
-test("a challenger that consolidates is refused, not trimmed", () => {
-  const error = refusal(() =>
-    parseExploreResult("challenge", {
-      candidates: [],
-      objections: [
-        {
-          ref: "j1",
-          hypothesis: "hyp_00000001",
-          grounds: "evidence",
-          recipe: RECIPE,
-          claim: CLAIM,
-        },
-      ],
-      consolidations: [
-        {
-          ref: "con1",
-          observations: ["o1"],
-          finding: { title: "t", pattern: "p", counter_evidence_absent: true },
-        },
-      ],
-    }),
-  );
-  expect(error.refusal).toBe(REFUSALS.schema);
-  expect(error.message).toContain("consolidations");
-});
-
-test("an observation with no evidence, or with both counter-evidence answers, is refused", () => {
-  const bare = refusal(() =>
-    parseExploreResult("explore", {
-      candidates: [
-        {
-          ref: "c1",
-          hypothesis: { statement: "s" },
-          observations: [{ ref: "o1", recipe: RECIPE, claim: { ...CLAIM, evidence: [] } }],
-        },
-      ],
-    }),
-  );
-  expect(bare.refusal).toBe(REFUSALS.schema);
-
-  const both = refusal(() =>
-    parseExploreResult("explore", {
-      candidates: [
-        {
-          ref: "c1",
-          hypothesis: { statement: "s" },
-          observations: [
-            {
-              ref: "o1",
-              recipe: RECIPE,
-              claim: { ...CLAIM, counter_evidence: [EVIDENCE], counter_evidence_absent: true },
-            },
-          ],
-        },
-      ],
-    }),
-  );
-  expect(both.message).toContain("counter_evidence");
-});
-
-test("a consolidation resting on a candidate rather than an observation skips the development path", () => {
-  const error = refusal(() =>
-    parseExploreResult("explore", {
-      candidates: [{ ref: "c1", hypothesis: { statement: "s" }, observations: [] }],
-      consolidations: [
-        {
-          ref: "con1",
-          observations: ["c1"],
-          finding: { title: "t", pattern: "p", counter_evidence_absent: true },
-        },
-      ],
-    }),
-  );
-  expect(error.refusal).toBe(REFUSALS.developmentPath);
-  expect(error.message).toContain("hypothesis rather than an observation");
-});
-
-test("a consolidation resting on a name nobody emitted or listed is refused", () => {
-  const error = refusal(() =>
-    parseExploreResult("explore", {
-      candidates: [],
-      consolidations: [
-        {
-          ref: "con1",
-          observations: ["o-invented"],
-          finding: { title: "t", pattern: "p", counter_evidence_absent: true },
-        },
-      ],
-    }),
-  );
-  expect(error.refusal).toBe(REFUSALS.developmentPath);
-});
-
-test("a consolidation may rest on a durable observation identifier from the brief", () => {
-  const result = parseExploreResult("synthesize", {
+test("a challenger that consolidates loses the consolidation and keeps its criticism", () => {
+  /*
+    Authority is enforced by ABSENCE where absence is what the model sees — `challenge` is never
+    offered a `consolidations` field — and by refusal when a payload carries one anyway. What
+    changed with #231 is the blast radius: the field it had no authority for costs itself, and
+    the criticism beside it, which the stage did have authority for and which was paid for, is
+    recorded rather than thrown away with it.
+  */
+  const submission = submit("challenge", {
+    candidates: [],
+    objections: [
+      {
+        ref: "j1",
+        hypothesis: "hyp_00000001",
+        grounds: "evidence",
+        recipe: RECIPE,
+        claim: CLAIM,
+      },
+    ],
     consolidations: [
       {
         ref: "con1",
-        observations: ["obs_0123456789abcdef"],
+        observations: ["o1"],
         finding: { title: "t", pattern: "p", counter_evidence_absent: true },
       },
     ],
   });
+
+  expect(kept(submission).objections[0]?.ref).toBe("j1");
+  expect(kept(submission).consolidations).toEqual([]);
+  expect(submission.refused).toEqual([
+    {
+      item: "/consolidations/0",
+      reason: `${REFUSALS.authority}: a challenge result may not carry consolidations`,
+    },
+  ]);
+});
+
+test("an observation with no evidence, or with both counter-evidence answers, costs its own item", () => {
+  const bare = submit("explore", {
+    candidates: [
+      {
+        ref: "c1",
+        hypothesis: { statement: "s" },
+        observations: [{ ref: "o1", recipe: RECIPE, claim: { ...CLAIM, evidence: [] } }],
+      },
+    ],
+  });
+  expect(bare.refused[0]?.item).toBe("/candidates/0/observations/0");
+  expect(bare.refused[0]?.reason).toStartWith(`${REFUSALS.schema}:`);
+  // THE HYPOTHESIS STANDS. It rests on nothing, so the claim that failed to develop it takes
+  // only itself: #231's third cause was exactly one observation missing one obligation, and it
+  // used to cost the whole run.
+  expect(kept(bare).candidates[0]?.hypothesis.statement).toBe("s");
+  expect(kept(bare).candidates[0]?.observations).toEqual([]);
+
+  const both = submit("explore", {
+    candidates: [
+      {
+        ref: "c1",
+        hypothesis: { statement: "s" },
+        observations: [
+          {
+            ref: "o1",
+            recipe: RECIPE,
+            claim: { ...CLAIM, counter_evidence: [EVIDENCE], counter_evidence_absent: true },
+          },
+        ],
+      },
+    ],
+  });
+  expect(both.refused[0]?.reason).toContain("counter_evidence");
+});
+
+test("a consolidation resting on a candidate rather than an observation skips the development path", () => {
+  const submission = submit("explore", {
+    candidates: [{ ref: "c1", hypothesis: { statement: "s" }, observations: [] }],
+    consolidations: [
+      {
+        ref: "con1",
+        observations: ["c1"],
+        finding: { title: "t", pattern: "p", counter_evidence_absent: true },
+      },
+    ],
+  });
+  expect(submission.refused[0]?.item).toBe("/consolidations/0");
+  expect(submission.refused[0]?.reason).toStartWith(`${REFUSALS.developmentPath}:`);
+  expect(submission.refused[0]?.reason).toContain("hypothesis rather than an observation");
+  expect(kept(submission).candidates).toHaveLength(1);
+});
+
+test("a consolidation resting on a name nobody emitted or listed is refused", () => {
+  const submission = submit("explore", {
+    candidates: [],
+    consolidations: [
+      {
+        ref: "con1",
+        observations: ["o-invented"],
+        finding: { title: "t", pattern: "p", counter_evidence_absent: true },
+      },
+    ],
+  });
+  // The only item it carried, so there is nothing left to keep and the submission stands refused.
+  expect(submission.result).toBeNull();
+  expect(submission.reason).toStartWith(`${REFUSALS.developmentPath}:`);
+});
+
+test("a consolidation may rest on a durable observation identifier from the brief", () => {
+  const result = kept(
+    submit("synthesize", {
+      consolidations: [
+        {
+          ref: "con1",
+          observations: ["obs_0123456789abcdef"],
+          finding: { title: "t", pattern: "p", counter_evidence_absent: true },
+        },
+      ],
+    }),
+  );
   expect(result.consolidations[0]?.observations).toEqual(["obs_0123456789abcdef"]);
 });
 
 test("an objection on evidence grounds that cites none is refused", () => {
-  const error = refusal(() =>
-    parseExploreResult("challenge", {
-      objections: [
-        {
-          ref: "j1",
-          hypothesis: "hyp_0123456789abcdef",
-          grounds: "evidence",
-          recipe: RECIPE,
-          claim: { ...CLAIM, evidence: [] },
-        },
-      ],
-    }),
-  );
-  expect(error.refusal).toBe(REFUSALS.support);
-});
-
-test("an objection on alternative grounds carries no locator and is accepted", () => {
-  const result = parseExploreResult("challenge", {
+  const submission = submit("challenge", {
     objections: [
       {
         ref: "j1",
         hypothesis: "hyp_0123456789abcdef",
-        grounds: "alternative",
+        grounds: "evidence",
         recipe: RECIPE,
-        claim: {
-          claim: "a queue would drop nothing",
-          confidence: "low",
-          impact: "moderate",
-          evidence: [],
-          counter_evidence_absent: true,
-        },
+        claim: { ...CLAIM, evidence: [] },
       },
     ],
   });
+  expect(submission.result).toBeNull();
+  expect(submission.reason).toStartWith(`${REFUSALS.support}:`);
+});
+
+test("an objection on alternative grounds carries no locator and is accepted", () => {
+  const result = kept(
+    submit("challenge", {
+      objections: [
+        {
+          ref: "j1",
+          hypothesis: "hyp_0123456789abcdef",
+          grounds: "alternative",
+          recipe: RECIPE,
+          claim: {
+            claim: "a queue would drop nothing",
+            confidence: "low",
+            impact: "moderate",
+            evidence: [],
+            counter_evidence_absent: true,
+          },
+        },
+      ],
+    }),
+  );
   expect(result.objections[0]?.grounds).toBe("alternative");
   expect(result.objections[0]?.claim.evidence).toEqual([]);
 });
 
-test("a ref used twice is refused, because later items name earlier ones by it", () => {
-  const error = refusal(() =>
-    parseExploreResult("explore", {
-      candidates: [
-        { ref: "c1", hypothesis: { statement: "a" }, observations: [] },
-        { ref: "c1", hypothesis: { statement: "b" }, observations: [] },
-      ],
-    }),
-  );
-  expect(error.message).toContain("used twice");
+test("a ref used twice costs the later item, because earlier ones were named by it", () => {
+  const submission = submit("explore", {
+    candidates: [
+      { ref: "c1", hypothesis: { statement: "a" }, observations: [] },
+      { ref: "c1", hypothesis: { statement: "b" }, observations: [] },
+    ],
+  });
+  expect(submission.refused).toEqual([
+    { item: "/candidates/1", reason: expect.stringContaining("used twice") },
+  ]);
+  // The FIRST declaration stands: every reference in the answer was written against it, and
+  // minting both would have collapsed two claims into one row at the ingest.
+  expect(kept(submission).candidates).toEqual([
+    expect.objectContaining({ hypothesis: expect.objectContaining({ statement: "a" }) }),
+  ]);
+});
+
+// ------------------------------------------------- a submission kept in part (#231, #311)
+
+test("one unusable disposition costs itself and the paid records around it stand", () => {
+  /*
+    The three causes of #231, submitted together in one answer: a `draft-issue` naming no
+    workspace (the disposition this machine cannot act on), an objection attacking an id nobody
+    holds, and a citation of a file the run was never served. Each used to fail the run.
+  */
+  const submission = submit("explore", {
+    candidates: [
+      { ref: "c1", hypothesis: { statement: "the router drops publishes" } },
+      {
+        ref: "c2",
+        hypothesis: { statement: "the catalog forgets sessions" },
+        observations: [{ ref: "o1", recipe: RECIPE, claim: CLAIM }],
+      },
+      {
+        ref: "c3",
+        hypothesis: { statement: "the reaper reads a sealed session twice" },
+        observations: [
+          {
+            ref: "o2",
+            recipe: RECIPE,
+            claim: {
+              ...CLAIM,
+              evidence: [{ locator: { ...LOCATOR, path: "omp/never-served.jsonl" }, note: "n" }],
+            },
+          },
+        ],
+      },
+    ],
+    consolidations: [
+      {
+        ref: "con1",
+        observations: ["o1"],
+        finding: { title: "t", pattern: "p", counter_evidence_absent: true },
+      },
+    ],
+    next_actions: [
+      { record: "c1", kind: "draft-issue", summary: "file it", workspace: "" },
+      { record: "c2", kind: "develop-further", summary: "keep reading" },
+    ],
+    questions: [
+      { ref: "q1", subjects: ["dev-01"], prompt: "which host?", why_asked: "two claim it" },
+    ],
+  });
+
+  const result = kept(submission);
+  expect(result.candidates.map((candidate) => candidate.ref)).toEqual(["c1", "c2", "c3"]);
+  expect(result.consolidations).toHaveLength(1);
+  expect(result.next_actions.map((action) => action.kind)).toEqual(["develop-further"]);
+  expect(result.questions).toHaveLength(1);
+  // The two items at fault, named by position and by reason, and nothing else lost.
+  expect(submission.refused).toEqual([
+    {
+      item: "/candidates/2/observations/0",
+      reason: expect.stringContaining("omp/never-served.jsonl, which is not a file this run"),
+    },
+    {
+      item: "/next_actions/0",
+      reason: `${REFUSALS.support}: the draft-issue proposed on "c1" names no workspace, so the issue would be about no repository`,
+    },
+  ]);
+});
+
+test("a refused candidate takes what rested on it and nothing else", () => {
+  /*
+    What "kept" means for a set: the largest subset closed under §4.2's development path. The
+    candidate's own claim is unreadable, so its observation cannot hang off a hypothesis that
+    does not exist, and the finding consolidating that observation would rest on nothing. Both
+    fall WITH IT and say so; the unrelated candidate beside them does not.
+  */
+  const submission = submit("explore", {
+    candidates: [
+      {
+        ref: "c1",
+        hypothesis: { statement: "" },
+        observations: [{ ref: "o1", recipe: RECIPE, claim: CLAIM }],
+      },
+      { ref: "c2", hypothesis: { statement: "the catalog forgets sessions" } },
+      { ref: "c3", hypothesis: { statement: "a third reading" } },
+      { ref: "c4", hypothesis: { statement: "a fourth reading" } },
+    ],
+    consolidations: [
+      {
+        ref: "con1",
+        observations: ["o1"],
+        finding: { title: "t", pattern: "p", counter_evidence_absent: true },
+      },
+    ],
+  });
+
+  expect(kept(submission).candidates.map((candidate) => candidate.ref)).toEqual(["c2", "c3", "c4"]);
+  expect(kept(submission).consolidations).toEqual([]);
+  expect(submission.refused).toEqual([
+    { item: "/candidates/0", reason: expect.stringContaining(REFUSALS.schema) },
+    {
+      item: "/candidates/0/observations/0",
+      reason: `${REFUSALS.developmentPath}: the candidate this observation develops was refused`,
+    },
+    {
+      item: "/consolidations/0",
+      reason: `${REFUSALS.developmentPath}: consolidation "con1" rests on "o1", which this submission refused`,
+    },
+  ]);
+});
+
+test("a submission that keeps less than the floor is refused whole, and says what it was", () => {
+  /*
+    The floor is the one judgement in this path (`SUBMISSION_KEPT_FLOOR`): below it the model
+    demonstrably was not writing against this contract, and the items that happened to parse are
+    then likely wrong in ways no schema sees. The receipt still gets every refusal — the run is
+    spend either way, and the refusals are the measurement the spend bought.
+  */
+  const submission = submit("explore", {
+    candidates: [
+      { ref: "c1", hypothesis: { statement: "the one readable claim" } },
+      { ref: "c2", hypothesis: { statement: "" } },
+      { ref: "c3", hypothesis: { statement: "" } },
+    ],
+  });
+
+  expect(submission.result).toBeNull();
+  expect(submission.refused.map((item) => item.item)).toEqual(["/candidates/1", "/candidates/2"]);
+  // The DEFECT leads the sentence, so `refusalCode` still counts the class the operator acts on.
+  expect(refusalCode(submission.reason)).toBe(REFUSALS.schema);
+  expect(submission.reason).toContain("2 of this submission's 3 items were refused");
+  expect(submission.reason).toContain("50%");
+});
+
+test("exactly half kept clears the floor, because the comparison is inclusive", () => {
+  const submission = submit("explore", {
+    candidates: [
+      { ref: "c1", hypothesis: { statement: "the readable claim" } },
+      { ref: "c2", hypothesis: { statement: "" } },
+    ],
+  });
+  expect(kept(submission).candidates.map((candidate) => candidate.ref)).toEqual(["c1"]);
+});
+
+test("a cascade counts against the floor, so a whole path resting on one bad claim is refused", () => {
+  /*
+    The floor is a share of the items SUBMITTED, and a cascade is an item this submission did
+    not deliver whatever its own shape was. Two of these three items fall because the candidate
+    they hang off is unreadable; counting only the item whose own schema failed would leave two
+    of three kept and let the whole broken path through, which is the reward for having built
+    everything on one bad claim that the floor exists to withhold.
+  */
+  const submission = submit("explore", {
+    candidates: [
+      {
+        ref: "c1",
+        hypothesis: { statement: "" },
+        observations: [{ ref: "o1", recipe: RECIPE, claim: CLAIM }],
+      },
+      { ref: "c2", hypothesis: { statement: "the one readable claim" } },
+    ],
+  });
+
+  expect(submission.result).toBeNull();
+  expect(submission.refused.map((item) => item.item)).toEqual([
+    "/candidates/0",
+    "/candidates/0/observations/0",
+  ]);
+  expect(submission.reason).toContain("2 of this submission's 3 items were refused");
 });
 
 // ---------------------------------------------------------------------------- the review

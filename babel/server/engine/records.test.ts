@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { JOB_OUTPUT_FILES, RECORD_RESTS_ON_ONE_RUN, type MaterialEntry } from "../../contract.ts";
-import { parseExploreResult, type ExploreResult } from "../../machine/results.ts";
+import { exploreSubmission, type ExploreResult } from "../../machine/results.ts";
 import { insert, openTestStore } from "../../store/testdb.ts";
 import { correctionMarker, exploreRows, markerReferences } from "./records.ts";
 import type { Cell, Row } from "./rows.ts";
@@ -31,13 +31,23 @@ const SESSION: MaterialEntry = {
 
 const LOCATOR = { path: "s1.jsonl", line: 1, byte_offset: 0, digest: "sha256:aaa" };
 
+/** One submission as the hub reads it, refusing to go on if the contract refused any of it. */
+function shaped(payload: unknown): ExploreResult {
+  const submission = exploreSubmission("explore", payload, [SESSION]);
+  if (submission.result === null) throw new Error(`refused: ${submission.reason}`);
+  if (submission.refused.length > 0) {
+    throw new Error(`refused items: ${JSON.stringify(submission.refused)}`);
+  }
+  return submission.result;
+}
+
 /** One candidate with one locator-backed observation, as the answer schema shapes it. */
 function answer(options: {
   statement: string;
   claim: string;
   extra?: Record<string, unknown>;
 }): ExploreResult {
-  return parseExploreResult("explore", {
+  return shaped({
     candidates: [
       {
         ref: "h1",
@@ -66,14 +76,15 @@ function edgesOf(rows: Readonly<Record<string, readonly Row[]>>): readonly Row[]
 }
 
 function settle(result: ExploreResult, holds: readonly string[] = [], runId = "run_1") {
-  const written = exploreRows(result, {
+  return exploreRows(result, {
     runId,
     at: "2026-09-18T00:00:00.000Z",
     sessions: [SESSION],
     holds: new Set(holds),
+    // The citation checks are the settlement's, not the writer's: these tests are about the
+    // rows an answer becomes, and `citations.test.ts` owns what a verdict is.
+    checks: new Map(),
   });
-  if ("refusal" in written) throw new Error(`refused: ${written.refusal.message}`);
-  return written;
 }
 
 // ------------------------------------------------------------------------------- the grammar
@@ -196,7 +207,7 @@ test("a record correcting a handle this answer declared gets the edge at creatio
 test("a marker resolves a handle declared later in the same answer", () => {
   // The candidate is written before the consolidation that names it, so a pass interleaved with
   // creation would resolve this one by luck of ordering and the reverse case not at all.
-  const result = parseExploreResult("explore", {
+  const result = shaped({
     candidates: [
       {
         ref: "h1",
@@ -298,7 +309,7 @@ function observed(ref: string, claim: string) {
 
 /** An answer whose finding consolidates exactly the observation handles named. */
 function consolidating(observations: readonly string[]): ExploreResult {
-  return parseExploreResult("explore", {
+  return shaped({
     candidates: [
       {
         ref: "h1",

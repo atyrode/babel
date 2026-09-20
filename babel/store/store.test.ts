@@ -1007,6 +1007,39 @@ describe("topics", () => {
     expect(proposal?.targets).toEqual([{ id: PROJECT, name: "babel" }]);
   });
 
+  test("a proposal whose record id nothing can name is dropped from the rail, not raised", async () => {
+    // A row of the vintage #426 was reported from: written before the frontier's guard existed,
+    // undeletable below the doors, and carrying an id `TopicProposalSchema` refuses. The rail
+    // is a shortcut into the feed and nothing could open this one, so listing it would only
+    // fail the `topics` door's own result and take the nameable proposal with it.
+    await insert(harness.db, "records", {
+      id: "rec_seed_002",
+      kind: "proposal",
+      root_id: "rec_seed_002",
+      seq: 1,
+      actor_kind: "run",
+      actor_id: "run-b",
+      title: "an imported proposal",
+      created_at: stamp(NOW - 5 * HOUR),
+      payload: JSON.stringify({ schema: 1, outcome: "file the imports somewhere" }),
+    });
+    await insert(harness.db, "plans", {
+      id: "pln_0002",
+      kind: "topic",
+      subject_kind: "proposal",
+      subject_id: "rec_seed_002",
+      operation: "create",
+      payload: JSON.stringify({ reasoning: "the imports cite it", name: "the imports" }),
+      proposed_by_kind: "run",
+      proposed_by_id: "run-b",
+      state: "open",
+      created_at: stamp(NOW - 5 * HOUR),
+    });
+    harness.store.touch();
+    const answer = await harness.store.topics();
+    expect(answer.proposed.map((row) => row.proposalId)).toEqual([AGREED]);
+  });
+
   test("one topic answers with its row, its proposals and its own feed", async () => {
     const answer = await harness.store.topic("tyrode-infra");
     expect(answer.topic?.id).toBe(REPOSITORY);
@@ -1147,11 +1180,14 @@ describe("the peel", () => {
     expect(await harness.store.record(ARGUED).then((peeled) => peeled?.plan)).toBeNull();
   });
 
-  // The peel's top row is a `FeedPost`, whose kind is one of the four post kinds, so an
-  // observation could only be served by calling it a hypothesis. It is reached from the records
-  // that cite it instead, and the door refuses it by name rather than mislabelling it.
-  test("an observation is not peelable, because a peel would have to call it something else", async () => {
-    expect(await harness.store.record(OBSERVATION)).toBeNull();
+  test("an observation peels in its own kind without becoming a feed post", async () => {
+    const peeled = await harness.store.record(OBSERVATION);
+    expect(peeled?.post).toMatchObject({
+      id: OBSERVATION,
+      kind: "observation",
+      title: "an observation, which is evidence",
+    });
+    expect(peeled?.claim.statement).toBe("an observation, which is evidence");
   });
 
   test("a record this deployment does not hold is nothing rather than an empty document", async () => {

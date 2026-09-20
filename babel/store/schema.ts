@@ -841,6 +841,8 @@ export const SCHEMA_V1: readonly string[] = [
      last_model TEXT NOT NULL DEFAULT '',
      last_call_at TEXT NOT NULL DEFAULT '',
      seq INTEGER NOT NULL DEFAULT 0,
+     /* The distinct models that have answered, JSON, first-heard order; see SCHEMA_ADDITIONS. */
+     models TEXT NOT NULL DEFAULT '',
      stalled INTEGER NOT NULL DEFAULT 0 CHECK (stalled IN (0, 1)),
      updated_at TEXT NOT NULL
    ) STRICT`,
@@ -931,6 +933,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
      last_model TEXT NOT NULL DEFAULT '',
      last_call_at TEXT NOT NULL DEFAULT '',
      seq INTEGER NOT NULL DEFAULT 0,
+     models TEXT NOT NULL DEFAULT '',
      stalled INTEGER NOT NULL DEFAULT 0 CHECK (stalled IN (0, 1)),
      updated_at TEXT NOT NULL
    ) STRICT`,
@@ -990,6 +993,17 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // above — and the one addition in this file that names a VIRTUAL table, which `sqlite_master`
   // answers for by name exactly as it does for an ordinary one.
   ...CORPUS_INDEX_SCHEMA.map(objectAddition),
+  // #169: the models that have answered a running job, JSON, in the order it first heard from
+  // each. A column and not a table, because the table above already arrives by addition for a
+  // store created before #261 — and an addition keyed only on the table's name would have left
+  // such a store with the table and without this column, which is the one shape the fold's
+  // INSERT cannot write. A row an earlier shape wrote reads `''`, which is the truth about it:
+  // that fold recorded only the newest model, so which others answered is not recoverable.
+  {
+    object: "run_progress",
+    column: "models",
+    sql: `ALTER TABLE run_progress ADD COLUMN models TEXT NOT NULL DEFAULT ''`,
+  },
 ];
 
 /**
@@ -1059,4 +1073,23 @@ export function recordTextSql(alias: string): string {
     .map((field) => `COALESCE(json_extract(${alias}payload, '$.${field}'), '')`)
     .join(` || ' ' || `);
   return `CASE WHEN json_valid(${alias}payload) THEN TRIM(${parts}) ELSE '' END`;
+}
+
+/**
+ * WHETHER A ROW'S IDENTIFIER IS ONE A CALLER COULD NAME, AS SQL (#426).
+ *
+ * `contract.ts`'s `isRecordId` is the same question in TypeScript and the two must answer alike;
+ * they are spelled twice because a regular expression is not available to SQLite and a read that
+ * filtered in TypeScript could not keep a COUNT and a LIMIT'd page agreeing about how many rows
+ * there are. `store/acts.test.ts` holds the two to each other over a spread of identifiers.
+ *
+ * The family is the first four characters, the tail is 8 to 64 lowercase hex — so the whole id
+ * is 12 to 68 characters — and `GLOB` is the case-sensitive match SQLite has: `LIKE` would admit
+ * `FND_0000ABCD`, which `RecordIdSchema` refuses.
+ */
+export function nameableRecordSql(column: string): string {
+  return `substr(${column}, 1, 4) IN ('hyp_', 'obs_', 'fnd_', 'pro_', 'qst_')
+          AND length(${column}) BETWEEN 12 AND 68
+          AND length(CAST(${column} AS BLOB)) = length(${column})
+          AND substr(${column}, 5) NOT GLOB '*[^0-9a-f]*'`;
 }

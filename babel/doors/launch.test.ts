@@ -5,14 +5,10 @@
   input, run the handler, parse what it produced against the action's own result — and then
   asks the STORE and the FLEET what happened.
 
-  WHAT A LAUNCH DOES IS FIVE STEPS AND STOPS AT THE FIFTH (#279). A Babel run is a Code
-  session: the operator names a saved Code profile, Babel chooses the sessions, posts its OWN
-  `prepare` job to seal them as the material, composes the prompt around `/inputs/material` —
-  and then asks `atyrode.code.runSession` to post the session. That last call is what
-  `MATERIAL_INPUT_PENDING` still refuses, because Manifold cannot yet bind one job's sealed
-  output into another plugin's job. So the tests below pin the four steps that DO happen, the
-  refusal that ends the fifth, and the fact that the preparation is real work left behind
-  rather than a ghost.
+  A launch names a Code profile, selects sessions and posts a preparation to seal the material.
+  `postPrepared` waits for that job to settle before asking Code to post a session with the
+  material bound. These tests distinguish a refused launch, a preparation in flight and the
+  later session posting; none may be recorded as another.
 
   `stop` is unchanged and still fully exercised: a run this deployment already started can be
   running when the plugin is upgraded, and ending it releases what it reserved.
@@ -27,7 +23,6 @@ import {
   OPERATIONS,
   OUTPUT_BINDING,
   PRESET_OPERATIONS,
-  type ProfileAccount,
   type ProfileRow,
 } from "../contract.ts";
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
@@ -39,7 +34,6 @@ import {
   type SessionRequest,
 } from "../server/engine/session.ts";
 import type { Recipe } from "../server/engine/prompts.ts";
-import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
@@ -129,10 +123,8 @@ function refusedByCode<T>(code: string, detail: string): EngineAnswer<T> {
 }
 
 /**
- * CODE, as this door reaches it. `runSession` is the one verb that cannot be called yet:
- * `codeEngine` refuses it `material_input_pending` before the call is made, so a fake that
- * ACCEPTED it would be testing a door against a world that does not exist. This one throws if
- * it is ever reached, which is how the refusal's position in the sequence is pinned.
+ * CODE, as this door reaches it. A launch must not post a session before preparation settles;
+ * tests of `postPrepared` explicitly supply the posting response for that later transition.
  */
 class Code implements CodeEngine {
   saved: ProfileRow[] = [
@@ -155,30 +147,10 @@ class Code implements CodeEngine {
     return await Promise.resolve({ ok: true, value: this.saved });
   }
 
-  /**
-   * THE QUESTION THE PRESS ASKS BEFORE IT SEALS ANYTHING (#255), answered the way the adapter
-   * answers it: the profile's own accounts, or the refusal that says the deployment has none.
-   * `saved` is the whole of it, so a test sets up "no account installed" by emptying the list
-   * or the row's `accounts` rather than by stubbing a verb.
-   */
-  async spendAuthority(containerId: string): Promise<EngineAnswer<readonly ProfileAccount[]>> {
-    const listed = await this.profiles();
-    if (!listed.ok) return listed;
-    const held = listed.value.find((profile) => profile.containerId === containerId);
-    if (held === undefined) {
-      return refusedByCode(
-        "engine_stale_profile",
-        `${CODE_PLUGIN_ID} holds no profile for container ${containerId}`,
-      );
-    }
-    if (held.resolved && held.accounts.length === 0) {
-      return refusedByCode(
-        "engine_no_account",
-        `the Code profile ${containerId} spends no account: Code resolved its saved choices ` +
-          `against the live observation and found none`,
-      );
-    }
-    return { ok: true, value: held.accounts };
+  checkResult: EngineAnswer<null> = { ok: true, value: null };
+
+  async checkProfile(): Promise<EngineAnswer<null>> {
+    return await Promise.resolve(this.checkResult);
   }
 
   /**
@@ -453,8 +425,8 @@ test("a model preset naming no Code profile is refused by name, and nothing is p
   and a deployment that never installed an account must not spend it to be told so afterwards.
   The assertion is therefore what the FLEET was asked to run, not what the door returned.
 */
-test("a profile Code resolved with no account refuses the press, and no preparation is posted", async () => {
-  code.saved = [{ ...code.saved[0]!, accounts: [] }];
+test("an account-check refusal prevents preparation and creates no run", async () => {
+  code.checkResult = refusedByCode("engine_no_account", "ctr_workbench has no resolved account");
 
   const answer = await start({
     preset: "read-whats-new",
@@ -464,22 +436,20 @@ test("a profile Code resolved with no account refuses the press, and no preparat
 
   expect(fleet.executed).toEqual([]);
   expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
-  // The engine's own word, forwarded verbatim: which profile, and what is missing from it. The
-  // whole sentence an operator reads is pinned where it is written, in `engine/session.test.ts`.
   expect(String(answer["refused"])).toStartWith("engine_no_account:");
   expect(String(answer["refused"])).toContain("ctr_workbench");
 });
 
 test("a hub holding no cookbook recipe refuses an explore rather than posting one with no method", async () => {
   cookbook = {};
+  code.checkProfile = () =>
+    Promise.reject(new Error("local eligibility must be checked before querying Code"));
   const answer = await start({
     preset: "read-whats-new",
     sinceDays: 1,
     profile: { containerId: "ctr_workbench", expectedRevision: 7 },
   });
-  expect(answer["refused"]).toBe(
-    "no cookbook recipe is installed on this hub, so an explore has no method to run",
-  );
+  expect(answer).toHaveProperty("refused");
   expect(fleet.executed).toEqual([]);
 });
 

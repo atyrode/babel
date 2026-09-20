@@ -358,10 +358,13 @@ runs use — search returning locators and a bounded excerpt and never a score, 
 a bounded excerpt around a locator with a provenance header — and everything it returned would be
 delimited and labelled as archived data rather than instruction.
 
-**Recall is not built, and neither is the retrieval it rests on.** There is no index over the
-corpus; a preparation selects by recency or by topic. `docs/parity.md` records both, under
-`index/` and `research/`. This section is the design recall must satisfy when it is built, not a
-description of a capability Babel has.
+**Recall is not built, and the retrieval it rests on exists for half of what it needs.** Babel's
+own records are indexed and retrievable — keyword and meaning, fused, behind one door — so an
+agent can be told what Babel concluded about a subject. The session corpus is not indexed: a
+preparation still selects by recency or by topic, and Recall's first question, _where is it_, is a
+question about sessions. [`docs/parity.md`](docs/parity.md) records both halves under `index/`, and
+`research/` for the network no run of Babel's reaches. This section is the design recall must
+satisfy when it is built, not a description of a capability Babel has.
 
 ### 4.11 References, not copies
 
@@ -395,6 +398,21 @@ operator decisions, implementation, observed outcomes, and material reasons to r
 decisions. [`docs/evaluation-lifecycle.md`](docs/evaluation-lifecycle.md) records the
 implementation.
 
+**A review's corpus is its assignment and the material it was served, and a review never digests
+the corpus.** The assignment names the revision under review; the material is the immutable sealed
+selection of §2.6, and every citation is checked against its index. The principle that makes
+breadth of evidence worth having — contrary evidence is by definition not in the sessions a claim
+already cited — is served by retrieval over an index the deployment already holds, built once as
+its inputs change and read by every review. It is never served by a pass that describes, digests
+and indexes the corpus per review: that is a cost that scales with the corpus times the reviews,
+and it buys nothing a built index does not. Today the index exists over Babel's own records and
+not over the sessions (§4.10), so a review's breadth is bounded by what `prepare` selected for it,
+and the bound is stated rather than paid for twice.
+
+Per-record caps bound the deployment's standing obligation to an idea, not the operator's
+permission to look at it again: a cap reached is one of the counted reasons a cycle drew nothing,
+beside a cooldown and a recorded stance, and never a verdict on the record.
+
 **A vote can be the whole contribution.** After reading an exact revision, a reviewer may record
 support, opposition or uncertainty without a comment, a new source or an original argument.
 Support means "this deserves the operator's consideration"; opposition means "put this lower in
@@ -421,6 +439,33 @@ acceptance indicates a choice, not a successful outcome.
 The human reading order and the next-review selection are different projections (§5.8). The
 ordering is explainable and versioned: it cannot accept, reject, defer, mark a duplicate, delete
 or shelve a record.
+
+**Optional Jev readings keep the votes independent.** Each admitted voter backs, objects or
+abstains with unit weight; there is no learned combiner or pairwise tournament. The reading names
+`unjudged`, `unheard`, `unremarked`, `backed`, `objected` or `contested` before showing a net tally.
+No judgement, or no usable voter answer, has no number; an answered abstention is a measured zero.
+Backers, objectors and silent voters remain inspectable by name, with failed advisers separate.
+This is advisory reception, not evidence strength, an operator ruling or a replacement feed rank.
+
+A free plan sizes the pending live corpus under the current bank, per-kind document and service
+policy revisions. An explicit sweep judges at most 24 records per dispatch, including observations
+and records already ruled on. Only records still eligible for suggestions produce those proposals.
+A missing judgement stops further spending in that pass; an unreadable or over-cap record is
+reported unjudged, never treated as agreement. Losing a continuation can repeat work but cannot
+mark unfinished work complete.
+
+The caller previews the number of suggestions before submitting them through the allow-listed
+suggestion door. Jev itself has no write authority, and the sweep changes no record, assessment,
+edge, disposition or ranking. Readings in the panels last for the browser session; only submitted
+suggestions are durable. A silent reading leaves no durable completion mark and can be offered
+again after the bounded process memo loses its answer.
+
+Pair maintenance is a separate bounded request over explicitly named anchors, not an exhaustive
+all-pairs claim. One ordered-pair judgement answers both contradiction and later-state questions.
+The caller supplies measured confidence cuts; an unstated cut is uncalibrated and cannot buy a
+judgement on its own. Contradictions propose beside both records without choosing a winner;
+supersession proposes only beside the stale one. Suggestions distinguish the counterpart and the
+independent relation, so neither arrival order nor a second counterpart can erase another finding.
 
 Learning from operator feedback preserves its meaning and scope. "Not now," "wrong problem," and
 "right problem, wrong remedy" are different reasons, not one negative signal. An opened card, a
@@ -660,6 +705,18 @@ Each self-improvement finding is classified into exactly one audience dimension 
 operator — because those reach different dispositions. Mechanization pressure applies to substrate,
 not to making cheaper thoughts or suppressing content diversity.
 
+**Babel watches Babel, and a drain is a session of Babel's own.** A run's receipt, its calls and
+the record a drain leaves are Babel's own output about Babel's own work, and they are ordinary
+records: a report is a feed post, drawable and citable, so the next drain's changes can come from
+Babel's analysis of the last one rather than from a person reading receipts afterwards. The
+relation Babel learns from is between reception and what the operator later did — a proposal
+accepted and implemented, one deferred and never revisited, a vote the operator's own ruling
+contradicted — and that relation is evidence about Babel's process, never a score on an idea.
+What self-analysis produces is what every run produces: a suggestion the operator rules on, never
+an action. A run's full agent transcript is not yet archived and traceable the way an operator's
+session is, so self-analysis today reads receipts, calls and records rather than the reasoning
+that produced them.
+
 ### 5.8 Backlog-first evaluation within a budget
 
 The evaluation policy favors improving the existing backlog over producing more ideas, within the
@@ -751,6 +808,13 @@ record, so nothing is ever dropped. It seals the result as the run's material, w
 each session's selector, its file, and the digest it was served at. Unknown or partial Codex and
 Claude structures degrade explicitly rather than being discarded.
 
+**A preparation is content-addressed.** Its identity is a function of the selection it holds and
+not of the run that asked for it, so the same sessions selected twice name the same preparation
+rather than two copies of it, and a citation resolves against bytes any later reader recovers
+whole. Preparing is still a pass per job — nothing recognizes that another job has already
+prepared the same scope (§6.4) — so content addressing buys identity and comparability, not a
+skipped pass.
+
 ### 6.4 Deterministic preflight
 
 Before material reaches a model, likely secrets and high-risk data, malformed or truncated
@@ -763,8 +827,17 @@ It redacts by default, may be asked to refuse, and records which on the receipt.
 bounded before it is allowed to judge, because a scanner that redacts every digest, identifier
 and path makes the corpus useless and gets switched off, which is worse than not having one.
 
-The rest of this section is not built: nothing checks a session for truncation, nothing bounds a
-transcript by size, and nothing recognizes an input it has already prepared.
+Two of the three remaining checks are not built: nothing checks a session for truncation, and
+nothing bounds a transcript by size.
+
+**What is recognized is the session, not the scope.** A machine keeps its reading of each settled
+log — both digests and the normalized, scanned record stream — keyed on the observation it was
+taken from, so a second preparation over an unchanged scope re-seals its material without
+re-reading the corpus. The kept stream is re-hashed as it is replayed, so the source digest a
+citation carries is always a digest of the bytes that were sealed rather than one remembered from
+an earlier pass. A log that could still be moving is never kept, because it is never in a scope
+(§6.2). Recognizing that another job already prepared the same scope is a different and unbuilt
+thing (§6.3).
 
 ### 6.5 Explore through Code
 
@@ -843,7 +916,8 @@ serialized and reserves the cycle's ceiling before the run starts, so the day's 
 is committed rather than on what has already been spent.
 
 A **budget** is a bounded, expiring exception to the standing policy, carrying what it moves, until
-when, and why. A **drain** is a bounded burst the operator starts and stops, reported as it runs.
+when, and why. A **drain** is a bounded burst the operator starts and stops, reported as it runs
+(§7.1).
 
 A cycle that does not spend says why: disabled, unrouted, nothing eligible, a ceiling reached, a
 machine unavailable. Those reasons are counted and readable, because a loop that produced nothing
@@ -862,6 +936,54 @@ Every run records:
 Those inputs make a run reproducible enough to inspect, not deterministic enough to promise
 identical ideas. Review decisions survive re-exploration; descendants and new evidence link to
 rather than silently replace prior hypotheses or findings.
+
+**And while it runs, not only afterwards.** A run's stage, the instant it entered it, what it has
+spent and the models that have answered are readable during the run: the newest progress the hub
+holds for the job and every metered call since the last fold, projected into one row per run —
+a projection of the hub's own record, replaced rather than appended, and the one piece of Babel's
+state that is not an act. A job that is metered, at the model and silent is marked as **stalled**,
+and a job no cycle has confirmed for minutes is marked **stale** — the difference between slow and
+gone, which a reader of a live list has to be able to tell. The model a launch asked for and the
+models that answered are two different facts and are recorded as two: a review the conductor
+dispatched names a Code profile and no model at all, so there is nothing to record on that side,
+and a receipt that wrote the answering model into the asked-for field would make two runs of the
+identical request — one of them served by a fallback — compare as two different requests, which
+disqualifies every other field of the comparison. Each settled session is also kept for itself —
+one row per call, with the locator of the transcript and no byte of its traffic, never edited and
+never deleted, because a judgement is rechecked against the calls that produced it.
+
+### 7.1 Drains
+
+A **drain** spends a named account's remaining window on purpose, before it resets, and stops
+itself. It is the one operation whose point is to spend: a cycle draws against ceilings because
+nobody asked it to, and a drain is the operator saying that this window is to be used. It names
+the account before it starts, because "which window did that fan burn" is a question that has to
+be answerable afterwards.
+
+- **Target** — metered cost, output tokens, or a deadline. The drain closes on the first of them
+  it meets.
+- **Allocation** — one of Babel's own activities per drain, as a preset. The record it leaves
+  reports allocation across duties as named and as spent, and says out loud that per-duty figures
+  overlap where one session performed several methods rather than leaving a reader to sum them and
+  be wrong. A weighted list over several activities at once, scheduled by deficit, is designed and
+  not built.
+- **Controller** — N jobs in flight on one machine, the next launched as each settles, with the
+  burn rate read from the hub's own metered calls over a trailing window rather than estimated. A
+  refused submission is spend (§6.5), so a drain never relaunches against a burn rate that did not
+  happen.
+- **Endings, and there are four** — `target` and `deadline` are the controller stopping itself,
+  `stopped` is the operator, `failed` is the controller refusing to continue. Stopping means
+  stopping _launching_: a drain still holding jobs goes to `closing` and keeps them, because they
+  were paid for and their receipts are part of what it spent. A cancel is a request and a receipt
+  is what answers it.
+- **The report** — every ending leaves exactly one record of the drain, identified from the drain's
+  own identity so a second close writes no second record. It answers from itself alone what was
+  allocated and spent per duty and per account, how many jobs launched, reached a model, settled,
+  went unsettled or were refused and under which code, what it produced per million tokens, and
+  one line per gap reason with a count. What the deployment cannot observe — the host's CPU and
+  memory, cache-write tokens, the account's window at either end — is named there rather than
+  carried as a column of nulls, because a field that is always empty reads as a measurement that
+  came back empty.
 
 ## 8. The surface
 
@@ -919,6 +1041,11 @@ A record shows its current revision, reception and assessment counts, evidence a
 objections, and why it occupies this position. Bare votes stay bare rather than acquiring
 generated rationales. Model reception and the operator's own choices are visibly different.
 
+When an optional Jev reading is present, its standing leads its own compact line: a contested
+record is visibly contested even when its net tally is positive. That line does not replace
+Babel's score or change the selected ordering. No installed or usable judgement means no empty
+Jev section and no fabricated zero.
+
 ### 8.6 One record, peeled
 
 A record is one page. It opens at its claim and expands in place, and nothing navigates away to
@@ -935,6 +1062,11 @@ The first three depths carry no identifier at all, and the fifth is collapsed by
 mixed into them: a reader deciding whether a proposal is worth his time is doing a different job
 from a reader debugging Babel.
 
+The related-record strip opens the named record, including an observation in its own kind.
+Observations remain evidence rather than feed posts and acquire neither a reception vote strip
+nor ruling controls merely because their peel is readable. Jev's named backers, objectors,
+silent voters and failed advisers appear in reception when a session reading is available.
+
 **The operator's voice sits where he reads.** Three acts, none requiring a page change: an
 attributed stance — agree, disagree, unsure — that decides nothing and says so; the append-only
 ruling authority; and a reason in his own words, kept verbatim, attachable to either. The stance is
@@ -948,6 +1080,9 @@ without pagination; badges are rationed to standing and kind, with coverage, lan
 reconsideration rendered as text or filter state; and one container vocabulary serves the whole
 surface, so a different meaning gets a different shape rather than another class name with
 identical rules.
+
+An optional Jev reading may occupy one additional text line in a listing row; its detailed voter
+breakdown belongs in reception, not another set of badges in the list.
 
 ### 8.7 The surface is a feed
 
@@ -1006,6 +1141,13 @@ concluded, and holds no authority and no durable state the storage does not alre
 what lets a run be posted to any machine, interrupted, restarted or replaced without losing
 anything that was not already written down. Which machine ran a cycle is a fact its receipt
 records, not a place where knowledge accumulated.
+
+**A claim dies with its job.** Every settlement releases the claim that authorized it — at the
+receipt's cost when the job exited, at the full reservation when it did not, because a job that
+died mid-flight may have spent all of it. Claims no settlement can ever reach — a grant whose
+posting never landed, a job with no open run, a job the hub has stopped reporting — are abandoned
+by the cycle's own reaper, oldest first and a bounded number per cycle, before the cycle asks what
+it may draw. A slot is held only while a job stands behind it, so a ghost holds nothing.
 
 Invariants:
 

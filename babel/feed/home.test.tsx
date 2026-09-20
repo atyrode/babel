@@ -76,6 +76,9 @@ describe("the list", () => {
     // A row nobody is waiting on offers no acts and states no reason.
     expect(view.all('[data-post="fnd_0000000b"] [data-ruling]')).toHaveLength(0);
     expect(view.all('[data-post="fnd_0000000b"] .babel-why')).toHaveLength(0);
+    // An absent optional judgement part adds neither a section nor a paid sweep.
+    expect(view.all(".babel-jev-sweep")).toHaveLength(0);
+    expect(fake.to("jev.sweep")).toHaveLength(0);
     await view.unmount();
   });
 

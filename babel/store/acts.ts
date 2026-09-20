@@ -3,7 +3,9 @@ import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/p
 import type { INTEREST_STATES } from "../contract.ts";
 import {
   NextActionStandingSchema,
+  RECORD_KINDS,
   RecordIdSchema,
+  RecordKindSchema,
   REFINEMENT_KEY,
   RefinementOutcomeSchema,
   RefinementSchema,
@@ -15,7 +17,9 @@ import {
   type Ruling,
   type Suggested,
   type Suggester,
+  type SuggestionsQuery,
   type SuggestionsResult,
+  type UnjudgedRecord,
 } from "../contract.ts";
 import {
   acceptReviewResult,
@@ -23,7 +27,7 @@ import {
   ResultRefusal,
   type RefusalCode,
 } from "../machine/results.ts";
-import { SCHEMA_V1 } from "./schema.ts";
+import { nameableRecordSql, SCHEMA_V1 } from "./schema.ts";
 import {
   budgetChanges,
   coordinator,
@@ -1724,8 +1728,16 @@ export interface SuggestArgs {
   recordId: string;
   revision: number;
   kind: NextAction;
+  /**
+   * The counterpart record, or empty for a per-record opinion. Subject and aspect distinguish
+   * independent findings without teaching the store any plugin's relation vocabulary.
+   */
+  subject: string;
+  aspect: string;
   summary: string;
   rationale: string;
+  /** What the suggester judged under; kept on the row and compared by equality, never parsed. */
+  basis: string;
 }
 
 /**
@@ -1738,11 +1750,15 @@ export interface SuggestArgs {
  * a record is immutable and a refinement is a new revision — a suggestion carrying only a record
  * id would silently re-attach to whatever the live revision becomes.
  *
- * ONE LIVE SUGGESTION PER (SUGGESTER, REVISION, KIND), and the second supersedes the first. The
- * same predicate is the durable "already judged" mark: `suggestionsOf` counts the revisions this
- * suggester has ever named, so a retroactive sweep over the whole corpus can state how many rows
- * it would add before it adds one. One constraint, two jobs, and no second bookkeeping table to
- * disagree with the rows.
+ * One live opinion per (suggester, revision, kind, subject, aspect). A repeat replaces only that
+ * opinion; another counterpart or another relation remains independently actionable. Empty
+ * subject and aspect preserve the identity of existing per-record callers and persisted rows.
+ *
+ * The same predicate is the durable "already judged" mark: `suggestionsOf` counts the revisions
+ * this suggester has ever named — over any subject, because a record judged in one pair has been
+ * judged — so a retroactive sweep over the whole corpus can state how many rows it would add
+ * before it adds one. One constraint, two jobs, and no second bookkeeping table to disagree with
+ * the rows.
  */
 export async function suggest(
   store: ActsStore,
@@ -1776,6 +1792,18 @@ export async function suggest(
         `${String(Number(judged.head_seq))}): a suggestion is about the revision it read`,
     );
   }
+  // THE COUNTERPART HAS TO BE A RECORD. `next_actions` has no foreign key for it — the column
+  // is one leaf of a JSON payload — so nothing but this refuses an id that resolves to nothing,
+  // and a dangling counterpart is a pair finding the operator cannot read the other half of.
+  if (args.subject !== "") {
+    if (args.subject === args.recordId) {
+      throw new ActRefused(`${args.recordId} cannot be its own counterpart`);
+    }
+    const counterpart = await first<{ id: string }>(store, `SELECT id FROM records WHERE id = ?`, [
+      args.subject,
+    ]);
+    if (counterpart === null) throw new ActRefused(`no counterpart record ${args.subject}`);
+  }
   const standing = standingOf(
     (
       await first<{ disposition: string }>(
@@ -1795,10 +1823,12 @@ export async function suggest(
     `SELECT n.id AS id FROM next_actions n
       WHERE n.record_id = ? AND n.kind = ? AND n.proposed_by_kind = 'engine'
         AND n.proposed_by_id = ? AND json_extract(n.payload, '$.revision') = ?
+        AND COALESCE(json_extract(n.payload, '$.subject'), '') = ?
+        AND COALESCE(json_extract(n.payload, '$.aspect'), '') = ?
         AND NOT EXISTS (SELECT 1 FROM next_actions s WHERE s.record_id = n.record_id
                           AND json_extract(s.payload, '$.supersedes') = n.id)
       ORDER BY n.created_at DESC, n.id DESC LIMIT 1`,
-    [args.recordId, args.kind, suggester, args.revision],
+    [args.recordId, args.kind, suggester, args.revision, args.subject, args.aspect],
   );
   const supersedes = live?.id ?? "";
   const id = newId("nxt");
@@ -1808,6 +1838,14 @@ export async function suggest(
     revision: args.revision,
     suggester,
     supersedes,
+    // The counterpart, empty for a per-record suggestion. A row written before this field
+    // existed carries no leaf at all, which `COALESCE` reads as the same empty: the old rows and
+    // the new per-record ones share one uniqueness key, as they must.
+    subject: args.subject,
+    aspect: args.aspect,
+    // The mark's own date: `suggestionsOf` reads it back as an equality, which is what lets a
+    // suggester whose rules moved find its corpus unjudged again without forgetting this row.
+    basis: args.basis,
   });
   // THE UNIQUENESS IS IN THE STATEMENT and not only in the read above, so two calls that raced
   // past the same read cannot both land: the second finds a live sibling it is not superseding
@@ -1821,6 +1859,8 @@ export async function suggest(
                SELECT 1 FROM next_actions n
                 WHERE n.record_id = ? AND n.kind = ? AND n.proposed_by_kind = 'engine'
                   AND n.proposed_by_id = ? AND json_extract(n.payload, '$.revision') = ?
+                  AND COALESCE(json_extract(n.payload, '$.subject'), '') = ?
+                  AND COALESCE(json_extract(n.payload, '$.aspect'), '') = ?
                   AND n.id <> ?
                   AND NOT EXISTS (SELECT 1 FROM next_actions s WHERE s.record_id = n.record_id
                                     AND json_extract(s.payload, '$.supersedes') = n.id))
@@ -1837,6 +1877,8 @@ export async function suggest(
         args.kind,
         suggester,
         args.revision,
+        args.subject,
+        args.aspect,
         supersedes,
       ],
     },
@@ -1844,7 +1886,8 @@ export async function suggest(
   if ((inserted?.length ?? 0) === 0) {
     throw new ActRefused(
       `${suggester} already has a live ${args.kind} suggestion on ${args.recordId} revision ` +
-        `${String(args.revision)}`,
+        `${String(args.revision)}` +
+        (args.subject === "" ? "" : ` about ${args.subject}`),
     );
   }
   store.touch();
@@ -1854,6 +1897,8 @@ export async function suggest(
     recordId: args.recordId,
     revision: args.revision,
     kind: args.kind,
+    subject: args.subject,
+    aspect: args.aspect,
     suggester,
     supersedes,
     at,
@@ -1861,17 +1906,77 @@ export async function suggest(
   };
 }
 
+/** The one asked when nobody asked: the counts, every kind, any basis, from the start. */
+const EVERY_SUGGESTION: SuggestionsQuery = { pending: 0, basis: "", kinds: [], after: "" };
+
+/**
+ * THE GAP, AS ONE PREDICATE: the live records of these kinds that this suggester has no mark on
+ * under this basis.
+ *
+ * It is built once and used by both the count and the page, because a sweep that was told a
+ * number by one query and handed rows by another could be told the two disagree — and the number
+ * is what an operator authorises spending against.
+ *
+ * A RULED RECORD IS STILL UNSCREENED. The gap is what a sweep has not LOOKED at, and #360 asks
+ * for the whole imported corpus: a record the operator accepted or declined has a position a
+ * screener can still hold about it, and excluding it would leave the larger half of a long-lived
+ * hub permanently unread. What a ruling governs is what may be OFFERED — a caller suppresses the
+ * action it would deliver on a ruled record — and that is a decision about delivery rather than
+ * a reason to never read the row. Only the record's live head is here: a superseded revision is
+ * a wording nobody can act on.
+ *
+ * A row whose `basis` is not the one asked for counts as UNJUDGED, which is the whole mechanism
+ * behind a moved rule set: it is `pendingVectors`' join on the model (`store/corpus.ts`) in the
+ * other half of the family, and for the same reason — a derived fact computed under something
+ * that has since changed is pending rather than present, and needs no second bookkeeping.
+ *
+ * A ROW WHOSE ID NOTHING CAN NAME IS NOT IN THE GAP AT ALL (#426). `suggest` refuses such an id
+ * on the way in and `UnjudgedRecordSchema` refuses it on the way out, so a sweep offered one
+ * could only fail on it for ever — and because the exclusion is in the predicate rather than in
+ * the caller, the count and the page still answer about the same set: filtering the page after
+ * its LIMIT would make `unjudged` promise work no pass can deliver and could hand back an empty
+ * page whose continuation never moves.
+ */
+function gap(
+  suggester: string,
+  ask: SuggestionsQuery,
+): { readonly sql: string; readonly params: readonly SqlParam[] } {
+  const kinds = ask.kinds.length === 0 ? RECORD_KINDS : ask.kinds;
+  const holes = (values: readonly unknown[]): string => values.map(() => "?").join(", ");
+  return {
+    sql: `FROM records r
+           WHERE r.kind IN (${holes(kinds)})
+             AND ${nameableRecordSql("r.id")}
+             AND NOT EXISTS (SELECT 1 FROM records h WHERE h.supersedes_id = r.id)
+             AND NOT EXISTS (SELECT 1 FROM next_actions n
+                              WHERE n.record_id = r.id AND n.proposed_by_kind = 'engine'
+                                AND n.proposed_by_id = ?
+                                AND (? = '' OR
+                                     COALESCE(json_extract(n.payload, '$.basis'), '') = ?))`,
+    params: [...kinds, suggester, ask.basis, ask.basis],
+  };
+}
+
 /**
  * WHAT ONE SUGGESTER'S QUEUE LOOKS LIKE, and what one more sweep would cost.
  *
- * `judged` counts every revision this suggester has ever named, superseded rows included: the
- * mark exists so a sweep does not re-judge what it has judged, and a supersession is a second
- * opinion rather than a reason to forget the first. `unjudged` is the complement over the live
- * revisions — the head of every root — which is exactly the number of rows one more pass adds.
+ * `judged` counts every record this suggester has marked under the basis asked for, superseded
+ * rows included: the mark exists so a sweep does not re-judge what it has judged, and a
+ * supersession is a second opinion rather than a reason to forget the first. `unjudged` is
+ * {@link gap} counted — the LIVE records this suggester has not screened under this basis,
+ * ruled ones included, since a ruling decides what may be offered on a record and not whether a
+ * screener has read it — and `pending` is the same gap's first rows, so the number a pass is
+ * authorised against and the records it would read are one query's two answers.
+ *
+ * `after` walks the gap in `rowid` order, oldest record first. An `after` naming a record this
+ * deployment does not hold starts from the beginning rather than answering nothing: the rows are
+ * the authority on what has been judged, a continuation is only how one sequence of passes walks
+ * them, and a lost one must cost an ordering rather than stall a sweep for ever.
  */
 export async function suggestionsOf(
   store: ActsStore,
   suggester: string,
+  ask: SuggestionsQuery = EVERY_SUGGESTION,
 ): Promise<SuggestionsResult> {
   const live = await first<{ live: number | bigint; outstanding: number | bigint }>(
     store,
@@ -1885,24 +1990,58 @@ export async function suggestionsOf(
                           AND json_extract(s.payload, '$.supersedes') = n.id)`,
     [suggester],
   );
-  const marks = await first<{ judged: number | bigint; unjudged: number | bigint }>(
+  const unjudged = gap(suggester, ask);
+  const kinds = ask.kinds.length === 0 ? RECORD_KINDS : ask.kinds;
+  const marks = await first<{ judged: number | bigint }>(
     store,
-    `SELECT (SELECT COUNT(DISTINCT record_id) FROM next_actions
-              WHERE proposed_by_kind = 'engine' AND proposed_by_id = ?) AS judged,
-            (SELECT COUNT(*) FROM records r
-              WHERE NOT EXISTS (SELECT 1 FROM records h WHERE h.supersedes_id = r.id)
-                AND NOT EXISTS (SELECT 1 FROM next_actions n WHERE n.record_id = r.id
-                                  AND n.proposed_by_kind = 'engine'
-                                  AND n.proposed_by_id = ?)) AS unjudged`,
-    [suggester, suggester],
+    `SELECT COUNT(DISTINCT n.record_id) AS judged
+       FROM next_actions n JOIN records r ON r.id = n.record_id
+      WHERE n.proposed_by_kind = 'engine' AND n.proposed_by_id = ?
+        AND r.kind IN (${kinds.map(() => "?").join(", ")})
+        AND (? = '' OR COALESCE(json_extract(n.payload, '$.basis'), '') = ?)`,
+    [suggester, ...kinds, ask.basis, ask.basis],
   );
+  const counted = await first<{ unjudged: number | bigint }>(
+    store,
+    `SELECT COUNT(*) AS unjudged ${unjudged.sql}`,
+    [...unjudged.params],
+  );
+  const pending: UnjudgedRecord[] = [];
+  if (ask.pending > 0) {
+    const rows = await store.db.query<{
+      id: string;
+      seq: number | bigint;
+      kind: string;
+      disposition: string | null;
+    }>(
+      `SELECT r.id AS id, r.seq AS seq, r.kind AS kind,
+              (SELECT d.disposition FROM dispositions d
+                WHERE d.record_id = r.id ORDER BY d.seq DESC LIMIT 1) AS disposition
+         ${unjudged.sql}
+         AND r.rowid > COALESCE((SELECT a.rowid FROM records a WHERE a.id = ?), 0)
+        ORDER BY r.rowid LIMIT ?`,
+      [...unjudged.params, ask.after, ask.pending],
+    );
+    for (const row of rows) {
+      pending.push({
+        recordId: String(row.id),
+        revision: Number(row.seq),
+        kind: RecordKindSchema.parse(row.kind),
+        // The newest ruling decides it, read exactly as `suggest` reads it on the way in: the
+        // gap carries ruled rows so a screener can still read them, and this is what says the
+        // door would refuse the suggestion. The row is the live head already.
+        suggestible: standingOf(row.disposition) === "new",
+      });
+    }
+  }
   const outstanding = Number(live?.outstanding ?? 0);
   return {
     suggester,
     outstanding,
     answered: Number(live?.live ?? 0) - outstanding,
     judged: Number(marks?.judged ?? 0),
-    unjudged: Number(marks?.unjudged ?? 0),
+    unjudged: Number(counted?.unjudged ?? 0),
+    pending,
   };
 }
 

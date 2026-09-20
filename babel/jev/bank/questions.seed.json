@@ -1,10 +1,10 @@
 {
   "about": "The question bank: what Jev is asked of each record kind, at what line each answer becomes a vote, and the distribution over this corpus that justified the line. An assessment cites kind@version; the thresholds are one deployment's calibration and not Babel's behaviour.",
-  "version": 1,
+  "version": 2,
   "documents": [
     {
       "kind": "finding",
-      "version": 1,
+      "version": 2,
       "title": "Finding",
       "questions": [
         {
@@ -106,6 +106,41 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "vague",
+          "type": "score",
+          "asks": "How concretely does `record` say what to do about what it describes?",
+          "criteria": [
+            "No action is implied at all.",
+            "An area of concern, with no move named.",
+            "An action, but in general terms.",
+            "A specific action an agent could start on."
+          ]
+        },
+        {
+          "id": "settleable",
+          "type": "choice",
+          "asks": "What kind of check would settle whether `record`'s central claim is true?",
+          "criteria": [
+            "query_own_data — A query against the records, runs, edges or events Babel already holds; not for: Data Babel would first have to go and collect",
+            "reading_code — Reading the code, configuration or documentation as it stands; not for: Anything that needs the system running",
+            "needs_live_system — Watching a running system behave; not for: Anything a static read settles",
+            "command_or_test — Running one command, test or build and reading what it prints; not for: A change that would have to be written first",
+            "not_settleable — Nothing checks it; it is a matter of judgement; not for: A claim that is merely expensive to check",
+            "needs_new_work — Nothing short of doing the work the record describes; not for: Work needed to act on the claim rather than to believe it"
+          ]
+        },
+        {
+          "id": "overclaims",
+          "type": "score",
+          "asks": "How far does `record`'s stated confidence run ahead of the material it actually shows?",
+          "criteria": [
+            "The wording is more careful than the material requires: it claims less than what is shown establishes.",
+            "The wording matches the material: every claim in it is carried by something shown.",
+            "The wording runs ahead of the material: a claim or two rests on assertion rather than on what is shown.",
+            "The wording runs well ahead of the material: the central claim is asserted rather than shown."
+          ]
         },
         {
           "id": "subject",
@@ -429,6 +464,143 @@
           "admitted": true
         }
       ],
+      "advisories": [
+        {
+          "question": "overclaims",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-least",
+            "value": 3
+          },
+          "observed": {
+            "n": 974,
+            "fires": 31.7,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "overclaims",
+          "suggests": null,
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 5.9,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "query_own_data"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 37.5,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "reading_code"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 33.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "ask-question",
+          "when": {
+            "op": "is",
+            "value": "needs_live_system"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 17,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "command_or_test"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 11.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": null,
+          "when": {
+            "op": "is",
+            "value": "not_settleable"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "settleable",
+          "suggests": "draft-issue",
+          "when": {
+            "op": "is",
+            "value": "needs_new_work"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 0.1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "vague",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 54.9,
+            "mean": 1.581,
+            "sd": 0.876
+          },
+          "admitted": true
+        }
+      ],
       "routing": [
         {
           "question": "subject",
@@ -464,7 +636,7 @@
     },
     {
       "kind": "hypothesis",
-      "version": 1,
+      "version": 2,
       "title": "Hypothesis",
       "questions": [
         {
@@ -566,6 +738,41 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "vague",
+          "type": "score",
+          "asks": "How concretely does `record` say what to do about what it describes?",
+          "criteria": [
+            "No action is implied at all.",
+            "An area of concern, with no move named.",
+            "An action, but in general terms.",
+            "A specific action an agent could start on."
+          ]
+        },
+        {
+          "id": "settleable",
+          "type": "choice",
+          "asks": "What kind of check would settle whether `record`'s central claim is true?",
+          "criteria": [
+            "query_own_data — A query against the records, runs, edges or events Babel already holds; not for: Data Babel would first have to go and collect",
+            "reading_code — Reading the code, configuration or documentation as it stands; not for: Anything that needs the system running",
+            "needs_live_system — Watching a running system behave; not for: Anything a static read settles",
+            "command_or_test — Running one command, test or build and reading what it prints; not for: A change that would have to be written first",
+            "not_settleable — Nothing checks it; it is a matter of judgement; not for: A claim that is merely expensive to check",
+            "needs_new_work — Nothing short of doing the work the record describes; not for: Work needed to act on the claim rather than to believe it"
+          ]
+        },
+        {
+          "id": "overclaims",
+          "type": "score",
+          "asks": "How far does `record`'s stated confidence run ahead of the material it actually shows?",
+          "criteria": [
+            "The wording is more careful than the material requires: it claims less than what is shown establishes.",
+            "The wording matches the material: every claim in it is carried by something shown.",
+            "The wording runs ahead of the material: a claim or two rests on assertion rather than on what is shown.",
+            "The wording runs well ahead of the material: the central claim is asserted rather than shown."
+          ]
         },
         {
           "id": "subject",
@@ -889,6 +1096,143 @@
           "admitted": true
         }
       ],
+      "advisories": [
+        {
+          "question": "overclaims",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-least",
+            "value": 3
+          },
+          "observed": {
+            "n": 974,
+            "fires": 31.7,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "overclaims",
+          "suggests": null,
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 5.9,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "query_own_data"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 37.5,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "reading_code"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 33.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "ask-question",
+          "when": {
+            "op": "is",
+            "value": "needs_live_system"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 17,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "command_or_test"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 11.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": null,
+          "when": {
+            "op": "is",
+            "value": "not_settleable"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "settleable",
+          "suggests": "draft-issue",
+          "when": {
+            "op": "is",
+            "value": "needs_new_work"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 0.1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "vague",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 54.9,
+            "mean": 1.581,
+            "sd": 0.876
+          },
+          "admitted": true
+        }
+      ],
       "routing": [
         {
           "question": "subject",
@@ -916,7 +1260,7 @@
     },
     {
       "kind": "observation",
-      "version": 1,
+      "version": 2,
       "title": "Observation",
       "questions": [
         {
@@ -1018,6 +1362,41 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "vague",
+          "type": "score",
+          "asks": "How concretely does `record` say what to do about what it describes?",
+          "criteria": [
+            "No action is implied at all.",
+            "An area of concern, with no move named.",
+            "An action, but in general terms.",
+            "A specific action an agent could start on."
+          ]
+        },
+        {
+          "id": "settleable",
+          "type": "choice",
+          "asks": "What kind of check would settle whether `record`'s central claim is true?",
+          "criteria": [
+            "query_own_data — A query against the records, runs, edges or events Babel already holds; not for: Data Babel would first have to go and collect",
+            "reading_code — Reading the code, configuration or documentation as it stands; not for: Anything that needs the system running",
+            "needs_live_system — Watching a running system behave; not for: Anything a static read settles",
+            "command_or_test — Running one command, test or build and reading what it prints; not for: A change that would have to be written first",
+            "not_settleable — Nothing checks it; it is a matter of judgement; not for: A claim that is merely expensive to check",
+            "needs_new_work — Nothing short of doing the work the record describes; not for: Work needed to act on the claim rather than to believe it"
+          ]
+        },
+        {
+          "id": "overclaims",
+          "type": "score",
+          "asks": "How far does `record`'s stated confidence run ahead of the material it actually shows?",
+          "criteria": [
+            "The wording is more careful than the material requires: it claims less than what is shown establishes.",
+            "The wording matches the material: every claim in it is carried by something shown.",
+            "The wording runs ahead of the material: a claim or two rests on assertion rather than on what is shown.",
+            "The wording runs well ahead of the material: the central claim is asserted rather than shown."
+          ]
         },
         {
           "id": "subject",
@@ -1341,6 +1720,143 @@
           "admitted": true
         }
       ],
+      "advisories": [
+        {
+          "question": "overclaims",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-least",
+            "value": 3
+          },
+          "observed": {
+            "n": 974,
+            "fires": 31.7,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "overclaims",
+          "suggests": null,
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 5.9,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "query_own_data"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 37.5,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "reading_code"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 33.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "ask-question",
+          "when": {
+            "op": "is",
+            "value": "needs_live_system"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 17,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "command_or_test"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 11.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": null,
+          "when": {
+            "op": "is",
+            "value": "not_settleable"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "settleable",
+          "suggests": "draft-issue",
+          "when": {
+            "op": "is",
+            "value": "needs_new_work"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 0.1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "vague",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 54.9,
+            "mean": 1.581,
+            "sd": 0.876
+          },
+          "admitted": true
+        }
+      ],
       "routing": [
         {
           "question": "subject",
@@ -1376,7 +1892,7 @@
     },
     {
       "kind": "proposal",
-      "version": 1,
+      "version": 2,
       "title": "Proposal",
       "questions": [
         {
@@ -1478,6 +1994,41 @@
           "type": "noul",
           "asks": "Does judging `record` depend on a count, a date comparison, or other arithmetic that would have to be recomputed to be trusted?",
           "criteria": []
+        },
+        {
+          "id": "vague",
+          "type": "score",
+          "asks": "How concretely does `record` say what to do about what it describes?",
+          "criteria": [
+            "No action is implied at all.",
+            "An area of concern, with no move named.",
+            "An action, but in general terms.",
+            "A specific action an agent could start on."
+          ]
+        },
+        {
+          "id": "settleable",
+          "type": "choice",
+          "asks": "What kind of check would settle whether `record`'s central claim is true?",
+          "criteria": [
+            "query_own_data — A query against the records, runs, edges or events Babel already holds; not for: Data Babel would first have to go and collect",
+            "reading_code — Reading the code, configuration or documentation as it stands; not for: Anything that needs the system running",
+            "needs_live_system — Watching a running system behave; not for: Anything a static read settles",
+            "command_or_test — Running one command, test or build and reading what it prints; not for: A change that would have to be written first",
+            "not_settleable — Nothing checks it; it is a matter of judgement; not for: A claim that is merely expensive to check",
+            "needs_new_work — Nothing short of doing the work the record describes; not for: Work needed to act on the claim rather than to believe it"
+          ]
+        },
+        {
+          "id": "overclaims",
+          "type": "score",
+          "asks": "How far does `record`'s stated confidence run ahead of the material it actually shows?",
+          "criteria": [
+            "The wording is more careful than the material requires: it claims less than what is shown establishes.",
+            "The wording matches the material: every claim in it is carried by something shown.",
+            "The wording runs ahead of the material: a claim or two rests on assertion rather than on what is shown.",
+            "The wording runs well ahead of the material: the central claim is asserted rather than shown."
+          ]
         },
         {
           "id": "subject",
@@ -1799,6 +2350,143 @@
             "sd": 0.137
           },
           "admitted": false
+        }
+      ],
+      "advisories": [
+        {
+          "question": "overclaims",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-least",
+            "value": 3
+          },
+          "observed": {
+            "n": 974,
+            "fires": 31.7,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "overclaims",
+          "suggests": null,
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 5.9,
+            "mean": 2.227,
+            "sd": 0.444
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "query_own_data"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 37.5,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "reading_code"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 33.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "ask-question",
+          "when": {
+            "op": "is",
+            "value": "needs_live_system"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 17,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": "develop-further",
+          "when": {
+            "op": "is",
+            "value": "command_or_test"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 11.2,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": true
+        },
+        {
+          "question": "settleable",
+          "suggests": null,
+          "when": {
+            "op": "is",
+            "value": "not_settleable"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "settleable",
+          "suggests": "draft-issue",
+          "when": {
+            "op": "is",
+            "value": "needs_new_work"
+          },
+          "observed": {
+            "n": 974,
+            "fires": 0.1,
+            "mean": null,
+            "sd": null
+          },
+          "admitted": false
+        },
+        {
+          "question": "vague",
+          "suggests": "develop-further",
+          "when": {
+            "op": "at-most",
+            "value": 1
+          },
+          "observed": {
+            "n": 974,
+            "fires": 54.9,
+            "mean": 1.581,
+            "sd": 0.876
+          },
+          "admitted": true
         }
       ],
       "routing": [

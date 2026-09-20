@@ -1,5 +1,5 @@
 import type { RecordKind } from "../../contract.ts";
-import { BankSchema, type Bank, type BankDocument, type Vote } from "./schema.ts";
+import { BankSchema, type Advisory, type Bank, type BankDocument, type Vote } from "./schema.ts";
 import seed from "./questions.seed.json";
 
 /*
@@ -32,4 +32,17 @@ export function bankFor(kind: RecordKind): BankDocument {
  */
 export function votesFor(kind: RecordKind): readonly Vote[] {
   return bankFor(kind).votes.filter((vote) => vote.admitted);
+}
+
+/**
+ * The advisories that may fire on this kind — the admitted ones alone, by the same rule and the
+ * same band as `votesFor`. An advisory firing on almost none or almost all of its kind proposes
+ * the same next action for everything, and a suggestion nobody could avoid is not advice.
+ *
+ * A kind with no admitted advisory returns nothing, which is how a voter produces nothing for a
+ * kind the bank has not calibrated it on. A caller wanting the whole block, retired rows
+ * included, reads `bankFor(kind).advisories` and is thereby saying so.
+ */
+export function advisoriesFor(kind: RecordKind): readonly Advisory[] {
+  return bankFor(kind).advisories.filter((advisory) => advisory.admitted);
 }

@@ -17,7 +17,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -40,8 +42,8 @@ import {
   PrepareInputSchema,
   type PreparationEntry,
   digests,
-  modifiedAt,
   newPreparation,
+  observe,
   prepare,
   resolveRedaction,
   type PrepareDeps,
@@ -91,7 +93,7 @@ function ref(harness: SessionRef["harness"], sourceId: string): SessionRef {
 }
 
 function deps(over: readonly SessionRef[] = sessions): PrepareDeps {
-  return { discover: async () => over, digests, modifiedAt };
+  return { discover: async () => over, digests, observe };
 }
 
 async function run(
@@ -627,6 +629,200 @@ test("a corpus with nothing to redact prepares to the same identity scanned or n
   expect(scanned.receipt.preflight?.records).toBeGreaterThan(0);
   expect(scanned.receipt.preflight?.redactions).toBe(0);
   expect(unscanned.receipt.preflight?.records).toBe(0);
+});
+
+/*
+  THE READING KEPT BETWEEN PREPARATIONS (#236).
+
+  The defect was measured rather than guessed: twenty concurrent explorations over overlapping
+  scopes read and hashed the same logs twenty times, ~12 GB per draw, load 41 on twelve cores
+  with no model call in flight. So what is pinned here is the OBSERVABLE, not a duration — which
+  logs the operation opened — and, beside it, the two properties that make skipping a read
+  admissible at all: a log that moved is read again, and bytes that do not hash to what they
+  were kept as never reach a material.
+
+  `deps.digests` is the only thing in this operation that opens a session's log, so a recording
+  wrapper around it is exactly "which sessions were read".
+*/
+
+/** The same deps the suite uses, with the selector of every session actually read. */
+function counting(over: readonly SessionRef[] = sessions): {
+  readonly deps: PrepareDeps;
+  readonly read: string[];
+} {
+  const read: string[] = [];
+  return {
+    read,
+    deps: {
+      discover: async () => over,
+      digests: async (session, seal, scan) => {
+        read.push(session.selector);
+        return await digests(session, seal, scan);
+      },
+      observe,
+    },
+  };
+}
+
+/** One preparation, with somewhere to keep readings and somewhere to seal the material. */
+async function prepareInto(
+  cacheDir: string,
+  materialDir: string,
+  over: readonly SessionRef[] = sessions,
+  input: Partial<{ selectors: string[]; preflight: "redact" | "refuse" | "off" }> = {},
+): Promise<{ readonly receipt: Receipt; readonly read: readonly string[] }> {
+  const counted = counting(over);
+  const receipt = await prepare(
+    PrepareInputSchema.parse({ machineId: MACHINE, ...input }),
+    new Recorder(),
+    { ...counted.deps, cacheDir, material: materialSink(materialDir) },
+  );
+  return { receipt, read: counted.read };
+}
+
+function scratch(): { readonly cache: string; readonly material: () => string; drop(): void } {
+  const made = [mkdtempSync(join(tmpdir(), "babel-readings-"))];
+  return {
+    cache: made[0] ?? "",
+    material: () => {
+      const dir = mkdtempSync(join(tmpdir(), "babel-material-"));
+      made.push(dir);
+      return dir;
+    },
+    drop: () => {
+      for (const dir of made) rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+test("a second preparation over an unchanged scope opens none of the logs again", async () => {
+  const dirs = scratch();
+  try {
+    const one = dirs.material();
+    const first = await prepareInto(dirs.cache, one);
+    // Discovery order, which is the order the logs are opened in; the SELECTION is sorted.
+    expect(first.read).toEqual(["omp/a1b2c3", "omp/d4e5f6", "codex/0192ab"]);
+    expect(first.receipt.counts["reused"]).toBe(0);
+
+    const two = dirs.material();
+    const again = await prepareInto(dirs.cache, two);
+
+    // THE OBSERVABLE: not one session's log was opened the second time.
+    expect(again.read).toEqual([]);
+    expect(again.receipt.counts["reused"]).toBe(3);
+    expect(again.receipt.counts["selected"]).toBe(3);
+    expect(idOf(again.receipt)).toBe(idOf(first.receipt));
+    expect(again.receipt.counts["bytes"]).toBe(first.receipt.counts["bytes"]);
+    expect(again.receipt.counts["records"]).toBe(first.receipt.counts["records"]);
+    // Including what the scan found, which the receipt is the only record of: a reused reading
+    // that forgot its report would say a corpus was clean because nobody looked at it twice.
+    expect(again.receipt.preflight).toEqual(first.receipt.preflight);
+    // AND THE MATERIAL IS THE SAME EVIDENCE, byte for byte, under the same names — which is the
+    // whole claim, because a citation carries the digest of the file a model actually read.
+    expect(again.receipt.material?.sessions).toEqual(first.receipt.material?.sessions);
+    for (const held of again.receipt.material?.sessions ?? []) {
+      const body = readFileSync(join(two, MATERIAL_SESSIONS, held.file));
+      expect(body).toEqual(readFileSync(join(one, MATERIAL_SESSIONS, held.file)));
+      expect(`sha256:${new Bun.CryptoHasher("sha256").update(body).digest("hex")}`).toBe(
+        held.sourceDigest,
+      );
+    }
+  } finally {
+    dirs.drop();
+  }
+});
+
+test("a log that moved is read again, and it is the only one that is", async () => {
+  const dirs = scratch();
+  const moved = join(root, "omp", "d4e5f6.jsonl");
+  try {
+    const first = await prepareInto(dirs.cache, dirs.material());
+    expect(first.read).toHaveLength(3);
+
+    settle(moved, '{"type":"user","text":"second"}\n{"type":"agent","text":"appended"}\n');
+    const again = await prepareInto(dirs.cache, dirs.material());
+
+    expect(again.read).toEqual(["omp/d4e5f6"]);
+    expect(again.receipt.counts["reused"]).toBe(2);
+    expect(idOf(again.receipt)).not.toBe(idOf(first.receipt));
+
+    // And the entry the changed log overwrote is the one that is reused next time: a cache that
+    // grew an entry per version of a file would be a second copy of the corpus per week.
+    const third = await prepareInto(dirs.cache, dirs.material());
+    expect(third.read).toEqual([]);
+    expect(idOf(third.receipt)).toBe(idOf(again.receipt));
+  } finally {
+    settle(moved, '{"type":"user","text":"second"}\n');
+    dirs.drop();
+  }
+});
+
+test("a preparation that redacts never reuses a stream kept unscanned", async () => {
+  // The kept stream is the stream that was SEALED, so under `off` it is the raw record. Serving
+  // it to a preparation that redacts would put a credential into a material a provider reads —
+  // the exact disclosure #339 exists to prevent, reintroduced by a cache.
+  const dirs = scratch();
+  const { over } = leaky();
+  try {
+    const raw = dirs.material();
+    const unscanned = await prepareInto(dirs.cache, raw, over, { preflight: "off" });
+    expect(unscanned.read).toEqual(["omp/leaky"]);
+    expect(
+      readFileSync(
+        join(raw, MATERIAL_SESSIONS, unscanned.receipt.material?.sessions[0]?.file ?? ""),
+        "utf8",
+      ),
+    ).toContain(LEAKED_KEY);
+
+    const scanned = dirs.material();
+    const redacted = await prepareInto(dirs.cache, scanned, over);
+
+    expect(redacted.read).toEqual(["omp/leaky"]);
+    expect(redacted.receipt.counts["reused"]).toBe(0);
+    const body = readFileSync(
+      join(scanned, MATERIAL_SESSIONS, redacted.receipt.material?.sessions[0]?.file ?? ""),
+      "utf8",
+    );
+    expect(body).not.toContain(LEAKED_KEY);
+    expect(redacted.receipt.counts["redacted"]).toBe(1);
+  } finally {
+    dirs.drop();
+  }
+});
+
+test("a kept stream that does not digest to what it was kept as refuses the scope", async () => {
+  const dirs = scratch();
+  try {
+    const first = await prepareInto(dirs.cache, dirs.material(), sessions, {
+      selectors: ["codex/0192ab"],
+    });
+    expect(first.receipt.closure).toBe("completed");
+
+    // One entry, corrupted in place at its own length — the one failure the observation cannot
+    // see, because size and mtime are the log's and not the cache's.
+    const stream = readdirSync(dirs.cache).find((name) => name.endsWith(".records")) ?? "";
+    const held = join(dirs.cache, stream);
+    writeFileSync(held, "x".repeat(statSync(held).size));
+
+    const corrupt = await prepareInto(dirs.cache, dirs.material(), sessions, {
+      selectors: ["codex/0192ab"],
+    });
+    expect(corrupt.receipt.closure).toBe("failed");
+    expect(corrupt.receipt.reason).toContain("codex/0192ab");
+    expect(corrupt.receipt.reason).toContain("does not digest to what it was kept as");
+    expect(corrupt.receipt.preparation).toBeUndefined();
+    expect(corrupt.receipt.material).toBeUndefined();
+
+    // And the entry is gone, so the next preparation reads the log and is the scope the first
+    // one was: a corrupt cache costs one refusal, never a machine that can no longer prepare.
+    const after = await prepareInto(dirs.cache, dirs.material(), sessions, {
+      selectors: ["codex/0192ab"],
+    });
+    expect(after.read).toEqual(["codex/0192ab"]);
+    expect(idOf(after.receipt)).toBe(idOf(first.receipt));
+  } finally {
+    dirs.drop();
+  }
 });
 
 function idOf(receipt: Receipt): string {

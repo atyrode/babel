@@ -1,23 +1,23 @@
 {
   "bank": {
-    "version": 1
+    "version": 2
   },
   "documents": [
     {
       "kind": "hypothesis",
-      "version": 1
+      "version": 2
     },
     {
       "kind": "observation",
-      "version": 1
+      "version": 2
     },
     {
       "kind": "finding",
-      "version": 1
+      "version": 2
     },
     {
       "kind": "proposal",
-      "version": 1
+      "version": 2
     }
   ]
 }
