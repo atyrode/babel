@@ -372,7 +372,8 @@ exceed 120. Matching sessions are ordered by their best matching passage, with s
 within the existing 448 MiB observed-source-byte bound. Zero matches skip rather than broaden the
 scope. The receipt's `retrieval` reports coverage, reuse, matches and byte-bound exclusions; busy
 or unavailable coverage refuses the query rather than substituting recency. `matches: null`
-means the query was not run.
+means the query was not run. The receipt identifies the normalized literal-term query by its
+SHA-256 digest and limit, never by copying the search text.
 
 This is an opt-in machine preparation input, not a new panel control, launch preset, semantic
 session search or external-agent Recall API. Existing catalog-driven launches and automatic
@@ -852,7 +853,8 @@ reading is verified while it is indexed, otherwise the existing normalized/redac
 both the reading cache and term index. Unchanged indexed observations need only metadata checks
 before retrieval; selected material still replays and verifies its kept stream. Switching the
 requested material's preflight mode may require rereading selected sources, never indexing an
-unredacted stream.
+unredacted stream. Already-redacted records that are no longer parseable JSON remain searchable
+as opaque text, not a reason to lose that session or refuse all content retrieval.
 
 One bounded SQLite write transaction publishes each session's replacement terms. Concurrent
 builders recheck coverage under the lock; a loser reuses the winner or reports bounded contention,

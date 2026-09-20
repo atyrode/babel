@@ -84,6 +84,30 @@ function fixture() {
 const selected = (receipt: Receipt) =>
   receipt.material?.sessions.map((session) => session.selector) ?? [];
 
+test("content retrieval accepts opaque redacted records and reuses their verified readings", async () => {
+  const f = fixture();
+  try {
+    const session = f.add(
+      "quoted-command",
+      'orchid curl -d "api_key=abcdefghijklmnop" https://example.invalid',
+    );
+    const query = { text: "orchid", limit: 24 };
+    const first = await f.run({ query });
+    expect(first.receipt.closure).toBe("completed");
+    expect(selected(first.receipt)).toEqual([session.selector]);
+    const entry = first.receipt.material?.sessions[0];
+    if (entry === undefined) throw new Error("missing queried material");
+    const text = readFileSync(join(first.material, MATERIAL_SESSIONS, entry.file), "utf8");
+    expect(text).not.toContain("abcdefghijklmnop");
+    const again = await f.run({ query });
+    expect(again.receipt.closure).toBe("completed");
+    expect(again.reads).toEqual([]);
+    expect(again.receipt.preparation?.id).toBe(first.receipt.preparation?.id);
+  } finally {
+    f.drop();
+  }
+});
+
 test("content selection seals exact bounded matches, reuses readings, and replaces changed coverage", async () => {
   const f = fixture();
   try {
@@ -260,6 +284,7 @@ test("content queries always index redacted readings while material retains requ
     const absent = await f.run({ preflight: "off", query: { text: secret, limit: 24 } });
     expect(absent.receipt.closure).toBe("skipped");
     expect(absent.receipt.retrieval?.matches).toBe(0);
+    expect(JSON.stringify(absent.receipt)).not.toContain(secret);
     const refused = await f.run({ preflight: "refuse", query: { text: "orchid", limit: 24 } });
     expect(refused.receipt.closure).toBe("failed");
     expect(refused.receipt.preflight?.redactions).toBe(1);

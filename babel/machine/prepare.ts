@@ -67,11 +67,13 @@ import {
   RUN_STAGES,
   SessionContentQuerySchema,
   materialFile,
+  termsQuery,
   type MaterialEntry,
   type MaterialIndex,
   type PreflightMode,
   type PreflightReport,
   type Receipt,
+  type SessionContentQuery,
   type SessionRetrieval,
 } from "../contract.ts";
 import { LIVE_GRACE_MS, babelOwnLog, type SessionRef } from "./adapters/index.ts";
@@ -548,7 +550,10 @@ export async function prepare(
     input.query === undefined
       ? undefined
       : {
-          query: input.query,
+          query: {
+            digest: `sha256:${new Bun.CryptoHasher("sha256").update(termsQuery(input.query.text)).digest("hex")}`,
+            limit: input.query.limit,
+          },
           status: "complete",
           eligible: 0,
           indexed: 0,
@@ -579,9 +584,9 @@ export async function prepare(
   const discovered = await deps.discover();
   counts.discovered = discovered.length;
   const queried =
-    retrieval === undefined
+    input.query === undefined || retrieval === undefined
       ? null
-      : await contentSelection(discovered, input, deps, retrieval, counts);
+      : await contentSelection(discovered, input, input.query, deps, retrieval, counts);
   const chosen = queried ?? choose(discovered, input.selectors);
   if (chosen.failure !== "") {
     // A selector that matches nothing, or matches two sessions, is a rejected invocation
@@ -861,6 +866,7 @@ function sameObservation(before: Observation | undefined, after: Observation): b
 async function contentSelection(
   discovered: readonly SessionRef[],
   input: PrepareInput,
+  query: SessionContentQuery,
   deps: PrepareDeps,
   retrieval: SessionRetrieval,
   counts: { live: number; agent: number },
@@ -995,12 +1001,7 @@ async function contentSelection(
         return refuse("content selection refused: an eligible session changed before selection");
       }
     }
-    const found = index.search(
-      retrieval.query.text,
-      eligible,
-      retrieval.query.limit,
-      MAX_MATERIAL_BYTES,
-    );
+    const found = index.search(query.text, eligible, query.limit, MAX_MATERIAL_BYTES);
     retrieval.matches = found.matches;
     retrieval.overBound = found.overBound;
     return { chosen: found.selection, failure: "", observations };

@@ -119,7 +119,16 @@ function passages(insert: (text: string) => void): RecordSink {
     length = 0;
     if (text.startsWith("!")) insert(text.slice(1));
     else {
-      const parsed: unknown = JSON.parse(text);
+      // Preflight markers can make an otherwise canonical record opaque. The index consumes
+      // the verified redacted stream, not a stricter JSON format than ordinary material does.
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        insert(text);
+        return;
+      }
       let passage = "";
       for (const value of strings(parsed)) {
         if (value === "") continue;
@@ -369,7 +378,8 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
         const candidates = new Map<number, IndexedSession>();
         for (const candidate of eligible) {
           const id = current(candidate);
-          if (id !== null && !candidates.has(id)) candidates.set(id, candidate);
+          if (id === null) throw new SessionIndexError("unavailable");
+          if (!candidates.has(id)) candidates.set(id, candidate);
         }
         const hits = db.query<{ source: number }, [string]>(
           `SELECT p.source FROM session_terms

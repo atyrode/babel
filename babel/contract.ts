@@ -2209,7 +2209,10 @@ export type SessionContentQuery = z.infer<typeof SessionContentQuerySchema>;
 
 /** Coverage belongs to the query, not to a claim that an unavailable index found nothing. */
 export const SessionRetrievalSchema = z.strictObject({
-  query: SessionContentQuerySchema,
+  /** Identify the literal term query without copying potentially sensitive search text. */
+  query: SessionContentQuerySchema.omit({ text: true }).extend({
+    digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  }),
   status: z.enum(["complete", "busy", "unavailable"]),
   eligible: z.number().int().nonnegative(),
   indexed: z.number().int().nonnegative(),

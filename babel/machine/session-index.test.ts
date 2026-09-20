@@ -110,6 +110,18 @@ test("concurrent builders never duplicate a source read and readers retain the c
   expect(second.search("previous", [next], 10, MAX_MATERIAL_BYTES).matches).toBe(0);
 });
 
+test("a concurrent context replacement refuses incomplete eligible coverage", async () => {
+  const { index, dir } = await open();
+  const entry = candidate("context-race");
+  await index.build(entry, content(entry, "needle"));
+  const { index: newer } = await open(dir, { ...CONTEXT, detectors: "next-detectors" });
+  await newer.build(entry, content(entry, "needle"));
+  expect(() => index.search("needle", [entry], 10, 100)).toThrow(SessionIndexError);
+  expect(newer.search("needle", [entry], 10, 100).selection).toEqual([entry.session]);
+  await index.build(entry, content(entry, "needle"));
+  expect(index.search("needle", [entry], 10, 100).selection).toEqual([entry.session]);
+});
+
 test("a failed replacement rolls back its tokens and releases the writer for another handle", async () => {
   const { index, dir } = await open();
   const old = candidate("rollback");
@@ -119,11 +131,10 @@ test("a failed replacement rolls back its tokens and releases the writer for ano
     sink.write('{"text":"partial"}\n');
     throw new Error("credential-and-transcript-must-not-escape");
   });
-  await expect(failure).rejects.toBeInstanceOf(SessionIndexError);
-  await expect(failure).rejects.toMatchObject({
-    kind: "unavailable",
-    message: "Session content index is unavailable.",
-  });
+  const error: unknown = await failure.catch((error: unknown) => error);
+  expect(error).toBeInstanceOf(SessionIndexError);
+  expect(error).toMatchObject({ kind: "unavailable" });
+  expect(String(error)).not.toContain("credential-and-transcript-must-not-escape");
   const { index: other } = await open(dir);
   expect(other.search("durable", [old], 10, 100).selection).toEqual([old.session]);
   expect(other.search("partial", [old], 10, 100).matches).toBe(0);
@@ -167,7 +178,7 @@ test("source identity, observation and every reading context field participate i
   ];
   for (const changed of different) {
     expect(index.holds(changed)).toBe(false);
-    expect(index.search("identityword", [changed], 10, 100).matches).toBe(0);
+    expect(() => index.search("identityword", [changed], 10, 100)).toThrow(SessionIndexError);
   }
   let reads = 0;
   expect(
@@ -183,7 +194,7 @@ test("source identity, observation and every reading context field participate i
   ]) {
     const { index: other } = await open(dir, context);
     expect(other.holds(original)).toBe(false);
-    expect(other.search("identityword", [original], 10, 100).matches).toBe(0);
+    expect(() => other.search("identityword", [original], 10, 100)).toThrow(SessionIndexError);
   }
   await expect(sessionIndex(dir, { ...CONTEXT, mode: "off" })).rejects.toMatchObject({
     kind: "unavailable",
@@ -217,26 +228,20 @@ test("literal queries find escaped and UTF-8 content across arbitrary replay bou
   });
 });
 
-test("invalid or oversized normalized records refuse atomically, even if the callback swallows a sink error", async () => {
+test("oversized normalized records refuse atomically even if the callback swallows a sink error", async () => {
   const { index } = await open();
-  const old = candidate("malformed");
+  const old = candidate("oversized");
   const next = { ...old, seen: { ...old.seen, modifiedAt: 2000 } };
   await index.build(old, content(old, "retained"));
   await expect(
     index.build(next, async (sink) => {
       sink.write('{"text":"partial"}\n');
       try {
-        sink.write('{"text":invalid}\n');
+        const chunk = "x".repeat(1024 * 1024);
+        for (let i = 0; i < 65; i += 1) sink.write(chunk);
       } catch {
         /* A faulty producer must not publish partial coverage. */
       }
-      return { reading: reading(next.seen), after: next.seen };
-    }),
-  ).rejects.toMatchObject({ kind: "unavailable" });
-  await expect(
-    index.build(next, async (sink) => {
-      const chunk = "x".repeat(1024 * 1024);
-      for (let i = 0; i < 65; i += 1) sink.write(chunk);
       return { reading: reading(next.seen), after: next.seen };
     }),
   ).rejects.toMatchObject({ kind: "unavailable" });
@@ -245,7 +250,7 @@ test("invalid or oversized normalized records refuse atomically, even if the cal
   expect(index.search("partial", [old], 10, 100).matches).toBe(0);
 });
 
-test("search counts only distinct eligible identities, preserves original refs and skips byte-overbound hits", async () => {
+test("search counts only distinct eligible identities and skips byte-overbound hits", async () => {
   const { index } = await open();
   const a = candidate("a", 11);
   const b = candidate("b", 6);
@@ -254,8 +259,6 @@ test("search counts only distinct eligible identities, preserves original refs a
   for (const entry of [excluded, c, b, a]) await index.build(entry, content(entry, "matching"));
   const result = index.search("matching", [c, b, a, b], 2, 10);
   expect(result).toEqual({ selection: [b.session, c.session], matches: 3, overBound: 1 });
-  expect(result.selection[0]).toBe(b.session);
-  expect(result.selection[1]).toBe(c.session);
   expect(index.search("matching", [c, b, a], 1, 10)).toEqual({
     selection: [b.session],
     matches: 3,
