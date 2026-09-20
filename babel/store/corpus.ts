@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { MAX_SQL_BATCH_STATEMENTS } from "@manifold/plugin";
 import type { PluginDatabase, SqlStatement } from "@manifold/plugin";
+import { termsQuery } from "../contract.ts";
 import { nameableRecordSql, recordTextSql } from "./schema.ts";
 
 /*
@@ -170,28 +171,6 @@ export async function ensureTerms(store: CorpusStore): Promise<number> {
   const counted = await termCounts(store);
   if (counted.terms >= counted.records) return 0;
   return await rebuildTerms(store);
-}
-
-/**
- * The FTS5 query one line of operator prose becomes.
- *
- * EVERY TERM IS QUOTED AND THE TERMS ARE OR-ED. Quoting is what makes the input text rather than
- * syntax: `NEAR`, `*`, `-` and a stray double quote are FTS5 operators, and a search box that
- * raised `fts5: syntax error` at a hyphen would be a search box nobody uses twice.
- *
- * OR rather than FTS5's implicit AND, because bm25 already does the work AND would do badly: it
- * sums a per-term contribution weighted by how rare the term is, so a record matching four terms
- * of five outranks one matching two, while AND answers NOTHING for a five-word question. A
- * corpus whose measured problem is that retrieval loses to chance cannot afford a zero-recall
- * default.
- */
-export function termsQuery(query: string): string {
-  const terms = query
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((term) => term.length > 1)
-    .slice(0, 32);
-  return terms.map((term) => `"${term}"`).join(" OR ");
 }
 
 /** One record the keyword index matched, and bm25's score for it; lower is better. */

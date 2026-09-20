@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { InstanceServiceDescription, ServiceReply } from "@manifold/protocol";
-import { EMBEDDING_SERVICE } from "../contract.ts";
+import { EMBEDDING_SERVICE, termsQuery } from "../contract.ts";
 import { askEmbedding, embedder, type EmbeddingServices } from "../server/embed.ts";
 import {
   PROBE_DEPTH,
@@ -8,7 +8,6 @@ import {
   ensureTerms,
   rebuildTerms,
   searchCorpus,
-  termsQuery,
   type CorpusStore,
   type Embedder,
 } from "./corpus.ts";

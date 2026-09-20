@@ -358,13 +358,27 @@ runs use — search returning locators and a bounded excerpt and never a score, 
 a bounded excerpt around a locator with a provenance header — and everything it returned would be
 delimited and labelled as archived data rather than instruction.
 
-**Recall is not built, and the retrieval it rests on exists for half of what it needs.** Babel's
-own records are indexed and retrievable — keyword and meaning, fused, behind one door — so an
-agent can be told what Babel concluded about a subject. The session corpus is not indexed: a
-preparation still selects by recency or by topic, and Recall's first question, _where is it_, is a
-question about sessions. [`docs/parity.md`](docs/parity.md) records both halves under `index/`, and
-`research/` for the network no run of Babel's reaches. This section is the design recall must
-satisfy when it is built, not a description of a capability Babel has.
+**Recall is not built. Its two underlying corpora now have distinct retrieval paths.** Babel's
+own records are indexed and retrievable — keyword and meaning, fused, behind the `search` door.
+The existing `prepare` machine operation also accepts an optional lexical
+`query: { text, limit }` over this machine's eligible session content. It searches a local,
+contentless FTS5 index of the normalized redacted stream, then seals the selected sessions through
+the ordinary preparation path. It records their exact selectors and digests in the material
+index; it does not return Recall locators or excerpts.
+
+The query cannot accompany explicit selectors. Its text is at most 512 characters, interpreted
+as literal terms with OR semantics, not as FTS syntax; its session limit defaults to 24 and cannot
+exceed 120. Matching sessions are ordered by their best matching passage, with selector ties,
+within the existing 448 MiB observed-source-byte bound. Zero matches skip rather than broaden the
+scope. The receipt's `retrieval` reports coverage, reuse, matches and byte-bound exclusions; busy
+or unavailable coverage refuses the query rather than substituting recency. `matches: null`
+means the query was not run. The receipt identifies the normalized literal-term query by its
+SHA-256 digest and limit, never by copying the search text.
+
+This is an opt-in machine preparation input, not a new panel control, launch preset, semantic
+session search or external-agent Recall API. Existing catalog-driven launches and automatic
+reviews retain their current selection rules. [`docs/parity.md`](docs/parity.md) records the two
+indexes under `index/`, and `research/` for the network no run of Babel's reaches.
 
 ### 4.11 References, not copies
 
@@ -402,12 +416,14 @@ implementation.
 the corpus.** The assignment names the revision under review; the material is the immutable sealed
 selection of §2.6, and every citation is checked against its index. The principle that makes
 breadth of evidence worth having — contrary evidence is by definition not in the sessions a claim
-already cited — is served by retrieval over an index the deployment already holds, built once as
-its inputs change and read by every review. It is never served by a pass that describes, digests
-and indexes the corpus per review: that is a cost that scales with the corpus times the reviews,
-and it buys nothing a built index does not. Today the index exists over Babel's own records and
-not over the sessions (§4.10), so a review's breadth is bounded by what `prepare` selected for it,
-and the bound is stated rather than paid for twice.
+already cited — calls for retrieval over an index the deployment already holds, built once as
+its inputs change and reused across preparations. It is never served by a pass that describes,
+digests and indexes the corpus per review: that is a cost that scales with the corpus times the
+reviews, and it buys nothing a built index does not. Record retrieval and opt-in lexical session
+preparation now exist (§4.10). The latter pays for new or changed eligible session observations
+during preparation, never inside a review draw. Automatic reviews do not yet request that query
+input: their breadth remains bounded by the material their existing preparation selected, with no
+implicit expansion or extra provider authority.
 
 Per-record caps bound the deployment's standing obligation to an idea, not the operator's
 permission to look at it again: a cap reached is one of the counted reasons a cycle drew nothing,
@@ -830,6 +846,23 @@ record, so nothing is ever dropped. It seals the result as the run's material, w
 each session's selector, its file, and the digest it was served at. Unknown or partial Codex and
 Claude structures degrade explicitly rather than being discarded.
 
+A queried preparation maintains its session term index in the already-managed preparation cache.
+It excludes live logs and known own-run paths before opening their content, including on first
+sight; `agentSessions` may opt in own runs but never bypasses the live check. A matching cached
+reading is verified while it is indexed, otherwise the existing normalized/redacted pass supplies
+both the reading cache and term index. Unchanged indexed observations need only metadata checks
+before retrieval; selected material still replays and verifies its kept stream. Switching the
+requested material's preflight mode may require rereading selected sources, never indexing an
+unredacted stream. Already-redacted records that are no longer parseable JSON remain searchable
+as opaque text, not a reason to lose that session or refuse all content retrieval.
+
+One bounded SQLite write transaction publishes each session's replacement terms. Concurrent
+builders recheck coverage under the lock; a loser reuses the winner or reports bounded contention,
+never treats a lock as corruption or deletes the database. Failed or changing reads roll back,
+and source observations are checked again before selection and before and after sealing.
+Unavailable coverage refuses the queried preparation whole. Ordinary selector preparations do
+not open the index and remain independent of its locks.
+
 **A preparation is content-addressed.** Its identity is a function of the selection it holds and
 not of the run that asked for it, so the same sessions selected twice name the same preparation
 rather than two copies of it, and a citation resolves against bytes any later reader recovers
@@ -950,6 +983,11 @@ when, and why. A **drain** is a bounded burst the operator starts and stops, rep
 A cycle that does not spend says why: disabled, unrouted, nothing eligible, a ceiling reached, a
 machine unavailable. Those reasons are counted and readable, because a loop that produced nothing
 and said nothing is indistinguishable from one that is broken.
+
+Session retrieval is incremental per observed source, not per review. Its cache identity includes
+the canonical session identity, path, size, modification time, normalization schema and detector
+set. Unknown modification times prove no reusable coverage. This index is local convenience
+state; it neither changes archive truth nor adds an automatic corpus-read duty to the conductor.
 
 Every run records:
 

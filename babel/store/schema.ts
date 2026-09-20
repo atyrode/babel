@@ -400,6 +400,37 @@ const CORPUS_INDEX_SCHEMA: readonly string[] = [
   `CREATE INDEX record_vectors_by_model ON record_vectors(model, dims)`,
 ];
 
+/**
+ * The machine's disposable session-token cache, NOT part of the hub store or its migrations.
+ * Contentless FTS keeps tokens and positions, never a second copy of the normalized transcript.
+ * A source and all its passages are replaced in one transaction by `machine/session-index.ts`.
+ */
+export const SESSION_INDEX_SCHEMA: readonly string[] = [
+  `CREATE TABLE session_sources(
+     id INTEGER PRIMARY KEY,
+     selector TEXT NOT NULL UNIQUE,
+     harness TEXT NOT NULL,
+     source_id TEXT NOT NULL,
+     path TEXT NOT NULL,
+     size INTEGER NOT NULL CHECK (size >= 0),
+     modified_at REAL NOT NULL CHECK (modified_at > 0),
+     schema INTEGER NOT NULL,
+     detectors TEXT NOT NULL,
+     mode TEXT NOT NULL
+   ) STRICT`,
+  `CREATE TABLE session_passages(
+     id INTEGER PRIMARY KEY,
+     source INTEGER NOT NULL REFERENCES session_sources(id)
+   ) STRICT`,
+  `CREATE INDEX session_passages_by_source ON session_passages(source)`,
+  `CREATE VIRTUAL TABLE session_terms USING fts5(
+     tokens,
+     content = '',
+     contentless_delete = 1,
+     tokenize = 'unicode61 remove_diacritics 2'
+   )`,
+];
+
 /** Statements of the first migration, in order; each is one `run`. */
 export const SCHEMA_V1: readonly string[] = [
   // ---------------------------------------------------------------- the catalog

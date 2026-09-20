@@ -11,6 +11,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Preparation can choose what a session says, not only when it happened.** An opt-in content
+  query on the existing machine operation selects bounded lexical matches from a local session
+  index, then seals their exact selectors and digests into ordinary material. Indexing is paid
+  once per changed eligible observation, always from redacted content; live and known own-run
+  paths are excluded before reading. Empty results never widen the scope, incomplete coverage
+  refuses explicitly, and index contention cannot break an ordinary selector preparation.
+
+  Native SQLite regressions exercise concurrent builders, rollback and bounded locks. An isolated
+  machine-operation exercise selects an older relevant session over a newer unrelated one,
+  reuses unchanged coverage, replaces changed terms and verifies exact material identity.
+  This adds neither an automatic review corpus read nor a new panel, preset or Recall API (#436).
+
 - **Waiting is not a reason to keep an idea at the front.** Desk Next now fades from the first
   citation of independently sourced evidence or an explicit operator act. Repeated analysis,
   copied links, changed digests and passive reading buy no fresh attention; missing history is
