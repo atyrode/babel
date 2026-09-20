@@ -11,7 +11,7 @@ import {
   type Contribution,
   type ReviewResult,
 } from "../../machine/results.ts";
-import type { Assignment } from "../../store/coordinator.ts";
+import type { ReviewAssignment } from "../../store/coordinator.ts";
 import { ANSWER_FENCE, answerOf, type Recipe } from "./prompts.ts";
 import { mintId, recordRow, type Row } from "./rows.ts";
 
@@ -190,7 +190,7 @@ const ROLE_RULES: Record<Role, string> = {
 };
 
 export function composeReviewPrompt(input: {
-  readonly assignment: Assignment;
+  readonly assignment: ReviewAssignment;
   readonly preparation: ReviewPreparation;
   readonly recipe: Recipe;
   readonly projection: ReviewProjection;

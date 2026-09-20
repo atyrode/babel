@@ -25,7 +25,6 @@ import { embedder, type EmbeddingServices } from "./server/embed.ts";
 import {
   conductor,
   type Conductor,
-  type JobsSlice,
   type KeysSlice,
   type MachinesSlice,
   type RunPlan,
@@ -165,11 +164,12 @@ function planFor(policy: Policy, operationId: OperationName): RunPlan {
 }
 
 function loop(
-  jobs: JobsSlice,
+  jobs: BabelJobs,
   machines: MachinesSlice,
   actions: ActionsSlice | undefined,
   plan: RunPlan,
 ): Conductor {
+  const engine = codeEngine(actions);
   return conductor({
     store,
     coordinator: coordinated,
@@ -178,7 +178,33 @@ function loop(
     // A run that reaches a model is CODE's job, and `onJobSettled` is delivered only to the
     // plugin that started one: the loop learns what became of a session by asking Code, over
     // the authority of whatever wake it is running on (#279).
-    engine: codeEngine(actions),
+    engine,
+    dispatchAnalysis: async (assignment, claim, cycleRunId, identity) => {
+      const policy = (await coordinated.policy()).policy;
+      const route = policy.review;
+      if (!policy.enabled || route === undefined)
+        return { refused: "analysis policy is no longer enabled" };
+      const recipe = route.stageRecipes[assignment.activity];
+      if (recipe === undefined) return { refused: "the analysis stage no longer has a recipe" };
+      return await machinery.startExplore(
+        identity,
+        jobs,
+        engine,
+        {
+          preset: "read-whats-new",
+          machineId: route.machineId,
+          profile: route.profile,
+          recipes: [recipe],
+        },
+        planFor(policy, MACHINE_OPERATIONS.prepare),
+        {
+          stage: assignment.activity,
+          selectors: [...assignment.selectors],
+          brief: [...assignment.brief],
+          claim: { id: claim.id, runId: cycleRunId, fence: claim.fence },
+        },
+      );
+    },
     keys,
     plan,
     now: () => store.now(),

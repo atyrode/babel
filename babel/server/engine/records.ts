@@ -1,4 +1,5 @@
 import {
+  CHALLENGE_RELATION,
   JOB_OUTPUT_FILES,
   MATERIAL_ROOT,
   MATERIAL_SESSIONS,
@@ -66,10 +67,10 @@ export interface ExploreSettlement {
   /** The material this run was served, which is what a `cites` edge resolves a locator through. */
   readonly sessions: readonly MaterialEntry[];
   /**
-   * The record identifiers this hub already holds, of those a marker in this answer names
-   * ({@link markerReferences}). A marker pointing at a record nobody has is dropped with a note
-   * rather than minting an edge into nothing, and the caller supplies the set because the rows
-   * are built synchronously and the store is not.
+   * The durable records this hub actually holds, including existing text-marker targets.
+   * Structured references were already scoped to the offered brief by the validator; this
+   * guard drops missing target/support rows without changing the correction-marker contract.
+   * The caller supplies the set because the rows are built synchronously and the store is not.
    */
   readonly holds: ReadonlySet<string>;
   /**
@@ -110,9 +111,9 @@ export interface ExploreWrite {
  * copy is gone and the caller has no refusal branch left to write.
  *
  * What is still here is RESOLUTION: a handle becomes the identifier this settlement minted for
- * it, and a durable identifier stays itself. A handle the validator admitted resolves to one or
- * the other by construction — and the subset it admitted is closed under the development path,
- * so a finding whose observations were refused never arrives here without them.
+ * it, and an offered durable identifier stays itself only while the store still holds it.
+ * Missing durable rows can invalidate dependent writes between validation and settlement;
+ * those writes are dropped with notes, without weakening the validator's authority.
  */
 export function exploreRows(result: ExploreResult, settlement: ExploreSettlement): ExploreWrite {
   const rows: Record<string, Row[]> = {
@@ -125,7 +126,7 @@ export function exploreRows(result: ExploreResult, settlement: ExploreSettlement
   const notes: string[] = [];
   const writer = new Writer(rows, notes, settlement);
   for (const candidate of result.candidates) writer.candidate(candidate);
-  for (const objection of result.objections) writer.objection(objection);
+  writer.objections(result.objections);
   for (const consolidation of result.consolidations) writer.consolidation(consolidation);
   writer.schedule(result);
   for (const question of result.questions) writer.question(question);
@@ -305,7 +306,6 @@ function markedTexts(result: ExploreResult): readonly string[] {
 
 class Writer {
   private readonly hypotheses = new Map<string, string>();
-  private readonly observations = new Map<string, string>();
   /** Every handle this result declared, by the row it became: the marker pass resolves here. */
   private readonly declared = new Map<string, { id: string; kind: string }>();
   /** One entry per record written, kept until every handle in the answer has been declared. */
@@ -339,7 +339,6 @@ class Writer {
     this.status(id, 0, "untriaged", "");
     for (const observation of candidate.observations) {
       const child = this.mint("obs", observation.ref);
-      this.observations.set(observation.ref, child);
       this.record(child, "observation", observation.claim.claim, observation.claim, {
         parentId: id,
         recipe: observation.recipe,
@@ -358,27 +357,47 @@ class Writer {
     this.edge("addresses", proposal, "proposal", id, "hypothesis", 0, "");
   }
 
+  /** Keep forward local targets, but close every path whose durable target disappeared. */
+  objections(objections: readonly Objection[]): void {
+    const kept = new Map(objections.map((objection) => [objection.ref, objection]));
+    for (let dropping = true; dropping;) {
+      dropping = false;
+      for (const [ref, objection] of kept) {
+        const local = kept.get(objection.hypothesis);
+        if (local !== undefined && local.claim.evidence.length === 0) continue;
+        if (this.resolve(objection.hypothesis, "hypothesis", `objection ${ref}`) !== null) continue;
+        kept.delete(ref);
+        dropping = true;
+      }
+    }
+    // Reserve the surviving hypothesis IDs before resolving forward or mutual objections.
+    // No row is minted for a dropped dependency, so later consolidations cannot revive it.
+    for (const objection of kept.values()) {
+      if (objection.claim.evidence.length === 0) this.mint("hyp", objection.ref);
+    }
+    for (const objection of kept.values()) this.objection(objection);
+  }
+
   /**
    * One challenger criticism: an observation when it carries locators, and a contradicting
    * candidate when it does not.
    *
    * The branch is §5.4's authority made mechanical, and it is the Go tree's (`putObjection`):
-   * §4.3 forbids an evidence-free observation, so an ungrounded criticism becomes an idea to
-   * investigate rather than a claim established by being asserted.
+   * §4.3 forbids an evidence-free observation, so a criticism grounded in a consequence,
+   * missing check or alternative becomes an idea to investigate rather than asserted evidence.
    */
   objection(objection: Objection): void {
-    // The candidate it attacks: the row this settlement minted, or the durable identifier the
-    // brief named. `machine/results.ts` has already refused anything that is neither.
-    const target = this.hypotheses.get(objection.hypothesis) ?? objection.hypothesis;
+    const target = this.resolve(objection.hypothesis, "hypothesis", `objection ${objection.ref}`);
+    if (target === null) return;
     if (objection.claim.evidence.length > 0) {
       const id = this.mint("obs", objection.ref);
-      this.observations.set(objection.ref, id);
       this.record(id, "observation", objection.claim.claim, objection.claim, {
         parentId: target,
         recipe: objection.recipe,
         supports: [],
       });
       this.cites(id, "observation", objection.claim.evidence);
+      this.edge(CHALLENGE_RELATION, id, "observation", target, "hypothesis", 0, objection.grounds);
       return;
     }
     const id = this.mint("hyp", objection.ref);
@@ -400,6 +419,7 @@ class Writer {
       { supports: [] },
     );
     this.status(id, 0, "untriaged", "");
+    this.edge(CHALLENGE_RELATION, id, "hypothesis", target, "hypothesis", 0, objection.grounds);
     this.edge(
       "contradicts",
       id,
@@ -413,7 +433,12 @@ class Writer {
 
   /** One consolidation: what recurs across observations, and the change it asks for. */
   consolidation(consolidation: Consolidation): void {
-    const supports = consolidation.observations.map((ref) => this.observations.get(ref) ?? ref);
+    const supports: string[] = [];
+    for (const reference of consolidation.observations) {
+      const support = this.resolve(reference, "observation", `consolidation ${consolidation.ref}`);
+      if (support === null) return;
+      supports.push(support);
+    }
     const id = this.mint("fnd", consolidation.ref);
     this.record(id, "finding", consolidation.finding.title, consolidation.finding, { supports });
     for (const [position, support] of supports.entries()) {
@@ -466,7 +491,10 @@ class Writer {
    */
   question(draft: QuestionDraft): void {
     const blocked =
-      draft.hypothesis === "" ? "" : (this.hypotheses.get(draft.hypothesis) ?? draft.hypothesis);
+      draft.hypothesis === ""
+        ? ""
+        : this.resolve(draft.hypothesis, "hypothesis", `question ${draft.ref}`);
+    if (blocked === null) return;
     this.rows[JOB_OUTPUT_FILES.questions]?.push({
       id: mintId("qst", this.settlement.runId, draft.ref),
       kind: "acquire-context",
@@ -542,10 +570,9 @@ class Writer {
    * no issue: this plugin holds no credential for one and has no network path to it.
    *
    * A PROPOSAL ABOUT A RECORD THIS HUB DOES NOT HOLD IS DROPPED WITH A NOTE rather than
-   * refused. `parseExploreResult` has already refused anything that is neither a handle this
-   * result declared nor a record identifier, so what reaches here is a well-formed reference
-   * to a record that is not in this deployment — and the records the run did produce are
-   * unaffected by a suggestion about one that is not.
+   * refused. `exploreSubmission` already required an offered durable record or a local handle;
+   * this guard covers a durable row disappearing since validation, or a local dependency
+   * dropped during resolution. The surviving records are unaffected.
    *
    * The identifier is a digest of the run, the kind and the subject, so a retry mints the same
    * row and a model proposing the same action on the same record twice proposes it once.
@@ -618,14 +645,16 @@ class Writer {
     return id;
   }
 
-  /*
-    A HANDLE BECOMES WHAT THIS SETTLEMENT MINTED FOR IT, and a durable identifier stays itself.
-    Both resolutions used to be guarded here by a refusal of their own — "neither a candidate
-    this result declared nor a hypothesis identifier", "no observation f1" — over shapes
-    `machine/results.ts` had already judged, in its own words and sometimes under a different
-    code. The guards are gone with the second copy: what arrives here is the subset the one
-    validator admitted, closed under the development path.
-  */
+  /** Resolve a validated dependency only while its correctly typed row still exists. */
+  private resolve(reference: string, kind: RecordKind, what: string): string | null {
+    const local = this.declared.get(reference);
+    const target = local ?? (this.settlement.holds.has(reference) ? durable(reference) : null);
+    if (target !== null && target.kind === kind) return target.id;
+    this.notes.push(
+      `${what} names ${reference}, which this settlement does not hold as a ${kind}, so it was dropped`,
+    );
+    return null;
+  }
 
   /** A handle a disposal named, or the empty string with the note saying it was dropped. */
   private scheduled(ref: string, what: string): string {

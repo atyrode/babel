@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { JOB_OUTPUT_FILES, RECORD_RESTS_ON_ONE_RUN, type MaterialEntry } from "../../contract.ts";
+import {
+  CHALLENGE_RELATION,
+  JOB_OUTPUT_FILES,
+  RECORD_RESTS_ON_ONE_RUN,
+  type AnalysisBriefRecord,
+  type MaterialEntry,
+  type Stage,
+} from "../../contract.ts";
 import { exploreSubmission, type ExploreResult } from "../../machine/results.ts";
 import { insert, openTestStore } from "../../store/testdb.ts";
 import { correctionMarker, exploreRows, markerReferences } from "./records.ts";
@@ -32,8 +39,12 @@ const SESSION: MaterialEntry = {
 const LOCATOR = { path: "s1.jsonl", line: 1, byte_offset: 0, digest: "sha256:aaa" };
 
 /** One submission as the hub reads it, refusing to go on if the contract refused any of it. */
-function shaped(payload: unknown): ExploreResult {
-  const submission = exploreSubmission("explore", payload, [SESSION]);
+function shaped(
+  payload: unknown,
+  brief: readonly AnalysisBriefRecord[] = [],
+  stage: Stage = "explore",
+): ExploreResult {
+  const submission = exploreSubmission(stage, payload, [SESSION], brief);
   if (submission.result === null) throw new Error(`refused: ${submission.reason}`);
   if (submission.refused.length > 0) {
     throw new Error(`refused items: ${JSON.stringify(submission.refused)}`);
@@ -46,29 +57,33 @@ function answer(options: {
   statement: string;
   claim: string;
   extra?: Record<string, unknown>;
+  brief?: readonly AnalysisBriefRecord[];
 }): ExploreResult {
-  return shaped({
-    candidates: [
-      {
-        ref: "h1",
-        hypothesis: { statement: options.statement },
-        observations: [
-          {
-            ref: "o1",
-            recipe: { id: "test-economics", version: 3 },
-            claim: {
-              claim: options.claim,
-              confidence: "moderate",
-              impact: "moderate",
-              evidence: [{ locator: LOCATOR, note: "the line" }],
-              counter_evidence_absent: true,
+  return shaped(
+    {
+      candidates: [
+        {
+          ref: "h1",
+          hypothesis: { statement: options.statement },
+          observations: [
+            {
+              ref: "o1",
+              recipe: { id: "test-economics", version: 3 },
+              claim: {
+                claim: options.claim,
+                confidence: "moderate",
+                impact: "moderate",
+                evidence: [{ locator: LOCATOR, note: "the line" }],
+                counter_evidence_absent: true,
+              },
             },
-          },
-        ],
-      },
-    ],
-    ...options.extra,
-  });
+          ],
+        },
+      ],
+      ...options.extra,
+    },
+    options.brief,
+  );
 }
 
 function edgesOf(rows: Readonly<Record<string, readonly Row[]>>): readonly Row[] {
@@ -308,31 +323,55 @@ function observed(ref: string, claim: string) {
 }
 
 /** An answer whose finding consolidates exactly the observation handles named. */
-function consolidating(observations: readonly string[]): ExploreResult {
-  return shaped({
-    candidates: [
-      {
-        ref: "h1",
-        hypothesis: { statement: "the advisory notices lag by construction" },
-        observations: [observed("o1", "the first reading"), observed("o2", "the second reading")],
-      },
-    ],
-    consolidations: [
-      {
-        ref: "c1",
-        observations,
-        finding: {
-          title: "the lag is structural",
-          pattern: "every notice lands after the window it describes",
-          counter_evidence_absent: true,
+function consolidating(
+  observations: readonly string[],
+  brief: readonly AnalysisBriefRecord[] = [],
+): ExploreResult {
+  return shaped(
+    {
+      candidates: [
+        {
+          ref: "h1",
+          hypothesis: { statement: "the advisory notices lag by construction" },
+          observations: [observed("o1", "the first reading"), observed("o2", "the second reading")],
         },
-      },
-    ],
-  });
+      ],
+      consolidations: [
+        {
+          ref: "c1",
+          observations,
+          finding: {
+            title: "the lag is structural",
+            pattern: "every notice lands after the window it describes",
+            counter_evidence_absent: true,
+          },
+        },
+      ],
+    },
+    brief,
+  );
 }
 
-/** An observation an earlier run wrote, which is the only kind a brief can name. */
+/** An observation an earlier run wrote, offered as a consolidation support in the brief. */
 const EARLIER = "obs_1c0d2f5aa3b64e5d9fbb0d1f0e7c4a21";
+
+function prior(
+  id: string,
+  kind: AnalysisBriefRecord["kind"],
+  runId: string | null = "run_0",
+): AnalysisBriefRecord {
+  return {
+    id,
+    kind,
+    runId,
+    summary: "a reading an earlier run wrote",
+    payload:
+      kind === "observation"
+        ? observed("prior", "a reading an earlier run wrote").claim
+        : { statement: "the delivery guarantee holds" },
+    objectionTo: [],
+  };
+}
 
 function recordsOf(rows: Readonly<Record<string, readonly Row[]>>): readonly Row[] {
   return rows[JOB_OUTPUT_FILES.records] ?? [];
@@ -362,13 +401,19 @@ test("a finding resting on this run's own observations is marked, and is written
 });
 
 test("a finding that also rests on an earlier run's observation is not marked", () => {
-  const written = settle(consolidating(["o1", EARLIER]));
+  const written = settle(consolidating(["o1", EARLIER], [prior(EARLIER, "observation")]), [
+    EARLIER,
+  ]);
   expect(payloadOf(findingIn(written.rows))[RECORD_RESTS_ON_ONE_RUN]).toBe(false);
 });
 
 test("the mark at creation and the store's own count are one definition", async () => {
   const single = settle(consolidating(["o1", "o2"]));
-  const spread = settle(consolidating(["o1", EARLIER]), [], "run_2");
+  const spread = settle(
+    consolidating(["o1", EARLIER], [prior(EARLIER, "observation")]),
+    [EARLIER],
+    "run_2",
+  );
   const store = await openTestStore(Date.parse("2026-09-18T00:00:00.000Z"));
   try {
     await insert(store.db, "records", {
@@ -504,13 +549,13 @@ test("a proposed action a retry re-proposes is the same row, and one on a record
   ].map((written) => (written.rows[JOB_OUTPUT_FILES.nextActions] ?? [])[0]?.["id"]);
   expect(twice[0]).toBe(twice[1]);
 
-  // A well-formed identifier this hub does not hold: the records the run produced stand and the
-  // suggestion about a record that is not here is reported, because a `record_id` referencing
-  // nothing would fail the whole batch.
+  // The brief offered this row during validation, but it is no longer held at settlement.
+  // The surviving records stand while the now-dangling action is dropped defensively.
   const stranger = settle(
     answer({
       statement: "the wrapper tests only its own control flow",
       claim: "every assertion is about the mock",
+      brief: [prior("fnd_abcdef01", "finding")],
       extra: {
         next_actions: [{ record: "fnd_abcdef01", kind: "store-memory", summary: "Remember this." }],
       },
@@ -521,4 +566,238 @@ test("a proposed action a retry re-proposes is the same row, and one on a record
   expect(stranger.notes).toEqual([
     "a store-memory was proposed on fnd_abcdef01, which this hub does not hold, so it was dropped",
   ]);
+});
+
+test("every grounded objection records challenge provenance without becoming a ruling", async () => {
+  const target = prior("hyp_00000011", "hypothesis", "run_original");
+  const objections = [
+    { ...observed("j1", "the receipt records a drop"), grounds: "evidence" },
+    ...(["consequence", "missing-check", "alternative"] as const).map((grounds, index) => ({
+      ...observed(`j${String(index + 2)}`, `the ${grounds} changes the guarantee`),
+      grounds,
+      claim: { ...observed("unused", `the ${grounds} changes the guarantee`).claim, evidence: [] },
+    })),
+    // Ground is not a proxy for citation presence: a consequence can itself cite evidence.
+    { ...observed("j5", "the drop loses a customer update"), grounds: "consequence" },
+  ].map((objection) => ({ ...objection, hypothesis: target.id }));
+  const result = shaped({ objections }, [target], "challenge");
+  const written = settle(result, [target.id], "run_challenger");
+  const challenges = edgesOf(written.rows).filter((edge) => edge["kind"] === CHALLENGE_RELATION);
+  expect(challenges.map((edge) => edge["note"])).toEqual([
+    "evidence",
+    "consequence",
+    "missing-check",
+    "alternative",
+    "consequence",
+  ]);
+  expect(challenges.map((edge) => edge["from_kind"])).toEqual([
+    "observation",
+    "hypothesis",
+    "hypothesis",
+    "hypothesis",
+    "observation",
+  ]);
+  for (const edge of challenges) {
+    expect(edge["to_id"]).toBe(target.id);
+    expect(edge["to_kind"]).toBe("hypothesis");
+    expect(edge["actor_kind"]).toBe("run");
+    expect(edge["actor_id"]).toBe("run_challenger");
+    expect(
+      recordsOf(written.rows).find((record) => record["id"] === edge["from_id"])?.["run_id"],
+    ).toBe("run_challenger");
+  }
+  expect(edgesOf(written.rows).filter((edge) => edge["kind"] === "contradicts")).toHaveLength(3);
+  expect(edgesOf(written.rows).filter((edge) => edge["kind"] === "cites")).toHaveLength(2);
+  expect(
+    edgesOf(written.rows).filter(
+      (edge) => edge["kind"] === "consolidates" || edge["kind"] === "addresses",
+    ),
+  ).toEqual([]);
+  const store = await openTestStore(Date.parse("2026-09-18T00:00:00.000Z"));
+  try {
+    await insert(store.db, "records", {
+      id: target.id,
+      kind: target.kind,
+      root_id: target.id,
+      seq: 0,
+      run_id: target.runId,
+      actor_kind: "run",
+      actor_id: target.runId,
+      title: target.summary,
+      created_at: "2026-09-17T00:00:00.000Z",
+      payload: JSON.stringify(target.payload),
+    });
+    for (const row of recordsOf(written.rows)) await insert(store.db, "records", row);
+    for (const row of edgesOf(written.rows)) await insert(store.db, "edges", row);
+    const held = await store.db.query<{ note: string; actor_id: string }>(
+      `SELECT note, actor_id FROM edges WHERE kind = ? AND to_id = ? ORDER BY note`,
+      [CHALLENGE_RELATION, target.id],
+    );
+    expect(held).toEqual([
+      { note: "alternative", actor_id: "run_challenger" },
+      { note: "consequence", actor_id: "run_challenger" },
+      { note: "consequence", actor_id: "run_challenger" },
+      { note: "evidence", actor_id: "run_challenger" },
+      { note: "missing-check", actor_id: "run_challenger" },
+    ]);
+    expect(await store.db.query(`SELECT COUNT(*) AS n FROM dispositions`)).toEqual([{ n: 0n }]);
+  } finally {
+    store.close();
+  }
+});
+
+test("missing held targets drop objections and questions without dangling rows", () => {
+  const target = prior("hyp_00000011", "hypothesis");
+  const result = shaped(
+    {
+      candidates: [{ ref: "h1", hypothesis: { statement: "a surviving local candidate" } }],
+      objections: [
+        {
+          ...observed("j1", "the receipt records a drop"),
+          hypothesis: target.id,
+          grounds: "evidence",
+        },
+      ],
+      questions: [
+        {
+          ref: "q1",
+          hypothesis: target.id,
+          subjects: ["router"],
+          prompt: "Which queue?",
+          why_asked: "delivery depends on it",
+        },
+      ],
+    },
+    [target],
+    "challenge",
+  );
+  const written = settle(result);
+  expect(recordsOf(written.rows).map((record) => record["kind"])).toEqual(["hypothesis"]);
+  expect(edgesOf(written.rows)).toEqual([]);
+  expect(written.rows[JOB_OUTPUT_FILES.questions]).toEqual([]);
+  expect(written.notes).toHaveLength(2);
+});
+
+test("a disappeared observation drops the whole consolidation path, not just one support", () => {
+  const result = shaped(
+    {
+      consolidations: [
+        {
+          ref: "f1",
+          observations: [EARLIER, "obs_00000012"],
+          finding: {
+            title: "recurrence",
+            pattern: "delivery drops",
+            counter_evidence_absent: true,
+          },
+        },
+      ],
+      next_actions: [{ record: "f1", kind: "store-memory", summary: "remember the recurrence" }],
+    },
+    [prior(EARLIER, "observation"), prior("obs_00000012", "observation")],
+    "synthesize",
+  );
+  const written = settle(result, [EARLIER]);
+  expect(recordsOf(written.rows)).toEqual([]);
+  expect(edgesOf(written.rows)).toEqual([]);
+  expect(written.rows[JOB_OUTPUT_FILES.nextActions]).toEqual([]);
+  expect(written.notes).toHaveLength(2);
+});
+
+test("synthesis counts the held observation source runs rather than newly minted synthesis runs", async () => {
+  const brief = [
+    prior("obs_00000011", "observation", "run_source_a"),
+    prior("obs_00000012", "observation", "run_source_b"),
+    prior("obs_00000013", "observation", "run_source_a"),
+  ];
+  const result = shaped(
+    {
+      consolidations: [
+        {
+          ref: "f1",
+          observations: brief.map((record) => record.id),
+          finding: {
+            title: "recurrence",
+            pattern: "delivery drops",
+            counter_evidence_absent: true,
+          },
+        },
+      ],
+    },
+    brief,
+    "synthesize",
+  );
+  const writes = ["run_synthesis_a", "run_synthesis_b"].map((runId) =>
+    settle(
+      result,
+      brief.map((record) => record.id),
+      runId,
+    ),
+  );
+  const store = await openTestStore(Date.parse("2026-09-18T00:00:00.000Z"));
+  try {
+    for (const record of brief) {
+      await insert(store.db, "records", {
+        id: record.id,
+        kind: record.kind,
+        root_id: record.id,
+        seq: 0,
+        run_id: record.runId,
+        actor_kind: "run",
+        actor_id: record.runId,
+        title: record.summary,
+        created_at: "2026-09-17T00:00:00.000Z",
+        payload: JSON.stringify(record.payload),
+      });
+    }
+    for (const written of writes) {
+      expect(edgesOf(written.rows).map((edge) => edge["to_id"])).toEqual(
+        brief.map((record) => record.id),
+      );
+      // The writer cannot infer the independence of several durable supports from their count.
+      expect(payloadOf(findingIn(written.rows))).not.toHaveProperty(RECORD_RESTS_ON_ONE_RUN);
+      for (const row of recordsOf(written.rows)) await insert(store.db, "records", row);
+      for (const row of edgesOf(written.rows)) await insert(store.db, "edges", row);
+      const peel = await store.store.record(String(findingIn(written.rows)?.["id"]));
+      expect(peel?.corroboration).toEqual({ supports: 3, distinctRuns: 2 });
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test("forward local objection targets survive, and disappear transitively with their durable root", () => {
+  const target = prior("hyp_00000011", "hypothesis");
+  const result = shaped(
+    {
+      objections: [
+        {
+          ...observed("j1", "the proposed alternative also drops"),
+          hypothesis: "j2",
+          grounds: "evidence",
+        },
+        {
+          ...observed("j2", "a queue would avoid drops"),
+          hypothesis: target.id,
+          grounds: "alternative",
+          claim: { ...observed("unused", "a queue would avoid drops").claim, evidence: [] },
+        },
+      ],
+    },
+    [target],
+    "challenge",
+  );
+  const held = settle(result, [target.id]);
+  const observations = recordsOf(held.rows).filter((record) => record["kind"] === "observation");
+  const hypotheses = recordsOf(held.rows).filter((record) => record["kind"] === "hypothesis");
+  expect(observations[0]?.["parent_id"]).toBe(hypotheses[0]?.["id"] as Cell);
+  expect(
+    edgesOf(held.rows)
+      .filter((edge) => edge["kind"] === CHALLENGE_RELATION)
+      .map((edge) => edge["to_id"]),
+  ).toEqual([hypotheses[0]?.["id"], target.id]);
+  const missing = settle(result);
+  expect(recordsOf(missing.rows)).toEqual([]);
+  expect(edgesOf(missing.rows)).toEqual([]);
+  expect(missing.notes).toHaveLength(2);
 });

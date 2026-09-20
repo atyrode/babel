@@ -645,9 +645,11 @@ recorded in the receipt. They can establish behaviour in that environment but no
 intent. Unavailable reality evidence remains visible as uncertainty rather than being filled from
 conversational confidence.
 
-**Only the explore stage runs today.** The three stages are declared with separate authorities and
-the prompt writes each one's instructions, but every launch posts `explore`, so nothing criticizes
-a claim and nothing consolidates across runs. `docs/parity.md` names the issue.
+Explore, challenge and synthesize are separate weighted activities of the same conductor. A
+challenge has its own run and writes objections with named grounds, not votes or rulings. A
+candidate's list entry and opened record distinguish no recorded challenge from recorded objections;
+the objection and its source-run receipt remain inspectable. Cross-run synthesis retains the
+original observations rather than relabelling them as evidence gathered by the synthesizer.
 
 ### 5.5 Baseline domain lenses
 
@@ -745,6 +747,19 @@ Review roles are reception, evidence checking, challenge, comparison, outcome ch
 checking, filing and backlog. Open ideas are eligible for reception voting. Accepted proposals
 leave generic voting and receive prerequisite, implementation and outcome attention instead. The
 same budget funds every role; no role can create an unbounded recursive obligation.
+
+Activity weights select between review, explore, challenge and synthesize before review's own lane
+shares apply. They are relative weights in `[0, 1]`, not percentages that must sum to one. The
+default is review at one and every analysis stage at zero; zero disables that activity, and an
+all-zero policy draws nothing. The review exploration lane is not the explore activity, and the
+review challenge role is not the challenge stage. Watch shows both allocations without changing
+them; policy changes remain the owner's.
+
+A positive weight neither enables the conductor nor grants new spending. An analysis stage also
+needs an installed stage recipe, a usable Code profile and eligible material. It reserves through
+the same budget, item cooldown and fenced claim as review; preparation and the subsequent Code
+session occupy one claim rather than opening a second spending loop. A completed unchanged brief
+is not bought again merely because the policy version changes.
 
 The run's budget is the hard stopping condition. Policy supplies bounded per-item spending,
 cooldowns, and a response to repeated skips, so unreachable items and persistent disagreement
@@ -865,10 +880,16 @@ the run and the model's own handle, so settling the same run twice writes the ro
 
 ### 6.6 Synthesize
 
-Consolidation is part of the same answer: a run may consolidate the observations it developed
-into a finding, name the observations it rests on, and address that finding with a proposal.
-Consolidating across runs is the synthesize stage's job, and **only the explore stage runs**
-(§5.4), so today a finding consolidates observations one run made.
+An explore answer may consolidate the observations it developed into a finding and address that
+finding with a proposal. A separate synthesize run can instead be offered observations from at
+least two known source runs, connected through a candidate, an active entity or an actually cited
+session. Its bounded brief preserves complete claim payloads, source-run identity and objections;
+prior prose is untrusted context, not newly citeable transcript evidence.
+
+Structured references to existing records must name the exact records and kinds offered to that
+run. Consolidation edges retain those original observation ids, so the resulting finding reports
+both its supports and their distinct source runs. Different run ids establish provenance, not a
+guarantee of statistical independence. Neither synthesis nor challenge writes an operator ruling.
 
 ### 6.7 Review and project
 

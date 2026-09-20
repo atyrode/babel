@@ -37,6 +37,7 @@ import {
   SUBMISSION_KEPT_FLOOR,
   VOTES,
   normalizeRemote,
+  type AnalysisBriefRecord,
 } from "../contract.ts";
 // THE SCOPE HALF OF A CITATION IS SPELLED ONCE, in `server/engine/citations.ts`, and this file
 // asks it rather than restating it (#422, #231). The module is pure — it reads no file, no
@@ -334,7 +335,13 @@ const NextActionDraftSchema = z.strictObject({
 });
 export type NextActionDraft = z.infer<typeof NextActionDraftSchema>;
 
-/** A record identifier the ledger already holds, as `RecordIdSchema` spells the four families. */
+/** The identifier family must agree with the held kind before a brief can offer it. */
+const DURABLE_KINDS: Readonly<Record<string, RefKind>> = {
+  hyp: "hypothesis",
+  obs: "observation",
+  fnd: "finding",
+  pro: "proposal",
+};
 const DURABLE_RECORD = /^(hyp|obs|fnd|pro)_[0-9a-f]{8,64}$/u;
 
 // ---------------------------------------------------------------------------- the exploration
@@ -625,11 +632,9 @@ interface Scope {
   readonly dropped: ReadonlySet<string>;
   /** The material this run was served: what {@link unservedCitation} admits a locator against. */
   readonly served: readonly MaterialEntry[];
+  /** Only immutable records actually offered by the caller, never names asserted by the model. */
+  readonly brief: ReadonlyMap<string, RefKind>;
 }
-
-/** A durable identifier of one family, as `RecordIdSchema` spells the four. */
-const HYPOTHESIS_REF = /^hyp_[0-9a-f]{8,64}$/u;
-const OBSERVATION_REF = /^obs_[0-9a-f]{8,64}$/u;
 
 /**
  * The candidate as an envelope: its own claim strictly, its observations and its remedy unread.
@@ -687,6 +692,7 @@ export function exploreSubmission(
   stage: Stage,
   payload: unknown,
   sessions: readonly MaterialEntry[],
+  brief: readonly AnalysisBriefRecord[] = [],
 ): ExploreSubmission {
   const envelope = ExploreEnvelope.safeParse(payload);
   if (!envelope.success) {
@@ -697,6 +703,13 @@ export function exploreSubmission(
         `${REFUSALS.schema}: the ${stage} result does not match its schema: ` +
         issues(envelope.error),
     };
+  }
+  const offered = new Map<string, RefKind>();
+  for (const record of brief) {
+    const family = DURABLE_RECORD.exec(record.id)?.[1];
+    if (family !== undefined && DURABLE_KINDS[family] === record.kind) {
+      offered.set(record.id, record.kind);
+    }
   }
   const items = shapeItems(stage, envelope.data);
   for (let settling = true; settling;) {
@@ -720,7 +733,7 @@ export function exploreSubmission(
       }
       refs.set(item.declares, item.family);
     }
-    const scope: Scope = { refs, dropped, served: sessions };
+    const scope: Scope = { refs, dropped, served: sessions, brief: offered };
     for (const item of items) {
       if (item.reason !== "") continue;
       if (item.parent !== null && item.parent.reason !== "") {
@@ -1005,10 +1018,10 @@ function itemRefusal(item: Item, scope: Scope): ResultRefusal | null {
               `consolidation ${named} rests on ${JSON.stringify(name)}, which this submission refused`,
             );
           }
-          if (!OBSERVATION_REF.test(name)) {
+          if (scope.brief.get(name) !== "observation") {
             return new ResultRefusal(
               REFUSALS.developmentPath,
-              `consolidation ${named} rests on ${JSON.stringify(name)}, which is neither a ref in this result nor an observation identifier`,
+              `consolidation ${named} rests on ${JSON.stringify(name)}, which is neither an observation ref in this result nor an observation the brief offered`,
             );
           }
           continue;
@@ -1038,7 +1051,7 @@ function itemRefusal(item: Item, scope: Scope): ResultRefusal | null {
             `objection ${named} attacks ${attacked}, which this submission refused`,
           );
         }
-        if (!HYPOTHESIS_REF.test(objection.hypothesis)) {
+        if (scope.brief.get(objection.hypothesis) !== "hypothesis") {
           return new ResultRefusal(
             REFUSALS.unknownReference,
             `objection ${named} attacks ${attacked}, which this result did not emit and no brief listed`,
@@ -1063,7 +1076,12 @@ function itemRefusal(item: Item, scope: Scope): ResultRefusal | null {
     }
     case "disposal": {
       const named = JSON.stringify(item.value.hypothesis);
-      if (scope.refs.has(item.value.hypothesis) || HYPOTHESIS_REF.test(item.value.hypothesis)) {
+      const target =
+        scope.refs.get(item.value.hypothesis) ??
+        (scope.dropped.has(item.value.hypothesis)
+          ? undefined
+          : scope.brief.get(item.value.hypothesis));
+      if (target === "hypothesis") {
         return null;
       }
       return new ResultRefusal(
@@ -1075,8 +1093,11 @@ function itemRefusal(item: Item, scope: Scope): ResultRefusal | null {
     }
     case "question": {
       const question = item.value;
-      if (question.hypothesis === "" || scope.refs.has(question.hypothesis)) return null;
-      if (HYPOTHESIS_REF.test(question.hypothesis)) return null;
+      if (question.hypothesis === "") return null;
+      const target =
+        scope.refs.get(question.hypothesis) ??
+        (scope.dropped.has(question.hypothesis) ? undefined : scope.brief.get(question.hypothesis));
+      if (target === "hypothesis") return null;
       return new ResultRefusal(
         REFUSALS.unknownReference,
         `question ${JSON.stringify(question.ref)} blocks ${JSON.stringify(question.hypothesis)}, ` +
@@ -1093,7 +1114,10 @@ function itemRefusal(item: Item, scope: Scope): ResultRefusal | null {
       // this further" about one is a coherent thing to ask for.
       const action = item.value;
       const named = JSON.stringify(action.record);
-      if (!scope.refs.has(action.record) && !DURABLE_RECORD.test(action.record)) {
+      if (
+        !scope.refs.has(action.record) &&
+        (scope.dropped.has(action.record) || !scope.brief.has(action.record))
+      ) {
         return new ResultRefusal(
           REFUSALS.unknownReference,
           scope.dropped.has(action.record)

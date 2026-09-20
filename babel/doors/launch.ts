@@ -3,7 +3,12 @@ import { HostCallError } from "@manifold/plugin-kit/errors";
 import { defineServerAction, type GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
+  AnalysisWorkSchema,
+  AnalysisClaimSchema,
+  ANALYSIS_BRIEF_BYTE_LIMIT,
+  type AnalysisWork,
   INPUT_FIELD,
+  MAX_MATERIAL_BYTES,
   LaunchRequestSchema,
   LaunchResultSchema,
   MATERIAL_OUTPUT,
@@ -50,7 +55,7 @@ import {
   type ActionsSlice,
   type CodeEngine,
 } from "../server/engine/session.ts";
-import { describeHost, type JobLaunch, type JobsSlice, type RunPlan } from "../server/conductor.ts";
+import { describeHost, type JobLaunch, type RunPlan } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
@@ -216,40 +221,6 @@ export const DRAW_MANAGED =
 const MAX_SELECTION = 120;
 
 /**
- * HOW MANY BYTES OF LOG ONE PREPARATION MAY SEAL, and why it is 448 MiB under a 512 MiB job.
- *
- * The count above bounds the REQUEST; this bounds the OUTPUT, and they are different failures.
- * `prepare` seals the normalized record stream of every selected session into the material
- * lease, and a lease over the operation's `limits.outputBytes` is refused by the machine —
- * after it has read every one of those logs. The operator's remedy is a narrower window, and
- * he cannot guess it from an `output_too_large` on a job that already spent twenty minutes.
- *
- * THE NUMBER IS THE POST-MORTEM'S OWN. A catalogued session averages ~12 MB, and the two logs
- * that broke 2026-09-13 were 35 MB (a harness transcript) and 240 MB (a live Code session);
- * 120 sessions at that average is ~1.4 GB, so the count alone bounds nothing. The declared
- * job is 512 MiB, which holds about forty average sessions or two of the largest the corpus
- * has ever held, and is under the gigabyte this plugin's own database is allowed — a machine
- * that cannot spare half a gigabyte of tmpfs for a lease cannot run this operation at all.
- *
- * AND `outputBytes` IS THE AGGREGATE, WHICH IS WHY THIS IS NOT THAT NUMBER. The owner seals a
- * job's outputs against ONE running budget — `remainingBytes = limits.outputBytes`, minus
- * stdout, minus stderr, minus each sealed lease in turn, and a negative remainder is
- * `output_collection_refused` (`agent/src/job-owner.ts`). This operation writes TWO leases,
- * `outputs` and `material`, and each is sealed as a POSIX ustar archive: 512 bytes of header
- * plus padding to 512 for every member, and a 1,024-byte trailer. A selection admitted at
- * exactly the job's bound would therefore pack to the bound and be refused at the seal, after
- * the full read — the very failure this constant exists to move before the post.
- *
- * So the selection gets 87.5% of the job and the remaining 64 MiB is the framing, the
- * ordinary `outputs` lease and the two byte streams. `test/contract.test.ts` pins the
- * inequality with a margin, not just `<=`.
- *
- * It is checked against the catalogued `size` — what `scan` measured — because that is the
- * only figure the hub has before the job runs.
- */
-export const MAX_MATERIAL_BYTES = 448 * 1024 * 1024;
-
-/**
  * THE PREPARATION'S JOB ID, derived from the run's own so a retried start posts the same
  * preparation rather than a second one over the same sessions — and so the controller that
  * has to cancel it can name it without having kept the answer of the call that posted it.
@@ -275,7 +246,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface LaunchIdentity {
   readonly runId: string;
   readonly jobId: string;
-  /** What the `runs` row records as `authority_id`; `authority_kind` stays `operator`. */
+  readonly materialJobId?: string;
+  /** The operator or owning conductor cycle recorded as the run's authority. */
   readonly authorityId: string;
 }
 
@@ -298,6 +270,8 @@ export interface LaunchIdentity {
 export interface Refused {
   readonly refused: string;
   readonly code?: string;
+  /** Cancellation was not confirmed; retain the existing grant until the job is terminal. */
+  readonly pending?: boolean;
 }
 
 /** What a start answered: the two ids, or why nothing was started. */
@@ -334,15 +308,16 @@ export interface LaunchMachinery {
    */
   startExplore(
     identity: LaunchIdentity,
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     engine: CodeEngine,
     input: LaunchInput,
     plan: RunPlan,
+    analysis?: AnalysisWork,
   ): Promise<Started>;
   /** One beat — an `atyrode.babel.scan`, Babel's own job. It reaches no model and needs no Code. */
   startBeat(
     identity: LaunchIdentity,
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     input: LaunchInput,
     plan: RunPlan,
   ): Promise<Started>;
@@ -354,7 +329,7 @@ export interface LaunchMachinery {
    */
   startVerify(
     identity: LaunchIdentity,
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     input: VerifyInput,
     plan: RunPlan,
   ): Promise<Verified>;
@@ -366,7 +341,7 @@ export interface LaunchMachinery {
    * preparation is still running. Called from the cycle, after the conductor has settled what
    * finished and before the drain decides whether to launch more.
    */
-  postPrepared(jobs: JobsSlice, engine: CodeEngine, plan: RunPlan): Promise<readonly Posted[]>;
+  postPrepared(jobs: BabelJobs, engine: CodeEngine, plan: RunPlan): Promise<readonly Posted[]>;
   /**
    * NAMING THE SESSIONS WHOSE OWN LOGS CARRY NO TITLE, IF THIS CYCLE MAY SPEND ON IT (#342).
    *
@@ -379,7 +354,7 @@ export interface LaunchMachinery {
    * It answers null far more often than not: no route, no untitled session, one already in
    * flight, or no allowance left. Those are the normal states and none of them is a note.
    */
-  inferTitles(jobs: JobsSlice, engine: CodeEngine, cycleRunId: string): Promise<Posted | null>;
+  inferTitles(jobs: BabelJobs, engine: CodeEngine, cycleRunId: string): Promise<Posted | null>;
 }
 
 export interface LaunchDeps {
@@ -446,18 +421,26 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * may read" are different facts, and the day this lane comes from was two hours of reading an
    * adjacent number as the one that was asked for.
    */
-  async function selection(input: LaunchInput): Promise<Selected> {
+  async function selection(input: LaunchInput, analysis?: AnalysisWork): Promise<Selected> {
     const cited = `FROM filings f
          JOIN edges e ON e.from_id = f.record_id AND e.kind = 'cites' AND e.to_kind = 'session'
          JOIN sessions s ON s.selector = e.to_id
         WHERE f.entity_id = ? AND f.withdrawn = 0 AND s.host = ?`;
     const recent = `FROM sessions s WHERE s.host = ? AND s.seen_at >= ?`;
     const topic = input.preset === "explore-topic";
-    const scope = topic ? cited : recent;
-    const params: readonly string[] = topic
-      ? [input.entityId ?? "", input.machineId]
-      : [input.machineId, new Date(deps.now() - (input.sinceDays ?? 1) * DAY_MS).toISOString()];
-    const allowed = `AND s.live = 0${input.agentSessions ? "" : " AND s.kind = 'operator'"}`;
+    const scope =
+      analysis === undefined
+        ? topic
+          ? cited
+          : recent
+        : `FROM sessions s WHERE s.host = ? AND s.selector IN (${analysis.selectors.map(() => "?").join(", ")})`;
+    const params: readonly string[] =
+      analysis !== undefined
+        ? [input.machineId, ...analysis.selectors]
+        : topic
+          ? [input.entityId ?? "", input.machineId]
+          : [input.machineId, new Date(deps.now() - (input.sinceDays ?? 1) * DAY_MS).toISOString()];
+    const allowed = `AND s.live = 0${input.agentSessions && analysis === undefined ? "" : " AND s.kind = 'operator'"}`;
 
     const rows = await store.db.query<SessionRow>(
       `SELECT DISTINCT s.selector AS selector, s.harness AS harness, s.source_id AS source_id,
@@ -516,7 +499,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * the word back out of the sentence would be reading a line written for a person.
    */
   async function post(
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     launch: JobLaunch,
     run: {
       readonly runId: string;
@@ -524,6 +507,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       readonly recipeId: string;
       readonly authorityId: string;
       readonly preparation: Record<string, unknown>;
+      readonly authorityKind?: "operator" | "conductor";
     },
   ): Promise<Refused | null> {
     try {
@@ -535,23 +519,43 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       };
     }
     const at = new Date(deps.now()).toISOString();
-    await store.db.run(
-      `INSERT INTO runs(id, kind, machine_id, job_id, recipe_id, authority_kind,
+    try {
+      await store.db.run(
+        `INSERT INTO runs(id, kind, machine_id, job_id, recipe_id, authority_kind,
                         authority_id, preparation, started_at, records, payload)
-       VALUES (?, ?, ?, ?, ?, 'operator', ?, ?, ?, 0, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
        ON CONFLICT(id) DO NOTHING`,
-      [
-        run.runId,
-        run.kind,
-        launch.machineId,
-        launch.jobId,
-        run.recipeId,
-        run.authorityId,
-        JSON.stringify(run.preparation),
-        at,
-        JSON.stringify({ closure: null, requestedAt: deps.now() }),
-      ],
-    );
+        [
+          run.runId,
+          run.kind,
+          launch.machineId,
+          launch.jobId,
+          run.recipeId,
+          run.authorityKind ?? "operator",
+          run.authorityId,
+          JSON.stringify(run.preparation),
+          at,
+          JSON.stringify({ closure: null, requestedAt: deps.now() }),
+        ],
+      );
+    } catch (error) {
+      try {
+        await jobs.cancel({
+          kind: "job",
+          machineId: launch.machineId,
+          operationId: launch.operationId,
+          jobId: launch.jobId,
+        });
+      } catch (cancelError) {
+        return {
+          refused: `Babel could not retain job ${launch.jobId}: ${message(error)}; cancellation is unconfirmed: ${message(cancelError)}`,
+          pending: true,
+        };
+      }
+      return {
+        refused: `the job was cancelled because Babel could not retain it: ${message(error)}`,
+      };
+    }
     store.touch();
     return null;
   }
@@ -577,7 +581,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
 
   /** The pins a posting carries, or the sentence naming why this machine cannot run this. */
   async function ready(
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     machineId: string,
     operationId: string,
   ): Promise<
@@ -599,7 +603,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
 
   async function startBeat(
     identity: LaunchIdentity,
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     input: LaunchInput,
     plan: RunPlan,
   ): Promise<Started> {
@@ -656,7 +660,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    */
   async function startVerify(
     identity: LaunchIdentity,
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     input: VerifyInput,
     plan: RunPlan,
   ): Promise<Verified> {
@@ -843,7 +847,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * ceilings; and finally a session that actually needs a name.
    */
   async function inferTitles(
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     engine: CodeEngine,
     cycleRunId: string,
   ): Promise<Posted | null> {
@@ -959,11 +963,23 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    */
   async function startExplore(
     identity: LaunchIdentity,
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     engine: CodeEngine,
     input: LaunchInput,
     plan: RunPlan,
+    analysis?: AnalysisWork,
   ): Promise<Started> {
+    if (analysis !== undefined) {
+      const parsed = AnalysisWorkSchema.safeParse(analysis);
+      if (!parsed.success) return { refused: "invalid analysis authority" };
+      if (
+        new TextEncoder().encode(JSON.stringify(parsed.data.brief)).byteLength >
+        ANALYSIS_BRIEF_BYTE_LIMIT
+      ) {
+        return { refused: "the analysis brief exceeds its whole-record byte bound" };
+      }
+      analysis = parsed.data;
+    }
     const profile = input.profile;
     if (profile === undefined) {
       return {
@@ -986,7 +1002,15 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             : `this hub holds no recipe called ${asked.join(", ")}`,
       };
     }
-    const prepared = await selection(input);
+    const prepared = await selection(input, analysis);
+    if (
+      analysis !== undefined &&
+      (prepared.rows.length !== new Set(analysis.selectors).size || prepared.overBound > 0)
+    ) {
+      return {
+        refused: "the exact analysis selection is no longer available within the material bound",
+      };
+    }
     if (prepared.rows.length === 0) {
       // A window can hold sessions and offer none, in three ways that need three answers. A
       // log still being written, or one of Babel's own runs', is catalogued and not a
@@ -1019,7 +1043,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     // the normalized record stream per session and writes the index a citation's digest comes
     // from. Its id is DERIVED from the run's so a retried start posts the same preparation
     // rather than a second one over the same sessions.
-    const prepareJobId = materialJobId(identity.jobId);
+    const prepareJobId = identity.materialJobId ?? materialJobId(identity.jobId);
     const built = document({
       runId: `${identity.runId}_material`,
       machineId: input.machineId,
@@ -1032,6 +1056,16 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     if (!checked.ok) return { refused: checked.refused };
     const admitted = await ready(jobs, input.machineId, OPERATIONS.prepare);
     if ("refused" in admitted) return admitted;
+    if (analysis !== undefined) {
+      const refused = await analysisAuthority(
+        analysis,
+        prepareJobId,
+        input.machineId,
+        profile,
+        recipes.map((recipe) => recipe.id),
+      );
+      if (refused !== null) return { refused };
+    }
     const sealed = await post(
       jobs,
       {
@@ -1055,6 +1089,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         kind: OPERATIONS.prepare,
         recipeId: "",
         authorityId: identity.authorityId,
+        authorityKind: analysis === undefined ? "operator" : "conductor",
         preparation: {
           preset: input.preset,
           for: identity.runId,
@@ -1081,36 +1116,68 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       citation has to copy — which is the document the hub then checks those citations
       against.
     */
-    await store.db.run(
-      `INSERT INTO runs(id, kind, machine_id, container_id, prepare_job_id, recipe_id, profile,
+    try {
+      await store.db.run(
+        `INSERT INTO runs(id, kind, machine_id, container_id, prepare_job_id, recipe_id, profile,
                         authority_kind, authority_id, preparation, started_at, records, payload)
-       VALUES (?, ?, ?, ?, ?, '', ?, 'operator', ?, ?, ?, 0, ?)
+       VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, 0, ?)
        ON CONFLICT(id) DO NOTHING`,
-      [
-        identity.runId,
-        PRESET_PLANS[input.preset].operationId,
-        input.machineId,
-        profile.containerId,
-        prepareJobId,
-        launchReport(input, profile),
-        identity.authorityId,
-        JSON.stringify({
-          preset: input.preset,
-          selected: prepared.rows.length,
-          available: prepared.held,
-          excluded: prepared.excluded,
-          bytes: prepared.bytes,
-          overBound: prepared.overBound,
-          promptVersion: PROMPT_VERSION,
-          recipes: recipes.map((recipe) => ({ id: recipe.id, version: recipe.version })),
-          ...(input.preset === "explore-topic"
-            ? { entityId: input.entityId ?? "" }
-            : { sinceDays: input.sinceDays ?? 1 }),
-        }),
-        new Date(deps.now()).toISOString(),
-        JSON.stringify({ closure: null, preparing: prepareJobId }),
-      ],
-    );
+        [
+          identity.runId,
+          PRESET_PLANS[input.preset].operationId,
+          input.machineId,
+          profile.containerId,
+          prepareJobId,
+          launchReport(input, profile),
+          analysis === undefined ? "operator" : "conductor",
+          identity.authorityId,
+          JSON.stringify({
+            preset: input.preset,
+            ...(analysis === undefined ? {} : { analysis }),
+            selectors: prepared.rows.map((row) => row.selector),
+            selected: prepared.rows.length,
+            available: prepared.held,
+            excluded: prepared.excluded,
+            bytes: prepared.bytes,
+            overBound: prepared.overBound,
+            promptVersion: PROMPT_VERSION,
+            recipes: recipes.map((recipe) => ({ id: recipe.id, version: recipe.version })),
+            ...(analysis !== undefined
+              ? {}
+              : input.preset === "explore-topic"
+                ? { entityId: input.entityId ?? "" }
+                : { sinceDays: input.sinceDays ?? 1 }),
+          }),
+          new Date(deps.now()).toISOString(),
+          JSON.stringify({ closure: null, preparing: prepareJobId }),
+        ],
+      );
+    } catch (error) {
+      try {
+        await jobs.cancel({
+          kind: "job",
+          machineId: input.machineId,
+          operationId: OPERATIONS.prepare,
+          jobId: prepareJobId,
+        });
+      } catch (cancelError) {
+        return {
+          refused: `Babel could not retain the parent: ${message(error)}; preparation cancellation is unconfirmed: ${message(cancelError)}`,
+          pending: true,
+        };
+      }
+      await store.db.run(
+        `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
+        [
+          new Date(deps.now()).toISOString(),
+          JSON.stringify({ closure: "failed", reason: message(error) }),
+          `${identity.runId}_material`,
+        ],
+      );
+      return {
+        refused: `the preparation was cancelled because Babel could not retain its parent: ${message(error)}`,
+      };
+    }
     store.touch();
     return { runId: identity.runId, jobId: prepareJobId };
   }
@@ -1156,6 +1223,13 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     | { readonly refused: string }
   > {
     const intent = documentOf(run.preparation);
+    const parsed =
+      intent["analysis"] === undefined
+        ? undefined
+        : AnalysisWorkSchema.safeParse(intent["analysis"]);
+    if (parsed !== undefined && !parsed.success)
+      return { refused: "invalid persisted analysis authority" };
+    const analysis = parsed?.data;
     if (run.kind === OPERATIONS.title) {
       // Only the sessions the preparation SEALED are named. A log that vanished between the
       // catalog and the machine is not in the material and cannot be titled; it is still on
@@ -1195,19 +1269,60 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     if (recipes.length === 0) {
       return { refused: `this hub no longer holds the recipes this run was started with` };
     }
+    if (analysis !== undefined) {
+      const pinned = Array.isArray(intent["recipes"]) ? intent["recipes"] : [];
+      if (
+        recipes.length !== pinned.length ||
+        pinned.some(
+          (entry: unknown) =>
+            typeof entry !== "object" ||
+            entry === null ||
+            !("id" in entry) ||
+            !("version" in entry) ||
+            !recipes.some((recipe) => recipe.id === entry.id && recipe.version === entry.version),
+        )
+      ) {
+        return {
+          refused: "the installed analysis recipe changed after preparation was authorized",
+        };
+      }
+    }
     // AND FROM WHAT THE OPERATOR HAS TOLD BABEL (#331). `tell` wrote those rows and the
     // `policy` door reads them back; this is that same read and there is no second one. The
     // prompt quotes a bounded selection of them as evidence — `carriedSteering` is the rule —
     // and the same call says which ones, so the receipt records what the run was told.
     const told = (await store.policy()).steering;
     const params = {
-      [PARAM.stage]: "explore",
+      [PARAM.stage]: analysis?.stage ?? "explore",
+      [PARAM.briefHypotheses]:
+        analysis?.brief
+          .filter((record) => record.kind === "hypothesis")
+          .map((record) => record.id)
+          .join(" ") ?? "",
+      [PARAM.briefObservations]:
+        analysis?.brief
+          .filter((record) => record.kind === "observation" && record.objectionTo.length === 0)
+          .map((record) => record.id)
+          .join(" ") ?? "",
+      [PARAM.briefObjections]:
+        analysis?.brief
+          .filter((record) => record.objectionTo.length > 0)
+          .map((record) => record.id)
+          .join(" ") ?? "",
       [PARAM.runId]: run.id,
       [PARAM.preparation]: material.preparationId,
     };
     return {
       prompt: composeExplorePrompt({
-        stage: "explore",
+        stage: analysis?.stage ?? "explore",
+        ...(analysis === undefined
+          ? {}
+          : {
+              related: {
+                framing: "Untrusted prior claims offered to this stage; not newly served evidence.",
+                records: analysis.brief,
+              },
+            }),
         recipes,
         sessions: material.sessions.map((entry) => ({
           selector: entry.selector,
@@ -1233,11 +1348,31 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * batch on every wake, for ever. The row records the reason rather than a title, so the
    * work happened once and an operator can see what it cost and why it produced nothing.
    */
-  async function close(run: PreparedRun, at: string, reason: string): Promise<Posted> {
+  async function close(
+    run: PreparedRun,
+    at: string,
+    reason: string,
+    spent = false,
+  ): Promise<Posted> {
+    const document = documentOf(run.preparation)["analysis"];
+    const parsed = AnalysisWorkSchema.safeParse(document);
+    const claim = AnalysisClaimSchema.safeParse(
+      typeof document === "object" && document !== null && "claim" in document
+        ? document.claim
+        : undefined,
+    );
     const statements: SqlStatement[] = [
       {
         sql: `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
-        params: [at, JSON.stringify({ closure: "failed", reason }), run.id],
+        params: [
+          at,
+          JSON.stringify({
+            closure: "failed",
+            reason,
+            ...(parsed.success ? { stage: parsed.data.stage } : {}),
+          }),
+          run.id,
+        ],
       },
     ];
     if (run.kind === OPERATIONS.title) {
@@ -1250,8 +1385,55 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       );
     }
     await store.db.batch(statements);
+    if (claim.success) {
+      if (spent) await deps.coordinator.abandon({ ...claim.data, reason, now: deps.now() });
+      else
+        await deps.coordinator.finish({
+          ...claim.data,
+          cost: 0,
+          outcome: "failed",
+          now: deps.now(),
+        });
+    }
     store.touch();
     return { runId: run.id, refused: reason };
+  }
+
+  /** A continuation spends only while the same live grant and route still authorize it. */
+  async function analysisAuthority(
+    analysis: AnalysisWork,
+    jobId: string,
+    machineId: string,
+    profile: CodeProfile,
+    recipes: readonly string[],
+  ): Promise<string | null> {
+    const policy = (await deps.coordinator.policy()).policy;
+    const route = policy.review;
+    if (
+      !policy.enabled ||
+      policy.activityWeights[analysis.stage] <= 0 ||
+      route === undefined ||
+      route.machineId !== machineId ||
+      route.profile.containerId !== profile.containerId ||
+      route.profile.expectedRevision !== profile.expectedRevision ||
+      !recipes.includes(route.stageRecipes[analysis.stage] ?? "")
+    ) {
+      return "the current policy no longer authorizes this analysis continuation";
+    }
+    const held = await store.db.query<{ id: string }>(
+      `SELECT id FROM claims WHERE id = ? AND run_id = ? AND fence = ? AND job_id = ?
+         AND finished_at IS NULL AND expires_at > ?`,
+      [
+        analysis.claim.id,
+        analysis.claim.runId,
+        analysis.claim.fence,
+        jobId,
+        new Date(deps.now()).toISOString(),
+      ],
+    );
+    if (held.length === 0) return "the analysis claim is expired, finished or taken over";
+    const renewed = await deps.coordinator.renew({ ...analysis.claim, now: deps.now() });
+    return renewed.outcome === "refused" ? renewed.refusal.detail : null;
   }
 
   /**
@@ -1272,7 +1454,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * ever post.
    */
   async function postPrepared(
-    jobs: JobsSlice,
+    jobs: BabelJobs,
     engine: CodeEngine,
     plan: RunPlan,
   ): Promise<readonly Posted[]> {
@@ -1291,22 +1473,44 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     const posted: Posted[] = [];
     for (const run of waiting) {
       const at = new Date(deps.now()).toISOString();
-      const material = materialOf(run.prepare_payload);
-      if (run.prepare_closure !== "completed" || material === null) {
-        const reason =
-          run.prepare_closure === "completed"
-            ? `the preparation ${run.prepare_job_id ?? ""} sealed no material this run could read`
-            : `the preparation ${run.prepare_job_id ?? ""} closed as ${run.prepare_closure ?? ""}`;
-        posted.push(await close(run, at, reason));
-        continue;
-      }
-      const report = documentOf(run.profile);
-      const composed = await composeFor(run, material);
-      if ("refused" in composed) {
-        posted.push(await close(run, at, composed.refused));
-        continue;
-      }
-      /*
+      let modelRequested = false;
+      let unconfirmedJob: string | null = null;
+      try {
+        const material = materialOf(run.prepare_payload);
+        if (run.prepare_closure !== "completed" || material === null) {
+          const reason =
+            run.prepare_closure === "completed"
+              ? `the preparation ${run.prepare_job_id ?? ""} sealed no material this run could read`
+              : `the preparation ${run.prepare_job_id ?? ""} closed as ${run.prepare_closure ?? ""}`;
+          posted.push(await close(run, at, reason));
+          continue;
+        }
+        const report = documentOf(run.profile);
+        const intent = documentOf(run.preparation);
+        const parsed =
+          intent["analysis"] === undefined
+            ? undefined
+            : AnalysisWorkSchema.safeParse(intent["analysis"]);
+        if (parsed !== undefined && !parsed.success) {
+          posted.push(await close(run, at, "invalid persisted analysis authority"));
+          continue;
+        }
+        const analysis = parsed?.data;
+        if (
+          analysis !== undefined &&
+          material.sessions.some((entry) => !analysis.selectors.includes(entry.selector))
+        ) {
+          posted.push(
+            await close(run, at, "the sealed material exceeds the exact analysis selection"),
+          );
+          continue;
+        }
+        const composed = await composeFor(run, material);
+        if ("refused" in composed) {
+          posted.push(await close(run, at, composed.refused));
+          continue;
+        }
+        /*
         CODE BOUNDS A SESSION'S PROMPT IN BYTES, and the bound is the hub's own: a prompt is
         carried in the 64 KiB job-input map, which counts ENCODED bytes — so a character
         check would pass a prompt of legal length whose selectors and digests are multi-byte
@@ -1321,46 +1525,143 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         contract and the selection, both fixed by now — so the run closes rather than being
         retried.
       */
-      const bytes = promptBytes(composed.prompt);
-      if (bytes > PROMPT_LIMIT) {
-        const reason =
-          `prompt_too_large: this run's prompt is ${String(bytes)} bytes and ` +
-          `${CODE_PLUGIN_ID}.runSession takes ${String(PROMPT_LIMIT)}. The analysis contract ` +
-          `and the stage's schema are most of it, so what moves is Code's bound or the ` +
-          `contract itself — not this selection.`;
-        posted.push(await close(run, at, reason));
-        continue;
-      }
-      const answered = await engine.runSession({
-        profile: {
+        const bytes = promptBytes(composed.prompt);
+        if (bytes > PROMPT_LIMIT) {
+          const reason =
+            `prompt_too_large: this run's prompt is ${String(bytes)} bytes and ` +
+            `${CODE_PLUGIN_ID}.runSession takes ${String(PROMPT_LIMIT)}. The analysis contract ` +
+            `and the stage's schema are most of it, so what moves is Code's bound or the ` +
+            `contract itself — not this selection.`;
+          posted.push(await close(run, at, reason));
+          continue;
+        }
+        const profile = {
           containerId: run.container_id ?? "",
           expectedRevision: Number(report["expectedRevision"] ?? 0),
-        },
-        machineId: run.machine_id ?? "",
-        prompt: composed.prompt,
-        prepareJobId: run.prepare_job_id ?? "",
-      });
-      if (!answered.ok) {
-        // A REFUSAL HERE IS FINAL, not a thing to retry on every wake for ever: the material
-        // is sealed and immutable, the profile was named at the press, and nothing a later
-        // wake could do changes what Code just said. The run closes carrying the sentence.
-        posted.push(await close(run, at, answered.refused));
-        continue;
+        };
+        const recipes = (Array.isArray(intent["recipes"]) ? intent["recipes"] : []).flatMap(
+          (recipe: unknown) =>
+            typeof recipe === "object" &&
+            recipe !== null &&
+            "id" in recipe &&
+            typeof recipe.id === "string"
+              ? [recipe.id]
+              : [],
+        );
+        if (analysis !== undefined) {
+          const checked = await engine.checkProfile(profile);
+          const refusal = !checked.ok
+            ? checked.refused
+            : await analysisAuthority(
+                analysis,
+                run.prepare_job_id ?? "",
+                run.machine_id ?? "",
+                profile,
+                recipes,
+              );
+          if (refusal !== null) {
+            posted.push(await close(run, at, refusal));
+            continue;
+          }
+        }
+        modelRequested = true;
+        const answered = await engine.runSession({
+          profile: {
+            containerId: run.container_id ?? "",
+            expectedRevision: Number(report["expectedRevision"] ?? 0),
+          },
+          machineId: run.machine_id ?? "",
+          prompt: composed.prompt,
+          prepareJobId: run.prepare_job_id ?? "",
+        });
+        if (!answered.ok) {
+          // A REFUSAL HERE IS FINAL, not a thing to retry on every wake for ever: the material
+          // is sealed and immutable, the profile was named at the press, and nothing a later
+          // wake could do changes what Code just said. The run closes carrying the sentence.
+          posted.push(await close(run, at, answered.refused));
+          continue;
+        }
+        // The run's own document is the only thing that reaches the settlement — the prompt is
+        // Code's job's input and nothing reads it back — so whatever the composition decided
+        // this run was told travels on the row with the intent it is part of.
+        try {
+          if (analysis !== undefined) {
+            const refusal = await analysisAuthority(
+              analysis,
+              run.prepare_job_id ?? "",
+              run.machine_id ?? "",
+              profile,
+              recipes,
+            );
+            if (refusal !== null) throw new Error(refusal);
+            const bound = await deps.coordinator.bind({
+              ...analysis.claim,
+              jobId: answered.value.jobId,
+              previousJobId: run.prepare_job_id ?? "",
+              now: deps.now(),
+            });
+            if (bound.outcome === "refused") throw new Error(bound.refusal.detail);
+          }
+          const retained = await store.db.run(
+            `UPDATE runs SET job_id = ?, preparation = ?, payload = ? WHERE id = ? AND job_id IS NULL AND closure IS NULL
+         ${analysis === undefined ? "" : `AND EXISTS (SELECT 1 FROM claims WHERE id = ? AND run_id = ? AND fence = ? AND job_id = ? AND finished_at IS NULL)`}
+         RETURNING id`,
+            [
+              answered.value.jobId,
+              JSON.stringify(composed.preparation),
+              JSON.stringify({ closure: null, requestedAt: deps.now() }),
+              run.id,
+              ...(analysis === undefined
+                ? []
+                : [
+                    analysis.claim.id,
+                    analysis.claim.runId,
+                    analysis.claim.fence,
+                    answered.value.jobId,
+                  ]),
+            ],
+          );
+          if (retained.changes === 0)
+            throw new Error("the parent or its analysis claim changed before retention");
+        } catch (error) {
+          unconfirmedJob = answered.value.jobId;
+          let cancellation: string | null = null;
+          try {
+            const cancelled = await engine.cancelSession({
+              containerId: run.container_id ?? "",
+              jobId: answered.value.jobId,
+            });
+            if (!cancelled.ok) cancellation = cancelled.refused;
+          } catch (cancelError) {
+            cancellation = message(cancelError);
+          }
+          if (cancellation !== null) {
+            const reason = `session ${answered.value.jobId} could not be bound or retained: ${message(error)}; cancellation is unconfirmed: ${cancellation}`;
+            // Keep polling the actual job without granting it a new fence or opening its slot.
+            const retained = await store.db.run(
+              `UPDATE runs SET payload = ?, job_id = ? WHERE id = ? AND closure IS NULL AND job_id IS NULL`,
+              [JSON.stringify({ closure: null, reason }), answered.value.jobId, run.id],
+            );
+            if (retained.changes === 0) throw new Error(reason);
+            posted.push({ runId: run.id, refused: reason });
+            continue;
+          }
+          unconfirmedJob = null;
+          posted.push(
+            await close(run, at, `the newly posted session was cancelled: ${message(error)}`, true),
+          );
+          continue;
+        }
+        store.touch();
+        posted.push({ runId: run.id, jobId: answered.value.jobId });
+      } catch (error) {
+        if (unconfirmedJob !== null) {
+          posted.push({
+            runId: run.id,
+            refused: `session ${unconfirmedJob} remains unconfirmed and its grant is retained: ${message(error)}`,
+          });
+        } else posted.push(await close(run, at, message(error), modelRequested));
       }
-      // The run's own document is the only thing that reaches the settlement — the prompt is
-      // Code's job's input and nothing reads it back — so whatever the composition decided
-      // this run was told travels on the row with the intent it is part of.
-      await store.db.run(
-        `UPDATE runs SET job_id = ?, preparation = ?, payload = ? WHERE id = ? AND job_id IS NULL`,
-        [
-          answered.value.jobId,
-          JSON.stringify(composed.preparation),
-          JSON.stringify({ closure: null, requestedAt: deps.now() }),
-          run.id,
-        ],
-      );
-      store.touch();
-      posted.push({ runId: run.id, jobId: answered.value.jobId });
     }
     return posted;
   }

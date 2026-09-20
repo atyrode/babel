@@ -99,6 +99,87 @@ describe("what it is looking at", () => {
 });
 
 describe("the peel", () => {
+  test("opens the grounded objection and its actual source receipt independently of review votes", async () => {
+    const candidate = post({
+      id: "hyp_00000001",
+      kind: "hypothesis",
+      challenges: { objections: 1, distinctRuns: 1 },
+    });
+    const fake = hub({
+      record: () =>
+        peel({
+          post: candidate,
+          challenges: [
+            {
+              id: "hyp_00000002",
+              kind: "hypothesis",
+              runId: "independent-challenger",
+              grounds: "missing-check",
+              summary: "The rollback path was not checked.",
+            },
+          ],
+        }),
+      run: () => ({
+        run: null,
+        receipt: {
+          runId: "independent-challenger",
+          stage: "challenge",
+          note: "An independently recorded receipt.",
+        },
+      }),
+    });
+    const view = await mount(<RecordPanel host={fake.host} arg={{ recordId: candidate.id }} />);
+    expect(view.text()).toContain("1 grounded objection");
+    expect(view.text()).toContain("Ground: missing-check");
+    expect(fake.to("run")).toHaveLength(0);
+    await view.press(".babel-challenge-run .disclosure__header");
+    expect(view.text()).toContain("An independently recorded receipt.");
+    expect(fake.last("run")).toEqual({ id: "independent-challenger" });
+    await view.press(".babel-field-list .babel-link");
+    expect(fake.opened.at(-1)?.arg).toEqual({ recordId: "hyp_00000002" });
+    await view.unmount();
+  });
+
+  test("source-run read failure can be retried and missing historical receipts stay explicit", async () => {
+    let refused = true;
+    const fake = hub({
+      record: () =>
+        peel({
+          post: post({ kind: "hypothesis", challenges: { objections: 1, distinctRuns: 1 } }),
+          challenges: [
+            {
+              id: "obs_00000002",
+              kind: "observation",
+              runId: "historical-source",
+              grounds: "evidence",
+              summary: "The transcript shows a different result.",
+            },
+          ],
+        }),
+      run: () => {
+        if (refused) throw new Denial("This source run cannot be read.");
+        return { run: null, receipt: null };
+      },
+    });
+    const view = await mount(<RecordPanel host={fake.host} arg={{ recordId: "hyp_00000001" }} />);
+    await view.press(".babel-challenge-run .disclosure__header");
+    expect(view.text()).toContain("This source run cannot be read.");
+    refused = false;
+    await view.press(".babel-challenge-run .disclosure__header");
+    await view.press(".babel-challenge-run .disclosure__header");
+    expect(view.text()).toContain("No historical run row");
+    expect(view.text()).toContain("No receipt is held");
+    await view.unmount();
+  });
+
+  test("review-role opposition alone leaves the opened candidate without a recorded challenge", async () => {
+    const fake = hub({ record: () => peel({ post: post({ kind: "hypothesis" }) }) });
+    const view = await mount(<RecordPanel host={fake.host} arg={{ recordId: "hyp_00000001" }} />);
+    expect(view.text()).toContain("No recorded challenge");
+    expect(view.all(".babel-challenge-run")).toHaveLength(0);
+    await view.unmount();
+  });
+
   test("draws the claim, the case, the evidence, the reception and the machinery in one read", async () => {
     const fake = hub();
     look({ recordId: "pro_0000000a" });

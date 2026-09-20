@@ -59,6 +59,21 @@ export const ESTABLISHED_LABELS: Record<Established, string> = {
   settled: "settled",
 };
 
+/** Analysis objections are neither reviewer opposition nor an operator's ruling. */
+export function ChallengeSummary({
+  challenges,
+}: {
+  challenges: FeedPost["challenges"];
+}): ReactElement {
+  return (
+    <span className="babel-note">
+      {challenges.objections === 0
+        ? "No recorded challenge"
+        : `${challenges.objections} grounded objection${challenges.objections === 1 ? "" : "s"} · ${challenges.distinctRuns} source run${challenges.distinctRuns === 1 ? "" : "s"}`}
+    </span>
+  );
+}
+
 /** An act on a record from a surface that lists it: the rulings, plus the question. */
 export type RuleAct = Ruling | "ask";
 
@@ -657,6 +672,7 @@ export function FeedRow({
             />
           )}
         </Cluster>
+        {post.kind === "hypothesis" && <ChallengeSummary challenges={post.challenges} />}
         <JevPosition host={host} id={post.id} />
         {acted !== undefined && (
           <span className="babel-acted" data-act={acted.act}>

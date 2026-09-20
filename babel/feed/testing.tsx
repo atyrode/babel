@@ -263,6 +263,7 @@ export function post(overrides: Partial<FeedPost> = {}): FeedPost {
     ],
     contested: true,
     reviewing: false,
+    challenges: { objections: 0, distinctRuns: 0 },
     comments: 2,
     awaiting: true,
     why: "never ruled on · waiting 3d",
@@ -421,6 +422,7 @@ export function peel(overrides: Partial<RecordPeel> = {}): RecordPeel {
     ],
     // Three supports from one run: the 84.5% case, and the one the prose has to read correctly.
     corroboration: { supports: 3, distinctRuns: 1 },
+    challenges: [],
     // One repository Babel probed in the cited session's own workspace, at the commit the
     // evidence recorded; the fixture carries no merely-named one, so a panel test that wants
     // the other provenance overrides this.

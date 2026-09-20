@@ -6,7 +6,7 @@
 */
 
 import { expect, test } from "bun:test";
-import { ROLES, type MaterialEntry, type Stage } from "../contract.ts";
+import { ROLES, type AnalysisBriefRecord, type MaterialEntry, type Stage } from "../contract.ts";
 import {
   acceptReviewResult,
   exploreJsonSchema,
@@ -41,8 +41,12 @@ const SERVED: readonly MaterialEntry[] = [
 ];
 
 /** One submission against the material above: what it kept, what it refused, and never a throw. */
-function submit(stage: Stage, payload: unknown): ExploreSubmission {
-  return exploreSubmission(stage, payload, SERVED);
+function submit(
+  stage: Stage,
+  payload: unknown,
+  brief: readonly AnalysisBriefRecord[] = [],
+): ExploreSubmission {
+  return exploreSubmission(stage, payload, SERVED, brief);
 }
 
 /** The subset a submission kept, or the failure that it kept none. */
@@ -58,6 +62,202 @@ const CLAIM = {
   evidence: [EVIDENCE],
   counter_evidence_absent: true,
 };
+
+function prior(
+  id: string,
+  kind: AnalysisBriefRecord["kind"],
+  runId: string | null = "run_prior",
+): AnalysisBriefRecord {
+  return {
+    id,
+    kind,
+    runId,
+    summary: "the prior claim",
+    payload: kind === "observation" ? CLAIM : { statement: "the prior candidate" },
+    objectionTo: [],
+  };
+}
+
+test("durable IDs authorize nothing unless the brief offers their exact record family", () => {
+  const hypothesis = "hyp_00000011";
+  const observation = "obs_00000012";
+  const finding = "fnd_00000013";
+  const cases: readonly {
+    stage: Stage;
+    payload: unknown;
+    record: AnalysisBriefRecord;
+  }[] = [
+    {
+      stage: "challenge",
+      payload: {
+        objections: [
+          {
+            ref: "j1",
+            hypothesis,
+            grounds: "evidence",
+            recipe: RECIPE,
+            claim: CLAIM,
+          },
+        ],
+      },
+      record: prior(hypothesis, "hypothesis"),
+    },
+    {
+      stage: "synthesize",
+      payload: {
+        consolidations: [
+          {
+            ref: "f1",
+            observations: [observation],
+            finding: {
+              title: "recurrence",
+              pattern: "retries drop",
+              counter_evidence_absent: true,
+            },
+          },
+        ],
+      },
+      record: prior(observation, "observation"),
+    },
+    ...(["deferred", "rejected"] as const).map((list) => ({
+      stage: "explore" as const,
+      payload: { [list]: [{ hypothesis, reason: "needs another reading" }] },
+      record: prior(hypothesis, "hypothesis"),
+    })),
+    {
+      stage: "explore",
+      payload: {
+        questions: [
+          {
+            ref: "q1",
+            hypothesis,
+            subjects: ["router"],
+            prompt: "Which queue?",
+            why_asked: "the delivery guarantee depends on it",
+          },
+        ],
+      },
+      record: prior(hypothesis, "hypothesis"),
+    },
+    {
+      stage: "synthesize",
+      payload: {
+        next_actions: [{ record: finding, kind: "develop-further", summary: "check the limit" }],
+      },
+      record: prior(finding, "finding"),
+    },
+  ];
+  for (const { stage, payload, record } of cases) {
+    expect(submit(stage, payload).result).toBeNull();
+    expect(submit(stage, payload, [prior("hyp_ffffffff", "hypothesis")]).result).toBeNull();
+    // The ID's spelling cannot override the actual row kind the caller verified.
+    expect(submit(stage, payload, [{ ...record, kind: "proposal" }]).result).toBeNull();
+    expect(submit(stage, payload, [record]).refused).toEqual([]);
+  }
+});
+
+test("a refused durable support closes dependent actions without losing unrelated candidates", () => {
+  const submission = submit("synthesize", {
+    candidates: ["h1", "h2", "h3"].map((ref) => ({ ref, hypothesis: { statement: ref } })),
+    consolidations: [
+      {
+        ref: "f1",
+        observations: ["obs_ffffffff"],
+        finding: {
+          title: "invented",
+          pattern: "unsupported recurrence",
+          counter_evidence_absent: true,
+        },
+      },
+    ],
+    next_actions: [{ record: "f1", kind: "store-memory", summary: "do not store this" }],
+  });
+  expect(kept(submission).candidates.map((candidate) => candidate.ref)).toEqual(["h1", "h2", "h3"]);
+  expect(kept(submission).consolidations).toEqual([]);
+  expect(kept(submission).next_actions).toEqual([]);
+  expect(submission.refused.map((item) => item.item)).toEqual([
+    "/consolidations/0",
+    "/next_actions/0",
+  ]);
+});
+
+test("a hypothesis target cannot be a locally emitted or offered observation", () => {
+  const observation = prior("obs_00000012", "observation");
+  for (const target of ["o1", observation.id]) {
+    const submission = submit(
+      "explore",
+      {
+        candidates: [
+          {
+            ref: "h1",
+            hypothesis: { statement: "retries exhaust" },
+            observations: [{ ref: "o1", recipe: RECIPE, claim: CLAIM }],
+          },
+        ],
+        deferred: [{ hypothesis: target, reason: "wait" }],
+        questions: [
+          {
+            ref: "q1",
+            hypothesis: target,
+            subjects: ["router"],
+            prompt: "Which queue?",
+            why_asked: "delivery depends on it",
+          },
+        ],
+      },
+      [observation],
+    );
+    expect(kept(submission).candidates[0]?.observations[0]?.ref).toBe("o1");
+    expect(kept(submission).deferred).toEqual([]);
+    expect(kept(submission).questions).toEqual([]);
+  }
+});
+
+test("synthesis retains the exact observations offered from multiple source runs", () => {
+  const brief = [
+    prior("obs_00000011", "observation", "run_a"),
+    prior("obs_00000012", "observation", "run_b"),
+  ];
+  const submission = submit(
+    "synthesize",
+    {
+      consolidations: [
+        {
+          ref: "f1",
+          observations: brief.map((record) => record.id),
+          finding: { title: "recurrence", pattern: "retries drop", counter_evidence_absent: true },
+        },
+      ],
+    },
+    brief,
+  );
+  expect(kept(submission).consolidations[0]?.observations).toEqual(
+    brief.map((record) => record.id),
+  );
+  expect(submission.refused).toEqual([]);
+});
+
+test("prior payload citations do not expand the run's served material", () => {
+  const target = prior("hyp_00000011", "hypothesis");
+  const unserved = { ...EVIDENCE, locator: { ...LOCATOR, path: "prior-only.jsonl" } };
+  const submission = submit(
+    "challenge",
+    {
+      objections: [
+        {
+          ref: "j1",
+          hypothesis: target.id,
+          grounds: "evidence",
+          recipe: RECIPE,
+          claim: { ...CLAIM, evidence: [unserved] },
+        },
+      ],
+    },
+    [{ ...target, payload: { evidence: [unserved] } }],
+  );
+  expect(submission.result).toBeNull();
+  expect(submission.reason).toStartWith(`${REFUSALS.unknownReference}:`);
+});
 
 /** The properties a generated schema offers, which is what a model is allowed to fill. */
 /**
@@ -265,25 +465,29 @@ test("a challenger that consolidates loses the consolidation and keeps its criti
     the criticism beside it, which the stage did have authority for and which was paid for, is
     recorded rather than thrown away with it.
   */
-  const submission = submit("challenge", {
-    candidates: [],
-    objections: [
-      {
-        ref: "j1",
-        hypothesis: "hyp_00000001",
-        grounds: "evidence",
-        recipe: RECIPE,
-        claim: CLAIM,
-      },
-    ],
-    consolidations: [
-      {
-        ref: "con1",
-        observations: ["o1"],
-        finding: { title: "t", pattern: "p", counter_evidence_absent: true },
-      },
-    ],
-  });
+  const submission = submit(
+    "challenge",
+    {
+      candidates: [],
+      objections: [
+        {
+          ref: "j1",
+          hypothesis: "hyp_00000001",
+          grounds: "evidence",
+          recipe: RECIPE,
+          claim: CLAIM,
+        },
+      ],
+      consolidations: [
+        {
+          ref: "con1",
+          observations: ["o1"],
+          finding: { title: "t", pattern: "p", counter_evidence_absent: true },
+        },
+      ],
+    },
+    [prior("hyp_00000001", "hypothesis")],
+  );
 
   expect(kept(submission).objections[0]?.ref).toBe("j1");
   expect(kept(submission).consolidations).toEqual([]);
@@ -366,54 +570,66 @@ test("a consolidation resting on a name nobody emitted or listed is refused", ()
 
 test("a consolidation may rest on a durable observation identifier from the brief", () => {
   const result = kept(
-    submit("synthesize", {
-      consolidations: [
-        {
-          ref: "con1",
-          observations: ["obs_0123456789abcdef"],
-          finding: { title: "t", pattern: "p", counter_evidence_absent: true },
-        },
-      ],
-    }),
+    submit(
+      "synthesize",
+      {
+        consolidations: [
+          {
+            ref: "con1",
+            observations: ["obs_0123456789abcdef"],
+            finding: { title: "t", pattern: "p", counter_evidence_absent: true },
+          },
+        ],
+      },
+      [prior("obs_0123456789abcdef", "observation")],
+    ),
   );
   expect(result.consolidations[0]?.observations).toEqual(["obs_0123456789abcdef"]);
 });
 
 test("an objection on evidence grounds that cites none is refused", () => {
-  const submission = submit("challenge", {
-    objections: [
-      {
-        ref: "j1",
-        hypothesis: "hyp_0123456789abcdef",
-        grounds: "evidence",
-        recipe: RECIPE,
-        claim: { ...CLAIM, evidence: [] },
-      },
-    ],
-  });
+  const submission = submit(
+    "challenge",
+    {
+      objections: [
+        {
+          ref: "j1",
+          hypothesis: "hyp_0123456789abcdef",
+          grounds: "evidence",
+          recipe: RECIPE,
+          claim: { ...CLAIM, evidence: [] },
+        },
+      ],
+    },
+    [prior("hyp_0123456789abcdef", "hypothesis")],
+  );
   expect(submission.result).toBeNull();
   expect(submission.reason).toStartWith(`${REFUSALS.support}:`);
 });
 
 test("an objection on alternative grounds carries no locator and is accepted", () => {
   const result = kept(
-    submit("challenge", {
-      objections: [
-        {
-          ref: "j1",
-          hypothesis: "hyp_0123456789abcdef",
-          grounds: "alternative",
-          recipe: RECIPE,
-          claim: {
-            claim: "a queue would drop nothing",
-            confidence: "low",
-            impact: "moderate",
-            evidence: [],
-            counter_evidence_absent: true,
+    submit(
+      "challenge",
+      {
+        objections: [
+          {
+            ref: "j1",
+            hypothesis: "hyp_0123456789abcdef",
+            grounds: "alternative",
+            recipe: RECIPE,
+            claim: {
+              claim: "a queue would drop nothing",
+              confidence: "low",
+              impact: "moderate",
+              evidence: [],
+              counter_evidence_absent: true,
+            },
           },
-        },
-      ],
-    }),
+        ],
+      },
+      [prior("hyp_0123456789abcdef", "hypothesis")],
+    ),
   );
   expect(result.objections[0]?.grounds).toBe("alternative");
   expect(result.objections[0]?.claim.evidence).toEqual([]);

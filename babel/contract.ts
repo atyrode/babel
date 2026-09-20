@@ -168,7 +168,12 @@ export const ActivityWeightsSchema = z
   .default(DEFAULT_ACTIVITY_WEIGHTS);
 export type ActivityWeights = z.infer<typeof ActivityWeightsSchema>;
 
-export const OBJECTION_GROUNDS = ["evidence", "consequence", "missing-check", "alternative"] as const;
+export const OBJECTION_GROUNDS = [
+  "evidence",
+  "consequence",
+  "missing-check",
+  "alternative",
+] as const;
 export const ObjectionGroundSchema = z.enum(OBJECTION_GROUNDS);
 /** From the objection record to its target, with its ground in the edge's note. */
 export const CHALLENGE_RELATION = "challenges";

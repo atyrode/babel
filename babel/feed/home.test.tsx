@@ -82,6 +82,22 @@ describe("the list", () => {
     await view.unmount();
   });
 
+  test("candidate rows distinguish grounded objections from review-role opposition", async () => {
+    const unchallenged = post({ id: "hyp_00000001", kind: "hypothesis", surface: "queue" });
+    const challenged = post({
+      id: "hyp_00000002",
+      kind: "hypothesis",
+      surface: "queue",
+      challenges: { objections: 3, distinctRuns: 2 },
+    });
+    const fake = hub({ feed: () => feed({ posts: [unchallenged, challenged] }) });
+    const view = await mount(<HomePanel host={fake.host} />);
+    expect(view.one('[data-post="hyp_00000001"]').textContent).toContain("No recorded challenge");
+    expect(view.one('[data-post="hyp_00000002"]').textContent).toContain("3 grounded objections");
+    expect(view.one('[data-post="hyp_00000002"]').textContent).toContain("2 source runs");
+    await view.unmount();
+  });
+
   // §8.6 caps a listing row at one line of claim and at most three facts, and #354 had to fit
   // the status axis inside that cap rather than beside it. The maximal row carried eight
   // elements before — kind, two subject chips, the overflow, the age, the comments, the reason

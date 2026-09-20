@@ -58,14 +58,18 @@ provenance comment on a port, which is why the deletion broke no build.
 
 ## Two things the table's rows do not name
 
-One is absent, one is present and unproven; both sit inside `explore/`'s row and would be
-invisible as part of it.
+These are separate evidence boundaries inside `explore/`'s row, not capabilities that should be
+assumed from that row alone.
 
-- **The challenge and synthesize stages are absent.** `machine/results.ts` declares all three
-  stages with their separate authorities, and `server/engine/prompts.ts` writes each one's
-  instructions, but every launch posts `stage: "explore"` (`doors/launch.ts`) and the settlement
-  reads the answer as that stage. So nothing criticizes a claim and nothing consolidates across
-  runs. Issue: [#332](https://github.com/atyrode/babel/issues/332), **"plugin: only the explore stage ever runs"**.
+- **Challenge and synthesize have separate weighted dispatch.** The coordinator allocates review,
+  explore, challenge and synthesize through one claim and budget ledger. A stage retains its exact
+  brief and fenced ownership across preparation and Code; settlement reads that stage and refuses
+  unoffered durable references. Challenge writes attributed objections, which the candidate's feed
+  entry and opened record expose. Synthesis connects observations from multiple known source runs
+  without replacing their original provenance. Regression suites and a synthetic SQLite-frontier
+  exercise prove dispatch, terminal accounting and record projection; no paid stage run has been
+  exercised on a live deployment. New stage weights default to zero, so installing the plugin
+  enables no new paid activity. Issue: [#332](https://github.com/atyrode/babel/issues/332).
 - **A drawn review dispatches, and no live one has ever run.** `dispatchReviews`
   (`server/conductor.ts`) draws an assignment from the coordinator, claims it under a fence,
   refuses a projection that leaks withheld review state, composes the review prompt around the

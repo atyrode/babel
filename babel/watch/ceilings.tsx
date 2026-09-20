@@ -1,5 +1,6 @@
 import { Cluster, Stack, Switcher } from "@manifold/ui";
 import { OVERLAY_FIELDS, since, until, usd, type PolicyResult } from "./api.ts";
+import { ACTIVITIES } from "../contract.ts";
 
 /*
   THE CEILINGS — what bounds Babel's autonomy, and how much of today it has spent.
@@ -160,7 +161,7 @@ export function Ceilings({ policy, now, note }: CeilingsProps) {
         <Figure
           label="At once"
           value={unset ? "unset" : String(ceilings.concurrent)}
-          note="How many reviews may be claimed together."
+          note="How many review or analysis jobs may be claimed together."
         />
       </Switcher>
       {policy.overlay === null ? null : <Overlay overlay={policy.overlay} now={now} />}
@@ -180,18 +181,40 @@ export function Ceilings({ policy, now, note }: CeilingsProps) {
           />
         </div>
       )}
-      {policy.lanes.length === 0 ? null : (
+      <Stack gap="var(--babel-space-2)" role="group" aria-label="Activity weights">
+        <h3 className="plugin-atyrode_babel_watch__stat-label">Activity weights</h3>
+        <p className="plugin-atyrode_babel_watch__muted">
+          Relative allocation weights, not percentages. Zero disables an activity; weights alone do
+          not authorize a run. Policy changes belong to the owner in Settings.
+        </p>
         <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
-          {policy.lanes.map((lane) => (
-            <span key={`${lane.lane}:${lane.role}`} className="plugin-atyrode_babel_watch__lane">
+          {ACTIVITIES.map((activity) => (
+            <span key={activity} className="plugin-atyrode_babel_watch__lane">
+              {activity}{" "}
               <span className="plugin-atyrode_babel_watch__mono">
-                {Math.round(lane.share * 100)}%
-              </span>{" "}
-              {lane.lane}
-              {lane.role === "" ? "" : ` · ${lane.role}`}
+                {policy.activityWeights[activity]}
+              </span>
             </span>
           ))}
         </Cluster>
+      </Stack>
+      {policy.lanes.length === 0 ? null : (
+        <Stack gap="var(--babel-space-2)" role="group" aria-label="Review lane shares">
+          <h3 className="plugin-atyrode_babel_watch__stat-label">Review lane shares</h3>
+          <p className="plugin-atyrode_babel_watch__muted">
+            Reservations within review only. The exploration lane is not the explore activity.
+          </p>
+          <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
+            {policy.lanes.map((lane) => (
+              <span key={`${lane.lane}:${lane.role}`} className="plugin-atyrode_babel_watch__lane">
+                <span className="plugin-atyrode_babel_watch__mono">
+                  {Math.round(lane.share * 100)}%
+                </span>{" "}
+                {lane.lane}
+              </span>
+            ))}
+          </Cluster>
+        </Stack>
       )}
     </Stack>
   );
