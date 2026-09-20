@@ -18,7 +18,9 @@ export type IndexBuildResult = "indexed" | "reused" | "busy" | "changed";
 /** No underlying SQLite or callback message is exposed: either can contain source text. */
 export class SessionIndexError extends Error {
   constructor(readonly kind: "busy" | "unavailable") {
-    super(kind === "busy" ? "Session content index is busy." : "Session content index is unavailable.");
+    super(
+      kind === "busy" ? "Session content index is busy." : "Session content index is unavailable.",
+    );
     this.name = "SessionIndexError";
   }
 }
@@ -51,7 +53,8 @@ function busy(error: unknown): boolean {
   const code = "code" in error ? error.code : null;
   const errno = "errno" in error ? error.errno : null;
   return (
-    (typeof code === "string" && (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED"))) ||
+    (typeof code === "string" &&
+      (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED"))) ||
     (typeof errno === "number" && ((errno & 255) === 5 || (errno & 255) === 6))
   );
 }
@@ -61,7 +64,12 @@ function failure(error: unknown): SessionIndexError {
 }
 
 function observed(seen: Observation): boolean {
-  return Number.isSafeInteger(seen.size) && seen.size >= 0 && Number.isFinite(seen.modifiedAt) && seen.modifiedAt > 0;
+  return (
+    Number.isSafeInteger(seen.size) &&
+    seen.size >= 0 &&
+    Number.isFinite(seen.modifiedAt) &&
+    seen.modifiedAt > 0
+  );
 }
 
 /** Walk scalars without allocating another flattened transcript or recursively using the stack. */
@@ -70,7 +78,10 @@ function* strings(value: unknown): Generator<string> {
   const stack: Iterator<unknown>[] = [[value][Symbol.iterator]()];
   while (stack.length !== 0) {
     const next = stack[stack.length - 1]!.next();
-    if (next.done) { stack.pop(); continue; }
+    if (next.done) {
+      stack.pop();
+      continue;
+    }
     const item: unknown = next.value;
     if (typeof item === "string") yield item;
     else if (typeof item === "number") yield String(item);
@@ -133,7 +144,10 @@ function passages(insert: (text: string) => void): RecordSink {
       if (length > MAX_RECORD_CHARS) throw new SessionIndexError("unavailable");
       if (end > start) {
         tail += text.slice(start, end);
-        if (tail.length >= CHUNK_CHARS) { parts.push(tail); tail = ""; }
+        if (tail.length >= CHUNK_CHARS) {
+          parts.push(tail);
+          tail = "";
+        }
       }
       if (newline < 0) return;
       record();
@@ -146,13 +160,17 @@ function passages(insert: (text: string) => void): RecordSink {
         if (closed || broken) throw new SessionIndexError("unavailable");
         if (typeof record === "string") {
           consume(decoder.decode());
-          for (let at = 0; at < record.length; at += CHUNK_CHARS) consume(record.slice(at, at + CHUNK_CHARS));
+          for (let at = 0; at < record.length; at += CHUNK_CHARS)
+            consume(record.slice(at, at + CHUNK_CHARS));
         } else {
           for (let at = 0; at < record.byteLength; at += CHUNK_CHARS) {
             consume(decoder.decode(record.subarray(at, at + CHUNK_CHARS), { stream: true }));
           }
         }
-      } catch (error) { broken = true; throw failure(error); }
+      } catch (error) {
+        broken = true;
+        throw failure(error);
+      }
     },
     async close() {
       if (broken) throw new SessionIndexError("unavailable");
@@ -161,7 +179,10 @@ function passages(insert: (text: string) => void): RecordSink {
         consume(decoder.decode());
         record();
         closed = true;
-      } catch (error) { broken = true; throw failure(error); }
+      } catch (error) {
+        broken = true;
+        throw failure(error);
+      }
     },
   };
 }
@@ -177,15 +198,19 @@ export async function sessionIndex(dir: string, context: ReadingContext): Promis
     await chmod(privateDir, 0o700);
     const path = join(privateDir, "tokens.sqlite");
     const file = await lstat(path).catch((error: unknown) => {
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return null;
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
+        return null;
       throw error;
     });
     if (file !== null && !file.isFile()) throw new SessionIndexError("unavailable");
     db = new Database(path, { create: true, strict: true });
-    db.exec(`PRAGMA busy_timeout = ${BUSY_MS}; PRAGMA foreign_keys = ON; PRAGMA cache_size = -2048; PRAGMA temp_store = FILE`);
+    db.exec(
+      `PRAGMA busy_timeout = ${BUSY_MS}; PRAGMA foreign_keys = ON; PRAGMA cache_size = -2048; PRAGMA temp_store = FILE`,
+    );
     db.exec("PRAGMA journal_mode = WAL");
     await chmod(path, 0o600);
-    const version = (): number => db!.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
+    const version = (): number =>
+      db!.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
     if (version() === 0) {
       db.exec("BEGIN IMMEDIATE");
       // Another opener may have initialized the file between our first check and the lock.
@@ -200,7 +225,11 @@ export async function sessionIndex(dir: string, context: ReadingContext): Promis
     return opened(db, { ...context });
   } catch (error) {
     // Closing also rolls back an interrupted initialization. Never unlink a shared database.
-    try { db?.close(); } catch { /* The original, sanitized failure is the useful one. */ }
+    try {
+      db?.close();
+    } catch {
+      /* The original, sanitized failure is the useful one. */
+    }
     throw failure(error);
   }
 }
@@ -208,14 +237,28 @@ export async function sessionIndex(dir: string, context: ReadingContext): Promis
 function opened(db: Database, context: ReadingContext): SessionIndex {
   let closed = false;
   let active = false;
-  const lookup = db.query<{ id: number }, [string, string, string, string, number, number, number, string, string]>(
+  const lookup = db.query<
+    { id: number },
+    [string, string, string, string, number, number, number, string, string]
+  >(
     `SELECT id FROM session_sources WHERE selector = ? AND harness = ? AND source_id = ?
      AND path = ? AND size = ? AND modified_at = ? AND schema = ? AND detectors = ? AND mode = ?`,
   );
   const current = ({ session, seen }: IndexedSession): number | null => {
     if (!observed(seen)) return null;
-    return lookup.get(session.selector, session.harness, session.sourceId, session.primaryPath,
-      seen.size, seen.modifiedAt, context.schema, context.detectors, context.mode)?.id ?? null;
+    return (
+      lookup.get(
+        session.selector,
+        session.harness,
+        session.sourceId,
+        session.primaryPath,
+        seen.size,
+        seen.modifiedAt,
+        context.schema,
+        context.detectors,
+        context.mode,
+      )?.id ?? null
+    );
   };
   const ready = (): void => {
     if (closed) throw new SessionIndexError("unavailable");
@@ -223,14 +266,25 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
   };
   const rollback = (): void => {
     if (closed || !db.inTransaction) return;
-    try { db.exec("ROLLBACK"); } catch {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
       closed = true;
-      try { db.close(); } catch { /* Release a failed handle; never reuse a broken transaction. */ }
+      try {
+        db.close();
+      } catch {
+        /* Release a failed handle; never reuse a broken transaction. */
+      }
     }
   };
   return {
     holds(candidate) {
-      try { ready(); return current(candidate) !== null; } catch (error) { throw failure(error); }
+      try {
+        ready();
+        return current(candidate) !== null;
+      } catch (error) {
+        throw failure(error);
+      }
     },
     async build(candidate, read) {
       if (active) return "busy";
@@ -242,16 +296,33 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
       try {
         db.exec("BEGIN IMMEDIATE");
         if (current(frozen) !== null) return "reused";
-        const old = db.query<{ id: number }, [string]>("SELECT id FROM session_sources WHERE selector = ?").get(frozen.session.selector);
+        const old = db
+          .query<{ id: number }, [string]>("SELECT id FROM session_sources WHERE selector = ?")
+          .get(frozen.session.selector);
         if (old !== null) {
-          db.query("DELETE FROM session_terms WHERE rowid IN (SELECT id FROM session_passages WHERE source = ?)").run(old.id);
+          db.query(
+            "DELETE FROM session_terms WHERE rowid IN (SELECT id FROM session_passages WHERE source = ?)",
+          ).run(old.id);
           db.query("DELETE FROM session_passages WHERE source = ?").run(old.id);
           db.query("DELETE FROM session_sources WHERE id = ?").run(old.id);
         }
         const { session, seen } = frozen;
-        const source = db.query(`INSERT INTO session_sources(selector, harness, source_id, path, size, modified_at, schema, detectors, mode)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(session.selector, session.harness, session.sourceId,
-          session.primaryPath, seen.size, seen.modifiedAt, context.schema, context.detectors, context.mode).lastInsertRowid;
+        const source = db
+          .query(
+            `INSERT INTO session_sources(selector, harness, source_id, path, size, modified_at, schema, detectors, mode)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            session.selector,
+            session.harness,
+            session.sourceId,
+            session.primaryPath,
+            seen.size,
+            seen.modifiedAt,
+            context.schema,
+            context.detectors,
+            context.mode,
+          ).lastInsertRowid;
         const passage = db.query("INSERT INTO session_passages(source) VALUES (?)");
         const terms = db.query("INSERT INTO session_terms(rowid, tokens) VALUES (?, ?)");
         const sink = passages((text) => {
@@ -261,8 +332,13 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
         });
         const { reading, after } = await read(sink);
         await sink.close();
-        if (!observed(after) || after.size !== seen.size || after.modifiedAt !== seen.modifiedAt ||
-            reading.bytes !== seen.size) return "changed";
+        if (
+          !observed(after) ||
+          after.size !== seen.size ||
+          after.modifiedAt !== seen.modifiedAt ||
+          reading.bytes !== seen.size
+        )
+          return "changed";
         db.exec("COMMIT");
         return "indexed";
       } catch (error) {
@@ -275,8 +351,15 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
     },
     search(text, eligible, limit, maxBytes) {
       ready();
-      if (text.length > 512 || !Number.isInteger(limit) || limit < 1 || limit > 120 ||
-          !Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new SessionIndexError("unavailable");
+      if (
+        text.length > 512 ||
+        !Number.isInteger(limit) ||
+        limit < 1 ||
+        limit > 120 ||
+        !Number.isSafeInteger(maxBytes) ||
+        maxBytes < 0
+      )
+        throw new SessionIndexError("unavailable");
       const query = termsQuery(text);
       if (query === "") return { selection: [], matches: 0, overBound: 0 };
       active = true;
@@ -304,7 +387,10 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
           if (candidate === undefined || matched.has(hit.source)) continue;
           matched.add(hit.source);
           if (selection.length >= limit) continue;
-          if (candidate.seen.size > bound - bytes) { overBound += 1; continue; }
+          if (candidate.seen.size > bound - bytes) {
+            overBound += 1;
+            continue;
+          }
           bytes += candidate.seen.size;
           selection.push(candidate.session);
         }
@@ -321,7 +407,11 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
       if (closed) return;
       rollback();
       closed = true;
-      try { db.close(); } catch (error) { throw failure(error); }
+      try {
+        db.close();
+      } catch (error) {
+        throw failure(error);
+      }
     },
   };
 }

@@ -1,12 +1,29 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MATERIAL_SESSIONS, type Receipt } from "../contract.ts";
 import type { SessionRef } from "./adapters/index.ts";
 import { materialSink, type OutputSink } from "./output.ts";
 import { PREFLIGHT_DETECTORS } from "./preflight.ts";
-import { PREPARATION_SCHEMA, PrepareInputSchema, digests, observe, prepare, type PrepareDeps, type PrepareInput } from "./prepare.ts";
+import {
+  PREPARATION_SCHEMA,
+  PrepareInputSchema,
+  digests,
+  observe,
+  prepare,
+  type PrepareDeps,
+  type PrepareInput,
+} from "./prepare.ts";
 import { sessionIndex, type SessionIndex } from "./session-index.ts";
 
 function fixture() {
@@ -33,10 +50,17 @@ function fixture() {
     }
   };
   return {
-    cache, sessions, reads, deps, output, replace,
+    cache,
+    sessions,
+    reads,
+    deps,
+    output,
+    replace,
     add: (name: string, text: string, live = false) => {
       const session: SessionRef = {
-        harness: "omp", sourceId: name, selector: `omp/${name}`,
+        harness: "omp",
+        sourceId: name,
+        selector: `omp/${name}`,
         primaryPath: join(root, `${name}.jsonl`),
       };
       replace(session, text, live);
@@ -47,7 +71,8 @@ function fixture() {
       reads.length = 0;
       const material = join(root, `material-${String(serial++)}`);
       const receipt = await prepare(
-        PrepareInputSchema.parse({ machineId: "content-test", ...input }), output,
+        PrepareInputSchema.parse({ machineId: "content-test", ...input }),
+        output,
         { ...deps, material: materialSink(material), ...overrides },
       );
       return { receipt, material, reads: [...reads] };
@@ -56,7 +81,8 @@ function fixture() {
   };
 }
 
-const selected = (receipt: Receipt) => receipt.material?.sessions.map((session) => session.selector) ?? [];
+const selected = (receipt: Receipt) =>
+  receipt.material?.sessions.map((session) => session.selector) ?? [];
 
 test("content selection seals exact bounded matches, reuses readings, and replaces changed coverage", async () => {
   const f = fixture();
@@ -68,13 +94,22 @@ test("content selection seals exact bounded matches, reuses readings, and replac
     const first = await f.run({ query });
     expect(first.receipt.closure).toBe("completed");
     expect(first.reads).toEqual(["omp/alpha", "omp/beta", "omp/gamma"]);
-    expect(first.receipt.retrieval).toMatchObject({ status: "complete", eligible: 3, indexed: 3, reused: 0, matches: 2, overBound: 0 });
+    expect(first.receipt.retrieval).toMatchObject({
+      status: "complete",
+      eligible: 3,
+      indexed: 3,
+      reused: 0,
+      matches: 2,
+      overBound: 0,
+    });
     expect(selected(first.receipt)).toHaveLength(1);
     const match = first.receipt.material?.sessions[0];
     if (match === undefined) throw new Error("missing selected material");
     const body = readFileSync(join(first.material, MATERIAL_SESSIONS, match.file));
     expect(body.toString()).toContain("orchid");
-    expect(`sha256:${new Bun.CryptoHasher("sha256").update(body).digest("hex")}`).toBe(match.sourceDigest);
+    expect(`sha256:${new Bun.CryptoHasher("sha256").update(body).digest("hex")}`).toBe(
+      match.sourceDigest,
+    );
     const ordinary = await f.run({ selectors: [match.selector] });
     expect(ordinary.receipt.preparation?.id).toBe(first.receipt.preparation?.id);
     expect(ordinary.receipt.retrieval).toBeUndefined();
@@ -87,14 +122,21 @@ test("content selection seals exact bounded matches, reuses readings, and replac
     const changed = await f.run({ query });
     expect(changed.reads).toEqual([alpha.selector]);
     expect(selected(changed.receipt)).toEqual([beta.selector]);
-    expect(changed.receipt.retrieval).toMatchObject({ indexed: 1, reused: 2, matches: 1, overBound: 0 });
+    expect(changed.receipt.retrieval).toMatchObject({
+      indexed: 1,
+      reused: 2,
+      matches: 1,
+      overBound: 0,
+    });
     const absent = await f.run({ query: { text: "absentword", limit: 24 } });
     expect(absent.receipt.closure).toBe("skipped");
     expect(absent.receipt.retrieval?.matches).toBe(0);
     expect(absent.receipt.preparation).toBeUndefined();
     expect(absent.receipt.material).toBeUndefined();
     expect(absent.reads).toEqual([]);
-  } finally { f.drop(); }
+  } finally {
+    f.drop();
+  }
 });
 
 test("first-sight content indexing excludes live and own logs before reads, with only own logs opt-in", async () => {
@@ -113,7 +155,9 @@ test("first-sight content indexing excludes live and own logs before reads, with
     expect(opted.reads).toEqual([own.selector]);
     expect(selected(opted.receipt).sort()).toEqual([own.selector, settled.selector].sort());
     expect(opted.receipt.counts).toMatchObject({ live: 1, agent: 0 });
-  } finally { f.drop(); }
+  } finally {
+    f.drop();
+  }
 });
 
 test("a source changed during indexing refuses coverage and is read afresh after settling", async () => {
@@ -121,22 +165,32 @@ test("a source changed during indexing refuses coverage and is read afresh after
   try {
     const session = f.add("changing", "orchid");
     const query = { text: "orchid", limit: 24 };
-    const changed = await f.run({ query }, {
-      digests: async (ref, sink, scan) => {
-        const reading = await f.deps.digests(ref, sink, scan);
-        f.replace(ref, "orchid has changed while indexed", true);
-        return reading;
+    const changed = await f.run(
+      { query },
+      {
+        digests: async (ref, sink, scan) => {
+          const reading = await f.deps.digests(ref, sink, scan);
+          f.replace(ref, "orchid has changed while indexed", true);
+          return reading;
+        },
       },
-    });
+    );
     expect(changed.receipt.closure).toBe("failed");
-    expect(changed.receipt.retrieval).toMatchObject({ status: "unavailable", matches: null, indexed: 0, unavailable: 1 });
+    expect(changed.receipt.retrieval).toMatchObject({
+      status: "unavailable",
+      matches: null,
+      indexed: 0,
+      unavailable: 1,
+    });
     expect(changed.receipt.material).toBeUndefined();
     f.replace(session, "orchid settled again with new content");
     const next = await f.run({ query });
     expect(next.receipt.closure).toBe("completed");
     expect(next.reads).toEqual([session.selector]);
     expect(next.receipt.retrieval).toMatchObject({ indexed: 1, matches: 1 });
-  } finally { f.drop(); }
+  } finally {
+    f.drop();
+  }
 });
 
 test("query selection refuses disappearance while sealing rather than shrinking the scope", async () => {
@@ -147,45 +201,56 @@ test("query selection refuses disappearance while sealing rather than shrinking 
     await f.run({ query });
     const material = materialSink(join(f.cache, "unsealed"));
     let removed = false;
-    const result = await f.run({ query }, {
-      material: {
-        ...material,
-        session: async (file) => {
-          if (!removed) {
-            rmSync(session.primaryPath);
-            removed = true;
-          }
-          return await material.session(file);
+    const result = await f.run(
+      { query },
+      {
+        material: {
+          ...material,
+          session: async (file) => {
+            if (!removed) {
+              rmSync(session.primaryPath);
+              removed = true;
+            }
+            return await material.session(file);
+          },
         },
       },
-    });
+    );
     expect(result.receipt.closure).toBe("failed");
     expect(result.receipt.retrieval).toMatchObject({ status: "unavailable", matches: 1 });
     expect(result.receipt.material).toBeUndefined();
     expect(result.receipt.preparation).toBeUndefined();
     expect(result.reads).toEqual([]);
-  } finally { f.drop(); }
+  } finally {
+    f.drop();
+  }
 });
 
-test("building content coverage from an existing reading verifies its digest without reopening raw logs", async () => {
-  const f = fixture();
-  try {
-    f.add("cached", "orchid");
-    await f.run();
-    const kept = readdirSync(f.cache).find((name) => name.endsWith(".records"));
-    if (kept === undefined) throw new Error("missing kept reading");
-    const path = join(f.cache, kept);
-    writeFileSync(path, "x".repeat(statSync(path).size));
-    const rejected = await f.run({ query: { text: "orchid", limit: 24 } });
-    expect(rejected.reads).toEqual([]);
-    expect(rejected.receipt.closure).toBe("failed");
-    expect(rejected.receipt.retrieval).toMatchObject({ status: "unavailable", matches: null });
-    expect(rejected.receipt.material).toBeUndefined();
-    const next = await f.run({ query: { text: "orchid", limit: 24 } });
-    expect(next.reads).toEqual(["omp/cached"]);
-    expect(selected(next.receipt)).toEqual(["omp/cached"]);
-  } finally { f.drop(); }
-});
+test.each(["terminated", "unterminated"] as const)(
+  "corrupt cached records are refused and replaced on the next query (%s)",
+  async (ending) => {
+    const f = fixture();
+    try {
+      f.add("cached", "orchid");
+      await f.run();
+      const kept = readdirSync(f.cache).find((name) => name.endsWith(".records"));
+      if (kept === undefined) throw new Error("missing kept reading");
+      const path = join(f.cache, kept);
+      const suffix = ending === "terminated" ? "\n" : "";
+      writeFileSync(path, "x".repeat(statSync(path).size - suffix.length) + suffix);
+      const rejected = await f.run({ query: { text: "orchid", limit: 24 } });
+      expect(rejected.reads).toEqual([]);
+      expect(rejected.receipt.closure).toBe("failed");
+      expect(rejected.receipt.retrieval).toMatchObject({ status: "unavailable", matches: null });
+      expect(rejected.receipt.material).toBeUndefined();
+      const next = await f.run({ query: { text: "orchid", limit: 24 } });
+      expect(next.reads).toEqual(["omp/cached"]);
+      expect(selected(next.receipt)).toEqual(["omp/cached"]);
+    } finally {
+      f.drop();
+    }
+  },
+);
 
 test("content queries always index redacted readings while material retains requested preflight", async () => {
   const f = fixture();
@@ -203,12 +268,16 @@ test("content queries always index redacted readings while material retains requ
     expect(raw.receipt.closure).toBe("completed");
     const entry = raw.receipt.material?.sessions[0];
     if (entry === undefined) throw new Error("missing raw material");
-    expect(readFileSync(join(raw.material, MATERIAL_SESSIONS, entry.file), "utf8")).toContain(secret);
+    expect(readFileSync(join(raw.material, MATERIAL_SESSIONS, entry.file), "utf8")).toContain(
+      secret,
+    );
     const redacted = await f.run({ query: { text: "orchid", limit: 24 } });
     expect(redacted.reads).toEqual(["omp/secret"]);
     expect(redacted.receipt.preflight?.redactions).toBe(1);
     expect(redacted.receipt.preparation?.id).not.toBe(raw.receipt.preparation?.id);
-  } finally { f.drop(); }
+  } finally {
+    f.drop();
+  }
 });
 
 test("content selection requires managed storage and refuses mixed selectors without reading", async () => {
@@ -227,7 +296,9 @@ test("content selection requires managed storage and refuses mixed selectors wit
     const ordinary = await f.run({ selectors: ["ordinary"] }, { cacheDir: "" });
     expect(selected(ordinary.receipt)).toEqual(["omp/ordinary"]);
     expect(ordinary.receipt.retrieval).toBeUndefined();
-  } finally { f.drop(); }
+  } finally {
+    f.drop();
+  }
 });
 
 test("a busy content builder refuses a query but cannot block ordinary selector preparation", async () => {
@@ -238,15 +309,21 @@ test("a busy content builder refuses a query but cannot block ordinary selector 
   try {
     const session = f.add("contended", "orchid");
     mkdirSync(f.cache, { recursive: true });
-    index = await sessionIndex(f.cache, { schema: PREPARATION_SCHEMA, detectors: PREFLIGHT_DETECTORS, mode: "redact" });
+    index = await sessionIndex(f.cache, {
+      schema: PREPARATION_SCHEMA,
+      detectors: PREFLIGHT_DETECTORS,
+      mode: "redact",
+    });
     const entered = Promise.withResolvers<void>();
     const gate = Promise.withResolvers<void>();
     unlock = () => gate.resolve();
-    held = index.build({ session, seen: await observe(session) }, async () => {
-      entered.resolve();
-      await gate.promise;
-      throw new Error("release test builder");
-    }).catch(() => undefined);
+    held = index
+      .build({ session, seen: await observe(session) }, async () => {
+        entered.resolve();
+        await gate.promise;
+        throw new Error("release test builder");
+      })
+      .catch(() => undefined);
     await entered.promise;
     const busy = await f.run({ query: { text: "orchid", limit: 24 } });
     expect(busy.receipt.closure).toBe("failed");

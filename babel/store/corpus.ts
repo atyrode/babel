@@ -173,7 +173,6 @@ export async function ensureTerms(store: CorpusStore): Promise<number> {
   return await rebuildTerms(store);
 }
 
-
 /** One record the keyword index matched, and bm25's score for it; lower is better. */
 interface TermHit {
   readonly id: string;
