@@ -16,6 +16,7 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
+import { HostCallError } from "@manifold/plugin-kit/errors";
 import {
   ACTIONS,
   MACHINE_OPERATIONS,
@@ -737,6 +738,14 @@ test("stop cancels the job, closes the run and releases what it reserved", async
     granted_at: stamp(NOW - HOUR),
     expires_at: stamp(NOW + HOUR),
   });
+  await insert(db, "run_progress", {
+    run_id: "run_live",
+    job_id: "job_live",
+    stage: "reading",
+    message: "Still reading material",
+    since: stamp(NOW - HOUR),
+    updated_at: stamp(NOW),
+  });
 
   const answer = await halt(
     "run_live",
@@ -755,6 +764,7 @@ test("stop cancels the job, closes the run and releases what it reserved", async
   ]);
   const run = await store.run("run_live");
   expect(run.run).toMatchObject({ state: "stopped", freshness: "ended" });
+  expect(run.run?.progress).toBeNull();
   expect(run.receipt).toMatchObject({
     closure: "stopped",
     stoppedBy: "operator",
@@ -1638,6 +1648,7 @@ test("an unconfirmed Code cancellation keeps the parent pollable and the reserva
     await harness.db.query(`SELECT finished_at, actual_cost FROM claims WHERE id = 'asg_stage'`),
   ).toEqual([{ finished_at: null, actual_cost: null }]);
   expect((await coordinator(harness.store, () => NOW, 16).open(NOW)).byMachine[MACHINE]).toBe(1);
+  expect((await harness.store.run("run_stage")).run?.progress).toBeNull();
 });
 
 test("multiple brief ids carry record-scoped operator steering into the prompt and receipt intent", async () => {
@@ -1810,3 +1821,101 @@ test("a definite pre-dispatch refusal closes an analysis parent instead of claim
   ]);
   expect((await harness.store.run("run_stage")).run?.progress?.unheard).not.toBe(true);
 });
+
+test("a native titling admission refusal leaves no retained material or parent to poll", async () => {
+  await route();
+  await nameless("refused");
+  fleet.execute = () => {
+    throw new HostCallError("jobs.execute", "installation_changed");
+  };
+  fleet.status = () => {
+    throw new HostCallError("jobs.status", "job_not_started");
+  };
+  expect(await machinery.inferTitles(fleet, code, "cyc_title")).toHaveProperty("refused");
+  expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+  expect(fleet.executed).toEqual([]);
+});
+
+test("an unresolved posting cannot be stopped or reported as closed on a later refusal", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  code.runSession = async () =>
+    refusedByCode(ENGINE_REFUSALS.unconfirmed, "response transport interrupted");
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  expect(
+    await halt("run_stage", { operationId: OPERATIONS.prepare, jobId: "job_stage_material" }),
+  ).toHaveProperty("refused");
+  expect(fleet.cancelled).toEqual([]);
+  await harness.db.run(
+    `UPDATE policies SET payload = json_set(payload, '$.enabled', json('false'))`,
+  );
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+  expect(await harness.db.query(`SELECT closure FROM runs WHERE id = 'run_stage'`)).toEqual([
+    { closure: null },
+  ]);
+  expect((await harness.store.run("run_stage")).run?.progress?.unheard).toBe(true);
+  expect(await harness.db.query(`SELECT finished_at FROM claims WHERE id = 'asg_stage'`)).toEqual([
+    { finished_at: null },
+  ]);
+});
+
+test.each(["posting", "bound"] as const)(
+  "Stop's preparing snapshot cannot close a parent that becomes %s while cancellation is awaited",
+  async (boundary) => {
+    const { start, analysis } = await stageLaunch();
+    await start();
+    await sealStage();
+    const cancelling = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    fleet.cancel = async () => {
+      cancelling.resolve();
+      await cancelled.promise;
+    };
+    const posting = Promise.withResolvers<void>();
+    const posted = Promise.withResolvers<void>();
+    code.runSession = async () => {
+      posting.resolve();
+      await posted.promise;
+      return stageJob();
+    };
+    const stopping = halt("run_stage", {
+      operationId: OPERATIONS.prepare,
+      jobId: "job_stage_material",
+    });
+    await cancelling.promise;
+    const continuation = machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+    await posting.promise;
+    try {
+      if (boundary === "bound") {
+        posted.resolve();
+        await continuation;
+      }
+      cancelled.resolve();
+      expect(await stopping).toHaveProperty("refused");
+      expect(await harness.db.query(`SELECT closure FROM runs WHERE id = 'run_stage'`)).toEqual([
+        { closure: null },
+      ]);
+    } finally {
+      cancelled.resolve();
+      posted.resolve();
+      await stopping;
+      await continuation;
+    }
+    expect(code.cancelled).toEqual([]);
+    expect(
+      await harness.db.query(`SELECT job_id, closure FROM runs WHERE id = 'run_stage'`),
+    ).toEqual([{ job_id: "job_stage_code", closure: null }]);
+    const governor = coordinator(harness.store, () => NOW, 16);
+    expect(
+      await governor.finish({
+        ...analysis.claim,
+        unpostedJobId: "job_stage_code",
+        outcome: "failed",
+        cost: 0,
+        now: NOW + 2 * HOUR,
+      }),
+    ).toHaveProperty("outcome", "refused");
+    expect((await governor.open(NOW)).byMachine[MACHINE]).toBe(1);
+  },
+);

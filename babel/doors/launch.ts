@@ -491,9 +491,8 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
   }
 
   /**
-   * One job request, posted and recorded. The run row is written AFTER the engine accepted the
-   * job and never before: a row for a job that was refused is a run an operator would wait for
-   * and the loop would poll for ever.
+   * One native request, retained before execute for conductor work so a lost response remains
+   * pollable. Only a typed pre-admission refusal plus an authoritative absent job releases it.
    *
    * A refusal here is the HUB's, so it carries the hub's word as well as the sentence: this is
    * the one place a posting's two accounts of itself are still together, and a caller reading
@@ -543,10 +542,32 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     try {
       await jobs.execute(launch);
     } catch (error) {
+      const refused = `${launch.machineId} refused the job: ${message(error)}`;
+      let absent = false;
+      if (run.authorityKind === "conductor" && nativeAdmissionRefusal(error)) {
+        try {
+          await jobs.status({
+            kind: "job",
+            machineId: launch.machineId,
+            operationId: launch.operationId,
+            jobId: launch.jobId,
+          });
+        } catch (statusError) {
+          absent = nativeFailureToken(statusError, "jobs.status") === "job_not_started";
+        }
+      }
+      if (run.authorityKind === "conductor" && absent) {
+        await store.db.run(
+          `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ?
+           WHERE id = ? AND job_id = ? AND closure IS NULL`,
+          [at, JSON.stringify({ closure: "failed", reason: refused }), run.runId, launch.jobId],
+        );
+        store.touch();
+      }
       return {
-        refused: `${launch.machineId} refused the job: ${message(error)}`,
+        refused,
         code: hubRefusal(error),
-        ...(run.authorityKind === "conductor" ? { pending: true } : {}),
+        ...(run.authorityKind === "conductor" && !absent ? { pending: true } : {}),
       };
     }
     try {
@@ -1410,7 +1431,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     reason: string,
     spent = false,
     posting = false,
-  ): Promise<Posted> {
+  ): Promise<readonly Posted[]> {
     const document = documentOf(run.preparation)["analysis"];
     const parsed = AnalysisWorkSchema.safeParse(document);
     const claim = AnalysisClaimSchema.safeParse(
@@ -1446,9 +1467,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       );
     }
     const closed = await store.db.batch(statements);
-    if ((closed[0]?.length ?? 0) > 0)
-      await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
-    if (claim.success && (closed[0]?.length ?? 0) > 0) {
+    if ((closed[0]?.length ?? 0) === 0) return [];
+    await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+    if (claim.success) {
       if (spent) await deps.coordinator.abandon({ ...claim.data, reason, now: deps.now() });
       else
         await deps.coordinator.finish({
@@ -1459,7 +1480,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         });
     }
     store.touch();
-    return { runId: run.id, refused: reason };
+    return [{ runId: run.id, refused: reason }];
   }
 
   /** A continuation spends only while the same live grant and route still authorize it. */
@@ -1545,7 +1566,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             run.prepare_closure === "completed"
               ? `the preparation ${run.prepare_job_id ?? ""} sealed no material this run could read`
               : `the preparation ${run.prepare_job_id ?? ""} closed as ${run.prepare_closure ?? ""}`;
-          posted.push(await close(run, at, reason));
+          posted.push(...(await close(run, at, reason)));
           continue;
         }
         const report = documentOf(run.profile);
@@ -1555,7 +1576,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             ? undefined
             : AnalysisWorkSchema.safeParse(intent["analysis"]);
         if (parsed !== undefined && !parsed.success) {
-          posted.push(await close(run, at, "invalid persisted analysis authority"));
+          posted.push(...(await close(run, at, "invalid persisted analysis authority")));
           continue;
         }
         const analysis = parsed?.data;
@@ -1564,13 +1585,13 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           material.sessions.some((entry) => !analysis.selectors.includes(entry.selector))
         ) {
           posted.push(
-            await close(run, at, "the sealed material exceeds the exact analysis selection"),
+            ...(await close(run, at, "the sealed material exceeds the exact analysis selection")),
           );
           continue;
         }
         const composed = await composeFor(run, material);
         if ("refused" in composed) {
-          posted.push(await close(run, at, composed.refused));
+          posted.push(...(await close(run, at, composed.refused)));
           continue;
         }
         /*
@@ -1595,7 +1616,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             `${CODE_PLUGIN_ID}.runSession takes ${String(PROMPT_LIMIT)}. The analysis contract ` +
             `and the stage's schema are most of it, so what moves is Code's bound or the ` +
             `contract itself — not this selection.`;
-          posted.push(await close(run, at, reason));
+          posted.push(...(await close(run, at, reason)));
           continue;
         }
         const profile = {
@@ -1623,7 +1644,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
                 recipes,
               );
           if (refusal !== null) {
-            posted.push(await close(run, at, refusal));
+            posted.push(...(await close(run, at, refusal)));
             continue;
           }
         }
@@ -1660,7 +1681,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             // Publish the uncertain interval in Watch's existing progress projection in
             // the same transaction as the marker, including a process crash before reply.
             sql: `INSERT INTO run_progress(run_id, job_id, stage, message, since, updated_at)
-              SELECT id, '', 'posting unconfirmed', 'Awaiting the Code posting response; the reservation remains occupied.', ?, ''
+              SELECT id, '', 'posting unconfirmed', 'Code posting is unresolved; the job may be live. Its reservation remains held, and Stop cannot release it.', ?, ''
                 FROM runs WHERE id = ? AND closure IS NULL AND job_id IS NULL
                   AND json_extract(payload, '$.posting') = 1
               ON CONFLICT(run_id) DO NOTHING`,
@@ -1685,7 +1706,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           // A REFUSAL HERE IS FINAL, not a thing to retry on every wake for ever: the material
           // is sealed and immutable, the profile was named at the press, and nothing a later
           // wake could do changes what Code just said. The run closes carrying the sentence.
-          posted.push(await close(run, at, answered.refused, false, true));
+          posted.push(...(await close(run, at, answered.refused, false, true)));
           continue;
         }
         // The run's own document is the only thing that reaches the settlement — the prompt is
@@ -1750,18 +1771,20 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
               [JSON.stringify({ closure: null, reason }), answered.value.jobId, run.id],
             );
             if (retained.changes === 0) throw new Error(reason);
+            await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+            store.touch();
             posted.push({ runId: run.id, refused: reason });
             continue;
           }
           unconfirmedJob = null;
           posted.push(
-            await close(
+            ...(await close(
               run,
               at,
               `the newly posted session was cancelled: ${message(error)}`,
               true,
               true,
-            ),
+            )),
           );
           continue;
         }
@@ -1793,7 +1816,8 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           ]);
           store.touch();
           posted.push({ runId: run.id, refused: reason });
-        } else posted.push(await close(run, at, message(error), modelRequested, modelRequested));
+        } else
+          posted.push(...(await close(run, at, message(error), modelRequested, modelRequested)));
       }
     }
     return posted;
@@ -1930,8 +1954,10 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         kind: string;
         closure: string | null;
         container_id: string | null;
+        posting: number | bigint | null;
       }>(
-        `SELECT job_id, prepare_job_id, machine_id, kind, closure, container_id
+        `SELECT job_id, prepare_job_id, machine_id, kind, closure, container_id,
+                json_extract(payload, '$.posting') AS posting
            FROM runs WHERE id = ?`,
         [runId],
       );
@@ -1950,6 +1976,8 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         wake free to post the session AFTER the operator pressed stop.
       */
       const preparing = jobId === "" && prepareJobId !== "";
+      const postingRefusal = `${runId} has an unresolved Code posting; its job may be live, so Stop cannot safely release the reservation`;
+      if (jobId === "" && Number(run.posting) === 1) return { refused: postingRefusal };
       if (machineId === "" || (jobId === "" && !preparing)) {
         return { refused: `${runId} has no job on a machine to stop` };
       }
@@ -2003,13 +2031,14 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       // interface disagreeing with the act he just performed. Closing it also releases what it
       // reserved, which is why the claim is settled in the same breath.
       const at = new Date(deps.now()).toISOString();
-      await store.db.run(
+      const closed = await store.db.run(
         // `AND closure IS NULL` for the same reason the read above refuses a closed run: two
         // stops, or a stop racing the run's own ending, write the first closure and not the
         // second. For a PREPARING run this write is the whole stop: it is the row the posting
         // wake reads, so once it is closed no session can be posted for it.
         `UPDATE runs SET closure = 'stopped', finished_at = ?, payload = ?
-          WHERE id = ? AND closure IS NULL`,
+          WHERE id = ? AND closure IS NULL
+            AND (NOT ? OR (job_id IS NULL AND COALESCE(json_extract(payload, '$.posting'), 0) = 0))`,
         [
           at,
           JSON.stringify({
@@ -2019,8 +2048,17 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
             stoppedAt: at,
           }),
           runId,
+          preparing ? 1 : 0,
         ],
       );
+      if (closed.changes === 0) {
+        return {
+          refused: preparing
+            ? postingRefusal
+            : `${runId} changed while cancellation was awaited; no closure was applied`,
+        };
+      }
+      await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [runId]);
       const open = await store.db.query<{ id: string; run_id: string; fence: number }>(
         `SELECT id, run_id, fence FROM claims WHERE job_id = ? AND finished_at IS NULL`,
         [jobId],
@@ -2116,4 +2154,41 @@ export function hubRefusal(error: unknown): string {
   const typed: unknown = Reflect.get(error, "refusal");
   if (typeof typed === "string" && typed !== "") return typed;
   return error instanceof HostCallError ? error.detail : error.message;
+}
+
+function nativeFailureToken(
+  error: unknown,
+  method: "jobs.execute" | "jobs.status",
+): string | undefined {
+  if (error instanceof HostCallError) return error.method === method ? error.detail : undefined;
+  if (
+    error instanceof Error &&
+    error.name === "ServiceError" &&
+    Reflect.get(error, "code") === "forbidden"
+  )
+    return error.message;
+  return undefined;
+}
+
+/**
+ * Pinned hub JobService.build rejects these before reservation. A typed hub error alone is not
+ * enough: execute can also throw after commit while notifying or dispatching. A status probe
+ * after an arbitrary transport failure cannot prove the request was never admitted.
+ */
+function nativeAdmissionRefusal(error: unknown): boolean {
+  switch (nativeFailureToken(error, "jobs.execute")) {
+    case "unknown_operation":
+    case "installation_changed":
+    case "resource_bindings_changed":
+    case "invalid_revisioned_input":
+    case "invalid_input":
+    case "invalid_limits":
+    case "limit_exceeded":
+    case "output_parent_changed":
+    case "duplicate_output":
+    case "invalid_output_binding":
+      return true;
+    default:
+      return false;
+  }
 }

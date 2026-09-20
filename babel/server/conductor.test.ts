@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
+import { HostCallError } from "@manifold/plugin-kit/errors";
 import {
   BABEL_PLUGIN_ID,
   CONDUCTOR_CYCLE_KEY,
@@ -6049,4 +6050,126 @@ test("a retained analysis preparation remains occupied through repeated transpor
     await db.query(`SELECT finished_at FROM claims WHERE id = ?`, [requested.claimId]),
   ).toEqual([{ finished_at: null }]);
   expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
+});
+
+test.each(["hardened", "in-realm"] as const)(
+  "a typed native admission refusal releases failed/0 and retries only after cooldown: %s",
+  async (loader) => {
+    const { db, coordinator, fleet, loop } = await weightedCycle("challenge");
+    const execute = fleet.execute.bind(fleet);
+    const status = fleet.status.bind(fleet);
+    const refusal = (method: string, token: string) =>
+      loader === "hardened"
+        ? new HostCallError(method, token)
+        : Object.assign(new Error(token), { name: "ServiceError", code: "forbidden" });
+    fleet.execute = () => {
+      throw refusal("jobs.execute", "installation_changed");
+    };
+    fleet.status = () => {
+      throw refusal("jobs.status", "job_not_started");
+    };
+    const first = await loop.tick();
+    expect(first.settled).toMatchObject([{ outcome: "failed", cost: 0, refused: null }]);
+    expect(fleet.launched).toEqual([]);
+    expect(await db.query(`SELECT closure FROM runs ORDER BY id`)).toEqual([
+      { closure: "failed" },
+      { closure: "failed" },
+    ]);
+    expect(await db.query(`SELECT outcome, actual_cost FROM claims`)).toEqual([
+      { outcome: "failed", actual_cost: 0 },
+    ]);
+    expect((await coordinator.open(clock)).total).toBe(0);
+    expect((await coordinator.spend(clock)).total).toBe(0);
+    expect((await loop.tick()).requested).toEqual([]);
+    expect(await db.query(`SELECT COUNT(*) AS n FROM claims`)).toEqual([{ n: 1n }]);
+    clock += POLICY.cooldownSeconds * 1000 + 1;
+    fleet.execute = execute;
+    fleet.status = status;
+    const retry = await loop.tick();
+    expect(retry.requested).toHaveLength(1);
+    expect(retry.requested[0]!.claimId).not.toBe(first.settled[0]!.claimId);
+    expect((await coordinator.open(clock)).total).toBe(1);
+  },
+);
+
+test.each([
+  "transport-absent",
+  "untyped-refusal-absent",
+  "refusal-unreadable",
+  "host-error-absent",
+  "refusal-known",
+] as const)(
+  "native analysis uncertainty stays reserved across later cycles: %s",
+  async (boundary) => {
+    const { db, coordinator, fleet, loop } = await weightedCycle("challenge");
+    fleet.execute = (request) => {
+      if (boundary === "refusal-known")
+        fleet.running(request.jobId, request.machineId, request.operationId);
+      if (boundary === "transport-absent") throw new Error("response transport interrupted");
+      if (boundary === "untyped-refusal-absent") throw new Error("installation_changed");
+      throw new HostCallError(
+        "jobs.execute",
+        boundary === "host-error-absent" ? "dispatch unavailable" : "installation_changed",
+      );
+    };
+    const jobs: JobsSlice = fleet;
+    if (boundary !== "refusal-known") {
+      jobs.status = () => {
+        if (boundary === "refusal-unreadable") throw new Error("status transport interrupted");
+        throw new HostCallError("jobs.status", "job_not_started");
+      };
+    }
+    const first = await loop.tick();
+    expect(first.settled).toEqual([]);
+    await loop.tick();
+    await loop.tick();
+    expect(await db.query(`SELECT closure FROM runs ORDER BY id`)).toEqual([
+      { closure: null },
+      { closure: null },
+    ]);
+    expect(await db.query(`SELECT outcome, actual_cost FROM claims`)).toEqual([
+      { outcome: null, actual_cost: null },
+    ]);
+    expect((await coordinator.open(clock)).total).toBe(1);
+  },
+);
+
+test("retained analysis claims do not hide a real orphan behind the reaper work bound", async () => {
+  const { db, loop } = await weightedCycle("challenge");
+  await db.run(`UPDATE policies SET payload = json_set(payload, '$.activityWeights', json(?))`, [
+    JSON.stringify({ review: 0, explore: 0, challenge: 0, synthesize: 0 }),
+  ]);
+  const old = new Date(clock - 48 * 60 * 60 * 1000).toISOString();
+  for (let index = 0; index < 128; index += 1) {
+    const id = `retained_${index}`;
+    await db.run(
+      `INSERT INTO claims(id, record_id, role, lane, policy_version, run_id, job_id, fence,
+                          reserved_cost, granted_at, expires_at)
+       VALUES (?, 'hyp_00000001', 'analysis:challenge', 'exploration', ?, 'cyc_old', ?, 1, 0.05, ?, ?)`,
+      [id, POLICY.version, id, old, old],
+    );
+    await db.run(
+      `INSERT INTO runs(id, kind, machine_id, job_id, started_at, records, unreadable, payload)
+       VALUES (?, ?, ?, ?, ?, 0, 2, '{}')`,
+      [id, OPERATIONS.prepare, MACHINE, id, old],
+    );
+  }
+  const newer = new Date(clock - 24 * 60 * 60 * 1000).toISOString();
+  await db.run(
+    `INSERT INTO claims(id, record_id, role, lane, policy_version, run_id, fence,
+                        reserved_cost, granted_at, expires_at)
+     VALUES ('orphan', 'hyp_00000001', 'reception', 'coverage', ?, 'cyc_old', 1, 0.05, ?, ?)`,
+    [POLICY.version, newer, newer],
+  );
+  const report = await loop.tick();
+  expect(report.settled).toMatchObject([
+    { claimId: "orphan", outcome: "abandoned", cost: 0.05, refused: null },
+  ]);
+  expect(await db.query(`SELECT COUNT(*) AS n FROM claims WHERE finished_at IS NULL`)).toEqual([
+    { n: 128n },
+  ]);
+  expect(await db.query(`SELECT outcome, actual_cost FROM claims WHERE id = 'orphan'`)).toEqual([
+    { outcome: "abandoned", actual_cost: 0.05 },
+  ]);
+  expect(report.notes.some((note) => note.includes("dead claims were released"))).toBe(false);
 });

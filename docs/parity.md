@@ -74,7 +74,10 @@ assumed from that row alone.
   An unconfirmed Code posting stays visible and reserved rather than being bought twice:
   atyrode/code at c6a9c264bfcb37934b5814b0943989fa78f7dd05,
   [plugins/atyrode.code/session.ts:209–248](https://github.com/atyrode/code/blob/c6a9c264bfcb37934b5814b0943989fa78f7dd05/plugins/atyrode.code/session.ts#L209-L248),
-  can refuse after posting and retains sessions by the returned job id. Issue:
+  can refuse after posting and retains sessions by the returned job id. Without that id, Babel
+  cannot reconcile the Code job; Stop and lease expiry cannot safely free its slot. A permanently
+  lost response therefore retains the reservation indefinitely, not until an automatic recovery
+  that this API does not provide. Issue:
   [#332](https://github.com/atyrode/babel/issues/332).
 - **A drawn review dispatches, and no live one has ever run.** `dispatchReviews`
   (`server/conductor.ts`) draws an assignment from the coordinator, claims it under a fence,

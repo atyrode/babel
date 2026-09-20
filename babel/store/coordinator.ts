@@ -881,6 +881,7 @@ interface ClaimFacts {
   readonly active: number;
   readonly setbacks: number;
   readonly completed: number;
+  readonly latest: number | null;
 }
 
 interface Candidate {
@@ -1455,7 +1456,8 @@ export function coordinator(
               SUM(CASE WHEN COALESCE(c.outcome, '') <> 'abandoned' THEN 1 ELSE 0 END) AS total,
               SUM(CASE WHEN c.finished_at IS NULL AND (c.expires_at > ? OR ${RUNNING_CLAIM}) THEN 1 ELSE 0 END) AS active,
               SUM(CASE WHEN COALESCE(c.outcome, '') IN ('skipped','failed') THEN 1 ELSE 0 END) AS setbacks,
-              SUM(CASE WHEN COALESCE(c.outcome, '') = 'completed' THEN 1 ELSE 0 END) AS completed
+              SUM(CASE WHEN COALESCE(c.outcome, '') = 'completed' THEN 1 ELSE 0 END) AS completed,
+              MAX(COALESCE(c.finished_at, c.granted_at)) AS latest
          FROM claims c LEFT JOIN records r ON r.id = c.record_id
         GROUP BY COALESCE(r.root_id, c.record_id), c.role`,
       "root, role",
@@ -1468,12 +1470,13 @@ export function coordinator(
         active: count(row["active"]),
         setbacks: count(row["setbacks"]),
         completed: count(row["completed"]),
+        latest: maybeAt(row["latest"]),
       });
     }
     return out;
   }
 
-  const NO_CLAIMS: ClaimFacts = { total: 0, active: 0, setbacks: 0, completed: 0 };
+  const NO_CLAIMS: ClaimFacts = { total: 0, active: 0, setbacks: 0, completed: 0, latest: null };
   const NO_REVIEWS: RoleFacts = {
     reviews: 0,
     lastReviewed: null,
@@ -2005,8 +2008,12 @@ export function coordinator(
   async function buildAnalysis(
     policy: Policy,
     moment: number,
+    target?: { readonly id: string; readonly stage: Stage },
   ): Promise<{ candidates: AnalysisCandidate[]; gaps: Gap[] }> {
-    const stages = STAGES.filter((stage) => policy.activityWeights[stage] > 0);
+    const stages = STAGES.filter(
+      (stage) =>
+        policy.activityWeights[stage] > 0 && (target === undefined || target.stage === stage),
+    );
     const route = policy.review;
     if (stages.length === 0 || route === undefined) return { candidates: [], gaps: [] };
     const [records, filed, stance, status, ruling, claims, reviews] = await Promise.all([
@@ -2018,6 +2025,7 @@ export function coordinator(
       claimFacts(moment),
       roleFacts(),
     ]);
+    const recordsById = new Map(records.map((head) => [head.id, head]));
     const eligible = new Set<string>();
     const gaps: Gap[] = [];
     const attention = new Map<string, number>();
@@ -2054,6 +2062,7 @@ export function coordinator(
     }
     const candidates: AnalysisCandidate[] = [];
     const offeredStages = new Set<Stage>();
+    const admitted = new Map<Stage, number>();
     for await (const offer of analysisOffers(
       db,
       route.machineId,
@@ -2061,6 +2070,7 @@ export function coordinator(
       eligible,
       filed,
       new Set([...stance].filter(([, state]) => state === "working").map(([topic]) => topic)),
+      (stage) => target !== undefined || (admitted.get(stage) ?? 0) < 64,
     )) {
       if ("missing" in offer) {
         gaps.push({
@@ -2072,12 +2082,11 @@ export function coordinator(
         continue;
       }
       offeredStages.add(offer.stage);
-      // Bound retained payloads only AFTER eligibility and claim governance. Once these
-      // candidates settle or are withheld, scanning reaches the next eligible page.
-      if (candidates.filter((candidate) => candidate.stage === offer.stage).length >= 64) continue;
+      // Only draw bounds retained candidates. Claim refresh searches for its exact fingerprint,
+      // even if newly eligible offers have moved it beyond the draw's admitted window.
       const role = ANALYSIS_ROLES[offer.stage];
       const held = claims.get(`${offer.rootId}\u001f${role}`) ?? NO_CLAIMS;
-      const head = records.find((record) => record.id === offer.recordId) ?? {
+      const head = recordsById.get(offer.recordId) ?? {
         id: offer.recordId,
         rootId: offer.rootId,
         kind: offer.kind,
@@ -2086,9 +2095,7 @@ export function coordinator(
       const topics = [
         ...new Set(
           offer.brief.flatMap(
-            (record) =>
-              filed.get(records.find((head) => head.id === record.id)?.rootId ?? record.id)
-                ?.topics ?? [],
+            (record) => filed.get(recordsById.get(record.id)?.rootId ?? record.id)?.topics ?? [],
           ),
         ),
       ];
@@ -2122,15 +2129,13 @@ export function coordinator(
         candidate = { ...candidate, retry: candidate.retry + 1 };
         previous = await readClaim(assignmentIdOf(candidate, policy.version));
       }
-      const recent = await db.query(
-        `SELECT MAX(COALESCE(c.finished_at, c.granted_at)) AS latest
-           FROM claims c LEFT JOIN records r ON r.id = c.record_id
-          WHERE COALESCE(r.root_id, c.record_id) = ? AND c.role LIKE 'analysis:%'`,
-        [offer.rootId],
-      );
       let total = 0;
-      for (const stage of STAGES)
-        total += claims.get(`${offer.rootId}\u001f${ANALYSIS_ROLES[stage]}`)?.total ?? 0;
+      let latest = -Infinity;
+      for (const stage of STAGES) {
+        const facts = claims.get(`${offer.rootId}\u001f${ANALYSIS_ROLES[stage]}`);
+        total += facts?.total ?? 0;
+        latest = Math.max(latest, facts?.latest ?? -Infinity);
+      }
       for (const reviewRole of ROLES)
         total += reviews.get(`${offer.rootId}\u001f${reviewRole}`)?.reviews ?? 0;
       let reason: GapReason | null = null;
@@ -2138,11 +2143,7 @@ export function coordinator(
       else if (held.active > 0) reason = "claimed";
       else if (total >= policy.maxItemReviews) reason = "capped";
       else if (held.setbacks >= MAX_SETBACKS) reason = "exhausted";
-      else if (
-        (maybeAt(recent[0]?.["latest"]) ?? -Infinity) + policy.cooldownSeconds * 1000 >
-        moment
-      )
-        reason = "cooling";
+      else if (latest + policy.cooldownSeconds * 1000 > moment) reason = "cooling";
       if (reason !== null) {
         gaps.push({
           recordId: offer.recordId,
@@ -2152,7 +2153,11 @@ export function coordinator(
         });
         continue;
       }
+      if (target !== undefined && assignmentIdOf(candidate, policy.version) !== target.id) continue;
       candidates.push(candidate);
+      if (target !== undefined) return { candidates, gaps };
+      admitted.set(offer.stage, (admitted.get(offer.stage) ?? 0) + 1);
+      if (stages.every((stage) => (admitted.get(stage) ?? 0) >= 64)) break;
     }
     for (const stage of stages) {
       if (!offeredStages.has(stage))
@@ -2540,7 +2545,10 @@ export function coordinator(
           },
         };
       }
-      const refreshed = await buildAnalysis(policy, moment);
+      const refreshed = await buildAnalysis(policy, moment, {
+        id: assignment.id,
+        stage: assignment.activity,
+      });
       if (
         !refreshed.candidates.some(
           (candidate) =>
@@ -2990,7 +2998,13 @@ export function coordinator(
         ? ""
         : `
                  AND claims.role LIKE 'analysis:%' AND job_id = ? AND expires_at <= ?
-                 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.job_id = ? OR r.prepare_job_id = ?)`;
+                 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.job_id = ? OR r.prepare_job_id = ?)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM runs r
+                    WHERE json_extract(${document}, '$.analysis.claim.id') = claims.id
+                      AND json_extract(${document}, '$.analysis.claim.runId') = claims.run_id
+                      AND json_extract(${document}, '$.analysis.claim.fence') = claims.fence
+                 )`;
     const rows = await db.batch([
       {
         sql: `UPDATE claims SET finished_at = ?, actual_cost = ?, outcome = ?${terminal === undefined ? "" : ", job_id = ?"}

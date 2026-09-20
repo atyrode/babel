@@ -764,6 +764,9 @@ An unsuccessful attempt known to cost nothing may retry within those same cooldo
 bounds; paid or completed unchanged work may not. If Code's posting response is lost or cannot be
 interpreted, Watch reports the run as unconfirmed and its reservation remains held. An absent job
 id is not proof that no session was bought, so that uncertain posting is never retried.
+Stop cannot safely release that slot while an unidentified Code job may still be live. The pinned
+Code API cannot recover its job id from Babel's request, so a permanently lost response can hold
+the slot indefinitely; neither timeout nor lease expiry proves the session ended.
 
 The run's budget is the hard stopping condition. Policy supplies bounded per-item spending,
 cooldowns, and a response to repeated skips, so unreachable items and persistent disagreement
@@ -1169,10 +1172,11 @@ records, not a place where knowledge accumulated.
 
 **A claim dies with its job.** Every settlement releases the claim that authorized it — at the
 receipt's cost when the job exited, at the full reservation when it did not, because a job that
-died mid-flight may have spent all of it. Claims no settlement can ever reach — a grant whose
-posting never landed, a job with no open run, a job the hub has stopped reporting — are abandoned
-by the cycle's own reaper, oldest first and a bounded number per cycle, before the cycle asks what
-it may draw. A slot is held only while a job stands behind it, so a ghost holds nothing.
+died mid-flight may have spent all of it. A grant proven never posted can finish at zero cost.
+Expired orphan claims are abandoned by the cycle's own reaper, oldest first and a bounded number
+per cycle, before the cycle asks what it may draw. A retained analysis intent is not an orphan:
+an unconfirmed native or Code posting keeps its reservation and concurrency slot until its
+outcome is known, even if the lease expires.
 
 Invariants:
 

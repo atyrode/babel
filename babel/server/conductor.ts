@@ -3726,21 +3726,18 @@ export function conductor(deps: ConductorDeps): Conductor {
                       (SELECT MAX(r.unreadable) FROM runs r WHERE r.job_id = c.job_id) AS silent
                  FROM claims c
                 WHERE c.finished_at IS NULL)
-        WHERE (job_id IS NULL AND granted_at <= ?)
+        WHERE NOT (role LIKE 'analysis:%' AND open_runs > 0)
+          AND ((job_id IS NULL AND granted_at <= ?)
            OR (job_id IS NOT NULL AND runs = 0 AND granted_at <= ?)
            OR (job_id IS NOT NULL AND runs > 0 AND open_runs = 0)
-           OR (job_id IS NOT NULL AND COALESCE(silent, 0) >= ?)
+           OR (job_id IS NOT NULL AND COALESCE(silent, 0) >= ?))
         ORDER BY granted_at
         LIMIT ?`,
       [stale, stale, UNREPORTED_CYCLES, CLAIMS_REAPED_PER_TICK + 1],
     );
+    let released = 0;
     for (const orphan of orphans.slice(0, CLAIMS_REAPED_PER_TICK)) {
       const jobId = orphan.job_id;
-      if (orphan.role.startsWith("analysis:") && Number(orphan.open_runs) > 0) {
-        // Silence never proves a retained native or Code job stopped. In particular, a
-        // posting-marked parent may have lost its response after the machine accepted it.
-        continue;
-      }
       if (jobId !== null && Number(orphan.runs) === 0 && orphan.role.startsWith("analysis:")) {
         const route = (await coordinator.policy(at)).policy.review;
         if (route !== undefined) {
@@ -3769,6 +3766,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           now: at,
         });
         if (finished.outcome === "finished") {
+          released += 1;
           const reason = `expired analysis job ${jobId} was never authorized by a parent intent`;
           settled.push({
             claimId: orphan.id,
@@ -3791,7 +3789,10 @@ export function conductor(deps: ConductorDeps): Conductor {
               ? `job ${jobId} is closed and its claim was left open`
               : `the hub has not been able to report job ${jobId} for ` +
                 `${String(Number(orphan.silent ?? 0))} cycles`;
-      settled.push(await release(orphan, reason));
+      const abandoned = await release(orphan, reason);
+      settled.push(abandoned);
+      if (abandoned.refused !== null) continue;
+      released += 1;
       await store.db.run(
         `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ?
          WHERE prepare_job_id = ? AND job_id IS NULL AND closure IS NULL`,
@@ -3801,7 +3802,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
     if (orphans.length > CLAIMS_REAPED_PER_TICK) {
       notes.push(
-        `${String(CLAIMS_REAPED_PER_TICK)} dead claims were released this cycle and the oldest ` +
+        `${String(released)} dead claims were released this cycle and the oldest ` +
           `of what is left goes next: a reap holds the store's write lock, and a cycle has a ` +
           `dispatch waiting behind it`,
       );

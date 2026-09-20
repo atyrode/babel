@@ -19,6 +19,7 @@ import type {
   GuestSqlStatement,
 } from "@manifold/plugin-kit";
 import { SCHEMA_V1 } from "./schema.ts";
+import { analysisOffers } from "./analysis.ts";
 import {
   ANALYSIS_BRIEF_BYTE_LIMIT,
   ANALYSIS_BRIEF_LIMIT,
@@ -2233,6 +2234,69 @@ test("challenge reaches an older eligible head beyond 64 capped heads", async ()
   expect(drawn(await coord.draw({ runId: "after-window" })).recordId).toBe("hyp_00000041");
 });
 
+test("claim refresh finds its drawn analysis after one new offer shifts the draw cap", async () => {
+  const { db, coord } = await deployment(stagePolicy("explore"));
+  for (let n = 0; n < 63; n++) await catalog(db, `omp/a-${String(n).padStart(3, "0")}`);
+  await catalog(db, "omp/z-drawn");
+  // Separate hand-outs exhaust the admitted window without reserving or settling any offer.
+  let selected: { assignment: Assignment; runId: string } | undefined;
+  for (let n = 0; n < 64; n++) {
+    const runId = `owner_${n}`;
+    const assignment = drawn(await coord.draw({ runId, seed: 1n }));
+    if (assignment.recordId === "omp/z-drawn") {
+      selected = { assignment, runId };
+      break;
+    }
+  }
+  if (selected === undefined) throw new Error("the last admitted source was not drawn");
+  await catalog(db, "omp/0-new");
+  const grant = await coord.claim({ ...selected, jobId: "prepare_drawn" });
+  if (grant.outcome !== "granted") throw new Error(grant.refusal.detail);
+  expect(grant.claim.id).toBe(selected.assignment.id);
+  expect(grant.claim.recordId).toBe("omp/z-drawn");
+});
+
+test("a full offer stage stops independently while challenge and synthesis remain reachable", async () => {
+  const { db } = await deployment(stagePolicy("explore"));
+  for (let n = 0; n < 65; n++) await catalog(db, `omp/${String(n).padStart(3, "0")}`);
+  const ids = ["hyp_00000001", "obs_00000001", "obs_00000002"];
+  for (const [n, id] of ids.entries()) {
+    await analysisRecord(db, id, `source_${n}`, n === 0 ? null : ids[0]!);
+    await citation(db, id, "omp/000");
+  }
+  const full = new Set<Stage>();
+  const offers = analysisOffers(
+    db,
+    "dev-01",
+    ["explore", "challenge", "synthesize"],
+    new Set(ids),
+    new Map(),
+    new Set(),
+    (stage) => !full.has(stage),
+  );
+  try {
+    for (let n = 0; n < 64; n++) {
+      const next = await offers.next();
+      expect(next.done).toBe(false);
+      if (next.done || "missing" in next.value) throw new Error("expected an explore offer");
+      expect(next.value.stage).toBe("explore");
+    }
+    full.add("explore");
+    const challenge = await offers.next();
+    if (challenge.done || "missing" in challenge.value) throw new Error("expected challenge");
+    expect(challenge.value.stage).toBe("challenge");
+    full.add("challenge");
+    const synthesis = await offers.next();
+    if (synthesis.done || "missing" in synthesis.value) throw new Error("expected synthesis");
+    expect(synthesis.value.stage).toBe("synthesize");
+    expect(new Set(synthesis.value.brief.map((row) => row.runId))).toContain("source_2");
+    full.add("synthesize");
+    expect((await offers.next()).done).toBe(true);
+  } finally {
+    await offers.return(undefined);
+  }
+});
+
 test("synthesis joins original runs across record pages and keeps provisional critique", async () => {
   const { db, coord } = await deployment(stagePolicy("synthesize"));
   await catalog(db, "omp/shared");
@@ -2452,6 +2516,73 @@ test("unposted finish atomically refuses a native run or parent inserted after i
     ]);
     expect(held[0]?.["finished_at"]).toBeNull();
     expect(held[0]?.["actual_cost"]).toBeNull();
+  }
+});
+
+test("unposted finish refuses retained parent authority even after closure and Code rebinding", async () => {
+  for (const closure of [null, "failed"]) {
+    const { db, coord } = await deployment(stagePolicy("explore"));
+    await catalog(db, "omp/intent");
+    const assignment = drawn(await coord.draw({ runId: "owner" }));
+    const grant = await coord.claim({ assignment, runId: "owner", jobId: "prepare_intent" });
+    if (grant.outcome !== "granted") throw new Error(grant.refusal.detail);
+    const bound = await coord.bind({
+      id: assignment.id,
+      runId: "owner",
+      fence: grant.claim.fence,
+      previousJobId: "prepare_intent",
+      jobId: "code_unretained",
+    });
+    if (bound.outcome !== "bound") throw new Error(bound.refusal.detail);
+    const raced = coordinator(
+      {
+        db: {
+          ...db,
+          batch: async (statements) => {
+            // The parent still carries the prepare id, not the claim's newly bound Code id.
+            // Insert after finish reads ownership to exercise the atomic guard as well.
+            await db.run(
+              `INSERT INTO runs(id,kind,machine_id,prepare_job_id,authority_kind,authority_id,
+                                preparation,closure,started_at,records,payload)
+               VALUES('retained_parent',?,'dev-01','prepare_intent','conductor','owner',?,?,?,0,'{}')`,
+              [
+                OPERATIONS.explore,
+                JSON.stringify({
+                  analysis: {
+                    claim: { id: assignment.id, runId: "owner", fence: grant.claim.fence },
+                  },
+                }),
+                closure,
+                ago(0),
+              ],
+            );
+            return db.batch(statements);
+          },
+        },
+      },
+      () => NOW,
+      CONCURRENT_JOBS,
+    );
+    const expired = grant.claim.expiresAt + 1;
+    expect(
+      (
+        await raced.finish({
+          id: assignment.id,
+          runId: "owner",
+          fence: grant.claim.fence,
+          cost: 0,
+          outcome: "failed",
+          unpostedJobId: "code_unretained",
+          now: expired,
+        })
+      ).outcome,
+    ).toBe("refused");
+    const held = await db.query(`SELECT finished_at, actual_cost FROM claims WHERE id = ?`, [
+      assignment.id,
+    ]);
+    expect(held[0]?.["finished_at"]).toBeNull();
+    expect(held[0]?.["actual_cost"]).toBeNull();
+    expect((await coord.open(expired)).total).toBe(1);
   }
 });
 

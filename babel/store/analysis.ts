@@ -52,6 +52,7 @@ interface Head {
 
 /** Page through the entire frontier, retaining only identifiers between pages. Offers are
  * streamed so the caller can apply settlement, cooldown and caps before retaining payloads.
+ * The consumer may stop each stage independently through wants, before its next offer is built.
  * Whole records are admitted, never clipped; synthesis reserves two original runs first. */
 export async function* analysisOffers(
   db: GuestDatabase,
@@ -60,14 +61,21 @@ export async function* analysisOffers(
   eligible: ReadonlySet<string>,
   filings: ReadonlyMap<string, { topics: readonly string[] }>,
   activeTopics: ReadonlySet<string>,
+  wants: (stage: Stage) => boolean = () => true,
 ): AsyncGenerator<AnalysisOffer | { missing: string }> {
-  const source = async (selector: string): Promise<GuestSqlRow | undefined> => {
-    const rows = await db.query(
-      `SELECT selector, content_digest, snapshot_id, modified_at, size FROM sessions
-        WHERE selector = ? AND host = ? AND live = 0 AND kind = 'operator'`,
-      [selector, machineId],
-    );
-    return rows[0];
+  const sources = new Map<string, Promise<GuestSqlRow | undefined>>();
+  const source = (selector: string): Promise<GuestSqlRow | undefined> => {
+    const cached = sources.get(selector);
+    if (cached !== undefined) return cached;
+    const pending = db
+      .query(
+        `SELECT selector, content_digest, snapshot_id, modified_at, size FROM sessions
+          WHERE selector = ? AND host = ? AND live = 0 AND kind = 'operator'`,
+        [selector, machineId],
+      )
+      .then((rows) => rows[0]);
+    sources.set(selector, pending);
+    return pending;
   };
   const offer = async (
     stage: Stage,
@@ -112,15 +120,17 @@ export async function* analysisOffers(
     };
   };
 
-  if (stages.includes("explore")) {
+  if (stages.includes("explore") && wants("explore")) {
     let cursor = "";
-    for (;;) {
+    explore: for (;;) {
+      if (!wants("explore")) break;
       const page = await db.query(
         `SELECT selector FROM sessions WHERE host = ? AND live = 0 AND kind = 'operator'
           AND selector > ? ORDER BY selector LIMIT ?`,
         [machineId, cursor, FRONTIER_LIMIT],
       );
       for (const row of page) {
+        if (!wants("explore")) break explore;
         const selector = string(row["selector"]);
         const linked = await db.query(
           `SELECT DISTINCT r.root_id, parent.root_id AS parent_root
@@ -144,7 +154,7 @@ export async function* analysisOffers(
       cursor = string(page[page.length - 1]!["selector"]);
     }
   }
-  if (!stages.some((stage) => stage !== "explore")) return;
+  if (!stages.some((stage) => stage !== "explore" && wants(stage))) return;
 
   // Metadata may span pages; payloads never do. This also lets related observations join a
   // candidate or one another even when their creation times are arbitrarily far apart.
@@ -259,8 +269,9 @@ export async function* analysisOffers(
       related.set(target, group);
     }
   }
-  if (stages.includes("challenge")) {
+  if (stages.includes("challenge") && wants("challenge")) {
     for (const target of heads.values()) {
+      if (!wants("challenge")) break;
       if (target.kind !== "hypothesis") continue;
       const relatedIds = [...(related.get(target.id) ?? [])].sort(
         (a, b) =>
@@ -279,7 +290,7 @@ export async function* analysisOffers(
       );
     }
   }
-  if (stages.includes("synthesize")) {
+  if (stages.includes("synthesize") && wants("synthesize")) {
     const groups = new Map<string, string[]>();
     for (const head of heads.values()) {
       if (head.kind !== "observation" || head.runId === null) continue;
@@ -299,10 +310,11 @@ export async function* analysisOffers(
       }
     }
     const seen = new Set<string>();
-    for (const [key, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
+    synthesize: for (const [key, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
       if (new Set(group.map((id) => heads.get(id)!.runId)).size < 2) continue;
       const pending = new Set(group);
       while (pending.size > 0) {
+        if (!wants("synthesize")) break synthesize;
         const anchor = pending.values().next().value!;
         pending.delete(anchor);
         let pair: AnalysisBriefRecord[] = [];
