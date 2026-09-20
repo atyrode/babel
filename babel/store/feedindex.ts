@@ -44,16 +44,15 @@ import {
 } from "../contract.ts";
 import { standingOf } from "./acts.ts";
 import {
-  ageWord,
   controversialRank,
   establishedOf,
-  feedWhy,
   risingRank,
   surfaceOf,
   URGENCY,
   WINDOW_MS,
   type Ranked,
 } from "./rank.ts";
+import { type AttentionIndex, readAttention } from "./attention.ts";
 
 /** The reserved topic naming the posts nothing has said anything about (§4.13). */
 export const TOPIC_UNFILED = "unfiled";
@@ -149,6 +148,8 @@ export interface FeedIndex {
   readonly desk: number;
   /** One record a reviewer is holding right now, by record id, oldest claim first. */
   readonly reviewing: ReadonlyMap<string, number>;
+  /** Immutable evidence and explicit-act chronology, shared with record peels. */
+  readonly attention: AttentionIndex;
 }
 
 /** One subject's reception as the feed counts it (`v0.4.0:internal/evaluation`'s Tally). */
@@ -224,10 +225,9 @@ async function scan<Row extends SqlRow>(
 /**
  * Assembles the whole deployment's posts at one instant.
  *
- * `nowMs` is the build's own clock and every age in the index is measured from it — "waiting
- * 3d", "asked 2h" — rather than from the instant a request arrives. The two differ by at most
- * the index's freshness, and reading the clock per row would let two rows of one page disagree
- * about now.
+ * `nowMs` is the build's own clock for open review claims, qualifying attention dates and
+ * ranking. The index's freshness bounds its difference from request time; every row in
+ * one answer uses the same instant.
  */
 export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise<FeedIndex> {
   const topics = await readTopics(db);
@@ -236,12 +236,13 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
   const tallies = await readTallies(db);
   const reviewing = await readOpenClaims(db, nowMs);
   const challenges = await readChallenges(db);
+  const attention = await readAttention(db, nowMs);
 
   const posts: IndexEntry[] = [];
   await scan<SqlRow>(
     db,
     `SELECT r.id AS id, r.kind AS kind, r.run_id AS run_id, r.title AS title,
-            r.recipe_id AS recipe_id, r.created_at AS created_at
+            r.root_id AS root_id, r.recipe_id AS recipe_id, r.created_at AS created_at
        FROM records r
        JOIN (SELECT root_id, MAX(seq) AS head_seq FROM records GROUP BY root_id) h
          ON h.root_id = r.root_id AND h.head_seq = r.seq
@@ -249,7 +250,14 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
       ORDER BY r.id`,
     [],
     (row) => {
-      const entry = recordEntry(row, membership, standings, tallies, reviewing, nowMs);
+      const entry = recordEntry(
+        row,
+        membership,
+        standings,
+        tallies,
+        reviewing,
+        attention.records.get(text(row["root_id"])) ?? { at: null, basis: null },
+      );
       if (entry !== null) {
         entry.post.challenges = challenges.get(entry.post.id)?.summary ?? {
           objections: 0,
@@ -271,7 +279,11 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
       ORDER BY q.id`,
     [],
     (row) => {
-      const entry = questionEntry(row, reviewing, nowMs);
+      const entry = questionEntry(
+        row,
+        reviewing,
+        attention.questions.get(text(row["id"])) ?? { at: null, basis: null },
+      );
       if (entry !== null) posts.push(entry);
     },
   );
@@ -281,7 +293,7 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
   for (const entry of posts) {
     if (entry.post.surface === "desk") desk++;
   }
-  return { builtAt: nowMs, posts, topics, unfiled, desk, reviewing };
+  return { builtAt: nowMs, posts, topics, unfiled, desk, reviewing, attention };
 }
 
 /**
@@ -788,7 +800,7 @@ function recordEntry(
   standings: ReadonlyMap<string, string>,
   tallies: ReadonlyMap<string, Tally>,
   reviewing: ReadonlyMap<string, number>,
-  nowMs: number,
+  attention: FeedPost["attention"],
 ): IndexEntry | null {
   const id = text(row["id"]);
   const title = text(row["title"]);
@@ -818,6 +830,7 @@ function recordEntry(
     standing,
     established: establishedOf(awaiting, tally?.contested ?? false, tally?.votes.length ?? 0),
     createdAt: createdAtText,
+    attention,
     author: runId === "" ? null : { runId },
     topics: filed ?? [],
     score: (tally?.support ?? 0) - (tally?.oppose ?? 0),
@@ -830,11 +843,7 @@ function recordEntry(
     reviewing: reviewing.has(id),
     comments: tally?.comments ?? 0,
     awaiting,
-    why: !awaiting
-      ? ""
-      : standing === "new"
-        ? feedWhy("never ruled on", `waiting ${ageWord(nowMs - createdAt)}`)
-        : feedWhy("reopened", `waiting ${ageWord(nowMs - createdAt)}`),
+    why: !awaiting ? "" : standing === "new" ? "never ruled on" : "reopened",
     lastActivityAt: stamp(Math.max(tally?.lastActivity ?? 0, createdAt)),
   };
   return {
@@ -865,7 +874,7 @@ function recordEntry(
 function questionEntry(
   row: SqlRow,
   reviewing: ReadonlyMap<string, number>,
-  nowMs: number,
+  attention: FeedPost["attention"],
 ): IndexEntry | null {
   const id = text(row["id"]);
   const title = text(row["text"]);
@@ -887,6 +896,7 @@ function questionEntry(
     // open is unsettled, and a state that awaits nobody is settled.
     established: establishedOf(awaiting, false, 0),
     createdAt: createdAtText,
+    attention,
     author: null,
     topics: [],
     score: 0,
@@ -899,7 +909,7 @@ function questionEntry(
     reviewing: reviewing.has(id),
     comments: count(row["answers"]),
     awaiting,
-    why: head === undefined ? "" : feedWhy(head, `asked ${ageWord(nowMs - createdAt)}`),
+    why: head ?? "",
     lastActivityAt: stamp(createdAt),
   };
   return {

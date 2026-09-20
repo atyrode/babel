@@ -493,10 +493,10 @@ describe("the clock it reads ages against", () => {
     const fake = hub({ record: () => peel({ post: post({ createdAt: stamp }) }) });
     look({ recordId: "pro_0000000a" });
     const view = await mount(<RecordPanel host={fake.host} />);
-    expect(view.one(".babel-age").textContent).toBe("just now");
+    expect(view.one(".babel-age").textContent).toContain("just now");
     setSystemTime(new Date(base + 5 * 60_000));
     await view.wait(1_200);
-    expect(view.one(".babel-age").textContent).toBe("5m ago");
+    expect(view.one(".babel-age").textContent).toContain("5m ago");
     await view.unmount();
   });
 });

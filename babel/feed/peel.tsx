@@ -358,7 +358,7 @@ export function Peel({
               ))}
               {age !== "" && (
                 <time className="babel-age" dateTime={post.createdAt}>
-                  {age}
+                  recorded {age}
                 </time>
               )}
               {post.author !== null && <span className="babel-note">by {post.author.runId}</span>}

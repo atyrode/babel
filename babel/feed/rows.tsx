@@ -196,21 +196,10 @@ export const ANSWER_OUTCOMES: ReadonlyArray<{
   },
 ];
 
-/**
- * The why, shortened to the half that distinguishes it. The store sends a standing and a
- * wait, and on the front page the first clause was "never ruled on" for almost every row —
- * fifteen rows opening with the same four words is a column of noise where the reason goes.
- */
+/** The standing dot already conveys that nobody has ruled on a new record. */
 function whyShort(why: string): string {
-  const parts = why
-    .split("·")
-    .map((part) => part.trim())
-    .filter((part) => part !== "" && part !== "never ruled on");
-  if (parts.length < 2) return parts[0] ?? "";
-  const last = parts[parts.length - 1] ?? "";
-  const head = parts.slice(0, -1).join(" · ");
-  const waited = /^waiting\s+(?<age>.+)$/u.exec(last);
-  return waited === null ? `${head} · ${last}` : `${head} ${waited.groups?.["age"] ?? ""}`;
+  const reason = why.trim();
+  return reason === "never ruled on" ? "" : reason;
 }
 
 /** What a row recorded, until the next read carries the store's own answer. */
@@ -612,7 +601,16 @@ export function FeedRow({
   // were spelled by replacing a fact, never by adding one.
   const [first, ...rest] = post.topics;
   const why = post.awaiting ? whyShort(post.why) : "";
-  const age = since(post.createdAt, now);
+  const onDesk = post.surface === "desk";
+  const chronologyAt = onDesk ? post.attention.at : post.createdAt;
+  const age = chronologyAt === null ? "" : since(chronologyAt, now);
+  const chronology = onDesk
+    ? post.attention.basis === "evidence"
+      ? "source first cited"
+      : post.attention.basis === "operator"
+        ? "explicit act"
+        : "asked"
+    : "recorded";
   return (
     <li
       className="babel-row"
@@ -653,11 +651,21 @@ export function FeedRow({
               +{rest.length}
             </span>
           )}
-          {age !== "" && (
-            <time className="babel-age" dateTime={post.createdAt}>
-              {age}
+          {age !== "" ? (
+            <time
+              className="babel-age"
+              dateTime={chronologyAt ?? undefined}
+              title={
+                onDesk && post.attention.basis === "evidence"
+                  ? "First durable citation of an independent source under this claim"
+                  : undefined
+              }
+            >
+              {chronology} {age}
             </time>
-          )}
+          ) : onDesk ? (
+            <span className="babel-age">attention date unknown</span>
+          ) : null}
           {post.comments > 0 && (
             <span className="babel-comments">
               {post.comments} {post.comments === 1 ? "comment" : "comments"}

@@ -1051,14 +1051,41 @@ just finished reading.
 
 ### 8.5 Reading order and lifecycle views
 
-The default order serves the operator's next useful decision: what needs him, by urgency, then by
-kind — a proposal before a finding before a candidate at equal urgency — then by the longest
-wait. The order is over the whole deployment before paging; a page ranked independently of the
-set it came from is not an order. Every ordering names its basis, and missing evaluation data is
-never rendered as zero opposition or unanimous support: a nought over nothing reads as a record
-nobody objected to, which is the one defect this section exists to prevent.
+**Desk Next is renewal-aware attention, not confidence.** Urgency and kind supply a positive
+priority, divided by (2 + elapsed days)^1.8 since its latest qualifying date. At equal age the
+existing urgency and kind preference remains; without renewal a record loses urgency rather
+than gaining it by waiting. Unknown dates sort after dated attention, with stable identifier
+ties. In a mixed list the desk comes first; other surfaces keep their non-decaying priority.
 
-Alternative orders are **new**, **top**, **controversial** and **rising** (§8.7), and filters over
+Evidence chronology is the **first durable citation of each independently identified source
+under the claim**, not the original conversation's occurrence date. The earliest introduction
+across immutable revisions and support paths is retained for each harness/source identity;
+the latest among distinct sources can renew attention. Repeated runs, changed digests and copied
+edges do not make the same source new. Retained preparation material may resolve a missing
+catalog selector only when its identity is unambiguous. Agent-classified sources are excluded.
+Missing or unusable history stays unknown rather than borrowing an import, scan or preparation
+timestamp. A later graph repair dates a self-declared correction from its original record,
+not the repair sweep.
+
+An explicit operator act renews its target's attention: a ruling, comment, filing, targeted
+steering, next-action decision or record correction. Questions begin with their own recorded
+date and can be renewed by explicit answers or attributable operator events. Refining a record
+does not become an act on another record merely because its links were copied. Model reception,
+opening a record, dwelling on it and silence neither renew attention nor endorse the claim.
+This projection changes no evidence, score, standing or routing, and deletes nothing.
+
+**The shelf does not decay.** It opens at Top over all time and offers no Hot or Rising mode.
+An older caller requesting either receives Top/all-time, with the actual rule in the answer.
+Explicit chronology and reception-window filters remain browsing choices, not loss of evidence.
+The desk labels its qualifying date and basis, including an explicit unknown; other surfaces
+and the opened record label their record date instead.
+
+The order is over the whole deployment before paging; a page ranked independently of its set
+is not an order. Every answer names the rule actually applied. Missing evaluation data is never
+rendered as zero opposition or unanimous support: a nought over nothing reads as a record nobody
+objected to, which is the defect this distinction prevents.
+
+Alternative browsing orders are **hot**, **new**, **top**, **controversial** and **rising** (§8.7), and filters over
 the one list carry the rest: the record kinds, the topics, and the lifecycle states — open,
 accepted, implemented, verified, deferred or rejected, with **reconsider** as a linked attention
 view over earlier decisions. An **unreviewed** filter and a coverage summary expose
@@ -1116,11 +1143,11 @@ breakdown belongs in reception, not another set of badges in the list.
 
 **The front page is the feed, and there is one list.** Every record Babel has produced —
 hypothesis, finding, proposal, and the questions it asks — is a post: one line of claim, its kind
-as flair, the topics it belongs to, its age, Babel's score, its comment count, and, when it awaits
-the operator, _why it is next_ in five words. One sort bar over the whole deployment: **next** —
-what needs the operator, a proposal before a finding before a candidate at equal urgency — plus
-**hot**, **new**, **top** and **controversial** over an hour, day, week, month, year or all time,
-and **rising**.
+as flair, the topics it belongs to, its qualified date, Babel's score, its comment count, and,
+when it awaits the operator, _why it is next_. One sort bar over the whole deployment: **next**
+uses the attention rule in §8.5; **hot**, **new**, **top**, **controversial** and **rising** offer
+explicit browsing alternatives. Reception windows are an hour, day, week, month, year or all
+time. Hot and Rising are absent from the shelf; recent reviewer activity is not evidence renewal.
 
 **Babel votes; the operator rules.** The score is Babel's reception and only Babel's: one vote per
 run per role on one exact revision, support minus oppose, with the breakdown by role one gesture

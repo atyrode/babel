@@ -582,9 +582,6 @@ describe("the feed", () => {
     expect(ids).not.toContain(CANDIDATE);
     const reopened = desk.posts.find((post) => post.id === FINDING);
     expect(reopened?.standing).toBe("reopened");
-    expect(reopened?.why).toStartWith("reopened · waiting ");
-    // The blocking question says what it costs to leave, and its age rather than a wait.
-    expect(desk.posts.find((post) => post.id === BLOCKING)?.why).toBe("blocks a run · asked 2h");
     for (const post of desk.posts) expect(post.awaiting).toBe(true);
   });
 
@@ -604,7 +601,6 @@ describe("the feed", () => {
     expect(shelved).toContain(ANSWERED);
     const unruled = shelf.posts.find((post) => post.id === CANDIDATE);
     expect(unruled?.standing).toBe("new");
-    expect(unruled?.why).toBe("never ruled on · waiting 3d");
     // Never unprompted, still reachable: the same narrowings work over the shelf.
     const byTopic = await feed({
       sort: "new",
@@ -626,6 +622,13 @@ describe("the feed", () => {
     // A narrowing of the desk narrows the page and not the desk.
     const narrowed = await feed({ window: "all", kinds: ["question"], limit: 100 });
     expect(narrowed.total).toBeLessThan(narrowed.desk);
+  });
+
+  test("a retired shelf sort resolves to all-time reception before filtering and grouped pagination", async () => {
+    const page = { surface: "shelf", group: "recipe", offset: 1, limit: 1 } as const;
+    const allTime = await feed({ ...page, sort: "top", window: "all" });
+    const legacy = await feed({ ...page, sort: "rising", window: "hour" });
+    expect(legacy).toEqual(allTime);
   });
 
   // Next is a complete order over the corpus and not a filter wearing a sort's name: turning the

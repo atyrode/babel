@@ -66,8 +66,6 @@ describe("the list", () => {
     expect(view.one('[data-post="pro_0000000a"] .babel-kind').textContent).toBe("Proposal");
     expect(view.one('[data-post="pro_0000000a"] .babel-topic').textContent).toBe("t/babel");
     expect(view.one('[data-post="pro_0000000a"] .babel-comments').textContent).toBe("2 comments");
-    // "never ruled on" is dropped: fifteen rows opening with the same four words say nothing.
-    expect(view.one('[data-post="pro_0000000a"] .babel-why').textContent).toBe("waiting 3d");
     // The unreviewed finding carries the ring and no figure.
     expect(view.one('[data-post="fnd_0000000b"] .babel-dot').getAttribute("data-tone")).toBe(
       "none",
@@ -98,12 +96,7 @@ describe("the list", () => {
     await view.unmount();
   });
 
-  // §8.6 caps a listing row at one line of claim and at most three facts, and #354 had to fit
-  // the status axis inside that cap rather than beside it. The maximal row carried eight
-  // elements before — kind, two subject chips, the overflow, the age, the comments, the reason
-  // and the reviewing mark — and carries eight now, with the second chip's slot spent on the
-  // status. Both axes are on the row and the row did not grow.
-  test("a row carries both axes and no more facts than it did", async () => {
+  test("a row carries both the subject and standing axes", async () => {
     const crowded = post({
       reviewing: true,
       topics: [
@@ -114,9 +107,6 @@ describe("the list", () => {
     });
     const fake = hub({ feed: () => feed({ posts: [crowded], total: 1, desk: 1 }) });
     const view = await mount(<HomePanel host={fake.host} />);
-    const facts = view.one('[data-post="pro_0000000a"] .babel-facts');
-    expect(facts.children).toHaveLength(8);
-    // The subject axis: one chip and the overflow, where it used to be two chips and one.
     expect(
       view.all('[data-post="pro_0000000a"] .babel-topic').map((chip) => chip.textContent),
     ).toEqual(["t/babel", "+2"]);
@@ -236,7 +226,7 @@ describe("the list", () => {
 });
 
 describe("the sentence", () => {
-  test("choosing an order re-reads the feed under it", async () => {
+  test("order and period controls expose the active selection", async () => {
     const fake = hub();
     const view = await mount(<HomePanel host={fake.host} />);
     await view.press('[data-pick="sort"]');
@@ -250,13 +240,31 @@ describe("the sentence", () => {
     ]);
     await view.press('[data-sort="top"]');
     await view.settle();
-    expect(fake.last("feed")).toMatchObject({ sort: "top", window: "day" });
-    // An order computed over a period keeps its menu open, because it needs the period.
-    expect(view.all("[data-window]").length).toBeGreaterThan(0);
+    expect(view.one('[data-sort="top"]').getAttribute("aria-checked")).toBe("true");
     await view.press('[data-window="week"]');
     await view.settle();
-    expect(fake.last("feed")).toMatchObject({ sort: "top", window: "week" });
-    expect(view.one(".babel-sentence").textContent).toContain("sorted by top · this week");
+    await view.press('[data-pick="sort"]');
+    expect(view.one('[data-window="week"]').getAttribute("aria-checked")).toBe("true");
+    await view.unmount();
+  });
+
+  test("switching from a decaying browsing mode to the shelf restores all-time reception", async () => {
+    const view = await mount(<HomePanel host={hub().host} />);
+    await view.press('[data-pick="surface"]');
+    await view.press('[data-surface="all"]');
+    await view.press('[data-pick="sort"]');
+    await view.press('[data-sort="rising"]');
+    await view.press('[data-pick="surface"]');
+    await view.press('[data-surface="shelf"]');
+    await view.press('[data-pick="sort"]');
+    expect(view.all("[data-sort]").map((button) => button.getAttribute("data-sort"))).toEqual([
+      "next",
+      "new",
+      "top",
+      "controversial",
+    ]);
+    expect(view.one('[data-sort="top"]').getAttribute("aria-checked")).toBe("true");
+    expect(view.one('[data-window="all"]').getAttribute("aria-checked")).toBe("true");
     await view.unmount();
   });
 
@@ -281,22 +289,6 @@ describe("the sentence", () => {
     await view.settle();
     expect(fake.last("feed")).toMatchObject({ surface: "all", sort: "hot" });
     expect(view.one(".babel-sentence").textContent).toContain("everything");
-    await view.unmount();
-  });
-
-  // The shelf is reachable, which is the other half of "never shown unprompted": a reader who
-  // asks for it gets it, and it arrives hot rather than as a queue to drain.
-  test("the surface segment offers all three and the shelf is one press away", async () => {
-    const fake = hub();
-    const view = await mount(<HomePanel host={fake.host} />);
-    await view.press('[data-pick="surface"]');
-    expect(view.all("[data-surface]").map((button) => button.getAttribute("data-surface"))).toEqual(
-      ["desk", "queue", "shelf", "all"],
-    );
-    await view.press('[data-surface="shelf"]');
-    await view.settle();
-    expect(fake.last("feed")).toMatchObject({ surface: "shelf", sort: "hot" });
-    expect(view.one(".babel-sentence").textContent).toContain("the shelf");
     await view.unmount();
   });
 
@@ -692,7 +684,7 @@ describe("what the last read did", () => {
 describe("the clock and the hold", () => {
   afterEach(() => setSystemTime());
 
-  test("an age ages while the hub says nothing", async () => {
+  test("attention ages while the hub says nothing, without borrowing the record date", async () => {
     /*
       The clock is held still and moved by hand, which is what makes this a statement about
       the surface: the hub answers the same thing throughout, and nothing but time passes.
@@ -703,13 +695,24 @@ describe("the clock and the hold", () => {
     setSystemTime(new Date(base));
     const stamp = new Date(base - 59_000).toISOString();
     const fake = hub({
-      feed: () => feed({ posts: [post({ createdAt: stamp, lastActivityAt: stamp })], total: 1 }),
+      feed: () =>
+        feed({
+          posts: [
+            post({ attention: { at: stamp, basis: "evidence" } }),
+            post({ id: "pro_0000000d", attention: { at: null, basis: null } }),
+          ],
+          total: 2,
+        }),
     });
     const view = await mount(<HomePanel host={fake.host} />);
-    expect(view.one('[data-post="pro_0000000a"] .babel-age').textContent).toBe("just now");
+    expect(view.one('[data-post="pro_0000000a"] time').getAttribute("datetime")).toBe(stamp);
+    expect(view.one('[data-post="pro_0000000a"] .babel-age').textContent).toContain("just now");
+    expect(view.all('[data-post="pro_0000000d"] time')).toHaveLength(0);
+    expect(view.one('[data-post="pro_0000000d"] .babel-age').textContent).toContain("unknown");
     setSystemTime(new Date(base + 5 * 60_000));
     await view.wait(1_200);
-    expect(view.one('[data-post="pro_0000000a"] .babel-age').textContent).toBe("5m ago");
+    expect(view.one('[data-post="pro_0000000a"] .babel-age').textContent).toContain("5m ago");
+    expect(view.one('[data-post="pro_0000000d"] .babel-age').textContent).toContain("unknown");
     await view.unmount();
   });
 

@@ -6,6 +6,7 @@ import {
   FEED_SURFACES,
   FEED_WINDOWS,
   POST_KINDS,
+  SHELF_SORTS,
   type Established,
   type FeedGrouping,
   type FeedSort,
@@ -76,24 +77,21 @@ const SURFACE_NOTE: Record<FeedSurface, string> = {
   desk: "a ruling or an answer is waiting on you",
   queue: "an agent could do it without you: accepted, or sent back for refinement",
   shelf:
-    "kept rather than shown — candidates Babel is still developing, and what you have already decided",
+    "kept without attention decay — candidates Babel is still developing, and what you have already decided",
   all: "every post Babel has produced, in one list",
 };
 
-/**
- * The order each surface arrives under. The desk is a queue to drain, so it arrives by what is
- * waiting longest; the other three are a corpus to read, so they arrive hot.
- */
+/** Each surface opens in its own reading mode; the shelf keeps records without decay. */
 const SURFACE_SORT: Record<FeedSurface, FeedSort> = {
   desk: "next",
   queue: "next",
-  shelf: "hot",
+  shelf: "top",
   all: "hot",
 };
 
 /** What each ordering is computed from, in the reader's terms. The formula is the store's. */
 const SORT_BASIS: Record<FeedSort, string> = {
-  next: "What is waiting on you: the most urgent first, and at equal urgency a proposal before a finding before a candidate, oldest first.",
+  next: "Desk urgency fades from when a question was asked or an independent source was first cited. A newly cited independent source or explicit operator act renews it; viewing does not. Elsewhere, priority does not decay.",
   hot: "The score against how long ago the post arrived.",
   new: "Newest first, and nothing else.",
   top: "The highest score inside the window.",
@@ -334,10 +332,13 @@ export function Sentence({
             aria-checked={query.surface === name}
             onClick={() => {
               setPick(null);
-              // Changing surface changes what the list is FOR, so it brings the order that
-              // surface is read under: a queue to drain arrives by what has waited longest, a
-              // corpus to read arrives hot.
-              onQuery({ ...query, surface: name, sort: SURFACE_SORT[name], offset: 0 });
+              onQuery({
+                ...query,
+                surface: name,
+                sort: SURFACE_SORT[name],
+                window: name === "shelf" ? "all" : query.window,
+                offset: 0,
+              });
             }}
           >
             <span>{SURFACE_LABEL[name]}</span>
@@ -384,7 +385,7 @@ export function Sentence({
         setOpen={setPick}
       >
         <div className="babel-menu-column" role="group" aria-label="Order">
-          {FEED_SORTS.map((name) => (
+          {(query.surface === "shelf" ? SHELF_SORTS : FEED_SORTS).map((name) => (
             <button
               type="button"
               key={name}

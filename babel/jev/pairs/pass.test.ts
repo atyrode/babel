@@ -7,6 +7,7 @@ import {
   PairsInputSchema,
   PairsReportSchema,
   type PairsReport,
+  type RecordPeel,
 } from "../../contract.ts";
 import { JEV_SERVICE, type JevServices } from "../server/credential.ts";
 import { JevAnswers } from "../server/judge.ts";
@@ -81,7 +82,7 @@ const CLAIMS: Readonly<Record<string, string>> = {
 };
 
 /** The peel as the reading door serves it: the words, the instant, and the shape it requires. */
-function peel(id: string, createdAt: string): unknown {
+function peel(id: string, createdAt: string): RecordPeel {
   return {
     post: {
       id,
@@ -91,6 +92,7 @@ function peel(id: string, createdAt: string): unknown {
       standing: "new",
       established: "unsettled",
       createdAt,
+      attention: { at: null, basis: null },
       author: null,
       topics: [],
       score: 0,
