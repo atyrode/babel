@@ -22,19 +22,18 @@ import { SECRET_CLASSES, type ScanReport, type SecretClass } from "./preflight.t
   because "the pending set is the gap itself", and a stored position is a second authority that
   can disagree with the rows. The same discipline is what makes a cache admissible here: an entry
   is not a claim about the corpus NOW. It is a claim about one observation — this path, this many
-  bytes, this mtime, under this normalization, this detector set and this preflight mode — and
-  every one of those is re-observed (one `stat`) before the entry is used. A file that moved at
-  all does not invalidate an entry; it fails to match one, which is a miss and needs no
-  invalidation step to get right. There is nothing here a later reader has to trust and nothing
-  that can drift: the authority stays the filesystem, exactly as it stayed the rows there.
+  bytes, this mtime, this immutable archive capture (if any), under this normalization, this
+  detector set and this preflight mode. Live preparation re-observes the filesystem with `stat`;
+  archive callers supply the immutable capture identity and its recorded file metadata instead.
+  The cache does not re-stat either source. A changed observation fails to match, which is a
+  miss and needs no invalidation step to get right.
 
-  WHY THE OBSERVATION IS ENOUGH, and it is only enough because of #262. Size and mtime cannot
-  distinguish two different contents written at the same instant to the same length — but a
-  session whose bytes could still be moving is excluded from a scope altogether
-  (`prepare.ts`'s `excluded`, `LIVE_GRACE_MS`), so every session this cache is ever asked about
-  was last written at least two minutes ago. A log rewritten to exactly its old length with its
-  old mtime, minutes after it settled, is not a failure mode a harness has; a log still being
-  appended is, and that one never reaches here.
+  WHY THE OBSERVATION IS ENOUGH. For live preparation, #262 excludes logs whose bytes could
+  still be moving (`prepare.ts`'s `excluded`, `LIVE_GRACE_MS`). Size and mtime alone cannot
+  distinguish different contents of the same length written at the same instant, but a settled
+  live log rewritten to exactly its old length and mtime is not a harness failure mode. Archives
+  have a different boundary: distinct immutable captures may share a path, size and mtime.
+  Their capture identities must therefore match too; an archive reading is never a live one.
 
   AND THE STREAM IS VERIFIED, NOT TRUSTED. The kept stream is replayed into the material and
   hashed as it goes, and the digest it actually produces is what the preparation records. A
@@ -42,18 +41,20 @@ import { SECRET_CLASSES, type ScanReport, type SecretClass } from "./preflight.t
   checked against the digest a citation will carry, every time, at the cost of a sequential read
   with no parsing and no scanning in it.
 
-  ONE ENTRY PER SESSION, so the cache is bounded by the corpus and not by how often it is
-  prepared: the slot is named from the selector alone and a moved log overwrites its own entry.
-  The whole of it is best effort. A cache that cannot be written is a preparation that reads the
-  log again next time, never a preparation that fails.
+  ONE ENTRY PER SESSION in the caller-owned directory, so the cache is bounded by the corpus
+  and not by how often it is read: the slot is named from the selector alone and a different
+  observation overwrites its own entry. Archive hosts use separate directories. The whole of it
+  is best effort: a failed cache write only means reading the source again next time.
 */
 
-/** How large a log was and when it was last written; `modifiedAt` is 0 when nothing could be
- *  observed, which is never a match. */
+/** The source's size and recorded modification time, optionally bound to an immutable archive
+ *  capture. `modifiedAt` is 0 when nothing could be observed, which is never a match. */
 export interface Observation {
   readonly size: number;
-  /** Epoch milliseconds, as the filesystem answered. */
+  /** Epoch milliseconds, from the live filesystem or immutable archive metadata. */
   readonly modifiedAt: number;
+  /** Immutable archive capture identity; omitted for a live filesystem observation. */
+  readonly capture?: string;
 }
 
 /** What one pass produced, as a later pass may reuse it. */
@@ -147,10 +148,17 @@ const KeptReadingSchema = z.strictObject({
   mode: PreflightModeSchema,
   selector: z.string().min(1),
   path: z.string().min(1),
+  capture: z.string(),
   size: z.number().int().nonnegative(),
   modifiedAt: z.number().positive(),
-  captureDigest: z.string().min(1),
-  sourceDigest: z.string().min(1),
+  captureDigest: z
+    .string()
+    .length(71)
+    .regex(/^sha256:[0-9a-f]{64}$/),
+  sourceDigest: z
+    .string()
+    .length(71)
+    .regex(/^sha256:[0-9a-f]{64}$/),
   bytes: z.number().int().nonnegative(),
   records: z.number().int().nonnegative(),
   streamBytes: z.number().int().nonnegative(),
@@ -174,6 +182,7 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
   return {
     reuse: async (session, seen) => {
       if (seen.modifiedAt <= 0) return null;
+      const capture = seen.capture ?? "";
       const slot = slotOf(session);
       const text = await Bun.file(`${slot}.json`)
         .text()
@@ -197,6 +206,7 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
       if (kept.path !== session.primaryPath) return null;
       if (kept.size !== seen.size) return null;
       if (kept.modifiedAt !== seen.modifiedAt) return null;
+      if (kept.capture !== capture) return null;
       const stream = `${slot}.records`;
       const lying = await stat(stream).catch(() => null);
       if (lying === null || lying.size !== kept.streamBytes) return null;
@@ -229,6 +239,7 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
 
     keep: async (session, seen) => {
       if (seen.modifiedAt <= 0) return null;
+      const capture = seen.capture ?? "";
       const slot = slotOf(session);
       const temporary = `${slot}.${crypto.randomUUID()}.records`;
       let writer: Bun.FileSink;
@@ -268,6 +279,7 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
             await discard();
             return;
           }
+          const staged = `${slot}.${crypto.randomUUID()}.json`;
           try {
             const written = await stat(temporary);
             await rename(temporary, `${slot}.records`);
@@ -275,6 +287,7 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
               ...about,
               selector: session.selector,
               path: session.primaryPath,
+              capture,
               size: seen.size,
               modifiedAt: seen.modifiedAt,
               captureDigest: reading.captureDigest,
@@ -285,11 +298,12 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
               report: reading.report,
             };
             // The document is renamed last, so it is only ever seen beside a complete stream.
-            const staged = `${slot}.${crypto.randomUUID()}.json`;
             await Bun.write(staged, JSON.stringify(document) + "\n");
             await rename(staged, `${slot}.json`);
           } catch {
             await discard();
+          } finally {
+            await rm(staged, { force: true }).catch(() => undefined);
           }
         },
         abandon: discard,

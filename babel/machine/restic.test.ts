@@ -66,6 +66,40 @@ function config(overrides: Partial<ResticConfig> = {}): ResticConfig {
   };
 }
 
+/** A synthetic child exercises pipe ownership, not restic's protocol. Its output is larger
+ *  than either pipe, and it closes both before exiting so EOF is not mistaken for settlement. */
+async function withDumpChild(
+  body: (repo: Repo, exited: string, bytes: Buffer) => Promise<void>,
+  exitCode = 0,
+): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "babel-dump-child-"));
+  const binary = join(root, "restic");
+  const exited = join(root, "exited");
+  const bytes = Buffer.alloc(2 << 20, LOG);
+  writeFileSync(
+    binary,
+    `#!${process.execPath}
+import { closeSync, writeFileSync } from "node:fs";
+process.on("exit", (code) => writeFileSync(${JSON.stringify(exited)}, String(code)));
+await Bun.write(Bun.stdout, Buffer.alloc(${bytes.byteLength}, Buffer.from(${JSON.stringify([...LOG])})));
+closeSync(1);
+await Bun.write(Bun.stderr, Buffer.alloc(2 << 20, "synthetic diagnostic\\n"));
+closeSync(2);
+process.exit(${exitCode});
+`,
+    { mode: 0o755 },
+  );
+  try {
+    await body(
+      openRepo(config({ binary, repository: join(root, "repo"), cacheDir: join(root, "cache") })),
+      exited,
+      bytes,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 beforeAll(
   whenRestic(async () => {
     home = mkdtempSync(join(tmpdir(), "babel-restic-"));
@@ -135,6 +169,93 @@ test("a snapshot or a path that could be read as a flag is refused before restic
   });
 });
 
+test("dumpTo forwards exact binary bytes in order and awaits its sink", async () => {
+  await withDumpChild(async (streaming, exited, expected) => {
+    let offset = 0;
+    let pending = false;
+    const result = await streaming.dumpTo(
+      "latest",
+      "/session.jsonl",
+      async (chunk) => {
+        expect(pending).toBe(false);
+        pending = true;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(
+          Buffer.from(chunk).equals(expected.subarray(offset, offset + chunk.byteLength)),
+        ).toBe(true);
+        offset += chunk.byteLength;
+        pending = false;
+      },
+      { maxBytes: expected.byteLength },
+    );
+    expect(result).toEqual({ bytes: expected.byteLength });
+    expect(offset).toBe(expected.byteLength);
+    expect(readFileSync(exited, "utf8")).toBe("0");
+    expect(
+      await streaming.dump("latest", "/session.jsonl", { maxBytes: expected.byteLength }),
+    ).toEqual(new Uint8Array(expected));
+  });
+}, 15_000);
+
+test("dumpTo refuses before forwarding an over-bound chunk and settles both pipes", async () => {
+  await withDumpChild(async (streaming, exited) => {
+    let forwarded = 0;
+    await expect(
+      streaming.dumpTo(
+        "latest",
+        "/session.jsonl",
+        (chunk) => {
+          forwarded += chunk.byteLength;
+        },
+        { maxBytes: 0 },
+      ),
+    ).rejects.toMatchObject({ kind: "refused" });
+    expect(forwarded).toBe(0);
+    expect(readFileSync(exited, "utf8")).toBe("0");
+  });
+}, 15_000);
+
+test("dumpTo stops forwarding after a sink rejection and settles before preserving the error", async () => {
+  await withDumpChild(async (streaming, exited) => {
+    const failure = new Error("synthetic sink failure");
+    let calls = 0;
+    await expect(
+      streaming.dumpTo("latest", "/session.jsonl", async () => {
+        calls += 1;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+    expect(calls).toBe(1);
+    expect(readFileSync(exited, "utf8")).toBe("0");
+  });
+}, 15_000);
+
+test("dumpTo preserves even an undefined synchronous sink failure after settling", async () => {
+  await withDumpChild(async (streaming, exited) => {
+    let rejected = false;
+    try {
+      await streaming.dumpTo("latest", "/session.jsonl", () => {
+        throw undefined;
+      });
+    } catch (error) {
+      rejected = true;
+      expect(error).toBeUndefined();
+    }
+    expect(rejected).toBe(true);
+    expect(readFileSync(exited, "utf8")).toBe("0");
+  });
+}, 15_000);
+
+test("dump retains restic's exit error ahead of a size refusal", async () => {
+  await withDumpChild(async (streaming, exited) => {
+    await expect(streaming.dump("latest", "/session.jsonl", { maxBytes: 0 })).rejects.toMatchObject(
+      { kind: "exit", code: 12 },
+    );
+    expect(readFileSync(exited, "utf8")).toBe("12");
+  }, 12);
+}, 15_000);
+
 withRepository(
   "a fresh repository passes structurally and with every data blob read",
   async () => {
@@ -166,6 +287,21 @@ withRepository(
 
     const dumped = await repo.dump(snapshotId, sourcePath, { maxBytes: LOG.byteLength });
     expect(Buffer.from(dumped).equals(LOG)).toBe(true);
+    let streamed = 0;
+    expect(
+      await repo.dumpTo(
+        snapshotId,
+        sourcePath,
+        (chunk) => {
+          expect(
+            Buffer.from(chunk).equals(LOG.subarray(streamed, streamed + chunk.byteLength)),
+          ).toBe(true);
+          streamed += chunk.byteLength;
+        },
+        { maxBytes: LOG.byteLength },
+      ),
+    ).toEqual({ bytes: LOG.byteLength });
+    expect(streamed).toBe(LOG.byteLength);
 
     const target = mkdtempSync(join(home, "restored-"));
     const outcome = await repo.restore(snapshotId, { target, include: [sourcePath] });
@@ -249,3 +385,68 @@ withRepository(
   },
   RESTIC_TIMEOUT,
 );
+
+/** Large synthetic pipes isolate the ls visitor's backpressure and child-settlement contract. */
+async function withListingChild(
+  body: (repo: Repo, exited: string) => Promise<void>,
+): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "babel-ls-child-"));
+  const binary = join(root, "restic");
+  const exited = join(root, "exited");
+  writeFileSync(
+    binary,
+    `#!${process.execPath}
+import { closeSync, writeFileSync } from "node:fs";
+process.on("exit", () => writeFileSync(${JSON.stringify(exited)}, "settled"));
+for (let i = 0; i < 20003; i++) {
+  await Bun.write(Bun.stdout, JSON.stringify({struct_type:"node",path:"/synthetic/"+i,type:"file",size:i,mtime:"2026-09-01T00:00:00Z"})+"\\n");
+}
+closeSync(1);
+await Bun.write(Bun.stderr, Buffer.alloc(2 << 20, "synthetic diagnostic\\n"));
+closeSync(2);
+`,
+    { mode: 0o755 },
+  );
+  try {
+    await body(openRepo(config({ binary, repository: join(root, "repo") })), exited);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("streamed listing awaits each visitor and visits past the retained ls bound", async () => {
+  await withListingChild(async (repo, exited) => {
+    let count = 0;
+    let active = false;
+    await repo.lsTo("a".repeat(64), async (entry) => {
+      expect(active).toBe(false);
+      active = true;
+      await Promise.resolve();
+      expect(entry.path).toBe(`/synthetic/${count}`);
+      count++;
+      active = false;
+    });
+    expect(count).toBe(20003);
+    expect(readFileSync(exited, "utf8")).toBe("settled");
+    const retained = await repo.ls("a".repeat(64));
+    expect(retained.entries.length).toBe(20000);
+    expect(retained.entries[19999]?.path).toBe("/synthetic/19999");
+    expect(retained.truncated).toBe(true);
+  });
+}, 30_000);
+
+test("a failed listing visitor stops forwarding but drains and settles both child pipes", async () => {
+  await withListingChild(async (repo, exited) => {
+    const failure = new Error("synthetic consumer refusal");
+    let called = 0;
+    await expect(
+      repo.lsTo("a".repeat(64), async () => {
+        called++;
+        await Promise.resolve();
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+    expect(called).toBe(1);
+    expect(readFileSync(exited, "utf8")).toBe("settled");
+  });
+}, 30_000);

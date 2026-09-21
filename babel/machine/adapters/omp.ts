@@ -87,7 +87,7 @@ export const omp: Adapter = {
     return [join(agent, "sessions"), join(agent, "blobs"), join(home, ".omp", "collab")];
   },
 
-  claim(path) {
+  claim(path, _exists, roots) {
     if (!path.endsWith(SESSION_EXT) || !walkablePath(path)) return null;
     const segments = path.split("/");
     const n = segments.length;
@@ -96,6 +96,7 @@ export const omp: Adapter = {
     if (n < 3 || segments[n - 3] !== "sessions" || project === undefined || file === undefined) {
       return null;
     }
+    if (roots !== undefined && !roots.has(segments.slice(0, -2).join("/") || "/")) return null;
     const id = idSegment(project) + "/" + idSegment(file.slice(0, -SESSION_EXT.length));
     return validSourceId(id) ? sessionRef(HARNESS, id, path) : null;
   },

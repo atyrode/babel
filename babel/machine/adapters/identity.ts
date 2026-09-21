@@ -81,8 +81,13 @@ export interface Adapter {
   defaultRoots(): string[];
   /** What a backup must capture to be able to restore a session, closure included. */
   backupRoots(): string[];
-  /** The session this path is the primary log of, or null when it is not this harness's. */
-  claim(path: string): SessionRef | null;
+  /** The session this path is the primary log of. Archive callers supply listing existence
+   *  and recorded roots; omitted arguments retain the live filesystem behavior. */
+  claim(
+    path: string,
+    exists?: (path: string) => boolean,
+    roots?: ReadonlySet<string>,
+  ): SessionRef | null;
   discover(roots: readonly string[]): Promise<SessionRef[]>;
   describe(ref: SessionRef): Promise<SessionFacts>;
 }

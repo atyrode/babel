@@ -1,0 +1,32 @@
+[
+  {
+    "door": "atyrode.babel.recallSearch",
+    "contractDigest": "1368dbe379c011bb57b6b15c8a91292521aa1108986306cc3978874d5baa9607",
+    "maxResultBytes": 81920
+  },
+  {
+    "door": "atyrode.babel.recallShow",
+    "contractDigest": "1368dbe379c011bb57b6b15c8a91292521aa1108986306cc3978874d5baa9607",
+    "maxResultBytes": 81920
+  },
+  {
+    "door": "atyrode.babel.recallPreview",
+    "contractDigest": "1368dbe379c011bb57b6b15c8a91292521aa1108986306cc3978874d5baa9607",
+    "maxResultBytes": 81920
+  },
+  {
+    "door": "atyrode.babel.recallSession",
+    "contractDigest": "1368dbe379c011bb57b6b15c8a91292521aa1108986306cc3978874d5baa9607",
+    "maxResultBytes": 81920
+  },
+  {
+    "door": "atyrode.babel.recallPoll",
+    "contractDigest": "1368dbe379c011bb57b6b15c8a91292521aa1108986306cc3978874d5baa9607",
+    "maxResultBytes": 81920
+  },
+  {
+    "door": "atyrode.babel.recallSkill",
+    "contractDigest": "da36825f4c3e153621c42007360bebab56b91a16916d6b87430fe954b8e59d34",
+    "maxResultBytes": 81920
+  }
+]

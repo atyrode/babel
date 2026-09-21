@@ -22,7 +22,42 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 10 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 11 } as const;
+
+/** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
+const RECALL_TRACE_SCHEMA: readonly string[] = [
+  `CREATE TABLE recall_requests(
+     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+     id TEXT NOT NULL UNIQUE,
+     principal_id TEXT NOT NULL,
+     trace_id INTEGER NOT NULL CHECK(trace_id > 0),
+     operation TEXT NOT NULL CHECK(operation IN ('search', 'show', 'preview', 'session')),
+     target TEXT NOT NULL,
+     service_revision TEXT NOT NULL,
+     redacted_request TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     UNIQUE(principal_id, trace_id)
+   ) STRICT`,
+  `CREATE INDEX recall_requests_by_principal ON recall_requests(principal_id, seq DESC)`,
+  `CREATE TABLE recall_outcomes(
+     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+     request_id TEXT NOT NULL REFERENCES recall_requests(id),
+     state TEXT NOT NULL,
+     summary TEXT NOT NULL,
+     preview_digest TEXT,
+     created_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE INDEX recall_outcomes_by_request ON recall_outcomes(request_id, seq DESC)`,
+  `CREATE INDEX recall_outcomes_by_preview ON recall_outcomes(preview_digest) WHERE preview_digest IS NOT NULL`,
+  ...["recall_requests", "recall_outcomes"].flatMap((table) => [
+    `CREATE TRIGGER ${table}_no_update BEFORE UPDATE ON ${table} BEGIN
+       SELECT RAISE(ABORT, 'Recall traces are append-only');
+     END`,
+    `CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN
+       SELECT RAISE(ABORT, 'Recall traces are append-only');
+     END`,
+  ]),
+];
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -408,7 +443,9 @@ const CORPUS_INDEX_SCHEMA: readonly string[] = [
 export const SESSION_INDEX_SCHEMA: readonly string[] = [
   `CREATE TABLE session_sources(
      id INTEGER PRIMARY KEY,
-     selector TEXT NOT NULL UNIQUE,
+     namespace TEXT NOT NULL,
+     selector TEXT NOT NULL,
+     capture TEXT NOT NULL,
      harness TEXT NOT NULL,
      source_id TEXT NOT NULL,
      path TEXT NOT NULL,
@@ -416,13 +453,28 @@ export const SESSION_INDEX_SCHEMA: readonly string[] = [
      modified_at REAL NOT NULL CHECK (modified_at > 0),
      schema INTEGER NOT NULL,
      detectors TEXT NOT NULL,
-     mode TEXT NOT NULL
+     mode TEXT NOT NULL,
+     capture_digest TEXT NOT NULL,
+     source_digest TEXT NOT NULL,
+     UNIQUE(namespace, selector)
+   ) STRICT`,
+  `CREATE TABLE session_records(
+     id INTEGER PRIMARY KEY,
+     source INTEGER NOT NULL REFERENCES session_sources(id),
+     line INTEGER NOT NULL CHECK (line > 0),
+     byte_offset INTEGER NOT NULL CHECK (byte_offset >= 0),
+     byte_length INTEGER NOT NULL CHECK (byte_length > 0),
+     digest TEXT NOT NULL,
+     time TEXT,
+     UNIQUE(source, line)
    ) STRICT`,
   `CREATE TABLE session_passages(
      id INTEGER PRIMARY KEY,
-     source INTEGER NOT NULL REFERENCES session_sources(id)
+     source INTEGER NOT NULL REFERENCES session_sources(id),
+     record INTEGER NOT NULL REFERENCES session_records(id)
    ) STRICT`,
   `CREATE INDEX session_passages_by_source ON session_passages(source)`,
+  `CREATE INDEX session_passages_by_record ON session_passages(record)`,
   `CREATE VIRTUAL TABLE session_terms USING fts5(
      tokens,
      content = '',
@@ -889,6 +941,7 @@ export const SCHEMA_V1: readonly string[] = [
   // After `records`, because the trigger names that table, and before the crossing, because the
   // importer's own inserts are what the trigger first fires for.
   ...CORPUS_INDEX_SCHEMA,
+  ...RECALL_TRACE_SCHEMA,
 
   // ---------------------------------------------------------------- a drain (#258)
   // No index, and now for one reason rather than two: a deployment accumulates drains at the
@@ -1025,6 +1078,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // above — and the one addition in this file that names a VIRTUAL table, which `sqlite_master`
   // answers for by name exactly as it does for an ordinary one.
   ...CORPUS_INDEX_SCHEMA.map(objectAddition),
+  ...RECALL_TRACE_SCHEMA.map(objectAddition),
   // #169: the models that have answered a running job, JSON, in the order it first heard from
   // each. A column and not a table, because the table above already arrives by addition for a
   // store created before #261 — and an addition keyed only on the table's name would have left

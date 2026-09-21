@@ -152,6 +152,19 @@ describe("each adapter recognizes its own layout and refuses the others'", () =>
     expect(codex.claim(join(home, "history.jsonl"))).toBeNull();
   });
 
+  test("archive history claims use supplied listing existence instead of live siblings", () => {
+    const liveHistory = join(codexRoot, "history.jsonl");
+    expect(claim(liveHistory, () => false)).toBeNull();
+    expect(codex.claim(liveHistory, () => false)).toBeNull();
+    const archivedRoot = join(home, "archived-only-codex");
+    const archivedHistory = join(archivedRoot, "history.jsonl");
+    const archivedExists = (path: string): boolean => path === join(archivedRoot, "sessions");
+    expect(claim(archivedHistory, archivedExists)?.selector).toBe("codex/state");
+    expect(codex.claim(archivedHistory, archivedExists)?.selector).toBe("codex/state");
+    expect(claim(archivedHistory)).toBeNull();
+    expect(claim(liveHistory)?.selector).toBe("codex/state");
+  });
+
   test("default and backup roots follow the machine's own home", async () => {
     expect(omp.defaultRoots()).toEqual([ompRoot]);
     expect(omp.backupRoots()).toEqual([

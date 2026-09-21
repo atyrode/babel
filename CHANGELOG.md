@@ -11,12 +11,28 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Recall brings bounded archived evidence to any agent, without lending it the archive.**
+  An owner-managed native service fixes disclosure classes; search and locator windows share
+  preparation's redaction, record identities and UTF-8 bounds. Whole sessions need a size preview
+  before explicit sequential widening, with honest coverage, cost and derived traces. A versioned
+  skill and exact SDK approval profile expose the same read contract without credential discovery.
+  Shared preparation regressions and a source-deleted synthetic restic run reconstruct 245 pages
+  byte-for-byte, preserve class isolation after cache warming, and confirm native cleanup. Live
+  provisioning, managed activation and real-corpus disclosure remain operator steps (#156).
+
 - **The dependency closure carries the reviewed bounded-result SDK.** Babel's SDK and both
   workflow gates now follow the same merged Manifold revision, with Code and omp advanced in
   dependency order. Agent-facing data remains explicitly approved and bounded; this supplies
   Recall's transport prerequisite, not Recall itself or permission to disclose an archive.
   The full frozen gate passes 1,060 tests, and a disposable engine installs all eleven bundles,
   dispatches their doors and verifies Babel's store creation and purge.
+
+- **A long session record has the same boundary however its bytes arrive.** Preparation now
+  segments oversized records in content order, preserving Unicode pairs rather than letting a
+  filesystem chunk decide the normalized stream. Preparation identity advances to schema 3, so
+  earlier cached readings cannot be mistaken for the corrected form. Chunk-boundary regressions
+  and an isolated real-restic exercise prove unchanged raw capture identity and identical
+  redacted bytes, source digests and record locators through live preparation and archive replay.
 
 - **A refused next-action decision leaves no ruling behind.** A malformed historical record
   reference is rejected before the append or its event, rather than failing response validation

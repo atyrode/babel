@@ -412,7 +412,7 @@ plugin holds this by construction (§4). An operator using `restic` by hand hold
 
 ## 9. Reading what Babel holds
 
-There is one hub, so there is one place to read: the panels. `atyrode.babel.feed` serves Home (every
+The hub's durable analysis records are read through its panels. `atyrode.babel.feed` serves Home (every
 record, ranked by what needs the operator), the peeled record and a topic with its filings and his
 interest; `atyrode.babel.watch` serves what is running, what will run and what a drain is spending
 (`docs/building.md`). Behind them are the read doors — `feed`, `record`, `thread`, `topics`,
@@ -425,6 +425,76 @@ Three things that used to be commands are now properties of having one hub:
   and ingestion is idempotent, so a retried cycle writes the same rows.
 - An empty answer is an answer. A deployment that has explored nothing shows nothing, and that is
   not distinguished from a malfunction because there is nothing to distinguish.
+
+### 9.1 Recall reads archived conversations, not the live corpus
+
+`babel/recall-skill.md` is the versioned outside-agent procedure, also returned by the
+`recallSkill` door. The installed `babel-recall-runner` is a thin wrapper around Manifold's
+supported SDK runner, not a resurrected Babel CLI. Its immutable `babel/recall-profile.json`
+approves six exact bounded read doors. Neither file selects a hub, discovers a credential,
+creates a grant, launches inference or installs a native runtime.
+
+> **OPERATOR STEP — provision Recall authority. Not exercised on a live deployment.**
+> **Prerequisites:** an enrolled owner has installed this Babel artifact with the `restic` and
+> `system` tools, the writable managed cache and the existing `atyrode.babel.restic` storage
+> binding (§4). Preserve that deployment's repository and custody; do not create replacements.
+> The native `atyrode.babel.recall` operation must be a ready runtime candidate. The owner
+> chooses subject names, stable hosts, optional harness/selector prefixes and sensitivities
+> 0–3, plus disclosure classes with fixed ceilings. More specific matches cannot lower a
+> broader sensitivity: the highest matching sensitivity wins.
+> **Procedure:** as root, call `previewRecall` with the selected machine and policy. Inspect
+> its readiness, reason, changed flag, exact returned class targets, configuration revision
+> and preview digest. Call `installRecall` with that same policy, machine, expected revision
+> and digest; it re-reads the installation/artifact/resource tuple and uses native
+> compare-and-swap. A changed preview must be reviewed again. Installation configures one
+> owner-managed persistent instance service, not one native job per reader.
+> Grant an outside agent only `services:invoke` at its exact returned disclosure target;
+> do not give it native job, configuration or storage authority. The trusted launcher
+> supplies the hub and its own supported Agent/run binding, privately, and the matching
+> reviewed profile. **Success:** native readiness is acknowledged, a permitted filtered search
+> returns projected evidence and a durable trace, and an intentionally higher-class subject
+> stays refused before and after another authorized caller warms its cache.
+
+Start with bounded search, inspect partial coverage and archive dates, then follow returned
+locators. The archive is the only source: newer live logs and unarchived sessions are blind
+spots. Keep `requestId` on pending or uncertain starts and poll it with the same principal and
+target. If projection publication lost that handle, pass the original numeric `traceId` instead;
+`located` returns only the owned request id, which can then be polled normally. Lookup preserves
+the same principal/target/grant/revision fences and performs no native work. If both identifiers
+are lost, report uncertainty, not zero cost. Do not automatically retry under fresh ids.
+All excerpts are mandatory-redacted, explicitly untrusted data. Detector coverage
+and historical metadata have limits; neither is permission to send sensitive material to a
+different class or provider.
+
+Whole-session widening requires a completed size preview and explicit intent after reviewing
+that size. Respect the returned per-class `previewByteLimit`, sequential `nextOffset` and 8 KiB
+page ceiling. Progress renews the one-hour idle window; an expired or revision-invalidated
+preview needs a new preview, not guessed offsets. Completion releases temporary bytes while
+preserving a bounded final-page retry. Temporary widening lives in the native job's private
+tmpfs, never its persistent cache. Rebuildable indexes and metadata sidecars may be lost without
+losing the archive; rebuilding incurs reported fetch/replay work.
+
+**Executed synthetic evidence — dev-01, 2026-09-21.** A disposable restic repository, private
+HOME/XDG roots and a bundled machine half used the SDK's real anonymous input materializer
+(including its JSON-encoded generated service bearer), readonly input mounts and owner IPC.
+After deleting both synthetic source logs, the native service returned 2,000,413 canonical
+redacted bytes from a 2,000,394-byte capture in 245 UTF-8-safe pages. Reconstructed bytes and
+digests matched preparation's canonical scanner; cold refusal and higher-class cache warming
+preserved disclosure isolation. The final page retried unchanged, old transport responses
+expired through bounded eviction, and owner disconnect exited zero. Fifty core/record/store/
+runtime regressions and the eleven-test shared preparation suite passed. The compiled skill
+was byte-identical to its source and all six approvals matched their declared digests.
+Fixtures were removed. This proves synthetic data paths, **not** installed native governance,
+real-corpus classification, managed activation, a paid provider call or production installation.
+
+The Nix-built managed wrapper was also exercised on dev-01 on 2026-09-21 against a disposable
+loopback lifecycle peer connected to the actual Babel doors, ledger, native HTTP service and
+archive core over an immutable synthetic snapshot. It delivered the exact shipped skill and
+mandatory-redacted carrier-shaped evidence, performed one cold fetch, and recovered a deliberately
+withheld request handle from its action trace without a repeated fetch or evidence publication.
+Every SDK run confirmed cleanup. The managed `omp-stack` check proved byte-identical skill
+paths and OMP command discovery without activation or providers. This separate consumer proof
+does not claim real hub admission or a live storage binding.
 
 ---
 

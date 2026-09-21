@@ -110,20 +110,21 @@ toolchain; commands run from the repository root unless a working directory is s
 | The gate            | `bun install --frozen-lockfile && bun run deps:code && bun run check && bun test && bun run pack && bun run verify` | The whole of it, and what CI runs on every pull request. Read `docs/building.md` first.                                                                                                                                                                                                                      |
 | Dependency closure  | `bun run deps:code`                                                                                                 | Fetches atyrode/code at `CODE_REV`, arranges the sibling layout Code's own `prepare:integration` expects and runs Code's packers, which build omp's bundles beneath it. `verify` composes Babel on top of them.                                                                                              |
 | Typecheck           | `bun run typecheck`                                                                                                 | `tsc --noEmit` over both halves, the store, the panels and the tests.                                                                                                                                                                                                                                        |
-| Every check at once | `bun run check`                                                                                                     | `typecheck`, `lint`, `format:check`, `lint:reachability`, `lint:doc-paths` and `check-test-rules`, in that order. It is one script because the reusable CI workflow runs `check` and nothing else of the caller's: a gate outside it is a gate CI does not run.                                              |
-| Suites              | `bun test`                                                                                                          | The manifests against `babel/contract.ts` and `babel/store/schema.ts`, the doors against a real temporary database, the panels in a document, and `pack` itself.                                                                                                                                             |
+| Every check at once | `bun run check`                                                                                                     | `typecheck`, `lint`, `format:check`, `lint:reachability`, `lint:doc-paths`, `check-test-rules` and `check:recall-profile`, in that order. It is one script because the reusable CI workflow runs `check` and nothing else of the caller's: a gate outside it is a gate CI does not run.                      |
+| Suites              | `bun test`                                                                                                          | Requires `restic` 0.19.1 on `PATH` for disposable synthetic archive fixtures; CI provisions the checksum-pinned tool with `bun run deps:tests`. Tests manifests, real temporary databases and archives, panels in a document, and `pack` itself.                                                             |
 | Pack                | `bun run pack`                                                                                                      | Builds the machine half into one bundled file, stamps its digest into both platform artifacts of the manifest and writes one `dist/<id>.manifold-plugin.json` per manifest, parents first, plus `dist/SHA256SUMS`. A machine-half change shows up as a moved digest in the manifest diff.                    |
 | Verify              | `bun run verify`                                                                                                    | Installs every bundle on a disposable engine spawned from the `../manifold` sibling, dispatches every door it publishes, asserts the plugin's database file exists and then that a purge removed it. Needs `deps:code` and `pack` first.                                                                     |
 | Reachability        | `bun run lint:reachability`                                                                                         | knip over the entry points the manifests declare plus the dev-time tools. It FAILS on an unreachable file, an unlisted or unresolved import and an unused dependency; unused exports are reported and do not fail, because every name is spelled once in `contract.ts` whether or not a consumer exists yet. |
 | Documentation paths | `bun run lint:doc-paths`                                                                                            | Every backticked repository path and every `bun run <script>` named in a tracked `.md` must exist.                                                                                                                                                                                                           |
 | Format and lint     | `bun run lint`; `bun run format:check`; `bun run format` to fix                                                     | ESLint and Prettier at the Manifold sibling's own versions and settings, so three repositories in lockstep keep one convention rather than three. `react-hooks` runs at the plugin's own recommended severities over `babel/feed` and `babel/watch`, with no exception of this tree's own.                   |
 | Test rules          | `bun run check-test-rules`                                                                                          | A test may not read a `.md` file — prose wording is not a contract — and may not skip itself on an environment variable: a lane that cannot run is zero tests, never silently-skipped ones.                                                                                                                  |
+| Recall approvals    | `bun run check:recall-profile`; `bun run recall:profile` after a reviewed declaration change                        | Check or regenerate the immutable outside-agent approvals from `babel/contract.ts`. A live discovered declaration is never an approval source.                                                                                                                                                               |
 | Inner loop          | `bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifold-1`                               | Packs every manifest, installs the baseline before its parts on the named hub and reinstalls the bundles whose digest moved on every save. A preview hub only.                                                                                                                                               |
 
-Each of the five checks has been watched to fail on a deliberate break — an unimported file, an
-unresolved import, a document naming a path that does not exist, a test reading `SPEC.md`, a test
-skipping itself on an environment variable, a `==`, and a misformatted line — because a gate
-nobody has seen fail is not a gate.
+The checks have been watched to fail on deliberate breaks — an unimported file, an unresolved
+import, a document naming a path that does not exist, a test reading `SPEC.md`, a test skipping
+itself on an environment variable, a `==`, a misformatted line and an isolated Recall approval
+digest change — because a gate nobody has seen fail is not a gate.
 
 Every row needs the SDK: a checkout of atyrode/manifold **beside this repository**, at the
 revision in `MANIFOLD_REV`, with its own `bun install` run. `deps:code` and `verify`
@@ -133,11 +134,12 @@ additionally require that checkout to sit exactly at the pin, and Code's own
 pointing it elsewhere afterwards fails every web test with "Invalid hook call" for a reason that
 is not the component under test (`docs/building.md`, "The SDK is a sibling checkout").
 
-The `archive` machine operation is the one part no local command proves: it needs an enrolled
-machine binding a `restic` runtime tool and the `atyrode.babel.restic` service the operator
-installs, so it is exercised on a hub and never in the suites. Report skipped checks and the
-guarantees they leave unverified; completed CI evidence may supply missing capability proof, but
-a local skip is not a pass.
+Deployed archive and Recall authority need an enrolled machine, its reviewed native resources
+and the owner's `atyrode.babel.restic` service. Local synthetic restic and native IPC exercises
+prove their data paths, not live service/grant provisioning or real-corpus disclosure.
+`docs/runbook.md` §9.1 records Recall's consumer proof and unexercised operator steps. Report
+skipped checks and the guarantees they leave unverified; completed CI evidence may supply
+missing capability proof, but a local skip is not a pass.
 
 ## Boundaries
 

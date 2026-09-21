@@ -474,10 +474,10 @@ test("the doors that ask a machine what it can run are lent that read, and no ot
     press rather than by a job that never starts. The crossing's two owner-only doors ask for a
     different reason: `importLedger` and `rehostSessions` write a session's machine column, and a
     column carrying a name the hub does not know is provenance nothing can read back, so each
-    checks the id against the hub before writing it (#312). Nothing else in the roster asks a
-    machine anything, and a delegate nobody spends is authority nobody asked for: reading a feed,
-    ruling on a record and stopping a run all stay inside this plugin's own tables and its own
-    job nodes.
+    checks the id against the hub before writing it (#312). Recall's owner setup describes
+    the native service candidate and rechecks it on installation. Nothing else asks a machine
+    anything: reading a feed, ruling on a record and stopping a run stay inside this plugin's
+    own tables and job nodes.
   */
   const asks: Record<string, true> = {
     ...WAKES,
@@ -485,6 +485,8 @@ test("the doors that ask a machine what it can run are lent that read, and no ot
     [ACTIONS.verify]: true,
     [ACTIONS.importLedger]: true,
     [ACTIONS.rehostSessions]: true,
+    [ACTIONS.previewRecall]: true,
+    [ACTIONS.installRecall]: true,
   };
   for (const action of plugin.actions) {
     const reach = [...(action.caps ?? []), ...(action.delegates ?? [])];

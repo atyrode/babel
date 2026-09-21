@@ -12,19 +12,22 @@
     "lint:reachability": "knip --no-progress",
     "lint:doc-paths": "bun scripts/check-doc-paths.ts",
     "check-test-rules": "bun scripts/check-test-rules.ts",
+    "check:recall-profile": "bun scripts/recall-profile.ts",
+    "recall:profile": "bun scripts/recall-profile.ts --write",
     "triage": "bun scripts/triage-policy.ts --report",
     "triage:fix": "bun scripts/triage-policy.ts --fix",
     "labels": "bun scripts/labels.ts --check",
     "dispatch": "bun scripts/dispatch.ts --next",
-    "check": "bun run typecheck && bun run lint && bun run format:check && bun run lint:reachability && bun run lint:doc-paths && bun run check-test-rules",
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run lint:reachability && bun run lint:doc-paths && bun run check-test-rules && bun run check:recall-profile",
     "test": "bun test",
     "pack": "./pack.sh",
     "deps:code": "bun scripts/prepare-code.ts",
+    "deps:tests": "sh scripts/prepare-test-tools.sh",
     "verify": "bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/verify.ts\" .integration/code/plugins/.integration/omp/plugins/dist/*.manifold-plugin.json .integration/code/plugins/dist/*.manifold-plugin.json dist/*.manifold-plugin.json",
     "dev": "./pack.sh --machine && bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/dev.ts\" babel"
   },
   "dependencies": {
-    "@atyrode/manifold-code": "github:atyrode/code#7263ac6fe9743f0bc99bc4344655a9e9909e947d",
+    "@atyrode/manifold-code": "github:atyrode/code#0ad78200da64d0dbc1beeed6cf1ef933145712ad",
     "zod": "4.4.3"
   },
   "devDependencies": {

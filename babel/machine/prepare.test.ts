@@ -36,7 +36,7 @@ import {
 } from "../contract.ts";
 import type { SessionRef } from "./adapters/index.ts";
 import { materialSink, type OutputFile, type OutputSink } from "./output.ts";
-import { PREFLIGHT_DETECTORS } from "./preflight.ts";
+import { PREFLIGHT_DETECTORS, secretScan } from "./preflight.ts";
 import {
   PREPARATION_SCHEMA,
   PrepareInputSchema,
@@ -559,6 +559,38 @@ test("the locator on a redaction recovers the original, and only on this machine
   expect(resolved?.captureDigest).toBe(
     receipt.material?.sessions[0]?.captureDigest ?? "no capture digest",
   );
+});
+
+test("a locator after an oversized record resolves against the same local normalization", async () => {
+  const session = ref("omp", "oversized-redaction");
+  const raw = `${"x".repeat(4 << 20)}aws_access_key_id ${LEAKED_KEY}\n`;
+  writeFileSync(session.primaryPath, raw);
+  try {
+    const scan = secretScan();
+    let body = "";
+    const measured = await digests(
+      session,
+      {
+        write: (record) => {
+          body += typeof record === "string" ? record : new TextDecoder().decode(record);
+        },
+        close: async () => {},
+      },
+      scan,
+    );
+    expect(measured.records).toBe(2);
+    expect(body).not.toContain(LEAKED_KEY);
+    expect(measured.sourceDigest).toBe(
+      `sha256:${new Bun.CryptoHasher("sha256").update(body).digest("hex")}`,
+    );
+    const site = scan.report().sites[0];
+    expect(site?.line).toBe(2);
+    if (site === undefined) throw new Error("expected the oversized record's credential locator");
+    const resolved = await resolveRedaction(session, site);
+    expect(resolved).toEqual({ value: LEAKED_KEY, captureDigest: measured.captureDigest });
+  } finally {
+    rmSync(session.primaryPath);
+  }
 });
 
 test("a refused preparation names what it found by class, seals nothing, and quotes no value", async () => {

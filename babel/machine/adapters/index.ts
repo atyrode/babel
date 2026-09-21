@@ -39,9 +39,13 @@ export { omp } from "./omp.ts";
 export const ADAPTERS: readonly Adapter[] = [omp, codex, claude];
 
 /** The session this path is the primary log of, from the first adapter that recognizes it. */
-export function claim(path: string): SessionRef | null {
+export function claim(
+  path: string,
+  exists?: (path: string) => boolean,
+  roots?: ReadonlySet<string>,
+): SessionRef | null {
   for (const adapter of ADAPTERS) {
-    const ref = adapter.claim(path);
+    const ref = adapter.claim(path, exists, roots);
     if (ref !== null) return ref;
   }
   return null;

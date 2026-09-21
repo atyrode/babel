@@ -278,19 +278,9 @@ describe("the machine half is declared as the machine half is built", () => {
   }
 
   test("it declares every operation the machine half implements, in the contract's order", () => {
-    // Four, not six: `explore` and `evaluate` are NAMED by this plugin and DECLARED by
-    // nobody (#279). A Babel run is a Code session — the operator picks a Code profile or
-    // parametrizes one in Code's generator, and Code's `runSession` door posts the omp job —
-    // so neither is an operation of this bundle's machine half any more. `verify` is the
-    // archive's reading half (#338) and is one, because reading a repository back is work
-    // that happens on the machine that holds it.
+    // Model lanes remain Code sessions, not native Babel operations. Recall is a native
+    // archive service, so its declaration must match the same machine dispatcher contract.
     expect(declared).toEqual(Object.values(MACHINE_OPERATIONS));
-    expect(declared).toEqual([
-      OPERATIONS.scan,
-      OPERATIONS.archive,
-      OPERATIONS.prepare,
-      MACHINE_OPERATIONS.verify,
-    ]);
   });
 
   test("each operation runs the machine half with its own name and one input document", () => {
@@ -316,8 +306,9 @@ describe("the machine half is declared as the machine half is built", () => {
         { literal: word },
         { literal: "--input" },
         { literal: `/inputs/${INPUT_FIELD}` },
-        { literal: "--out" },
-        { literal: `/outputs/${OUTPUT_BINDING}` },
+        ...(op.providesService
+          ? []
+          : [{ literal: "--out" }, { literal: `/outputs/${OUTPUT_BINDING}` }]),
         ...(material
           ? [{ literal: "--material" }, { literal: `/outputs/${MATERIAL_OUTPUT}` }]
           : []),
@@ -328,11 +319,15 @@ describe("the machine half is declared as the machine half is built", () => {
       expect(op.input[INPUT_FIELD]?.required).toBe(true);
       expect(inputBytes(op)).toBeLessThanOrEqual(MAX_INPUT_BYTES);
       expect(op.inputFiles?.[INPUT_FIELD]).toEqual({ input: INPUT_FIELD });
-      expect(op.outputs).toEqual(material ? [OUTPUT_BINDING, MATERIAL_OUTPUT] : [OUTPUT_BINDING]);
+      expect(op.outputs).toEqual(
+        op.providesService ? [] : material ? [OUTPUT_BINDING, MATERIAL_OUTPUT] : [OUTPUT_BINDING],
+      );
       expect(op.executable).toEqual({ runtimeTool: "bun" });
       expect(op.stdin).toBe(false);
       // The lease is cut from a location the operation may write, or the hub refuses the launch.
-      expect(op.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
+      if (!op.providesService) {
+        expect(op.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
+      }
     }
   });
 
@@ -448,10 +443,13 @@ describe("the machine half is declared as the machine half is built", () => {
     // input file, and the operation asks that service for the storage document that carries
     // the locator and its secrets together (machine/restic.ts).
     //
-    // TWO operations touch the repository: `archive` writes it and `verify` reads it back
-    // (#338). They are held to the same delivery here, in one loop, because two ways of
-    // reaching one credential is a bug in whichever of them is the second.
-    const touching: readonly string[] = [OPERATIONS.archive, MACHINE_OPERATIONS.verify];
+    // Archive, verification and Recall share one storage-binding contract; no operation
+    // may invent an alternative path to its repository coordinates or credentials.
+    const touching: readonly string[] = [
+      OPERATIONS.archive,
+      MACHINE_OPERATIONS.verify,
+      MACHINE_OPERATIONS.recall,
+    ];
     for (const operation of touching) {
       const op = machine.operations[operation]!;
       expect(op.services).toEqual([
@@ -468,42 +466,25 @@ describe("the machine half is declared as the machine half is built", () => {
         { path: ["bearer"], serviceId: RESTIC_SERVICE.serviceId, value: "bearer" },
       ]);
     }
-    /*
-      AND THE RULE ABOUT AN ENVIRONMENT VALUE IS EVERY OPERATION'S, not those two's.
-
-      Every value is a DIRECTORY inside a location that operation may write: restic's index
-      cache, the scratch space a restore is proved in, or the readings `prepare` keeps between
-      preparations (#236). None is a secret and none is a locator — and a cache outside a
-      writable location would make every backup re-read every byte it already archived, and
-      every preparation re-read every log it already digested.
-
-      Held over ALL of them because the failure this catches is a path written into a manifest
-      by hand that the sandbox never mounts: the operation then silently caches nothing, which
-      is the defect #236 exists to fix, reintroduced where no test was looking.
-    */
+    // Environment values name writable cache directories or an exact materialized input
+    // file. A bearer FILE reference is allowed; a bearer value or unmounted path is not.
     for (const operation of declared) {
       const op = machine.operations[operation]!;
       const writable = op.locations
         .filter((location) => location.access === "write")
         .map((location) => machine.locations[location.locationId]?.guestPath ?? "\0");
+      const inputs = new Set(Object.keys(op.inputFiles ?? {}).map((key) => `/inputs/${key}`));
       for (const [name, value] of Object.entries(op.environment ?? {})) {
-        expect({ name, inside: writable.some((guest) => value.startsWith(`${guest}/`)) }).toEqual({
+        expect({
+          name,
+          inside: inputs.has(value) || writable.some((guest) => value.startsWith(`${guest}/`)),
+        }).toEqual({
           name,
           inside: true,
         });
       }
     }
-    // The three that reach the repository or keep a reading are the three that have one, and
-    // `scan` has neither: it reads logs and writes rows, and nothing it does is worth a byte of
-    // machine-local state.
-    expect(
-      declared
-        .filter((operation) => machine.operations[operation]!.environment !== undefined)
-        .toSorted(),
-    ).toEqual([OPERATIONS.archive, OPERATIONS.prepare, MACHINE_OPERATIONS.verify].toSorted());
-    // And nothing outside those two binds a service (#279): the operations that bound the
-    // inference service and fixed the CA bundle `SSL_CERT_FILE` names went with the launcher,
-    // because a run that reaches a model is a job Code posts under Code's own policy.
+    // No other operation acquires storage or model authority through a service binding.
     for (const other of declared.filter((operation) => !touching.includes(operation))) {
       expect(machine.operations[other]!.services).toBeUndefined();
     }

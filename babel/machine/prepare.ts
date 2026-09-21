@@ -61,8 +61,12 @@ import { stat } from "node:fs/promises";
 import { z } from "zod";
 import {
   MATERIAL_SCHEMA,
+  MATERIAL_RETRIEVAL,
+  MaterialRetrievalSchema,
   MAX_MATERIAL_BYTES,
   PREFLIGHT_SCHEMA,
+  RECALL_MAX_HITS,
+  RECALL_MAX_RESULT_BYTES,
   PreflightModeSchema,
   RUN_STAGES,
   SessionContentQuerySchema,
@@ -70,6 +74,7 @@ import {
   termsQuery,
   type MaterialEntry,
   type MaterialIndex,
+  type MaterialRetrieval,
   type PreflightMode,
   type PreflightReport,
   type Receipt,
@@ -87,10 +92,13 @@ import {
   type SecretScan,
 } from "./preflight.ts";
 import { SILENT, type ProgressChannel } from "./progress.ts";
+import { recallRecordReader } from "./recall-records.ts";
+import { recordReader, sessionDigester, type SessionDigests } from "./session-records.ts";
 import {
   sessionIndex,
   SessionIndexError,
   type IndexedSession,
+  type IndexedRecord,
   type SessionIndex,
 } from "./session-index.ts";
 
@@ -148,18 +156,6 @@ export const PrepareInputSchema = z.strictObject({
 });
 export type PrepareInput = z.infer<typeof PrepareInputSchema>;
 
-export interface SessionDigests {
-  readonly captureDigest: string;
-  readonly sourceDigest: string;
-  readonly bytes: number;
-  /**
-   * How many normalized records the source stream held. It is counted here rather than by the
-   * caller because it is the same pass: a second count would be a second read of the log, and
-   * the prompt's "N records" is what tells a model how big a session is before it opens one.
-   */
-  readonly records: number;
-}
-
 /** The machine facts this operation needs, which the adapters own (machine/adapters). */
 export interface PrepareDeps {
   /** Every session this machine can see, under the adapters' own roots. */
@@ -202,12 +198,12 @@ export interface PrepareDeps {
 /** The version of the preparation record's shape AND of the normalization behind its source
  *  digest. It participates in the derivation, so a record written by a later schema can never
  *  collide with one written by this schema even if every other field matches. */
-export const PREPARATION_SCHEMA = 2;
+export const PREPARATION_SCHEMA = 3;
 
 /** Separates this hash from every other use of SHA-256 in Babel: without a domain, a digest
  *  over some other structure that happened to serialize identically would be a valid
- *  preparation id. The `v2` is PREPARATION_SCHEMA's own, moved with it. */
-const PREPARATION_DOMAIN = "babel/preparation/v2";
+ *  preparation id. The `v3` is PREPARATION_SCHEMA's own, moved with it. */
+const PREPARATION_DOMAIN = "babel/preparation/v3";
 
 /** Marks a preparation id as one, so a mistyped identifier fails as the wrong kind of id
  *  rather than as a missing row. */
@@ -244,10 +240,6 @@ interface PreparedSessionRow {
   readonly size: number;
   readonly seen_at: string;
 }
-
-/** A record longer than this is hashed in bounded pieces, split at a content-determined
- *  offset so the digest never depends on how the file happened to arrive in chunks. */
-const MAX_RECORD_CHARS = 4 << 20;
 
 /**
  * Fixes a corpus scope and derives its identity.
@@ -360,69 +352,9 @@ export async function digests(
   seal?: RecordSink | undefined,
   scan?: SecretScan | undefined,
 ): Promise<SessionDigests> {
-  const capture = new Bun.CryptoHasher("sha256");
-  const source = new Bun.CryptoHasher("sha256");
-  let bytes = 0;
-  let records = 0;
-  await eachRecord(
-    ref,
-    (chunk) => {
-      capture.update(chunk);
-      bytes += chunk.byteLength;
-    },
-    (normalized) => {
-      records += 1;
-      // The ordinal is the record's line number in this stream, which is the line number the
-      // material's own file will have — so a marker's locator and the file a reader opens agree.
-      const served = scan === undefined ? normalized : scan.redact(normalized, records);
-      source.update(served);
-      seal?.write(served);
-    },
-  );
-  return {
-    captureDigest: `sha256:${capture.digest("hex")}`,
-    sourceDigest: `sha256:${source.digest("hex")}`,
-    bytes,
-    records,
-  };
-}
-
-/**
- * One session's primary log, streamed once, as the normalized records it holds — every chunk of
- * bytes handed to `onChunk` first, so one pass can digest the capture as well.
- *
- * It is a function rather than two copies of the loop because the splitting rule IS the record
- * numbering: a second implementation that split a chunk boundary or an over-long line differently
- * would number the same log's records differently, and a redaction's locator would then point at
- * the wrong record. {@link digests} and {@link resolveRedaction} must agree by construction.
- */
-async function eachRecord(
-  ref: SessionRef,
-  onChunk: (chunk: Uint8Array) => void,
-  onRecord: (normalized: string) => void,
-): Promise<void> {
-  const decoder = new TextDecoder();
-  let pending = "";
-  const record = (line: string): void => {
-    const normalized = normalize(line);
-    if (normalized !== "") onRecord(normalized);
-  };
-  for await (const chunk of Bun.file(ref.primaryPath).stream()) {
-    onChunk(chunk);
-    pending += decoder.decode(chunk, { stream: true });
-    let start = 0;
-    for (let nl = pending.indexOf("\n"); nl >= 0; nl = pending.indexOf("\n", start)) {
-      record(pending.slice(start, nl));
-      start = nl + 1;
-    }
-    pending = start === 0 ? pending : pending.slice(start);
-    while (pending.length > MAX_RECORD_CHARS) {
-      record(pending.slice(0, MAX_RECORD_CHARS));
-      pending = pending.slice(MAX_RECORD_CHARS);
-    }
-  }
-  pending += decoder.decode();
-  record(pending);
+  const reader = sessionDigester(seal, scan);
+  for await (const chunk of Bun.file(ref.primaryPath).stream()) reader.write(chunk);
+  return reader.finish();
 }
 
 /** What a redaction's locator recovers, and the digest saying it was recovered from the same
@@ -455,17 +387,16 @@ export async function resolveRedaction(
   site: { readonly line: number; readonly offset: number; readonly length: number },
 ): Promise<ResolvedRedaction | null> {
   const capture = new Bun.CryptoHasher("sha256");
-  let records = 0;
   let found = "";
-  await eachRecord(
-    ref,
-    (chunk) => capture.update(chunk),
-    (normalized) => {
-      records += 1;
-      if (records !== site.line) return;
-      found = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
-    },
-  );
+  const reader = recordReader((normalized, line) => {
+    if (line !== site.line) return;
+    found = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
+  });
+  for await (const chunk of Bun.file(ref.primaryPath).stream()) {
+    capture.update(chunk);
+    reader.write(chunk);
+  }
+  reader.finish();
   const captureDigest = `sha256:${capture.digest("hex")}`;
   const end = site.offset + site.length;
   if (found === "" || end > found.length) return null;
@@ -485,33 +416,6 @@ export async function observe(ref: SessionRef): Promise<Observation> {
   const info = await stat(ref.primaryPath).catch(() => null);
   if (info === null) return { size: 0, modifiedAt: 0 };
   return { size: info.size, modifiedAt: Math.trunc(info.mtimeMs) };
-}
-
-/**
- * One line of a primary log as the normalized stream states it.
- *
- * A record becomes canonical JSON, so a harness that reorders its keys or reflows its
- * whitespace is the same corpus. A line that is not a record is retained verbatim behind a
- * marker canonical JSON can never start with: a torn or corrupt line is evidence that this
- * exact line was seen, and dropping it would make degradation silent.
- */
-function normalize(line: string): string {
-  if (line.trim() === "") return "";
-  try {
-    return `${canonical(JSON.parse(line))}\n`;
-  } catch {
-    return `!${line}\n`;
-  }
-}
-
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  const keys = Object.keys(value).sort();
-  const fields = keys.map(
-    (key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
-  );
-  return `{${fields.join(",")}}`;
 }
 
 export async function prepare(
@@ -543,6 +447,7 @@ export async function prepare(
   const scans: { readonly selector: string; readonly report: ScanReport }[] = [];
   /** The material's own index, built as the loop seals each session's stream. */
   const sealed: MaterialEntry[] = [];
+  const retrievalHits: MaterialRetrieval["hits"] = [];
   let preparation: Preparation | null = null;
   let closure: Receipt["closure"] = "completed";
   let reason = "";
@@ -652,6 +557,14 @@ export async function prepare(
         // half way leaves no half-written stream a later reader could mistake for a session.
         const file = materialFile(sealed.length, session.selector);
         const reused = cache === null ? null : await cache.reuse(session, seen);
+        const record = queried?.hits.get(session.selector);
+        const excerpt =
+          record === undefined
+            ? null
+            : recallRecordReader({
+                harness: session.harness,
+                anchor: record.position,
+              });
         let measured: SessionDigests;
         let found: ScanReport | null;
         if (cache !== null && reused !== null) {
@@ -667,7 +580,10 @@ export async function prepare(
           succeeds — and the alternative, sealing bytes nothing verified into a material a model
           reads, is the one outcome worth failing a run over.
         */
-          const seal = (await deps.material?.session(file)) ?? null;
+          const seal = teeRecords(
+            (await deps.material?.session(file)) ?? null,
+            excerpt?.sink ?? null,
+          );
           let digested = reused.sourceDigest;
           try {
             if (seal !== null) digested = await cache.replay(reused, seal);
@@ -695,7 +611,10 @@ export async function prepare(
           found = reused.report;
           counts.reused++;
         } else {
-          const seal = (await deps.material?.session(file)) ?? null;
+          const seal = teeRecords(
+            (await deps.material?.session(file)) ?? null,
+            excerpt?.sink ?? null,
+          );
           // The reading is kept in the SAME pass, off the same bytes, for the reason the scan is
           // in it: a second pass to fill a cache would have paid the cost the cache exists to
           // avoid.
@@ -749,6 +668,24 @@ export async function prepare(
             reason = refusalMessage(session.selector, found);
             break;
           }
+        }
+        if (excerpt !== null && record !== undefined) {
+          const read = await excerpt.finish();
+          if (
+            !read.anchorMatches ||
+            measured.sourceDigest !== record.sourceDigest ||
+            measured.captureDigest !== record.captureDigest
+          )
+            throw new Error("content selection evidence changed before sealing");
+          retrievalHits.push({
+            selector: session.selector,
+            harness: session.harness,
+            file,
+            captureDigest: measured.captureDigest,
+            sourceDigest: measured.sourceDigest,
+            record: record.position,
+            excerpt: read.excerpt,
+          });
         }
         counts.bytes += measured.bytes;
         counts.records += measured.records;
@@ -826,8 +763,37 @@ export async function prepare(
           preparedAt: preparation.preparedAt,
           machineId: input.machineId,
           sessions: sealed,
+          ...(queried !== null && input.preflight !== "off" && deps.material != null
+            ? { retrievalFile: MATERIAL_RETRIEVAL }
+            : {}),
         }
       : null;
+  if (
+    index?.retrievalFile !== undefined &&
+    deps.material != null &&
+    queried !== null &&
+    retrieval !== undefined
+  ) {
+    const body = MaterialRetrievalSchema.parse({
+      schema: "babel.material-retrieval/1",
+      queryDigest: retrieval.query.digest,
+      matches: queried.recordMatches,
+      omitted: queried.recordMatches - retrievalHits.length,
+      hits: retrievalHits,
+    });
+    let encoded = JSON.stringify(body);
+    while (Buffer.byteLength(encoded) > RECALL_MAX_RESULT_BYTES && body.hits.length > 0) {
+      body.hits.pop();
+      body.omitted++;
+      encoded = JSON.stringify(body);
+    }
+    const sidecar = await deps.material.session(MATERIAL_RETRIEVAL);
+    try {
+      sidecar.write(encoded);
+    } finally {
+      await sidecar.close();
+    }
+  }
   if (index !== null && deps.material != null) await deps.material.index(index);
   const preflight = preflightReport(input.preflight, scans);
   const receipt: Receipt = {
@@ -874,9 +840,18 @@ async function contentSelection(
   readonly chosen: readonly SessionRef[];
   readonly failure: string;
   readonly observations: ReadonlyMap<string, Observation>;
+  readonly hits: ReadonlyMap<string, IndexedRecord>;
+  readonly recordMatches: number;
 }> {
   const observations = new Map<string, Observation>();
-  const refuse = (reason: string) => ({ chosen: [], failure: reason, observations });
+  const hits = new Map<string, IndexedRecord>();
+  const refuse = (reason: string) => ({
+    chosen: [],
+    failure: reason,
+    observations,
+    hits,
+    recordMatches: 0,
+  });
   if (input.selectors.length > 0) {
     retrieval.status = "unavailable";
     return refuse("content selection refused: a query cannot be combined with explicit selectors");
@@ -1004,7 +979,20 @@ async function contentSelection(
     const found = index.search(query.text, eligible, query.limit, MAX_MATERIAL_BYTES);
     retrieval.matches = found.matches;
     retrieval.overBound = found.overBound;
-    return { chosen: found.selection, failure: "", observations };
+    let recordMatches = 0;
+    if (input.preflight !== "off") {
+      const selected = new Set(found.selection.map((session) => session.primaryPath));
+      const records = index.searchRecords(
+        query.text,
+        eligible.filter((candidate) => selected.has(candidate.session.primaryPath)),
+        RECALL_MAX_HITS,
+      );
+      recordMatches = records.matches;
+      for (const record of records.hits)
+        if (!hits.has(record.candidate.session.selector))
+          hits.set(record.candidate.session.selector, record);
+    }
+    return { chosen: found.selection, failure: "", observations, hits, recordMatches };
   } catch (error) {
     retrieval.status = error instanceof SessionIndexError ? error.kind : "unavailable";
     retrieval.unavailable = Math.max(1, eligible.length - retrieval.indexed - retrieval.reused);

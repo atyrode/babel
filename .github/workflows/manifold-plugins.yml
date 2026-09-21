@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   bundles:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@89b065d0ff60718121629a72d8633ea348da91d6
+    uses: atyrode/manifold/.github/workflows/plugins.yml@3e8510c473d84175568ac81012763635112ed7d3
     with:
       # The repository IS the plugin family: there is no `plugins/` wrapper, so the caller
       # directory the reusable workflow works in is the checkout root.
@@ -46,4 +46,6 @@ jobs:
       # builds no other family's bundles itself. It needs no second `actions/checkout`,
       # because the fetch is the script's own and the manifold sibling this workflow already
       # lays out is the one `manifold-dir.sh` resolves.
-      prepare-command: bun run deps:code
+      prepare-command: |
+        bun run deps:tests
+        bun run deps:code
