@@ -26,6 +26,8 @@ import {
   type TranscriptMapPlan,
   type TranscriptMapPolicy,
   type TranscriptMapSegmentation,
+  type TranscriptMapStatus,
+  type TranscriptMapSource,
   type TranscriptMapSummary,
   type TranscriptMapVersion,
   type TranscriptMapView,
@@ -46,12 +48,8 @@ export interface TranscriptMapScope {
   readonly machineId: string;
   /** Obtained from the current native read context, never a caller-selected classification. */
   readonly context: TranscriptMapContext;
-}
-export interface TranscriptMapStatus {
-  readonly eligibleCaptures: number;
-  readonly verifiedMappedCaptures: number;
-  readonly observedAt: string;
-  readonly partial: boolean;
+  /** A read door's freshly attested selection; never widen to older cached attestations. */
+  readonly captureIds?: readonly string[];
 }
 export interface TranscriptMapCondition {
   readonly sql: string;
@@ -112,6 +110,8 @@ export interface TranscriptMaps {
   startWork(id: string, claim: { id: string; runId: string; fence: number }, now: string): Promise<boolean>;
   settlementStatements(input: TranscriptMapSettlementInput): Promise<{ statements: SqlStatement[]; summaryId: string | null }>;
   failureStatements(input: { workId: string; now: string; guard: TranscriptMapCondition; reason: string }): Promise<SqlStatement[]>;
+  candidates(machineId: string, input: { query?: string; captureId?: string; versionId?: string; nodeId?: string }, limit?: number): Promise<TranscriptMapCapture[]>;
+  reference(machineId: string, versionId: string, nodeId: string): Promise<{ source: TranscriptMapSource; node: TranscriptMapNode } | null>;
   search(scope: TranscriptMapScope, query: string, limit: number): Promise<TranscriptMapView[]>;
   node(scope: TranscriptMapScope, versionId: string, nodeId: string): Promise<TranscriptMapView | null>;
   children(scope: TranscriptMapScope, versionId: string, nodeId: string): Promise<TranscriptMapView[]>;
@@ -167,8 +167,10 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         ON c.machine_id=a.machine_id AND c.digest=a.context_digest
         WHERE a.machine_id=? AND a.capture_id=${captureColumn} AND a.context_digest=? AND a.sensitivity<=?)
         AND NOT EXISTS (SELECT 1 FROM transcript_map_contexts c WHERE c.machine_id=?
-          AND c.observed_at>? AND c.digest!=?)`,
-      params: [scope.machineId, context.digest, context.ceiling, scope.machineId, context.observedAt, context.digest],
+          AND c.observed_at>? AND c.digest!=?)
+        ${scope.captureIds === undefined ? "" : `AND ${captureColumn} IN (SELECT value FROM json_each(?))`}`,
+      params: [scope.machineId, context.digest, context.ceiling, scope.machineId, context.observedAt, context.digest,
+        ...(scope.captureIds === undefined ? [] : [json(scope.captureIds)])],
     };
   }
   async function rememberContext(scope: TranscriptMapScope, nextCursor: string | null, preserveCursor: boolean, mapping: boolean, now: string): Promise<void> {
@@ -781,6 +783,39 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     }
     return result;
   }
+  // These selection aids return immutable metadata only. They are not authorization.
+  async function candidates(machineId: string, input: { query?: string; captureId?: string; versionId?: string; nodeId?: string }, limit = TRANSCRIPT_MAP_MAX_CAPTURES): Promise<TranscriptMapCapture[]> {
+    if (input.captureId && input.query === undefined && input.versionId === undefined && input.nodeId === undefined) {
+      const capture = await one<TranscriptMapCapture>("transcript_map_captures", input.captureId);
+      return capture ? [capture] : [];
+    }
+    const match = input.query === undefined ? null : termsQuery(input.query);
+    if (input.query !== undefined && !match) return [];
+    const rows = await db.query<{ payload: string }>(`SELECT DISTINCT c.payload FROM transcript_map_captures c
+      JOIN transcript_map_plans p ON p.capture_id=c.id JOIN transcript_map_versions v ON v.plan_id=p.id
+      ${match ? `JOIN transcript_map_heads h ON h.version_id=v.id AND h.machine_id=v.machine_id
+        JOIN transcript_map_bindings b ON b.version_id=v.id
+        JOIN transcript_map_terms ON transcript_map_terms.summary_id=b.summary_id` : ""}
+      WHERE v.machine_id=? AND p.complete=1
+      ${match ? `AND transcript_map_terms MATCH ?
+        AND p.rowid=(SELECT max(latest.rowid) FROM transcript_map_plans latest WHERE latest.capture_id=p.capture_id)
+        AND NOT EXISTS (SELECT 1 FROM transcript_map_reviews r WHERE r.summary_id=b.summary_id AND r.verdict IN ('correct','reject'))` : ""}
+      ${input.captureId ? "AND c.id=?" : ""}
+      ${input.versionId ? "AND v.id=?" : ""}
+      ${input.nodeId ? "AND EXISTS (SELECT 1 FROM transcript_map_nodes n WHERE n.id=? AND n.plan_id=p.id)" : ""}
+      ORDER BY c.id LIMIT ?`, [machineId, ...(match ? [match] : []),
+      ...(input.captureId ? [input.captureId] : []), ...(input.versionId ? [input.versionId] : []),
+      ...(input.nodeId ? [input.nodeId] : []), bound(limit, TRANSCRIPT_MAP_MAX_CAPTURES)]);
+    return rows.map((row) => TranscriptMapCaptureSchema.parse(JSON.parse(row.payload)));
+  }
+  async function reference(machineId: string, versionId: string, nodeId: string): Promise<{ source: TranscriptMapSource; node: TranscriptMapNode } | null> {
+    const rows = await db.query<{ plan: string; node: string }>(`SELECT p.payload plan,n.payload node
+      FROM transcript_map_versions v JOIN transcript_map_plans p ON p.id=v.plan_id
+      JOIN transcript_map_nodes n ON n.plan_id=p.id WHERE v.machine_id=? AND v.id=? AND n.id=? AND p.complete=1`,
+      [machineId, versionId, nodeId]);
+    return rows[0] ? { source: TranscriptMapPlanSchema.parse(JSON.parse(rows[0].plan)).source,
+      node: TranscriptMapNodeSchema.parse(JSON.parse(rows[0].node)) } : null;
+  }
   async function search(scope: TranscriptMapScope, query: string, limit: number): Promise<TranscriptMapView[]> {
     const match = termsQuery(query);
     if (!match) return [];
@@ -825,5 +860,5 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     return Number(rows[0].generation);
   }
 
-  return { recordCatalog, recordAccess, catalogState, nextPlan, recordPlan, ensureVersion, refreshWork, offers, work, startWork, settlementStatements, failureStatements, search, node, children, ancestors, coverage, status, noteServed, regenerate };
+  return { recordCatalog, recordAccess, catalogState, nextPlan, recordPlan, ensureVersion, refreshWork, offers, work, startWork, settlementStatements, failureStatements, candidates, reference, search, node, children, ancestors, coverage, status, noteServed, regenerate };
 }

@@ -22,7 +22,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 11 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 12 } as const;
 
 /** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
 const RECALL_TRACE_SCHEMA: readonly string[] = [
@@ -56,6 +56,33 @@ const RECALL_TRACE_SCHEMA: readonly string[] = [
     `CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN
        SELECT RAISE(ABORT, 'Recall traces are append-only');
      END`,
+  ]),
+];
+
+/** Map navigation attempts contain digests and derived outcomes, never queries or prose. */
+const TRANSCRIPT_MAP_READ_SCHEMA: readonly string[] = [
+  `CREATE TABLE transcript_map_requests(
+     id TEXT PRIMARY KEY, principal_id TEXT NOT NULL, trace_id INTEGER NOT NULL CHECK(trace_id>0),
+     operation TEXT NOT NULL CHECK(operation IN ('read','source','regenerate')),
+     target TEXT NOT NULL, service_revision TEXT NOT NULL, request_digest TEXT NOT NULL,
+     created_at TEXT NOT NULL, UNIQUE(principal_id,trace_id)
+   ) STRICT`,
+  `CREATE TABLE transcript_map_native_requests(
+     request_id TEXT NOT NULL REFERENCES transcript_map_requests(id), round INTEGER NOT NULL,
+     stage TEXT NOT NULL, native_id TEXT NOT NULL UNIQUE, request TEXT NOT NULL,
+     created_at TEXT NOT NULL, PRIMARY KEY(request_id,round,stage)
+   ) STRICT`,
+  `CREATE TABLE transcript_map_read_outcomes(
+     seq INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL REFERENCES transcript_map_requests(id),
+     round INTEGER NOT NULL, outcome TEXT NOT NULL, created_at TEXT NOT NULL,
+     UNIQUE(request_id,round,outcome)
+   ) STRICT`,
+  `CREATE INDEX transcript_map_read_outcomes_request ON transcript_map_read_outcomes(request_id,seq DESC)`,
+  ...["requests", "native_requests", "read_outcomes"].flatMap((name) => [
+    `CREATE TRIGGER transcript_map_${name}_no_update BEFORE UPDATE ON transcript_map_${name}
+       BEGIN SELECT RAISE(ABORT,'immutable transcript map trace'); END`,
+    `CREATE TRIGGER transcript_map_${name}_no_delete BEFORE DELETE ON transcript_map_${name}
+       BEGIN SELECT RAISE(ABORT,'immutable transcript map trace'); END`,
   ]),
 ];
 
@@ -1053,6 +1080,7 @@ export const SCHEMA_V1: readonly string[] = [
   ...CORPUS_INDEX_SCHEMA,
   ...RECALL_TRACE_SCHEMA,
   ...TRANSCRIPT_MAP_SCHEMA,
+  ...TRANSCRIPT_MAP_READ_SCHEMA,
 
   // ---------------------------------------------------------------- a drain (#258)
   // No index, and now for one reason rather than two: a deployment accumulates drains at the
@@ -1191,6 +1219,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   ...CORPUS_INDEX_SCHEMA.map(objectAddition),
   ...RECALL_TRACE_SCHEMA.map(objectAddition),
   ...TRANSCRIPT_MAP_SCHEMA.map(objectAddition),
+  ...TRANSCRIPT_MAP_READ_SCHEMA.map(objectAddition),
   // #169: the models that have answered a running job, JSON, in the order it first heard from
   // each. A column and not a table, because the table above already arrives by addition for a
   // store created before #261 — and an addition keyed only on the table's name would have left
