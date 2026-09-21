@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import {
   defineServerPlugin,
   type GuestDatabase,
@@ -12,6 +13,9 @@ import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   DRAIN_CONCURRENT_MAX,
+  INPUT_FIELD,
+  OUTPUT_BINDING,
+  OUTPUT_LOCATION,
   MACHINE_OPERATIONS,
   type OperationName,
 } from "./contract.ts";
@@ -24,6 +28,8 @@ import { drainTick, type DrainDeps } from "./server/drain.ts";
 import { embedder, type EmbeddingServices } from "./server/embed.ts";
 import {
   conductor,
+  describeHost,
+  SCHEDULE_LIFETIME_MS,
   type Conductor,
   type KeysSlice,
   type MachinesSlice,
@@ -291,6 +297,91 @@ const LAUNCH_DEPS: LaunchDeps = {
 const machinery = launchMachinery(store, LAUNCH_DEPS);
 
 /**
+ * One native cadence per admitted machine. Keep its immutable template until configuration or
+ * pins change or renewal is due; replacement is the SDK's, never a plugin timer or a scan.
+ */
+async function catalogSchedule(
+  jobs: BabelJobs,
+  machineId: string,
+  policy: Policy,
+): Promise<string[]> {
+  const notes: string[] = [];
+  const machineKey = createHash("sha256").update(machineId).digest("hex").slice(0, 32);
+  const scheduleId = `${BABEL_PLUGIN_ID}.map-catalog.${machineKey}`;
+  try {
+    const registered = (await jobs.schedules()).filter(
+      (row) =>
+        row.scheduleId === scheduleId &&
+        row.machineId === machineId &&
+        row.operationId === MACHINE_OPERATIONS.mapCatalog,
+    );
+    if (!policy.enabled || policy.mapping?.machineId !== machineId) {
+      for (const row of registered)
+        await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+      return notes;
+    }
+    const intervalMs = policy.cadenceSeconds * 1000;
+    const described = await describeHost(jobs, machineId, MACHINE_OPERATIONS.mapCatalog);
+    if ("refused" in described) return [`catalog cadence: ${described.refused}`];
+    const installation = described.readiness.installation;
+    const limits = planFor(policy, MACHINE_OPERATIONS.mapCatalog).limits;
+    const configuration = createHash("sha256")
+      .update(JSON.stringify({
+        machineId,
+        intervalMs,
+        limits,
+        installationRevision: installation?.revision,
+        artifactSha256: installation?.artifactSha256,
+      }))
+      .digest("hex");
+    const at = store.now();
+    if (registered.some(
+      (row) => row.revision.startsWith(`${configuration}.`) && row.expiresAt - at > intervalMs,
+    )) return notes;
+    const revision = `${configuration}.${String(at)}`;
+    await jobs.schedule({
+      jobId: `catalog_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
+      machineId,
+      operationId: MACHINE_OPERATIONS.mapCatalog,
+      input: { [INPUT_FIELD]: JSON.stringify({ kind: "catalog-wake", machineId }) },
+      outputs: [
+        { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [MACHINE_OPERATIONS.mapCatalog] },
+      ],
+      limits,
+      ...(installation === null
+        ? {}
+        : {
+            installationRevision: installation.revision,
+            artifactSha256: installation.artifactSha256,
+          }),
+      scheduleId,
+      revision,
+      firstNominalAt: at + intervalMs,
+      intervalMs,
+      deadlineMs: intervalMs,
+      expiresAt: at + SCHEDULE_LIFETIME_MS,
+      offlinePolicy: "coalesce-one",
+    });
+  } catch (error) {
+    notes.push(`catalog cadence: ${message(error)}`);
+  }
+  return notes;
+}
+
+/** Only the explicitly admitted machine may continue this free lane, including after settlement. */
+async function catalogCycle(jobs: BabelJobs, machineId: string): Promise<readonly string[]> {
+  const { policy, standing } = await coordinated.policy();
+  const notes = await catalogSchedule(jobs, machineId, standing);
+  return [...notes, ...(await loop(
+    jobs,
+    unaskable(HOOK_WITHOUT_MACHINES),
+    undefined,
+    planFor(policy, MACHINE_OPERATIONS.scan),
+    planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+  ).tickCatalog(machineId))];
+}
+
+/**
  * The controller's dependencies over one wake's own authority (#258, #279).
  *
  * `embed` is `null` on a wake that holds no service authority, which is every background one
@@ -468,6 +559,11 @@ const doors = babelDoors(
   // `services` block on `archive` and `verify` is the declaration; the composer behind the two
   // owner doors turns it into the policy, so the binding and the policy cannot be edited apart.
   declaredServices(manifest),
+  async (ctx, machineId) =>
+    await catalogCycle(
+      jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+      machineId,
+    ),
 );
 
 /**
@@ -490,7 +586,9 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
     return await dispatched.run({ database: served, storage: ctx.storage }, async () => {
       const produced = await handler(ctx, args);
       const at = ctx.now();
-      if (wakes && at - woke >= WAKE_FLOOR_MS) {
+      const refused =
+        produced !== null && typeof produced === "object" && Object.hasOwn(produced, "refused");
+      if (wakes && !refused && at - woke >= WAKE_FLOOR_MS) {
         woke = at;
         try {
           await cycle(
@@ -623,7 +721,12 @@ export const plugin: ServerPluginDef = {
         throw new Error(`${BABEL_PLUGIN_ID}: a settled job was served without the plugin's tables`);
       }
       await dispatched.run({ database, storage: ctx.storage }, async () => {
-        await cycle(jobsSlice(ctx.jobs), unaskable(HOOK_WITHOUT_MACHINES), ctx.actions);
+        if (job.operationId === MACHINE_OPERATIONS.mapCatalog) {
+          for (const note of await catalogCycle(jobsSlice(ctx.jobs), job.machineId))
+            console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);
+        } else {
+          await cycle(jobsSlice(ctx.jobs), unaskable(HOOK_WITHOUT_MACHINES), ctx.actions);
+        }
       });
     },
   },

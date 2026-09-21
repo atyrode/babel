@@ -17,6 +17,7 @@ import {
   type TranscriptMapNativeResult,
   type TranscriptMapCatalogInput,
   type TranscriptMapPrepareInput,
+  type TranscriptMapCatalogWakeInput,
   type Receipt,
 } from "../contract.ts";
 import type { MaterialSink, OutputSink } from "./output.ts";
@@ -98,6 +99,25 @@ export async function openTranscriptMapClient(): Promise<TranscriptMapClient> {
     }
     return fail();
   };
+}
+
+/** A native cadence completes without reading sessions, Recall, or any model. */
+export async function mapCatalogWake(
+  input: TranscriptMapCatalogWakeInput,
+  out: OutputSink,
+): Promise<Receipt> {
+  const at = new Date().toISOString();
+  const receipt = ReceiptSchema.parse({
+    runId: "run_" + crypto.randomUUID().replaceAll("-", ""),
+    machineId: input.machineId,
+    kind: "mapCatalog",
+    startedAt: at,
+    finishedAt: at,
+    closure: "completed",
+    counts: { wakes: 1 },
+  });
+  await out.receipt(receipt);
+  return receipt;
 }
 
 export async function mapCatalog(

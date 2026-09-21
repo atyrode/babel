@@ -2,7 +2,7 @@ import { tmpdir } from "node:os";
 import {
   MACHINE_OPERATIONS,
   RESTIC_CREDENTIAL_FILE,
-  TranscriptMapCatalogInputSchema,
+  TranscriptMapCatalogJobInputSchema,
   TranscriptMapPrepareInputSchema,
   type OperationWord,
   type Receipt,
@@ -10,7 +10,12 @@ import {
 import { type MaterialSink, type OutputSink, directorySink, materialSink } from "./output.ts";
 import { openProgress, type ProgressChannel } from "./progress.ts";
 import { claim, discover, existingRoots } from "./adapters/index.ts";
-import { mapCatalog, mapPrepare, openTranscriptMapClient } from "./transcript-map-jobs.ts";
+import {
+  mapCatalog,
+  mapCatalogWake,
+  mapPrepare,
+  openTranscriptMapClient,
+} from "./transcript-map-jobs.ts";
 
 /*
   THE MACHINE HALF'S ENTRY POINT (plan §2, §4).
@@ -78,11 +83,9 @@ const DISPATCH: Record<
 > = {
   mapCatalog: async (raw, out) => {
     try {
-      return await mapCatalog(
-        TranscriptMapCatalogInputSchema.parse(raw),
-        out,
-        await openTranscriptMapClient(),
-      );
+      const input = TranscriptMapCatalogJobInputSchema.parse(raw);
+      if ("kind" in input) return await mapCatalogWake(input, out);
+      return await mapCatalog(input, out, await openTranscriptMapClient());
     } catch {
       throw new Error("Mapping catalog could not be collected.");
     }

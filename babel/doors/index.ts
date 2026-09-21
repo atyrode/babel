@@ -1,10 +1,10 @@
-import type { ServerActionDef, ServerHandler } from "@manifold/plugin-kit/server";
+import type { GuestCtx, ServerActionDef, ServerHandler } from "@manifold/plugin-kit/server";
 import type { BabelStore } from "../store/store.ts";
 import { actDoors } from "./acts.ts";
 import type { Door } from "./door.ts";
 import { drainDoors, type DrainDoorDeps } from "./drain.ts";
 import { exportDoors } from "./export.ts";
-import { launchDoors, type LaunchDeps } from "./launch.ts";
+import { launchDoors, mapCatalogDoor, type LaunchDeps } from "./launch.ts";
 import { readDoors } from "./read.ts";
 import { recallDoors } from "./recall.ts";
 import { recallServiceDoors } from "./recall-services.ts";
@@ -53,6 +53,7 @@ export function babelDoors(
   drain: DrainDoorDeps,
   concurrentJobs: number | null,
   services: readonly DeclaredService[],
+  advanceCatalog: (ctx: GuestCtx, machineId: string) => Promise<readonly string[]>,
 ): BabelDoors {
   const actions: ServerActionDef[] = [];
   const handlers: Record<string, ServerHandler> = {};
@@ -65,6 +66,7 @@ export function babelDoors(
     ...suggestDoors(store),
     ...exportDoors(store),
     ...launchDoors(store, deps),
+    mapCatalogDoor(deps.coordinator, advanceCatalog),
     ...drainDoors(store, drain),
     ...serviceDoors(services),
     ...recallServiceDoors(),

@@ -8,13 +8,15 @@
     "containers:write",
     "machines:read",
     "machines:run",
+    "operations:invoke",
     "jobs:read",
     "jobs:input",
     "jobs:cancel",
     "locations:read",
     "locations:write",
     "services:configure",
-    "services:invoke"
+    "services:invoke",
+    "network:host"
   ],
   "dependencies": {
     "atyrode.code": {

@@ -395,6 +395,8 @@ export const ACTIONS = {
    * run would cost is Code's to say, out of the profile the operator chose.
    */
   launch: "launch",
+  /** Explicit admission for the free native catalog and plan-page continuation, never a model. */
+  startMapCatalog: "startMapCatalog",
   stop: "stop",
   /**
    * VERIFYING THE ARCHIVE, AND RESTORING OUT OF IT (#338).
@@ -4680,6 +4682,19 @@ export const TRANSCRIPT_MAP_MAX_PAGE_BYTES = 32 * 1024;
 export const TRANSCRIPT_MAP_SERVICE_OPERATION = "mapping";
 export const TRANSCRIPT_MAP_SERVICE_FILE = "mapping-service";
 export const TRANSCRIPT_MAP_OUTPUT_FILE = "transcript-map.json";
+
+/** The caller names both native targets before admission; neither is inferred from a read. */
+export const StartMapCatalogRequestSchema = z.strictObject({
+  operation: OperationRefSchema.extend({ operationId: z.literal(MACHINE_OPERATIONS.mapCatalog) }),
+  target: RecallTargetSchema.extend({
+    operationId: z.literal(TRANSCRIPT_MAP_SERVICE_OPERATION),
+  }),
+});
+export const StartMapCatalogResultSchema = z.strictObject({
+  machineId: refId,
+  /** The conductor's account of this wake, including a refusal or work already in flight. */
+  notes: z.array(z.string()),
+});
 export const TRANSCRIPT_MAP_ROLES = {
   generate: "mapping:generate",
   review: "mapping:review",
@@ -5065,6 +5080,18 @@ export const TranscriptMapCatalogInputSchema = z.strictObject({
   ]),
 });
 export type TranscriptMapCatalogInput = z.infer<typeof TranscriptMapCatalogInputSchema>;
+
+/** Native scheduler liveness only: no archive request, plan, or catalog projection. */
+export const TranscriptMapCatalogWakeInputSchema = z.strictObject({
+  kind: z.literal("catalog-wake"),
+  machineId: refId,
+});
+export type TranscriptMapCatalogWakeInput = z.infer<typeof TranscriptMapCatalogWakeInputSchema>;
+export const TranscriptMapCatalogJobInputSchema = z.union([
+  TranscriptMapCatalogInputSchema,
+  TranscriptMapCatalogWakeInputSchema,
+]);
+
 export const TranscriptMapPrepareInputSchema = z.strictObject({
   runId: refId,
   machineId: refId,

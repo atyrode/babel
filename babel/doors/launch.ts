@@ -22,6 +22,8 @@ import {
   MACHINE_OPERATIONS,
   StopInputSchema,
   StopResultSchema,
+  StartMapCatalogRequestSchema,
+  StartMapCatalogResultSchema,
   VerifyRequestSchema,
   VerifyResultSchema,
   MaterialIndexSchema,
@@ -1858,6 +1860,43 @@ function documentOf(value: string | null): Record<string, unknown> {
 function materialOf(payload: string): MaterialIndex | null {
   const parsed = MaterialIndexSchema.safeParse(documentOf(payload)["material"]);
   return parsed.success ? parsed.data : null;
+}
+
+/**
+ * A free mapping wake has its own exact admission targets. A scan launch cannot lend its
+ * operation grant to the private mapping service, and a reader must never acquire that grant.
+ */
+export function mapCatalogDoor(
+  coordinator: Coordinator,
+  advance: (ctx: GuestCtx, machineId: string) => Promise<readonly string[]>,
+): Door {
+  return defineDoor(
+    defineServerAction({
+      name: ACTIONS.startMapCatalog,
+      title: "Start free transcript-map catalog and planning",
+      caps: ["machines:run", "operations:invoke", "services:invoke", "network:host"],
+      delegates: ["machines:read", "jobs:read", "locations:write"],
+      requirements: [
+        { cap: "machines:run", target: ["operation"] },
+        { cap: "operations:invoke", target: ["operation"] },
+        { cap: "network:host", target: ["operation"] },
+        { cap: "services:invoke", target: ["target"] },
+      ],
+      input: StartMapCatalogRequestSchema,
+      result: StartMapCatalogResultSchema,
+    }),
+    async (ctx, { operation, target }) => {
+      if (operation.machineId !== target.machineId)
+        return { refused: "The catalog operation and private mapping service must name one machine." };
+      const { policy } = await coordinator.policy();
+      if (!policy.enabled || policy.mapping?.machineId !== operation.machineId)
+        return { refused: "The enabled mapping policy must name the requested catalog machine." };
+      return {
+        machineId: operation.machineId,
+        notes: [...(await advance(ctx, operation.machineId))],
+      };
+    },
+  );
 }
 
 export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[] {

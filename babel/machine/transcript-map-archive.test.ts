@@ -17,6 +17,7 @@ import { BABEL_TAG, type Repo, type Snapshot } from "./restic.ts";
 import { mapPrepare, mapCatalog } from "./transcript-map-jobs.ts";
 import { directorySink, materialSink } from "./output.ts";
 import { projectJson, compileJsonProjection } from "@manifold/protocol";
+import { run } from "./main.ts";
 
 const path = "/synthetic/.omp/agent/sessions/project/2026-09-01T00-00-00-000Z_fixture.jsonl";
 const host = "synthetic-map-host";
@@ -514,5 +515,36 @@ test("finite material sealing uses exact leaves but only ordered summaries/gaps 
     expect(leafReceipt.counts.suppliedBytes).toBe(leaf.span.byteLength);
   } finally {
     await f.close();
+  }
+});
+
+test("a catalog cadence completes without a Recall binding and never claims catalog data", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "babel-map-wake-"));
+  try {
+    const inputPath = join(directory, "wake.json");
+    await Bun.write(inputPath, JSON.stringify({ kind: "catalog-wake", machineId: "synthetic" }));
+    const first = await run({
+      operation: "mapCatalog",
+      inputPath,
+      outputDir: join(directory, "first"),
+      materialDir: "",
+    });
+    const second = await run({
+      operation: "mapCatalog",
+      inputPath,
+      outputDir: join(directory, "second"),
+      materialDir: "",
+    });
+    if (!first || !second) throw new Error("A finite cadence must return its native receipt.");
+    expect(first).toMatchObject({
+      kind: "mapCatalog",
+      closure: "completed",
+      counts: { wakes: 1 },
+    });
+    expect(first.mapping).toBeUndefined();
+    expect(second.mapping).toBeUndefined();
+    expect(second.runId).not.toBe(first.runId);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
