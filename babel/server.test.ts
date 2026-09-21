@@ -18,10 +18,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx, GuestDatabase, GuestHookJobs } from "@manifold/plugin-kit/server";
 import type { SettledJob } from "@manifold/protocol";
-import { ACTIONS, BABEL_PLUGIN_ID, OPERATIONS, RUN_STAGES } from "./contract.ts";
+import { ACTIONS, asLaunchRequest, BABEL_PLUGIN_ID, OPERATIONS, RUN_STAGES } from "./contract.ts";
 import { WAKES, plugin } from "./server.ts";
 import { stamp } from "./store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
+import { PolicySchema } from "./store/coordinator.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -669,4 +670,62 @@ test("enabling a store made before the trace adds run_calls, triggers and all", 
   expect(await db.query(`SELECT seq FROM run_calls WHERE run_id = 'run_traced'`)).toEqual([
     { seq: 1n },
   ]);
+});
+
+test("mapping-only methods are unavailable to ordinary exploration", async () => {
+  const stored = await harness.db.query<{ payload: string }>(
+    `SELECT payload FROM policies ORDER BY seq DESC LIMIT 1`,
+  );
+  const policy = PolicySchema.parse(JSON.parse(stored[0]!.payload));
+  if (policy.review === undefined) throw new Error("the fixture has no review route");
+  const mapping = {
+    machineId: MACHINE,
+    profile: policy.review.profile,
+    dailyCost: 1,
+    generateRecipe: "map-generation-only",
+    reviewRecipe: "map-review-only",
+  };
+  const methods = [mapping.generateRecipe, mapping.reviewRecipe];
+  await insert(harness.db, "policies", {
+    version: "p2",
+    seq: 2,
+    actor_id: "operator",
+    reason: "separate navigation methods",
+    recorded_at: stamp(NOW),
+    payload: JSON.stringify({
+      ...policy,
+      mapping,
+      review: {
+        ...policy.review,
+        recipes: [
+          ...policy.review.recipes,
+          ...methods.map((id) => ({ id, version: 1, enabled: true, body: "Map this input." })),
+        ],
+      },
+    }),
+  });
+  const ctx = context(harness.db as unknown as GuestDatabase, jobs);
+  for (const id of methods) {
+    const result = await plugin.handlers[ACTIONS.launch]?.(
+      ctx,
+      asLaunchRequest({
+        machineId: MACHINE,
+        preset: "read-whats-new",
+        profile: policy.review.profile,
+        recipes: [id],
+      }) as never,
+    );
+    // The unavailable method is named, rather than proceeding to transcript selection.
+    expect(result).toMatchObject({ refused: expect.stringContaining(id) });
+  }
+  const ordinary = await plugin.handlers[ACTIONS.launch]?.(
+    ctx,
+    asLaunchRequest({
+      machineId: MACHINE,
+      preset: "read-whats-new",
+      profile: policy.review.profile,
+      recipes: ["triage"],
+    }) as never,
+  );
+  expect(ordinary).toMatchObject({ refused: expect.stringContaining(MACHINE) });
 });

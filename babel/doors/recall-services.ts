@@ -103,19 +103,28 @@ export function composeRecallServicePolicy(
             },
           },
         ]),
-        ...(parsed.mappingClassId === undefined ? [] : [[
-          TRANSCRIPT_MAP_SERVICE_OPERATION,
-          {
-            kind: "http-proxy",
-            method: "POST",
-            path: "/mapping",
-            request: { kind: "json", disclosure: "full" },
-            response: { kind: "stream", disclosure: "full", contentTypes: ["application/json"], headers: [] },
-            timeoutMs: 30_000,
-            maxRequestBytes: RECALL_MAX_REQUEST_BODY_BYTES,
-            maxResponseBytes: RECALL_MAX_RESULT_BYTES,
-          },
-        ]]),
+        ...(parsed.mappingClassId === undefined
+          ? []
+          : [
+              [
+                TRANSCRIPT_MAP_SERVICE_OPERATION,
+                {
+                  kind: "http-proxy",
+                  method: "POST",
+                  path: "/mapping",
+                  request: { kind: "json", disclosure: "full" },
+                  response: {
+                    kind: "stream",
+                    disclosure: "full",
+                    contentTypes: ["application/json"],
+                    headers: [],
+                  },
+                  timeoutMs: 30_000,
+                  maxRequestBytes: RECALL_MAX_REQUEST_BODY_BYTES,
+                  maxResponseBytes: RECALL_MAX_RESULT_BYTES,
+                },
+              ],
+            ]),
       ]),
     });
   } catch {

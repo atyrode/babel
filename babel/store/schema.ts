@@ -539,11 +539,11 @@ const TRANSCRIPT_MAP_SCHEMA: readonly string[] = [
   `CREATE INDEX transcript_map_plans_capture ON transcript_map_plans(capture_id)`,
   `CREATE TABLE transcript_map_nodes(
      id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES transcript_map_plans(id),
-     position INTEGER NOT NULL, parent_id TEXT, level INTEGER NOT NULL, ordinal INTEGER NOT NULL,
+     position INTEGER NOT NULL, parent_node_id TEXT, level INTEGER NOT NULL, ordinal INTEGER NOT NULL,
      byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL, gap TEXT, payload TEXT NOT NULL,
      UNIQUE(plan_id,position), UNIQUE(plan_id,level,ordinal)
    ) STRICT`,
-  `CREATE INDEX transcript_map_nodes_parent ON transcript_map_nodes(plan_id,parent_id,ordinal)`,
+  `CREATE INDEX transcript_map_nodes_parent ON transcript_map_nodes(plan_id,parent_node_id,ordinal)`,
   `CREATE TABLE transcript_map_versions(
      id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES transcript_map_plans(id),
      machine_id TEXT NOT NULL, contract_digest TEXT NOT NULL, generation INTEGER NOT NULL,

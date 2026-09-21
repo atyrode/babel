@@ -1,15 +1,25 @@
 import { createHash } from "node:crypto";
 import {
   SESSION_RECORD_COORDINATES,
-  TranscriptMapCaptureSchema, TranscriptMapSourceSchema, TranscriptMapSegmentationSchema,
+  TranscriptMapCaptureSchema,
+  TranscriptMapSourceSchema,
+  TranscriptMapSegmentationSchema,
   type TranscriptMapCapture,
-  type TranscriptMapSegmentation, type TranscriptMapSpan, type TranscriptMapNode,
-  type TranscriptMapPlan, type SessionRecordPosition,
+  type TranscriptMapSegmentation,
+  type TranscriptMapSpan,
+  type TranscriptMapNode,
+  type TranscriptMapPlan,
+  type SessionRecordPosition,
 } from "../contract.ts";
 import { readNormalizedRecords } from "./session-index.ts";
 import type { RecordSink } from "./output.ts";
 
-import { transcriptMapCaptureId, transcriptMapPlanId, transcriptMapNodeId, transcriptMapManifestDigest } from "../transcript-map-identity.ts";
+import {
+  transcriptMapCaptureId,
+  transcriptMapPlanId,
+  transcriptMapNodeId,
+  transcriptMapManifestDigest,
+} from "../transcript-map-identity.ts";
 
 export interface TranscriptMapTree {
   header: TranscriptMapPlan;
@@ -42,10 +52,17 @@ export async function buildTranscriptMap(options: {
   let leafHash = createHash("sha256");
   const flush = (gap: TranscriptMapNode["gap"] = null): void => {
     if (!first || !last) return;
-    leaves.push({ span: {
-      firstRecord: first.line, lastRecord: last.line, byteOffset: first.byteOffset,
-      byteLength: length, digest: `sha256:${leafHash.digest("hex")}`, anchor: first,
-    }, gap });
+    leaves.push({
+      span: {
+        firstRecord: first.line,
+        lastRecord: last.line,
+        byteOffset: first.byteOffset,
+        byteLength: length,
+        digest: `sha256:${leafHash.digest("hex")}`,
+        anchor: first,
+      },
+      gap,
+    });
     first = undefined;
     last = undefined;
     length = 0;
@@ -55,10 +72,20 @@ export async function buildTranscriptMap(options: {
     options.record?.(position);
     bytes += position.byteLength;
     records++;
-    const fields = parsed !== null && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
-    const message = fields.message !== null && typeof fields.message === "object" ? fields.message as Record<string, unknown> : {};
-    const boundary = fields.type === "turn_context" || fields.role === "user" || message.role === "user";
-    if (!overflow && first && (length + position.byteLength > segmentation.leafBytes || (boundary && length >= Math.max(segmentation.directBytes, segmentation.leafBytes / 2)))) {
+    const fields =
+      parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    const message =
+      fields.message !== null && typeof fields.message === "object"
+        ? (fields.message as Record<string, unknown>)
+        : {};
+    const boundary =
+      fields.type === "turn_context" || fields.role === "user" || message.role === "user";
+    if (
+      !overflow &&
+      first &&
+      (length + position.byteLength > segmentation.leafBytes ||
+        (boundary && length >= Math.max(segmentation.directBytes, segmentation.leafBytes / 2)))
+    ) {
       if (leaves.length + 1 >= capacity) overflow = true;
       else flush();
     }
@@ -73,14 +100,36 @@ export async function buildTranscriptMap(options: {
   });
   await options.replay(sink);
   // replay closes its sink; repeated close is unnecessary and may conceal framing errors.
-  flush(overflow ? (first?.line === last?.line && length > segmentation.leafBytes ? "record-too-large" : "depth-bound") : null);
-  const source = TranscriptMapSourceSchema.parse({ ...capture, coordinates: SESSION_RECORD_COORDINATES, captureDigest: options.captureDigest, sourceDigest: options.sourceDigest, bytes, records });
+  flush(
+    overflow
+      ? first?.line === last?.line && length > segmentation.leafBytes
+        ? "record-too-large"
+        : "depth-bound"
+      : null,
+  );
+  const source = TranscriptMapSourceSchema.parse({
+    ...capture,
+    coordinates: SESSION_RECORD_COORDINATES,
+    captureDigest: options.captureDigest,
+    sourceDigest: options.sourceDigest,
+    bytes,
+    records,
+  });
   const planId = transcriptMapPlanId(source, segmentation);
   const nodes: TranscriptMapNode[] = [];
   let gapBytes = 0;
   let layer = leaves.map(({ span, gap }, ordinal): TranscriptMapNode => {
     if (gap) gapBytes += span.byteLength;
-    return { id: transcriptMapNodeId(planId, 0, ordinal, span, [], gap), planId, parentId: null, level: 0, ordinal, span, children: [], gap };
+    return {
+      id: transcriptMapNodeId(planId, 0, ordinal, span, [], gap),
+      planId,
+      parentId: null,
+      level: 0,
+      ordinal,
+      span,
+      children: [],
+      gap,
+    };
   });
   for (const node of layer) nodes.push(node);
   for (let level = 1; layer.length > 1; level++) {
@@ -90,7 +139,12 @@ export async function buildTranscriptMap(options: {
       const start = group[0]!.span;
       const end = group[group.length - 1]!.span;
       const byteLength = end.byteOffset + end.byteLength - start.byteOffset;
-      const span: TranscriptMapSpan = { ...start, lastRecord: end.lastRecord, byteLength, digest: await options.rangeDigest(start.byteOffset, byteLength) };
+      const span: TranscriptMapSpan = {
+        ...start,
+        lastRecord: end.lastRecord,
+        byteLength,
+        digest: await options.rangeDigest(start.byteOffset, byteLength),
+      };
       const children = group.map((child) => child.id);
       const ordinal = parents.length;
       const id = transcriptMapNodeId(planId, level, ordinal, span, children, null);
@@ -100,6 +154,22 @@ export async function buildTranscriptMap(options: {
     for (const node of parents) nodes.push(node);
     layer = parents;
   }
-  if ((layer[0]?.span.digest ?? `sha256:${createHash("sha256").digest("hex")}`) !== options.sourceDigest) throw new Error("Canonical source digest mismatch.");
-  return { header: { id: planId, source, segmentation, rootId: layer[0]?.id ?? null, nodeCount: nodes.length, digest: transcriptMapManifestDigest(nodes), direct: bytes <= segmentation.directBytes, gapBytes }, nodes };
+  if (
+    (layer[0]?.span.digest ?? `sha256:${createHash("sha256").digest("hex")}`) !==
+    options.sourceDigest
+  )
+    throw new Error("Canonical source digest mismatch.");
+  return {
+    header: {
+      id: planId,
+      source,
+      segmentation,
+      rootId: layer[0]?.id ?? null,
+      nodeCount: nodes.length,
+      digest: transcriptMapManifestDigest(nodes),
+      direct: bytes <= segmentation.directBytes,
+      gapBytes,
+    },
+    nodes,
+  };
 }

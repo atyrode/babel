@@ -361,7 +361,9 @@ export function validatePolicy(policy: Policy, concurrentJobs: number | null): s
     const parsed = TranscriptMapConfigSchema.safeParse(policy.mapping);
     if (!parsed.success) return `invalid mapping configuration: ${parsed.error.message}`;
     for (const recipeId of [policy.mapping.generateRecipe, policy.mapping.reviewRecipe]) {
-      if (!policy.review?.recipes.some((recipe) => recipe.id === recipeId && recipe.enabled !== false))
+      if (
+        !policy.review?.recipes.some((recipe) => recipe.id === recipeId && recipe.enabled !== false)
+      )
         return `mapping names missing recipe ${JSON.stringify(recipeId)} in review.recipes`;
     }
   }
@@ -2202,14 +2204,18 @@ export function coordinator(
 
   async function buildMapping(policy: Policy, moment: number): Promise<MappingCandidate[]> {
     const route = mappingPolicy(policy);
-    if (route === null || policy.activityWeights.mapping <= 0 || route.dailyCost <= 0)
-      return [];
+    if (route === null || policy.activityWeights.mapping <= 0 || route.dailyCost <= 0) return [];
     const maps = transcriptMaps(store);
     await maps.refreshWork(route, iso(moment), 64);
     return (await maps.offers(route, iso(moment), 64)).map((work) => ({
       work,
       role: TRANSCRIPT_MAP_ROLES[work.mode],
-      head: { id: work.id, rootId: work.nodeId, kind: "transcript-map", createdAt: at(work.createdAt) },
+      head: {
+        id: work.id,
+        rootId: work.nodeId,
+        kind: "transcript-map",
+        createdAt: at(work.createdAt),
+      },
       topics: [],
       weight: 1,
       ordinal: work.attempt,
@@ -2282,11 +2288,14 @@ export function coordinator(
     }
 
     const [active, spent] = await Promise.all([openClaims(moment), spendOn(moment)]);
-    const machines = [...new Set([
-      ...(policy.review === undefined ? (request.machines ?? []) : [policy.review.machineId]),
-      ...(policy.activityWeights.mapping > 0 && policy.mapping !== undefined
-        ? [policy.mapping.machineId] : []),
-    ])];
+    const machines = [
+      ...new Set([
+        ...(policy.review === undefined ? (request.machines ?? []) : [policy.review.machineId]),
+        ...(policy.activityWeights.mapping > 0 && policy.mapping !== undefined
+          ? [policy.mapping.machineId]
+          : []),
+      ]),
+    ];
     const overspent = admitSpend(
       policy,
       active,
@@ -2296,11 +2305,21 @@ export function coordinator(
     );
     if (overspent !== null) return { outcome: "gap", gap: overspent, gaps: [] };
 
-    const reviewAdmission = admitSpend(policy, active, spent.byRun[request.runId] ?? 0,
-      spent.total, policy.review === undefined ? (request.machines ?? []) : [policy.review.machineId]);
-    const mappingAdmission = policy.mapping === undefined ? null
-      : admitSpend(policy, active, spent.byRun[request.runId] ?? 0, spent.total, [policy.mapping.machineId]);
-    const mappingBudget = policy.mapping !== undefined &&
+    const reviewAdmission = admitSpend(
+      policy,
+      active,
+      spent.byRun[request.runId] ?? 0,
+      spent.total,
+      policy.review === undefined ? (request.machines ?? []) : [policy.review.machineId],
+    );
+    const mappingAdmission =
+      policy.mapping === undefined
+        ? null
+        : admitSpend(policy, active, spent.byRun[request.runId] ?? 0, spent.total, [
+            policy.mapping.machineId,
+          ]);
+    const mappingBudget =
+      policy.mapping !== undefined &&
       spent.mapping + reservedCost(policy) <= policy.mapping.dailyCost;
     const [review, analysis, mapping] = await Promise.all([
       policy.activityWeights.review > 0 && reviewAdmission === null
@@ -2309,13 +2328,19 @@ export function coordinator(
       reviewAdmission === null
         ? buildAnalysis(policy, moment)
         : Promise.resolve({ candidates: [] as AnalysisCandidate[], gaps: [] as Gap[] }),
-      mappingBudget && mappingAdmission === null ? buildMapping(policy, moment) : Promise.resolve([]),
+      mappingBudget && mappingAdmission === null
+        ? buildMapping(policy, moment)
+        : Promise.resolve([]),
     ]);
     const candidates = review.candidates;
     const gaps = [...review.gaps, ...analysis.gaps];
     if (policy.activityWeights.mapping > 0 && !mappingBudget)
-      gaps.push({ recordId: "", role: "", reason: "capped",
-        detail: "mapping's daily subtotal cannot reserve another assignment" });
+      gaps.push({
+        recordId: "",
+        role: "",
+        reason: "capped",
+        detail: "mapping's daily subtotal cannot reserve another assignment",
+      });
     if (candidates.length === 0 && analysis.candidates.length === 0 && mapping.length === 0) {
       return {
         outcome: "gap",
@@ -2367,7 +2392,9 @@ export function coordinator(
           handout.at + HANDOUT_GRACE_MS > moment)
       );
     };
-    const chooseActivity = (stream: Stream): { lane: Lane | "mapping"; chosen: WorkCandidate } | null => {
+    const chooseActivity = (
+      stream: Stream,
+    ): { lane: Lane | "mapping"; chosen: WorkCandidate } | null => {
       const eligible = ACTIVITIES.filter(
         (activity) =>
           policy.activityWeights[activity] > 0 &&
@@ -2395,11 +2422,12 @@ export function coordinator(
         }
       }
       if (activity === "review") return sample(candidates, policy, stream, contended);
-      const offered = activity === "mapping"
-        ? mapping.filter((candidate) => !contended(candidate))
-        : analysis.candidates.filter(
-            (candidate) => candidate.stage === activity && !contended(candidate),
-          );
+      const offered =
+        activity === "mapping"
+          ? mapping.filter((candidate) => !contended(candidate))
+          : analysis.candidates.filter(
+              (candidate) => candidate.stage === activity && !contended(candidate),
+            );
       let target = stream.float() * offered.reduce((sum, candidate) => sum + candidate.weight, 0);
       for (const chosen of offered) {
         target -= chosen.weight;
@@ -2467,14 +2495,34 @@ export function coordinator(
       drawnAt: moment,
       topics: chosen.topics,
     };
-    const assignment: Assignment = "work" in chosen
-      ? { ...base, activity: "mapping", role: chosen.role, work: chosen.work,
-          kind: "transcript-map", lane: "mapping" }
-      : "stage" in chosen
-        ? { ...base, activity: chosen.stage, role: chosen.role, kind: chosen.head.kind,
-            lane: chosen.lane, selectors: chosen.selectors, brief: chosen.brief }
-        : { ...base, activity: "review", role: chosen.role, kind: chosen.head.kind,
-            lane: chosen.lane ?? (chosen.role === "challenge" ? "challenge" : sampled.lane as Lane) };
+    const assignment: Assignment =
+      "work" in chosen
+        ? {
+            ...base,
+            activity: "mapping",
+            role: chosen.role,
+            work: chosen.work,
+            kind: "transcript-map",
+            lane: "mapping",
+          }
+        : "stage" in chosen
+          ? {
+              ...base,
+              activity: chosen.stage,
+              role: chosen.role,
+              kind: chosen.head.kind,
+              lane: chosen.lane,
+              selectors: chosen.selectors,
+              brief: chosen.brief,
+            }
+          : {
+              ...base,
+              activity: "review",
+              role: chosen.role,
+              kind: chosen.head.kind,
+              lane:
+                chosen.lane ?? (chosen.role === "challenge" ? "challenge" : (sampled.lane as Lane)),
+            };
     return { outcome: "assignment", assignment, gaps };
   }
 
@@ -2615,14 +2663,21 @@ export function coordinator(
       const maps = transcriptMaps(store);
       const details = await maps.work(assignment.work.id);
       const offered = route === null ? [] : await maps.offers(route, iso(moment), 128);
-      if (details === null ||
-        !offered.some((work) => work.id === assignment.work.id && work.attempt === assignment.work.attempt) ||
+      if (
+        details === null ||
+        !offered.some(
+          (work) => work.id === assignment.work.id && work.attempt === assignment.work.attempt,
+        ) ||
         assignment.id !== `asg_${digest([details.work.id, String(details.work.attempt)])}` ||
-        assignment.recordId !== details.work.id || assignment.rootId !== details.work.nodeId ||
+        assignment.recordId !== details.work.id ||
+        assignment.rootId !== details.work.nodeId ||
         assignment.role !== TRANSCRIPT_MAP_ROLES[details.work.mode] ||
-        JSON.stringify(assignment.work) !== JSON.stringify(details.work)) {
-        return { outcome: "refused", refusal: { reason: "conflict",
-          detail: "the offered mapping work is no longer eligible" } };
+        JSON.stringify(assignment.work) !== JSON.stringify(details.work)
+      ) {
+        return {
+          outcome: "refused",
+          refusal: { reason: "conflict", detail: "the offered mapping work is no longer eligible" },
+        };
       }
     } else if (assignment.activity !== "review") {
       const refreshed = await buildAnalysis(policy, moment, {
@@ -2656,11 +2711,19 @@ export function coordinator(
         },
       };
     }
-    if (assignment.activity === "mapping" &&
-      (policy.mapping === undefined || policy.mapping.dailyCost <= 0 ||
-        spent.mapping + assignment.reservedCost > policy.mapping.dailyCost)) {
-      return { outcome: "refused", refusal: { reason: "budget",
-        detail: `${spent.mapping.toFixed(4)} is already committed to mapping today; its daily subcap refuses this reservation` } };
+    if (
+      assignment.activity === "mapping" &&
+      (policy.mapping === undefined ||
+        policy.mapping.dailyCost <= 0 ||
+        spent.mapping + assignment.reservedCost > policy.mapping.dailyCost)
+    ) {
+      return {
+        outcome: "refused",
+        refusal: {
+          reason: "budget",
+          detail: `${spent.mapping.toFixed(4)} is already committed to mapping today; its daily subcap refuses this reservation`,
+        },
+      };
     }
     const cycle = spent.byRun[request.runId] ?? 0;
     if (cycle + assignment.reservedCost > policy.perCycleCost) {
@@ -2672,7 +2735,8 @@ export function coordinator(
         },
       };
     }
-    const machine = (assignment.activity === "mapping" ? policy.mapping : policy.review)?.machineId ?? "";
+    const machine =
+      (assignment.activity === "mapping" ? policy.mapping : policy.review)?.machineId ?? "";
 
     const admission = admitSpend(
       policy,
@@ -2721,9 +2785,18 @@ export function coordinator(
         AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.record_id = ? AND c.id <> ?
           AND c.role LIKE 'mapping:%' AND c.finished_at IS NULL
           AND (c.expires_at > ? OR ${RUNNING_CLAIM}))`;
-      admissionParams.push(from, until, assignment.reservedCost, policy.mapping!.dailyCost,
-        assignment.work.id, assignment.work.attempt, iso(moment),
-        assignment.work.id, assignment.id, iso(moment));
+      admissionParams.push(
+        from,
+        until,
+        assignment.reservedCost,
+        policy.mapping!.dailyCost,
+        assignment.work.id,
+        assignment.work.attempt,
+        iso(moment),
+        assignment.work.id,
+        assignment.id,
+        iso(moment),
+      );
     } else if (assignment.activity !== "review") {
       admissionSql += `
         AND NOT EXISTS (SELECT 1 FROM claims c LEFT JOIN records r ON r.id = c.record_id

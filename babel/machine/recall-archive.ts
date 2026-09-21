@@ -111,7 +111,11 @@ function publishedMetadata(value: RecallMetadata): RecallMetadata {
 /** Only the selected repository is consulted. Native routes, not requests, supply classId. */
 export interface RecallArchive {
   execute(classId: string, request: RecallRequest): Promise<RecallResult>;
-  executeMap(classId: string, request: TranscriptMapNativeRequest, privileged?: boolean): Promise<TranscriptMapNativeResult>;
+  executeMap(
+    classId: string,
+    request: TranscriptMapNativeRequest,
+    privileged?: boolean,
+  ): Promise<TranscriptMapNativeResult>;
   close(): Promise<void>;
 }
 
@@ -362,7 +366,7 @@ export async function createRecallArchive(options: {
   ): Promise<Capture[]> => {
     const refused = new Set<string>();
     const newest = new Map<string, Capture>();
-    const snapshots = (inventory ?? await options.repo.snapshots()).filter(
+    const snapshots = (inventory ?? (await options.repo.snapshots())).filter(
       (snapshot) =>
         snapshot.tags.includes(BABEL_TAG) &&
         /^[0-9a-f]{64}$/.test(snapshot.id) &&
@@ -389,7 +393,9 @@ export async function createRecallArchive(options: {
           (filter.harness !== undefined && filter.harness !== session.harness)
         )
           return;
-        const key = all ? JSON.stringify([snapshot.host, snapshot.id, node.path]) : sourceKey(snapshot.host, session.selector);
+        const key = all
+          ? JSON.stringify([snapshot.host, snapshot.id, node.path])
+          : sourceKey(snapshot.host, session.selector);
         const previous = newest.get(key);
         if (
           previous !== undefined &&
@@ -406,7 +412,7 @@ export async function createRecallArchive(options: {
           snapshot,
           session,
           subjects,
-          cache: cacheFor(all ? JSON.stringify([snapshot.host, snapshot.id, node.path]) : snapshot.host),
+          cache: cacheFor(snapshot.host),
           namespace: hash(JSON.stringify([options.repo.repository, snapshot.host])),
           seen: {
             size: node.size,
@@ -520,8 +526,12 @@ export async function createRecallArchive(options: {
     now,
     reason: safeReason,
     reserve(classId, bytes) {
-      const handles = (mappingHandles.get(classId) ?? 0) + [...tokens.values()].filter((value) => value.classId === classId && value.path !== null).length;
-      if (handles >= previewHandleLimit || bytes > previewByteLimit - stagedBytes.get(classId)!) return false;
+      const handles =
+        (mappingHandles.get(classId) ?? 0) +
+        [...tokens.values()].filter((value) => value.classId === classId && value.path !== null)
+          .length;
+      if (handles >= previewHandleLimit || bytes > previewByteLimit - stagedBytes.get(classId)!)
+        return false;
       mappingHandles.set(classId, (mappingHandles.get(classId) ?? 0) + 1);
       stagedBytes.set(classId, stagedBytes.get(classId)! + bytes);
       return true;
@@ -534,16 +544,39 @@ export async function createRecallArchive(options: {
       if (closed) throw new Refused("archive-unavailable");
       await expire();
       const snapshots = await options.repo.snapshots();
-      const captures = await enumerate({}, { cost, newestSnapshotAt: null, refusedSubjects: [] }, ceiling, true, snapshots);
+      const captures = await enumerate(
+        {},
+        { cost, newestSnapshotAt: null, refusedSubjects: [] },
+        ceiling,
+        true,
+        snapshots,
+      );
       return {
-        inventory: snapshots.map(({ id, host, time, paths, tags }) => ({ id, host, time, paths: [...paths].sort(), tags: [...tags].sort() })).sort((a, b) => a.id.localeCompare(b.id)),
+        inventory: snapshots
+          .map(({ id, host, time, paths, tags }) => ({
+            id,
+            host,
+            time,
+            paths: [...paths].sort(),
+            tags: [...tags].sort(),
+          }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
         captures: captures.map((entry) => {
-          const identity = { host: entry.host, harness: entry.session.harness, session: entry.session.selector, snapshot: entry.snapshot.id, path: entry.session.primaryPath, capturedAt: new Date(entry.snapshot.time).toISOString() };
+          const identity = {
+            host: entry.host,
+            harness: entry.session.harness,
+            session: entry.session.selector,
+            snapshot: entry.snapshot.id,
+            path: entry.session.primaryPath,
+            capturedAt: new Date(entry.snapshot.time).toISOString(),
+          };
           return {
             capture: { id: transcriptMapCaptureId(identity), ...identity },
             sensitivity: Math.max(...entry.subjects.map((subject) => subject.sensitivity)),
-            load: (cost: RecallResult["cost"]) => load(entry, { cost }, MAX_MATERIAL_BYTES, new Set()),
-            verify: (reading: ReusedReading, sink: RecordSink, cost: RecallResult["cost"]) => verify(entry, reading, sink, { cost }),
+            load: (cost: RecallResult["cost"]) =>
+              load(entry, { cost }, MAX_MATERIAL_BYTES, new Set()),
+            verify: (reading: ReusedReading, sink: RecordSink, cost: RecallResult["cost"]) =>
+              verify(entry, reading, sink, { cost }),
           };
         }),
       };
@@ -551,7 +584,8 @@ export async function createRecallArchive(options: {
   });
 
   return {
-    executeMap: (classId, request, privileged = false) => mapping.execute(classId, request, privileged),
+    executeMap: (classId, request, privileged = false) =>
+      mapping.execute(classId, request, privileged),
     async execute(classId, input) {
       const result: RecallResult = {
         operation: input.kind,

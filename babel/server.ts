@@ -227,6 +227,7 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
   const payload = rows[0]?.payload;
   if (payload === undefined) return {};
   let held: unknown;
+  let mapping: Record<string, unknown> | undefined;
   try {
     const parsed = JSON.parse(payload) as Record<string, unknown>;
     const review = parsed["review"];
@@ -235,6 +236,13 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
         ? (review as Record<string, unknown>)["recipes"]
         : undefined;
     held = Array.isArray(routed) ? routed : parsed["recipes"];
+    const configuredMapping = parsed["mapping"];
+    if (
+      typeof configuredMapping === "object" &&
+      configuredMapping !== null &&
+      !Array.isArray(configuredMapping)
+    )
+      mapping = configuredMapping as Record<string, unknown>;
   } catch {
     return {};
   }
@@ -250,6 +258,8 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
     if (typeof id !== "string" || id === "") continue;
     if (typeof body !== "string" || body.trim() === "") continue;
     if (recipe["enabled"] === false) continue;
+    // Mapping methods never become exploration methods, including the implicit all-recipes case.
+    if (id === mapping?.["generateRecipe"] || id === mapping?.["reviewRecipe"]) continue;
     cookbook[id] = {
       id,
       version: typeof version === "number" && Number.isFinite(version) ? version : 0,

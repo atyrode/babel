@@ -139,7 +139,14 @@ export function materialSink(dir: string): MaterialSink {
   };
   return {
     document: async (file, text) => {
-      if (file !== TRANSCRIPT_MAP_OUTPUT_FILE || Buffer.byteLength(text) > 6 * (TRANSCRIPT_MAP_MAX_SPAN_BYTES + TRANSCRIPT_MAP_MAX_CHILDREN * TRANSCRIPT_MAP_MAX_SUMMARY_BYTES) + 65536)
+      if (
+        file !== TRANSCRIPT_MAP_OUTPUT_FILE ||
+        Buffer.byteLength(text) >
+          6 *
+            (TRANSCRIPT_MAP_MAX_SPAN_BYTES +
+              TRANSCRIPT_MAP_MAX_CHILDREN * TRANSCRIPT_MAP_MAX_SUMMARY_BYTES) +
+            65536
+      )
         throw new Error("Mapping material exceeds its bound.");
       await ready();
       await Bun.write(join(dir, file), text, { mode: 0o600 });

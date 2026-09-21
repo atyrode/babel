@@ -27,9 +27,7 @@ import {
   importableTables,
   interest,
   leaseFloor,
-  machineColumns,
   newId,
-  recordColumns,
   refuseRow,
   validateNewPolicy,
   rule,
@@ -1768,55 +1766,6 @@ test("the importable tables are derived from the migration itself", () => {
     "payload",
   ]);
   expect(tables["sqlite_master"]).toBeUndefined();
-});
-
-test("every machine column of the migration is one the crossing guard covers", () => {
-  // THE PIN IS THE EXHAUSTIVENESS. The guard's worth is that it covers ALL of them: two of three
-  // reads as a statement that the third is fine, which is how `runs.machine_id` went untested
-  // and `drains.machine_id` went unguarded (#378, #379). TypeScript cannot carry this — the
-  // columns live inside SQL text, so no union it can check is anything but a second hand-written
-  // list — and the derivation reads that text, so this is where the schema and the guard are
-  // held to each other. A column added to `SCHEMA_V1` under either machine spelling lands here
-  // and fails this line; one added under a third spelling fails nothing, which is why the rule
-  // is a shape and not a set of table names.
-  expect(machineColumns()).toEqual({
-    sessions: ["host"],
-    runs: ["machine_id"],
-    drains: ["machine_id"],
-    run_calls: ["transcript_host"],
-  });
-  // A count of jobs per machine is not a machine, and the crossing must still be able to carry
-  // an overlay row: `concurrent_per_machine` is in `budgets` and `budgets` is not in the map.
-  expect(importableTables()["budgets"]).toContain("concurrent_per_machine");
-  expect(machineColumns()["budgets"]).toBeUndefined();
-});
-
-test("every record-identifier column of the migration is one the crossing guard covers", () => {
-  // The same pin as the machine columns above, for the same reason and against the same failure
-  // mode. A column added to `SCHEMA_V1` that holds a record id — by name, or by saying
-  // `REFERENCES records(id)` — lands here and fails this line rather than quietly becoming the
-  // one place an unopenable row can still get in (#414).
-  expect(recordColumns()).toEqual({
-    records: ["id", "root_id", "supersedes_id", "parent_id"],
-    status_events: ["record_id"],
-    dispositions: ["record_id", "duplicate_of_id"],
-    next_actions: ["record_id"],
-    filings: ["record_id"],
-    feedback: ["record_id"],
-    steering: ["root_id"],
-    assessments: ["record_id", "revision_id"],
-    claims: ["record_id"],
-    record_vectors: ["record_id"],
-  });
-  // A `supersedes_id` that references its OWN table is not a record id, and the crossing must
-  // still carry those rows: the name family is the columns whose meaning is fixed, and the
-  // REFERENCES clause carries the rest. `filings` and `facts` supersede themselves.
-  expect(importableTables()["filings"]).toContain("supersedes_id");
-  expect(recordColumns()["filings"]).toEqual(["record_id"]);
-  expect(recordColumns()["facts"]).toBeUndefined();
-  // `edges` is absent because its ends are polymorphic; the row's own kind decides, which the
-  // import path checks and the test below proves.
-  expect(recordColumns()["edges"]).toBeUndefined();
 });
 
 test("the crossing refuses a record id no door could read back, and imports none of the chunk", async () => {

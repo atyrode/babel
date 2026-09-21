@@ -318,14 +318,21 @@ test("mapping exports require owner opt-in and never widen either invocable read
   const ordinary = composeRecallServicePolicy(POLICY, RUNTIME);
   expect(ordinary.operations.mapping).toBeUndefined();
   expect(ordinary.operations.public).toMatchObject({ invocable: true, path: "/recall/public" });
-  expect(ordinary.operations["map.public"]).toMatchObject({ invocable: true, path: "/maps/public" });
+  expect(ordinary.operations["map.public"]).toMatchObject({
+    invocable: true,
+    path: "/maps/public",
+  });
   const configured = composeRecallServicePolicy({ ...POLICY, mappingClassId: "private" }, RUNTIME);
   expect(configured.operations.public).toEqual(ordinary.operations.public);
   expect(configured.operations["map.public"]).toEqual(ordinary.operations["map.public"]);
   expect(configured.operations.mapping).toMatchObject({
-    kind: "http-proxy", path: "/mapping", method: "POST",
+    kind: "http-proxy",
+    path: "/mapping",
+    method: "POST",
     response: { kind: "stream", disclosure: "full", contentTypes: ["application/json"] },
   });
   expect(configured.operations.mapping).not.toHaveProperty("invocable");
-  expect(() => composeRecallServicePolicy({ ...POLICY, mappingClassId: "missing" }, RUNTIME)).toThrow();
+  expect(() =>
+    composeRecallServicePolicy({ ...POLICY, mappingClassId: "missing" }, RUNTIME),
+  ).toThrow();
 });

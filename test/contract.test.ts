@@ -24,6 +24,10 @@ import {
   RUNTIME_TOOLS,
   WATCH_PLUGIN_ID,
   asLaunchRequest,
+  RECALL_SERVICE_ID,
+  RECALL_SERVICE_REVISION,
+  TRANSCRIPT_MAP_SERVICE_FILE,
+  TRANSCRIPT_MAP_SERVICE_OPERATION,
 } from "../babel/contract.ts";
 import { launchRequest } from "../babel/watch/api.ts";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
@@ -277,10 +281,10 @@ describe("the machine half is declared as the machine half is built", () => {
     return bytes;
   }
 
-  test("it declares every operation the machine half implements, in the contract's order", () => {
+  test("it declares exactly the native operations the machine half implements", () => {
     // Model lanes remain Code sessions, not native Babel operations. Recall is a native
     // archive service, so its declaration must match the same machine dispatcher contract.
-    expect(declared).toEqual(Object.values(MACHINE_OPERATIONS));
+    expect(new Set(declared)).toEqual(new Set(Object.values(MACHINE_OPERATIONS)));
   });
 
   test("each operation runs the machine half with its own name and one input document", () => {
@@ -293,14 +297,14 @@ describe("the machine half is declared as the machine half is built", () => {
     // id to tell two plugins' operations apart, and the binary behind the id belongs to one
     // plugin and takes `scan`.
     //
-    // `prepare` alone takes a SECOND lease (#279). The material a Code session reads is a
+    // Source and map preparation take a SECOND lease (#279). The material a Code session reads is a
     // separate sealed output, because a session binds one named output of one job and Babel's
     // ordinary `outputs` lease carries the receipt and the catalog rows the hub ingests — a
     // model handed that directory would be reading Babel's bookkeeping as if it were evidence.
     for (const [word, operation] of Object.entries(OPERATIONS)) {
       if (!declared.includes(operation)) continue;
       const op = machine.operations[operation]!;
-      const material = operation === OPERATIONS.prepare;
+      const material = operation === OPERATIONS.prepare || operation === OPERATIONS.mapPrepare;
       expect(op.argv).toEqual([
         { literal: "/job/artifact" },
         { literal: word },
@@ -466,6 +470,24 @@ describe("the machine half is declared as the machine half is built", () => {
         { path: ["bearer"], serviceId: RESTIC_SERVICE.serviceId, value: "bearer" },
       ]);
     }
+    const mappingOperations: readonly string[] = [
+      MACHINE_OPERATIONS.mapCatalog,
+      MACHINE_OPERATIONS.mapPrepare,
+    ];
+    for (const operation of mappingOperations) {
+      const op = machine.operations[operation]!;
+      expect(op.services).toEqual([
+        {
+          serviceId: RECALL_SERVICE_ID,
+          revision: RECALL_SERVICE_REVISION,
+          operationIds: [TRANSCRIPT_MAP_SERVICE_OPERATION],
+        },
+      ]);
+      expect(op.inputFiles?.[TRANSCRIPT_MAP_SERVICE_FILE]?.jsonValues).toEqual([
+        { path: ["url"], serviceId: RECALL_SERVICE_ID, value: "url" },
+        { path: ["bearer"], serviceId: RECALL_SERVICE_ID, value: "bearer" },
+      ]);
+    }
     // Environment values name writable cache directories or an exact materialized input
     // file. A bearer FILE reference is allowed; a bearer value or unmounted path is not.
     for (const operation of declared) {
@@ -485,7 +507,9 @@ describe("the machine half is declared as the machine half is built", () => {
       }
     }
     // No other operation acquires storage or model authority through a service binding.
-    for (const other of declared.filter((operation) => !touching.includes(operation))) {
+    for (const other of declared.filter(
+      (operation) => !touching.includes(operation) && !mappingOperations.includes(operation),
+    )) {
       expect(machine.operations[other]!.services).toBeUndefined();
     }
   });

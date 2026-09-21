@@ -3013,8 +3013,16 @@ export const RECORD_RESTS_ON_ONE_RUN = "restsOnOneRunAtCreation";
 export const ReceiptSchema = z.strictObject({
   runId: z.string(),
   kind: z.enum([
-    "scan", "archive", "prepare", "verify", "explore", "evaluate", "title",
-    "mapCatalog", "mapPrepare", "map",
+    "scan",
+    "archive",
+    "prepare",
+    "verify",
+    "explore",
+    "evaluate",
+    "title",
+    "mapCatalog",
+    "mapPrepare",
+    "map",
   ]),
   machineId: z.string(),
   recipeId: z.string().optional(),
@@ -4528,11 +4536,15 @@ export const RecallSetupPreviewSchema = z.strictObject({
   reason: z.string().max(512),
   changed: z.boolean(),
   /** Configuration targets only; raw and map operations each require an independent grant. */
-  classes: z.array(z.strictObject({
-    id: recallId,
-    target: RecallTargetSchema,
-    mapTarget: TranscriptMapTargetSchema,
-  })).max(16),
+  classes: z
+    .array(
+      z.strictObject({
+        id: recallId,
+        target: RecallTargetSchema,
+        mapTarget: TranscriptMapTargetSchema,
+      }),
+    )
+    .max(16),
 });
 export const RecallInstallInputSchema = z.strictObject({
   ...RecallSetupInputSchema.shape,
@@ -4647,7 +4659,11 @@ export const PolicyRecipeSchema = z.strictObject({
   title: z.string().max(400).optional(),
   looksFor: z.string().max(2_000).optional(),
   enabled: z.boolean().optional(),
-  body: z.string().trim().min(1).max(64 * 1024),
+  body: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64 * 1024),
 });
 export type PolicyRecipe = z.infer<typeof PolicyRecipeSchema>;
 
@@ -4681,7 +4697,9 @@ export const TranscriptMapWorkIdSchema = z.string().regex(/^tmwork_[0-9a-f]{64}$
 
 export const TranscriptMapSegmentationSchema = z
   .strictObject({
-    version: z.literal(TRANSCRIPT_MAP_SEGMENTATION_VERSION).default(TRANSCRIPT_MAP_SEGMENTATION_VERSION),
+    version: z
+      .literal(TRANSCRIPT_MAP_SEGMENTATION_VERSION)
+      .default(TRANSCRIPT_MAP_SEGMENTATION_VERSION),
     leafBytes: z.number().int().min(1024).max(TRANSCRIPT_MAP_MAX_SPAN_BYTES).default(8192),
     directBytes: z.number().int().nonnegative().max(TRANSCRIPT_MAP_MAX_SPAN_BYTES).default(4096),
     fanout: z.number().int().min(2).max(TRANSCRIPT_MAP_MAX_CHILDREN).default(64),
@@ -4735,7 +4753,11 @@ export const TranscriptMapNodeSchema = z.strictObject({
   id: TranscriptMapNodeIdSchema,
   planId: TranscriptMapPlanIdSchema,
   parentId: TranscriptMapNodeIdSchema.nullable(),
-  level: z.number().int().nonnegative().max(TRANSCRIPT_MAP_MAX_DEPTH - 1),
+  level: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(TRANSCRIPT_MAP_MAX_DEPTH - 1),
   ordinal: z.number().int().nonnegative(),
   span: TranscriptMapSpanSchema,
   children: z.array(TranscriptMapNodeIdSchema).max(TRANSCRIPT_MAP_MAX_CHILDREN),
@@ -4870,7 +4892,15 @@ export const TranscriptMapCoverageSchema = z.strictObject({
   directBytes: recallBytes,
   unmappedBytes: recallBytes,
   gapBytes: recallBytes,
-  levels: z.array(z.number().int().nonnegative().max(TRANSCRIPT_MAP_MAX_DEPTH - 1)).max(4),
+  levels: z
+    .array(
+      z
+        .number()
+        .int()
+        .nonnegative()
+        .max(TRANSCRIPT_MAP_MAX_DEPTH - 1),
+    )
+    .max(4),
   partial: z.boolean(),
   stale: z.boolean(),
   tailBytes: recallBytes.nullable(),
@@ -4896,8 +4926,15 @@ export const TranscriptMapViewSchema = z.strictObject({
 export type TranscriptMapView = z.infer<typeof TranscriptMapViewSchema>;
 
 export const TRANSCRIPT_MAP_NATIVE_KINDS = [
-  "map-context", "map-inventory", "map-plan", "map-node", "map-authorize",
-  "map-span", "map-preview", "map-page", "map-release",
+  "map-context",
+  "map-inventory",
+  "map-plan",
+  "map-node",
+  "map-authorize",
+  "map-span",
+  "map-preview",
+  "map-page",
+  "map-release",
 ] as const;
 export const TranscriptMapInventoryRequestSchema = z.strictObject({
   kind: z.literal("map-inventory"),
@@ -4959,24 +4996,30 @@ export const TranscriptMapNativeResultSchema = z.strictObject({
   nextCursor: z.string().min(1).max(1024).nullable(),
   accesses: z.array(TranscriptMapAccessSchema).max(TRANSCRIPT_MAP_MAX_CAPTURES),
   plan: TranscriptMapPlanPageSchema.optional(),
-  span: z.strictObject({
-    source: TranscriptMapSourceSchema,
-    span: TranscriptMapSpanSchema,
-    excerpt: RecallExcerptSchema,
-  }).optional(),
-  preview: z.strictObject({
-    previewId: z.uuid(),
-    bytes: recallBytes,
-    sourceDigest: recallDigest,
-    spanDigest: recallDigest,
-  }).optional(),
-  page: z.strictObject({
-    text: z.string().max(TRANSCRIPT_MAP_MAX_PAGE_BYTES),
-    offset: recallBytes,
-    nextOffset: recallBytes,
-    totalBytes: recallBytes,
-    complete: z.boolean(),
-  }).optional(),
+  span: z
+    .strictObject({
+      source: TranscriptMapSourceSchema,
+      span: TranscriptMapSpanSchema,
+      excerpt: RecallExcerptSchema,
+    })
+    .optional(),
+  preview: z
+    .strictObject({
+      previewId: z.uuid(),
+      bytes: recallBytes,
+      sourceDigest: recallDigest,
+      spanDigest: recallDigest,
+    })
+    .optional(),
+  page: z
+    .strictObject({
+      text: z.string().max(TRANSCRIPT_MAP_MAX_PAGE_BYTES),
+      offset: recallBytes,
+      nextOffset: recallBytes,
+      totalBytes: recallBytes,
+      complete: z.boolean(),
+    })
+    .optional(),
   cost: RecallResultSchema.shape.cost,
   refusal: z.union([
     RecallResultSchema.shape.refusal,
@@ -4984,14 +5027,16 @@ export const TranscriptMapNativeResultSchema = z.strictObject({
   ]),
 });
 export type TranscriptMapNativeResult = z.infer<typeof TranscriptMapNativeResultSchema>;
-export const TranscriptMapNativeReplySchema = z.strictObject({
-  requestId: z.uuid(),
-  state: RecallReplySchema.shape.state,
-  result: TranscriptMapNativeResultSchema.optional(),
-}).refine(
-  (reply) => (reply.state === "complete") === (reply.result !== undefined),
-  "Only a complete map reply carries a result.",
-);
+export const TranscriptMapNativeReplySchema = z
+  .strictObject({
+    requestId: z.uuid(),
+    state: RecallReplySchema.shape.state,
+    result: TranscriptMapNativeResultSchema.optional(),
+  })
+  .refine(
+    (reply) => (reply.state === "complete") === (reply.result !== undefined),
+    "Only a complete map reply carries a result.",
+  );
 export type TranscriptMapNativeReply = z.infer<typeof TranscriptMapNativeReplySchema>;
 
 /** Native transport can serve both families; the existing raw Recall doors remain narrower. */
@@ -5004,7 +5049,10 @@ export const ArchiveServiceRequestSchema = z.strictObject({
   ]),
 });
 export type ArchiveServiceRequest = z.infer<typeof ArchiveServiceRequestSchema>;
-export const ArchiveServiceReplySchema = z.union([RecallReplySchema, TranscriptMapNativeReplySchema]);
+export const ArchiveServiceReplySchema = z.union([
+  RecallReplySchema,
+  TranscriptMapNativeReplySchema,
+]);
 export type ArchiveServiceReply = z.infer<typeof ArchiveServiceReplySchema>;
 
 export const TranscriptMapCatalogInputSchema = z.strictObject({
@@ -5024,12 +5072,15 @@ export const TranscriptMapPrepareInputSchema = z.strictObject({
   segmentation: TranscriptMapSegmentationSchema,
   expectedPolicyDigest: recallDigest,
   mode: z.enum(TRANSCRIPT_MAP_MODES),
-  children: z.array(TranscriptMapChildSummarySchema.omit({ nodeId: true }))
+  children: z
+    .array(TranscriptMapChildSummarySchema.omit({ nodeId: true }))
     .max(TRANSCRIPT_MAP_MAX_CHILDREN),
-  baseSummary: z.strictObject({
-    id: TranscriptMapSummaryIdSchema,
-    text: transcriptMapText,
-  }).optional(),
+  baseSummary: z
+    .strictObject({
+      id: TranscriptMapSummaryIdSchema,
+      text: transcriptMapText,
+    })
+    .optional(),
   feedback: transcriptMapText.optional(),
 });
 export type TranscriptMapPrepareInput = z.infer<typeof TranscriptMapPrepareInputSchema>;
@@ -5056,7 +5107,6 @@ export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
 ]);
 export type TranscriptMapJobReceipt = z.infer<typeof TranscriptMapJobReceiptSchema>;
 
-
 /**
  * The 62 primitive leaves of the public native map reader. Full plan/export packets travel
  * only through the explicitly configured job proxy, never through a reader's invocation grant.
@@ -5068,17 +5118,26 @@ export const TRANSCRIPT_MAP_RESULT_FIELDS: string[][] = [
   ...TranscriptMapContextSchema.keyof().options.map((key) => ["result", "context", key]),
   ...RecallResultSchema.shape.cost.keyof().options.map((key) => ["result", "cost", key]),
   ...TranscriptMapCaptureSchema.keyof().options.map((key) => [
-    "result", "entries", "*", "capture", key,
+    "result",
+    "entries",
+    "*",
+    "capture",
+    key,
   ]),
   ...TranscriptMapAccessSchema.keyof().options.flatMap((key) => [
     ["result", "entries", "*", "access", key],
     ["result", "accesses", "*", key],
   ]),
   ...TranscriptMapSourceSchema.keyof().options.map((key) => ["result", "span", "source", key]),
-  ...TranscriptMapSpanSchema.keyof().options.filter((key) => key !== "anchor")
+  ...TranscriptMapSpanSchema.keyof()
+    .options.filter((key) => key !== "anchor")
     .map((key) => ["result", "span", "span", key]),
   ...SessionRecordPositionSchema.keyof().options.map((key) => [
-    "result", "span", "span", "anchor", key,
+    "result",
+    "span",
+    "span",
+    "anchor",
+    key,
   ]),
   ...RecallExcerptSchema.keyof().options.map((key) => ["result", "span", "excerpt", key]),
 ];
@@ -5131,7 +5190,12 @@ export const TranscriptMapSourceInputSchema = z.strictObject({
   target: TranscriptMapTargetSchema,
   versionId: TranscriptMapVersionIdSchema,
   nodeId: TranscriptMapNodeIdSchema,
-  maxBytes: z.number().int().positive().max(TRANSCRIPT_MAP_MAX_SPAN_BYTES).default(TRANSCRIPT_MAP_MAX_SPAN_BYTES),
+  maxBytes: z
+    .number()
+    .int()
+    .positive()
+    .max(TRANSCRIPT_MAP_MAX_SPAN_BYTES)
+    .default(TRANSCRIPT_MAP_MAX_SPAN_BYTES),
   requestId: z.uuid().optional(),
 });
 export const TranscriptMapLocateInputSchema = RecallPollInputSchema.safeExtend({
@@ -5175,13 +5239,15 @@ export const TranscriptMapReadResultSchema = z.strictObject({
   nextOffset: z.number().int().nonnegative().max(TRANSCRIPT_MAP_MAX_CHILDREN).nullable(),
 });
 export type TranscriptMapReadResult = z.infer<typeof TranscriptMapReadResultSchema>;
-export const TranscriptMapReadReplySchema = z.strictObject({
-  requestId: z.uuid(),
-  state: RecallReplySchema.shape.state,
-  result: TranscriptMapReadResultSchema.optional(),
-}).refine((reply) => (reply.state === "complete") === (reply.result !== undefined), {
-  message: "Only a completed map navigation may carry a result.",
-});
+export const TranscriptMapReadReplySchema = z
+  .strictObject({
+    requestId: z.uuid(),
+    state: RecallReplySchema.shape.state,
+    result: TranscriptMapReadResultSchema.optional(),
+  })
+  .refine((reply) => (reply.state === "complete") === (reply.result !== undefined), {
+    message: "Only a completed map navigation may carry a result.",
+  });
 export type TranscriptMapReadReply = z.infer<typeof TranscriptMapReadReplySchema>;
 
 /** Navigation's compact view keeps every primitive leaf within the SDK projection budget. */
@@ -5190,25 +5256,51 @@ export const TRANSCRIPT_MAP_READ_RESULT_FIELDS: string[][] = [
   ["state"],
   ...["operation", "inference", "nextOffset"].map((key) => ["result", key]),
   ...TranscriptMapCoverageSchema.keyof().options.map((key) =>
-    key === "levels" ? ["result", "coverage", key, "*"] : ["result", "coverage", key]),
+    key === "levels" ? ["result", "coverage", key, "*"] : ["result", "coverage", key],
+  ),
   ...TranscriptMapStatusSchema.keyof().options.map((key) => ["result", "status", key]),
   ...["versionId", "reused"].map((key) => ["result", "views", "*", key]),
-  ...TranscriptMapSourceSchema.keyof().options.map((key) => ["result", "views", "*", "source", key]),
-  ...TranscriptMapReadViewSchema.shape.node.keyof().options.filter((key) => key !== "span")
-    .map((key) => key === "children"
-      ? ["result", "views", "*", "node", key, "*"]
-      : ["result", "views", "*", "node", key]),
-  ...TranscriptMapSpanSchema.keyof().options.filter((key) => key !== "anchor")
+  ...TranscriptMapSourceSchema.keyof().options.map((key) => [
+    "result",
+    "views",
+    "*",
+    "source",
+    key,
+  ]),
+  ...TranscriptMapReadViewSchema.shape.node
+    .keyof()
+    .options.filter((key) => key !== "span")
+    .map((key) =>
+      key === "children"
+        ? ["result", "views", "*", "node", key, "*"]
+        : ["result", "views", "*", "node", key],
+    ),
+  ...TranscriptMapSpanSchema.keyof()
+    .options.filter((key) => key !== "anchor")
     .map((key) => ["result", "views", "*", "node", "span", key]),
   ...SessionRecordPositionSchema.keyof().options.map((key) => [
-    "result", "views", "*", "node", "span", "anchor", key,
+    "result",
+    "views",
+    "*",
+    "node",
+    "span",
+    "anchor",
+    key,
   ]),
-  ...TranscriptMapSummaryViewSchema.keyof().options.filter((key) => key !== "profile")
-    .map((key) => key === "inputSummaryIds"
-      ? ["result", "views", "*", "summary", key, "*"]
-      : ["result", "views", "*", "summary", key]),
+  ...TranscriptMapSummaryViewSchema.keyof()
+    .options.filter((key) => key !== "profile")
+    .map((key) =>
+      key === "inputSummaryIds"
+        ? ["result", "views", "*", "summary", key, "*"]
+        : ["result", "views", "*", "summary", key],
+    ),
   ...CodeProfileSchema.keyof().options.map((key) => [
-    "result", "views", "*", "summary", "profile", key,
+    "result",
+    "views",
+    "*",
+    "summary",
+    "profile",
+    key,
   ]),
 ];
 export const TRANSCRIPT_MAP_READ_RESULT_PROJECTION = {
@@ -5224,26 +5316,35 @@ export const TranscriptMapRegenerateInputSchema = z.strictObject({
   requestId: z.uuid(),
   reason: z.string().trim().min(1).max(512),
 });
-export const TranscriptMapRegenerateReplySchema = z.strictObject({
-  requestId: z.uuid(),
-  state: RecallReplySchema.shape.state,
-  generation: z.number().int().positive().optional(),
-}).refine((reply) => (reply.state === "complete") === (reply.generation !== undefined), {
-  message: "Only a completed regeneration request may identify its generation.",
-});
+export const TranscriptMapRegenerateReplySchema = z
+  .strictObject({
+    requestId: z.uuid(),
+    state: RecallReplySchema.shape.state,
+    generation: z.number().int().positive().optional(),
+  })
+  .refine((reply) => (reply.state === "complete") === (reply.generation !== undefined), {
+    message: "Only a completed regeneration request may identify its generation.",
+  });
 export const TranscriptMapReadTraceSchema = z.strictObject({
   state: RecallReplySchema.shape.state,
-  summaries: z.array(z.strictObject({
-    versionId: TranscriptMapVersionIdSchema,
-    nodeId: TranscriptMapNodeIdSchema,
-    summaryId: TranscriptMapSummaryIdSchema.nullable(),
-  })).max(TRANSCRIPT_MAP_MAX_CHILDREN).default([]),
-  source: z.strictObject({
-    captureId: TranscriptMapCaptureIdSchema,
-    span: TranscriptMapSpanSchema,
-    servedBytes: recallBytes,
-    truncated: z.boolean(),
-  }).optional(),
+  summaries: z
+    .array(
+      z.strictObject({
+        versionId: TranscriptMapVersionIdSchema,
+        nodeId: TranscriptMapNodeIdSchema,
+        summaryId: TranscriptMapSummaryIdSchema.nullable(),
+      }),
+    )
+    .max(TRANSCRIPT_MAP_MAX_CHILDREN)
+    .default([]),
+  source: z
+    .strictObject({
+      captureId: TranscriptMapCaptureIdSchema,
+      span: TranscriptMapSpanSchema,
+      servedBytes: recallBytes,
+      truncated: z.boolean(),
+    })
+    .optional(),
   cost: RecallResultSchema.shape.cost.optional(),
   generation: z.number().int().positive().optional(),
 });

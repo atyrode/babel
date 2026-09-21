@@ -40,13 +40,25 @@ export function openRecallService(options: {
   if (!/^[A-Za-z0-9_-]{32,128}$/.test(options.bearer))
     throw new Error("Recall service binding is unavailable.");
   const authorization = Buffer.from(`Bearer ${options.bearer}`);
-  const routes = new Map<string, { classId: string; privileged: boolean; maps: boolean }>(options.policy.classes.flatMap(({ id }) => [
-    [`/recall/${id}`, { classId: id, privileged: false, maps: false }],
-    [`/maps/${id}`, { classId: id, privileged: false, maps: true }],
-  ] as const));
+  const routes = new Map<string, { classId: string; privileged: boolean; maps: boolean }>(
+    options.policy.classes.flatMap(
+      ({ id }) =>
+        [
+          [`/recall/${id}`, { classId: id, privileged: false, maps: false }],
+          [`/maps/${id}`, { classId: id, privileged: false, maps: true }],
+        ] as const,
+    ),
+  );
   if (options.policy.mappingClassId)
-    routes.set("/mapping", { classId: options.policy.mappingClassId, privileged: true, maps: true });
-  const classQueueLimit = Math.max(1, Math.floor(RECALL_MAX_REQUESTS / options.policy.classes.length));
+    routes.set("/mapping", {
+      classId: options.policy.mappingClassId,
+      privileged: true,
+      maps: true,
+    });
+  const classQueueLimit = Math.max(
+    1,
+    Math.floor(RECALL_MAX_REQUESTS / options.policy.classes.length),
+  );
   const now = options.now ?? Date.now;
   const pending = new Map<string, Pending>();
   const queues = new Map<string, Pending[]>(options.policy.classes.map(({ id }) => [id, []]));
@@ -73,7 +85,11 @@ export function openRecallService(options: {
           const result = mapped.success
             ? await options.archive.executeMap(entry.classId, mapped.data, entry.privileged)
             : await options.archive.execute(entry.classId, entry.request as RecallRequest);
-          const reply = ArchiveServiceReplySchema.parse({ ...entry.reply, state: "complete", result });
+          const reply = ArchiveServiceReplySchema.parse({
+            ...entry.reply,
+            state: "complete",
+            result,
+          });
           if (Buffer.byteLength(JSON.stringify(reply)) > RECALL_MAX_RESULT_BYTES)
             throw new Error("Recall response exceeds its bound.");
           entry.reply = reply;
@@ -118,7 +134,11 @@ export function openRecallService(options: {
       if (frame.request.kind !== "poll") {
         const mapping = TranscriptMapNativeRequestSchema.safeParse(frame.request);
         if (maps !== mapping.success) return new Response(null, { status: 403 });
-        if (mapping.success && !privileged && !["map-context", "map-inventory", "map-authorize", "map-span"].includes(mapping.data.kind))
+        if (
+          mapping.success &&
+          !privileged &&
+          !["map-context", "map-inventory", "map-authorize", "map-span"].includes(mapping.data.kind)
+        )
           return new Response(null, { status: 403 });
       }
       if (stopped) return new Response(null, { status: 503 });

@@ -78,14 +78,27 @@ const DISPATCH: Record<
 > = {
   mapCatalog: async (raw, out) => {
     try {
-      return await mapCatalog(TranscriptMapCatalogInputSchema.parse(raw), out, await openTranscriptMapClient());
-    } catch { throw new Error("Mapping catalog could not be collected."); }
+      return await mapCatalog(
+        TranscriptMapCatalogInputSchema.parse(raw),
+        out,
+        await openTranscriptMapClient(),
+      );
+    } catch {
+      throw new Error("Mapping catalog could not be collected.");
+    }
   },
   mapPrepare: async (raw, out, _progress, material) => {
     try {
       if (!material) throw new Error("Missing material lease.");
-      return await mapPrepare(TranscriptMapPrepareInputSchema.parse(raw), out, material, await openTranscriptMapClient());
-    } catch { throw new Error("Mapping material could not be sealed."); }
+      return await mapPrepare(
+        TranscriptMapPrepareInputSchema.parse(raw),
+        out,
+        material,
+        await openTranscriptMapClient(),
+      );
+    } catch {
+      throw new Error("Mapping material could not be sealed.");
+    }
   },
   scan: async (raw, out) => {
     const { ScanInputSchema, scan } = await import("./scan.ts");

@@ -52,6 +52,7 @@ origin/bindings. It accepts JSONL, not `search`, `show`, or `--raw`; only `--hel
 
 The **trusted owner launcher**, isolated from agent code, supplies authorized `MANIFOLD_ORIGIN`
 and exactly one binding:
+
 - Agent: `MANIFOLD_RUNNER_TOKEN`, `MANIFOLD_AGENT_ID`; optional trusted harness
   `MANIFOLD_AGENT_SESSION`/`MANIFOLD_AGENT_MODEL` JSON. Admission cannot broaden standing grants.
 - Run: privately supplied `MANIFOLD_RUN_TOKEN`, `MANIFOLD_RUN_ID` adopt an already-admitted run.
