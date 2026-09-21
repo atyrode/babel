@@ -6220,7 +6220,7 @@ async function catalogDeployment() {
     readSession: unexpectedCode,
     cancelSession: unexpectedCode,
   };
-  const tick = () =>
+  const loop = () =>
     conductor({
       store,
       coordinator: draws as unknown as Coordinator,
@@ -6231,7 +6231,9 @@ async function catalogDeployment() {
       plan: PLAN,
       catalogPlan: UNMETERED_PLAN,
       now: () => clock,
-    }).tick();
+    });
+  const tick = (machineId = MACHINE) => loop().tickCatalog(machineId);
+  const ordinaryTick = () => loop().tick();
   const digest = `sha256:${"a".repeat(64)}`;
   const context = {
     digest,
@@ -6305,6 +6307,7 @@ async function catalogDeployment() {
     trees,
     finish,
     tick,
+    ordinaryTick,
     codeCalls,
   };
 }
@@ -6426,7 +6429,7 @@ test("terminally refused capture advances the sweep and is retried only on a lat
           authority: { decision: { refusal: decision } },
         }
       : status(node);
-  const report = await f.tick();
+  const notes = await f.tick();
   const failure = (
     await f.db.query<{ closure: string; reason: string; gap: string }>(
       `SELECT closure,json_extract(payload,'$.reason') reason,
@@ -6438,7 +6441,7 @@ test("terminally refused capture advances the sweep and is retried only on a lat
   expect(failure.reason).toContain("refused");
   expect(failure.reason).toContain(decision);
   expect(failure.gap).toContain(decision);
-  expect(report.notes.some((note) => note.includes(decision))).toBe(true);
+  expect(notes.some((note) => note.includes(decision))).toBe(true);
   expect(f.fleet.launched).toHaveLength(2);
   clock += POLICY.cadenceSeconds * 1000;
   await f.tick();
@@ -6555,6 +6558,57 @@ test("disabled and unconfigured policies never start free catalog work", async (
   await f.tick();
   expect(f.fleet.launched).toEqual([]);
   expect(f.codeCalls).toEqual([]);
+});
+
+test("ordinary cycles observe catalog work but cannot post or retry its native job", async () => {
+  const f = await catalogDeployment();
+  await f.ordinaryTick();
+  expect(f.fleet.launched).toEqual([]);
+  const execute = f.fleet.execute.bind(f.fleet);
+  let attempted = 0;
+  f.fleet.execute = (launch) => {
+    attempted += 1;
+    if (attempted === 1) throw new Error("catalog post interrupted before arrival");
+    return execute(launch);
+  };
+  const status = f.fleet.status.bind(f.fleet);
+  f.fleet.status = (node) => {
+    if (!f.fleet.jobs.has(node.jobId)) throw new HostCallError("jobs.status", "job_not_started");
+    return status(node);
+  };
+  await f.tick();
+  const retained = await f.db.query(`SELECT id,job_id,closure FROM runs WHERE kind=?`, [
+    OPERATIONS.mapCatalog,
+  ]);
+  await f.ordinaryTick();
+  expect(attempted).toBe(1);
+  expect(await f.db.query(`SELECT id,job_id,closure FROM runs WHERE kind=?`, [
+    OPERATIONS.mapCatalog,
+  ])).toEqual(retained);
+  await f.tick();
+  expect(attempted).toBe(2);
+  expect(f.fleet.launched).toHaveLength(1);
+});
+
+test("catalog admission cannot move with policy to another machine or reconcile paid sessions", async () => {
+  const f = await catalogDeployment();
+  await seed(f.db);
+  await sessionInFlight(f.db);
+  await f.tick();
+  f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null });
+  const other = "another-machine";
+  f.draws.mapping = { ...f.draws.mapping!, machineId: other };
+  await f.tick();
+  expect(f.fleet.launched).toHaveLength(1);
+  expect(f.codeCalls).toEqual([]);
+  expect(f.fleet.scheduled).toEqual([]);
+  expect(f.draws.finished).toEqual([]);
+
+  await f.tick(other);
+  expect(f.fleet.launched).toHaveLength(2);
+  expect(f.fleet.launched[1]!.machineId).toBe(other);
+  expect(f.codeCalls).toEqual([]);
+  expect(f.fleet.scheduled).toEqual([]);
 });
 
 test("a late duplicate catalog projector cannot rewind a newer page's context or cursor", async () => {

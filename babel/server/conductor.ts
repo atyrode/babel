@@ -587,6 +587,8 @@ export interface TickReport {
 
 export interface Conductor {
   tick(): Promise<TickReport>;
+  /** Free catalog continuation under admission for this machine, never ordinary scan authority. */
+  tickCatalog(machineId: string): Promise<readonly string[]>;
 }
 
 // ---------------------------------------------------------------------------- constants
@@ -2002,7 +2004,12 @@ export function conductor(deps: ConductorDeps): Conductor {
    * projection precedes its marker, so an interrupted store write replays the same sealed result.
    * Cursor commits follow capture writes, never the other way around.
    */
-  async function catalogReceipts(policy: Policy, at: number, notes: string[]): Promise<void> {
+  async function catalogReceipts(
+    policy: Policy,
+    at: number,
+    notes: string[],
+    machineId?: string,
+  ): Promise<void> {
     const route =
       policy.enabled && policy.mapping !== undefined
         ? TranscriptMapConfigSchema.parse(policy.mapping)
@@ -2014,8 +2021,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       closure: string;
     }>(
       `SELECT id,preparation,payload,closure FROM runs WHERE kind=? AND closure IS NOT NULL
-       AND json_extract(preparation,'$.progress') IS NULL ORDER BY started_at,id LIMIT 8`,
-      [OPERATIONS.mapCatalog],
+       AND json_extract(preparation,'$.progress') IS NULL
+       AND (? IS NULL OR machine_id=?) ORDER BY started_at,id LIMIT 8`,
+      [OPERATIONS.mapCatalog, machineId ?? null, machineId ?? null],
     );
     for (const row of rows) {
       const intent = catalogIntent(row.preparation);
@@ -2486,6 +2494,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       rows: result?.rows ?? {},
       skipped: result?.skipped ?? 0,
     });
+    // A free catalog is never an analysis grant, even if a stale claim names its job.
+    if (target.operationId === OPERATIONS.mapCatalog) return;
     // Native preparation seals evidence, not an analysis result. Its parent retains the grant.
     if (target.operationId === OPERATIONS.prepare) {
       const parents = await store.db.query<{ id: string }>(
@@ -3940,13 +3950,16 @@ export function conductor(deps: ConductorDeps): Conductor {
     settled: SettledClaim[],
     notes: string[],
     refusals: Refusals,
+    catalogMachineId?: string,
   ): Promise<{ inFlight: number; runs: RunsTally }> {
     const pending = await store.db.query<PendingRun>(
       `SELECT id, job_id, machine_id, kind, container_id, prepare_job_id, started_at,
               profile, preparation, unreadable
          FROM runs
         WHERE closure IS NULL AND job_id IS NOT NULL AND machine_id IS NOT NULL
+          AND (? IS NULL OR (kind=? AND machine_id=?))
         ORDER BY started_at`,
+      [catalogMachineId ?? null, OPERATIONS.mapCatalog, catalogMachineId ?? null],
     );
     let inFlight = 0;
     let atModel = 0;
@@ -3954,11 +3967,15 @@ export function conductor(deps: ConductorDeps): Conductor {
     // The count of silent cycles is on the row now, so nothing is pruned here: a run that is
     // no longer waited on is not selected, and one that answers is set back to zero in place.
     for (const run of pending) {
-      await renewAnalysis(run.job_id, at);
+      if (run.kind !== OPERATIONS.mapCatalog) await renewAnalysis(run.job_id, at);
       // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
       // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it
       // answers nothing useful at best; Code is asked instead, through the door that owns it.
-      if (run.container_id !== null && run.container_id !== "") {
+      if (
+        run.kind !== OPERATIONS.mapCatalog &&
+        run.container_id !== null &&
+        run.container_id !== ""
+      ) {
         const reconciled = await reconcileSession(at, run, ingested, settled, notes, refusals);
         if (reconciled.inFlight) {
           inFlight += 1;
@@ -3980,6 +3997,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       } catch (error) {
         notes.push(`job ${run.job_id} cannot be read: ${message(error)}`);
         if (
+          catalogMachineId === run.machine_id &&
           run.kind === OPERATIONS.mapCatalog &&
           nativeFailureToken(error, "jobs.status") === "job_not_started"
         ) {
@@ -4778,6 +4796,24 @@ export function conductor(deps: ConductorDeps): Conductor {
   }
 
   return {
+    async tickCatalog(machineId: string): Promise<readonly string[]> {
+      const at = deps.now();
+      const policy = (await coordinator.policy(at)).policy;
+      const notes: string[] = [];
+      await reconcileRuns(
+        at,
+        [],
+        [],
+        [],
+        notes,
+        { paid: new Map(), free: new Map() },
+        machineId,
+      );
+      await catalogReceipts(policy, at, notes, machineId);
+      // An old settlement cannot transfer its admission when policy moves to another host.
+      if (policy.mapping?.machineId === machineId) await advanceCatalog(policy, at, notes);
+      return notes;
+    },
     async tick(): Promise<TickReport> {
       const at = deps.now();
       cycle += 1;
@@ -4842,7 +4878,6 @@ export function conductor(deps: ConductorDeps): Conductor {
       // by the time it answers rather than one cycle later.
       await reapClaims(at, policy.leaseSeconds, settled, notes);
       await catalogReceipts(policy, at, notes);
-      const catalogPosted = await advanceCatalog(policy, at, notes);
       // What a scan just catalogued is folders; what they ARE is the host's to say, and it is
       // asked here, after the rows exist and before this cycle spends anything.
       await identifyFolders(schedule.machines, notes);
@@ -4879,7 +4914,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         parked,
         pulse: { tick, today: await rollUp(at, tick, notes) },
         runs: reconciled.runs,
-        pending: reconciled.inFlight + requested.length + catalogPosted,
+        pending: reconciled.inFlight + requested.length,
         notes,
       };
     },
