@@ -6414,8 +6414,31 @@ test("terminally refused capture advances the sweep and is retried only on a lat
   await f.tick();
   f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null });
   await f.tick();
-  f.fleet.kill(f.fleet.launched.at(-1)!.jobId, "refused");
-  await f.tick();
+  const refused = f.fleet.launched.at(-1)!;
+  const status = f.fleet.status.bind(f.fleet);
+  const decision = "authority_or_consent_refused";
+  f.fleet.status = (node) =>
+    node.jobId === refused.jobId
+      ? {
+          ...status(node),
+          state: "refused",
+          result: null,
+          authority: { decision: { refusal: decision } },
+        }
+      : status(node);
+  const report = await f.tick();
+  const failure = (
+    await f.db.query<{ closure: string; reason: string; gap: string }>(
+      `SELECT closure,json_extract(payload,'$.reason') reason,
+              json_extract(preparation,'$.progress.gap') gap FROM runs WHERE job_id=?`,
+      [refused.jobId],
+    )
+  )[0]!;
+  expect(failure.closure).toBe("failed");
+  expect(failure.reason).toContain("refused");
+  expect(failure.reason).toContain(decision);
+  expect(failure.gap).toContain(decision);
+  expect(report.notes.some((note) => note.includes(decision))).toBe(true);
   expect(f.fleet.launched).toHaveLength(2);
   clock += POLICY.cadenceSeconds * 1000;
   await f.tick();
@@ -6451,6 +6474,49 @@ test("terminally refused capture advances the sweep and is retried only on a lat
       `SELECT count(*) n FROM runs WHERE json_extract(preparation,'$.progress.gap') IS NOT NULL`,
     ),
   ).toEqual([{ n: 1n }]);
+  expect(f.codeCalls).toEqual([]);
+});
+
+test("a completed catalog with unreadable sealed output retries that output without a refusal or replacement job", async () => {
+  const f = await catalogDeployment();
+  await f.tick();
+  const launch = f.fleet.launched[0]!;
+  f.finish({
+    kind: "catalog",
+    context: f.context,
+    entries: f.entries,
+    nextCursor: null,
+  });
+  const output = f.fleet.output.bind(f.fleet);
+  f.fleet.output = () => {
+    throw new Error("sealed output transport interrupted");
+  };
+  await f.tick();
+  clock += POLICY.cadenceSeconds * 1000;
+  await f.tick();
+  expect(f.fleet.launched).toHaveLength(1);
+  expect(
+    await f.db.query(
+      `SELECT closure,json_extract(preparation,'$.progress') progress FROM runs WHERE job_id=?`,
+      [launch.jobId],
+    ),
+  ).toEqual([{ closure: null, progress: null }]);
+  expect(await f.db.query(`SELECT count(*) n FROM transcript_map_captures`)).toEqual([{ n: 0n }]);
+
+  f.fleet.output = output;
+  await f.tick();
+  expect(
+    await f.db.query(
+      `SELECT closure,json_extract(preparation,'$.progress.gap') gap FROM runs WHERE job_id=?`,
+      [launch.jobId],
+    ),
+  ).toEqual([{ closure: "completed", gap: null }]);
+  expect(await f.db.query(`SELECT count(*) n FROM transcript_map_captures`)).toEqual([{ n: 3n }]);
+  expect(f.fleet.launched).toHaveLength(2);
+  const next = TranscriptMapCatalogInputSchema.parse(
+    JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+  );
+  expect(next.request.kind).toBe("map-plan");
   expect(f.codeCalls).toEqual([]);
 });
 

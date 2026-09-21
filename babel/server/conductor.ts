@@ -1191,7 +1191,7 @@ function runStatement(
     // read its model off the transcript it sealed, and the loop's reading of a ring is not an
     // improvement on the run's word about itself.
     payload: JSON.stringify({
-      ...(receipt ?? { closure, reason: target.closure }),
+      ...(receipt ?? { closure, reason: target.reason ?? target.closure }),
       ...(target.inference === null || target.inference === undefined
         ? {}
         : { inference: target.inference }),
@@ -1477,6 +1477,8 @@ export interface IngestTarget {
   readonly outputs: readonly JobOutput[];
   /** What the engine says became of the job, for a run whose receipt never arrived. */
   readonly closure: string;
+  /** The native terminal state and cause, retained when the job produced no receipt. */
+  readonly reason?: string;
   /**
    * What the OWNER metered for this job, or null when the hub has none — a machine whose lane
    * is not brokered, or a job that never reached a model. It is preferred over the receipt's
@@ -2032,13 +2034,26 @@ export function conductor(deps: ConductorDeps): Conductor {
         gap: null,
       };
       try {
+        // A terminal native failure need not have run, let alone sealed a receipt. Its
+        // retained cause is a catalog gap, not a malformed successful submission.
+        const payload: unknown = JSON.parse(row.payload);
+        if (row.closure !== "completed") {
+          const reason =
+            typeof payload === "object" && payload !== null && "reason" in payload
+              ? payload.reason
+              : null;
+          throw new TranscriptMapProjectionRefusal(
+            typeof reason === "string" && reason !== ""
+              ? reason
+              : `native catalog closed as ${row.closure} without a completed receipt`,
+          );
+        }
         if (!route || JSON.stringify(route) !== JSON.stringify(intent.route))
           throw new TranscriptMapProjectionRefusal(
             "mapping configuration was disabled or replaced",
           );
-        const receipt = ReceiptSchema.parse(JSON.parse(row.payload));
+        const receipt = ReceiptSchema.parse(payload);
         if (
-          row.closure !== "completed" ||
           receipt.closure !== "completed" ||
           receipt.runId !== row.id ||
           receipt.machineId !== route.machineId ||
@@ -2429,10 +2444,13 @@ export function conductor(deps: ConductorDeps): Conductor {
       // An output the hub cannot read closes its run as failed rather than being retried every
       // cycle for ever: the run row is the loop's memory of what it has already dealt with, and
       // a job nobody requested (the beat) has none until this writes one.
-      notes.push(`job ${target.jobId} outputs were refused: ${message(error)}`);
       // A catalog's sealed output is its replay source. Transport/DB interruption is not
       // a native refusal and must not retire that source in favor of another job.
-      if (target.operationId === OPERATIONS.mapCatalog) return;
+      if (target.operationId === OPERATIONS.mapCatalog) {
+        notes.push(`job ${target.jobId} outputs remain pending: ${message(error)}`);
+        return;
+      }
+      notes.push(`job ${target.jobId} outputs were refused: ${message(error)}`);
       const failed = JSON.stringify({ closure: "failed", reason: message(error) });
       await store.db.run(
         `INSERT INTO runs(id, kind, machine_id, job_id, started_at, finished_at, closure, records, payload)
@@ -4002,6 +4020,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           operationId: run.kind,
           outputs: state.result?.outputs ?? [],
           closure: closureOf(state),
+          reason: nativeReason(state),
           inference: state.result?.usage?.inference ?? null,
           models: modelList(heard[0]?.models),
         },
@@ -4053,6 +4072,7 @@ export function conductor(deps: ConductorDeps): Conductor {
             operationId: BEAT_OPERATION,
             outputs: job.result?.outputs ?? [],
             closure: closureOf(job),
+            reason: nativeReason(job),
             inference: job.result?.usage?.inference ?? null,
           },
           ingested,
@@ -4871,6 +4891,12 @@ function closureOf(state: JobRunState): string {
   if (state.state === "cancelled") return "stopped";
   if (state.state === "exited" && (state.result?.exitCode ?? 1) === 0) return "completed";
   return "failed";
+}
+
+/** Admission refusals have no result; the authority decision is their native cause. */
+function nativeReason(state: JobRunState): string {
+  const reason = state.authority?.decision?.refusal ?? state.result?.reason;
+  return `native job ${state.state}${reason ? `: ${reason}` : ""}`;
 }
 
 /** An ISO instant as epoch milliseconds, or null when the column held nothing readable. */
