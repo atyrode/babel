@@ -1868,6 +1868,8 @@ export const MACHINE_OPERATIONS = {
   verify: `${BABEL_PLUGIN_ID}.verify`,
   /** Owner-managed service, never a caller-authorized archive job. */
   recall: `${BABEL_PLUGIN_ID}.recall`,
+  mapCatalog: `${BABEL_PLUGIN_ID}.map-catalog`,
+  mapPrepare: `${BABEL_PLUGIN_ID}.map-prepare`,
 } as const;
 
 /**
@@ -1888,6 +1890,8 @@ export const OPERATIONS = {
   evaluate: `${BABEL_PLUGIN_ID}.evaluate`,
   /** Naming the sessions whose own logs carry no title (#342); never a preset, never declared. */
   title: `${BABEL_PLUGIN_ID}.title`,
+  /** Transcript navigation is paid Code work, never a frontier-record analysis stage. */
+  map: `${BABEL_PLUGIN_ID}.map`,
 } as const;
 export type OperationName = (typeof OPERATIONS)[keyof typeof OPERATIONS];
 
@@ -3002,7 +3006,10 @@ export const RECORD_RESTS_ON_ONE_RUN = "restsOnOneRunAtCreation";
 /** The receipt every run writes last (§7): what it was asked, read, produced and cost. */
 export const ReceiptSchema = z.strictObject({
   runId: z.string(),
-  kind: z.enum(["scan", "archive", "prepare", "verify", "explore", "evaluate", "title"]),
+  kind: z.enum([
+    "scan", "archive", "prepare", "verify", "explore", "evaluate", "title",
+    "mapCatalog", "mapPrepare", "map",
+  ]),
   machineId: z.string(),
   recipeId: z.string().optional(),
   role: RoleSchema.optional(),
@@ -3034,6 +3041,7 @@ export const ReceiptSchema = z.strictObject({
   material: MaterialIndexSchema.optional(),
   /** Present only for content-selected preparations; the material still names the served bytes. */
   retrieval: SessionRetrievalSchema.optional(),
+  mapping: z.lazy(() => TranscriptMapJobReceiptSchema).optional(),
   /**
    * WHETHER THIS PREPARATION WAS SCANNED FOR SECRETS, AND WHAT THE SCAN FOUND (#339).
    *
@@ -4159,6 +4167,8 @@ const recallBytes = z.number().int().nonnegative();
 export const RecallPolicySchema = z
   .strictObject({
     version: z.literal(1),
+    /** Opt-in fixed worker route; ordinary disclosure-class read grants do not acquire it. */
+    mappingClassId: recallId.optional(),
     classes: z
       .array(
         z.strictObject({
@@ -4188,6 +4198,13 @@ export const RecallPolicySchema = z
   .refine(
     (policy) => new Set(policy.classes.map((entry) => entry.id)).size === policy.classes.length,
     "Disclosure class ids must be unique.",
+  )
+  .refine(
+    (policy) =>
+      policy.mappingClassId === undefined ||
+      (policy.classes.some((entry) => entry.id === policy.mappingClassId) &&
+        policy.classes.every((entry) => entry.id !== TRANSCRIPT_MAP_SERVICE_OPERATION)),
+    "Mapping needs an existing disclosure class and reserves its separate service operation.",
   );
 export type RecallPolicy = z.infer<typeof RecallPolicySchema>;
 export const RecallRuntimeInputSchema = z.strictObject({ policy: RecallPolicySchema });
@@ -4849,3 +4866,156 @@ export const TranscriptMapViewSchema = z.strictObject({
   coverage: TranscriptMapCoverageSchema,
 });
 export type TranscriptMapView = z.infer<typeof TranscriptMapViewSchema>;
+
+export const TRANSCRIPT_MAP_NATIVE_KINDS = [
+  "map-context", "map-inventory", "map-plan", "map-authorize",
+  "map-span", "map-preview", "map-page", "map-release",
+] as const;
+export const TranscriptMapInventoryRequestSchema = z.strictObject({
+  kind: z.literal("map-inventory"),
+  cursor: z.string().min(1).max(1024).optional(),
+  maxCaptures: z.number().int().min(1).max(TRANSCRIPT_MAP_MAX_CAPTURES).default(64),
+});
+export const TranscriptMapPlanRequestSchema = z.strictObject({
+  kind: z.literal("map-plan"),
+  capture: TranscriptMapCaptureSchema,
+  segmentation: TranscriptMapSegmentationSchema,
+  offset: recallBytes.default(0),
+  maxNodes: z.number().int().min(1).max(TRANSCRIPT_MAP_NATIVE_PAGE_NODES).default(128),
+});
+export const TranscriptMapNativeRequestSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("map-context") }),
+  TranscriptMapInventoryRequestSchema,
+  TranscriptMapPlanRequestSchema,
+  z.strictObject({
+    kind: z.literal("map-authorize"),
+    captures: z.array(TranscriptMapCaptureSchema).min(1).max(TRANSCRIPT_MAP_MAX_CAPTURES),
+  }),
+  z.strictObject({
+    kind: z.literal("map-span"),
+    source: TranscriptMapSourceSchema,
+    span: TranscriptMapSpanSchema,
+    maxBytes: z.number().int().positive().max(TRANSCRIPT_MAP_MAX_SPAN_BYTES).default(8192),
+  }),
+  z.strictObject({
+    kind: z.literal("map-preview"),
+    source: TranscriptMapSourceSchema,
+    span: TranscriptMapSpanSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("map-page"),
+    previewId: z.uuid(),
+    offset: recallBytes,
+    maxBytes: z.number().int().positive().max(TRANSCRIPT_MAP_MAX_PAGE_BYTES).default(32768),
+  }),
+  z.strictObject({ kind: z.literal("map-release"), previewId: z.uuid() }),
+]);
+export type TranscriptMapNativeRequest = z.infer<typeof TranscriptMapNativeRequestSchema>;
+
+export const TranscriptMapPlanPageSchema = z.strictObject({
+  header: TranscriptMapPlanSchema,
+  nodes: z.array(TranscriptMapNodeSchema).max(TRANSCRIPT_MAP_NATIVE_PAGE_NODES),
+  offset: recallBytes,
+  nextOffset: recallBytes.nullable(),
+});
+export const TranscriptMapNativeResultSchema = z.strictObject({
+  operation: z.enum(TRANSCRIPT_MAP_NATIVE_KINDS),
+  context: TranscriptMapContextSchema.nullable(),
+  entries: z.array(TranscriptMapCatalogEntrySchema).max(TRANSCRIPT_MAP_MAX_CAPTURES),
+  nextCursor: z.string().min(1).max(1024).nullable(),
+  accesses: z.array(TranscriptMapAccessSchema).max(TRANSCRIPT_MAP_MAX_CAPTURES),
+  plan: TranscriptMapPlanPageSchema.optional(),
+  span: z.strictObject({
+    source: TranscriptMapSourceSchema,
+    span: TranscriptMapSpanSchema,
+    excerpt: RecallExcerptSchema,
+  }).optional(),
+  preview: z.strictObject({
+    previewId: z.uuid(),
+    bytes: recallBytes,
+    sourceDigest: recallDigest,
+    spanDigest: recallDigest,
+  }).optional(),
+  page: z.strictObject({
+    text: z.string().max(TRANSCRIPT_MAP_MAX_PAGE_BYTES),
+    offset: recallBytes,
+    nextOffset: recallBytes,
+    totalBytes: recallBytes,
+    complete: z.boolean(),
+  }).optional(),
+  cost: RecallResultSchema.shape.cost,
+  refusal: z.union([
+    RecallResultSchema.shape.refusal,
+    z.enum(["unsupported-source", "stale-context"]),
+  ]),
+});
+export type TranscriptMapNativeResult = z.infer<typeof TranscriptMapNativeResultSchema>;
+export const TranscriptMapNativeReplySchema = z.strictObject({
+  requestId: z.uuid(),
+  state: RecallReplySchema.shape.state,
+  result: TranscriptMapNativeResultSchema.optional(),
+}).refine(
+  (reply) => (reply.state === "complete") === (reply.result !== undefined),
+  "Only a complete map reply carries a result.",
+);
+export type TranscriptMapNativeReply = z.infer<typeof TranscriptMapNativeReplySchema>;
+
+/** Native transport can serve both families; the existing raw Recall doors remain narrower. */
+export const ArchiveServiceRequestSchema = z.strictObject({
+  requestId: z.uuid(),
+  request: z.union([
+    RecallRequestSchema,
+    TranscriptMapNativeRequestSchema,
+    z.strictObject({ kind: z.literal("poll") }),
+  ]),
+});
+export type ArchiveServiceRequest = z.infer<typeof ArchiveServiceRequestSchema>;
+export const ArchiveServiceReplySchema = z.union([RecallReplySchema, TranscriptMapNativeReplySchema]);
+export type ArchiveServiceReply = z.infer<typeof ArchiveServiceReplySchema>;
+
+export const TranscriptMapCatalogInputSchema = z.strictObject({
+  runId: refId,
+  machineId: refId,
+  request: z.discriminatedUnion("kind", [
+    TranscriptMapInventoryRequestSchema,
+    TranscriptMapPlanRequestSchema,
+  ]),
+});
+export type TranscriptMapCatalogInput = z.infer<typeof TranscriptMapCatalogInputSchema>;
+export const TranscriptMapPrepareInputSchema = z.strictObject({
+  runId: refId,
+  machineId: refId,
+  source: TranscriptMapSourceSchema,
+  node: TranscriptMapNodeSchema,
+  expectedPolicyDigest: recallDigest,
+  mode: z.enum(TRANSCRIPT_MAP_MODES),
+  children: z.array(TranscriptMapChildSummarySchema).max(TRANSCRIPT_MAP_MAX_CHILDREN),
+  baseSummary: z.strictObject({
+    id: TranscriptMapSummaryIdSchema,
+    text: transcriptMapText,
+  }).optional(),
+  feedback: transcriptMapText.optional(),
+});
+export type TranscriptMapPrepareInput = z.infer<typeof TranscriptMapPrepareInputSchema>;
+export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("catalog"),
+    context: TranscriptMapContextSchema,
+    entries: z.array(TranscriptMapCatalogEntrySchema).max(TRANSCRIPT_MAP_MAX_CAPTURES),
+    nextCursor: z.string().min(1).max(1024).nullable(),
+    access: TranscriptMapAccessSchema.optional(),
+    plan: TranscriptMapPlanPageSchema.extend({
+      nodes: z.array(TranscriptMapNodeSchema).max(TRANSCRIPT_MAP_JOB_PAGE_NODES),
+    }).optional(),
+  }),
+  z.strictObject({
+    kind: z.literal("material"),
+    context: TranscriptMapContextSchema,
+    access: TranscriptMapAccessSchema,
+    source: TranscriptMapSourceSchema,
+    node: TranscriptMapNodeSchema,
+    mode: z.enum(TRANSCRIPT_MAP_MODES),
+    inputDigest: recallDigest,
+  }),
+]);
+export type TranscriptMapJobReceipt = z.infer<typeof TranscriptMapJobReceiptSchema>;
