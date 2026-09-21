@@ -268,7 +268,13 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       {
         sql: `DELETE FROM transcript_map_contexts WHERE machine_id=? AND digest!=? AND observed_at<=?
           AND (${guard?.sql ?? "1"}) AND ${fresh}`,
-        params: [scope.machineId, context.digest, context.observedAt, ...(guard?.params ?? []), ...freshness],
+        params: [
+          scope.machineId,
+          context.digest,
+          context.observedAt,
+          ...(guard?.params ?? []),
+          ...freshness,
+        ],
       },
       {
         sql: `INSERT INTO transcript_map_contexts(machine_id,class_id,digest,ceiling,observed_at,payload,next_cursor,cataloged_at,completed_at,mapping,mapping_payload)
@@ -327,7 +333,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       )
         throw new TranscriptMapProjectionRefusal("invalid transcript map access attestation");
       const previous = await one("transcript_map_captures", capture.id);
-      if (previous && json(previous) !== json(capture)) throw new TranscriptMapProjectionRefusal("capture identity changed");
+      if (previous && json(previous) !== json(capture))
+        throw new TranscriptMapProjectionRefusal("capture identity changed");
       statements.push({
         sql: `INSERT OR IGNORE INTO transcript_map_captures(id,host,harness,session,captured_at,payload) VALUES(?,?,?,?,?,?)`,
         params: [
@@ -414,7 +421,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       true,
     );
     const old = await one<TranscriptMapPlan>("transcript_map_plans", plan.id);
-    if (old && json(old) !== json(plan)) throw new TranscriptMapProjectionRefusal("immutable transcript plan changed");
+    if (old && json(old) !== json(plan))
+      throw new TranscriptMapProjectionRefusal("immutable transcript plan changed");
     if (
       !Number.isSafeInteger(input.offset) ||
       input.offset < 0 ||
@@ -575,7 +583,9 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       for (const row of leaves) {
         const node = TranscriptMapNodeSchema.parse(JSON.parse(row.payload));
         if (node.span.byteOffset !== leafEnd || node.span.firstRecord !== recordEnd + 1)
-          throw new TranscriptMapProjectionRefusal("transcript terminal spans overlap or omit records");
+          throw new TranscriptMapProjectionRefusal(
+            "transcript terminal spans overlap or omit records",
+          );
         leafEnd += node.span.byteLength;
         recordEnd = node.span.lastRecord;
         after = Number(row.byte_offset);

@@ -966,6 +966,14 @@ Code profile and versioned recipes. The profile is the operator's choice, includ
 Babel neither chooses a provider nor holds its credentials. Redaction applies before material
 reaches the model and before generated prose is retained or served.
 
+Catalog and plan pages are free, bounded native work, not model admissions or side effects of a
+read. The conductor retains each request before posting, recovers an uncertain post under the
+same identity, and replays a sealed receipt after an interrupted projection. Confirmed refusals
+leave gaps and a later bounded retry; unrelated recipe edits do not restart inventory progress.
+The native proxy carrier requires `network:host` and explicit native consent
+([Manifold job-owner.ts:1042–1049 at 3e8510c](https://github.com/atyrode/manifold/blob/3e8510c473d84175568ac81012763635112ed7d3/packages/agent/src/job-owner.ts#L1042-L1049)).
+That is a trusted worker grant, not network isolation or a grant to the producing Code profile.
+
 Generation, quality review and bounded corrections share one mapping subcap inside the
 conductor's overall daily allowance. Both are atomic admission ceilings over recorded spend and
 reservations, with the in-flight overrun boundary of §5.8. Mapping grants no additive allowance.

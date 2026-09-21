@@ -431,13 +431,19 @@ describe("the machine half is declared as the machine half is built", () => {
     }
   });
 
-  test("only the operations that reach off the machine are given the network", () => {
+  test("filesystem-only work stays offline and service proxies declare host networking", () => {
     expect(machine.operations[OPERATIONS.scan]?.network).toBe("none");
     expect(machine.operations[OPERATIONS.prepare]?.network).toBe("none");
-    // archive and verify reach the repository, and their storage service proxy is loopback
-    // HTTP the engine refuses to open without it (`service_proxy_requires_host_network`).
-    expect(machine.operations[OPERATIONS.archive]?.network).toBe("host");
-    expect(machine.operations[MACHINE_OPERATIONS.verify]?.network).toBe("host");
+    // The pinned native owner serves even loopback proxies only under host networking.
+    for (const operation of [
+      MACHINE_OPERATIONS.archive,
+      MACHINE_OPERATIONS.verify,
+      MACHINE_OPERATIONS.recall,
+      MACHINE_OPERATIONS.mapCatalog,
+      MACHINE_OPERATIONS.mapPrepare,
+    ]) {
+      expect(machine.operations[operation]?.network).toBe("host");
+    }
   });
 
   test("the repository is handed to an operation by a service binding, never by an environment value", () => {

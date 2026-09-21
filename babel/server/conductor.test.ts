@@ -6190,16 +6190,23 @@ async function catalogDeployment() {
   const draws = new Draws(db);
   draws.review = ROUTE;
   const route = TranscriptMapPolicySchema.parse({
-    machineId: MACHINE, profile: ROUTE.profile, dailyCost: 0,
-    generateRecipe: ROUTE.recipes[0]!.id, reviewRecipe: ROUTE.recipes[0]!.id,
-    recipes: ROUTE.recipes, segmentation: { leafBytes: 1024, directBytes: 0 },
+    machineId: MACHINE,
+    profile: ROUTE.profile,
+    dailyCost: 0,
+    generateRecipe: ROUTE.recipes[0]!.id,
+    reviewRecipe: ROUTE.recipes[0]!.id,
+    recipes: ROUTE.recipes,
+    segmentation: { leafBytes: 1024, directBytes: 0 },
   });
   const { recipes: _recipes, ...mapping } = route;
   draws.mapping = mapping;
   const describe = fleet.describe.bind(fleet);
   fleet.describe = (args) => {
     const ready = describe(args);
-    return { ...ready, operations: { ...ready.operations, [OPERATIONS.mapCatalog]: { ready: true, reason: null } } };
+    return {
+      ...ready,
+      operations: { ...ready.operations, [OPERATIONS.mapCatalog]: { ready: true, reason: null } },
+    };
   };
   const codeCalls: string[] = [];
   const unexpectedCode = async (): Promise<never> => {
@@ -6207,78 +6214,160 @@ async function catalogDeployment() {
     throw new Error("free catalog must not call Code");
   };
   const engine: CodeEngine = {
-    profiles: unexpectedCode, checkProfile: unexpectedCode, runSession: unexpectedCode,
-    readSession: unexpectedCode, cancelSession: unexpectedCode,
+    profiles: unexpectedCode,
+    checkProfile: unexpectedCode,
+    runSession: unexpectedCode,
+    readSession: unexpectedCode,
+    cancelSession: unexpectedCode,
   };
-  const tick = () => conductor({
-    store, coordinator: draws as unknown as Coordinator, jobs, engine,
-    machines: new Folders(), keys: new Keys(), plan: PLAN, catalogPlan: UNMETERED_PLAN,
-    now: () => clock,
-  }).tick();
+  const tick = () =>
+    conductor({
+      store,
+      coordinator: draws as unknown as Coordinator,
+      jobs,
+      engine,
+      machines: new Folders(),
+      keys: new Keys(),
+      plan: PLAN,
+      catalogPlan: UNMETERED_PLAN,
+      now: () => clock,
+    }).tick();
   const digest = `sha256:${"a".repeat(64)}`;
   const context = {
-    digest, policyDigest: digest, classId: "private", ceiling: 2,
-    eligibleCaptures: 3, observedAt: new Date(clock).toISOString(),
+    digest,
+    policyDigest: digest,
+    classId: "private",
+    ceiling: 2,
+    eligibleCaptures: 3,
+    observedAt: new Date(clock).toISOString(),
   };
   const captures = Array.from({ length: 3 }, (_, n) => {
     const identity = {
-      host: "synthetic", harness: "omp" as const, session: `synthetic-${n}`,
-      snapshot: String(n + 1).repeat(64), path: `/synthetic/${n}.jsonl`,
+      host: "synthetic",
+      harness: "omp" as const,
+      session: `synthetic-${n}`,
+      snapshot: String(n + 1).repeat(64),
+      path: `/synthetic/${n}.jsonl`,
       capturedAt: new Date(clock + n).toISOString(),
     };
     return { id: transcriptMapCaptureId(identity), ...identity };
   });
   const entries = captures.map((capture) => ({
-    capture, access: { captureId: capture.id, contextDigest: context.digest, sensitivity: 2 },
+    capture,
+    access: { captureId: capture.id, contextDigest: context.digest, sensitivity: 2 },
   }));
-  const trees = await Promise.all(captures.map(async (capture) => {
-    const text = `${JSON.stringify({ role: "user", text: "a".repeat(700) })}\n${JSON.stringify({ role: "assistant", text: "b".repeat(700) })}\n`;
-    const bytes = Buffer.from(text);
-    const sha = (data: Uint8Array) => `sha256:${createHash("sha256").update(data).digest("hex")}`;
-    return buildTranscriptMap({
-      capture, captureDigest: sha(bytes), sourceDigest: sha(bytes), segmentation: route.segmentation,
-      async replay(sink) { sink.write(bytes); await sink.close(); },
-      rangeDigest: async (offset, length) => sha(bytes.subarray(offset, offset + length)),
-    });
-  }));
+  const trees = await Promise.all(
+    captures.map(async (capture) => {
+      const text = `${JSON.stringify({ role: "user", text: "a".repeat(700) })}\n${JSON.stringify({ role: "assistant", text: "b".repeat(700) })}\n`;
+      const bytes = Buffer.from(text);
+      const sha = (data: Uint8Array) => `sha256:${createHash("sha256").update(data).digest("hex")}`;
+      return buildTranscriptMap({
+        capture,
+        captureDigest: sha(bytes),
+        sourceDigest: sha(bytes),
+        segmentation: route.segmentation,
+        async replay(sink) {
+          sink.write(bytes);
+          await sink.close();
+        },
+        rangeDigest: async (offset, length) => sha(bytes.subarray(offset, offset + length)),
+      });
+    }),
+  );
   function finish(mapping: TranscriptMapJobReceipt) {
     const launch = fleet.launched.at(-1)!;
-    const input = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(launch.input[INPUT_FIELD])));
-    fleet.finish(launch.jobId, 0, { [JOB_OUTPUT_FILES.receipt]: {
-      runId: input.runId, machineId: MACHINE, kind: "mapCatalog",
-      startedAt: new Date(clock).toISOString(), finishedAt: new Date(clock).toISOString(),
-      closure: "completed", counts: {}, mapping,
-    } });
+    const input = TranscriptMapCatalogInputSchema.parse(
+      JSON.parse(String(launch.input[INPUT_FIELD])),
+    );
+    fleet.finish(launch.jobId, 0, {
+      [JOB_OUTPUT_FILES.receipt]: {
+        runId: input.runId,
+        machineId: MACHINE,
+        kind: "mapCatalog",
+        startedAt: new Date(clock).toISOString(),
+        finishedAt: new Date(clock).toISOString(),
+        closure: "completed",
+        counts: {},
+        mapping,
+      },
+    });
   }
-  return { db, store, fleet, jobs, draws, route, context, captures, entries, trees, finish, tick, codeCalls };
+  return {
+    db,
+    store,
+    fleet,
+    jobs,
+    draws,
+    route,
+    context,
+    captures,
+    entries,
+    trees,
+    finish,
+    tick,
+    codeCalls,
+  };
 }
 
 test("free catalog resumes bounded inventory and plan pages without Recall or Code", async () => {
   const f = await catalogDeployment();
   await Promise.all([f.tick(), f.tick()]);
   expect(f.fleet.launched).toHaveLength(1);
-  f.finish({ kind: "catalog", context: f.context, entries: f.entries.slice(0, 2), nextCursor: "page-two" });
+  f.finish({
+    kind: "catalog",
+    context: f.context,
+    entries: f.entries.slice(0, 2),
+    nextCursor: "page-two",
+  });
   await f.tick();
-  const second = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched[1]!.input[INPUT_FIELD])));
+  const second = TranscriptMapCatalogInputSchema.parse(
+    JSON.parse(String(f.fleet.launched[1]!.input[INPUT_FIELD])),
+  );
   expect(second.request).toMatchObject({ kind: "map-inventory", cursor: "page-two" });
   f.finish({ kind: "catalog", context: f.context, entries: f.entries.slice(2), nextCursor: null });
   await f.tick();
   for (const [index, tree] of f.trees.entries()) {
-    const input = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
-    expect(input.request).toMatchObject({ kind: "map-plan", capture: f.captures[index], offset: 0 });
-    f.finish({ kind: "catalog", context: f.context, entries: [], nextCursor: null,
+    const input = TranscriptMapCatalogInputSchema.parse(
+      JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+    );
+    expect(input.request).toMatchObject({
+      kind: "map-plan",
+      capture: f.captures[index],
+      offset: 0,
+    });
+    f.finish({
+      kind: "catalog",
+      context: f.context,
+      entries: [],
+      nextCursor: null,
       access: f.entries[index]!.access,
-      plan: { header: tree.header, nodes: tree.nodes.slice(0, 1), offset: 0, nextOffset: 1 } });
+      plan: { header: tree.header, nodes: tree.nodes.slice(0, 1), offset: 0, nextOffset: 1 },
+    });
     await f.tick();
-    const resumed = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
-    expect(resumed.request).toMatchObject({ kind: "map-plan", capture: f.captures[index], offset: 1 });
-    f.finish({ kind: "catalog", context: f.context, entries: [], nextCursor: null,
+    const resumed = TranscriptMapCatalogInputSchema.parse(
+      JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+    );
+    expect(resumed.request).toMatchObject({
+      kind: "map-plan",
+      capture: f.captures[index],
+      offset: 1,
+    });
+    f.finish({
+      kind: "catalog",
+      context: f.context,
+      entries: [],
+      nextCursor: null,
       access: f.entries[index]!.access,
-      plan: { header: tree.header, nodes: tree.nodes.slice(1), offset: 1, nextOffset: null } });
+      plan: { header: tree.header, nodes: tree.nodes.slice(1), offset: 1, nextOffset: null },
+    });
     await f.tick();
   }
-  expect(await f.db.query(`SELECT count(*) n FROM transcript_map_plans WHERE complete=1`)).toEqual([{ n: 3n }]);
-  expect(await f.db.query(`SELECT count(*) n FROM transcript_map_work WHERE state='queued'`)).toEqual([{ n: 6n }]);
+  expect(await f.db.query(`SELECT count(*) n FROM transcript_map_plans WHERE complete=1`)).toEqual([
+    { n: 3n },
+  ]);
+  expect(
+    await f.db.query(`SELECT count(*) n FROM transcript_map_work WHERE state='queued'`),
+  ).toEqual([{ n: 6n }]);
   expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 0n }]);
   expect(f.codeCalls).toEqual([]);
   expect(f.fleet.launched).toHaveLength(8);
@@ -6304,10 +6393,19 @@ test("catalog posting interruption recovers the retained ID and never duplicates
   await f.tick();
   expect(attempts).toHaveLength(2);
   expect(attempts[1]).toBe(attempts[0]);
-  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([{ n: 1n }]);
-  f.finish({ kind: "catalog", context: { ...f.context, eligibleCaptures: 0 }, entries: [], nextCursor: null });
+  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+    { n: 1n },
+  ]);
+  f.finish({
+    kind: "catalog",
+    context: { ...f.context, eligibleCaptures: 0 },
+    entries: [],
+    nextCursor: null,
+  });
   await f.tick();
-  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([{ n: 0n }]);
+  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+    { n: 0n },
+  ]);
   expect(f.codeCalls).toEqual([]);
 });
 
@@ -6321,21 +6419,38 @@ test("terminally refused capture advances the sweep and is retried only on a lat
   expect(f.fleet.launched).toHaveLength(2);
   clock += POLICY.cadenceSeconds * 1000;
   await f.tick();
-  const next = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
+  const next = TranscriptMapCatalogInputSchema.parse(
+    JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+  );
   expect(next.request).toMatchObject({ kind: "map-plan", capture: f.captures[1] });
   for (const index of [1, 2]) {
     const tree = f.trees[index]!;
-    f.finish({ kind: "catalog", context: f.context, entries: [], nextCursor: null,
+    f.finish({
+      kind: "catalog",
+      context: f.context,
+      entries: [],
+      nextCursor: null,
       access: f.entries[index]!.access,
-      plan: { header: tree.header, nodes: tree.nodes, offset: 0, nextOffset: null } });
+      plan: { header: tree.header, nodes: tree.nodes, offset: 0, nextOffset: null },
+    });
     await f.tick();
   }
-  f.finish({ kind: "catalog", context: { ...f.context, observedAt: new Date(clock).toISOString() },
-    entries: f.entries, nextCursor: null });
+  f.finish({
+    kind: "catalog",
+    context: { ...f.context, observedAt: new Date(clock).toISOString() },
+    entries: f.entries,
+    nextCursor: null,
+  });
   await f.tick();
-  const retry = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
+  const retry = TranscriptMapCatalogInputSchema.parse(
+    JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+  );
   expect(retry.request).toMatchObject({ kind: "map-plan", capture: f.captures[0] });
-  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE json_extract(preparation,'$.progress.gap') IS NOT NULL`)).toEqual([{ n: 1n }]);
+  expect(
+    await f.db.query(
+      `SELECT count(*) n FROM runs WHERE json_extract(preparation,'$.progress.gap') IS NOT NULL`,
+    ),
+  ).toEqual([{ n: 1n }]);
   expect(f.codeCalls).toEqual([]);
 });
 
@@ -6343,14 +6458,25 @@ test("stale native catalog receipt cannot overwrite a newer authorization contex
   const f = await catalogDeployment();
   await f.tick();
   await transcriptMaps(f.store).recordAccess({
-    machineId: MACHINE, context: { ...f.context, digest: `sha256:${"b".repeat(64)}`,
-      ceiling: 0, eligibleCaptures: 0, observedAt: new Date(clock + 1000).toISOString() },
-    entries: [], now: new Date(clock + 1000).toISOString(),
+    machineId: MACHINE,
+    context: {
+      ...f.context,
+      digest: `sha256:${"b".repeat(64)}`,
+      ceiling: 0,
+      eligibleCaptures: 0,
+      observedAt: new Date(clock + 1000).toISOString(),
+    },
+    entries: [],
+    now: new Date(clock + 1000).toISOString(),
   });
   f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null });
   await f.tick();
   expect(await f.db.query(`SELECT count(*) n FROM transcript_map_captures`)).toEqual([{ n: 0n }]);
-  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE json_extract(preparation,'$.progress.gap') IS NOT NULL`)).toEqual([{ n: 1n }]);
+  expect(
+    await f.db.query(
+      `SELECT count(*) n FROM runs WHERE json_extract(preparation,'$.progress.gap') IS NOT NULL`,
+    ),
+  ).toEqual([{ n: 1n }]);
   expect(f.fleet.launched).toHaveLength(1);
 });
 
@@ -6368,13 +6494,24 @@ test("disabled and unconfigured policies never start free catalog work", async (
 test("a late duplicate catalog projector cannot rewind a newer page's context or cursor", async () => {
   const f = await catalogDeployment();
   await f.tick();
-  f.finish({ kind: "catalog", context: f.context, entries: f.entries.slice(0, 2), nextCursor: "page-two" });
+  f.finish({
+    kind: "catalog",
+    context: f.context,
+    entries: f.entries.slice(0, 2),
+    nextCursor: "page-two",
+  });
   let startBoth!: () => void;
-  const bothReading = new Promise<void>((resolve) => { startBoth = resolve; });
+  const bothReading = new Promise<void>((resolve) => {
+    startBoth = resolve;
+  });
   let arrived!: () => void;
-  const lateWrite = new Promise<void>((resolve) => { arrived = resolve; });
+  const lateWrite = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
   let resume!: () => void;
-  const heldWrite = new Promise<void>((resolve) => { resume = resolve; });
+  const heldWrite = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
   let readers = 0;
   let writers = 0;
   const query = f.db.query.bind(f.db);
@@ -6389,9 +6526,13 @@ test("a late duplicate catalog projector cannot rewind a newer page's context or
     return rows;
   };
   f.db.batch = async (statements) => {
-    if (statements.some((statement) =>
-      statement.sql.startsWith("INSERT INTO transcript_map_contexts") &&
-      statement.params?.[6] === "page-two")) {
+    if (
+      statements.some(
+        (statement) =>
+          statement.sql.startsWith("INSERT INTO transcript_map_contexts") &&
+          statement.params?.[6] === "page-two",
+      )
+    ) {
       writers++;
       if (writers === 2) {
         arrived();
@@ -6427,7 +6568,12 @@ test("late native ingestion cannot reopen an applied catalog receipt after the n
   await f.tick();
   const first = f.fleet.launched[0]!;
   const input = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(first.input[INPUT_FIELD])));
-  f.finish({ kind: "catalog", context: f.context, entries: f.entries.slice(0, 2), nextCursor: "page-two" });
+  f.finish({
+    kind: "catalog",
+    context: f.context,
+    entries: f.entries.slice(0, 2),
+    nextCursor: "page-two",
+  });
   const sealed = f.fleet.status({ jobId: first.jobId }).result!.outputs;
   await f.tick();
   clock += 1000;
@@ -6436,8 +6582,12 @@ test("late native ingestion cannot reopen an applied catalog receipt after the n
   await f.tick();
   const currentPlan = f.fleet.launched.at(-1)!;
   await ingestOutputs(f.store, f.jobs, {
-    runId: input.runId, jobId: first.jobId, machineId: MACHINE, operationId: OPERATIONS.mapCatalog,
-    outputs: sealed, closure: "completed",
+    runId: input.runId,
+    jobId: first.jobId,
+    machineId: MACHINE,
+    operationId: OPERATIONS.mapCatalog,
+    outputs: sealed,
+    closure: "completed",
   });
   await f.tick();
   const state = await transcriptMaps(f.store).catalogState(MACHINE);
@@ -6447,61 +6597,103 @@ test("late native ingestion cannot reopen an applied catalog receipt after the n
   expect(f.fleet.launched.at(-1)!.jobId).toBe(currentPlan.jobId);
 });
 
-test.each(["captures", "nodes"] as const)("interrupted %s projection replays the same sealed receipt without another native read", async (boundary) => {
-  const f = await catalogDeployment();
-  await f.tick();
-  if (boundary === "nodes") {
-    f.finish({ kind: "catalog", context: { ...f.context, eligibleCaptures: 1 },
-      entries: f.entries.slice(0, 1), nextCursor: null });
+test.each(["captures", "nodes"] as const)(
+  "interrupted %s projection replays the same sealed receipt without another native read",
+  async (boundary) => {
+    const f = await catalogDeployment();
     await f.tick();
-    const tree = f.trees[0]!;
-    f.finish({ kind: "catalog", context: { ...f.context, eligibleCaptures: 1 },
-      entries: [], nextCursor: null, access: f.entries[0]!.access,
-      plan: { header: tree.header, nodes: tree.nodes, offset: 0, nextOffset: null } });
-  } else {
-    f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null });
-  }
-  const launched = f.fleet.launched.length;
-  const batch = f.db.batch.bind(f.db);
-  let interrupted = false;
-  f.db.batch = async (statements) => {
-    if (!interrupted && statements.some((statement) =>
-      statement.sql.startsWith(`INSERT OR IGNORE INTO transcript_map_${boundary}`))) {
-      interrupted = true;
-      await batch(statements.slice(0, boundary === "captures" ? 2 : 1));
-      throw new Error("database transport interrupted after a committed projection chunk");
+    if (boundary === "nodes") {
+      f.finish({
+        kind: "catalog",
+        context: { ...f.context, eligibleCaptures: 1 },
+        entries: f.entries.slice(0, 1),
+        nextCursor: null,
+      });
+      await f.tick();
+      const tree = f.trees[0]!;
+      f.finish({
+        kind: "catalog",
+        context: { ...f.context, eligibleCaptures: 1 },
+        entries: [],
+        nextCursor: null,
+        access: f.entries[0]!.access,
+        plan: { header: tree.header, nodes: tree.nodes, offset: 0, nextOffset: null },
+      });
+    } else {
+      f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null });
     }
-    return batch(statements);
-  };
-  await f.tick();
-  expect(f.fleet.launched).toHaveLength(launched);
-  expect(await f.db.query(`SELECT count(*) n FROM transcript_map_${boundary}`)).toEqual([{ n: 1n }]);
-  await f.tick();
-  expect(await f.db.query(`SELECT count(*) n FROM transcript_map_${boundary}`)).toEqual([{ n: 3n }]);
-  if (boundary === "nodes") {
+    const launched = f.fleet.launched.length;
+    const batch = f.db.batch.bind(f.db);
+    let interrupted = false;
+    f.db.batch = async (statements) => {
+      if (
+        !interrupted &&
+        statements.some((statement) =>
+          statement.sql.startsWith(`INSERT OR IGNORE INTO transcript_map_${boundary}`),
+        )
+      ) {
+        interrupted = true;
+        await batch(statements.slice(0, boundary === "captures" ? 2 : 1));
+        throw new Error("database transport interrupted after a committed projection chunk");
+      }
+      return batch(statements);
+    };
+    await f.tick();
     expect(f.fleet.launched).toHaveLength(launched);
-    expect(await f.db.query(`SELECT count(*) n FROM transcript_map_work WHERE state='queued'`)).toEqual([{ n: 2n }]);
-  } else {
-    expect(f.fleet.launched).toHaveLength(launched + 1);
-    const next = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
-    expect(next.request.kind).toBe("map-plan");
-  }
-  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE json_extract(preparation,'$.progress.gap') IS NOT NULL`)).toEqual([{ n: 0n }]);
-  expect(f.codeCalls).toEqual([]);
-});
+    expect(await f.db.query(`SELECT count(*) n FROM transcript_map_${boundary}`)).toEqual([
+      { n: 1n },
+    ]);
+    await f.tick();
+    expect(await f.db.query(`SELECT count(*) n FROM transcript_map_${boundary}`)).toEqual([
+      { n: 3n },
+    ]);
+    if (boundary === "nodes") {
+      expect(f.fleet.launched).toHaveLength(launched);
+      expect(
+        await f.db.query(`SELECT count(*) n FROM transcript_map_work WHERE state='queued'`),
+      ).toEqual([{ n: 2n }]);
+    } else {
+      expect(f.fleet.launched).toHaveLength(launched + 1);
+      const next = TranscriptMapCatalogInputSchema.parse(
+        JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+      );
+      expect(next.request.kind).toBe("map-plan");
+    }
+    expect(
+      await f.db.query(
+        `SELECT count(*) n FROM runs WHERE json_extract(preparation,'$.progress.gap') IS NOT NULL`,
+      ),
+    ).toEqual([{ n: 0n }]);
+    expect(f.codeCalls).toEqual([]);
+  },
+);
 
 test("editing an unrelated ordinary recipe does not restart free inventory pagination", async () => {
   const f = await catalogDeployment();
   await f.tick();
-  f.finish({ kind: "catalog", context: f.context, entries: f.entries.slice(0, 2), nextCursor: "page-two" });
-  f.draws.review = { ...ROUTE, recipes: [...ROUTE.recipes,
-    { id: "ordinary-exploration", version: 2, body: "An unrelated ordinary method." }] };
+  f.finish({
+    kind: "catalog",
+    context: f.context,
+    entries: f.entries.slice(0, 2),
+    nextCursor: "page-two",
+  });
+  f.draws.review = {
+    ...ROUTE,
+    recipes: [
+      ...ROUTE.recipes,
+      { id: "ordinary-exploration", version: 2, body: "An unrelated ordinary method." },
+    ],
+  };
   await f.tick();
-  const next = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
+  const next = TranscriptMapCatalogInputSchema.parse(
+    JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+  );
   expect(next.request).toMatchObject({ kind: "map-inventory", cursor: "page-two" });
   f.finish({ kind: "catalog", context: f.context, entries: f.entries.slice(2), nextCursor: null });
   await f.tick();
-  const plan = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
+  const plan = TranscriptMapCatalogInputSchema.parse(
+    JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+  );
   expect(plan.request).toMatchObject({ kind: "map-plan", capture: f.captures[0] });
   expect(f.codeCalls).toEqual([]);
 });
@@ -6511,9 +6703,13 @@ test("disablement cannot retire a native catalog post still arriving at the hub"
   const execute = f.fleet.execute.bind(f.fleet);
   const status = f.fleet.status.bind(f.fleet);
   let arrived!: () => void;
-  const attempted = new Promise<void>((resolve) => { arrived = resolve; });
+  const attempted = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
   let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   let posts = 0;
   f.jobs.execute = async (launch) => {
     posts++;
@@ -6531,19 +6727,110 @@ test("disablement cannot retire a native catalog post still arriving at the hub"
     f.draws.enabled = false;
     await f.tick();
     expect(posts).toBe(1);
-    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([{ n: 1n }]);
+    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+      { n: 1n },
+    ]);
     release();
     await posting;
     await f.tick();
     expect(posts).toBe(1);
-    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([{ n: 1n }]);
+    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+      { n: 1n },
+    ]);
     f.fleet.kill(f.fleet.launched[0]!.jobId, "interrupted");
     await f.tick();
-    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([{ n: 0n }]);
+    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+      { n: 0n },
+    ]);
   } finally {
     release();
     await posting;
   }
+});
+
+test("overlapping catalog posts that all refuse do not strand the native slot", async () => {
+  const f = await catalogDeployment();
+  const execute = f.fleet.execute.bind(f.fleet);
+  const attempts: string[] = [];
+  let firstArrived!: () => void;
+  let bothArrived!: () => void;
+  let release!: () => void;
+  const first = new Promise<void>((resolve) => {
+    firstArrived = resolve;
+  });
+  const both = new Promise<void>((resolve) => {
+    bothArrived = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  f.jobs.execute = async (launch) => {
+    attempts.push(launch.jobId);
+    if (attempts.length === 1) firstArrived();
+    if (attempts.length === 2) bothArrived();
+    await held;
+    throw new HostCallError("jobs.execute", "installation_changed");
+  };
+  f.jobs.status = () => {
+    throw new HostCallError("jobs.status", "job_not_started");
+  };
+  const posting = f.tick();
+  let replay: Promise<unknown> | undefined;
+  try {
+    await first;
+    replay = f.tick();
+    await both;
+    release();
+    await Promise.all([posting, replay]);
+    expect(attempts[1]).toBe(attempts[0]);
+    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+      { n: 0n },
+    ]);
+    f.jobs.execute = execute;
+    clock += POLICY.cadenceSeconds * 1000;
+    await f.tick();
+    expect(f.fleet.launched).toHaveLength(1);
+    expect(f.fleet.launched[0]!.jobId).not.toBe(attempts[0]);
+    expect(f.codeCalls).toEqual([]);
+  } finally {
+    release();
+    await Promise.all([posting, replay]);
+  }
+});
+
+test("a replay refusal cannot retire an earlier unacknowledged catalog post", async () => {
+  const f = await catalogDeployment();
+  const execute = f.fleet.execute.bind(f.fleet);
+  const status = f.fleet.status.bind(f.fleet);
+  let delayed: Parameters<typeof execute>[0] | undefined;
+  f.jobs.execute = (launch) => {
+    if (delayed === undefined) {
+      delayed = launch;
+      throw new Error("native acknowledgement lost before visibility");
+    }
+    throw new HostCallError("jobs.execute", "installation_changed");
+  };
+  f.jobs.status = (node) => {
+    if (!f.fleet.jobs.has(node.jobId)) throw new HostCallError("jobs.status", "job_not_started");
+    return status(node);
+  };
+  await f.tick();
+  await f.tick();
+  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+    { n: 1n },
+  ]);
+  f.draws.enabled = false;
+  execute(delayed!);
+  await f.tick();
+  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+    { n: 1n },
+  ]);
+  f.fleet.kill(delayed!.jobId, "interrupted");
+  await f.tick();
+  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+    { n: 0n },
+  ]);
+  expect(f.codeCalls).toEqual([]);
 });
 
 test("a newer different disclosure class fences stale context insertion at the database boundary", async () => {
@@ -6551,27 +6838,55 @@ test("a newer different disclosure class fences stale context insertion at the d
   const maps = transcriptMaps(f.store);
   const batch = f.db.batch.bind(f.db);
   let arrived!: () => void;
-  const paused = new Promise<void>((resolve) => { arrived = resolve; });
+  const paused = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
   let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   f.db.batch = async (statements) => {
-    if (statements.some((statement) =>
-      statement.sql.startsWith("INSERT INTO transcript_map_contexts") &&
-      statement.params?.[1] === f.context.classId)) {
+    if (
+      statements.some(
+        (statement) =>
+          statement.sql.startsWith("INSERT INTO transcript_map_contexts") &&
+          statement.params?.[1] === f.context.classId,
+      )
+    ) {
       arrived();
       await held;
     }
     return batch(statements);
   };
-  const stale = maps.recordCatalog({ machineId: MACHINE, context: f.context,
-    entries: f.entries, nextCursor: "obsolete", now: new Date(clock).toISOString(),
-  }).then(() => null, (error: unknown) => error);
+  const stale = maps
+    .recordCatalog({
+      machineId: MACHINE,
+      context: f.context,
+      entries: f.entries,
+      nextCursor: "obsolete",
+      now: new Date(clock).toISOString(),
+    })
+    .then(
+      () => null,
+      (error: unknown) => error,
+    );
   try {
     await paused;
-    const newer = { ...f.context, classId: "public", ceiling: 0, eligibleCaptures: 0,
-      digest: `sha256:${"b".repeat(64)}`, observedAt: new Date(clock + 1000).toISOString() };
-    await maps.recordCatalog({ machineId: MACHINE, context: newer, entries: [],
-      nextCursor: null, now: newer.observedAt });
+    const newer = {
+      ...f.context,
+      classId: "public",
+      ceiling: 0,
+      eligibleCaptures: 0,
+      digest: `sha256:${"b".repeat(64)}`,
+      observedAt: new Date(clock + 1000).toISOString(),
+    };
+    await maps.recordCatalog({
+      machineId: MACHINE,
+      context: newer,
+      entries: [],
+      nextCursor: null,
+      now: newer.observedAt,
+    });
     release();
     expect(await stale).toBeInstanceOf(Error);
     const state = await maps.catalogState(MACHINE);

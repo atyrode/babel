@@ -1144,7 +1144,8 @@ function runStatement(
     // Catalog intent/progress belongs to the hub; even a delayed native receipt cannot replace it.
     preparation:
       target.operationId === OPERATIONS.mapCatalog || receipt?.preparation === undefined
-        ? undefined : JSON.stringify(receipt.preparation),
+        ? undefined
+        : JSON.stringify(receipt.preparation),
     started_at: receipt?.startedAt ?? "",
     finished_at: receipt?.finishedAt ?? "",
     closure,
@@ -1599,7 +1600,6 @@ function catalogIntent(preparation: string | null): TranscriptMapCatalogRun | nu
   }
 }
 
-
 /**
  * One run the loop is waiting on. `container_id` is the fork in the road: null is a job of
  * Babel's own, polled through `ctx.jobs`; non-null is a CODE SESSION, whose job belongs to
@@ -1908,18 +1908,31 @@ export function conductor(deps: ConductorDeps): Conductor {
   const maps = transcriptMaps(store);
 
   /** Retry only an authoritatively absent native job, with the original ID and exact request. */
-  async function postCatalog(runId: string, jobId: string, intent: TranscriptMapCatalogRun, notes: string[]): Promise<void> {
+  async function postCatalog(
+    runId: string,
+    jobId: string,
+    intent: TranscriptMapCatalogRun,
+    notes: string[],
+  ): Promise<void> {
     const current = (await coordinator.policy()).policy;
-    const route = current.enabled && current.mapping !== undefined
-      ? TranscriptMapConfigSchema.parse(current.mapping) : null;
+    const route =
+      current.enabled && current.mapping !== undefined
+        ? TranscriptMapConfigSchema.parse(current.mapping)
+        : null;
     if (route === null || JSON.stringify(route) !== JSON.stringify(intent.route)) {
       // An absent status does not rule out an earlier execute still reaching the hub.
       // Only an intent that has never crossed the attempted-post boundary can be closed here.
       await store.db.run(
         `UPDATE runs SET closure='failed',finished_at=?,payload=? WHERE id=? AND closure IS NULL
          AND json_extract(preparation,'$.attempts')=0`,
-        [new Date(deps.now()).toISOString(),
-         JSON.stringify({ closure: "failed", reason: "mapping configuration was disabled or replaced before posting" }), runId],
+        [
+          new Date(deps.now()).toISOString(),
+          JSON.stringify({
+            closure: "failed",
+            reason: "mapping configuration was disabled or replaced before posting",
+          }),
+          runId,
+        ],
       );
       return;
     }
@@ -1938,23 +1951,44 @@ export function conductor(deps: ConductorDeps): Conductor {
         input: { [INPUT_FIELD]: JSON.stringify(intent.input) },
         outputs: [{ name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [runId] }],
         limits: intent.limits,
-        ...(intent.installationRevision === undefined ? {} : { installationRevision: intent.installationRevision }),
+        ...(intent.installationRevision === undefined
+          ? {}
+          : { installationRevision: intent.installationRevision }),
         ...(intent.artifactSha256 === undefined ? {} : { artifactSha256: intent.artifactSha256 }),
       });
     } catch (error) {
       const reason = `catalog posting: ${message(error)}`;
       notes.push(`${jobId}: ${reason}`);
-      // A refusal on a replay cannot disprove the earlier, still uncertain attempt.
-      if (intent.attempts === 0 && nativeAdmissionRefusal(error)) {
+      // Retain uncertainty until every attempted post has returned an admission refusal.
+      if (nativeAdmissionRefusal(error)) {
         try {
-          await jobs.status({ kind: "job", machineId: intent.input.machineId, operationId: OPERATIONS.mapCatalog, jobId });
+          await jobs.status({
+            kind: "job",
+            machineId: intent.input.machineId,
+            operationId: OPERATIONS.mapCatalog,
+            jobId,
+          });
         } catch (statusError) {
           if (nativeFailureToken(statusError, "jobs.status") === "job_not_started") {
-            await store.db.run(
-              `UPDATE runs SET closure='failed',finished_at=?,payload=? WHERE id=? AND closure IS NULL
-               AND json_extract(preparation,'$.attempts')=1`,
-              [new Date(deps.now()).toISOString(), JSON.stringify({ closure: "failed", reason }), runId],
-            );
+            await store.db.batch([
+              {
+                sql: `UPDATE runs SET preparation=json_set(preparation,'$.refusedAttempts',
+                  json_extract(preparation,'$.refusedAttempts')+1)
+                  WHERE id=? AND closure IS NULL AND json_extract(preparation,'$.progress') IS NULL
+                    AND json_extract(preparation,'$.refusedAttempts')<json_extract(preparation,'$.attempts')`,
+                params: [runId],
+              },
+              {
+                sql: `UPDATE runs SET closure='failed',finished_at=?,payload=?
+                  WHERE id=? AND closure IS NULL AND json_extract(preparation,'$.attempts')>0
+                    AND json_extract(preparation,'$.refusedAttempts')=json_extract(preparation,'$.attempts')`,
+                params: [
+                  new Date(deps.now()).toISOString(),
+                  JSON.stringify({ closure: "failed", reason }),
+                  runId,
+                ],
+              },
+            ]);
           }
         }
       }
@@ -1967,9 +2001,16 @@ export function conductor(deps: ConductorDeps): Conductor {
    * Cursor commits follow capture writes, never the other way around.
    */
   async function catalogReceipts(policy: Policy, at: number, notes: string[]): Promise<void> {
-    const route = policy.enabled && policy.mapping !== undefined
-      ? TranscriptMapConfigSchema.parse(policy.mapping) : null;
-    const rows = await store.db.query<{ id: string; preparation: string | null; payload: string; closure: string }>(
+    const route =
+      policy.enabled && policy.mapping !== undefined
+        ? TranscriptMapConfigSchema.parse(policy.mapping)
+        : null;
+    const rows = await store.db.query<{
+      id: string;
+      preparation: string | null;
+      payload: string;
+      closure: string;
+    }>(
       `SELECT id,preparation,payload,closure FROM runs WHERE kind=? AND closure IS NOT NULL
        AND json_extract(preparation,'$.progress') IS NULL ORDER BY started_at,id LIMIT 8`,
       [OPERATIONS.mapCatalog],
@@ -1992,26 +2033,44 @@ export function conductor(deps: ConductorDeps): Conductor {
       };
       try {
         if (!route || JSON.stringify(route) !== JSON.stringify(intent.route))
-          throw new TranscriptMapProjectionRefusal("mapping configuration was disabled or replaced");
+          throw new TranscriptMapProjectionRefusal(
+            "mapping configuration was disabled or replaced",
+          );
         const receipt = ReceiptSchema.parse(JSON.parse(row.payload));
-        if (row.closure !== "completed" || receipt.closure !== "completed" ||
-            receipt.runId !== row.id || receipt.machineId !== route.machineId ||
-            receipt.kind !== "mapCatalog" || receipt.mapping?.kind !== "catalog")
-          throw new TranscriptMapProjectionRefusal("native catalog did not return the requested completed receipt");
+        if (
+          row.closure !== "completed" ||
+          receipt.closure !== "completed" ||
+          receipt.runId !== row.id ||
+          receipt.machineId !== route.machineId ||
+          receipt.kind !== "mapCatalog" ||
+          receipt.mapping?.kind !== "catalog"
+        )
+          throw new TranscriptMapProjectionRefusal(
+            "native catalog did not return the requested completed receipt",
+          );
         const result = receipt.mapping;
         if (intent.context !== null && result.context.digest !== intent.context.digest)
-          throw new TranscriptMapProjectionRefusal("catalog context changed while the page was in flight");
+          throw new TranscriptMapProjectionRefusal(
+            "catalog context changed while the page was in flight",
+          );
         const scope = {
-          machineId: route.machineId, context: result.context, now,
+          machineId: route.machineId,
+          context: result.context,
+          now,
           guard: {
             sql: `EXISTS (SELECT 1 FROM runs WHERE id=? AND json_extract(preparation,'$.progress') IS NULL)`,
             params: [row.id],
           },
         };
         if (request.kind === "map-inventory") {
-          if (result.plan !== undefined || result.entries.length > request.maxCaptures ||
-              (result.nextCursor !== null && result.nextCursor === request.cursor))
-            throw new TranscriptMapProjectionRefusal("native inventory did not advance the requested page");
+          if (
+            result.plan !== undefined ||
+            result.entries.length > request.maxCaptures ||
+            (result.nextCursor !== null && result.nextCursor === request.cursor)
+          )
+            throw new TranscriptMapProjectionRefusal(
+              "native inventory did not advance the requested page",
+            );
           // Any interrupted capture batch leaves the same sealed receipt pending. Commit its
           // cursor only after all capture writes, under the same receipt guard as the context.
           await maps.recordAccess({ ...scope, entries: result.entries });
@@ -2020,22 +2079,41 @@ export function conductor(deps: ConductorDeps): Conductor {
           progress.catalogCompletedAt = result.nextCursor === null ? now : null;
         } else {
           const page = result.plan;
-          const { coordinates: _coordinates, captureDigest: _captureDigest, sourceDigest: _sourceDigest,
-            bytes: _bytes, records: _records, ...capture } = page?.header.source ?? {};
-          if (!page || !result.access || page.offset !== request.offset ||
-              JSON.stringify(capture) !== JSON.stringify(request.capture) ||
-              JSON.stringify(page.header.segmentation) !== JSON.stringify(request.segmentation))
-            throw new TranscriptMapProjectionRefusal("native plan does not match the requested capture and segmentation");
+          const {
+            coordinates: _coordinates,
+            captureDigest: _captureDigest,
+            sourceDigest: _sourceDigest,
+            bytes: _bytes,
+            records: _records,
+            ...capture
+          } = page?.header.source ?? {};
+          if (
+            !page ||
+            !result.access ||
+            page.offset !== request.offset ||
+            JSON.stringify(capture) !== JSON.stringify(request.capture) ||
+            JSON.stringify(page.header.segmentation) !== JSON.stringify(request.segmentation)
+          )
+            throw new TranscriptMapProjectionRefusal(
+              "native plan does not match the requested capture and segmentation",
+            );
           const recorded = await maps.recordPlan({
-            ...scope, access: result.access, plan: page.header, nodes: page.nodes,
-            offset: page.offset, nextOffset: page.nextOffset,
+            ...scope,
+            access: result.access,
+            plan: page.header,
+            nodes: page.nodes,
+            offset: page.offset,
+            nextOffset: page.nextOffset,
           });
           if (!recorded.complete) progress.afterCaptureId = intent.afterCaptureId;
         }
         progress.context = result.context;
       } catch (error) {
-        if (!(error instanceof TranscriptMapProjectionRefusal) &&
-            !(error instanceof z.ZodError) && !(error instanceof SyntaxError)) {
+        if (
+          !(error instanceof TranscriptMapProjectionRefusal) &&
+          !(error instanceof z.ZodError) &&
+          !(error instanceof SyntaxError)
+        ) {
           notes.push(`catalog ${row.id} projection remains pending: ${message(error)}`);
           continue;
         }
@@ -2064,23 +2142,34 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (Number(held[0]?.n) > 0) return 0;
     const latest = await store.db.query<{ id: string; preparation: string }>(
       `SELECT id,preparation FROM runs WHERE kind=? AND machine_id=?
-       ORDER BY rowid DESC LIMIT 1`, [OPERATIONS.mapCatalog, route.machineId],
+       ORDER BY rowid DESC LIMIT 1`,
+      [OPERATIONS.mapCatalog, route.machineId],
     );
     const prior = latest[0];
     const previous = prior ? catalogIntent(prior.preparation) : null;
     const sameRoute = previous !== null && JSON.stringify(previous.route) === JSON.stringify(route);
     const progress = previous?.progress;
     const state = await maps.catalogState(route.machineId);
-    const sameContext = sameRoute && progress?.context != null &&
-      progress.context.digest === state.context?.digest;
-    const nextCursor = sameContext && previous.input.request.kind === "map-inventory"
-      ? progress?.nextCursor ?? null : null;
-    const afterCaptureId = sameContext ? progress?.afterCaptureId ?? null : null;
+    const sameContext =
+      sameRoute && progress?.context != null && progress.context.digest === state.context?.digest;
+    const nextCursor =
+      sameContext && previous.input.request.kind === "map-inventory"
+        ? (progress?.nextCursor ?? null)
+        : null;
+    const afterCaptureId = sameContext ? (progress?.afterCaptureId ?? null) : null;
     let request: TranscriptMapCatalogInput["request"];
     let context: TranscriptMapCatalogRun["context"] = null;
-    if (sameRoute && progress?.gap && at - (instantOf(progress.appliedAt) ?? 0) < policy.cadenceSeconds * 1000)
+    if (
+      sameRoute &&
+      progress?.gap &&
+      at - (instantOf(progress.appliedAt) ?? 0) < policy.cadenceSeconds * 1000
+    )
       return 0;
-    if (!state.context || !sameContext || (previous.input.request.kind === "map-inventory" && progress?.gap)) {
+    if (
+      !state.context ||
+      !sameContext ||
+      (previous.input.request.kind === "map-inventory" && progress?.gap)
+    ) {
       request = { kind: "map-inventory", maxCaptures: 64 };
     } else if (nextCursor !== null) {
       request = { kind: "map-inventory", cursor: nextCursor, maxCaptures: 64 };
@@ -2088,10 +2177,20 @@ export function conductor(deps: ConductorDeps): Conductor {
     } else {
       const next = await maps.nextPlan(route.machineId, route.segmentation, afterCaptureId);
       if (next) {
-        request = { kind: "map-plan", capture: next.capture, segmentation: route.segmentation, offset: next.offset, maxNodes: 128 };
+        request = {
+          kind: "map-plan",
+          capture: next.capture,
+          segmentation: route.segmentation,
+          offset: next.offset,
+          maxNodes: 128,
+        };
         context = state.context;
       } else {
-        if (at - (instantOf(progress?.catalogCompletedAt ?? "") ?? 0) < policy.cadenceSeconds * 1000) return 0;
+        if (
+          at - (instantOf(progress?.catalogCompletedAt ?? "") ?? 0) <
+          policy.cadenceSeconds * 1000
+        )
+          return 0;
         request = { kind: "map-inventory", maxCaptures: 64 };
       }
     }
@@ -2100,16 +2199,28 @@ export function conductor(deps: ConductorDeps): Conductor {
       notes.push(`catalog cannot be posted: ${described.refused}`);
       return 0;
     }
-    const token = createHash("sha256").update(JSON.stringify([route, request, prior?.id ?? null, at])).digest("hex");
+    const token = createHash("sha256")
+      .update(JSON.stringify([route, request, prior?.id ?? null, at]))
+      .digest("hex");
     const runId = `run_map_${token}`;
     const jobId = `map_${token}`;
     const installation = described.readiness.installation;
     const intent: TranscriptMapCatalogRun = {
-      route, input: { runId, machineId: route.machineId, request },
+      route,
+      input: { runId, machineId: route.machineId, request },
       afterCaptureId: request.kind === "map-plan" ? afterCaptureId : null,
-      context, catalogCompletedAt: progress?.catalogCompletedAt ?? null,
-      attempts: 0, progress: null, limits: deps.catalogPlan.limits,
-      ...(installation === null ? {} : { installationRevision: installation.revision, artifactSha256: installation.artifactSha256 }),
+      context,
+      catalogCompletedAt: progress?.catalogCompletedAt ?? null,
+      attempts: 0,
+      refusedAttempts: 0,
+      progress: null,
+      limits: deps.catalogPlan.limits,
+      ...(installation === null
+        ? {}
+        : {
+            installationRevision: installation.revision,
+            artifactSha256: installation.artifactSha256,
+          }),
     };
     // Atomic selection prevents overlapping wakes from retaining competing catalog intents.
     // The engine still enforces its global native job ceiling at execute.
@@ -2119,10 +2230,22 @@ export function conductor(deps: ConductorDeps): Conductor {
        NOT EXISTS (SELECT 1 FROM runs WHERE kind=? AND (closure IS NULL OR json_extract(preparation,'$.progress') IS NULL))
        AND (SELECT count(*) FROM runs WHERE machine_id=? AND closure IS NULL) < ?
        AND coalesce((SELECT id FROM runs WHERE kind=? AND machine_id=? ORDER BY rowid DESC LIMIT 1),'')=?`,
-      [runId, OPERATIONS.mapCatalog, route.machineId, jobId, policy.version, JSON.stringify(TranscriptMapCatalogRunSchema.parse(intent)),
-       new Date(at).toISOString(), JSON.stringify({ closure: null, requestedAt: at }),
-       OPERATIONS.mapCatalog, route.machineId, perMachineBound(policy),
-       OPERATIONS.mapCatalog, route.machineId, prior?.id ?? ""],
+      [
+        runId,
+        OPERATIONS.mapCatalog,
+        route.machineId,
+        jobId,
+        policy.version,
+        JSON.stringify(TranscriptMapCatalogRunSchema.parse(intent)),
+        new Date(at).toISOString(),
+        JSON.stringify({ closure: null, requestedAt: at }),
+        OPERATIONS.mapCatalog,
+        route.machineId,
+        perMachineBound(policy),
+        OPERATIONS.mapCatalog,
+        route.machineId,
+        prior?.id ?? "",
+      ],
     );
     if (!retained.changes) return 0;
     store.touch();
@@ -3838,8 +3961,10 @@ export function conductor(deps: ConductorDeps): Conductor {
         });
       } catch (error) {
         notes.push(`job ${run.job_id} cannot be read: ${message(error)}`);
-        if (run.kind === OPERATIONS.mapCatalog &&
-            nativeFailureToken(error, "jobs.status") === "job_not_started") {
+        if (
+          run.kind === OPERATIONS.mapCatalog &&
+          nativeFailureToken(error, "jobs.status") === "job_not_started"
+        ) {
           const intent = catalogIntent(run.preparation);
           if (intent) await postCatalog(run.id, run.job_id, intent, notes);
         }

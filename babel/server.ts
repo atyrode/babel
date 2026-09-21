@@ -338,7 +338,13 @@ async function cycle(
   const policy = (await coordinated.policy()).policy;
   // Native work uses each operation's own declared limits; model work remains Code's to post.
   const plan = planFor(policy, MACHINE_OPERATIONS.scan);
-  const report = await loop(jobs, machines, actions, plan, planFor(policy, MACHINE_OPERATIONS.mapCatalog)).tick();
+  const report = await loop(
+    jobs,
+    machines,
+    actions,
+    plan,
+    planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+  ).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
     drew nothing, or stopped on a gap, or refused a dispatch, left no trace outside the tick

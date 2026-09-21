@@ -42,20 +42,20 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "f59e95ae831f3473df6e7338980fc095a50181cc216aa8d89b828735926899bc",
+        "sha256": "c2e8f234bbf73c98004c167b00e99a7ad32d44f1c8f128275dbff6126a304eb2",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "f59e95ae831f3473df6e7338980fc095a50181cc216aa8d89b828735926899bc",
+        "entrySha256": "c2e8f234bbf73c98004c167b00e99a7ad32d44f1c8f128275dbff6126a304eb2",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "f59e95ae831f3473df6e7338980fc095a50181cc216aa8d89b828735926899bc",
+        "sha256": "c2e8f234bbf73c98004c167b00e99a7ad32d44f1c8f128275dbff6126a304eb2",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "f59e95ae831f3473df6e7338980fc095a50181cc216aa8d89b828735926899bc",
+        "entrySha256": "c2e8f234bbf73c98004c167b00e99a7ad32d44f1c8f128275dbff6126a304eb2",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -299,7 +299,7 @@
         "executable": { "runtimeTool": "bun" },
         "locations": [{ "locationId": "atyrode.babel.outputs", "access": "write" }],
         "outputs": ["outputs"],
-        "network": "none",
+        "network": "host",
         "limits": {
           "timeoutMs": 600000,
           "memoryBytes": 268435456,
@@ -338,7 +338,7 @@
         "locations": [{ "locationId": "atyrode.babel.outputs", "access": "write" }],
         "outputs": ["outputs", "material"],
         "exports": ["material"],
-        "network": "none",
+        "network": "host",
         "limits": {
           "timeoutMs": 600000,
           "memoryBytes": 268435456,

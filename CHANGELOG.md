@@ -11,6 +11,15 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Transcript maps are navigation artifacts, never evidence.** The capture, store and read layer
+  keeps immutable source coordinates, bounded hierarchy and versioned prose outside the frontier.
+  Summary and source traces stay distinct, current disclosure is checked even after cache warming,
+  and only actually served summaries become review candidates. Free catalog pages retain their
+  native intent before posting and recover without losing a cursor or buying a duplicate effect.
+  Real-store regressions cover interrupted writes, late receipt replay and ambiguous admission;
+  synthetic archived-source exercises verify exact spans, class boundaries and citation refusal.
+  Same-owner native activation and the paid isolated dispatcher are not yet delivered (#223).
+
 - **Recall brings bounded archived evidence to any agent, without lending it the archive.**
   An owner-managed native service fixes disclosure classes; search and locator windows share
   preparation's redaction, record identities and UTF-8 bounds. Whole sessions need a size preview

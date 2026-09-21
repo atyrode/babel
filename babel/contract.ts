@@ -5120,18 +5120,21 @@ export const TranscriptMapCatalogProgressSchema = z.strictObject({
 export type TranscriptMapCatalogProgress = z.infer<typeof TranscriptMapCatalogProgressSchema>;
 
 /** The exact native request and its attempted-post boundary survive acknowledgement loss. */
-export const TranscriptMapCatalogRunSchema = z.strictObject({
-  route: TranscriptMapConfigSchema,
-  input: TranscriptMapCatalogInputSchema,
-  afterCaptureId: TranscriptMapCaptureIdSchema.nullable(),
-  context: TranscriptMapContextSchema.nullable(),
-  catalogCompletedAt: z.iso.datetime({ offset: true }).nullable(),
-  limits: JobLimitsSchema,
-  installationRevision: z.string().optional(),
-  artifactSha256: z.string().optional(),
-  attempts: z.number().int().nonnegative(),
-  progress: TranscriptMapCatalogProgressSchema.nullable(),
-});
+export const TranscriptMapCatalogRunSchema = z
+  .strictObject({
+    route: TranscriptMapConfigSchema,
+    input: TranscriptMapCatalogInputSchema,
+    afterCaptureId: TranscriptMapCaptureIdSchema.nullable(),
+    context: TranscriptMapContextSchema.nullable(),
+    catalogCompletedAt: z.iso.datetime({ offset: true }).nullable(),
+    limits: JobLimitsSchema.omit({ inference: true }),
+    installationRevision: z.string().optional(),
+    artifactSha256: z.string().optional(),
+    attempts: z.number().int().nonnegative(),
+    refusedAttempts: z.number().int().nonnegative(),
+    progress: TranscriptMapCatalogProgressSchema.nullable(),
+  })
+  .refine((run) => run.refusedAttempts <= run.attempts);
 export type TranscriptMapCatalogRun = z.infer<typeof TranscriptMapCatalogRunSchema>;
 
 /**
