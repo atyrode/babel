@@ -101,13 +101,10 @@ export async function openTranscriptMapClient(): Promise<TranscriptMapClient> {
   };
 }
 
-/** A native cadence completes without reading sessions, Recall, or any model. */
-export async function mapCatalogWake(
-  input: TranscriptMapCatalogWakeInput,
-  out: OutputSink,
-): Promise<Receipt> {
+/** A native cadence returns its liveness receipt on stdout, without a filesystem lease. */
+export function mapCatalogWake(input: TranscriptMapCatalogWakeInput): Receipt {
   const at = new Date().toISOString();
-  const receipt = ReceiptSchema.parse({
+  return ReceiptSchema.parse({
     runId: "run_" + crypto.randomUUID().replaceAll("-", ""),
     machineId: input.machineId,
     kind: "mapCatalog",
@@ -116,8 +113,6 @@ export async function mapCatalogWake(
     closure: "completed",
     counts: { wakes: 1 },
   });
-  await out.receipt(receipt);
-  return receipt;
 }
 
 export async function mapCatalog(

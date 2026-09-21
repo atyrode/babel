@@ -1887,7 +1887,9 @@ export function mapCatalogDoor(
     }),
     async (ctx, { operation, target }) => {
       if (operation.machineId !== target.machineId)
-        return { refused: "The catalog operation and private mapping service must name one machine." };
+        return {
+          refused: "The catalog operation and private mapping service must name one machine.",
+        };
       const { policy } = await coordinator.policy();
       if (!policy.enabled || policy.mapping?.machineId !== operation.machineId)
         return { refused: "The enabled mapping policy must name the requested catalog machine." };

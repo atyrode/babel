@@ -84,7 +84,7 @@ const DISPATCH: Record<
   mapCatalog: async (raw, out) => {
     try {
       const input = TranscriptMapCatalogJobInputSchema.parse(raw);
-      if ("kind" in input) return await mapCatalogWake(input, out);
+      if ("kind" in input) return mapCatalogWake(input);
       return await mapCatalog(input, out, await openTranscriptMapClient());
     } catch {
       throw new Error("Mapping catalog could not be collected.");

@@ -14,8 +14,6 @@ import {
   BABEL_PLUGIN_ID,
   DRAIN_CONCURRENT_MAX,
   INPUT_FIELD,
-  OUTPUT_BINDING,
-  OUTPUT_LOCATION,
   MACHINE_OPERATIONS,
   type OperationName,
 } from "./contract.ts";
@@ -326,27 +324,30 @@ async function catalogSchedule(
     const installation = described.readiness.installation;
     const limits = planFor(policy, MACHINE_OPERATIONS.mapCatalog).limits;
     const configuration = createHash("sha256")
-      .update(JSON.stringify({
-        machineId,
-        intervalMs,
-        limits,
-        installationRevision: installation?.revision,
-        artifactSha256: installation?.artifactSha256,
-      }))
+      .update(
+        JSON.stringify({
+          machineId,
+          intervalMs,
+          limits,
+          installationRevision: installation?.revision,
+          artifactSha256: installation?.artifactSha256,
+        }),
+      )
       .digest("hex");
     const at = store.now();
-    if (registered.some(
-      (row) => row.revision.startsWith(`${configuration}.`) && row.expiresAt - at > intervalMs,
-    )) return notes;
+    if (
+      registered.some(
+        (row) => row.revision.startsWith(`${configuration}.`) && row.expiresAt - at > intervalMs,
+      )
+    )
+      return notes;
     const revision = `${configuration}.${String(at)}`;
     await jobs.schedule({
       jobId: `catalog_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
       machineId,
       operationId: MACHINE_OPERATIONS.mapCatalog,
       input: { [INPUT_FIELD]: JSON.stringify({ kind: "catalog-wake", machineId }) },
-      outputs: [
-        { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [MACHINE_OPERATIONS.mapCatalog] },
-      ],
+      outputs: [],
       limits,
       ...(installation === null
         ? {}
@@ -372,13 +373,16 @@ async function catalogSchedule(
 async function catalogCycle(jobs: BabelJobs, machineId: string): Promise<readonly string[]> {
   const { policy, standing } = await coordinated.policy();
   const notes = await catalogSchedule(jobs, machineId, standing);
-  return [...notes, ...(await loop(
-    jobs,
-    unaskable(HOOK_WITHOUT_MACHINES),
-    undefined,
-    planFor(policy, MACHINE_OPERATIONS.scan),
-    planFor(policy, MACHINE_OPERATIONS.mapCatalog),
-  ).tickCatalog(machineId))];
+  return [
+    ...notes,
+    ...(await loop(
+      jobs,
+      unaskable(HOOK_WITHOUT_MACHINES),
+      undefined,
+      planFor(policy, MACHINE_OPERATIONS.scan),
+      planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+    ).tickCatalog(machineId)),
+  ];
 }
 
 /**

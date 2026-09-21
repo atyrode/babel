@@ -518,21 +518,23 @@ test("finite material sealing uses exact leaves but only ordered summaries/gaps 
   }
 });
 
-test("a catalog cadence completes without a Recall binding and never claims catalog data", async () => {
+test("catalog cadences complete without a filesystem lease or Recall binding", async () => {
   const directory = await mkdtemp(join(tmpdir(), "babel-map-wake-"));
   try {
+    const outputDir = join(directory, "unbound-output");
+    await Bun.write(outputDir, "not a native output lease");
     const inputPath = join(directory, "wake.json");
     await Bun.write(inputPath, JSON.stringify({ kind: "catalog-wake", machineId: "synthetic" }));
     const first = await run({
       operation: "mapCatalog",
       inputPath,
-      outputDir: join(directory, "first"),
+      outputDir,
       materialDir: "",
     });
     const second = await run({
       operation: "mapCatalog",
       inputPath,
-      outputDir: join(directory, "second"),
+      outputDir,
       materialDir: "",
     });
     if (!first || !second) throw new Error("A finite cadence must return its native receipt.");

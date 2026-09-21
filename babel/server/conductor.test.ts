@@ -2117,6 +2117,54 @@ test("ingesting the same outputs twice changes nothing", async () => {
   expect(store.touched).toBe(2);
 });
 
+test("native logs and other leases cannot replace the sealed result records", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  fleet.running("job_native_results", "dev-01", OPERATIONS.evaluate);
+  fleet.finish("job_native_results", 0, outputs("run_native_results"));
+  const unrelated = new Map([
+    ["stdout", Buffer.from(JSON.stringify({ progress: "catalog page ".repeat(128) }))],
+    ["stderr", Buffer.from("native diagnostic\n".repeat(128))],
+    [MATERIAL_OUTPUT, tar(outputs("run_native_material"))],
+  ]);
+  const read = fleet.output.bind(fleet);
+  fleet.output = (args) => {
+    const bytes = unrelated.get(args.node.outputId);
+    if (bytes === undefined) return read(args);
+    const end = Math.min(bytes.byteLength, args.offset + args.maxBytes);
+    return {
+      data: bytes.subarray(args.offset, end).toString("base64"),
+      eof: end === bytes.byteLength,
+    };
+  };
+
+  const result = await ingestOutputs(store, fleet, {
+    runId: "run_native_results",
+    jobId: "job_native_results",
+    machineId: "dev-01",
+    operationId: OPERATIONS.evaluate,
+    outputs: [
+      ...(fleet.status({ jobId: "job_native_results" }).result?.outputs ?? []),
+      ...Array.from(unrelated, ([name, bytes]) => ({
+        outputId: name,
+        name,
+        bytes: bytes.byteLength,
+        files: 1,
+      })),
+    ],
+    closure: "completed",
+  });
+
+  expect(result.receipt?.runId).toBe("run_native_results");
+  expect(
+    await db.query(
+      "SELECT id FROM runs WHERE id IN ('run_native_results', 'run_native_material') ORDER BY id",
+    ),
+  ).toEqual([{ id: "run_native_results" }]);
+});
+
 test("an assessment the review contract refuses is not written, and the run still settles with its cost", async () => {
   const db = openDatabase();
   await seed(db);
@@ -6582,9 +6630,9 @@ test("ordinary cycles observe catalog work but cannot post or retry its native j
   ]);
   await f.ordinaryTick();
   expect(attempted).toBe(1);
-  expect(await f.db.query(`SELECT id,job_id,closure FROM runs WHERE kind=?`, [
-    OPERATIONS.mapCatalog,
-  ])).toEqual(retained);
+  expect(
+    await f.db.query(`SELECT id,job_id,closure FROM runs WHERE kind=?`, [OPERATIONS.mapCatalog]),
+  ).toEqual(retained);
   await f.tick();
   expect(attempted).toBe(2);
   expect(f.fleet.launched).toHaveLength(1);

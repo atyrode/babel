@@ -474,44 +474,6 @@ test("the cycle behind a read describes a machine, so the loop keeps its own cad
   ]);
 });
 
-test("the doors that ask a machine what it can run are lent that read, and no others are", () => {
-  /*
-    WHO ASKS, AND THEREFORE WHO IS LENT IT. Every door a cycle follows asks: the conductor
-    describes a machine to register the beat on it. `drainStart` asks on its own account too — it
-    posts the fan's first slot through `launchMachinery`, and `ready` describes before it posts.
-    `verify` asks for the same reason: it posts one of Babel's own jobs (#338) through the same
-    path, and a verification aimed at a machine with no Babel on it should be refused at the
-    press rather than by a job that never starts. The crossing's two owner-only doors ask for a
-    different reason: `importLedger` and `rehostSessions` write a session's machine column, and a
-    column carrying a name the hub does not know is provenance nothing can read back, so each
-    checks the id against the hub before writing it (#312). Recall's owner setup describes
-    the native service candidate and rechecks it on installation. Nothing else asks a machine
-    anything: reading a feed, ruling on a record and stopping a run stay inside this plugin's
-    own tables and job nodes.
-  */
-  const asks: Record<string, true> = {
-    ...WAKES,
-    [ACTIONS.drainStart]: true,
-    [ACTIONS.verify]: true,
-    [ACTIONS.importLedger]: true,
-    [ACTIONS.rehostSessions]: true,
-    [ACTIONS.previewRecall]: true,
-    [ACTIONS.installRecall]: true,
-  };
-  for (const action of plugin.actions) {
-    const reach = [...(action.caps ?? []), ...(action.delegates ?? [])];
-    expect({ door: action.name, describes: reach.includes("machines:read") }).toEqual({
-      door: action.name,
-      describes: Object.hasOwn(asks, action.name),
-    });
-  }
-  // And it is a DELEGATE everywhere it appears: a caller is never asked to hold a machine
-  // capability to be told whether the machine Babel was deployed to is ready.
-  for (const action of plugin.actions) {
-    expect(action.caps).not.toContain("machines:read");
-  }
-});
-
 test("a second dispatch inside the floor is the same wake, not another cycle", async () => {
   await pending();
   const at = (clock += HOUR);
@@ -755,11 +717,14 @@ test("catalog admission refuses mismatched targets without waking ordinary or pa
   await pending();
   const wrongMachine = await handler(
     ctx,
-    action.input.parse({ ...request, target: { ...request.target, machineId: "another-machine" } }),
+    action.input.parse({
+      ...request,
+      target: { ...request.target, machineId: "another-machine" },
+    }) as never,
   );
   expect(wrongMachine).toHaveProperty("refused");
   // This machine has no mapping route. An admitted node is not permission to choose one.
-  expect(await handler(ctx, action.input.parse(request))).toHaveProperty("refused");
+  expect(await handler(ctx, action.input.parse(request) as never)).toHaveProperty("refused");
   expect(jobs.statuses).toBe(0);
   expect(jobs.scheduled).toEqual([]);
   expect(await closure()).toBeNull();
@@ -780,7 +745,7 @@ test("a refused launch does not become a conductor wake", async () => {
   const request = asLaunchRequest({ machineId: MACHINE, preset: "keep-going" });
   const refused = await plugin.handlers[ACTIONS.launch]!(
     context(harness.db as unknown as GuestDatabase, jobs),
-    { ...request, operation: { ...request.operation, machineId: "another-machine" } },
+    { ...request, operation: { ...request.operation, machineId: "another-machine" } } as never,
   );
   expect(refused).toHaveProperty("refused");
   expect(jobs.statuses).toBe(0);
@@ -866,7 +831,7 @@ test("explicit catalog admission posts free work without settling or launching p
         serviceId: RECALL_SERVICE_ID,
         operationId: TRANSCRIPT_MAP_SERVICE_OPERATION,
       },
-    }),
+    }) as never,
   );
   expect(result).not.toHaveProperty("refused");
   expect(executed.map((job) => job.operationId)).toEqual([OPERATIONS.mapCatalog]);

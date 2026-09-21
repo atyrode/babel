@@ -1516,6 +1516,8 @@ export async function ingestOutputs(
   const notes: string[] = [];
   const refusals: RowRefusal[] = [];
   for (const output of target.outputs) {
+    // Native streams and separately bound material are not the declared result archive.
+    if (output.name !== OUTPUT_BINDING) continue;
     const node: OutputRef = {
       kind: "output",
       machineId: target.machineId,
@@ -4800,15 +4802,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       const at = deps.now();
       const policy = (await coordinator.policy(at)).policy;
       const notes: string[] = [];
-      await reconcileRuns(
-        at,
-        [],
-        [],
-        [],
-        notes,
-        { paid: new Map(), free: new Map() },
-        machineId,
-      );
+      await reconcileRuns(at, [], [], [], notes, { paid: new Map(), free: new Map() }, machineId);
       await catalogReceipts(policy, at, notes, machineId);
       // An old settlement cannot transfer its admission when policy moves to another host.
       if (policy.mapping?.machineId === machineId) await advanceCatalog(policy, at, notes);

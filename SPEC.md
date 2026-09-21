@@ -967,10 +967,17 @@ Babel neither chooses a provider nor holds its credentials. Redaction applies be
 reaches the model and before generated prose is retained or served.
 
 Catalog and plan pages are free, bounded native work, not model admissions or side effects of a
-read. The conductor retains each request before posting, recovers an uncertain post under the
-same identity, and replays a sealed receipt after an interrupted projection. Confirmed refusals
-leave gaps and a later bounded retry; unrelated recipe edits do not restart inventory progress.
-The native proxy carrier requires `network:host` and explicit native consent
+read. `startMapCatalog` requires authority for the configured machine's catalog operation and
+private mapping target; its continuation never enters the ordinary scan or paid Code paths.
+The native cadence emits a liveness receipt on stdout without acquiring a filesystem lease.
+Disabling policy, or moving its mapping machine, disables the old cadence on its next owned
+settlement; admission for another machine requires a new start.
+
+The conductor retains each request before posting, recovers an uncertain post under the same
+identity, and replays a sealed receipt after an interrupted projection. Only the named result
+lease is ingested as an archive, never native streams or separately bound material. Confirmed
+refusals leave gaps and a later bounded retry; unrelated recipe edits do not restart inventory
+progress. The native proxy carrier requires `network:host` and explicit native consent
 ([Manifold job-owner.ts:1042–1049 at 3e8510c](https://github.com/atyrode/manifold/blob/3e8510c473d84175568ac81012763635112ed7d3/packages/agent/src/job-owner.ts#L1042-L1049)).
 That is a trusted worker grant, not network isolation or a grant to the producing Code profile.
 
