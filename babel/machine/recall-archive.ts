@@ -321,15 +321,19 @@ export async function createRecallArchive(options: {
         // index rows with a verified replay, not with any digest supplied by a request.
         let refused: Refused | undefined;
         const built = await index
-          .build(entry, async (sink) => {
-            try {
-              await verify(entry, saved, sink, result);
-              return { reading: saved, after: entry.seen };
-            } catch (error) {
-              if (error instanceof Refused) refused = error;
-              throw error;
-            }
-          }, reading)
+          .build(
+            entry,
+            async (sink) => {
+              try {
+                await verify(entry, saved, sink, result);
+                return { reading: saved, after: entry.seen };
+              } catch (error) {
+                if (error instanceof Refused) refused = error;
+                throw error;
+              }
+            },
+            reading,
+          )
           .catch((error) => {
             throw refused ?? error;
           });

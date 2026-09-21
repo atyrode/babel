@@ -1413,59 +1413,62 @@ test("archive session ownership is exact to recorded roots, not closure-file suf
 for (const field of ["captureDigest", "sourceDigest"] as const) {
   for (const kind of ["search", "show", "preview"] as const) {
     for (const location of ["reading metadata", "index"] as const) {
-    test(`${kind} repairs canonical ${field} corruption in ${location} once before publishing immutable evidence`, async () => {
-      await listedFixture(async ({ archive, cacheDir }) => {
-        const original = await archive.execute("public", search());
-        const locator = original.hits[0]?.locator;
-        if (locator === undefined) throw new Error("missing locator");
-        if (location === "reading metadata") {
-        const stream = (await readdir(cacheDir, { recursive: true })).find((path) =>
-          path.endsWith(".records"),
-        );
-        if (stream === undefined) throw new Error("missing kept reading");
-        const path = join(cacheDir, stream.replace(/\.records$/, ".json"));
-        const document = await Bun.file(path).json();
-        await Bun.write(path, JSON.stringify({ ...document, [field]: `sha256:${"0".repeat(64)}` }));
-        } else {
-          const database = (await readdir(cacheDir, { recursive: true })).find((path) =>
-            path.endsWith("tokens.sqlite"),
-          );
-          if (database === undefined) throw new Error("missing index");
-          const db = new Database(join(cacheDir, database), { strict: true });
-          try {
-            const column = field === "captureDigest" ? "capture_digest" : "source_digest";
-            db.query(`UPDATE session_sources SET ${column} = ?`).run(`sha256:${"0".repeat(64)}`);
-          } finally {
-            db.close();
+      test(`${kind} repairs canonical ${field} corruption in ${location} once before publishing immutable evidence`, async () => {
+        await listedFixture(async ({ archive, cacheDir }) => {
+          const original = await archive.execute("public", search());
+          const locator = original.hits[0]?.locator;
+          if (locator === undefined) throw new Error("missing locator");
+          if (location === "reading metadata") {
+            const stream = (await readdir(cacheDir, { recursive: true })).find((path) =>
+              path.endsWith(".records"),
+            );
+            if (stream === undefined) throw new Error("missing kept reading");
+            const path = join(cacheDir, stream.replace(/\.records$/, ".json"));
+            const document = await Bun.file(path).json();
+            await Bun.write(
+              path,
+              JSON.stringify({ ...document, [field]: `sha256:${"0".repeat(64)}` }),
+            );
+          } else {
+            const database = (await readdir(cacheDir, { recursive: true })).find((path) =>
+              path.endsWith("tokens.sqlite"),
+            );
+            if (database === undefined) throw new Error("missing index");
+            const db = new Database(join(cacheDir, database), { strict: true });
+            try {
+              const column = field === "captureDigest" ? "capture_digest" : "source_digest";
+              db.query(`UPDATE session_sources SET ${column} = ?`).run(`sha256:${"0".repeat(64)}`);
+            } finally {
+              db.close();
+            }
           }
-        }
-        const repaired = await archive.execute(
-          "public",
-          kind === "search"
-            ? search({ maxFetchBytes: Buffer.byteLength(SOURCE) })
-            : request({ kind, locator }),
-        );
-        expect(repaired.refusal).toBeNull();
-        expect(repaired.cost.fetchedFiles).toBe(1);
-        expect(repaired.cost.fetchedBytes).toBe(Buffer.byteLength(SOURCE));
-        expect(repaired.coverage.complete).toBe(true);
-        expect(repaired.cost.indexedFiles).toBe(location === "index" ? 1 : 0);
-        if (kind === "preview") {
-          const previewId = repaired.preview?.previewId;
-          if (previewId === undefined) throw new Error("missing repaired preview");
-          const page = await archive.execute("public", request({ kind: "session", previewId }));
-          expect(page.hits[0]?.locator).toEqual(locator);
-          expect(page.hits[0]?.excerpt.text).toBe(SOURCE);
-        } else {
-          expect(repaired.hits[0]?.locator).toEqual(locator);
-          expect(repaired.hits[0]?.excerpt.text).toContain("needle");
-        }
-        const warm = await archive.execute("public", search({ maxFetchBytes: 0 }));
-        expect(warm.refusal).toBeNull();
-        expect(warm.cost.fetchedFiles).toBe(0);
-        expect(warm.hits).toEqual(original.hits);
+          const repaired = await archive.execute(
+            "public",
+            kind === "search"
+              ? search({ maxFetchBytes: Buffer.byteLength(SOURCE) })
+              : request({ kind, locator }),
+          );
+          expect(repaired.refusal).toBeNull();
+          expect(repaired.cost.fetchedFiles).toBe(1);
+          expect(repaired.cost.fetchedBytes).toBe(Buffer.byteLength(SOURCE));
+          expect(repaired.coverage.complete).toBe(true);
+          expect(repaired.cost.indexedFiles).toBe(location === "index" ? 1 : 0);
+          if (kind === "preview") {
+            const previewId = repaired.preview?.previewId;
+            if (previewId === undefined) throw new Error("missing repaired preview");
+            const page = await archive.execute("public", request({ kind: "session", previewId }));
+            expect(page.hits[0]?.locator).toEqual(locator);
+            expect(page.hits[0]?.excerpt.text).toBe(SOURCE);
+          } else {
+            expect(repaired.hits[0]?.locator).toEqual(locator);
+            expect(repaired.hits[0]?.excerpt.text).toContain("needle");
+          }
+          const warm = await archive.execute("public", search({ maxFetchBytes: 0 }));
+          expect(warm.refusal).toBeNull();
+          expect(warm.cost.fetchedFiles).toBe(0);
+          expect(warm.hits).toEqual(original.hits);
+        });
       });
-    });
     }
   }
 

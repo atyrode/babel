@@ -73,20 +73,32 @@ test("verified digest repair replaces an exact capture transactionally and reuse
     captureDigest: `sha256:${"c".repeat(64)}`,
     sourceDigest: `sha256:${"d".repeat(64)}`,
   };
-  expect(await index.build(entry, async (sink) => {
-    sink.write('{"text":"canonical-content"}\n');
-    return { reading: verified, after: entry.seen };
-  }, verified)).toBe("indexed");
+  expect(
+    await index.build(
+      entry,
+      async (sink) => {
+        sink.write('{"text":"canonical-content"}\n');
+        return { reading: verified, after: entry.seen };
+      },
+      verified,
+    ),
+  ).toBe("indexed");
   const { index: other } = await open(dir);
   expect(other.digests(entry)).toEqual({
     captureDigest: verified.captureDigest,
     sourceDigest: verified.sourceDigest,
   });
-  expect(other.searchRecords("wrong-index-content", [entry], 10).matches).toBe(0);
-  expect(other.searchRecords("canonical-content", [entry], 10).matches).toBe(1);
-  expect(await other.build(entry, async () => {
-    throw new Error("a correct committed replacement must not replay again");
-  }, verified)).toBe("reused");
+  expect(other.searchRecords("wrong", [entry], 10).matches).toBe(0);
+  expect(other.searchRecords("canonical", [entry], 10).matches).toBe(1);
+  expect(
+    await other.build(
+      entry,
+      async () => {
+        throw new Error("a correct committed replacement must not replay again");
+      },
+      verified,
+    ),
+  ).toBe("reused");
 });
 
 test("concurrent builders never duplicate a source read and readers retain the committed generation", async () => {

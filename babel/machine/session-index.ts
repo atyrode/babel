@@ -496,10 +496,13 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
         namespace: candidate.namespace ?? "",
         session: { ...candidate.session },
         seen: { ...candidate.seen },
-        repair: repair === undefined ? undefined : {
-          captureDigest: repair.captureDigest,
-          sourceDigest: repair.sourceDigest,
-        },
+        repair:
+          repair === undefined
+            ? undefined
+            : {
+                captureDigest: repair.captureDigest,
+                sourceDigest: repair.sourceDigest,
+              },
       };
       active = true;
       try {
