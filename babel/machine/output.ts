@@ -5,6 +5,10 @@ import {
   JOB_OUTPUT_FILES,
   MATERIAL_INDEX,
   MATERIAL_SESSIONS,
+  TRANSCRIPT_MAP_OUTPUT_FILE,
+  TRANSCRIPT_MAP_MAX_SPAN_BYTES,
+  TRANSCRIPT_MAP_MAX_CHILDREN,
+  TRANSCRIPT_MAP_MAX_SUMMARY_BYTES,
   type MaterialIndex,
   type Receipt,
 } from "../contract.ts";
@@ -115,6 +119,8 @@ export interface MaterialSink {
   session(file: string): Promise<RecordSink>;
   /** The index, written last, as `index.json` at the material's root. */
   index(index: MaterialIndex): Promise<void>;
+  /** A bounded navigation document, separate from raw session evidence. */
+  document(file: typeof TRANSCRIPT_MAP_OUTPUT_FILE, text: string): Promise<void>;
 }
 
 /**
@@ -132,6 +138,12 @@ export function materialSink(dir: string): MaterialSink {
     await ensured;
   };
   return {
+    document: async (file, text) => {
+      if (file !== TRANSCRIPT_MAP_OUTPUT_FILE || Buffer.byteLength(text) > 6 * (TRANSCRIPT_MAP_MAX_SPAN_BYTES + TRANSCRIPT_MAP_MAX_CHILDREN * TRANSCRIPT_MAP_MAX_SUMMARY_BYTES) + 65536)
+        throw new Error("Mapping material exceeds its bound.");
+      await ready();
+      await Bun.write(join(dir, file), text, { mode: 0o600 });
+    },
     session: async (file) => {
       await ready();
       const writer = Bun.file(join(sessions, file)).writer();

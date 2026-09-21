@@ -272,6 +272,81 @@
         },
         "stdin": false
       },
+      "atyrode.babel.mapCatalog": {
+        "argv": [
+          { "literal": "/job/artifact" },
+          { "literal": "mapCatalog" },
+          { "literal": "--input" },
+          { "literal": "/inputs/input" },
+          { "literal": "--out" },
+          { "literal": "/outputs/outputs" }
+        ],
+        "input": { "input": { "type": "string", "required": true, "maxLength": 65536 } },
+        "inputFiles": {
+          "input": { "input": "input" },
+          "mapping-service": {
+            "literal": "{\"url\":\"\",\"bearer\":\"\"}",
+            "jsonValues": [
+              { "path": ["url"], "serviceId": "atyrode.babel.recall", "value": "url" },
+              { "path": ["bearer"], "serviceId": "atyrode.babel.recall", "value": "bearer" }
+            ]
+          }
+        },
+        "services": [
+          { "serviceId": "atyrode.babel.recall", "revision": "1", "operationIds": ["mapping"] }
+        ],
+        "runtimeTools": ["bun", "system"],
+        "executable": { "runtimeTool": "bun" },
+        "locations": [{ "locationId": "atyrode.babel.outputs", "access": "write" }],
+        "outputs": ["outputs"],
+        "network": "none",
+        "limits": {
+          "timeoutMs": 600000,
+          "memoryBytes": 268435456,
+          "processes": 16,
+          "outputBytes": 16777216
+        },
+        "stdin": false
+      },
+      "atyrode.babel.mapPrepare": {
+        "argv": [
+          { "literal": "/job/artifact" },
+          { "literal": "mapPrepare" },
+          { "literal": "--input" },
+          { "literal": "/inputs/input" },
+          { "literal": "--out" },
+          { "literal": "/outputs/outputs" },
+          { "literal": "--material" },
+          { "literal": "/outputs/material" }
+        ],
+        "input": { "input": { "type": "string", "required": true, "maxLength": 65536 } },
+        "inputFiles": {
+          "input": { "input": "input" },
+          "mapping-service": {
+            "literal": "{\"url\":\"\",\"bearer\":\"\"}",
+            "jsonValues": [
+              { "path": ["url"], "serviceId": "atyrode.babel.recall", "value": "url" },
+              { "path": ["bearer"], "serviceId": "atyrode.babel.recall", "value": "bearer" }
+            ]
+          }
+        },
+        "services": [
+          { "serviceId": "atyrode.babel.recall", "revision": "1", "operationIds": ["mapping"] }
+        ],
+        "runtimeTools": ["bun", "system"],
+        "executable": { "runtimeTool": "bun" },
+        "locations": [{ "locationId": "atyrode.babel.outputs", "access": "write" }],
+        "outputs": ["outputs", "material"],
+        "exports": ["material"],
+        "network": "none",
+        "limits": {
+          "timeoutMs": 600000,
+          "memoryBytes": 268435456,
+          "processes": 16,
+          "outputBytes": 16777216
+        },
+        "stdin": false
+      },
       "atyrode.babel.recall": {
         "argv": [
           { "literal": "/job/artifact" },

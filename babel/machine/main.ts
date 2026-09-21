@@ -2,12 +2,15 @@ import { tmpdir } from "node:os";
 import {
   MACHINE_OPERATIONS,
   RESTIC_CREDENTIAL_FILE,
+  TranscriptMapCatalogInputSchema,
+  TranscriptMapPrepareInputSchema,
   type OperationWord,
   type Receipt,
 } from "../contract.ts";
 import { type MaterialSink, type OutputSink, directorySink, materialSink } from "./output.ts";
 import { openProgress, type ProgressChannel } from "./progress.ts";
 import { claim, discover, existingRoots } from "./adapters/index.ts";
+import { mapCatalog, mapPrepare, openTranscriptMapClient } from "./transcript-map-jobs.ts";
 
 /*
   THE MACHINE HALF'S ENTRY POINT (plan §2, §4).
@@ -73,6 +76,17 @@ const DISPATCH: Record<
     material: MaterialSink | null,
   ) => Promise<Receipt>
 > = {
+  mapCatalog: async (raw, out) => {
+    try {
+      return await mapCatalog(TranscriptMapCatalogInputSchema.parse(raw), out, await openTranscriptMapClient());
+    } catch { throw new Error("Mapping catalog could not be collected."); }
+  },
+  mapPrepare: async (raw, out, _progress, material) => {
+    try {
+      if (!material) throw new Error("Missing material lease.");
+      return await mapPrepare(TranscriptMapPrepareInputSchema.parse(raw), out, material, await openTranscriptMapClient());
+    } catch { throw new Error("Mapping material could not be sealed."); }
+  },
   scan: async (raw, out) => {
     const { ScanInputSchema, scan } = await import("./scan.ts");
     return scan(ScanInputSchema.parse(raw), out);
