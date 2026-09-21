@@ -329,8 +329,8 @@ export interface Listing {
 }
 
 export interface DumpOptions {
-  /** The most the dumped file may be. A file past it is refused with its size named rather
-   *  than becoming the job's whole memory. */
+  /** The most bytes retained or forwarded. A file past it is refused, but its rejected
+   *  remainder is drained: this bound does not limit remote transport cost. */
   readonly maxBytes?: number;
 }
 
@@ -384,6 +384,15 @@ export interface Repo {
   /** One archived file's bytes, straight out of the snapshot: nothing is written to a disk, so
    *  a session can be proved recoverable without a target directory or a cleanup. */
   dump(snapshotId: string, path: string, options?: DumpOptions): Promise<Uint8Array>;
+  /** Streams one archived file without retaining it. Each sink call settles before the next;
+   *  a failed sink or exceeded bound stops forwarding, then drains and settles the child.
+   *  Forwarded bytes are provisional until this operation succeeds. */
+  dumpTo(
+    snapshotId: string,
+    path: string,
+    sink: (chunk: Uint8Array) => void | Promise<void>,
+    options?: DumpOptions,
+  ): Promise<{ bytes: number }>;
   /** Writes a snapshot's files back, under `target`. It writes to the machine and never to the
    *  repository: a restore adds and removes nothing there. */
   restore(snapshotId: string, options: RestoreOptions): Promise<RestoreOutcome>;
@@ -695,31 +704,75 @@ class ResticRepo implements Repo {
   }
 
   async dump(snapshotId: string, path: string, options: DumpOptions = {}): Promise<Uint8Array> {
+    const chunks: Uint8Array[] = [];
+    const { bytes } = await this.dumpTo(
+      snapshotId,
+      path,
+      (chunk) => {
+        chunks.push(chunk);
+      },
+      options,
+    );
+    const held = new Uint8Array(bytes);
+    let at = 0;
+    for (const chunk of chunks) {
+      held.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    return held;
+  }
+
+  async dumpTo(
+    snapshotId: string,
+    path: string,
+    sink: (chunk: Uint8Array) => void | Promise<void>,
+    options: DumpOptions = {},
+  ): Promise<{ bytes: number }> {
     const bound = options.maxBytes ?? MAX_DUMP_BYTES;
     const args = resticArgv("dump", ["--", snapshotArgument(snapshotId), pathArgument(path)]);
     const child = this.#spawn(args);
     const tail = new Tail();
-    const chunks: Uint8Array[] = [];
     let bytes = 0;
     let over = false;
-    await Promise.all([
-      (async () => {
+    let sinkFailed = false;
+    let sinkError: unknown;
+    // Only pipe failures require termination. A bound or sink refusal still drains both
+    // streams, preserving restic's own outcome and leaving no child blocked on its output.
+    const settleStream = async (consume: () => Promise<void>): Promise<void> => {
+      try {
+        await consume();
+      } catch (error) {
+        child.kill();
+        throw error;
+      }
+    };
+    const settled = await Promise.allSettled([
+      settleStream(async () => {
         for await (const chunk of child.stdout as unknown as AsyncIterable<Uint8Array>) {
           bytes += chunk.byteLength;
           if (bytes > bound) {
-            // Past the bound the bytes are dropped and the stream is still drained, for the
-            // same reason `ls` drains its own: a child nobody reads from does not exit.
             over = true;
-            chunks.length = 0;
             continue;
           }
-          if (!over) chunks.push(chunk);
+          if (!over && !sinkFailed) {
+            try {
+              await sink(chunk);
+            } catch (error) {
+              sinkFailed = true;
+              sinkError = error;
+            }
+          }
         }
-      })(),
-      (async () => {
+      }),
+      settleStream(async () => {
         for await (const line of readLines(child.stderr)) tail.push(line);
-      })(),
+      }),
+      child.exited,
     ]);
+    for (const result of settled) {
+      if (result.status === "rejected") throw result.reason;
+    }
+    if (sinkFailed) throw sinkError;
     const code = await child.exited;
     if (code !== 0) {
       throw new ResticError("exit", `restic dump failed (exit ${code})`, code, tail.toString());
@@ -730,13 +783,7 @@ class ResticRepo implements Repo {
         `${path} is ${bytes} bytes in ${snapshotId}, past the ${bound} this dump holds`,
       );
     }
-    const held = new Uint8Array(bytes);
-    let at = 0;
-    for (const chunk of chunks) {
-      held.set(chunk, at);
-      at += chunk.byteLength;
-    }
-    return held;
+    return { bytes };
   }
 
   async restore(snapshotId: string, options: RestoreOptions): Promise<RestoreOutcome> {

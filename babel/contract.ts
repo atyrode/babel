@@ -4093,3 +4093,19 @@ export const DrainStatusResultSchema = z.strictObject({
  * is a corpus that does not carry records from answers that failed to follow their contract.
  */
 export const SUBMISSION_KEPT_FLOOR = 0.5;
+
+// ---------------------------------------------------------- shared normalized record locations
+
+/** Byte coordinates name the mandatory-redacted normalized stream, never the raw snapshot. */
+export const SESSION_RECORD_COORDINATES = "normalized-redacted-utf8" as const;
+
+export const SessionRecordPositionSchema = z.strictObject({
+  line: z.number().int().positive(),
+  byteOffset: z.number().int().nonnegative(),
+  /** Includes the terminating newline when the normalized record has one. */
+  byteLength: z.number().int().positive(),
+  digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  /** An archived record's own timestamp; unknown is not replaced with a live observation. */
+  time: z.iso.datetime().nullable(),
+});
+export type SessionRecordPosition = z.infer<typeof SessionRecordPositionSchema>;
