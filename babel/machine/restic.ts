@@ -381,6 +381,13 @@ export interface Repo {
   check(options?: CheckOptions): Promise<CheckOutcome>;
   /** What one snapshot holds, entirely or under the given absolute paths. */
   ls(snapshotId: string, paths?: readonly string[]): Promise<Listing>;
+  /** Visits every parsed node in order, awaiting each visitor. A failed visitor stops
+   * forwarding, but both pipes and the child are settled before the failure is returned. */
+  lsTo(
+    snapshotId: string,
+    sink: (entry: ArchivedEntry) => void | Promise<void>,
+    paths?: readonly string[],
+  ): Promise<void>;
   /** One archived file's bytes, straight out of the snapshot: nothing is written to a disk, so
    *  a session can be proved recoverable without a target directory or a cleanup. */
   dump(snapshotId: string, path: string, options?: DumpOptions): Promise<Uint8Array>;
@@ -671,36 +678,61 @@ class ResticRepo implements Repo {
   }
 
   async ls(snapshotId: string, paths: readonly string[] = []): Promise<Listing> {
+    const entries: ArchivedEntry[] = [];
+    let truncated = false;
+    await this.lsTo(snapshotId, (entry) => {
+      if (entries.length < MAX_LISTED_ENTRIES) entries.push(entry);
+      else truncated = true;
+    }, paths);
+    return { entries, truncated };
+  }
+
+  async lsTo(
+    snapshotId: string,
+    sink: (entry: ArchivedEntry) => void | Promise<void>,
+    paths: readonly string[] = [],
+  ): Promise<void> {
     const within = paths.map(pathArgument);
     const args = resticArgv("ls", ["--json", "--", snapshotArgument(snapshotId), ...within]);
     const child = this.#spawn(args);
     const tail = new Tail();
-    const entries: ArchivedEntry[] = [];
-    let truncated = false;
-    await Promise.all([
-      (async () => {
-        // The stream is read to its end even once the bound is reached: a child left with a
-        // full pipe never exits, and the alternative — killing it — turns a complete listing
-        // into an exit status nobody can tell from a failure.
+    let failed = false;
+    let failure: unknown;
+    const settle = async (consume: () => Promise<void>): Promise<void> => {
+      try {
+        await consume();
+      } catch (error) {
+        child.kill();
+        throw error;
+      }
+    };
+    const settled = await Promise.allSettled([
+      settle(async () => {
         for await (const line of readLines(child.stdout)) {
+          if (failed) continue;
           const node = parseNode(line);
           if (node === null) continue;
-          if (entries.length >= MAX_LISTED_ENTRIES) {
-            truncated = true;
-            continue;
+          try {
+            await sink(node);
+          } catch (error) {
+            failed = true;
+            failure = error;
           }
-          entries.push(node);
         }
-      })(),
-      (async () => {
+      }),
+      settle(async () => {
         for await (const line of readLines(child.stderr)) tail.push(line);
-      })(),
+      }),
+      child.exited,
     ]);
+    for (const result of settled) {
+      if (result.status === "rejected") throw result.reason;
+    }
+    if (failed) throw failure;
     const code = await child.exited;
     if (code !== 0) {
       throw new ResticError("exit", `restic ls failed (exit ${code})`, code, tail.toString());
     }
-    return { entries, truncated };
   }
 
   async dump(snapshotId: string, path: string, options: DumpOptions = {}): Promise<Uint8Array> {

@@ -1,0 +1,459 @@
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  MAX_MATERIAL_BYTES, RECALL_MAX_HITS, RECALL_MAX_RESULT_BYTES, RECALL_MAX_SERVED_BYTES,
+  RECALL_REQUEST_TTL_MS, RECALL_SEARCH_EXCERPT_BYTES, RECALL_UNTRUSTED_BEGIN,
+  RECALL_UNTRUSTED_END, SESSION_RECORD_COORDINATES, RecallMetadataSchema, RecallPolicySchema,
+  RecallRequestSchema, type RecallFilter, type RecallHit, type RecallLocator,
+  type RecallMetadata, type RecallPolicy, type RecallRequest, type RecallResult,
+} from "../contract.ts";
+import { claim } from "./adapters/index.ts";
+import { readingCache, type ReadingCache, type ReadingContext, type ReusedReading } from "./cache.ts";
+import { type RecordSink } from "./output.ts";
+import { PREFLIGHT_DETECTORS, secretScan } from "./preflight.ts";
+import { PREPARATION_SCHEMA } from "./prepare.ts";
+import { clipUtf8, recallRecordReader } from "./recall-records.ts";
+import { BABEL_TAG, type Repo, type Snapshot } from "./restic.ts";
+import { sessionDigester } from "./session-records.ts";
+import { sessionIndex, SessionIndexError, type IndexedSession } from "./session-index.ts";
+
+const context: ReadingContext = { schema: PREPARATION_SCHEMA, detectors: PREFLIGHT_DETECTORS, mode: "redact" };
+type Subject = RecallPolicy["subjects"][number];
+type Refusal = NonNullable<RecallResult["refusal"]>;
+class Refused extends Error {
+  constructor(readonly reason: Refusal) { super(reason); }
+}
+interface Capture extends IndexedSession {
+  host: string;
+  snapshot: Snapshot;
+  subjects: Subject[];
+  cache: ReadingCache;
+}
+interface Widening {
+  classId: string;
+  path: string;
+  expires: number;
+  bytes: number;
+  records: number;
+  hit: RecallHit;
+  offset: number;
+  line: number;
+  previous: { offset: number; hit: RecallHit; page: NonNullable<RecallResult["page"]> } | null;
+}
+const hash = (value: string): string => new Bun.CryptoHasher("sha256").update(value).digest("hex");
+const sourceKey = (host: string, selector: string): string => JSON.stringify([host, selector]);
+const matchesSubject = (subject: Subject, host: string, harness: string, selector: string): boolean =>
+  subject.host === host && (subject.harness === undefined || subject.harness === harness) &&
+  (subject.selectorPrefix === undefined || selector.startsWith(subject.selectorPrefix));
+
+/** Only the selected repository is consulted. Native routes, not requests, supply classId. */
+export interface RecallArchive {
+  execute(classId: string, request: RecallRequest): Promise<RecallResult>;
+  close(): Promise<void>;
+}
+
+export async function createRecallArchive(options: {
+  repo: Repo;
+  cacheDir: string;
+  policy: RecallPolicy;
+  now?: () => number;
+}): Promise<RecallArchive> {
+  const policy = RecallPolicySchema.parse(options.policy);
+  const now = options.now ?? Date.now;
+  const root = join(options.cacheDir, "recall", hash(options.repo.repository));
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  const index = await sessionIndex(root, context);
+  const caches = new Map<string, ReadingCache>();
+  // Rebuildable, bounded metadata only; transcripts live solely in readingCache's redacted stream.
+  const metadata = new Map<string, RecallMetadata>();
+  const tokens = new Map<string, Widening>();
+  let staging: string | null = null;
+  let stagedBytes = 0;
+  let closed = false;
+  const cacheFor = (host: string): ReadingCache => {
+    let cache = caches.get(host);
+    if (cache === undefined) {
+      cache = readingCache(join(root, "hosts", hash(host)), context);
+      caches.set(host, cache);
+    }
+    return cache;
+  };
+  const remember = (key: string, value: RecallMetadata): void => {
+    if (metadata.size >= 10000) {
+      const oldest = metadata.keys().next().value;
+      if (oldest !== undefined) metadata.delete(oldest);
+    }
+    metadata.set(key, RecallMetadataSchema.parse(value));
+  };
+  const metadataKey = (entry: Capture, reading: ReusedReading): string =>
+    hash(JSON.stringify([context, entry.namespace, entry.session.selector, entry.seen, reading.sourceDigest]));
+  const expire = async (): Promise<void> => {
+    for (const [token, entry] of tokens) {
+      if (entry.expires > now()) continue;
+      await rm(entry.path, { force: true });
+      tokens.delete(token);
+      stagedBytes -= entry.bytes;
+    }
+  };
+  const association = (entry: Capture, archived: RecallMetadata): RecallMetadata => {
+    const associated = entry.subjects.find(subject => subject.workspace !== undefined || subject.repository !== undefined);
+    return associated === undefined ? archived : {
+      title: archived.title,
+      workspace: associated.workspace ?? archived.workspace,
+      repository: associated.repository ?? null,
+      metadataOrigin: "owner-association",
+    };
+  };
+  const verify = async (entry: Capture, reading: ReusedReading, sink: RecordSink): Promise<void> => {
+    let failed = false;
+    let failure: unknown;
+    try {
+      const digest = await entry.cache.replay(reading, {
+        write(chunk) {
+          if (failed) return;
+          try { sink.write(chunk); } catch (error) { failed = true; failure = error; }
+        },
+        close: async () => {},
+      });
+      if (digest !== reading.sourceDigest) {
+        await entry.cache.forget(entry.session);
+        throw new Refused("capture-changed");
+      }
+      if (failed) throw failure;
+      await sink.close();
+    } catch (error) {
+      if (error instanceof Refused) throw error;
+      throw new Refused("source-unavailable");
+    }
+  };
+  const load = async (entry: Capture, result: RecallResult, budget: number): Promise<ReusedReading> => {
+    const reused = await entry.cache.reuse(entry.session, entry.seen);
+    if (reused !== null) {
+      if (reused.bytes !== entry.seen.size) {
+        await entry.cache.forget(entry.session);
+        throw new Refused("capture-changed");
+      }
+      result.cost.cacheHits++;
+      return reused;
+    }
+    if (entry.seen.size > MAX_MATERIAL_BYTES || entry.seen.size > budget - result.cost.fetchedBytes)
+      throw new Refused("fetch-bound");
+    const kept = await entry.cache.keep(entry.session, entry.seen);
+    if (kept === null) throw new Refused("source-unavailable");
+    const scan = secretScan();
+    let served = 0;
+    const digest = sessionDigester({
+      write(chunk) {
+        served += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
+        if (served > RECALL_MAX_SERVED_BYTES) throw new Refused("fetch-bound");
+        kept.sink.write(chunk);
+      },
+      close: async () => {},
+    }, scan);
+    let ended = false;
+    try {
+      result.cost.fetchedFiles++;
+      await options.repo.dumpTo(entry.snapshot.id, entry.session.primaryPath, chunk => {
+        result.cost.fetchedBytes += chunk.byteLength;
+        digest.write(chunk);
+      }, { maxBytes: Math.min(entry.seen.size, budget - result.cost.fetchedBytes, MAX_MATERIAL_BYTES) });
+      const reading = { ...digest.finish(), report: scan.report() };
+      await kept.sink.close();
+      ended = true;
+      if (reading.bytes !== entry.seen.size) throw new Refused("capture-changed");
+      await kept.commit(reading);
+      const saved = await entry.cache.reuse(entry.session, entry.seen);
+      if (saved === null) throw new Refused("source-unavailable");
+      return saved;
+    } catch (error) {
+      if (!ended) await kept.sink.close().catch(() => undefined);
+      await kept.abandon();
+      if (error instanceof Refused) throw error;
+      throw new Refused("source-unavailable");
+    }
+  };
+  const enumerate = async (filter: RecallFilter, result: RecallResult, ceiling: number): Promise<Capture[]> => {
+    const refused = new Set<string>();
+    const newest = new Map<string, Capture>();
+    const snapshots = (await options.repo.snapshots()).filter(snapshot =>
+      snapshot.tags.includes(BABEL_TAG) && /^[0-9a-f]{64}$/.test(snapshot.id) &&
+      Number.isFinite(Date.parse(snapshot.time)) && snapshot.host.length > 0 && snapshot.host.length <= 128 &&
+      (filter.host === undefined || filter.host === snapshot.host));
+    snapshots.sort((a, b) => Date.parse(b.time) - Date.parse(a.time) || a.id.localeCompare(b.id));
+    result.newestSnapshotAt = snapshots[0] === undefined ? null : new Date(snapshots[0].time).toISOString();
+    for (const snapshot of snapshots) {
+      // Unknown hosts cannot acquire authority through archived metadata.
+      if (!policy.subjects.some(subject => subject.host === snapshot.host)) continue;
+      result.cost.listedSnapshots++;
+      await options.repo.lsTo(snapshot.id, node => {
+        result.cost.listedEntries++;
+        if (node.type !== "file" || node.path.length > 4096) return;
+        const session = claim(node.path);
+        if (session === null || session.selector.length > 600 ||
+          (filter.harness !== undefined && filter.harness !== session.harness)) return;
+        const key = sourceKey(snapshot.host, session.selector);
+        if (newest.has(key)) return;
+        const subjects = policy.subjects.filter(subject =>
+          matchesSubject(subject, snapshot.host, session.harness, session.selector));
+        const modified = Date.parse(node.modifiedAt);
+        newest.set(key, {
+          host: snapshot.host, snapshot, session, subjects, cache: cacheFor(snapshot.host),
+          namespace: hash(JSON.stringify([options.repo.repository, snapshot.host])),
+          seen: { size: node.size, modifiedAt: Number.isFinite(modified) && modified > 0 ? modified : Date.parse(snapshot.time),
+            capture: JSON.stringify([snapshot.id, node.path]) },
+        });
+      });
+    }
+    const eligible: Capture[] = [];
+    for (const entry of newest.values()) {
+      if (entry.subjects.length === 0) continue;
+      const sensitivity = Math.max(...entry.subjects.map(subject => subject.sensitivity));
+      if (sensitivity > ceiling) {
+        for (const subject of entry.subjects) if (subject.sensitivity > ceiling) refused.add(subject.name);
+      } else eligible.push(entry);
+    }
+    result.refusedSubjects = [...refused];
+    return eligible;
+  };
+  const locator = (entry: Capture, reading: ReusedReading, record: RecallLocator["record"]): RecallLocator => ({
+    coordinates: SESSION_RECORD_COORDINATES, host: entry.host, harness: entry.session.harness,
+    session: entry.session.selector, snapshot: entry.snapshot.id, path: entry.session.primaryPath,
+    captureDigest: reading.captureDigest, sourceDigest: reading.sourceDigest, record,
+  });
+  const readHit = async (entry: Capture, reading: ReusedReading, target: RecallLocator,
+    selection?: Extract<RecallRequest, { kind: "show" }>["selection"], maxBytes = RECALL_SEARCH_EXCERPT_BYTES,
+  ): Promise<RecallHit> => {
+    if (reading.captureDigest !== target.captureDigest || reading.sourceDigest !== target.sourceDigest)
+      throw new Refused("locator-mismatch");
+    const reader = recallRecordReader({ harness: entry.session.harness, anchor: target.record, selection, maxBytes });
+    await verify(entry, reading, reader.sink);
+    const readback = await reader.finish();
+    if (!readback.anchorMatches) throw new Refused("locator-mismatch");
+    if (selection?.kind === "turns" && !readback.turnsSupported) throw new Refused("unsupported-turns");
+    return { locator: target, snapshotAt: new Date(entry.snapshot.time).toISOString(),
+      ...association(entry, readback.metadata), excerpt: readback.excerpt };
+  };
+  const bounded = (result: RecallResult): RecallResult => {
+    while (Buffer.byteLength(JSON.stringify(result)) > RECALL_MAX_RESULT_BYTES) {
+      if (result.hits.length > 0) { result.hits.pop(); result.omitted++; }
+      else if (result.refusedSubjects.length > 0) {
+        result.refusedSubjects.pop(); result.omittedSubjects++; result.refusal = "response-bound";
+      }
+      else { delete result.preview; delete result.page; result.refusal = "response-bound"; break; }
+    }
+    return result;
+  };
+
+  return {
+    async execute(classId, input) {
+      const result: RecallResult = {
+        operation: input.kind, observedAt: new Date(now()).toISOString(), newestSnapshotAt: null,
+        cost: { fetchedFiles: 0, fetchedBytes: 0, cacheHits: 0, indexedFiles: 0, listedSnapshots: 0, listedEntries: 0 },
+        coverage: { eligible: 0, indexed: 0, complete: false, overBound: 0 }, matches: null,
+        omitted: 0, omittedSubjects: 0, refusedSubjects: [], refusal: null, hits: [],
+      };
+      try {
+        if (closed) throw new Refused("archive-unavailable");
+        const request = RecallRequestSchema.parse(input);
+        const disclosure = policy.classes.find(entry => entry.id === classId);
+        if (disclosure === undefined) throw new Refused("disclosure");
+        await expire();
+        if (request.kind === "session") {
+          const token = tokens.get(request.previewToken);
+          if (token === undefined) throw new Refused("preview-expired");
+          if (token.classId !== classId) throw new Refused("disclosure");
+          if (token.previous?.offset === request.offset) {
+            if (token.previous.hit.excerpt.bytes > request.maxBytes) throw new Refused("invalid-offset");
+            result.hits = [token.previous.hit]; result.page = token.previous.page;
+          } else {
+            if (request.offset !== token.offset) throw new Refused("invalid-offset");
+            // Reserve worst-case JSON escaping before advancing: a page can never disappear
+            // under the serialized response bound after its offset has been consumed.
+            const overhead = Buffer.byteLength(JSON.stringify({ ...result, hits: [token.hit] })) + 2048;
+            const pageBytes = Math.min(request.maxBytes, Math.floor((RECALL_MAX_RESULT_BYTES - overhead) / 6));
+            if (pageBytes < 4) throw new Refused("response-bound");
+            const bytes = new Uint8Array(await Bun.file(token.path).slice(token.offset, Math.min(token.bytes, token.offset + pageBytes + 3)).arrayBuffer());
+            const clipped = clipUtf8(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0,
+              utf8End(bytes, Math.min(pageBytes, bytes.length)))), pageBytes);
+            if (clipped.bytes === 0 && token.offset < token.bytes) throw new Refused("source-unavailable");
+            const start = token.line;
+            let newlines = 0;
+            for (let at = 0; at < clipped.text.length; at++) if (clipped.text.charCodeAt(at) === 10) newlines++;
+            const next = token.offset + clipped.bytes;
+            const hit: RecallHit = { ...token.hit, excerpt: {
+              trust: "archived-untrusted", begin: RECALL_UNTRUSTED_BEGIN, end: RECALL_UNTRUSTED_END,
+              text: clipped.text, maxBytes: request.maxBytes, bytes: clipped.bytes, truncated: next < token.bytes,
+              firstRecord: clipped.bytes === 0 ? 0 : start,
+              lastRecord: clipped.bytes === 0 ? 0 : start + newlines - (clipped.text.endsWith("\n") ? 1 : 0),
+            } };
+            const page = { offset: token.offset, nextOffset: next, totalBytes: token.bytes, complete: next === token.bytes };
+            token.previous = { offset: token.offset, hit, page };
+            token.offset = next; token.line += newlines;
+            result.hits = [hit]; result.page = page;
+          }
+          result.newestSnapshotAt = token.hit.snapshotAt;
+          result.coverage = { eligible: 1, indexed: 1, complete: true, overBound: 0 };
+          return bounded(result);
+        }
+        if (request.kind !== "search") {
+          const target = request.locator;
+          const rules = policy.subjects.filter(subject => matchesSubject(subject, target.host, target.harness, target.session));
+          if (rules.length === 0) throw new Refused("unclassified");
+          if (Math.max(...rules.map(rule => rule.sensitivity)) > disclosure.ceiling) {
+            result.refusedSubjects = rules.filter(rule => rule.sensitivity > disclosure.ceiling).map(rule => rule.name);
+            throw new Refused("disclosure");
+          }
+        }
+        let entries: Capture[];
+        try {
+          entries = await enumerate(request.kind === "search" ? request.filter : {
+            host: request.locator.host, harness: request.locator.harness,
+          }, result, disclosure.ceiling);
+        } catch { throw new Refused("archive-unavailable"); }
+        if (request.kind === "search") {
+          result.coverage.eligible = entries.length;
+          const covered: Capture[] = [];
+          const readings = new Map<Capture, ReusedReading>();
+          // Missing captures first: a finite cold budget makes progress on subsequent requests.
+          entries.sort((a, b) => Number(index.holds(a)) - Number(index.holds(b)));
+          for (const entry of entries) {
+            try {
+              if (entry.seen.size > MAX_MATERIAL_BYTES) throw new Refused("fetch-bound");
+              const reading = await load(entry, result, request.maxFetchBytes);
+              const key = metadataKey(entry, reading);
+              let about = metadata.get(key);
+              if (!index.holds(entry)) {
+                const reader = recallRecordReader({ harness: entry.session.harness });
+                const built = await index.build(entry, async sink => {
+                  await verify(entry, reading, {
+                    write(chunk) { sink.write(chunk); reader.sink.write(chunk); },
+                    close: async () => { await sink.close(); await reader.sink.close(); },
+                  });
+                  return { reading, after: entry.seen };
+                });
+                if (built === "busy") throw new Refused("index-busy");
+                if (built === "changed") throw new Refused("capture-changed");
+                if (built === "indexed") {
+                  result.cost.indexedFiles++;
+                  about = (await reader.finish()).metadata;
+                  remember(key, about);
+                }
+              }
+              if (about === undefined) {
+                const reader = recallRecordReader({ harness: entry.session.harness });
+                await verify(entry, reading, reader.sink);
+                about = (await reader.finish()).metadata;
+                remember(key, about);
+              }
+              result.coverage.indexed++;
+              const associated = association(entry, about);
+              if ((request.filter.workspace !== undefined && request.filter.workspace !== associated.workspace) ||
+                (request.filter.repository !== undefined && request.filter.repository !== associated.repository)) continue;
+              covered.push(entry); readings.set(entry, reading);
+            } catch (error) {
+              if (error instanceof Refused && error.reason === "fetch-bound") result.coverage.overBound++;
+              else result.refusal = safeReason(error);
+            }
+          }
+          result.coverage.complete = result.coverage.indexed === result.coverage.eligible;
+          const found = index.searchRecords(request.query, covered, Math.min(request.limit, RECALL_MAX_HITS), request.filter);
+          result.matches = found.matches;
+          for (const foundHit of found.hits) {
+            const entry = foundHit.candidate as Capture;
+            const reading = readings.get(entry);
+            if (reading === undefined) throw new Refused("capture-changed");
+            try {
+              const target = locator(entry, reading, foundHit.position);
+              if (reading.captureDigest !== foundHit.captureDigest || reading.sourceDigest !== foundHit.sourceDigest)
+                throw new Refused("capture-changed");
+              result.hits.push(await readHit(entry, reading, target));
+            } catch (error) {
+              result.refusal = safeReason(error);
+              result.coverage.complete = false;
+            }
+          }
+          result.omitted = found.matches - result.hits.length;
+        } else {
+          const target = request.locator;
+          const entry = entries.find(candidate => candidate.host === target.host && candidate.session.selector === target.session);
+          if (entry === undefined || entry.snapshot.id !== target.snapshot || entry.session.primaryPath !== target.path ||
+            entry.session.harness !== target.harness) throw new Refused("locator-mismatch");
+          result.coverage.eligible = 1;
+          if (entry.seen.size > MAX_MATERIAL_BYTES) throw new Refused("fetch-bound");
+          const reading = await load(entry, result, MAX_MATERIAL_BYTES);
+          if (request.kind === "show") {
+            result.hits = [await readHit(entry, reading, target, request.selection, request.maxBytes)];
+          } else {
+            // No content leaves this branch. Token publication follows the whole replay's digest.
+            if (reading.captureDigest !== target.captureDigest || reading.sourceDigest !== target.sourceDigest)
+              throw new Refused("locator-mismatch");
+            staging ??= await mkdtemp(join(root, "widening-"));
+            await chmod(staging, 0o700);
+            const token = crypto.randomUUID();
+            const path = join(staging, token);
+            const writer = Bun.file(path).writer();
+            const reader = recallRecordReader({ harness: entry.session.harness, anchor: target.record, maxBytes: 1 });
+            let bytes = 0;
+            let ended = false;
+            try {
+              await verify(entry, reading, {
+                write(chunk) {
+                  bytes += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
+                  if (bytes > RECALL_MAX_SERVED_BYTES - stagedBytes) throw new Refused("fetch-bound");
+                  writer.write(chunk); reader.sink.write(chunk);
+                },
+                close: async () => { await writer.end(); ended = true; await reader.sink.close(); },
+              });
+              const readback = await reader.finish();
+              if (!readback.anchorMatches) throw new Refused("locator-mismatch");
+              const hit: RecallHit = { locator: target, snapshotAt: new Date(entry.snapshot.time).toISOString(),
+                ...association(entry, readback.metadata), excerpt: { ...readback.excerpt, text: "", bytes: 0,
+                  firstRecord: 0, lastRecord: 0, truncated: false } };
+              tokens.set(token, { classId, path, expires: now() + RECALL_REQUEST_TTL_MS, bytes,
+                records: readback.records, hit, offset: 0, line: 1, previous: null });
+              stagedBytes += bytes;
+              result.preview = { token, sourceBytes: reading.bytes, servedBytes: bytes,
+                records: readback.records, sourceDigest: reading.sourceDigest };
+            } catch (error) {
+              try {
+                if (!ended) await writer.end();
+              } catch {
+                // Always unlink an unpublished widening, even when its writer failed.
+              } finally {
+                await rm(path, { force: true });
+              }
+              throw error;
+            }
+          }
+          result.coverage.indexed = 1; result.coverage.complete = true;
+        }
+      } catch (error) {
+        result.refusal = safeReason(error);
+        result.hits = []; delete result.preview; delete result.page;
+      }
+      return bounded(result);
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
+      try { index.close(); }
+      finally {
+        tokens.clear(); metadata.clear();
+        if (staging !== null) await rm(staging, { recursive: true, force: true });
+      }
+    },
+  };
+}
+
+function safeReason(error: unknown): Refusal {
+  if (error instanceof Refused) return error.reason;
+  if (error instanceof SessionIndexError && error.kind === "busy") return "index-busy";
+  return "source-unavailable";
+}
+
+/** End before any UTF-8 codepoint split by the requested byte boundary. */
+function utf8End(bytes: Uint8Array, bound: number): number {
+  let end = bound;
+  while (end > 0 && end < bytes.length && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
+  return end;
+}

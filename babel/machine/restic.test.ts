@@ -385,3 +385,58 @@ withRepository(
   },
   RESTIC_TIMEOUT,
 );
+
+/** Large synthetic pipes isolate the ls visitor's backpressure and child-settlement contract. */
+async function withListingChild(body: (repo: Repo, exited: string) => Promise<void>): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "babel-ls-child-"));
+  const binary = join(root, "restic");
+  const exited = join(root, "exited");
+  writeFileSync(binary, `#!${process.execPath}
+import { closeSync, writeFileSync } from "node:fs";
+process.on("exit", () => writeFileSync(${JSON.stringify(exited)}, "settled"));
+for (let i = 0; i < 20003; i++) {
+  await Bun.write(Bun.stdout, JSON.stringify({struct_type:"node",path:"/synthetic/"+i,type:"file",size:i,mtime:"2026-09-01T00:00:00Z"})+"\\n");
+}
+closeSync(1);
+await Bun.write(Bun.stderr, Buffer.alloc(2 << 20, "synthetic diagnostic\\n"));
+closeSync(2);
+`, { mode: 0o755 });
+  try {
+    await body(openRepo(config({ binary, repository: join(root, "repo") })), exited);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+test("streamed listing awaits each visitor and visits past the retained ls bound", async () => {
+  await withListingChild(async (repo, exited) => {
+    let count = 0;
+    let active = false;
+    await repo.lsTo("a".repeat(64), async entry => {
+      expect(active).toBe(false);
+      active = true;
+      await Promise.resolve();
+      expect(entry.path).toBe(`/synthetic/${count}`);
+      count++;
+      active = false;
+    });
+    expect(count).toBe(20003);
+    expect(readFileSync(exited, "utf8")).toBe("settled");
+    const retained = await repo.ls("a".repeat(64));
+    expect(retained.entries.length).toBe(20000);
+    expect(retained.entries[19999]?.path).toBe("/synthetic/19999");
+    expect(retained.truncated).toBe(true);
+  });
+}, 30_000);
+
+test("a failed listing visitor stops forwarding but drains and settles both child pipes", async () => {
+  await withListingChild(async (repo, exited) => {
+    const failure = new Error("synthetic consumer refusal");
+    let called = 0;
+    await expect(repo.lsTo("a".repeat(64), async () => {
+      called++;
+      await Promise.resolve();
+      throw failure;
+    })).rejects.toBe(failure);
+    expect(called).toBe(1);
+    expect(readFileSync(exited, "utf8")).toBe("settled");
+  });
+}, 30_000);
