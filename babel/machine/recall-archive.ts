@@ -74,6 +74,11 @@ interface Widening {
   previous: { offset: number; hit: RecallHit; page: NonNullable<RecallResult["page"]> } | null;
 }
 const hash = (value: string): string => new Bun.CryptoHasher("sha256").update(value).digest("hex");
+const sameDigests = (
+  left: Pick<ReusedReading, "captureDigest" | "sourceDigest">,
+  right: Pick<ReusedReading, "captureDigest" | "sourceDigest">,
+): boolean =>
+  left.captureDigest === right.captureDigest && left.sourceDigest === right.sourceDigest;
 const sourceKey = (host: string, selector: string): string => JSON.stringify([host, selector]);
 const matchesSubject = (
   subject: Subject,
@@ -248,16 +253,22 @@ export async function createRecallArchive(options: {
     entry: Capture,
     result: RecallResult,
     budget: number,
+    fetched: Set<Capture>,
+    expected?: Pick<ReusedReading, "captureDigest" | "sourceDigest">,
   ): Promise<ReusedReading> => {
     const reused = await entry.cache.reuse(entry.session, entry.seen);
     if (reused !== null) {
-      if (reused.bytes !== entry.seen.size) {
-        await entry.cache.forget(entry.session);
-        throw new Refused("capture-changed");
+      if (
+        reused.bytes === entry.seen.size &&
+        (expected === undefined || sameDigests(reused, expected))
+      ) {
+        result.cost.cacheHits++;
+        return reused;
       }
-      result.cost.cacheHits++;
-      return reused;
+      // A commit marker is rebuildable, not authority over an immutable locator or index.
+      await entry.cache.forget(entry.session);
     }
+    if (fetched.has(entry)) throw new Refused("capture-changed");
     if (entry.seen.size > MAX_MATERIAL_BYTES || entry.seen.size > budget - result.cost.fetchedBytes)
       throw new Refused("fetch-bound");
     const kept = await entry.cache.keep(entry.session, entry.seen);
@@ -277,6 +288,7 @@ export async function createRecallArchive(options: {
     );
     let ended = false;
     try {
+      fetched.add(entry);
       result.cost.fetchedFiles++;
       await options.repo.dumpTo(
         entry.snapshot.id,
@@ -331,10 +343,11 @@ export async function createRecallArchive(options: {
       snapshots[0] === undefined ? null : new Date(snapshots[0].time).toISOString();
     for (const snapshot of snapshots) {
       result.cost.listedSnapshots++;
+      const roots = new Set(snapshot.paths.map((path) => path.replace(/\/+$/, "") || "/"));
       const directories = new Set<string>();
       const deferred: ArchivedEntry[] = [];
       const collect = (node: ArchivedEntry, exists: (path: string) => boolean): void => {
-        const session = claim(node.path, exists);
+        const session = claim(node.path, exists, roots);
         if (
           session === null ||
           session.selector.length > 600 ||
@@ -489,6 +502,7 @@ export async function createRecallArchive(options: {
         refusal: null,
         hits: [],
       };
+      const fetched = new Set<Capture>();
       try {
         if (closed) throw new Refused("archive-unavailable");
         const request = RecallRequestSchema.parse(input);
@@ -622,9 +636,10 @@ export async function createRecallArchive(options: {
           // Missing captures first: a finite cold budget makes progress on subsequent requests.
           entries.sort((a, b) => Number(index.holds(a)) - Number(index.holds(b)));
           for (const entry of entries) {
+            for (let attempt = 0; attempt < 2; attempt++) {
             try {
               if (entry.seen.size > MAX_MATERIAL_BYTES) throw new Refused("fetch-bound");
-              const reading = await load(entry, result, request.maxFetchBytes);
+              const reading = await load(entry, result, request.maxFetchBytes, fetched);
               const key = metadataKey(entry, reading);
               let about = await recalledMetadata(key, reading);
               if (!index.holds(entry)) {
@@ -679,13 +694,24 @@ export async function createRecallArchive(options: {
                 (request.filter.repository !== undefined &&
                   request.filter.repository !== associated.repository)
               )
-                continue;
+                break;
               covered.push(entry);
               readings.set(entry, reading);
+              break;
             } catch (error) {
+              if (
+                attempt === 0 &&
+                error instanceof Refused &&
+                error.reason === "capture-changed" &&
+                index.holds(entry) &&
+                !fetched.has(entry)
+              )
+                continue;
               if (error instanceof Refused && error.reason === "fetch-bound")
                 result.coverage.overBound++;
               else result.refusal = safeReason(error);
+              break;
+            }
             }
           }
           result.coverage.complete = result.coverage.indexed === result.coverage.eligible;
@@ -701,15 +727,15 @@ export async function createRecallArchive(options: {
           result.matches = found.matches;
           for (const foundHit of found.hits) {
             const entry = foundHit.candidate as Capture;
-            const reading = readings.get(entry);
+            let reading = readings.get(entry);
             if (reading === undefined) throw new Refused("capture-changed");
             try {
+              if (!sameDigests(reading, foundHit)) {
+                reading = await load(entry, result, request.maxFetchBytes, fetched, foundHit);
+                readings.set(entry, reading);
+                if (!sameDigests(reading, foundHit)) throw new Refused("capture-changed");
+              }
               const target = locator(entry, reading, foundHit.position);
-              if (
-                reading.captureDigest !== foundHit.captureDigest ||
-                reading.sourceDigest !== foundHit.sourceDigest
-              )
-                throw new Refused("capture-changed");
               result.hits.push(await readHit(entry, reading, target, result));
             } catch (error) {
               result.refusal = safeReason(error);
@@ -732,7 +758,7 @@ export async function createRecallArchive(options: {
             throw new Refused("locator-mismatch");
           result.coverage.eligible = 1;
           if (entry.seen.size > MAX_MATERIAL_BYTES) throw new Refused("fetch-bound");
-          const reading = await load(entry, result, MAX_MATERIAL_BYTES);
+          const reading = await load(entry, result, MAX_MATERIAL_BYTES, fetched, target);
           if (request.kind === "show") {
             result.hits = [
               await readHit(entry, reading, target, result, request.selection, request.maxBytes),

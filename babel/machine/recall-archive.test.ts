@@ -97,7 +97,7 @@ async function fixture(
       objectStore: null,
     });
     await repo.init();
-    await repo.backup([root], { host: HOST, tags: [BABEL_TAG] });
+    await repo.backup([dirname(root)], { host: HOST, tags: [BABEL_TAG] });
     archive = await createRecallArchive({
       repo,
       cacheDir,
@@ -151,9 +151,12 @@ withRestic(
       const old = before.hits[0]?.locator;
       if (old === undefined) throw new Error("missing first capture");
       await Bun.write(source, HEADER + message("replacement changed capture"));
-      await repo.backup([dirname(source)], { host: HOST, tags: ["not-babel"] });
+      await repo.backup([dirname(dirname(source))], { host: HOST, tags: ["not-babel"] });
       expect((await archive.execute("public", search())).hits[0]?.locator).toEqual(old);
-      const backup = await repo.backup([dirname(source)], { host: HOST, tags: [BABEL_TAG] });
+      const backup = await repo.backup([dirname(dirname(source))], {
+        host: HOST,
+        tags: [BABEL_TAG],
+      });
       const replaced = await archive.execute("public", search({ query: "replacement" }));
       expect(replaced.hits[0]?.locator.snapshot).toBe(backup.snapshotId);
       expect(replaced.hits[0]?.locator.sourceDigest).not.toBe(old.sourceDigest);
@@ -530,7 +533,7 @@ test("highest matching owner sensitivity and unknown subjects refuse before dump
         time: TIME,
         parentId: null,
         host: HOST,
-        paths: [path],
+        paths: [dirname(dirname(path))],
         tags: [BABEL_TAG],
       },
     ],
@@ -610,7 +613,7 @@ withRestic(
       async ({ archive, source, repo }) => {
         const first = await archive.execute("public", search({ filter: { host: HOST } }));
         await Bun.write(source, HEADER + message("needle secondhostcontent"));
-        await repo.backup([dirname(source)], { host: otherHost, tags: [BABEL_TAG] });
+        await repo.backup([dirname(dirname(source))], { host: otherHost, tags: [BABEL_TAG] });
         const other = await archive.execute("public", search({ filter: { host: otherHost } }));
         expect(other.hits[0]?.locator.session).toBe(first.hits[0]?.locator.session);
         expect(other.hits[0]?.locator.host).toBe(otherHost);
@@ -823,7 +826,11 @@ withRestic(
 );
 
 /** A deterministic archived listing: no subprocess, live source reads or provider state. */
-function listedRepo(entries: ArchivedEntry[], source: string): Repo {
+function listedRepo(
+  entries: ArchivedEntry[],
+  source: string,
+  roots = ["/synthetic/.omp/agent/sessions"],
+): Repo {
   const bytes = new TextEncoder().encode(source);
   const forbidden = async (): Promise<never> => {
     throw new Error("unexpected synthetic operation");
@@ -845,7 +852,7 @@ function listedRepo(entries: ArchivedEntry[], source: string): Repo {
         time: TIME,
         parentId: null,
         host: HOST,
-        paths: ["/synthetic"],
+        paths: roots,
         tags: [BABEL_TAG],
       },
     ],
@@ -1195,7 +1202,7 @@ test("archived history eligibility is listing-order independent and ignores live
     subjects: [{ name: "history", host: HOST, harness: "codex", sensitivity: 0 }],
   };
   const archive = await createRecallArchive({
-    repo: listedRepo(entries, source),
+    repo: listedRepo(entries, source, [root]),
     cacheDir: join(home, "cache"),
     policy,
     temporaryDir: home,
@@ -1332,3 +1339,167 @@ withRestic(
   },
   TIMEOUT,
 );
+
+test("archive session ownership is exact to recorded roots, not closure-file suffixes", async () => {
+  const home = await mkdtemp(join(tmpdir(), "babel-recall-root-ownership-"));
+  const ompRoot = "/synthetic/.omp/agent/sessions";
+  const codexRoot = "/synthetic/.codex";
+  const relocatedCodexRoot = "/synthetic/relocated-codex";
+  const claudeRoot = "/synthetic/.claude";
+  const blobsRoot = "/synthetic/.omp/agent/blobs";
+  const collabRoot = "/synthetic/.omp/collab";
+  const eligible = [
+    `${ompRoot}/project/session.jsonl`,
+    `${codexRoot}/sessions/2026/09/01/default.jsonl`,
+    `${relocatedCodexRoot}/sessions/2026/09/01/relocated.jsonl`,
+    `${claudeRoot}/projects/project/session.jsonl`,
+  ];
+  const closures = [
+    `${ompRoot}/project/session/artifacts/sessions/2026/09/01/omp-closure.jsonl`,
+    `${codexRoot}/attachments/attachment/sessions/2026/09/01/codex-closure.jsonl`,
+    `${claudeRoot}/projects/project/artifacts/sessions/2026/09/01/claude-closure.jsonl`,
+    `${blobsRoot}/nested/sessions/2026/09/01/blob-closure.jsonl`,
+    `${collabRoot}/nested/sessions/2026/09/01/collab-closure.jsonl`,
+    `${codexRoot}-unrecorded/sessions/2026/09/01/prefix-confusion.jsonl`,
+    `${codexRoot}/attachments/attachment/projects/project/claude-shaped.jsonl`,
+    `${codexRoot}/attachments/attachment/sessions/project/omp-shaped.jsonl`,
+  ];
+  const entries: ArchivedEntry[] = [...eligible, ...closures].map((path) => ({
+    path,
+    type: "file",
+    size: Buffer.byteLength(SOURCE),
+    modifiedAt: TIME,
+  }));
+  const repo = listedRepo(entries, SOURCE, [
+    `${ompRoot}/`,
+    codexRoot,
+    relocatedCodexRoot,
+    claudeRoot,
+    blobsRoot,
+    collabRoot,
+  ]);
+  const dump = repo.dumpTo;
+  const fetched: string[] = [];
+  repo.dumpTo = async (snapshot, path, sink, limits) => {
+    fetched.push(path);
+    return dump(snapshot, path, sink, limits);
+  };
+  const archive = await createRecallArchive({
+    repo,
+    cacheDir: home,
+    temporaryDir: home,
+    policy: {
+      ...POLICY,
+      subjects: [{ name: "supported sessions", host: HOST, sensitivity: 0 }],
+    },
+  });
+  try {
+    const first = await archive.execute("public", search());
+    expect(first.refusal).toBeNull();
+    expect(first.coverage).toEqual({ eligible: 4, indexed: 4, complete: true, overBound: 0 });
+    expect(first.hits.map((hit) => hit.locator.path).sort()).toEqual([...eligible].sort());
+    expect(fetched.sort()).toEqual([...eligible].sort());
+    entries.reverse();
+    const reversed = await archive.execute("public", search({ maxFetchBytes: 0 }));
+    expect(reversed.refusal).toBeNull();
+    expect(reversed.hits.map((hit) => hit.locator.path).sort()).toEqual([...eligible].sort());
+    expect(reversed.cost.fetchedFiles).toBe(0);
+  } finally {
+    await archive.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+for (const field of ["captureDigest", "sourceDigest"] as const) {
+  for (const kind of ["search", "show", "preview"] as const) {
+    test(`${kind} repairs canonical ${field} corruption once before publishing immutable evidence`, async () => {
+      await listedFixture(async ({ archive, cacheDir }) => {
+        const original = await archive.execute("public", search());
+        const locator = original.hits[0]?.locator;
+        if (locator === undefined) throw new Error("missing locator");
+        const stream = (await readdir(cacheDir, { recursive: true })).find((path) =>
+          path.endsWith(".records"),
+        );
+        if (stream === undefined) throw new Error("missing kept reading");
+        const path = join(cacheDir, stream.replace(/\.records$/, ".json"));
+        const document = await Bun.file(path).json();
+        await Bun.write(path, JSON.stringify({ ...document, [field]: `sha256:${"0".repeat(64)}` }));
+        const repaired = await archive.execute(
+          "public",
+          kind === "search"
+            ? search({ maxFetchBytes: Buffer.byteLength(SOURCE) })
+            : request({ kind, locator }),
+        );
+        expect(repaired.refusal).toBeNull();
+        expect(repaired.cost.fetchedFiles).toBe(1);
+        expect(repaired.cost.fetchedBytes).toBe(Buffer.byteLength(SOURCE));
+        expect(repaired.coverage.complete).toBe(true);
+        if (kind === "preview") {
+          const previewId = repaired.preview?.previewId;
+          if (previewId === undefined) throw new Error("missing repaired preview");
+          const page = await archive.execute("public", request({ kind: "session", previewId }));
+          expect(page.hits[0]?.locator).toEqual(locator);
+          expect(page.hits[0]?.excerpt.text).toBe(SOURCE);
+        } else {
+          expect(repaired.hits[0]?.locator).toEqual(locator);
+          expect(repaired.hits[0]?.excerpt.text).toContain("needle");
+        }
+        const warm = await archive.execute("public", search({ maxFetchBytes: 0 }));
+        expect(warm.refusal).toBeNull();
+        expect(warm.cost.fetchedFiles).toBe(0);
+        expect(warm.hits).toEqual(original.hits);
+      });
+    });
+  }
+
+  test(`${field} repair respects the search fetch bound and leaves a rebuildable miss`, async () => {
+    await listedFixture(async ({ archive, cacheDir }) => {
+      const original = await archive.execute("public", search());
+      const stream = (await readdir(cacheDir, { recursive: true })).find((path) =>
+        path.endsWith(".records"),
+      );
+      if (stream === undefined) throw new Error("missing kept reading");
+      const path = join(cacheDir, stream.replace(/\.records$/, ".json"));
+      const document = await Bun.file(path).json();
+      await Bun.write(path, JSON.stringify({ ...document, [field]: `sha256:${"0".repeat(64)}` }));
+      const bounded = await archive.execute("public", search({ maxFetchBytes: 0 }));
+      expect(bounded.hits).toEqual([]);
+      expect(bounded.coverage.complete).toBe(false);
+      expect(bounded.cost.fetchedFiles).toBe(0);
+      const rebuilt = await archive.execute(
+        "public",
+        search({ maxFetchBytes: Buffer.byteLength(SOURCE) }),
+      );
+      expect(rebuilt.refusal).toBeNull();
+      expect(rebuilt.cost.fetchedFiles).toBe(1);
+      expect(rebuilt.hits).toEqual(original.hits);
+    });
+  });
+}
+
+test("refetch cannot bless an invalid locator and stale captures never trigger a fetch", async () => {
+  await listedFixture(async ({ archive }) => {
+    const locator = (await archive.execute("public", search())).hits[0]?.locator;
+    if (locator === undefined) throw new Error("missing locator");
+    for (const kind of ["show", "preview"] as const) {
+      const stale = await archive.execute(
+        "public",
+        request({ kind, locator: { ...locator, snapshot: "c".repeat(64) } }),
+      );
+      expect(stale.refusal).toBe("locator-mismatch");
+      expect(stale.cost.fetchedFiles).toBe(0);
+      const invalid = await archive.execute(
+        "public",
+        request({ kind, locator: { ...locator, sourceDigest: `sha256:${"0".repeat(64)}` } }),
+      );
+      expect(invalid.refusal).toBe("locator-mismatch");
+      expect(invalid.cost.fetchedFiles).toBe(1);
+      expect(invalid.hits).toEqual([]);
+      expect(invalid.preview).toBeUndefined();
+      const valid = await archive.execute("public", request({ kind: "show", locator }));
+      expect(valid.refusal).toBeNull();
+      expect(valid.cost.fetchedFiles).toBe(0);
+      expect(valid.hits[0]?.locator).toEqual(locator);
+    }
+  });
+});

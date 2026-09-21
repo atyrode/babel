@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -63,6 +64,73 @@ test("a session slot reuses only its exact immutable capture, never another capt
         expect(replayed).toBe(digest);
         expect(reused.sourceDigest).toBe(replayed);
       }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("reading metadata accepts only canonical SHA-256 digests", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "babel-reading-digests-"));
+  const session = sessionRef("omp", "digest-boundary", "/synthetic/session.jsonl");
+  const seen = { size: 7, modifiedAt: 1000, capture: "snapshot" };
+  const cache = readingCache(dir, { schema: 1, detectors: "test/1", mode: "redact" });
+  const digest = `sha256:${"a".repeat(64)}`;
+  try {
+    const kept = await cache.keep(session, seen);
+    if (kept === null) throw new Error("could not keep fixture reading");
+    kept.sink.write("record\n");
+    await kept.sink.close();
+    await kept.commit({
+      captureDigest: digest,
+      sourceDigest: digest,
+      bytes: seen.size,
+      records: 1,
+      report: null,
+    });
+    const file = (await readdir(dir)).find((path) => path.endsWith(".json"));
+    if (file === undefined) throw new Error("missing reading metadata");
+    const path = join(dir, file);
+    const document = await Bun.file(path).json();
+    for (const field of ["captureDigest", "sourceDigest"]) {
+      for (const invalid of ["arbitrary", digest.slice(0, -1), digest.toUpperCase(), `${digest}\n`]) {
+        await Bun.write(path, JSON.stringify({ ...document, [field]: invalid }));
+        expect(await cache.reuse(session, seen)).toBeNull();
+      }
+    }
+    await Bun.write(path, JSON.stringify(document));
+    expect((await cache.reuse(session, seen))?.sourceDigest).toBe(digest);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("failed metadata renames clean unique staging files without removing the destination", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "babel-reading-cleanup-"));
+  const session = sessionRef("omp", "cleanup-boundary", "/synthetic/session.jsonl");
+  const seen = { size: 7, modifiedAt: 1000, capture: "snapshot" };
+  const cache = readingCache(dir, { schema: 1, detectors: "test/1", mode: "redact" });
+  const slot = new Bun.CryptoHasher("sha256").update(session.selector).digest("hex");
+  const destination = join(dir, `${slot}.json`);
+  const digest = `sha256:${new Bun.CryptoHasher("sha256").update("record\n").digest("hex")}`;
+  try {
+    await mkdir(destination);
+    await Bun.write(join(destination, "unrelated"), "preserve me");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const kept = await cache.keep(session, seen);
+      if (kept === null) throw new Error("could not keep fixture reading");
+      kept.sink.write("record\n");
+      await kept.sink.close();
+      await kept.commit({
+        captureDigest: digest,
+        sourceDigest: digest,
+        bytes: seen.size,
+        records: 1,
+        report: null,
+      });
+      expect(await cache.reuse(session, seen)).toBeNull();
+      expect((await readdir(dir)).sort()).toEqual([`${slot}.json`, `${slot}.records`]);
+      expect(await Bun.file(join(destination, "unrelated")).text()).toBe("preserve me");
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

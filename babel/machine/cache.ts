@@ -151,8 +151,8 @@ const KeptReadingSchema = z.strictObject({
   capture: z.string(),
   size: z.number().int().nonnegative(),
   modifiedAt: z.number().positive(),
-  captureDigest: z.string().min(1),
-  sourceDigest: z.string().min(1),
+  captureDigest: z.string().length(71).regex(/^sha256:[0-9a-f]{64}$/),
+  sourceDigest: z.string().length(71).regex(/^sha256:[0-9a-f]{64}$/),
   bytes: z.number().int().nonnegative(),
   records: z.number().int().nonnegative(),
   streamBytes: z.number().int().nonnegative(),
@@ -273,6 +273,7 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
             await discard();
             return;
           }
+          const staged = `${slot}.${crypto.randomUUID()}.json`;
           try {
             const written = await stat(temporary);
             await rename(temporary, `${slot}.records`);
@@ -291,11 +292,12 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
               report: reading.report,
             };
             // The document is renamed last, so it is only ever seen beside a complete stream.
-            const staged = `${slot}.${crypto.randomUUID()}.json`;
             await Bun.write(staged, JSON.stringify(document) + "\n");
             await rename(staged, `${slot}.json`);
           } catch {
             await discard();
+          } finally {
+            await rm(staged, { force: true }).catch(() => undefined);
           }
         },
         abandon: discard,

@@ -60,7 +60,7 @@ export const claude: Adapter = {
     return claudeRoots();
   },
 
-  claim(path) {
+  claim(path, _exists, roots) {
     if (!path.endsWith(SESSION_EXT) || !walkablePath(path)) return null;
     const segments = path.split("/");
     const file = segments[segments.length - 1];
@@ -72,6 +72,7 @@ export const claude: Adapter = {
     ) {
       return null;
     }
+    if (roots !== undefined && !roots.has(segments.slice(0, -3).join("/") || "/")) return null;
     const session = file.slice(0, -SESSION_EXT.length);
     if (session === "") return null;
     return sessionRef(HARNESS, sanitizeSegment(project) + "/" + sanitizeSegment(session), path);

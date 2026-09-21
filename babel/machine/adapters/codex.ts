@@ -82,17 +82,19 @@ export const codex: Adapter = {
     return codexRoots();
   },
 
-  claim(path, exists = existsSync) {
+  claim(path, exists = existsSync, roots) {
     if (!walkablePath(path)) return null;
     const segments = path.split("/");
     if (segments[segments.length - 1] === HISTORY_FILE) {
-      // The host state is only Codex's when a "sessions" tree sits beside it: a listing cannot
-      // say which ancestor was a root, and "history.jsonl" is not a name only Codex uses.
+      // A history file also needs its archived sibling sessions directory; a filename alone
+      // is not evidence of Codex ownership.
       const root = segments.slice(0, -1).join("/");
+      if (roots !== undefined && !roots.has(root || "/")) return null;
       return exists(join(root === "" ? "/" : root, "sessions"))
         ? sessionRef(HARNESS, STATE_SOURCE_ID, path)
         : null;
     }
+    if (roots !== undefined && !roots.has(segments.slice(0, -5).join("/") || "/")) return null;
     const rollout = rolloutIdentity(segments);
     return rollout === null ? null : sessionRef(HARNESS, rollout, path);
   },
