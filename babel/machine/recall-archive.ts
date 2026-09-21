@@ -637,81 +637,81 @@ export async function createRecallArchive(options: {
           entries.sort((a, b) => Number(index.holds(a)) - Number(index.holds(b)));
           for (const entry of entries) {
             for (let attempt = 0; attempt < 2; attempt++) {
-            try {
-              if (entry.seen.size > MAX_MATERIAL_BYTES) throw new Refused("fetch-bound");
-              const reading = await load(entry, result, request.maxFetchBytes, fetched);
-              const key = metadataKey(entry, reading);
-              let about = await recalledMetadata(key, reading);
-              if (!index.holds(entry)) {
-                const reader = recallRecordReader({ harness: entry.session.harness });
-                let refused: Refused | undefined;
-                const built = await index
-                  .build(entry, async (sink) => {
-                    try {
-                      await verify(
-                        entry,
-                        reading,
-                        {
-                          write(chunk) {
-                            sink.write(chunk);
-                            reader.sink.write(chunk);
+              try {
+                if (entry.seen.size > MAX_MATERIAL_BYTES) throw new Refused("fetch-bound");
+                const reading = await load(entry, result, request.maxFetchBytes, fetched);
+                const key = metadataKey(entry, reading);
+                let about = await recalledMetadata(key, reading);
+                if (!index.holds(entry)) {
+                  const reader = recallRecordReader({ harness: entry.session.harness });
+                  let refused: Refused | undefined;
+                  const built = await index
+                    .build(entry, async (sink) => {
+                      try {
+                        await verify(
+                          entry,
+                          reading,
+                          {
+                            write(chunk) {
+                              sink.write(chunk);
+                              reader.sink.write(chunk);
+                            },
+                            close: async () => {
+                              await sink.close();
+                              await reader.sink.close();
+                            },
                           },
-                          close: async () => {
-                            await sink.close();
-                            await reader.sink.close();
-                          },
-                        },
-                        result,
-                      );
-                      return { reading, after: entry.seen };
-                    } catch (error) {
-                      if (error instanceof Refused) refused = error;
-                      throw error;
-                    }
-                  })
-                  .catch((error) => {
-                    throw refused ?? error;
-                  });
-                if (built === "busy") throw new Refused("index-busy");
-                if (built === "changed") throw new Refused("capture-changed");
-                if (built === "indexed") {
-                  result.cost.indexedFiles++;
+                          result,
+                        );
+                        return { reading, after: entry.seen };
+                      } catch (error) {
+                        if (error instanceof Refused) refused = error;
+                        throw error;
+                      }
+                    })
+                    .catch((error) => {
+                      throw refused ?? error;
+                    });
+                  if (built === "busy") throw new Refused("index-busy");
+                  if (built === "changed") throw new Refused("capture-changed");
+                  if (built === "indexed") {
+                    result.cost.indexedFiles++;
+                    about = (await reader.finish()).metadata;
+                    await remember(key, reading, about);
+                  }
+                }
+                if (about === undefined) {
+                  const reader = recallRecordReader({ harness: entry.session.harness });
+                  await verify(entry, reading, reader.sink, result);
                   about = (await reader.finish()).metadata;
                   await remember(key, reading, about);
                 }
-              }
-              if (about === undefined) {
-                const reader = recallRecordReader({ harness: entry.session.harness });
-                await verify(entry, reading, reader.sink, result);
-                about = (await reader.finish()).metadata;
-                await remember(key, reading, about);
-              }
-              result.coverage.indexed++;
-              const associated = association(entry, about);
-              if (
-                (request.filter.workspace !== undefined &&
-                  request.filter.workspace !== associated.workspace) ||
-                (request.filter.repository !== undefined &&
-                  request.filter.repository !== associated.repository)
-              )
+                result.coverage.indexed++;
+                const associated = association(entry, about);
+                if (
+                  (request.filter.workspace !== undefined &&
+                    request.filter.workspace !== associated.workspace) ||
+                  (request.filter.repository !== undefined &&
+                    request.filter.repository !== associated.repository)
+                )
+                  break;
+                covered.push(entry);
+                readings.set(entry, reading);
                 break;
-              covered.push(entry);
-              readings.set(entry, reading);
-              break;
-            } catch (error) {
-              if (
-                attempt === 0 &&
-                error instanceof Refused &&
-                error.reason === "capture-changed" &&
-                index.holds(entry) &&
-                !fetched.has(entry)
-              )
-                continue;
-              if (error instanceof Refused && error.reason === "fetch-bound")
-                result.coverage.overBound++;
-              else result.refusal = safeReason(error);
-              break;
-            }
+              } catch (error) {
+                if (
+                  attempt === 0 &&
+                  error instanceof Refused &&
+                  error.reason === "capture-changed" &&
+                  index.holds(entry) &&
+                  !fetched.has(entry)
+                )
+                  continue;
+                if (error instanceof Refused && error.reason === "fetch-bound")
+                  result.coverage.overBound++;
+                else result.refusal = safeReason(error);
+                break;
+              }
             }
           }
           result.coverage.complete = result.coverage.indexed === result.coverage.eligible;

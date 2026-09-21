@@ -263,9 +263,7 @@ test("a lost start response is recovered by its owned trace without starting or 
   // Deliberately discard the start response, as a failed SDK projection does.
   await knock(ACTIONS.recallSearch, context(), { target: f.target, query: "archived" });
   const lookup = RecallPollInputSchema.parse({ target: f.target, traceId: 42 });
-  const recovered = RecallPollReplySchema.parse(
-    await knock(ACTIONS.recallPoll, context(), lookup),
-  );
+  const recovered = RecallPollReplySchema.parse(await knock(ACTIONS.recallPoll, context(), lookup));
   expect(recovered.state).toBe("located");
   expect(Object.keys(recovered).toSorted()).toEqual(["requestId", "state"]);
   expect(nativeRequests).toHaveLength(1);

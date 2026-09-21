@@ -151,8 +151,14 @@ const KeptReadingSchema = z.strictObject({
   capture: z.string(),
   size: z.number().int().nonnegative(),
   modifiedAt: z.number().positive(),
-  captureDigest: z.string().length(71).regex(/^sha256:[0-9a-f]{64}$/),
-  sourceDigest: z.string().length(71).regex(/^sha256:[0-9a-f]{64}$/),
+  captureDigest: z
+    .string()
+    .length(71)
+    .regex(/^sha256:[0-9a-f]{64}$/),
+  sourceDigest: z
+    .string()
+    .length(71)
+    .regex(/^sha256:[0-9a-f]{64}$/),
   bytes: z.number().int().nonnegative(),
   records: z.number().int().nonnegative(),
   streamBytes: z.number().int().nonnegative(),

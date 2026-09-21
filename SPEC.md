@@ -917,6 +917,9 @@ unfiltered retry, raw read, whole-session widening or paid call.
 The hub records redacted request intent before invoking the service and derived outcomes before
 releasing data. Traces retain provenance and costs, not transcript bodies or usable preview
 handles. Uncertain starts retain their request id for `recallPoll`, not automatic fresh-id retries.
+When publication loses that handle, the original action trace resolves only the same principal's
+owned handle after the same target, grant and revision checks; it releases no evidence and starts
+no native work. A subsequent request-id poll resumes the ordinary path.
 The versioned `recallSkill` door and managed skill share one body. The supported SDK exposes
 data only for exact reviewed source-profile approvals; its text leaves preserve evidence bytes
 without bypassing input or held-credential checks. Installation grants no live corpus access.

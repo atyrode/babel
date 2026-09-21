@@ -42,9 +42,7 @@ export function openRecallService(options: {
   const classQueueLimit = Math.max(1, Math.floor(RECALL_MAX_REQUESTS / routes.size));
   const now = options.now ?? Date.now;
   const pending = new Map<string, Pending>();
-  const queues = new Map<string, Pending[]>(
-    [...routes.values()].map((classId) => [classId, []]),
-  );
+  const queues = new Map<string, Pending[]>([...routes.values()].map((classId) => [classId, []]));
   const classQueues = [...queues.values()];
   let nextClass = 0;
   let stopped = false;

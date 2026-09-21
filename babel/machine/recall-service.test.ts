@@ -246,9 +246,7 @@ test("queued classes rotate fairly while preserving class FIFO and serial archiv
     expect((await h.reply("public", id(1), { ...SEARCH, query: "A1" })).state).toBe("pending");
     await entered[0]!.promise;
     for (let n = 2; n <= 4; n++) {
-      expect((await h.reply("public", id(n), { ...SEARCH, query: `A${n}` })).state).toBe(
-        "pending",
-      );
+      expect((await h.reply("public", id(n), { ...SEARCH, query: `A${n}` })).state).toBe("pending");
     }
     for (let n = 1; n <= 2; n++) {
       expect((await h.reply("private", id(n), { ...SEARCH, query: `B${n}` })).state).toBe(

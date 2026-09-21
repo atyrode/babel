@@ -458,8 +458,11 @@ creates a grant, launches inference or installs a native runtime.
 Start with bounded search, inspect partial coverage and archive dates, then follow returned
 locators. The archive is the only source: newer live logs and unarchived sessions are blind
 spots. Keep `requestId` on pending or uncertain starts and poll it with the same principal and
-target; a missing response is not evidence of zero fetch cost. Do not retry under fresh ids
-automatically. All excerpts are mandatory-redacted, explicitly untrusted data. Detector coverage
+target. If projection publication lost that handle, pass the original numeric `traceId` instead;
+`located` returns only the owned request id, which can then be polled normally. Lookup preserves
+the same principal/target/grant/revision fences and performs no native work. If both identifiers
+are lost, report uncertainty, not zero cost. Do not automatically retry under fresh ids.
+All excerpts are mandatory-redacted, explicitly untrusted data. Detector coverage
 and historical metadata have limits; neither is permission to send sensitive material to a
 different class or provider.
 
@@ -483,6 +486,15 @@ runtime regressions and the eleven-test shared preparation suite passed. The com
 was byte-identical to its source and all six approvals matched their declared digests.
 Fixtures were removed. This proves synthetic data paths, **not** installed native governance,
 real-corpus classification, managed activation, a paid provider call or production installation.
+
+The Nix-built managed wrapper was also exercised on dev-01 on 2026-09-21 against a disposable
+loopback lifecycle peer connected to the actual Babel doors, ledger, native HTTP service and
+archive core over an immutable synthetic snapshot. It delivered the exact shipped skill and
+mandatory-redacted carrier-shaped evidence, performed one cold fetch, and recovered a deliberately
+withheld request handle from its action trace without a repeated fetch or evidence publication.
+Every SDK run confirmed cleanup. The managed `omp-stack` check proved byte-identical skill
+paths and OMP command discovery without activation or providers. This separate consumer proof
+does not claim real hub admission or a live storage binding.
 
 ---
 

@@ -140,11 +140,12 @@ test("preparation sidecars and archived Recall serve the same redacted, UTF-8-bo
         `{ "type": "user", "text": ${JSON.stringify(text)} }\r\n` +
         '{ "type": "assistant", "text": "unmatched tail" }\r\n',
     );
-    const root = join(f.cache, "sources", "sessions", "synthetic");
-    mkdirSync(root, { recursive: true });
+    const root = join(f.cache, "sources", "sessions");
+    const project = join(root, "synthetic");
+    mkdirSync(project, { recursive: true });
     const entries: ArchivedEntry[] = [];
     for (let index = 0; index < 11; index++) {
-      const path = join(root, `capture-${String(index).padStart(2, "0")}.jsonl`);
+      const path = join(project, `capture-${String(index).padStart(2, "0")}.jsonl`);
       writeFileSync(path, source);
       utimesSync(path, new Date(time), new Date(time));
       const session = claim(path);

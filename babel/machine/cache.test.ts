@@ -93,7 +93,12 @@ test("reading metadata accepts only canonical SHA-256 digests", async () => {
     const path = join(dir, file);
     const document = await Bun.file(path).json();
     for (const field of ["captureDigest", "sourceDigest"]) {
-      for (const invalid of ["arbitrary", digest.slice(0, -1), digest.toUpperCase(), `${digest}\n`]) {
+      for (const invalid of [
+        "arbitrary",
+        digest.slice(0, -1),
+        digest.toUpperCase(),
+        `${digest}\n`,
+      ]) {
         await Bun.write(path, JSON.stringify({ ...document, [field]: invalid }));
         expect(await cache.reuse(session, seen)).toBeNull();
       }
