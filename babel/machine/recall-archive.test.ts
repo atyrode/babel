@@ -1412,11 +1412,13 @@ test("archive session ownership is exact to recorded roots, not closure-file suf
 
 for (const field of ["captureDigest", "sourceDigest"] as const) {
   for (const kind of ["search", "show", "preview"] as const) {
-    test(`${kind} repairs canonical ${field} corruption once before publishing immutable evidence`, async () => {
+    for (const location of ["reading metadata", "index"] as const) {
+    test(`${kind} repairs canonical ${field} corruption in ${location} once before publishing immutable evidence`, async () => {
       await listedFixture(async ({ archive, cacheDir }) => {
         const original = await archive.execute("public", search());
         const locator = original.hits[0]?.locator;
         if (locator === undefined) throw new Error("missing locator");
+        if (location === "reading metadata") {
         const stream = (await readdir(cacheDir, { recursive: true })).find((path) =>
           path.endsWith(".records"),
         );
@@ -1424,6 +1426,19 @@ for (const field of ["captureDigest", "sourceDigest"] as const) {
         const path = join(cacheDir, stream.replace(/\.records$/, ".json"));
         const document = await Bun.file(path).json();
         await Bun.write(path, JSON.stringify({ ...document, [field]: `sha256:${"0".repeat(64)}` }));
+        } else {
+          const database = (await readdir(cacheDir, { recursive: true })).find((path) =>
+            path.endsWith("tokens.sqlite"),
+          );
+          if (database === undefined) throw new Error("missing index");
+          const db = new Database(join(cacheDir, database), { strict: true });
+          try {
+            const column = field === "captureDigest" ? "capture_digest" : "source_digest";
+            db.query(`UPDATE session_sources SET ${column} = ?`).run(`sha256:${"0".repeat(64)}`);
+          } finally {
+            db.close();
+          }
+        }
         const repaired = await archive.execute(
           "public",
           kind === "search"
@@ -1434,6 +1449,7 @@ for (const field of ["captureDigest", "sourceDigest"] as const) {
         expect(repaired.cost.fetchedFiles).toBe(1);
         expect(repaired.cost.fetchedBytes).toBe(Buffer.byteLength(SOURCE));
         expect(repaired.coverage.complete).toBe(true);
+        expect(repaired.cost.indexedFiles).toBe(location === "index" ? 1 : 0);
         if (kind === "preview") {
           const previewId = repaired.preview?.previewId;
           if (previewId === undefined) throw new Error("missing repaired preview");
@@ -1450,6 +1466,7 @@ for (const field of ["captureDigest", "sourceDigest"] as const) {
         expect(warm.hits).toEqual(original.hits);
       });
     });
+    }
   }
 
   test(`${field} repair respects the search fetch bound and leaves a rebuildable miss`, async () => {
@@ -1477,7 +1494,7 @@ for (const field of ["captureDigest", "sourceDigest"] as const) {
   });
 }
 
-test("refetch cannot bless an invalid locator and stale captures never trigger a fetch", async () => {
+test("repeated forged digests and stale locators cannot evict a valid warm capture", async () => {
   await listedFixture(async ({ archive }) => {
     const locator = (await archive.execute("public", search())).hits[0]?.locator;
     if (locator === undefined) throw new Error("missing locator");
@@ -1488,14 +1505,19 @@ test("refetch cannot bless an invalid locator and stale captures never trigger a
       );
       expect(stale.refusal).toBe("locator-mismatch");
       expect(stale.cost.fetchedFiles).toBe(0);
-      const invalid = await archive.execute(
-        "public",
-        request({ kind, locator: { ...locator, sourceDigest: `sha256:${"0".repeat(64)}` } }),
-      );
-      expect(invalid.refusal).toBe("locator-mismatch");
-      expect(invalid.cost.fetchedFiles).toBe(1);
-      expect(invalid.hits).toEqual([]);
-      expect(invalid.preview).toBeUndefined();
+      for (const field of ["captureDigest", "sourceDigest"] as const) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const invalid = await archive.execute(
+            "public",
+            request({ kind, locator: { ...locator, [field]: `sha256:${"0".repeat(64)}` } }),
+          );
+          expect(invalid.refusal).toBe("locator-mismatch");
+          expect(invalid.cost.fetchedFiles).toBe(0);
+          expect(invalid.cost.fetchedBytes).toBe(0);
+          expect(invalid.hits).toEqual([]);
+          expect(invalid.preview).toBeUndefined();
+        }
+      }
       const valid = await archive.execute("public", request({ kind: "show", locator }));
       expect(valid.refusal).toBeNull();
       expect(valid.cost.fetchedFiles).toBe(0);
@@ -1503,3 +1525,53 @@ test("refetch cannot bless an invalid locator and stale captures never trigger a
     }
   });
 });
+
+for (const keepReading of [true, false]) {
+  test(`${keepReading ? "warm" : "cold"} captures without an index never use caller hashes to invalidate cache`, async () => {
+    await listedFixture(async ({ archive, repo, cacheDir, home }) => {
+      const locator = (await archive.execute("public", search())).hits[0]?.locator;
+      if (locator === undefined) throw new Error("missing locator");
+      await archive.close();
+      if (keepReading) {
+        const database = (await readdir(cacheDir, { recursive: true })).find((path) =>
+          path.endsWith("tokens.sqlite"),
+        );
+        if (database === undefined) throw new Error("missing index");
+        await rm(dirname(join(cacheDir, database)), { recursive: true });
+      } else {
+        await rm(cacheDir, { recursive: true });
+      }
+      const reopened = await createRecallArchive({
+        repo,
+        cacheDir,
+        policy: POLICY,
+        temporaryDir: home,
+      });
+      try {
+        let cold = !keepReading;
+        for (const kind of ["show", "preview"] as const) {
+          for (const field of ["captureDigest", "sourceDigest"] as const) {
+            for (let attempt = 0; attempt < 3; attempt++) {
+              const invalid = await reopened.execute(
+                "public",
+                request({ kind, locator: { ...locator, [field]: `sha256:${"0".repeat(64)}` } }),
+              );
+              expect(invalid.refusal).toBe("locator-mismatch");
+              expect(invalid.cost.fetchedFiles).toBe(cold ? 1 : 0);
+              expect(invalid.hits).toEqual([]);
+              expect(invalid.preview).toBeUndefined();
+              cold = false;
+            }
+          }
+        }
+        const valid = await reopened.execute("public", request({ kind: "show", locator }));
+        expect(valid.refusal).toBeNull();
+        expect(valid.cost.fetchedFiles).toBe(0);
+        expect(valid.hits[0]?.locator).toEqual(locator);
+        expect(valid.hits[0]?.excerpt.text).toContain("needle");
+      } finally {
+        await reopened.close();
+      }
+    });
+  });
+}

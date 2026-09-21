@@ -36,9 +36,14 @@ export class SessionIndexError extends Error {
 
 export interface SessionIndex {
   holds(candidate: IndexedSession): boolean;
+  /** Canonical digests of the committed reading for this exact candidate, never caller hints. */
+  digests(candidate: IndexedSession): Pick<Reading, "captureDigest" | "sourceDigest"> | null;
   build(
     candidate: IndexedSession,
     read: (sink: RecordSink) => Promise<{ reading: Reading; after: Observation }>,
+    /** Replace a disagreeing committed entry only from this independently verified reading.
+     *  Rechecked under the writer lock; omitted by ordinary preparation callers. */
+    repair?: Pick<Reading, "captureDigest" | "sourceDigest">,
   ): Promise<IndexBuildResult>;
   search(
     text: string,
@@ -350,6 +355,9 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
      AND harness = ? AND source_id = ? AND path = ? AND size = ? AND modified_at = ?
      AND schema = ? AND detectors = ? AND mode = ?`,
   );
+  const digestLookup = db.query<Pick<Reading, "captureDigest" | "sourceDigest">, [number]>(
+    "SELECT capture_digest AS captureDigest, source_digest AS sourceDigest FROM session_sources WHERE id = ?",
+  );
   const current = ({ namespace, session, seen }: IndexedSession): number | null => {
     if (!observed(seen)) return null;
     return (
@@ -453,7 +461,33 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
         throw failure(error);
       }
     },
-    async build(candidate, read) {
+    digests(candidate) {
+      ready();
+      active = true;
+      try {
+        // Keep identity and digests in one read snapshot: a concurrent replacement can reuse
+        // a source row ID, but must never lend its digests to an older observation.
+        db.exec("BEGIN");
+        const source = current(candidate);
+        if (source === null) return null;
+        const held = digestLookup.get(source);
+        if (
+          held === null ||
+          held.captureDigest.length !== 71 ||
+          held.sourceDigest.length !== 71 ||
+          !/^sha256:[0-9a-f]{64}$/.test(held.captureDigest) ||
+          !/^sha256:[0-9a-f]{64}$/.test(held.sourceDigest)
+        )
+          return null;
+        return held;
+      } catch (error) {
+        throw failure(error);
+      } finally {
+        rollback();
+        active = false;
+      }
+    },
+    async build(candidate, read, repair) {
       if (active) return "busy";
       ready();
       if (!observed(candidate.seen)) return "changed";
@@ -462,11 +496,24 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
         namespace: candidate.namespace ?? "",
         session: { ...candidate.session },
         seen: { ...candidate.seen },
+        repair: repair === undefined ? undefined : {
+          captureDigest: repair.captureDigest,
+          sourceDigest: repair.sourceDigest,
+        },
       };
       active = true;
       try {
         db.exec("BEGIN IMMEDIATE");
-        if (current(frozen) !== null) return "reused";
+        const existing = current(frozen);
+        if (existing !== null) {
+          if (frozen.repair === undefined) return "reused";
+          const held = digestLookup.get(existing);
+          if (
+            held?.captureDigest === frozen.repair.captureDigest &&
+            held.sourceDigest === frozen.repair.sourceDigest
+          )
+            return "reused";
+        }
         const old = db
           .query<{ id: number }, [string, string]>(
             "SELECT id FROM session_sources WHERE namespace = ? AND selector = ?",
@@ -528,7 +575,10 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
           after.size !== seen.size ||
           after.modifiedAt !== seen.modifiedAt ||
           (after.capture ?? "") !== (seen.capture ?? "") ||
-          reading.bytes !== seen.size
+          reading.bytes !== seen.size ||
+          (frozen.repair !== undefined &&
+            (reading.captureDigest !== frozen.repair.captureDigest ||
+              reading.sourceDigest !== frozen.repair.sourceDigest))
         )
           return "changed";
         db.query(

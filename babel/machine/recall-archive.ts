@@ -265,7 +265,7 @@ export async function createRecallArchive(options: {
         result.cost.cacheHits++;
         return reused;
       }
-      // A commit marker is rebuildable, not authority over an immutable locator or index.
+      // Digest expectations come only from a held index, never untrusted locator hashes.
       await entry.cache.forget(entry.session);
     }
     if (fetched.has(entry)) throw new Refused("capture-changed");
@@ -312,6 +312,31 @@ export async function createRecallArchive(options: {
       await kept.commit(reading);
       const saved = await entry.cache.reuse(entry.session, entry.seen);
       if (saved === null) throw new Refused("source-unavailable");
+      if (!sameDigests(saved, reading)) {
+        await entry.cache.forget(entry.session);
+        throw new Refused("capture-changed");
+      }
+      if (expected !== undefined && !sameDigests(saved, expected)) {
+        // The refetched immutable bytes settle a cache/index disagreement. Repair derived
+        // index rows with a verified replay, not with any digest supplied by a request.
+        let refused: Refused | undefined;
+        const built = await index
+          .build(entry, async (sink) => {
+            try {
+              await verify(entry, saved, sink, result);
+              return { reading: saved, after: entry.seen };
+            } catch (error) {
+              if (error instanceof Refused) refused = error;
+              throw error;
+            }
+          }, reading)
+          .catch((error) => {
+            throw refused ?? error;
+          });
+        if (built === "busy") throw new Refused("index-busy");
+        if (built === "changed") throw new Refused("capture-changed");
+        if (built === "indexed") result.cost.indexedFiles++;
+      }
       return saved;
     } catch (error) {
       if (!ended) await kept.sink.close().catch(() => undefined);
@@ -733,7 +758,6 @@ export async function createRecallArchive(options: {
               if (!sameDigests(reading, foundHit)) {
                 reading = await load(entry, result, request.maxFetchBytes, fetched, foundHit);
                 readings.set(entry, reading);
-                if (!sameDigests(reading, foundHit)) throw new Refused("capture-changed");
               }
               const target = locator(entry, reading, foundHit.position);
               result.hits.push(await readHit(entry, reading, target, result));
@@ -758,7 +782,10 @@ export async function createRecallArchive(options: {
             throw new Refused("locator-mismatch");
           result.coverage.eligible = 1;
           if (entry.seen.size > MAX_MATERIAL_BYTES) throw new Refused("fetch-bound");
-          const reading = await load(entry, result, MAX_MATERIAL_BYTES, fetched, target);
+          const held = index.digests(entry);
+          // Locator hashes are claims, not cache invalidation authority. Without a held index,
+          // a warm reading can still be verified and compared, but never evicted for that claim.
+          const reading = await load(entry, result, MAX_MATERIAL_BYTES, fetched, held ?? undefined);
           if (request.kind === "show") {
             result.hits = [
               await readHit(entry, reading, target, result, request.selection, request.maxBytes),

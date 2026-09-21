@@ -64,6 +64,31 @@ function content(entry: IndexedSession, text: string) {
   };
 }
 
+test("verified digest repair replaces an exact capture transactionally and reuses an already repaired row", async () => {
+  const { index, dir } = await open();
+  const entry = candidate("repair");
+  await index.build(entry, content(entry, "wrong-index-content"));
+  const verified = {
+    ...reading(entry.seen),
+    captureDigest: `sha256:${"c".repeat(64)}`,
+    sourceDigest: `sha256:${"d".repeat(64)}`,
+  };
+  expect(await index.build(entry, async (sink) => {
+    sink.write('{"text":"canonical-content"}\n');
+    return { reading: verified, after: entry.seen };
+  }, verified)).toBe("indexed");
+  const { index: other } = await open(dir);
+  expect(other.digests(entry)).toEqual({
+    captureDigest: verified.captureDigest,
+    sourceDigest: verified.sourceDigest,
+  });
+  expect(other.searchRecords("wrong-index-content", [entry], 10).matches).toBe(0);
+  expect(other.searchRecords("canonical-content", [entry], 10).matches).toBe(1);
+  expect(await other.build(entry, async () => {
+    throw new Error("a correct committed replacement must not replay again");
+  }, verified)).toBe("reused");
+});
+
 test("concurrent builders never duplicate a source read and readers retain the committed generation", async () => {
   const { index: first, dir } = await open();
   const { index: second } = await open(dir);
@@ -89,6 +114,11 @@ test("concurrent builders never duplicate a source read and readers retain the c
     expect(await first.build(next, forbidden)).toBe("busy");
     expect(await second.build(next, forbidden)).toBe("busy");
     expect(second.holds(old)).toBe(true);
+    expect(second.digests(old)).toEqual({
+      captureDigest: reading(old.seen).captureDigest,
+      sourceDigest: reading(old.seen).sourceDigest,
+    });
+    expect(second.digests(next)).toBeNull();
     expect(second.search("previous", [old], 10, MAX_MATERIAL_BYTES).selection).toEqual([
       old.session,
     ]);
@@ -110,6 +140,11 @@ test("concurrent builders never duplicate a source read and readers retain the c
   ).toBe("reused");
   expect(reads).toBe(1);
   expect(second.holds(old)).toBe(false);
+  expect(second.digests(old)).toBeNull();
+  expect(second.digests(next)).toEqual({
+    captureDigest: reading(next.seen).captureDigest,
+    sourceDigest: reading(next.seen).sourceDigest,
+  });
   expect(second.search("replacement", [next], 10, MAX_MATERIAL_BYTES).selection).toEqual([
     next.session,
   ]);
@@ -207,6 +242,7 @@ test("source identity, observation and every reading context field participate i
   ];
   for (const changed of different) {
     expect(index.holds(changed)).toBe(false);
+    expect(index.digests(changed)).toBeNull();
     expect(() => index.search("identityword", [changed], 10, 100)).toThrow(SessionIndexError);
     expect(() => index.searchRecords("identityword", [changed], 10)).toThrow(SessionIndexError);
   }
@@ -224,6 +260,7 @@ test("source identity, observation and every reading context field participate i
   ]) {
     const { index: other } = await open(dir, context);
     expect(other.holds(original)).toBe(false);
+    expect(other.digests(original)).toBeNull();
     expect(() => other.search("identityword", [original], 10, 100)).toThrow(SessionIndexError);
   }
   await expect(sessionIndex(dir, { ...CONTEXT, mode: "off" })).rejects.toMatchObject({
