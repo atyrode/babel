@@ -133,7 +133,7 @@ const identity = (prefix: string, value: unknown): string => `${prefix}_${digest
 const bound = (limit: number, max = READ_LIMIT): number => Math.max(1, Math.min(max, Math.floor(Number.isFinite(limit) ? limit : 1)));
 function safeText(text: string): void {
   const scan = secretScan();
-  scan.redact(text, 1);
+  scan.redact(JSON.stringify(text), 1);
   if (scan.report().redactions !== 0) throw new Error("transcript map prose refused by secret preflight");
 }
 function recipes(policy: TranscriptMapPolicy) {
@@ -235,7 +235,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       WHERE ${auth.sql} AND NOT EXISTS (SELECT 1 FROM transcript_map_plans ready
         WHERE ready.capture_id=c.id AND ready.complete=1 AND json_extract(ready.payload,'$.segmentation')=json(?))
       ORDER BY julianday(c.captured_at),c.id LIMIT 1`, [structural, ...auth.params, structural]);
-    return rows[0] ? { capture: TranscriptMapCaptureSchema.parse(JSON.parse(rows[0].payload)), offset: rows[0].next_offset } : null;
+    return rows[0] ? { capture: TranscriptMapCaptureSchema.parse(JSON.parse(rows[0].payload)), offset: Number(rows[0].next_offset) } : null;
   }
   async function recordPlan(input: TranscriptMapPlanInput): Promise<{ complete: boolean }> {
     const plan = TranscriptMapPlanSchema.parse(input.plan);
@@ -265,7 +265,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     const count = await db.query<{ n: number }>(`SELECT count(*) n FROM transcript_map_nodes WHERE plan_id=?`, [plan.id]);
     if (Number(count[0]?.n) !== plan.nodeCount) return { complete: false };
     const published = await db.query<{ complete: number }>(`SELECT complete FROM transcript_map_plans WHERE id=?`, [plan.id]);
-    if (published[0]?.complete === 1) return { complete: true };
+    if (Number(published[0]?.complete) === 1) return { complete: true };
     await verifyPlan(plan);
     await db.run(`UPDATE transcript_map_plans SET complete=1 WHERE id=?`, [plan.id]);
     store.touch?.();
@@ -285,7 +285,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       if (!rows.length) throw new Error("missing transcript plan page");
       for (const row of rows) {
         const node = TranscriptMapNodeSchema.parse(JSON.parse(row.payload));
-        if (row.position !== position || node.level < previousLevel || node.ordinal !== (node.level === previousLevel ? previousOrdinal + 1 : 0)) throw new Error("unordered transcript manifest");
+        if (Number(row.position) !== position || node.level < previousLevel || node.ordinal !== (node.level === previousLevel ? previousOrdinal + 1 : 0)) throw new Error("unordered transcript manifest");
         previousLevel = node.level;
         previousOrdinal = node.ordinal;
         hash.update(position === 0 ? "" : ",").update(json(node));
@@ -323,7 +323,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         if (node.span.byteOffset !== leafEnd || node.span.firstRecord !== recordEnd + 1) throw new Error("transcript terminal spans overlap or omit records");
         leafEnd += node.span.byteLength;
         recordEnd = node.span.lastRecord;
-        after = row.byte_offset;
+        after = Number(row.byte_offset);
       }
       if (leaves.length < PAGE) break;
     }
@@ -336,7 +336,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     const plan = await one<TranscriptMapPlan>("transcript_map_plans", planId);
     if (!plan) throw new Error("unknown transcript map plan");
     const complete = await db.query<{ complete: number }>(`SELECT complete FROM transcript_map_plans WHERE id=?`, [planId]);
-    if (complete[0]?.complete !== 1 || json(plan.segmentation) !== json(policy.segmentation)) throw new Error("transcript plan is incomplete or uses a different segmentation");
+    if (Number(complete[0]?.complete) !== 1 || json(plan.segmentation) !== json(policy.segmentation)) throw new Error("transcript plan is incomplete or uses a different segmentation");
     const requests = await db.query<{ generation: number }>(`SELECT coalesce(max(generation),0) generation FROM transcript_map_regenerations WHERE capture_id=?`, [plan.source.id]);
     const gen = generation ?? Number(requests[0]?.generation ?? 0);
     if (!Number.isSafeInteger(gen) || gen < 0 || gen > Number(requests[0]?.generation ?? 0)) throw new Error("generation requires an explicit regeneration request");
@@ -444,7 +444,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     if (inputs === null || json(inputs) !== json(details.work.children)) return false;
     const check = readiness(details);
     const rows = await db.query<{ valid: number }>(`SELECT (${check.sql}) valid`, check.params);
-    return rows[0]?.valid === 1;
+    return Number(rows[0]?.valid) === 1;
   }
   async function queue(details: Pick<TranscriptMapWorkDetails, "plan" | "node" | "version">, policy: TranscriptMapPolicy,
     mode: TranscriptMapWork["mode"], base: TranscriptMapSummary | null, inputs: TranscriptMapChildSummary[], depth: number,
@@ -556,7 +556,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   async function startWork(id: string, claim: { id: string; runId: string; fence: number }, now: string): Promise<boolean> {
     const held = await db.query<{ state: string; claim_id: string | null; run_id: string | null; fence: number | null }>(`SELECT state,claim_id,run_id,fence FROM transcript_map_work WHERE id=?`, [id]);
     const running = held[0]?.state === "running";
-    if (running && (held[0]?.claim_id !== claim.id || held[0]?.run_id !== claim.runId || held[0]?.fence !== claim.fence)) return false;
+    if (running && (held[0]?.claim_id !== claim.id || held[0]?.run_id !== claim.runId || Number(held[0]?.fence) !== claim.fence)) return false;
     const details = await work(id);
     if (!details) return false;
     const rows = await db.query<{ policy: string }>(`SELECT policy FROM transcript_map_versions WHERE id=?`, [details.version.id]);
@@ -635,7 +635,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     const out = emptyCoverage();
     out.sourceBytes = plan.source.bytes;
     const state = await db.query<{ complete: number }>(`SELECT complete FROM transcript_map_plans WHERE id=?`, [plan.id]);
-    if (state[0]?.complete !== 1) return { ...out, unmappedBytes: out.sourceBytes, partial: true, tailBytes: out.sourceBytes };
+    if (Number(state[0]?.complete) !== 1) return { ...out, unmappedBytes: out.sourceBytes, partial: true, tailBytes: out.sourceBytes };
     if (plan.direct) return { ...out, directBytes: plan.source.bytes };
     out.gapBytes = plan.gapBytes;
     const accepted = `b.summary_id IS NOT NULL AND NOT EXISTS
@@ -652,7 +652,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     out.partial = out.gapBytes > 0 || out.unmappedBytes > 0 || Number(rows[0]?.missing ?? 0) > 0;
     const levels = await db.query<{ level: number }>(`SELECT DISTINCT n.level FROM transcript_map_nodes n
       JOIN transcript_map_bindings b ON b.node_id=n.id AND b.version_id=? WHERE n.plan_id=? AND ${accepted} ORDER BY n.level LIMIT 4`, [versionId, plan.id]);
-    out.levels = levels.map((row) => row.level);
+    out.levels = levels.map((row) => Number(row.level));
     // A parent retains its actual historical inputs. Changed child bindings make that parent
     // stale until a bounded correction is published; they never silently rewrite its provenance.
     const stale = await db.query<{ n: number }>(`SELECT count(*) n FROM transcript_map_bindings b
@@ -822,7 +822,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     const rows = await db.query<{ generation: number }>(`SELECT generation FROM transcript_map_regenerations WHERE capture_id=? AND request_id=?`, [input.captureId, input.requestId]);
     if (!rows[0]) throw new Error("transcript map regeneration was not recorded");
     store.touch?.();
-    return rows[0].generation;
+    return Number(rows[0].generation);
   }
 
   return { recordCatalog, recordAccess, catalogState, nextPlan, recordPlan, ensureVersion, refreshWork, offers, work, startWork, settlementStatements, failureStatements, search, node, children, ancestors, coverage, status, noteServed, regenerate };

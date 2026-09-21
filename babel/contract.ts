@@ -344,6 +344,10 @@ export const ACTIONS = {
   recallSession: "recallSession",
   recallPoll: "recallPoll",
   recallSkill: "recallSkill",
+  mapRead: "mapRead",
+  mapSource: "mapSource",
+  mapLocate: "mapLocate",
+  regenerateMap: "regenerateMap",
   previewRecall: "previewRecall",
   installRecall: "installRecall",
   // the operator's acts
@@ -5077,3 +5081,154 @@ export const TRANSCRIPT_MAP_RESULT_PROJECTION = {
   maxArrayItems: TRANSCRIPT_MAP_MAX_CAPTURES,
   maxResultBytes: RECALL_MAX_RESULT_BYTES,
 };
+
+/** Summary navigation and actual source reading are separate actions and trace outcomes. */
+export const TranscriptMapReadRequestSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("search"),
+    query: z.string().trim().min(1).max(512),
+    limit: z.number().int().min(1).max(16).default(10),
+  }),
+  z.strictObject({
+    kind: z.literal("node"),
+    versionId: TranscriptMapVersionIdSchema,
+    nodeId: TranscriptMapNodeIdSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("children"),
+    versionId: TranscriptMapVersionIdSchema,
+    nodeId: TranscriptMapNodeIdSchema,
+    offset: z.number().int().nonnegative().max(TRANSCRIPT_MAP_MAX_CHILDREN).default(0),
+    limit: z.number().int().min(1).max(16).default(16),
+  }),
+  z.strictObject({
+    kind: z.literal("ancestors"),
+    versionId: TranscriptMapVersionIdSchema,
+    nodeId: TranscriptMapNodeIdSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("coverage"),
+    captureId: TranscriptMapCaptureIdSchema.optional(),
+  }),
+  z.strictObject({ kind: z.literal("status") }),
+]);
+export type TranscriptMapReadRequest = z.infer<typeof TranscriptMapReadRequestSchema>;
+export const TranscriptMapReadInputSchema = z.strictObject({
+  target: TranscriptMapTargetSchema,
+  request: TranscriptMapReadRequestSchema,
+  /** Resume the same caller's identical request; no query or prose is needed in the trace. */
+  requestId: z.uuid().optional(),
+});
+export const TranscriptMapSourceInputSchema = z.strictObject({
+  target: TranscriptMapTargetSchema,
+  versionId: TranscriptMapVersionIdSchema,
+  nodeId: TranscriptMapNodeIdSchema,
+  maxBytes: z.number().int().positive().max(TRANSCRIPT_MAP_MAX_SPAN_BYTES).default(TRANSCRIPT_MAP_MAX_SPAN_BYTES),
+  requestId: z.uuid().optional(),
+});
+export const TranscriptMapLocateInputSchema = RecallPollInputSchema.safeExtend({
+  target: TranscriptMapTargetSchema,
+});
+export const TranscriptMapLocateReplySchema = z.strictObject({
+  requestId: z.uuid(),
+  state: z.literal("located"),
+});
+export const TranscriptMapStatusSchema = z.strictObject({
+  eligibleCaptures: recallBytes,
+  verifiedMappedCaptures: recallBytes,
+  observedAt: z.iso.datetime({ offset: true }),
+  partial: z.boolean(),
+});
+export type TranscriptMapStatus = z.infer<typeof TranscriptMapStatusSchema>;
+
+/** Shared coverage and inference labels avoid duplicating them in every projected item. */
+export const TranscriptMapReadViewSchema = TranscriptMapViewSchema.omit({
+  inference: true,
+  coverage: true,
+  node: true,
+}).extend({
+  node: TranscriptMapNodeSchema.omit({ planId: true }),
+});
+export const TranscriptMapReadResultSchema = z.strictObject({
+  operation: z.enum(["search", "node", "children", "ancestors", "coverage", "status"]),
+  inference: z.literal(true),
+  views: z.array(TranscriptMapReadViewSchema).max(TRANSCRIPT_MAP_MAX_CHILDREN),
+  coverage: TranscriptMapCoverageSchema,
+  status: TranscriptMapStatusSchema,
+  /** Child pagination advances only past items actually included in this response. */
+  nextOffset: z.number().int().nonnegative().max(TRANSCRIPT_MAP_MAX_CHILDREN).nullable(),
+});
+export type TranscriptMapReadResult = z.infer<typeof TranscriptMapReadResultSchema>;
+export const TranscriptMapReadReplySchema = z.strictObject({
+  requestId: z.uuid(),
+  state: RecallReplySchema.shape.state,
+  result: TranscriptMapReadResultSchema.optional(),
+}).refine((reply) => (reply.state === "complete") === (reply.result !== undefined), {
+  message: "Only a completed map navigation may carry a result.",
+});
+export type TranscriptMapReadReply = z.infer<typeof TranscriptMapReadReplySchema>;
+
+/** Navigation's compact view keeps every primitive leaf within the SDK projection budget. */
+export const TRANSCRIPT_MAP_READ_RESULT_FIELDS: string[][] = [
+  ["requestId"],
+  ["state"],
+  ...["operation", "inference", "nextOffset"].map((key) => ["result", key]),
+  ...TranscriptMapCoverageSchema.keyof().options.map((key) =>
+    key === "levels" ? ["result", "coverage", key, "*"] : ["result", "coverage", key]),
+  ...TranscriptMapStatusSchema.keyof().options.map((key) => ["result", "status", key]),
+  ...["versionId", "reused"].map((key) => ["result", "views", "*", key]),
+  ...TranscriptMapSourceSchema.keyof().options.map((key) => ["result", "views", "*", "source", key]),
+  ...TranscriptMapReadViewSchema.shape.node.keyof().options.filter((key) => key !== "span")
+    .map((key) => key === "children"
+      ? ["result", "views", "*", "node", key, "*"]
+      : ["result", "views", "*", "node", key]),
+  ...TranscriptMapSpanSchema.keyof().options.filter((key) => key !== "anchor")
+    .map((key) => ["result", "views", "*", "node", "span", key]),
+  ...SessionRecordPositionSchema.keyof().options.map((key) => [
+    "result", "views", "*", "node", "span", "anchor", key,
+  ]),
+  ...TranscriptMapSummaryViewSchema.keyof().options.filter((key) => key !== "profile")
+    .map((key) => key === "inputSummaryIds"
+      ? ["result", "views", "*", "summary", key, "*"]
+      : ["result", "views", "*", "summary", key]),
+  ...CodeProfileSchema.keyof().options.map((key) => [
+    "result", "views", "*", "summary", "profile", key,
+  ]),
+];
+export const TRANSCRIPT_MAP_READ_RESULT_PROJECTION = {
+  kind: "projected-json" as const,
+  fields: TRANSCRIPT_MAP_READ_RESULT_FIELDS,
+  textFields: [["result", "views", "*", "summary", "text"]],
+  maxArrayItems: TRANSCRIPT_MAP_MAX_CHILDREN,
+  maxResultBytes: RECALL_MAX_RESULT_BYTES,
+};
+export const TranscriptMapRegenerateInputSchema = z.strictObject({
+  target: TranscriptMapTargetSchema,
+  captureId: TranscriptMapCaptureIdSchema,
+  requestId: z.uuid(),
+  reason: z.string().trim().min(1).max(512),
+});
+export const TranscriptMapRegenerateReplySchema = z.strictObject({
+  requestId: z.uuid(),
+  state: RecallReplySchema.shape.state,
+  generation: z.number().int().positive().optional(),
+}).refine((reply) => (reply.state === "complete") === (reply.generation !== undefined), {
+  message: "Only a completed regeneration request may identify its generation.",
+});
+export const TranscriptMapReadTraceSchema = z.strictObject({
+  state: RecallReplySchema.shape.state,
+  summaries: z.array(z.strictObject({
+    versionId: TranscriptMapVersionIdSchema,
+    nodeId: TranscriptMapNodeIdSchema,
+    summaryId: TranscriptMapSummaryIdSchema.nullable(),
+  })).max(TRANSCRIPT_MAP_MAX_CHILDREN).default([]),
+  source: z.strictObject({
+    captureId: TranscriptMapCaptureIdSchema,
+    span: TranscriptMapSpanSchema,
+    servedBytes: recallBytes,
+    truncated: z.boolean(),
+  }).optional(),
+  cost: RecallResultSchema.shape.cost.optional(),
+  generation: z.number().int().positive().optional(),
+});
+export type TranscriptMapReadTrace = z.infer<typeof TranscriptMapReadTraceSchema>;

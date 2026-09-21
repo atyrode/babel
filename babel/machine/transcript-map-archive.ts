@@ -14,7 +14,6 @@ import { transcriptMapCaptureId } from "../transcript-map-identity.ts";
 import { buildTranscriptMap, type TranscriptMapTree } from "./transcript-map-tree.ts";
 import type { ReusedReading } from "./cache.ts";
 import type { RecordSink } from "./output.ts";
-import { readNormalizedRecords } from "./session-index.ts";
 import { clipUtf8 } from "./recall-records.ts";
 
 const digest = (value: unknown): string => `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
@@ -146,13 +145,18 @@ export function transcriptMapArchive(options: {
     // Check EVERY record against coordinates derived independently of the caller. A forged
     // span digest cannot bless cache corruption or cause a destructive cache repair.
     let line = span.firstRecord;
-    const reader = readNormalizedRecords((_text, found) => {
-      const original = position(value, line++);
-      if (!original || original.byteOffset !== found.byteOffset + span.byteOffset || original.byteLength !== found.byteLength || original.digest !== found.digest || original.time !== found.time) throw new Refused("capture-changed");
-    });
-    reader.write(bytes);
-    await reader.close();
-    if (line !== span.lastRecord + 1) throw new Refused("locator-mismatch");
+    let offset = 0;
+    const records = value.db.query<{ line: number; offset: number; bytes: number; digest: string }, [number, number]>(
+      "SELECT line, offset, bytes, digest FROM records WHERE line BETWEEN ? AND ? ORDER BY line",
+    );
+    for (const record of records.iterate(span.firstRecord, span.lastRecord)) {
+      if (record.line !== line++ || record.offset !== span.byteOffset + offset || record.bytes > bytes.length - offset)
+        throw new Refused("capture-changed");
+      const digest = `sha256:${createHash("sha256").update(bytes.subarray(offset, offset + record.bytes)).digest("hex")}`;
+      if (digest !== record.digest) throw new Refused("capture-changed");
+      offset += record.bytes;
+    }
+    if (line !== span.lastRecord + 1 || offset !== bytes.length) throw new Refused("capture-changed");
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   };
   return {
