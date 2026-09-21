@@ -11,6 +11,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The dependency closure carries the reviewed bounded-result SDK.** Babel's SDK and both
+  workflow gates now follow the same merged Manifold revision, with Code and omp advanced in
+  dependency order. Agent-facing data remains explicitly approved and bounded; this supplies
+  Recall's transport prerequisite, not Recall itself or permission to disclose an archive.
+  The full frozen gate passes 1,060 tests, and a disposable engine installs all eleven bundles,
+  dispatches their doors and verifies Babel's store creation and purge.
+
 - **A refused next-action decision leaves no ruling behind.** A malformed historical record
   reference is rejected before the append or its event, rather than failing response validation
   after the decision was already written. Strict identifiers and historical rows stay unchanged.

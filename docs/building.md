@@ -438,23 +438,27 @@ git -C ../manifold checkout "$(cat MANIFOLD_REV)"
 bun install --cwd ../manifold --frozen-lockfile   # the kit resolves zod and the protocol from its workspace
 ```
 
-`MANIFOLD_REV` follows Manifold `main` and currently names `743ee75a` (`0.17.0+22.g743ee75a`),
-the revision the integrated preview's own hub runs, whose kit stamps `hardenedContract: 2` into
-repacked bundles (`packages/plugin-kit/src/pack.ts:300`, `HARDENED_CONTRACT_VERSION` at that
-revision; atyrode/manifold#606). It is the first revision that both lends a door
-`machines:read` (atyrode/manifold#740) — which four of Babel's doors declare, and without which
-the gate refuses the bundle with `invalid delegated capabilities` — and answers a plugin holding
-no installation the pre-deployment projection instead of refusing `job_installation_absent`
+`MANIFOLD_REV` follows Manifold `main` and currently names
+`89b065d0ff60718121629a72d8633ea348da91d6`. At that revision the kit stamps
+`hardenedContract: 3` into repacked bundles (`packages/plugin-kit/src/pack.ts:298-304`),
+while the host accepts contracts 1, 2 and 3 (`packages/protocol/src/isolate.ts:751-753`).
+The reviewed bounded-result channel is available to explicitly approved doors, but ordinary
+agent-facing results remain mechanical-only by default (`packages/sdk/README.md:138-176`;
+atyrode/manifold#798). This pin supplies that prerequisite, not Babel Recall or its disclosure
+policy. A source pin does not prove which revision any deployed hub is running.
+
+It retains delegated `machines:read` (atyrode/manifold#740) — which four of Babel's doors
+declare — and the pre-deployment projection for a plugin holding no installation
 (atyrode/manifold#744), which is the state `atyrode.omp.describeDestination` exists to report.
 A non-owner caller of a door that observes a machine must hold `machines:read` under it
 (atyrode/manifold#749). It also carries the plugin
 database (ADR 0034) with its failure-atomic lifecycle (atyrode/manifold#536) — the primitive
 Babel cannot start without — per-operation `concurrentJobs` admission (#551), the `job_progress`
 event (#552), metered brokered inference (ADR 0038, #554) and the `pi-native-usage` meter kind
-(#572) that omp's own gateway wire needs. The checkout on dev-01 is named
-`manifold-db` because the plugin database was a branch before it was `main`; it is now simply
-that clone of atyrode/manifold, detached at the pin, and `feat/brokered-inference`, the other
-branch it once carried, is merged into `main` and superseded by it. Nothing here pins a branch.
+(#572) that omp's own gateway wire needs. Some existing SDK checkouts are named
+`manifold-db`, from when the plugin database was a branch; the directory name does not select
+the revision. Keep the SDK used for this build at the exact pin, using an isolated sibling or
+`MANIFOLD_DIR` rather than moving an unrelated checkout. Nothing here pins a branch.
 `tsconfig.json` still lists **two candidates** for every `@manifold/*` alias, `../manifold-db`
 before `../manifold`, and tsc and Bun take the first that exists; `pack.sh` resolves
 `../manifold` and honours `MANIFOLD_DIR` for a tree that keeps the checkout elsewhere (an
@@ -525,7 +529,7 @@ last, one reviewable PR per repository, each proved by its own gate:
    Code's `scripts/gate.sh` is the proof.
 3. **This repository** moves `MANIFOLD_REV`, both workflow refs, and `CODE_REV` with its
    matching `@atyrode/manifold-code` dependency to a commit of step 2. `deps:code` then agrees
-   and the gate composes ten bundles.
+   and the gate composes the complete dependency closure.
 
 A pin naming an unmerged branch commit of the step above is fetchable but temporary: advance it
 to that repository's merge commit before this repository's PR leaves draft, because a deleted
