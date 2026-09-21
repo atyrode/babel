@@ -2,15 +2,23 @@ import { Database } from "bun:sqlite";
 import { chmod, lstat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import { MAX_MATERIAL_BYTES, termsQuery } from "../contract.ts";
+import { MAX_MATERIAL_BYTES, termsQuery, type SessionRecordPosition } from "../contract.ts";
 import { SESSION_INDEX_SCHEMA } from "../store/schema.ts";
 import type { SessionRef } from "./adapters/index.ts";
 import type { Observation, Reading, ReadingContext } from "./cache.ts";
 import type { RecordSink } from "./output.ts";
 
 export interface IndexedSession {
+  readonly namespace?: string;
   readonly session: SessionRef;
   readonly seen: Observation;
+}
+
+export interface IndexedRecord {
+  readonly candidate: IndexedSession;
+  readonly position: SessionRecordPosition;
+  readonly captureDigest: string;
+  readonly sourceDigest: string;
 }
 
 export type IndexBuildResult = "indexed" | "reused" | "busy" | "changed";
@@ -37,10 +45,16 @@ export interface SessionIndex {
     limit: number,
     maxBytes: number,
   ): { selection: readonly SessionRef[]; matches: number; overBound: number };
+  searchRecords(
+    text: string,
+    eligible: readonly IndexedSession[],
+    limit: number,
+    window?: { since?: string; until?: string },
+  ): { hits: readonly IndexedRecord[]; matches: number };
   close(): void;
 }
 
-const VERSION = 1;
+const VERSION = 2;
 const BUSY_MS = 100;
 const CHUNK_CHARS = 16 * 1024;
 // Normalization already bounds source records. Leave room for JSON escaping and redaction;
@@ -98,83 +112,137 @@ function* objectStrings(value: object): Generator<unknown> {
   }
 }
 
+/** Only archived fields recognized by the harness adapters supply a record's time. */
+function recordTime(parsed: unknown): string | null {
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const fields = parsed as Record<string, unknown>;
+  const iso = (value: unknown): string | null => {
+    if (typeof value !== "string" || value === "") return null;
+    const at = new Date(value);
+    return Number.isNaN(at.getTime()) ? null : at.toISOString();
+  };
+  const timestamp = iso(fields["timestamp"]);
+  if (timestamp !== null) return timestamp;
+  if (fields["type"] === "session_meta") {
+    const payload = fields["payload"];
+    if (typeof payload === "object" && payload !== null)
+      return iso((payload as Record<string, unknown>)["timestamp"]);
+  }
+  // Codex's history.jsonl records seconds since the epoch rather than an ISO timestamp.
+  const seconds = fields["ts"];
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return null;
+  const at = new Date(seconds * 1000);
+  return Number.isNaN(at.getTime()) ? null : at.toISOString();
+}
+
 /**
- * Replay can split UTF-8 and JSON escapes anywhere. Buffer one bounded normalized record,
- * parse it once, and let SQLite (not a second Unicode tokenizer) index its scalar passages.
- * Raw (!-prefixed) records are searchable verbatim. No retained history is truncated.
+ * Frame the already-normalized stream, never normalize it again. Hash incoming bytes, not
+ * re-encoded JSON, and retain physical empty lines in the coordinates. Replay can split any
+ * UTF-8 codepoint, string surrogate pair, JSON escape or record boundary.
  */
-function passages(insert: (text: string) => void): RecordSink {
-  const decoder = new TextDecoder();
+export function readNormalizedRecords(
+  visit: (text: string, position: SessionRecordPosition, parsed: unknown) => void,
+): RecordSink {
+  const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+  const encoder = new TextEncoder();
   const parts: string[] = [];
+  let hash = new Bun.CryptoHasher("sha256");
   let length = 0;
   let tail = "";
+  let surrogate = "";
+  let line = 1;
+  let byteOffset = 0;
+  let byteLength = 0;
   let broken = false;
   let closed = false;
+  const append = (text: string): void => {
+    length += text.length;
+    if (length > MAX_RECORD_CHARS) throw new SessionIndexError("unavailable");
+    tail += text;
+    if (tail.length >= CHUNK_CHARS) {
+      parts.push(tail);
+      tail = "";
+    }
+  };
   const record = (): void => {
-    if (length === 0) return;
+    if (byteLength === 0) return;
+    append(decoder.decode());
     if (tail !== "") parts.push(tail);
     const text = parts.length === 1 ? parts[0]! : parts.join("");
-    parts.length = 0;
-    tail = "";
-    length = 0;
-    if (text.startsWith("!")) insert(text.slice(1));
-    else {
-      // Preflight markers can make an otherwise canonical record opaque. The index consumes
-      // the verified redacted stream, not a stricter JSON format than ordinary material does.
-      let parsed: unknown;
+    let parsed: unknown;
+    if (!text.startsWith("!")) {
       try {
         parsed = JSON.parse(text);
       } catch (error) {
         if (!(error instanceof SyntaxError)) throw error;
-        insert(text);
-        return;
       }
-      let passage = "";
-      for (const value of strings(parsed)) {
-        if (value === "") continue;
-        if (passage.length + value.length >= CHUNK_CHARS) {
-          if (passage !== "") insert(passage);
-          passage = "";
-        }
-        // Large scalars are already owned by this bounded record. Native FTS tokenizes them
-        // without copying or splitting a word at an invented character boundary.
-        if (value.length >= CHUNK_CHARS) insert(value);
-        else passage += (passage === "" ? "" : "\n") + value;
-      }
-      if (passage !== "") insert(passage);
+    }
+    visit(
+      text,
+      {
+        line,
+        byteOffset,
+        byteLength,
+        digest: `sha256:${hash.digest("hex")}`,
+        time: recordTime(parsed),
+      },
+      parsed,
+    );
+    line += 1;
+    byteOffset += byteLength;
+    byteLength = 0;
+    parts.length = 0;
+    tail = "";
+    length = 0;
+    hash = new Bun.CryptoHasher("sha256");
+  };
+  const consume = (bytes: Uint8Array): void => {
+    let start = 0;
+    while (start < bytes.byteLength) {
+      const newline = bytes.indexOf(10, start);
+      const end = newline < 0 ? bytes.byteLength : newline;
+      const next = newline < 0 ? end : end + 1;
+      hash.update(bytes.subarray(start, next));
+      byteLength += next - start;
+      append(decoder.decode(bytes.subarray(start, end), { stream: true }));
+      if (newline >= 0) record();
+      start = next;
     }
   };
-  const consume = (text: string): void => {
-    let start = 0;
-    while (start < text.length) {
-      const newline = text.indexOf("\n", start);
-      const end = newline < 0 ? text.length : newline;
-      length += end - start;
-      if (length > MAX_RECORD_CHARS) throw new SessionIndexError("unavailable");
-      if (end > start) {
-        tail += text.slice(start, end);
-        if (tail.length >= CHUNK_CHARS) {
-          parts.push(tail);
-          tail = "";
-        }
-      }
-      if (newline < 0) return;
-      record();
-      start = newline + 1;
-    }
+  const flushSurrogate = (): void => {
+    if (surrogate === "") return;
+    consume(encoder.encode(surrogate));
+    surrogate = "";
   };
   return {
-    write(record) {
+    write(chunk) {
       try {
         if (closed || broken) throw new SessionIndexError("unavailable");
-        if (typeof record === "string") {
-          consume(decoder.decode());
-          for (let at = 0; at < record.length; at += CHUNK_CHARS)
-            consume(record.slice(at, at + CHUNK_CHARS));
-        } else {
-          for (let at = 0; at < record.byteLength; at += CHUNK_CHARS) {
-            consume(decoder.decode(record.subarray(at, at + CHUNK_CHARS), { stream: true }));
+        if (typeof chunk === "string") {
+          let at = 0;
+          if (surrogate !== "" && chunk !== "") {
+            const first = chunk.charCodeAt(0);
+            if (first >= 0xdc00 && first <= 0xdfff) {
+              consume(encoder.encode(surrogate + chunk[0]!));
+              surrogate = "";
+              at = 1;
+            } else flushSurrogate();
           }
+          while (at < chunk.length) {
+            let end = Math.min(at + CHUNK_CHARS, chunk.length);
+            const last = chunk.charCodeAt(end - 1);
+            if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+            if (end === at) {
+              surrogate = chunk[at]!;
+              break;
+            }
+            consume(encoder.encode(chunk.slice(at, end)));
+            at = end;
+          }
+        } else if (chunk.byteLength !== 0) {
+          flushSurrogate();
+          for (let at = 0; at < chunk.byteLength; at += CHUNK_CHARS)
+            consume(chunk.subarray(at, at + CHUNK_CHARS));
         }
       } catch (error) {
         broken = true;
@@ -185,7 +253,7 @@ function passages(insert: (text: string) => void): RecordSink {
       if (broken) throw new SessionIndexError("unavailable");
       if (closed) return;
       try {
-        consume(decoder.decode());
+        flushSurrogate();
         record();
         closed = true;
       } catch (error) {
@@ -196,12 +264,33 @@ function passages(insert: (text: string) => void): RecordSink {
   };
 }
 
+/** SQLite owns tokenization; the record visitor already parsed JSON exactly once. */
+function passages(text: string, parsed: unknown, insert: (text: string) => void): void {
+  if (text.startsWith("!")) insert(text.slice(1));
+  else if (parsed === undefined) {
+    if (text !== "") insert(text);
+  } else {
+    let passage = "";
+    for (const value of strings(parsed)) {
+      if (value === "") continue;
+      if (passage.length + value.length >= CHUNK_CHARS) {
+        if (passage !== "") insert(passage);
+        passage = "";
+      }
+      // Large scalars remain intact; invented boundaries would split searchable words.
+      if (value.length >= CHUNK_CHARS) insert(value);
+      else passage += (passage === "" ? "" : "\n") + value;
+    }
+    if (passage !== "") insert(passage);
+  }
+}
+
 /** The only filesystem opened here is the managed cache; source reads belong to the callback. */
 export async function sessionIndex(dir: string, context: ReadingContext): Promise<SessionIndex> {
   let db: Database | null = null;
   try {
     if (dir === "" || context.mode !== "redact") throw new SessionIndexError("unavailable");
-    const privateDir = join(dir, "session-index-v1");
+    const privateDir = join(dir, `session-index-v${VERSION}`);
     await mkdir(privateDir, { recursive: true, mode: 0o700 });
     if (!(await lstat(privateDir)).isDirectory()) throw new SessionIndexError("unavailable");
     await chmod(privateDir, 0o700);
@@ -248,16 +337,19 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
   let active = false;
   const lookup = db.query<
     { id: number },
-    [string, string, string, string, number, number, number, string, string]
+    [string, string, string, string, string, string, number, number, number, string, string]
   >(
-    `SELECT id FROM session_sources WHERE selector = ? AND harness = ? AND source_id = ?
-     AND path = ? AND size = ? AND modified_at = ? AND schema = ? AND detectors = ? AND mode = ?`,
+    `SELECT id FROM session_sources WHERE namespace = ? AND selector = ? AND capture = ?
+     AND harness = ? AND source_id = ? AND path = ? AND size = ? AND modified_at = ?
+     AND schema = ? AND detectors = ? AND mode = ?`,
   );
-  const current = ({ session, seen }: IndexedSession): number | null => {
+  const current = ({ namespace, session, seen }: IndexedSession): number | null => {
     if (!observed(seen)) return null;
     return (
       lookup.get(
+        namespace ?? "",
         session.selector,
+        seen.capture ?? "",
         session.harness,
         session.sourceId,
         session.primaryPath,
@@ -286,6 +378,65 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
       }
     }
   };
+  // Both APIs use the same query, coverage snapshot and best-passage ordering. Only bounded
+  // record hits load locator metadata; scanning the remaining matches retains integer IDs.
+  const retrieve = <Result>(
+    text: string,
+    eligible: readonly IndexedSession[],
+    limit: number,
+    window: { since?: string; until?: string } | undefined,
+    empty: Result,
+    collect: (
+      rows: Iterable<{ source: number; record: number }>,
+      candidates: ReadonlyMap<number, IndexedSession>,
+    ) => Result,
+  ): Result => {
+    ready();
+    if (text.length > 512 || !Number.isInteger(limit) || limit < 1 || limit > 120)
+      throw new SessionIndexError("unavailable");
+    const bound = (value: string | undefined): string | null => {
+      if (value === undefined) return null;
+      const at = new Date(value);
+      if (Number.isNaN(at.getTime())) throw new SessionIndexError("unavailable");
+      return at.toISOString();
+    };
+    const since = bound(window?.since);
+    const until = bound(window?.until);
+    if (since !== null && until !== null && since > until)
+      throw new SessionIndexError("unavailable");
+    const query = termsQuery(text);
+    if (query === "") return empty;
+    active = true;
+    try {
+      db.exec("BEGIN");
+      const candidates = new Map<number, IndexedSession>();
+      for (const candidate of eligible) {
+        const id = current(candidate);
+        if (id === null) throw new SessionIndexError("unavailable");
+        if (!candidates.has(id)) candidates.set(id, candidate);
+      }
+      const rows = db.query<
+        { source: number; record: number },
+        [string, string | null, string | null, string | null, string | null]
+      >(
+        `SELECT p.source, p.record FROM session_terms
+         JOIN session_passages p ON p.id = session_terms.rowid
+         JOIN session_sources s ON s.id = p.source
+         JOIN session_records r ON r.id = p.record
+         WHERE session_terms MATCH ? AND (? IS NULL OR r.time >= ?)
+           AND (? IS NULL OR r.time <= ?)
+         ORDER BY session_terms.rank, s.namespace, s.selector, r.line, p.id`,
+      );
+      const result = collect(rows.iterate(query, since, since, until, until), candidates);
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      throw failure(error);
+    } finally {
+      rollback();
+      active = false;
+    }
+  };
   return {
     holds(candidate) {
       try {
@@ -300,29 +451,39 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
       ready();
       if (!observed(candidate.seen)) return "changed";
       // Snapshot caller-owned objects before awaiting any source read.
-      const frozen = { session: { ...candidate.session }, seen: { ...candidate.seen } };
+      const frozen = {
+        namespace: candidate.namespace ?? "",
+        session: { ...candidate.session },
+        seen: { ...candidate.seen },
+      };
       active = true;
       try {
         db.exec("BEGIN IMMEDIATE");
         if (current(frozen) !== null) return "reused";
         const old = db
-          .query<{ id: number }, [string]>("SELECT id FROM session_sources WHERE selector = ?")
-          .get(frozen.session.selector);
+          .query<{ id: number }, [string, string]>(
+            "SELECT id FROM session_sources WHERE namespace = ? AND selector = ?",
+          )
+          .get(frozen.namespace, frozen.session.selector);
         if (old !== null) {
           db.query(
             "DELETE FROM session_terms WHERE rowid IN (SELECT id FROM session_passages WHERE source = ?)",
           ).run(old.id);
           db.query("DELETE FROM session_passages WHERE source = ?").run(old.id);
+          db.query("DELETE FROM session_records WHERE source = ?").run(old.id);
           db.query("DELETE FROM session_sources WHERE id = ?").run(old.id);
         }
         const { session, seen } = frozen;
         const source = db
           .query(
-            `INSERT INTO session_sources(selector, harness, source_id, path, size, modified_at, schema, detectors, mode)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO session_sources(namespace, selector, capture, harness, source_id, path,
+             size, modified_at, schema, detectors, mode, capture_digest, source_digest)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '')`,
           )
           .run(
+            frozen.namespace,
             session.selector,
+            seen.capture ?? "",
             session.harness,
             session.sourceId,
             session.primaryPath,
@@ -332,12 +493,26 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
             context.detectors,
             context.mode,
           ).lastInsertRowid;
-        const passage = db.query("INSERT INTO session_passages(source) VALUES (?)");
+        const record = db.query(
+          `INSERT INTO session_records(source, line, byte_offset, byte_length, digest, time)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        );
+        const passage = db.query("INSERT INTO session_passages(source, record) VALUES (?, ?)");
         const terms = db.query("INSERT INTO session_terms(rowid, tokens) VALUES (?, ?)");
-        const sink = passages((text) => {
+        const sink = readNormalizedRecords((text, position, parsed) => {
           if (closed) throw new SessionIndexError("unavailable");
-          const id = passage.run(source).lastInsertRowid;
-          terms.run(id, text);
+          const id = record.run(
+            source,
+            position.line,
+            position.byteOffset,
+            position.byteLength,
+            position.digest,
+            position.time,
+          ).lastInsertRowid;
+          passages(text, parsed, (tokens) => {
+            const row = passage.run(source, id).lastInsertRowid;
+            terms.run(row, tokens);
+          });
         });
         const { reading, after } = await read(sink);
         await sink.close();
@@ -345,9 +520,13 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
           !observed(after) ||
           after.size !== seen.size ||
           after.modifiedAt !== seen.modifiedAt ||
+          (after.capture ?? "") !== (seen.capture ?? "") ||
           reading.bytes !== seen.size
         )
           return "changed";
+        db.query(
+          "UPDATE session_sources SET capture_digest = ?, source_digest = ? WHERE id = ?",
+        ).run(reading.captureDigest, reading.sourceDigest, source);
         db.exec("COMMIT");
         return "indexed";
       } catch (error) {
@@ -360,58 +539,61 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
     },
     search(text, eligible, limit, maxBytes) {
       ready();
-      if (
-        text.length > 512 ||
-        !Number.isInteger(limit) ||
-        limit < 1 ||
-        limit > 120 ||
-        !Number.isSafeInteger(maxBytes) ||
-        maxBytes < 0
-      )
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
         throw new SessionIndexError("unavailable");
-      const query = termsQuery(text);
-      if (query === "") return { selection: [], matches: 0, overBound: 0 };
-      active = true;
-      try {
-        db.exec("BEGIN");
-        // This read transaction fixes the identity checks and the search to one publication.
-        const candidates = new Map<number, IndexedSession>();
-        for (const candidate of eligible) {
-          const id = current(candidate);
-          if (id === null) throw new SessionIndexError("unavailable");
-          if (!candidates.has(id)) candidates.set(id, candidate);
-        }
-        const hits = db.query<{ source: number }, [string]>(
-          `SELECT p.source FROM session_terms
-           JOIN session_passages p ON p.id = session_terms.rowid
-           JOIN session_sources s ON s.id = p.source
-           WHERE session_terms MATCH ? ORDER BY session_terms.rank, s.selector`,
-        );
-        const matched = new Set<number>();
-        const selection: SessionRef[] = [];
-        let bytes = 0;
-        let overBound = 0;
-        const bound = Math.min(maxBytes, MAX_MATERIAL_BYTES);
-        for (const hit of hits.iterate(query)) {
-          const candidate = candidates.get(hit.source);
-          if (candidate === undefined || matched.has(hit.source)) continue;
-          matched.add(hit.source);
-          if (selection.length >= limit) continue;
-          if (candidate.seen.size > bound - bytes) {
-            overBound += 1;
-            continue;
+      return retrieve(
+        text,
+        eligible,
+        limit,
+        undefined,
+        { selection: [] as SessionRef[], matches: 0, overBound: 0 },
+        (rows, candidates) => {
+          const matched = new Set<number>();
+          const selection: SessionRef[] = [];
+          let bytes = 0;
+          let overBound = 0;
+          const bound = Math.min(maxBytes, MAX_MATERIAL_BYTES);
+          for (const hit of rows) {
+            const candidate = candidates.get(hit.source);
+            if (candidate === undefined || matched.has(hit.source)) continue;
+            matched.add(hit.source);
+            if (selection.length >= limit) continue;
+            if (candidate.seen.size > bound - bytes) {
+              overBound += 1;
+              continue;
+            }
+            bytes += candidate.seen.size;
+            selection.push(candidate.session);
           }
-          bytes += candidate.seen.size;
-          selection.push(candidate.session);
+          return { selection, matches: matched.size, overBound };
+        },
+      );
+    },
+    searchRecords(text, eligible, limit, window) {
+      const empty = { hits: [] as IndexedRecord[], matches: 0 };
+      return retrieve(text, eligible, limit, window, empty, (rows, candidates) => {
+        const matched = new Set<number>();
+        const hits: IndexedRecord[] = [];
+        const metadata = db.query<
+          SessionRecordPosition & { captureDigest: string; sourceDigest: string },
+          [number]
+        >(
+          `SELECT r.line, r.byte_offset AS byteOffset, r.byte_length AS byteLength,
+           r.digest, r.time, s.capture_digest AS captureDigest, s.source_digest AS sourceDigest
+           FROM session_records r JOIN session_sources s ON s.id = r.source WHERE r.id = ?`,
+        );
+        for (const row of rows) {
+          const candidate = candidates.get(row.source);
+          if (candidate === undefined || matched.has(row.record)) continue;
+          matched.add(row.record);
+          if (hits.length >= limit) continue;
+          const entry = metadata.get(row.record);
+          if (entry === null) throw new SessionIndexError("unavailable");
+          const { captureDigest, sourceDigest, ...position } = entry;
+          hits.push({ candidate, position, captureDigest, sourceDigest });
         }
-        db.exec("COMMIT");
-        return { selection, matches: matched.size, overBound };
-      } catch (error) {
-        throw failure(error);
-      } finally {
-        rollback();
-        active = false;
-      }
+        return { hits, matches: matched.size };
+      });
     },
     close() {
       if (closed) return;

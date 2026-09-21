@@ -408,7 +408,9 @@ const CORPUS_INDEX_SCHEMA: readonly string[] = [
 export const SESSION_INDEX_SCHEMA: readonly string[] = [
   `CREATE TABLE session_sources(
      id INTEGER PRIMARY KEY,
-     selector TEXT NOT NULL UNIQUE,
+     namespace TEXT NOT NULL,
+     selector TEXT NOT NULL,
+     capture TEXT NOT NULL,
      harness TEXT NOT NULL,
      source_id TEXT NOT NULL,
      path TEXT NOT NULL,
@@ -416,13 +418,28 @@ export const SESSION_INDEX_SCHEMA: readonly string[] = [
      modified_at REAL NOT NULL CHECK (modified_at > 0),
      schema INTEGER NOT NULL,
      detectors TEXT NOT NULL,
-     mode TEXT NOT NULL
+     mode TEXT NOT NULL,
+     capture_digest TEXT NOT NULL,
+     source_digest TEXT NOT NULL,
+     UNIQUE(namespace, selector)
+   ) STRICT`,
+  `CREATE TABLE session_records(
+     id INTEGER PRIMARY KEY,
+     source INTEGER NOT NULL REFERENCES session_sources(id),
+     line INTEGER NOT NULL CHECK (line > 0),
+     byte_offset INTEGER NOT NULL CHECK (byte_offset >= 0),
+     byte_length INTEGER NOT NULL CHECK (byte_length > 0),
+     digest TEXT NOT NULL,
+     time TEXT,
+     UNIQUE(source, line)
    ) STRICT`,
   `CREATE TABLE session_passages(
      id INTEGER PRIMARY KEY,
-     source INTEGER NOT NULL REFERENCES session_sources(id)
+     source INTEGER NOT NULL REFERENCES session_sources(id),
+     record INTEGER NOT NULL REFERENCES session_records(id)
    ) STRICT`,
   `CREATE INDEX session_passages_by_source ON session_passages(source)`,
+  `CREATE INDEX session_passages_by_record ON session_passages(record)`,
   `CREATE VIRTUAL TABLE session_terms USING fts5(
      tokens,
      content = '',
