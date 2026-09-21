@@ -148,7 +148,7 @@ export function isRecordId(id: string): boolean {
 export const STAGES = ["explore", "challenge", "synthesize"] as const;
 export const StageSchema = z.enum(STAGES);
 export type Stage = z.infer<typeof StageSchema>;
-export const ACTIVITIES = ["review", ...STAGES] as const;
+export const ACTIVITIES = ["review", ...STAGES, "mapping"] as const;
 export const ActivitySchema = z.enum(ACTIVITIES);
 export type Activity = z.infer<typeof ActivitySchema>;
 export const ANALYSIS_ROLES = {
@@ -164,6 +164,7 @@ export const DEFAULT_ACTIVITY_WEIGHTS = {
   explore: 0,
   challenge: 0,
   synthesize: 0,
+  mapping: 0,
 } as const;
 const activityWeight = z.number().min(0).max(1);
 export const ActivityWeightsSchema = z
@@ -172,6 +173,7 @@ export const ActivityWeightsSchema = z
     explore: activityWeight,
     challenge: activityWeight,
     synthesize: activityWeight,
+    mapping: activityWeight.default(0),
   })
   .default(DEFAULT_ACTIVITY_WEIGHTS);
 export type ActivityWeights = z.infer<typeof ActivityWeightsSchema>;
