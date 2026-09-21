@@ -222,6 +222,51 @@ test("one class filling its pending quota cannot block admission to another clas
   });
 });
 
+test("queued classes rotate fairly while preserving class FIFO and serial archive execution", async () => {
+  await fixture(async (h) => {
+    const expected = [
+      { classId: "public", query: "A1" },
+      { classId: "private", query: "B1" },
+      { classId: "public", query: "A2" },
+      { classId: "private", query: "B2" },
+      { classId: "public", query: "A3" },
+      { classId: "public", query: "A4" },
+    ];
+    const entered = expected.map(() => h.gate());
+    const release = expected.map(() => h.gate());
+    const executions: typeof expected = [];
+    h.archive.execute = async (classId, request) => {
+      if (request.kind !== "search") throw new Error("Expected a search request.");
+      const index = executions.length;
+      executions.push({ classId, query: request.query });
+      entered[index]!.resolve();
+      await release[index]!.promise;
+      return result();
+    };
+    expect((await h.reply("public", id(1), { ...SEARCH, query: "A1" })).state).toBe("pending");
+    await entered[0]!.promise;
+    for (let n = 2; n <= 4; n++) {
+      expect((await h.reply("public", id(n), { ...SEARCH, query: `A${n}` })).state).toBe(
+        "pending",
+      );
+    }
+    for (let n = 1; n <= 2; n++) {
+      expect((await h.reply("private", id(n), { ...SEARCH, query: `B${n}` })).state).toBe(
+        "pending",
+      );
+    }
+    // Later classes cannot preempt active work or execute concurrently with it.
+    expect(executions).toEqual(expected.slice(0, 1));
+    for (let index = 1; index < expected.length; index++) {
+      release[index - 1]!.resolve();
+      await entered[index]!.promise;
+      expect(executions).toEqual(expected.slice(0, index + 1));
+    }
+    release[expected.length - 1]!.resolve();
+    expect((await h.terminal("public", id(4))).state).toBe("complete");
+  });
+});
+
 test("completed response eviction permits more than 128 sequential requests without advancing the clock", async () => {
   await fixture(async (h) => {
     let executions = 0;
@@ -299,12 +344,13 @@ test("stop closes admission, waits for active work and drops queued work before 
     expect((await h.reply("public", id(1), SEARCH)).state).toBe("pending");
     await entered.promise;
     expect((await h.reply("private", id(2), SEARCH)).state).toBe("pending");
+    expect((await h.reply("public", id(3), SEARCH)).state).toBe("pending");
     let stopped = false;
     const stopping = h.stop().then(() => {
       stopped = true;
     });
     // An actual rejected connection observes shutdown without an ordering sleep.
-    await expect(h.send("public", id(3), SEARCH)).rejects.toThrow();
+    await expect(h.send("public", id(4), SEARCH)).rejects.toThrow();
     expect(stopped).toBe(false);
     expect(events).toEqual(["execute"]);
     release.resolve();

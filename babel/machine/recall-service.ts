@@ -42,15 +42,27 @@ export function openRecallService(options: {
   const classQueueLimit = Math.max(1, Math.floor(RECALL_MAX_REQUESTS / routes.size));
   const now = options.now ?? Date.now;
   const pending = new Map<string, Pending>();
-  const queue: Pending[] = [];
+  const queues = new Map<string, Pending[]>(
+    [...routes.values()].map((classId) => [classId, []]),
+  );
+  const classQueues = [...queues.values()];
+  let nextClass = 0;
   let stopped = false;
   let pumping: Promise<void> | undefined;
   let stopping: Promise<void> | undefined;
   const pump = (): void => {
     if (pumping !== undefined) return;
     pumping = (async () => {
-      while (!stopped && queue.length !== 0) {
-        const entry = queue.shift()!;
+      while (!stopped) {
+        let entry: Pending | undefined;
+        // Rotate after every operation, including when work arrives while another class is active.
+        for (let scanned = 0; scanned < classQueues.length; scanned++) {
+          const queue = classQueues[nextClass]!;
+          nextClass = (nextClass + 1) % classQueues.length;
+          entry = queue.shift();
+          if (entry !== undefined) break;
+        }
+        if (entry === undefined) break;
         try {
           const result = await options.archive.execute(entry.classId, entry.request);
           const reply = RecallReplySchema.parse({ ...entry.reply, state: "complete", result });
@@ -65,7 +77,7 @@ export function openRecallService(options: {
       }
     })().finally(() => {
       pumping = undefined;
-      if (!stopped && queue.length !== 0) pump();
+      if (!stopped && classQueues.some((queue) => queue.length !== 0)) pump();
     });
   };
   const server = Bun.serve({
@@ -139,7 +151,7 @@ export function openRecallService(options: {
         expiresAt: at + RECALL_REQUEST_TTL_MS,
       };
       pending.set(key, entry);
-      queue.push(entry);
+      queues.get(classId)!.push(entry);
       pump();
       return Response.json(entry.reply);
     },
@@ -149,7 +161,7 @@ export function openRecallService(options: {
     stop() {
       stopping ??= (async () => {
         stopped = true;
-        queue.length = 0;
+        for (const queue of classQueues) queue.length = 0;
         await server.stop(true);
         await pumping;
         pending.clear();
