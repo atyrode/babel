@@ -168,6 +168,7 @@ function loop(
   machines: MachinesSlice,
   actions: ActionsSlice | undefined,
   plan: RunPlan,
+  catalogPlan: RunPlan,
 ): Conductor {
   const engine = codeEngine(actions);
   return conductor({
@@ -207,6 +208,7 @@ function loop(
     },
     keys,
     plan,
+    catalogPlan,
     now: () => store.now(),
   });
 }
@@ -334,10 +336,9 @@ async function cycle(
   services?: EmbeddingServices | undefined,
 ): Promise<void> {
   const policy = (await coordinated.policy()).policy;
-  // The beat is the only job this loop still posts itself, so its operation is what the plan's
-  // limits are read for; a run that reaches a model is Code's to post (#279).
+  // Native work uses each operation's own declared limits; model work remains Code's to post.
   const plan = planFor(policy, MACHINE_OPERATIONS.scan);
-  const report = await loop(jobs, machines, actions, plan).tick();
+  const report = await loop(jobs, machines, actions, plan, planFor(policy, MACHINE_OPERATIONS.mapCatalog)).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
     drew nothing, or stopped on a gap, or refused a dispatch, left no trace outside the tick

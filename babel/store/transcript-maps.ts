@@ -76,11 +76,14 @@ export interface TranscriptMapNextPlan {
 export interface TranscriptMapAccessInput extends TranscriptMapScope {
   readonly entries: readonly TranscriptMapCatalogEntry[];
   readonly now: string;
+  /** Checked at the context mutation boundary, so a late receipt replay cannot rewind progress. */
+  readonly guard?: TranscriptMapCondition;
 }
 export interface TranscriptMapCatalogInput extends TranscriptMapScope {
   readonly entries: readonly TranscriptMapCatalogEntry[];
   readonly nextCursor: string | null;
   readonly now: string;
+  readonly guard?: TranscriptMapCondition;
 }
 export interface TranscriptMapPlanInput extends TranscriptMapScope {
   readonly access: TranscriptMapAccess;
@@ -89,6 +92,7 @@ export interface TranscriptMapPlanInput extends TranscriptMapScope {
   readonly offset: number;
   readonly nextOffset: number | null;
   readonly now: string;
+  readonly guard?: TranscriptMapCondition;
 }
 export interface TranscriptMapSettlementInput {
   readonly details: TranscriptMapWorkDetails;
@@ -104,6 +108,7 @@ export interface TranscriptMaps {
   nextPlan(
     machineId: string,
     segmentation: TranscriptMapSegmentation,
+    afterCaptureId?: string | null,
   ): Promise<TranscriptMapNextPlan | null>;
   recordPlan(input: TranscriptMapPlanInput): Promise<{ complete: boolean }>;
   ensureVersion(
@@ -250,21 +255,25 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     preserveCursor: boolean,
     mapping: boolean,
     now: string,
+    guard?: TranscriptMapCondition,
   ): Promise<void> {
     const context = TranscriptMapContextSchema.parse(scope.context);
     const newer = await db.query<{ n: number }>(
-      `SELECT count(*) n FROM transcript_map_contexts WHERE machine_id=? AND observed_at>? AND digest!=?`,
-      [scope.machineId, context.observedAt, context.digest],
+      `SELECT count(*) n FROM transcript_map_contexts WHERE machine_id=? AND observed_at>? AND digest!=?
+       AND (${guard?.sql ?? "1"})`,
+      [scope.machineId, context.observedAt, context.digest, ...(guard?.params ?? [])],
     );
     if (Number(newer[0]?.n) > 0) throw new Error("stale transcript map context");
     await db.batch([
       {
-        sql: `DELETE FROM transcript_map_contexts WHERE machine_id=? AND digest!=? AND observed_at<=?`,
-        params: [scope.machineId, context.digest, context.observedAt],
+        sql: `DELETE FROM transcript_map_contexts WHERE machine_id=? AND digest!=? AND observed_at<=?
+          AND (${guard?.sql ?? "1"})`,
+        params: [scope.machineId, context.digest, context.observedAt, ...(guard?.params ?? [])],
       },
       {
         sql: `INSERT INTO transcript_map_contexts(machine_id,class_id,digest,ceiling,observed_at,payload,next_cursor,cataloged_at,completed_at,mapping,mapping_payload)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(machine_id,class_id) DO UPDATE SET digest=excluded.digest,
+        SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE (${guard?.sql ?? "1"})
+        ON CONFLICT(machine_id,class_id) DO UPDATE SET digest=excluded.digest,
         ceiling=excluded.ceiling,observed_at=max(observed_at,excluded.observed_at),
         payload=CASE WHEN excluded.observed_at>=observed_at THEN excluded.payload ELSE payload END,
         next_cursor=CASE WHEN ? THEN transcript_map_contexts.next_cursor ELSE excluded.next_cursor END,
@@ -285,6 +294,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           !preserveCursor && nextCursor === null ? now : null,
           mapping ? 1 : 0,
           mapping ? json(context) : null,
+          ...(guard?.params ?? []),
           preserveCursor ? 1 : 0,
           preserveCursor ? 1 : 0,
         ],
@@ -298,7 +308,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   ): Promise<void> {
     if (input.entries.length > TRANSCRIPT_MAP_MAX_CAPTURES)
       throw new Error("transcript catalog page exceeds bound");
-    await rememberContext(input, input.nextCursor, preserveCursor, mapping, input.now);
+    await rememberContext(input, input.nextCursor, preserveCursor, mapping, input.now, input.guard);
     const statements: SqlStatement[] = [];
     for (const entry of input.entries) {
       const capture = TranscriptMapCaptureSchema.parse(entry.capture);
@@ -353,6 +363,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   async function nextPlan(
     machineId: string,
     segmentation: TranscriptMapSegmentation,
+    afterCaptureId?: string | null,
   ): Promise<TranscriptMapNextPlan | null> {
     const state = await catalogState(machineId);
     if (!state.context) return null;
@@ -368,8 +379,10 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         (SELECT max(candidate.rowid) FROM transcript_map_plans candidate WHERE candidate.capture_id=c.id AND json_extract(candidate.payload,'$.segmentation')=json(?))
       WHERE ${auth.sql} AND NOT EXISTS (SELECT 1 FROM transcript_map_plans ready
         WHERE ready.capture_id=c.id AND ready.complete=1 AND json_extract(ready.payload,'$.segmentation')=json(?))
+      AND (? IS NULL OR (julianday(c.captured_at),c.id) >
+        (SELECT julianday(prior.captured_at),prior.id FROM transcript_map_captures prior WHERE prior.id=?))
       ORDER BY julianday(c.captured_at),c.id LIMIT 1`,
-      [structural, ...auth.params, structural],
+      [structural, ...auth.params, structural, afterCaptureId ?? null, afterCaptureId ?? null],
     );
     return rows[0]
       ? {

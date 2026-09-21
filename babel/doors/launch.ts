@@ -2156,7 +2156,7 @@ export function hubRefusal(error: unknown): string {
   return error instanceof HostCallError ? error.detail : error.message;
 }
 
-function nativeFailureToken(
+export function nativeFailureToken(
   error: unknown,
   method: "jobs.execute" | "jobs.status",
 ): string | undefined {
@@ -2175,7 +2175,7 @@ function nativeFailureToken(
  * enough: execute can also throw after commit while notifying or dispatching. A status probe
  * after an arbitrary transport failure cannot prove the request was never admitted.
  */
-function nativeAdmissionRefusal(error: unknown): boolean {
+export function nativeAdmissionRefusal(error: unknown): boolean {
   switch (nativeFailureToken(error, "jobs.execute")) {
     case "unknown_operation":
     case "installation_changed":
