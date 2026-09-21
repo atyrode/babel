@@ -82,14 +82,14 @@ export const codex: Adapter = {
     return codexRoots();
   },
 
-  claim(path) {
+  claim(path, exists = existsSync) {
     if (!walkablePath(path)) return null;
     const segments = path.split("/");
     if (segments[segments.length - 1] === HISTORY_FILE) {
       // The host state is only Codex's when a "sessions" tree sits beside it: a listing cannot
       // say which ancestor was a root, and "history.jsonl" is not a name only Codex uses.
       const root = segments.slice(0, -1).join("/");
-      return existsSync(join(root === "" ? "/" : root, "sessions"))
+      return exists(join(root === "" ? "/" : root, "sessions"))
         ? sessionRef(HARNESS, STATE_SOURCE_ID, path)
         : null;
     }
