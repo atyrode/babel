@@ -24,6 +24,7 @@ import {
   RecallSetupInputSchema,
   RecallSetupPreviewSchema,
   RecallRuntimeInputSchema,
+  transcriptMapReadTarget,
   type RecallPolicy,
 } from "../contract.ts";
 import { defineDoor, type Door } from "./door.ts";
@@ -205,6 +206,7 @@ async function composePreview(ctx: GuestCtx, args: { machineId: string; policy: 
           serviceId: RECALL_SERVICE_ID,
           operationId: id,
         },
+        mapTarget: transcriptMapReadTarget(args.machineId, id),
       })),
     },
   };

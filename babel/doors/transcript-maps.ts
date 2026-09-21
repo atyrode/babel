@@ -1,7 +1,8 @@
 import { defineServerAction, type GuestCtx, type ServerActionDef } from "@manifold/plugin-kit/server";
 import {
   ACTIONS, BABEL_PLUGIN_ID, RECALL_MAX_REQUEST_BODY_BYTES, RECALL_MAX_RESULT_BYTES, RECALL_SERVICE_ID,
-  TRANSCRIPT_MAP_MAX_CAPTURES, TRANSCRIPT_MAP_READ_RESULT_PROJECTION, TRANSCRIPT_MAP_RESULT_PROJECTION,
+  TRANSCRIPT_MAP_MAX_CAPTURES, TRANSCRIPT_MAP_LOCATE_RESULT_PROJECTION,
+  TRANSCRIPT_MAP_READ_RESULT_PROJECTION, TRANSCRIPT_MAP_RESULT_PROJECTION,
   RecallServiceBodySchema, TranscriptMapCaptureSchema, TranscriptMapLocateInputSchema, TranscriptMapLocateReplySchema,
   TranscriptMapNativeReplySchema, TranscriptMapReadInputSchema, TranscriptMapReadReplySchema,
   TranscriptMapRegenerateInputSchema, TranscriptMapRegenerateReplySchema, TranscriptMapSourceInputSchema,
@@ -19,11 +20,7 @@ const READ = {
   caps: ["services:invoke"], delegates: ["services:invoke"],
   requirements: [{ cap: "services:invoke", target: ["target"] }], trace: "opaque",
 } satisfies Pick<ServerActionDef, "caps" | "delegates" | "requirements" | "trace">;
-const LOCATE_PROJECTION = {
-  kind: "projected-json" as const, fields: [["requestId"], ["state"]],
-  maxArrayItems: 1, maxResultBytes: 1024,
-};
-const REGENERATE_PROJECTION = { ...LOCATE_PROJECTION, fields: [["requestId"], ["state"], ["generation"]] };
+const REGENERATE_PROJECTION = { ...TRANSCRIPT_MAP_LOCATE_RESULT_PROJECTION, fields: [["requestId"], ["state"], ["generation"]] };
 
 async function currentRevision(ctx: GuestCtx, target: TranscriptMapTarget): Promise<string | null> {
   if (!TranscriptMapTargetSchema.safeParse(target).success || !(await ctx.auth.allows("services:invoke", target))) return null;
@@ -229,7 +226,7 @@ export function transcriptMapDoors(store: BabelStore): readonly Door[] {
       return "refused" in reply && typeof reply.refused === "string" ? { refused: reply.refused } : TranscriptMapNativeReplySchema.parse(reply);
     }),
     defineDoor(defineServerAction({ ...READ, name: ACTIONS.mapLocate, title: "Locate this caller's durable map request",
-      input: TranscriptMapLocateInputSchema, result: TranscriptMapLocateReplySchema, resultProjection: LOCATE_PROJECTION }),
+      input: TranscriptMapLocateInputSchema, result: TranscriptMapLocateReplySchema, resultProjection: TRANSCRIPT_MAP_LOCATE_RESULT_PROJECTION }),
     async (ctx, { target, ...reference }) => {
       try {
         const owned = await traces.locate(ctx.auth.principal.id, reference);

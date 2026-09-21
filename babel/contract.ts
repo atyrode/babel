@@ -4141,7 +4141,7 @@ export type SessionRecordPosition = z.infer<typeof SessionRecordPositionSchema>;
 
 export const RECALL_SERVICE_ID = `${BABEL_PLUGIN_ID}.recall`;
 export const RECALL_SERVICE_REVISION = "1";
-export const RECALL_SKILL_VERSION = "1.0.0";
+export const RECALL_SKILL_VERSION = "1.1.0";
 export const RECALL_MAX_HITS = 10;
 export const RECALL_SEARCH_EXCERPT_BYTES = 2048;
 export const RECALL_MAX_EXCERPT_BYTES = 8192;
@@ -4470,6 +4470,20 @@ export const RecallTargetSchema = z.strictObject({
   operationId: recallId,
 });
 export type RecallTarget = z.infer<typeof RecallTargetSchema>;
+/** Map reads have their own exact grant; installing them never widens a raw Recall grant. */
+export const TRANSCRIPT_MAP_READ_OPERATION_PREFIX = "map.";
+export const TranscriptMapTargetSchema = RecallTargetSchema.extend({
+  operationId: z.string().regex(/^map\.[a-z][a-z0-9-]{0,47}$/),
+});
+export type TranscriptMapTarget = z.infer<typeof TranscriptMapTargetSchema>;
+export function transcriptMapReadTarget(machineId: string, classId: string): TranscriptMapTarget {
+  return {
+    kind: "service",
+    machineId,
+    serviceId: RECALL_SERVICE_ID,
+    operationId: `${TRANSCRIPT_MAP_READ_OPERATION_PREFIX}${classId}`,
+  };
+}
 export const RecallSearchInputSchema = z.strictObject({
   target: RecallTargetSchema,
   ...RecallSearchRequestSchema.omit({ kind: true }).shape,
@@ -4513,7 +4527,12 @@ export const RecallSetupPreviewSchema = z.strictObject({
   ready: z.boolean(),
   reason: z.string().max(512),
   changed: z.boolean(),
-  classes: z.array(z.strictObject({ id: recallId, target: RecallTargetSchema })).max(16),
+  /** Configuration targets only; raw and map operations each require an independent grant. */
+  classes: z.array(z.strictObject({
+    id: recallId,
+    target: RecallTargetSchema,
+    mapTarget: TranscriptMapTargetSchema,
+  })).max(16),
 });
 export const RecallInstallInputSchema = z.strictObject({
   ...RecallSetupInputSchema.shape,
@@ -5037,20 +5056,6 @@ export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
 ]);
 export type TranscriptMapJobReceipt = z.infer<typeof TranscriptMapJobReceiptSchema>;
 
-/** Map reads have their own exact grant; installing them never widens a raw Recall grant. */
-export const TRANSCRIPT_MAP_READ_OPERATION_PREFIX = "map.";
-export const TranscriptMapTargetSchema = RecallTargetSchema.extend({
-  operationId: z.string().regex(/^map\.[a-z][a-z0-9-]{0,47}$/),
-});
-export type TranscriptMapTarget = z.infer<typeof TranscriptMapTargetSchema>;
-export function transcriptMapReadTarget(machineId: string, classId: string): TranscriptMapTarget {
-  return {
-    kind: "service",
-    machineId,
-    serviceId: RECALL_SERVICE_ID,
-    operationId: `${TRANSCRIPT_MAP_READ_OPERATION_PREFIX}${classId}`,
-  };
-}
 
 /**
  * The 62 primitive leaves of the public native map reader. Full plan/export packets travel
@@ -5136,6 +5141,12 @@ export const TranscriptMapLocateReplySchema = z.strictObject({
   requestId: z.uuid(),
   state: z.literal("located"),
 });
+export const TRANSCRIPT_MAP_LOCATE_RESULT_PROJECTION = {
+  kind: "projected-json" as const,
+  fields: [["requestId"], ["state"]],
+  maxArrayItems: 1,
+  maxResultBytes: 1024,
+};
 export const TranscriptMapStatusSchema = z.strictObject({
   eligibleCaptures: recallBytes,
   verifiedMappedCaptures: recallBytes,
