@@ -176,12 +176,12 @@ use a new JSONL envelope `id` for each poll, not a new Recall request:
 }
 ```
 
-The UUID above stands for the actual returned `requestId`. Search/show/preview/session doors
-create it; callers do not choose it. If a start is uncertain (`unavailable`, transport loss,
-or a failed projection), do **not** automatically start again under a fresh id. When the
-request id is known, reconcile via `recallPoll`; when it is unknown, report the trace and
-uncertainty for owner reconciliation. Do not claim no fetch occurred. `busy` is bounded
-capacity, not a reason to hammer the service; `failed` and `expired` are not empty searches.
+Start doors generate the UUID; callers do not choose it. On `unavailable`, lost transport or
+failed projection, never automatically start again. Poll a known `requestId`. Otherwise supply
+the original numeric `traceId` instead: `args:{target,traceId:42}`. An authorized `located`
+reply gives only the owned request id, without replaying work or returning evidence; poll that id.
+The same principal, target and service revision remain required. If both identifiers are lost,
+report uncertainty; never claim zero fetch. `busy` is capacity, not a retry loop.
 
 ### Bounded evidence windows and provenance
 

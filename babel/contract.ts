@@ -4463,10 +4463,22 @@ export const RecallSessionInputSchema = z.strictObject({
   target: RecallTargetSchema,
   ...RecallSessionRequestSchema.omit({ kind: true }).shape,
 });
-export const RecallPollInputSchema = z.strictObject({
-  target: RecallTargetSchema,
-  requestId: z.uuid(),
-});
+export const RecallPollInputSchema = z
+  .strictObject({
+    target: RecallTargetSchema,
+    requestId: z.uuid().optional(),
+    traceId: z.number().int().positive().optional(),
+  })
+  .refine(
+    (input) => (input.requestId === undefined) !== (input.traceId === undefined),
+    "Supply either a Recall request id or its original action trace, never both.",
+  );
+export type RecallPollInput = z.infer<typeof RecallPollInputSchema>;
+/** Trace reconciliation reveals an owned handle, never repeats work or republishes evidence. */
+export const RecallPollReplySchema = z.union([
+  RecallReplySchema,
+  z.strictObject({ requestId: z.uuid(), state: z.literal("located") }),
+]);
 export const RecallSetupInputSchema = z.strictObject({
   machineId: refId,
   policy: RecallPolicySchema,

@@ -13,6 +13,7 @@ import {
   RECALL_SKILL_PROJECTION,
   RECALL_SKILL_VERSION,
   RecallPollInputSchema,
+  RecallPollReplySchema,
   RecallPreviewInputSchema,
   RecallReplySchema,
   RecallSearchInputSchema,
@@ -118,7 +119,14 @@ async function begin(
       !(await ownsRecallPreview(store, ctx.auth.principal.id, target, revision, request.previewId))
     )
       return { refused: "Whole-session widening requires this caller's completed size preview." };
-    const requestId = await startRecall(store, ctx.auth.principal.id, target, revision, request);
+    const requestId = await startRecall(
+      store,
+      ctx.auth.principal.id,
+      ctx.traceId,
+      target,
+      revision,
+      request,
+    );
     return await invoke(ctx, store, target, revision, { requestId, request }, request.kind);
   } catch {
     return { refused: "Recall could not record or authorize this request." };
@@ -183,13 +191,15 @@ export function recallDoors(store: BabelStore): readonly Door[] {
         ...READ,
         name: ACTIONS.recallPoll,
         title: "Poll this caller's bounded Recall request",
+        result: RecallPollReplySchema,
         input: RecallPollInputSchema,
       }),
-      async (ctx, { target, requestId }) => {
+      async (ctx, { target, ...reference }) => {
         try {
-          const owned = await readRecallRequest(store, ctx.auth.principal.id, requestId);
+          const owned = await readRecallRequest(store, ctx.auth.principal.id, reference);
           if (owned === null || JSON.stringify(owned.target) !== JSON.stringify(target))
             return { refused: "Unknown Recall request for this caller and disclosure class." };
+          const { requestId } = owned;
           const revision = await currentRevision(ctx, target);
           if (revision === null) return { refused: "Recall disclosure authority is unavailable." };
           if (revision !== owned.revision) {
@@ -197,6 +207,7 @@ export function recallDoors(store: BabelStore): readonly Door[] {
             await recordRecallOutcome(store, reply);
             return reply;
           }
+          if (reference.traceId !== undefined) return { requestId, state: "located" } as const;
           return await invoke(
             ctx,
             store,

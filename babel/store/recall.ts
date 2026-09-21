@@ -4,6 +4,7 @@ import {
   RecallTargetSchema,
   RecallTraceRequestSchema,
   RecallTraceSchema,
+  type RecallPollInput,
   type RecallReply,
   type RecallRequest,
   type RecallTarget,
@@ -16,6 +17,7 @@ import type { BabelStore } from "./store.ts";
 export async function startRecall(
   store: BabelStore,
   principalId: string,
+  traceId: number,
   target: RecallTarget,
   revision: string,
   request: RecallRequest,
@@ -35,11 +37,12 @@ export async function startRecall(
     1,
   );
   await store.db.run(
-    `INSERT INTO recall_requests(id, principal_id, operation, target, service_revision, redacted_request, created_at)
-     VALUES(?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO recall_requests(id, principal_id, trace_id, operation, target, service_revision, redacted_request, created_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       principalId,
+      traceId,
       request.kind,
       JSON.stringify(target),
       revision,
@@ -50,14 +53,21 @@ export async function startRecall(
   return id;
 }
 
-export async function readRecallRequest(store: BabelStore, principalId: string, id: string) {
+export async function readRecallRequest(
+  store: BabelStore,
+  principalId: string,
+  reference: Omit<RecallPollInput, "target">,
+) {
+  if ((reference.requestId === undefined) === (reference.traceId === undefined)) return null;
   const rows = await store.db.query(
-    `SELECT target, service_revision, operation FROM recall_requests WHERE id = ? AND principal_id = ?`,
-    [id, principalId],
+    `SELECT id, target, service_revision, operation FROM recall_requests
+     WHERE ${reference.requestId === undefined ? "trace_id" : "id"} = ? AND principal_id = ?`,
+    [reference.requestId ?? reference.traceId!, principalId],
   );
   const row = rows[0];
   if (row === undefined) return null;
   return {
+    requestId: String(row["id"]),
     target: RecallTargetSchema.parse(JSON.parse(String(row["target"]))),
     revision: String(row["service_revision"]),
     operation: RecallResultSchema.shape.operation.parse(row["operation"]),

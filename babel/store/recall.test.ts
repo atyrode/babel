@@ -4,17 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openPluginDatabase } from "@manifold/server/plugin-database";
 import {
+  ACTIONS,
   BABEL_PLUGIN_ID,
   RECALL_MAX_SERVED_BYTES,
   RECALL_SERVICE_ID,
   RECALL_UNTRUSTED_BEGIN,
   RECALL_UNTRUSTED_END,
+  RecallPollInputSchema,
+  RecallPollReplySchema,
   RecallRequestSchema,
   RecallResultSchema,
+  RecallServiceRequestSchema,
   RecallTargetSchema,
   RecallTraceRequestSchema,
   SESSION_RECORD_COORDINATES,
   type RecallReply,
+  type RecallServiceRequest,
 } from "../contract.ts";
 import {
   ownsRecallPreview,
@@ -24,6 +29,8 @@ import {
 } from "./recall.ts";
 import { SCHEMA_V1 } from "./schema.ts";
 import { openStore } from "./store.ts";
+import type { GuestCtx } from "@manifold/plugin-kit/server";
+import { recallDoors } from "../doors/recall.ts";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -61,7 +68,7 @@ async function fixture() {
     },
   };
   const request = RecallRequestSchema.parse({ kind: "preview", locator });
-  const requestId = await startRecall(store, "reader", target, "revision-1", request);
+  const requestId = await startRecall(store, "reader", 1, target, "revision-1", request);
   const previewId = crypto.randomUUID();
   const result = RecallResultSchema.parse({
     operation: "preview",
@@ -129,8 +136,9 @@ test("a completed preview belongs to the recorded principal, class and service r
   expect(await ownsRecallPreview(f.store, "reader", f.target, "revision-2", f.previewId)).toBe(
     false,
   );
-  expect(await readRecallRequest(f.store, "another-reader", f.requestId)).toBeNull();
-  expect(await readRecallRequest(f.store, "reader", f.requestId)).toEqual({
+  expect(await readRecallRequest(f.store, "another-reader", { requestId: f.requestId })).toBeNull();
+  expect(await readRecallRequest(f.store, "reader", { requestId: f.requestId })).toEqual({
+    requestId: f.requestId,
     target: f.target,
     revision: "revision-1",
     operation: "preview",
@@ -143,6 +151,7 @@ test("durable requests redact likely secrets and retain only a digest of a widen
   const wideningId = await startRecall(
     f.store,
     "reader",
+    2,
     f.target,
     "revision-1",
     RecallRequestSchema.parse({
@@ -156,6 +165,7 @@ test("durable requests redact likely secrets and retain only a digest of a widen
   await startRecall(
     f.store,
     "reader",
+    3,
     f.target,
     "revision-1",
     RecallRequestSchema.parse({
@@ -219,4 +229,71 @@ test("concurrent repeated outcomes append once without retaining excerpt bodies"
   await expect(
     f.store.db.run("DELETE FROM recall_outcomes WHERE request_id = ?", [f.requestId]),
   ).rejects.toThrow();
+});
+
+test("a lost start response is recovered by its owned trace without starting or publishing again", async () => {
+  const f = await fixture();
+  const nativeRequests: RecallServiceRequest[] = [];
+  const control = { allowed: true, revision: "revision-1" };
+  const context = (principalId = "reader"): GuestCtx =>
+    ({
+      traceId: 42,
+      auth: { principal: { id: principalId }, allows: async () => control.allowed },
+      services: {
+        describeInstance: async () => ({
+          owner: { machineId: f.target.machineId },
+          configuration: {
+            pluginId: BABEL_PLUGIN_ID,
+            enabled: true,
+            revision: control.revision,
+          },
+        }),
+        invokeInstance: async (args: { input: { request: string } }) => {
+          const frame = RecallServiceRequestSchema.parse(JSON.parse(args.input.request));
+          nativeRequests.push(frame);
+          if (frame.request.kind !== "poll") throw new Error("synthetic response lost after start");
+          return { ok: true, result: { requestId: frame.requestId, state: "pending" } };
+        },
+      },
+    }) as unknown as GuestCtx;
+  const knock = async (name: string, ctx: GuestCtx, args: unknown): Promise<unknown> => {
+    const door = recallDoors(openStore(f.store.db)).find((entry) => entry.action.name === name)!;
+    return door.handler(ctx, door.action.input.parse(args) as never);
+  };
+  // Deliberately discard the start response, as a failed SDK projection does.
+  await knock(ACTIONS.recallSearch, context(), { target: f.target, query: "archived" });
+  const lookup = RecallPollInputSchema.parse({ target: f.target, traceId: 42 });
+  const recovered = RecallPollReplySchema.parse(
+    await knock(ACTIONS.recallPoll, context(), lookup),
+  );
+  expect(recovered.state).toBe("located");
+  expect(Object.keys(recovered).toSorted()).toEqual(["requestId", "state"]);
+  expect(nativeRequests).toHaveLength(1);
+  expect(recovered.requestId).toBe(nativeRequests[0]!.requestId);
+  expect(await knock(ACTIONS.recallPoll, context("another-reader"), lookup)).toHaveProperty(
+    "refused",
+  );
+  expect(
+    await knock(ACTIONS.recallPoll, context(), {
+      ...lookup,
+      target: { ...f.target, operationId: "other-class" },
+    }),
+  ).toHaveProperty("refused");
+  control.allowed = false;
+  expect(await knock(ACTIONS.recallPoll, context(), lookup)).toHaveProperty("refused");
+  control.allowed = true;
+  expect(nativeRequests).toHaveLength(1);
+  expect(
+    await knock(ACTIONS.recallPoll, context(), {
+      target: f.target,
+      requestId: recovered.requestId,
+    }),
+  ).toEqual({ requestId: recovered.requestId, state: "pending" });
+  expect(nativeRequests.map((frame) => frame.request.kind)).toEqual(["search", "poll"]);
+  control.revision = "revision-2";
+  expect(await knock(ACTIONS.recallPoll, context(), lookup)).toEqual({
+    requestId: recovered.requestId,
+    state: "expired",
+  });
+  expect(nativeRequests).toHaveLength(2);
 });

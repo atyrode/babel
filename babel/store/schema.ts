@@ -30,11 +30,13 @@ const RECALL_TRACE_SCHEMA: readonly string[] = [
      seq INTEGER PRIMARY KEY AUTOINCREMENT,
      id TEXT NOT NULL UNIQUE,
      principal_id TEXT NOT NULL,
+     trace_id INTEGER NOT NULL CHECK(trace_id > 0),
      operation TEXT NOT NULL CHECK(operation IN ('search', 'show', 'preview', 'session')),
      target TEXT NOT NULL,
      service_revision TEXT NOT NULL,
      redacted_request TEXT NOT NULL,
-     created_at TEXT NOT NULL
+     created_at TEXT NOT NULL,
+     UNIQUE(principal_id, trace_id)
    ) STRICT`,
   `CREATE INDEX recall_requests_by_principal ON recall_requests(principal_id, seq DESC)`,
   `CREATE TABLE recall_outcomes(
