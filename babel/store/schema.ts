@@ -47,7 +47,7 @@ const RECALL_TRACE_SCHEMA: readonly string[] = [
    ) STRICT`,
   `CREATE INDEX recall_outcomes_by_request ON recall_outcomes(request_id, seq DESC)`,
   `CREATE INDEX recall_outcomes_by_preview ON recall_outcomes(preview_digest) WHERE preview_digest IS NOT NULL`,
-  ...["recall_requests", "recall_outcomes"].flatMap(table => [
+  ...["recall_requests", "recall_outcomes"].flatMap((table) => [
     `CREATE TRIGGER ${table}_no_update BEFORE UPDATE ON ${table} BEGIN
        SELECT RAISE(ABORT, 'Recall traces are append-only');
      END`,

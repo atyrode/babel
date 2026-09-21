@@ -877,6 +877,50 @@ whole. Preparing is still a pass per job — nothing recognizes that another job
 prepared the same scope (§6.4) — so content addressing buys identity and comparability, not a
 skipped pass.
 
+#### 6.3.1 Recall: archived evidence for an outside agent
+
+Recall is a model- and harness-independent read surface over archived OMP, Codex and Claude Code
+captures, not a live-session reader or a new analysis run. Its native instance service uses only
+the deployment's bound restic repository. The owner installs its immutable subject classifications
+and disclosure classes; each external reader needs the exact class operation's service grant.
+Requests cannot supply clearance, substitute a provider identity, invoke the native operation,
+or acquire storage authority. The highest matching subject sensitivity applies, unknown subjects
+are excluded, and an authorized cache hit cannot make a refused subject readable.
+
+`recallSearch` accepts a bounded lexical query and harness, host, time and workspace-or-repository
+filters. It returns at most ten hits, each with at most 2 KiB of mandatory-redacted UTF-8 evidence.
+`recallShow` expands a returned immutable locator to a bounded record or user-turn window, at most
+8 KiB. Both use preparation's canonical record reader, secret scanner, digest and clipping rules;
+queried redacted preparation includes the same bounded evidence in its retrieval material sidecar.
+Archive-derived metadata and owner associations are distinguished. Missing historical metadata
+is unknown, never filled from a current checkout or live conversation.
+
+Every locator identifies the snapshot, archived path, raw capture digest, normalized-redacted
+source digest and record's byte coordinates/digest. A whole-source verification precedes release;
+changed or unavailable captures refuse rather than silently redirecting a locator. Excerpts carry
+explicit archived-untrusted delimiters and are evidence, never instructions. Mandatory scanning
+is a detector-based precaution, not proof that arbitrary prose contains no secret.
+
+A whole-session request is a separate widening after `recallPreview` reports its content-free
+size and digest. Caller, class, machine and service revision bind the preview. Sequential pages
+preserve exact redacted bytes and UTF-8 boundaries; successful progress renews a one-hour idle
+expiry, not a fixed deadline for the whole reading. The last page remains retryable after its
+temporary file is released. Total temporary staging is 512 MiB divided among configured classes,
+reported as `previewByteLimit`; active previews share that class's reservation. Completed replay
+handles and native response caches are bounded, not permanent hourly admission quotas.
+
+Results report archived freshness, coverage, omissions, named refusals and logical fetch/index/
+replay cost. Missing or corrupt local indexes and metadata caches are rebuildable convenience
+state; they neither create authority nor change archive truth. No match never authorizes an
+unfiltered retry, raw read, whole-session widening or paid call.
+
+The hub records redacted request intent before invoking the service and derived outcomes before
+releasing data. Traces retain provenance and costs, not transcript bodies or usable preview
+handles. Uncertain starts retain their request id for `recallPoll`, not automatic fresh-id retries.
+The versioned `recallSkill` door and managed skill share one body. The supported SDK exposes
+data only for exact reviewed source-profile approvals; its text leaves preserve evidence bytes
+without bypassing input or held-credential checks. Installation grants no live corpus access.
+
 ### 6.4 Deterministic preflight
 
 Before material reaches a model, likely secrets and high-risk data, malformed or truncated

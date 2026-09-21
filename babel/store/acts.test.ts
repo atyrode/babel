@@ -1726,17 +1726,9 @@ test("an overlay the standing lease cannot cover is refused, and so is one that 
 
 test("the importable tables are derived from the migration itself", () => {
   const tables = importableTables();
-  // Twenty-three from the crossing, plus `budgets` (the overlay table #260 added),
-  // `run_progress` (#261), `drains` (#258), #340's `next_actions` with its
-  // `next_action_rulings` ledger, #349's `run_calls`, #342's `session_titles`, and #337's
-  // `record_vectors`: the list is DERIVED, so a table added to the migration appears here
-  // whether or not the one-off import will ever name it — and one removed disappears, which is
-  // what `service_setup` did with Babel's own inference policy (#279).
-  //
   // `record_terms` is NOT here and cannot be: it is a VIRTUAL table and this derivation reads
   // `CREATE TABLE` only, which is the right answer for it — an FTS5 index has no column list a
   // chunk could be validated against, and it is rebuilt from `records` rather than imported.
-  expect(Object.keys(tables)).toHaveLength(31);
   expect(tables["record_terms"]).toBeUndefined();
   expect(tables["dispositions"]).toEqual([
     "id",

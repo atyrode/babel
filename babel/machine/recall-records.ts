@@ -27,7 +27,10 @@ const titleBytes = RecallMetadataSchema.shape.title.unwrap().maxLength!;
 const workspaceBytes = RecallMetadataSchema.shape.workspace.unwrap().maxLength!;
 
 /** Clip only already-redacted text; never allocate an encoding of its unbounded suffix. */
-export function clipUtf8(text: string, maxBytes: number): {
+export function clipUtf8(
+  text: string,
+  maxBytes: number,
+): {
   text: string;
   bytes: number;
   truncated: boolean;
@@ -61,7 +64,8 @@ function metadataText(value: unknown, maxBytes: number): string | null {
 /** Same Codex message fields as its adapter, without retaining or encoding oversized parts. */
 function requestText(body: Record<string, unknown>): string {
   const message = body["message"];
-  if (typeof message === "string" && message !== "") return clipUtf8(message, MAX_REQUEST_BYTES).text;
+  if (typeof message === "string" && message !== "")
+    return clipUtf8(message, MAX_REQUEST_BYTES).text;
   const content = body["content"];
   if (typeof content === "string") return clipUtf8(content, MAX_REQUEST_BYTES).text;
   if (!Array.isArray(content)) return "";
@@ -87,7 +91,11 @@ type Selection = RecallShowRequest["selection"];
 type Harness = "omp" | "codex" | "claude";
 
 /** Whether this record begins an actual user exchange, rather than tool traffic. */
-function startsTurn(harness: Harness, fields: Record<string, unknown>, codexRequest: string | null): boolean {
+function startsTurn(
+  harness: Harness,
+  fields: Record<string, unknown>,
+  codexRequest: string | null,
+): boolean {
   if (harness === "codex") return codexRequest !== null && !injectedBlock(codexRequest);
   const message = object(fields["message"]);
   if (message?.["role"] !== "user") return false;
@@ -95,8 +103,11 @@ function startsTurn(harness: Harness, fields: Record<string, unknown>, codexRequ
   if (fields["type"] !== "user") return false;
   const content = message["content"];
   // Claude wraps tool responses in a user envelope, but no new exchange begins there.
-  return !Array.isArray(content) || content.length === 0 ||
-    !content.every(part => object(part)?.["type"] === "tool_result");
+  return (
+    !Array.isArray(content) ||
+    content.length === 0 ||
+    !content.every((part) => object(part)?.["type"] === "tool_result")
+  );
 }
 
 export interface RecallRecordReading {
@@ -128,7 +139,10 @@ export function recallRecordReader(options: {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > RECALL_MAX_EXCERPT_BYTES)
     throw new RangeError("Invalid excerpt byte bound");
   const metadata: RecallMetadata = {
-    title: null, workspace: null, repository: null, metadataOrigin: "archive",
+    title: null,
+    workspace: null,
+    repository: null,
+    metadataOrigin: "archive",
   };
   const codex: TitleEvidence = { source: NO_THREAD_SOURCE, request: "", requestFallback: "" };
   let fallbackTried = 0;
@@ -142,9 +156,15 @@ export function recallRecordReader(options: {
   let anchorMatches = options.anchor === undefined;
   let turns = 0;
   const excerpt: RecallExcerpt = {
-    trust: "archived-untrusted", begin: RECALL_UNTRUSTED_BEGIN, text: "",
-    end: RECALL_UNTRUSTED_END, maxBytes, bytes: 0, truncated: false,
-    firstRecord: 0, lastRecord: 0,
+    trust: "archived-untrusted",
+    begin: RECALL_UNTRUSTED_BEGIN,
+    text: "",
+    end: RECALL_UNTRUSTED_END,
+    maxBytes,
+    bytes: 0,
+    truncated: false,
+    firstRecord: 0,
+    lastRecord: 0,
   };
 
   const observeMetadata = (fields: Record<string, unknown>, codexRequest: string | null): void => {
@@ -157,7 +177,8 @@ export function recallRecordReader(options: {
         }
       } else if (fields["type"] === "session") {
         if (metadata.title === null) metadata.title = metadataText(fields["title"], titleBytes);
-        if (metadata.workspace === null) metadata.workspace = metadataText(fields["cwd"], workspaceBytes);
+        if (metadata.workspace === null)
+          metadata.workspace = metadataText(fields["cwd"], workspaceBytes);
       }
     } else if (options.harness === "claude") {
       const title = metadataText(fields["aiTitle"], titleBytes);
@@ -180,22 +201,27 @@ export function recallRecordReader(options: {
         if (codexWorkspace === null) codexWorkspace = metadataText(body["cwd"], workspaceBytes);
         if (codex.source === NO_THREAD_SOURCE) {
           const source = decodeThreadSource(body["source"]);
-          if (source !== NO_THREAD_SOURCE) codex.source = {
-            role: clipUtf8(source.role, MAX_REQUEST_BYTES).text,
-            spawn: source.spawn,
-            agentPath: clipUtf8(source.agentPath, MAX_REQUEST_BYTES).text,
-            agentRole: clipUtf8(source.agentRole, MAX_REQUEST_BYTES).text,
-          };
+          if (source !== NO_THREAD_SOURCE)
+            codex.source = {
+              role: clipUtf8(source.role, MAX_REQUEST_BYTES).text,
+              spawn: source.spawn,
+              agentPath: clipUtf8(source.agentPath, MAX_REQUEST_BYTES).text,
+              agentRole: clipUtf8(source.agentRole, MAX_REQUEST_BYTES).text,
+            };
         }
       } else if (fields["type"] === "turn_context") {
         const cwd = metadataText(body["cwd"], workspaceBytes);
         if (cwd !== null) metadata.workspace = cwd;
       } else if (fields["type"] === "event_msg" && body["type"] === "user_message") {
         if (codex.request === "") codex.request = requestText(body);
-      } else if (codexRequest !== null && codex.requestFallback === "" &&
-        fallbackTried < MAX_REQUEST_CANDIDATES) {
+      } else if (
+        codexRequest !== null &&
+        codex.requestFallback === "" &&
+        fallbackTried < MAX_REQUEST_CANDIDATES
+      ) {
         fallbackTried++;
-        if (codexRequest.trim() !== "" && !injectedBlock(codexRequest)) codex.requestFallback = codexRequest;
+        if (codexRequest.trim() !== "" && !injectedBlock(codexRequest))
+          codex.requestFallback = codexRequest;
       }
     }
   };
@@ -205,23 +231,30 @@ export function recallRecordReader(options: {
     bytes += position.byteLength;
     if (options.anchor?.line === position.line) {
       anchor = position;
-      anchorMatches = options.anchor.byteOffset === position.byteOffset &&
-        options.anchor.byteLength === position.byteLength && options.anchor.digest === position.digest &&
+      anchorMatches =
+        options.anchor.byteOffset === position.byteOffset &&
+        options.anchor.byteLength === position.byteLength &&
+        options.anchor.digest === position.digest &&
         options.anchor.time === position.time;
     }
     const fields = object(parsed);
     if (fields !== null) {
       const body = options.harness === "codex" ? object(fields["payload"]) : null;
-      const codexRequest = fields["type"] === "response_item" && body?.["type"] === "message" &&
-        body["role"] === "user" ? requestText(body) : null;
+      const codexRequest =
+        fields["type"] === "response_item" &&
+        body?.["type"] === "message" &&
+        body["role"] === "user"
+          ? requestText(body)
+          : null;
       observeMetadata(fields, codexRequest);
       if (startsTurn(options.harness, fields, codexRequest)) turns++;
     }
     const selection = options.selection;
-    const selected = selection?.kind === "turns"
-      ? turns >= selection.first && turns <= selection.last
-      : options.anchor !== undefined &&
-        Math.abs(position.line - options.anchor.line) <= (selection?.records ?? 0);
+    const selected =
+      selection?.kind === "turns"
+        ? turns >= selection.first && turns <= selection.last
+        : options.anchor !== undefined &&
+          Math.abs(position.line - options.anchor.line) <= (selection?.records ?? 0);
     if (!selected) return;
     if (excerpt.truncated) return;
     const clipped = clipUtf8(text, maxBytes - excerpt.bytes);
@@ -250,14 +283,23 @@ export function recallRecordReader(options: {
   return {
     sink,
     finish() {
-      return finished ??= (async () => {
+      return (finished ??= (async () => {
         await sink.close();
         if (options.harness === "codex") {
           metadata.title = metadataText(deriveTitle(codex).title, titleBytes);
           metadata.workspace = codexWorkspace ?? metadata.workspace;
         }
-        return { excerpt, metadata, records, bytes, anchor, anchorMatches, turns, turnsSupported: turns > 0 };
-      })();
+        return {
+          excerpt,
+          metadata,
+          records,
+          bytes,
+          anchor,
+          anchorMatches,
+          turns,
+          turnsSupported: turns > 0,
+        };
+      })());
     },
   };
 }

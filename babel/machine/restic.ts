@@ -680,10 +680,14 @@ class ResticRepo implements Repo {
   async ls(snapshotId: string, paths: readonly string[] = []): Promise<Listing> {
     const entries: ArchivedEntry[] = [];
     let truncated = false;
-    await this.lsTo(snapshotId, (entry) => {
-      if (entries.length < MAX_LISTED_ENTRIES) entries.push(entry);
-      else truncated = true;
-    }, paths);
+    await this.lsTo(
+      snapshotId,
+      (entry) => {
+        if (entries.length < MAX_LISTED_ENTRIES) entries.push(entry);
+        else truncated = true;
+      },
+      paths,
+    );
     return { entries, truncated };
   }
 

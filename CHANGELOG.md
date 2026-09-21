@@ -11,6 +11,15 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Recall brings bounded archived evidence to any agent, without lending it the archive.**
+  An owner-managed native service fixes disclosure classes; search and locator windows share
+  preparation's redaction, record identities and UTF-8 bounds. Whole sessions need a size preview
+  before explicit sequential widening, with honest coverage, cost and derived traces. A versioned
+  skill and exact SDK approval profile expose the same read contract without credential discovery.
+  Shared preparation regressions and a source-deleted synthetic restic run reconstruct 245 pages
+  byte-for-byte, preserve class isolation after cache warming, and confirm native cleanup. Live
+  provisioning, managed activation and real-corpus disclosure remain operator steps (#156).
+
 - **The dependency closure carries the reviewed bounded-result SDK.** Babel's SDK and both
   workflow gates now follow the same merged Manifold revision, with Code and omp advanced in
   dependency order. Agent-facing data remains explicitly approved and bounded; this supplies

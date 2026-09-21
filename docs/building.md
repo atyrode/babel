@@ -33,6 +33,15 @@ optional. `test/contract.test.ts` pins every manifest to those two files, and
 `test/optional-part.test.ts` dispatches every read door against a hub that refuses the part, so
 the fallback is run rather than described.
 
+Recall's six outside-agent read doors declare exact bounded projections in that same contract.
+`babel/recall-skill.md` is imported verbatim into the versioned `recallSkill` result;
+`babel/recall-profile.json` contains the corresponding source-reviewed SDK approvals, never
+approvals copied from a live hub. After deliberately changing a projection, run
+`bun run recall:profile` and review its digest change; `bun run check:recall-profile` is part of
+`bun run check` and refuses drift. Dotfiles packages that body, profile and the matching supported
+SDK runner as immutable source artifacts. It does not select an origin, retrieve credentials,
+create grants or install a service. Owner setup is `docs/runbook.md` §9.1.
+
 The web halves are **in-realm React** (`docs/PLUGINS.md` §10): a part's `web.tsx` —
 `babel/feed/web.tsx` and `babel/watch/web.tsx` — default-exports `{ id, panels }`
 of ordinary components on `@manifold/ui`'s layout primitives, with the skin in a `styles.css`
@@ -85,15 +94,19 @@ because the inner loop re-packs on every save. The committed manifest carries th
 so a change to the machine half shows up as a moved hash in the diff; `test/bundle.test.ts` runs
 the packed member through the argv the manifest declares and checks the receipt it leaves.
 
-The operations are `scan`, `archive` and `prepare` — the catalog, and what is kept of it. Each
-takes ONE input
-document — a JSON string in the job request, which the engine materializes as a file at
-`/inputs/input`, so `--input` is a path and never 64 KiB of argv — and writes every file it
-produced flat into the sealed output lease at `/outputs/outputs`, which the hub reads back with
-`ctx.jobs.outputs`. The lease is cut from a **managed** location: the alternative, an ordinary
-anchor, must already exist on the machine for `write` and refuses a second job for `create`.
-`scan` and `prepare` run with `network: "none"`; `archive` reaches the host because it reaches
-the repository and its storage service.
+The one-shot operations are `scan`, `archive`, `prepare` and `verify`; Recall adds a persistent
+native instance service. Each takes ONE input document — a JSON string materialized at
+`/inputs/input`, so `--input` is a path and never 64 KiB of argv. One-shot jobs write their
+results into sealed output leases read through `ctx.jobs.outputs`; Recall publishes no output
+lease and returns bounded authenticated loopback responses through its native service.
+Its generated service bearer is a separate readonly input containing a JSON string, not raw text:
+atyrode/manifold at `3e8510c473d84175568ac81012763635112ed7d3`,
+`packages/agent/src/job-inputs.ts:34-50`. The service parses it once, acknowledges readiness over
+the owner's IPC and shuts down on owner disconnect. It uses private tmpfs for widening bytes
+and the managed cache only for rebuildable local indexes and metadata.
+`scan` and `prepare` run with `network: "none"`; the archive-reading/writing operations reach
+the host network for their bound repository and storage service. The owner configures Recall's
+instance service and exact disclosure-class grant targets, not an outside caller's native job.
 
 **A MACHINE ANSWERS FOR TOOLS BY NAME, AND THE FLEET ADVERTISES TWO** (`development` and
 `system`, plus anchors). Until #303 this half asked for `bun`, `git` and `restic` by name, so
@@ -127,9 +140,9 @@ There is one decision per tool, and the four answers are different:
   (`libc.so.6`, `libdl.so.2`, `libm.so.6`, `libpthread.so.0`) — so every operation that runs it
   names this closure too. Those are direct requirements, not a transitive closure: the owner
   supplies and reviews that.
-- **`restic` stays the owner's, by name, and only `archive` asks for it.** See below: there is
-  nothing honest to pin. Requirements are per-operation, so a machine that binds no restic
-  disables `archive` alone — `jobResourceRefusal` admits `scan` and `prepare` unchanged.
+- **`restic` stays the owner's, by name; `archive`, `verify` and `recall` ask for it.**
+  There is nothing honest to pin. Requirements are per-operation, so a missing restic binding
+  refuses those archive paths without disabling `scan` or `prepare`.
 
 For the operator's fleet the remaining bindings are one dotfiles module — no `bun` entry any
 more, and `git` inside the `development` alias rather than beside it:
@@ -439,13 +452,15 @@ bun install --cwd ../manifold --frozen-lockfile   # the kit resolves zod and the
 ```
 
 `MANIFOLD_REV` follows Manifold `main` and currently names
-`89b065d0ff60718121629a72d8633ea348da91d6`. At that revision the kit stamps
-`hardenedContract: 3` into repacked bundles (`packages/plugin-kit/src/pack.ts:298-304`),
-while the host accepts contracts 1, 2 and 3 (`packages/protocol/src/isolate.ts:751-753`).
-The reviewed bounded-result channel is available to explicitly approved doors, but ordinary
-agent-facing results remain mechanical-only by default (`packages/sdk/README.md:138-176`;
-atyrode/manifold#798). This pin supplies that prerequisite, not Babel Recall or its disclosure
-policy. A source pin does not prove which revision any deployed hub is running.
+`3e8510c473d84175568ac81012763635112ed7d3`. At that revision the kit stamps
+`hardenedContract: 5` into repacked bundles (`packages/plugin-kit/src/pack.ts:298-304`),
+while the host retains contracts 1–5 (`packages/protocol/src/isolate.ts:744-758`).
+The reviewed bounded-result channel includes exact digest-reviewed `textFields`: string-or-null
+leaves preserve already-redacted evidence rather than refusing a redaction marker as a credential
+carrier. Ordinary agent-facing results remain mechanical-only without trusted source approval,
+and domain-owned classification/redaction remains mandatory
+(`packages/sdk/README.md:138-178`; atyrode/manifold#798 and atyrode/manifold#812).
+A source pin does not prove which revision any deployed hub is running.
 
 It retains delegated `machines:read` (atyrode/manifold#740) — which four of Babel's doors
 declare — and the pre-deployment projection for a plugin holding no installation

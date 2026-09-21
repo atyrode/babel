@@ -15,7 +15,11 @@ import {
   RecallSetupPreviewSchema,
   type RecallPolicy,
 } from "../contract.ts";
-import { composeRecallServicePolicy, recallServiceDoors, type RecallRuntime } from "./recall-services.ts";
+import {
+  composeRecallServicePolicy,
+  recallServiceDoors,
+  type RecallRuntime,
+} from "./recall-services.ts";
 
 const MACHINE = "recall-owner";
 const REVISION = "a".repeat(64);
@@ -27,7 +31,10 @@ const RUNTIME: RecallRuntime = {
 };
 const POLICY: RecallPolicy = {
   version: 1,
-  classes: [{ id: "public", label: "Public", ceiling: 0 }, { id: "private", label: "Private", ceiling: 3 }],
+  classes: [
+    { id: "public", label: "Public", ceiling: 0 },
+    { id: "private", label: "Private", ceiling: 3 },
+  ],
   subjects: [{ name: "Sensitive owner label", host: "archive-owner", sensitivity: 2 }],
 };
 
@@ -50,7 +57,13 @@ function owner(isRoot = true): OwnerFixture {
     admissionPublicKey: "-----BEGIN PUBLIC KEY-----synthetic",
     connected: true,
     platforms: ["linux-x64"],
-    operations: { [MACHINE_OPERATIONS.recall]: { ready: true, reason: null, resourceBindingDigest: RUNTIME.resourceBindingDigest } },
+    operations: {
+      [MACHINE_OPERATIONS.recall]: {
+        ready: true,
+        reason: null,
+        resourceBindingDigest: RUNTIME.resourceBindingDigest,
+      },
+    },
     installation: {
       revision: RUNTIME.installationRevision,
       artifactSha256: RUNTIME.artifactSha256,
@@ -65,11 +78,13 @@ function owner(isRoot = true): OwnerFixture {
     configuration: { revision: null, policies: [] },
     connected: true,
     credentialReferences: [],
-    runtimeCandidates: [{
-      runtime: { pluginId: BABEL_PLUGIN_ID, operationId: MACHINE_OPERATIONS.recall, ...RUNTIME },
-      ready: true,
-      reason: null,
-    }],
+    runtimeCandidates: [
+      {
+        runtime: { pluginId: BABEL_PLUGIN_ID, operationId: MACHINE_OPERATIONS.recall, ...RUNTIME },
+        ready: true,
+        reason: null,
+      },
+    ],
   };
   const installed: InstanceServiceConfigurationRead = {
     description: {
@@ -87,18 +102,33 @@ function owner(isRoot = true): OwnerFixture {
   const ctx = {
     auth: { isRoot },
     jobs: {
-      describe: async () => { reads.push("runtime"); return described; },
+      describe: async () => {
+        reads.push("runtime");
+        return described;
+      },
     },
     services: {
-      readConfiguration: async () => { reads.push("native"); return native; },
-      readInstanceConfiguration: async () => { reads.push("instance"); return installed; },
+      readConfiguration: async () => {
+        reads.push("native");
+        return native;
+      },
+      readInstanceConfiguration: async () => {
+        reads.push("instance");
+        return installed;
+      },
       configureInstance: async (args: ConfigureInstanceServiceArgs) => {
         if (control.configureError) throw new Error(control.configureError);
-        if (args.expectedRevision !== (installed.description.configuration?.revision ?? null)) throw new Error("conflict");
+        if (args.expectedRevision !== (installed.description.configuration?.revision ?? null))
+          throw new Error("conflict");
         writes.push(args);
         installed.policy = args.policy;
         installed.description.owner = { machineId: args.machineId!, name: "Owner", online: true };
-        installed.description.configuration = { revision: REVISION, pluginId: BABEL_PLUGIN_ID, enabled: args.enabled, policySha256: "e".repeat(64) };
+        installed.description.configuration = {
+          revision: REVISION,
+          pluginId: BABEL_PLUGIN_ID,
+          enabled: args.enabled,
+          policySha256: "e".repeat(64),
+        };
         installed.description.state = "starting";
         return installed.description;
       },
@@ -108,16 +138,22 @@ function owner(isRoot = true): OwnerFixture {
 }
 
 async function knock(name: string, ctx: GuestCtx, args: unknown): Promise<unknown> {
-  const door = recallServiceDoors().find(candidate => candidate.action.name === name);
+  const door = recallServiceDoors().find((candidate) => candidate.action.name === name);
   if (!door) throw new Error("Missing Recall configuration door");
   return door.handler(ctx, door.action.input.parse(args) as never);
 }
 
 async function preview(ctx: GuestCtx, policy = POLICY) {
-  return RecallSetupPreviewSchema.parse(await knock(ACTIONS.previewRecall, ctx, { machineId: MACHINE, policy }));
+  return RecallSetupPreviewSchema.parse(
+    await knock(ACTIONS.previewRecall, ctx, { machineId: MACHINE, policy }),
+  );
 }
 
-async function install(ctx: GuestCtx, shown: { expectedRevision: string | null; previewDigest: string }, policy = POLICY) {
+async function install(
+  ctx: GuestCtx,
+  shown: { expectedRevision: string | null; previewDigest: string },
+  policy = POLICY,
+) {
   return knock(ACTIONS.installRecall, ctx, {
     machineId: MACHINE,
     policy,
@@ -135,24 +171,47 @@ function expectRefusal(value: unknown) {
 
 test("non-owners cannot read or mutate Recall configuration", async () => {
   const fleet = owner(false);
-  expectRefusal(await knock(ACTIONS.previewRecall, fleet.ctx, { machineId: MACHINE, policy: POLICY }));
-  expectRefusal(await knock(ACTIONS.installRecall, fleet.ctx, {
-    machineId: MACHINE, policy: POLICY, expectedRevision: null, previewDigest: REVISION,
-  }));
+  expectRefusal(
+    await knock(ACTIONS.previewRecall, fleet.ctx, { machineId: MACHINE, policy: POLICY }),
+  );
+  expectRefusal(
+    await knock(ACTIONS.installRecall, fleet.ctx, {
+      machineId: MACHINE,
+      policy: POLICY,
+      expectedRevision: null,
+      previewDigest: REVISION,
+    }),
+  );
   expect(fleet.reads).toEqual([]);
   expect(fleet.writes).toEqual([]);
 });
 
 test("preview refuses missing, wrong, or unready native service runtimes without mutation", async () => {
   const mutations: ((fleet: OwnerFixture) => void)[] = [
-    fleet => { fleet.described.installation = null; },
-    fleet => { fleet.described.operations = {}; },
-    fleet => { fleet.described.pluginId = "other.plugin"; },
-    fleet => { fleet.described.installation!.purgeRequested = true; },
-    fleet => { fleet.native.runtimeCandidates = []; },
-    fleet => { fleet.native.runtimeCandidates[0]!.runtime.operationId = MACHINE_OPERATIONS.archive; },
-    fleet => { fleet.native.runtimeCandidates[0]!.runtime.resourceBindingDigest = MOVED; },
-    fleet => { fleet.native.runtimeCandidates[0]!.ready = false; },
+    (fleet) => {
+      fleet.described.installation = null;
+    },
+    (fleet) => {
+      fleet.described.operations = {};
+    },
+    (fleet) => {
+      fleet.described.pluginId = "other.plugin";
+    },
+    (fleet) => {
+      fleet.described.installation!.purgeRequested = true;
+    },
+    (fleet) => {
+      fleet.native.runtimeCandidates = [];
+    },
+    (fleet) => {
+      fleet.native.runtimeCandidates[0]!.runtime.operationId = MACHINE_OPERATIONS.archive;
+    },
+    (fleet) => {
+      fleet.native.runtimeCandidates[0]!.runtime.resourceBindingDigest = MOVED;
+    },
+    (fleet) => {
+      fleet.native.runtimeCandidates[0]!.ready = false;
+    },
   ];
   for (const mutate of mutations) {
     const fleet = owner();
@@ -164,15 +223,19 @@ test("preview refuses missing, wrong, or unready native service runtimes without
   }
 });
 
-
 test("owner preview is read-only and install configures only the selected instance", async () => {
   const fleet = owner();
   const shown = await preview(fleet.ctx);
   expect(shown.ready).toBe(true);
   expect(shown.changed).toBe(true);
-  expect(shown.classes.map(entry => entry.target)).toEqual(POLICY.classes.map(({ id }) => ({
-    kind: "service", machineId: MACHINE, serviceId: RECALL_SERVICE_ID, operationId: id,
-  })));
+  expect(shown.classes.map((entry) => entry.target)).toEqual(
+    POLICY.classes.map(({ id }) => ({
+      kind: "service",
+      machineId: MACHINE,
+      serviceId: RECALL_SERVICE_ID,
+      operationId: id,
+    })),
+  );
   expect(fleet.writes).toEqual([]);
   const result = RecallInstalledSchema.parse(await install(fleet.ctx, shown));
   expect(result.installed).toBe(true);
@@ -191,9 +254,17 @@ test("owner preview is read-only and install configures only the selected instan
 test("a changed owner policy or service revision invalidates the preview without mutation", async () => {
   const fleet = owner();
   const shown = await preview(fleet.ctx);
-  const changed: RecallPolicy = { ...POLICY, subjects: [{ ...POLICY.subjects[0]!, sensitivity: 0 }] };
+  const changed: RecallPolicy = {
+    ...POLICY,
+    subjects: [{ ...POLICY.subjects[0]!, sensitivity: 0 }],
+  };
   expectRefusal(await install(fleet.ctx, shown, changed));
-  fleet.installed.description.configuration = { revision: MOVED, pluginId: BABEL_PLUGIN_ID, enabled: true, policySha256: REVISION };
+  fleet.installed.description.configuration = {
+    revision: MOVED,
+    pluginId: BABEL_PLUGIN_ID,
+    enabled: true,
+    policySha256: REVISION,
+  };
   expectRefusal(await install(fleet.ctx, shown));
   expect(fleet.writes).toEqual([]);
 });
@@ -230,7 +301,9 @@ test("oversized owner metadata is refused before native configuration without di
   const oversized: RecallPolicy = {
     ...POLICY,
     subjects: Array.from({ length: 256 }, (_, index) => ({
-      name: `${secret}-${index}`, host: "archive-owner", sensitivity: 2,
+      name: `${secret}-${index}`,
+      host: "archive-owner",
+      sensitivity: 2,
       workspace: "世".repeat(2048),
     })),
   };

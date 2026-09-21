@@ -21,15 +21,31 @@ export async function startRecall(
   request: RecallRequest,
 ): Promise<string> {
   const id = crypto.randomUUID();
-  const recorded = request.kind === "session"
-    ? { kind: request.kind, previewDigest: previewDigest(request.previewId), offset: request.offset, maxBytes: request.maxBytes }
-    : request;
-  const redactedRequest = secretScan().redact(JSON.stringify(RecallTraceRequestSchema.parse(recorded)), 1);
+  const recorded =
+    request.kind === "session"
+      ? {
+          kind: request.kind,
+          previewDigest: previewDigest(request.previewId),
+          offset: request.offset,
+          maxBytes: request.maxBytes,
+        }
+      : request;
+  const redactedRequest = secretScan().redact(
+    JSON.stringify(RecallTraceRequestSchema.parse(recorded)),
+    1,
+  );
   await store.db.run(
     `INSERT INTO recall_requests(id, principal_id, operation, target, service_revision, redacted_request, created_at)
      VALUES(?, ?, ?, ?, ?, ?, ?)`,
-    [id, principalId, request.kind, JSON.stringify(target), revision,
-      redactedRequest, new Date(store.now()).toISOString()],
+    [
+      id,
+      principalId,
+      request.kind,
+      JSON.stringify(target),
+      revision,
+      redactedRequest,
+      new Date(store.now()).toISOString(),
+    ],
   );
   return id;
 }
@@ -76,13 +92,16 @@ export async function recordRecallOutcome(store: BabelStore, reply: RecallReply)
     const { hits, preview, ...metadata } = result;
     summary.result = {
       ...metadata,
-      locators: hits.map(hit => hit.locator),
-      preview: preview === undefined ? undefined : {
-        sourceBytes: preview.sourceBytes,
-        servedBytes: preview.servedBytes,
-        records: preview.records,
-        sourceDigest: preview.sourceDigest,
-      },
+      locators: hits.map((hit) => hit.locator),
+      preview:
+        preview === undefined
+          ? undefined
+          : {
+              sourceBytes: preview.sourceBytes,
+              servedBytes: preview.servedBytes,
+              records: preview.records,
+              sourceDigest: preview.sourceDigest,
+            },
     };
   }
   const redacted = secretScan().redact(JSON.stringify(RecallTraceSchema.parse(summary)), 1);
@@ -92,8 +111,15 @@ export async function recordRecallOutcome(store: BabelStore, reply: RecallReply)
      SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS(
        SELECT 1 FROM recall_outcomes WHERE request_id = ? AND state = ? AND summary = ?
      )`,
-    [reply.requestId, reply.state, redacted,
+    [
+      reply.requestId,
+      reply.state,
+      redacted,
       result?.preview === undefined ? null : previewDigest(result.preview.previewId),
-      new Date(store.now()).toISOString(), reply.requestId, reply.state, redacted],
+      new Date(store.now()).toISOString(),
+      reply.requestId,
+      reply.state,
+      redacted,
+    ],
   );
 }

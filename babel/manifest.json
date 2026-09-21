@@ -42,20 +42,20 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "993c20964fc8c3906cdd3da2e91ac97274fe443f664005359635198fd07271ad",
+        "sha256": "cab6849cd98a9722b301df283ee1f273036e46bd86c156def3752904e8e8f374",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "993c20964fc8c3906cdd3da2e91ac97274fe443f664005359635198fd07271ad",
+        "entrySha256": "cab6849cd98a9722b301df283ee1f273036e46bd86c156def3752904e8e8f374",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "993c20964fc8c3906cdd3da2e91ac97274fe443f664005359635198fd07271ad",
+        "sha256": "cab6849cd98a9722b301df283ee1f273036e46bd86c156def3752904e8e8f374",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "993c20964fc8c3906cdd3da2e91ac97274fe443f664005359635198fd07271ad",
+        "entrySha256": "cab6849cd98a9722b301df283ee1f273036e46bd86c156def3752904e8e8f374",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -301,9 +301,7 @@
         },
         "runtimeTools": ["bun", "restic", "system"],
         "executable": { "runtimeTool": "bun" },
-        "locations": [
-          { "locationId": "atyrode.babel.cache", "access": "write" }
-        ],
+        "locations": [{ "locationId": "atyrode.babel.cache", "access": "write" }],
         "outputs": [],
         "providesService": true,
         "network": "host",

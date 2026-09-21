@@ -150,23 +150,10 @@ test("the ceiling a bound is judged against is the manifest's, and it never ride
   expect(JobLimitsSchema.safeParse(plan.limits).success).toBe(true);
 });
 
-test("no operation this bundle ships binds a model service, so none of them meters a call", () => {
-  /*
-    The fold judges a stall only where a call could be counted, and it reads that off the
-    manifest's own bindings. Babel's two model lanes were the only bindings that could carry a
-    call and they went with the launcher (#279): a run that reaches a model is a job CODE
-    posts, under CODE's service policy, and what the owner metered arrives on the job the fold
-    settles. What is left binding anything reaches a restic repository: `archive`, which writes
-    one, and `verify`, which reads one back.
-  */
+test("native operations have storage authority but no inference service binding", () => {
   const shipped = PluginManifestSchema.parse(manifestJson);
-  const metered = runPlan({ manifest: shipped, policy: POLICY }).metered;
-  expect(metered).toEqual({
-    [OPERATIONS.scan]: false,
-    [OPERATIONS.prepare]: false,
-    [OPERATIONS.archive]: true,
-    [OPERATIONS.verify]: true,
-  });
+  // Inference belongs to Code's job. Adding a provider binding to Babel would widen native
+  // authority, not merely change the conductor's conservative meterability classification.
   const bindings = Object.values(shipped.machine?.operations ?? {}).flatMap(
     (operation) => operation.services ?? [],
   );

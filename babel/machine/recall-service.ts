@@ -38,7 +38,7 @@ export function openRecallService(options: {
   if (!/^[A-Za-z0-9_-]{32,128}$/.test(options.bearer))
     throw new Error("Recall service binding is unavailable.");
   const authorization = Buffer.from(`Bearer ${options.bearer}`);
-  const routes = new Map(options.policy.classes.map(entry => [`/recall/${entry.id}`, entry.id]));
+  const routes = new Map(options.policy.classes.map((entry) => [`/recall/${entry.id}`, entry.id]));
   const classQueueLimit = Math.max(1, Math.floor(RECALL_MAX_REQUESTS / routes.size));
   const now = options.now ?? Date.now;
   const pending = new Map<string, Pending>();
@@ -87,9 +87,9 @@ export function openRecallService(options: {
         const bytes = await request.arrayBuffer();
         if (bytes.byteLength > RECALL_MAX_REQUEST_BODY_BYTES)
           return new Response(null, { status: 413 });
-        const body = RecallServiceBodySchema.parse(JSON.parse(
-          new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-        ));
+        const body = RecallServiceBodySchema.parse(
+          JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+        );
         frame = RecallServiceRequestSchema.parse(JSON.parse(body.request));
       } catch {
         return new Response(null, { status: 400 });
@@ -102,10 +102,16 @@ export function openRecallService(options: {
       const key = `${classId}/${frame.requestId}`;
       const held = pending.get(key);
       if (frame.request.kind === "poll")
-        return Response.json(held?.reply ?? {
-          requestId: frame.requestId, state: "expired",
-        } satisfies RecallReply);
-      const digest = new Bun.CryptoHasher("sha256").update(JSON.stringify(frame.request)).digest("hex");
+        return Response.json(
+          held?.reply ??
+            ({
+              requestId: frame.requestId,
+              state: "expired",
+            } satisfies RecallReply),
+        );
+      const digest = new Bun.CryptoHasher("sha256")
+        .update(JSON.stringify(frame.request))
+        .digest("hex");
       if (held !== undefined) {
         if (held.digest !== digest) return new Response(null, { status: 409 });
         return Response.json(held.reply);
@@ -123,9 +129,12 @@ export function openRecallService(options: {
         return Response.json({ requestId: frame.requestId, state: "busy" } satisfies RecallReply);
       // Completed responses are a per-class bounded replay cache, not an hourly admission quota.
       // Eviction and the TTL both make later polls expire; pending work is never evicted.
-      if (retained >= RECALL_MAX_REQUESTS && oldestTerminal !== undefined) pending.delete(oldestTerminal);
+      if (retained >= RECALL_MAX_REQUESTS && oldestTerminal !== undefined)
+        pending.delete(oldestTerminal);
       const entry: Pending = {
-        classId, request: frame.request, digest,
+        classId,
+        request: frame.request,
+        digest,
         reply: { requestId: frame.requestId, state: "pending" },
         expiresAt: at + RECALL_REQUEST_TTL_MS,
       };
@@ -169,14 +178,21 @@ export async function runRecallService(raw: unknown): Promise<void> {
     context = openWorkerContext({ signal: controller.signal });
     await context.ready;
     const config = await resticConfig({ credentialFile: RESTIC_CREDENTIAL_FILE, env: process.env });
-    archive = await createRecallArchive({ repo: openRepo(config), cacheDir, temporaryDir: "/tmp", policy });
+    archive = await createRecallArchive({
+      repo: openRepo(config),
+      cacheDir,
+      temporaryDir: "/tmp",
+      policy,
+    });
     const bearer: unknown = await Bun.file(bearerFile).json();
     if (typeof bearer !== "string") throw new Error("Recall service binding is unavailable.");
     service = openRecallService({ archive, policy, bearer });
     await context.announceServiceReady(service.port);
     const signal = AbortSignal.any([controller.signal, context.signal]);
     if (!signal.aborted)
-      await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
   } catch {
     throw new Error("Recall service could not start or lost its native owner.");
   } finally {

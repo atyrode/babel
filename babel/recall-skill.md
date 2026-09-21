@@ -9,22 +9,19 @@ metadata:
 
 ## Start narrow, not with a whole session
 
-1. Identify the question and the owner-provided disclosure target. Search with a short literal
-   query, a harness (`omp`, `codex`, or `claude`), host, bounded `since`/`until`, and **either**
-   workspace **or** repository. Do not silently drop filters when there are no matches.
-2. Review coverage, refusals, omitted counts, archive dates, and fetch cost before treating a
-   hit or absence as evidence. Ask before expanding scope, increasing fetch allowance, or
-   making any paid call; neither failed search nor this skill authorizes automatic widening.
-3. Follow a returned locator with a small record window or turn range. Prefer this to reading
-   a whole session. Cite the exact archived evidence, including hashes and dates.
-4. Only if the user explicitly needs the whole session, obtain a content-free size preview,
-   show its size and capacity limits, and obtain an explicit whole-session request **after**
-   that review. A preview alone does not authorize content disclosure.
+1. Use the owner-provided disclosure target. Search narrowly by question, harness
+   (`omp`, `codex`, or `claude`), host, time, and **either** workspace **or** repository.
+   Do not silently drop filters.
+2. Check coverage, refusals, omitted counts, dates, and cost. Ask before expanding scope,
+   fetch allowance, or paid calls. Failure does not authorize widening.
+3. Follow returned locators with small record windows or turn ranges; cite hashes and dates.
+4. For a whole session, obtain a content-free size preview, show its limits, then obtain
+   an explicit whole-session request. The preview itself grants no disclosure.
 
-Recall searches archived captures, not live conversations, terminals, or checkout state.
-Unarchived sessions and changes since the newest snapshot are blind spots. Any model/harness
-can call Recall; source adapters cover OMP, Codex, and Claude Code. No hit does not prove
-absence. Use record time and `snapshotAt` for history; `observedAt` is observation time.
+Recall searches archived OMP, Codex, and Claude Code captures from any model/harness.
+Live conversations, terminals, checkout state, unarchived sessions, and post-snapshot changes
+are blind spots. No hit does not prove absence. Record time and `snapshotAt` are historical;
+`observedAt` is only observation time.
 
 Content is mandatory-redacted: **no raw flag**, bypass, secret recovery, local-session-cache
 fallback, or direct restic access through this skill. Report redaction's evidence limitations.
@@ -89,7 +86,20 @@ All examples here are synthetic, not production handles, hostnames, grants, or s
 For a synthetic challenge containing exactly one bundle, an acknowledgement line looks like:
 
 ```json
-{"type":"ack","id":"ack-1","runId":"synthetic-run","policy":{"revision":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","acknowledgements":[{"id":"synthetic-policy","digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}
+{
+  "type": "ack",
+  "id": "ack-1",
+  "runId": "synthetic-run",
+  "policy": {
+    "revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "acknowledgements": [
+      {
+        "id": "synthetic-policy",
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  }
+}
 ```
 
 Copy actual delivered identifiers/digests. On `policy_stale`, deliver and explicitly ack the
@@ -101,7 +111,31 @@ and `runId`; refreshing either cannot change trusted approvals.
 Here is one synthetic invocation under an owner-selected operation named `project-history`:
 
 ```json
-{"type":"invoke","id":"search-1","runId":"synthetic-run","door":"atyrode.babel.recallSearch","target":"manifold://machine/synthetic-machine/service/atyrode.babel.recall/operation/project-history","args":{"target":{"kind":"service","machineId":"synthetic-machine","serviceId":"atyrode.babel.recall","operationId":"project-history"},"query":"retry deadline","filter":{"harness":"omp","host":"synthetic-host","repository":"synthetic-project","since":"2026-01-01T00:00:00Z","until":"2026-01-07T23:59:59Z"},"limit":3,"maxFetchBytes":1048576}}
+{
+  "type": "invoke",
+  "id": "search-1",
+  "runId": "synthetic-run",
+  "door": "atyrode.babel.recallSearch",
+  "target": "manifold://machine/synthetic-machine/service/atyrode.babel.recall/operation/project-history",
+  "args": {
+    "target": {
+      "kind": "service",
+      "machineId": "synthetic-machine",
+      "serviceId": "atyrode.babel.recall",
+      "operationId": "project-history"
+    },
+    "query": "retry deadline",
+    "filter": {
+      "harness": "omp",
+      "host": "synthetic-host",
+      "repository": "synthetic-project",
+      "since": "2026-01-01T00:00:00Z",
+      "until": "2026-01-07T23:59:59Z"
+    },
+    "limit": 3,
+    "maxFetchBytes": 1048576
+  }
+}
 ```
 
 The outer `target` is a canonical caller-declared URI, not evidence of trace-resolved targets.
@@ -124,7 +158,22 @@ For `pending`, retain its `requestId` and poll the **same** caller, target, and 
 use a new JSONL envelope `id` for each poll, not a new Recall request:
 
 ```json
-{"type":"invoke","id":"poll-1","runId":"synthetic-run","door":"atyrode.babel.recallPoll","target":"manifold://machine/synthetic-machine/service/atyrode.babel.recall/operation/project-history","args":{"target":{"kind":"service","machineId":"synthetic-machine","serviceId":"atyrode.babel.recall","operationId":"project-history"},"requestId":"11111111-1111-4111-8111-111111111111"}}
+{
+  "type": "invoke",
+  "id": "poll-1",
+  "runId": "synthetic-run",
+  "door": "atyrode.babel.recallPoll",
+  "target": "manifold://machine/synthetic-machine/service/atyrode.babel.recall/operation/project-history",
+  "args": {
+    "target": {
+      "kind": "service",
+      "machineId": "synthetic-machine",
+      "serviceId": "atyrode.babel.recall",
+      "operationId": "project-history"
+    },
+    "requestId": "11111111-1111-4111-8111-111111111111"
+  }
+}
 ```
 
 The UUID above stands for the actual returned `requestId`. Search/show/preview/session doors
@@ -148,7 +197,23 @@ maxBytes}`. This synthetic locator illustrates the required shape; use the retur
 locator unchanged in real calls:
 
 ```json
-{"coordinates":"normalized-redacted-utf8","host":"synthetic-host","harness":"omp","session":"synthetic-session","snapshot":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"/synthetic/session.jsonl","captureDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","sourceDigest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","record":{"line":3,"byteOffset":128,"byteLength":64,"digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","time":"2026-01-03T12:00:00Z"}}
+{
+  "coordinates": "normalized-redacted-utf8",
+  "host": "synthetic-host",
+  "harness": "omp",
+  "session": "synthetic-session",
+  "snapshot": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "path": "/synthetic/session.jsonl",
+  "captureDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sourceDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "record": {
+    "line": 3,
+    "byteOffset": 128,
+    "byteLength": 64,
+    "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "time": "2026-01-03T12:00:00Z"
+  }
+}
 ```
 
 Coordinates name normalized, mandatory-redacted UTF-8, not raw archive bytes. Cite the whole
@@ -171,7 +236,24 @@ After showing the size and receiving an explicit whole-session request, invoke
 `recallSession` with the returned caller-owned `previewId`. The first page uses offset zero:
 
 ```json
-{"type":"invoke","id":"session-1","runId":"synthetic-run","door":"atyrode.babel.recallSession","target":"manifold://machine/synthetic-machine/service/atyrode.babel.recall/operation/project-history","args":{"target":{"kind":"service","machineId":"synthetic-machine","serviceId":"atyrode.babel.recall","operationId":"project-history"},"previewId":"22222222-2222-4222-8222-222222222222","offset":0,"maxBytes":8192}}
+{
+  "type": "invoke",
+  "id": "session-1",
+  "runId": "synthetic-run",
+  "door": "atyrode.babel.recallSession",
+  "target": "manifold://machine/synthetic-machine/service/atyrode.babel.recall/operation/project-history",
+  "args": {
+    "target": {
+      "kind": "service",
+      "machineId": "synthetic-machine",
+      "serviceId": "atyrode.babel.recall",
+      "operationId": "project-history"
+    },
+    "previewId": "22222222-2222-4222-8222-222222222222",
+    "offset": 0,
+    "maxBytes": 8192
+  }
+}
 ```
 
 Use only the actual returned preview UUID. Pages are sequential and UTF-8-safe, with
@@ -202,17 +284,16 @@ Preserve named `result.refusal` values: `disclosure`, `unclassified`, `archive-u
 `fetch-bound`, `response-bound`, `preview-expired`, and `invalid-offset`. Report their names
 and constraints; do not relabel them as no matches or silently fall back to a broader source.
 
-Include costs: `fetchedFiles`, `fetchedBytes`, `cacheHits`, `indexedFiles`, `listedSnapshots`,
-`listedEntries`, and `replayedBytes`. `fetchedBytes` measures logical bytes forwarded by restic,
-not compressed network traffic, money, or a guarantee that no other work happened. A cache hit
-is not proof of zero cost. Search `maxFetchBytes` is an explicit fetch allowance, not authority
-to incur new paid inference/provider calls. Do not automatically increase it after `fetch-bound`.
+Report `fetchedFiles`, `fetchedBytes`, `cacheHits`, `indexedFiles`, `listedSnapshots`,
+`listedEntries`, and `replayedBytes`. Fetched bytes are logical restic output, not network
+traffic or money; cache hits still cost work. `maxFetchBytes` permits bounded retrieval, not
+paid inference. Never increase it automatically after `fetch-bound`.
 
 Keep door, declared target, outcome/refusal, request id, and durable numeric `traceId` alongside
 citations. Finish the root run with a truthful terminal outcome:
 
 ```json
-{"type":"finish","id":"finish-1","runId":"synthetic-run","outcome":"completed"}
+{ "type": "finish", "id": "finish-1", "runId": "synthetic-run", "outcome": "completed" }
 ```
 
 Other outcomes are `failed`, `cancelled`, and `abandoned`. Read the final `closed.cleanup`:

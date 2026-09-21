@@ -1,31 +1,54 @@
 import { expect, test } from "bun:test";
 import {
-  RECALL_MAX_REQUESTS, RECALL_MAX_SERVED_BYTES, RECALL_REQUEST_TTL_MS,
-  RecallReplySchema, type RecallPolicy, type RecallReply, type RecallResult,
+  RECALL_MAX_REQUESTS,
+  RECALL_MAX_SERVED_BYTES,
+  RECALL_REQUEST_TTL_MS,
+  RecallReplySchema,
+  type RecallPolicy,
+  type RecallReply,
+  type RecallResult,
 } from "../contract.ts";
 import { type RecallArchive } from "./recall-archive.ts";
 import { openRecallService } from "./recall-service.ts";
 
 const POLICY: RecallPolicy = {
   version: 1,
-  classes: [{ id: "public", label: "Public", ceiling: 0 }, { id: "private", label: "Private", ceiling: 3 }],
+  classes: [
+    { id: "public", label: "Public", ceiling: 0 },
+    { id: "private", label: "Private", ceiling: 3 },
+  ],
   subjects: [{ name: "Synthetic sessions", host: "synthetic-host", sensitivity: 0 }],
 };
 const BEARER = "synthetic_recall_runtime_bearer_123456789";
 const SEARCH = { kind: "search", query: "needle" };
 const POLL = { kind: "poll" };
 const id = (n: number): string => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
-const frame = (requestId: string, request: unknown): string => JSON.stringify({
-  request: JSON.stringify({ requestId, request }),
-});
+const frame = (requestId: string, request: unknown): string =>
+  JSON.stringify({
+    request: JSON.stringify({ requestId, request }),
+  });
 function result(matches = 0): RecallResult {
   return {
-    operation: "search", observedAt: "2026-09-21T00:00:00.000Z", newestSnapshotAt: null,
+    operation: "search",
+    observedAt: "2026-09-21T00:00:00.000Z",
+    newestSnapshotAt: null,
     previewByteLimit: Math.floor(RECALL_MAX_SERVED_BYTES / POLICY.classes.length),
-    cost: { fetchedFiles: 0, fetchedBytes: 0, cacheHits: 0, indexedFiles: 0,
-      listedSnapshots: 0, listedEntries: 0, replayedBytes: 0 },
+    cost: {
+      fetchedFiles: 0,
+      fetchedBytes: 0,
+      cacheHits: 0,
+      indexedFiles: 0,
+      listedSnapshots: 0,
+      listedEntries: 0,
+      replayedBytes: 0,
+    },
     coverage: { eligible: 0, indexed: 0, complete: true, overBound: 0 },
-    matches, omitted: 0, omittedSubjects: 0, refusedSubjects: [], refusal: null, hits: [],
+    matches,
+    omitted: 0,
+    omittedSubjects: 0,
+    refusedSubjects: [],
+    refusal: null,
+    hits: [],
   };
 }
 
@@ -47,12 +70,20 @@ async function fixture(body: (h: Harness) => Promise<void>): Promise<void> {
   const gates: Gate[] = [];
   const clock = { now: Date.parse("2026-09-21T00:00:00.000Z") };
   const archive: RecallArchive = { execute: async () => result(), close: async () => {} };
-  const service = openRecallService({ archive, policy: POLICY, bearer: BEARER, now: () => clock.now });
-  const raw: Harness["raw"] = (body, path = "/recall/public", init = {}) => fetch(
-    `http://127.0.0.1:${service.port}${path}`,
-    { method: "POST", headers: { authorization: `Bearer ${BEARER}` }, body,
-      signal: AbortSignal.timeout(2_000), ...init },
-  );
+  const service = openRecallService({
+    archive,
+    policy: POLICY,
+    bearer: BEARER,
+    now: () => clock.now,
+  });
+  const raw: Harness["raw"] = (body, path = "/recall/public", init = {}) =>
+    fetch(`http://127.0.0.1:${service.port}${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${BEARER}` },
+      body,
+      signal: AbortSignal.timeout(2_000),
+      ...init,
+    });
   const send: Harness["send"] = (classId, requestId, request) =>
     raw(frame(requestId, request), `/recall/${classId}`);
   const reply: Harness["reply"] = async (classId, requestId, request) => {
@@ -62,7 +93,12 @@ async function fixture(body: (h: Harness) => Promise<void>): Promise<void> {
   };
   try {
     await body({
-      archive, clock, raw, send, reply, stop: service.stop,
+      archive,
+      clock,
+      raw,
+      send,
+      reply,
+      stop: service.stop,
       gate() {
         const gate = Promise.withResolvers<void>();
         gates.push(gate);
@@ -83,9 +119,12 @@ async function fixture(body: (h: Harness) => Promise<void>): Promise<void> {
 }
 
 test("HTTP admission requires the bearer, a declared route and strict caller-independent request bodies", async () => {
-  await fixture(async h => {
+  await fixture(async (h) => {
     let executed = 0;
-    h.archive.execute = async () => { executed++; return result(); };
+    h.archive.execute = async () => {
+      executed++;
+      return result();
+    };
     const body = frame(id(1), SEARCH);
     for (const authorization of ["", `Bearer ${"x".repeat(BEARER.length)}`]) {
       const denied = await h.raw(body, undefined, { headers: { authorization } });
@@ -93,12 +132,18 @@ test("HTTP admission requires the bearer, a declared route and strict caller-ind
       expect(await denied.text()).toBe("");
     }
     expect((await h.raw(body, "/recall/undeclared")).status).toBe(404);
-    expect((await h.raw(body, undefined, { method: "GET", body: undefined })).status).toBe(404);
+    expect((await h.raw(body, undefined, { method: "GET", body: null })).status).toBe(404);
     const malformed = [
-      "{", new Uint8Array([0xff]),
+      "{",
+      new Uint8Array([0xff]),
       JSON.stringify({ request: "{" }),
-      JSON.stringify({ request: JSON.stringify({ requestId: id(1), request: SEARCH }), clearance: 3 }),
-      JSON.stringify({ request: JSON.stringify({ requestId: id(1), request: SEARCH, classId: "private" }) }),
+      JSON.stringify({
+        request: JSON.stringify({ requestId: id(1), request: SEARCH }),
+        clearance: 3,
+      }),
+      JSON.stringify({
+        request: JSON.stringify({ requestId: id(1), request: SEARCH, classId: "private" }),
+      }),
       frame(id(1), { ...SEARCH, clearance: 3 }),
       frame("not-a-uuid", SEARCH),
     ];
@@ -115,16 +160,19 @@ test("HTTP admission requires the bearer, a declared route and strict caller-ind
 });
 
 test("UUID replay is idempotent within a class, conflicts cannot replace it, and other classes cannot poll it", async () => {
-  await fixture(async h => {
+  await fixture(async (h) => {
     const entered = h.gate();
     const release = h.gate();
     const executions: string[] = [];
-    h.archive.execute = async classId => {
+    h.archive.execute = async (classId) => {
       executions.push(classId);
-      if (classId === "public") { entered.resolve(); await release.promise; }
+      if (classId === "public") {
+        entered.resolve();
+        await release.promise;
+      }
       return result(classId === "public" ? 1 : 2);
     };
-    const pending = { requestId: id(1), state: "pending" };
+    const pending: RecallReply = { requestId: id(1), state: "pending" };
     expect(await h.reply("public", id(1), SEARCH)).toEqual(pending);
     await entered.promise;
     expect(await h.reply("public", id(1), SEARCH)).toEqual(pending);
@@ -137,23 +185,34 @@ test("UUID replay is idempotent within a class, conflicts cannot replace it, and
     expect(completed).toEqual({ requestId: id(1), state: "complete", result: result(1) });
     expect(await h.reply("public", id(1), SEARCH)).toEqual(completed);
     expect((await h.send("public", id(1), { ...SEARCH, query: "different" })).status).toBe(409);
-    expect(await h.terminal("private", id(1))).toEqual({ requestId: id(1), state: "complete", result: result(2) });
+    expect(await h.terminal("private", id(1))).toEqual({
+      requestId: id(1),
+      state: "complete",
+      result: result(2),
+    });
     expect(executions).toEqual(["public", "private"]);
   });
 });
 
 test("one class filling its pending quota cannot block admission to another class", async () => {
-  await fixture(async h => {
+  await fixture(async (h) => {
     const entered = h.gate();
     const release = h.gate();
-    h.archive.execute = async () => { entered.resolve(); await release.promise; return result(); };
+    h.archive.execute = async () => {
+      entered.resolve();
+      await release.promise;
+      return result();
+    };
     const quota = Math.floor(RECALL_MAX_REQUESTS / POLICY.classes.length);
     expect((await h.reply("public", id(1), SEARCH)).state).toBe("pending");
     await entered.promise;
     for (let n = 2; n <= quota; n++) {
       expect((await h.reply("public", id(n), SEARCH)).state).toBe("pending");
     }
-    expect(await h.reply("public", id(quota + 1), SEARCH)).toEqual({ requestId: id(quota + 1), state: "busy" });
+    expect(await h.reply("public", id(quota + 1), SEARCH)).toEqual({
+      requestId: id(quota + 1),
+      state: "busy",
+    });
     expect((await h.reply("public", id(1), SEARCH)).state).toBe("pending");
     expect((await h.reply("private", id(1), SEARCH)).state).toBe("pending");
     release.resolve();
@@ -164,7 +223,7 @@ test("one class filling its pending quota cannot block admission to another clas
 });
 
 test("completed response eviction permits more than 128 sequential requests without advancing the clock", async () => {
-  await fixture(async h => {
+  await fixture(async (h) => {
     let executions = 0;
     h.archive.execute = async () => result(++executions);
     await h.reply("private", id(1), SEARCH);
@@ -185,19 +244,20 @@ test("completed response eviction permits more than 128 sequential requests with
 }, 15_000);
 
 test("failures stay opaque and terminal TTL starts at completion, while active and queued work never expires", async () => {
-  await fixture(async h => {
+  await fixture(async (h) => {
     const entered = h.gate();
     const release = h.gate();
     let executions = 0;
     h.archive.execute = async () => {
       executions++;
-      if (executions === 1) throw new Error("synthetic secret: restic password and archived content");
+      if (executions === 1)
+        throw new Error("synthetic secret: restic password and archived content");
       entered.resolve();
       await release.promise;
       return result();
     };
     await h.reply("public", id(1), SEARCH);
-    const failed = { requestId: id(1), state: "failed" };
+    const failed: RecallReply = { requestId: id(1), state: "failed" };
     expect(await h.terminal("public", id(1))).toEqual(failed);
     expect(await h.reply("public", id(1), SEARCH)).toEqual(failed);
     expect(executions).toBe(1);
@@ -222,7 +282,7 @@ test("failures stay opaque and terminal TTL starts at completion, while active a
 });
 
 test("stop closes admission, waits for active work and drops queued work before closing the archive", async () => {
-  await fixture(async h => {
+  await fixture(async (h) => {
     const entered = h.gate();
     const release = h.gate();
     const events: string[] = [];
@@ -233,12 +293,16 @@ test("stop closes admission, waits for active work and drops queued work before 
       events.push("finished");
       return result();
     };
-    h.archive.close = async () => { events.push("close"); };
+    h.archive.close = async () => {
+      events.push("close");
+    };
     expect((await h.reply("public", id(1), SEARCH)).state).toBe("pending");
     await entered.promise;
     expect((await h.reply("private", id(2), SEARCH)).state).toBe("pending");
     let stopped = false;
-    const stopping = h.stop().then(() => { stopped = true; });
+    const stopping = h.stop().then(() => {
+      stopped = true;
+    });
     // An actual rejected connection observes shutdown without an ordering sleep.
     await expect(h.send("public", id(3), SEARCH)).rejects.toThrow();
     expect(stopped).toBe(false);
