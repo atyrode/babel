@@ -22,6 +22,7 @@
     "test": "bun test",
     "pack": "./pack.sh",
     "deps:code": "bun scripts/prepare-code.ts",
+    "deps:tests": "sh scripts/prepare-test-tools.sh",
     "verify": "bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/verify.ts\" .integration/code/plugins/.integration/omp/plugins/dist/*.manifold-plugin.json .integration/code/plugins/dist/*.manifold-plugin.json dist/*.manifold-plugin.json",
     "dev": "./pack.sh --machine && bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/dev.ts\" babel"
   },

@@ -47,6 +47,5 @@ jobs:
       # because the fetch is the script's own and the manifold sibling this workflow already
       # lays out is the one `manifold-dir.sh` resolves.
       prepare-command: |
-        sudo apt-get update
-        sudo apt-get install --yes restic
+        bun run deps:tests
         bun run deps:code

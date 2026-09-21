@@ -50,8 +50,7 @@ jobs:
     with:
       plugins-dir: "."
       prepare-command: |
-        sudo apt-get update
-        sudo apt-get install --yes restic
+        bun run deps:tests
         bun run deps:code
 
   # Babel requires Code, and Code requires omp (docs/building.md "Code is a second pin"): a
