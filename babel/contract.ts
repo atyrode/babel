@@ -4771,6 +4771,9 @@ export const TranscriptMapPolicySchema = z.strictObject({
   maxCorrections: z.number().int().nonnegative().max(2).default(1),
 });
 export type TranscriptMapPolicy = z.infer<typeof TranscriptMapPolicySchema>;
+/** Stored configuration names methods in the one authoritative policy.review.recipes library. */
+export const TranscriptMapConfigSchema = TranscriptMapPolicySchema.omit({ recipes: true });
+export type TranscriptMapConfig = z.infer<typeof TranscriptMapConfigSchema>;
 
 /** Source access is revalidated separately; a classification change never buys the prose again. */
 export const TranscriptMapVersionSchema = z.strictObject({
