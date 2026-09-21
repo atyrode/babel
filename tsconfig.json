@@ -37,6 +37,10 @@
         "../manifold-db/packages/plugin-kit/src/*.ts",
         "../manifold/packages/plugin-kit/src/*.ts"
       ],
+      "@manifold/sdk/worker": [
+        "../manifold-db/packages/sdk/src/worker.ts",
+        "../manifold/packages/sdk/src/worker.ts"
+      ],
       "@manifold/protocol": [
         "../manifold-db/packages/protocol/src/index.ts",
         "../manifold/packages/protocol/src/index.ts"

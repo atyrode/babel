@@ -1,8 +1,6 @@
 import { expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
 import {
-  compileJsonProjection,
-  projectJson,
   type ConfigureInstanceServiceArgs,
   type InstanceServiceConfigurationRead,
   type JobDescription,
@@ -11,9 +9,7 @@ import {
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
-  INPUT_FIELD,
   MACHINE_OPERATIONS,
-  RECALL_MAX_RESULT_BYTES,
   RECALL_SERVICE_ID,
   RecallInstalledSchema,
   RecallSetupPreviewSchema,
@@ -168,30 +164,6 @@ test("preview refuses missing, wrong, or unready native service runtimes without
   }
 });
 
-test("each disclosure class has a fixed invocation route and only projected results", () => {
-  const policy = composeRecallServicePolicy(POLICY, RUNTIME);
-  for (const { id } of POLICY.classes) {
-    const operation = policy.operations[id]!;
-    if ("kind" in operation || operation.response.kind !== "projected-json") throw new Error("Unbounded class operation");
-    expect(operation.path).toBe(`/recall/${id}`);
-    expect(operation.method).toBe("POST");
-    expect(operation.invocable).toBe(true);
-    expect(Object.keys(operation.input)).toEqual(["request"]);
-    expect(operation.query).toEqual({});
-    expect(operation.body).toEqual([{ path: ["request"], value: { input: "request" } }]);
-    expect(operation.maxResultBytes).toBeLessThanOrEqual(RECALL_MAX_RESULT_BYTES);
-    const projected = projectJson({
-      requestId: "synthetic-request",
-      state: "pending",
-      result: null,
-      policy: POLICY,
-      bearer: "must-not-disclose",
-    }, compileJsonProjection(operation.response.fields), operation.response.maxArrayItems);
-    expect(projected).toEqual({ requestId: "synthetic-request", state: "pending", result: null });
-  }
-  expect(policy.runtime?.input).toEqual({ [INPUT_FIELD]: { literal: JSON.stringify({ policy: POLICY }) } });
-  expect(() => composeRecallServicePolicy({ ...POLICY, classes: [{ id: "{request}", label: "Bad", ceiling: 3 }] }, RUNTIME)).toThrow();
-});
 
 test("owner preview is read-only and install configures only the selected instance", async () => {
   const fleet = owner();

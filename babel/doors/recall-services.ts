@@ -195,7 +195,7 @@ export function recallServiceDoors(): readonly Door[] {
         }
         if (!preview.ready || policy === null) return { refused: preview.reason };
         if (!preview.changed) {
-          return { serviceId: RECALL_SERVICE_ID, revision: preview.expectedRevision, installed: false, reason: "" };
+          return { serviceId: RECALL_SERVICE_ID, revision: preview.expectedRevision, installed: false, reason: "" } as const;
         }
         const configured = await ctx.services.configureInstance({
           serviceId: RECALL_SERVICE_ID,
@@ -209,7 +209,7 @@ export function recallServiceDoors(): readonly Door[] {
           revision: configured.configuration?.revision ?? null,
           installed: true,
           reason: "",
-        };
+        } as const;
       } catch {
         return { refused: "Recall configuration could not be installed; preview it again before retrying." };
       }

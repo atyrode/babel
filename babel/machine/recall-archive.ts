@@ -225,7 +225,10 @@ export async function createRecallArchive(options: {
   ): Promise<RecallHit> => {
     if (reading.captureDigest !== target.captureDigest || reading.sourceDigest !== target.sourceDigest)
       throw new Refused("locator-mismatch");
-    const reader = recallRecordReader({ harness: entry.session.harness, anchor: target.record, selection, maxBytes });
+    const reader = recallRecordReader({
+      harness: entry.session.harness, anchor: target.record, maxBytes,
+      ...(selection === undefined ? {} : { selection }),
+    });
     await verify(entry, reading, reader.sink);
     const readback = await reader.finish();
     if (!readback.anchorMatches) throw new Refused("locator-mismatch");
@@ -259,7 +262,7 @@ export async function createRecallArchive(options: {
         if (disclosure === undefined) throw new Refused("disclosure");
         await expire();
         if (request.kind === "session") {
-          const token = tokens.get(request.previewToken);
+          const token = tokens.get(request.previewId);
           if (token === undefined) throw new Refused("preview-expired");
           if (token.classId !== classId) throw new Refused("disclosure");
           if (token.previous?.offset === request.offset) {
@@ -356,7 +359,10 @@ export async function createRecallArchive(options: {
             }
           }
           result.coverage.complete = result.coverage.indexed === result.coverage.eligible;
-          const found = index.searchRecords(request.query, covered, Math.min(request.limit, RECALL_MAX_HITS), request.filter);
+          const found = index.searchRecords(request.query, covered, Math.min(request.limit, RECALL_MAX_HITS), {
+            ...(request.filter.since === undefined ? {} : { since: request.filter.since }),
+            ...(request.filter.until === undefined ? {} : { until: request.filter.until }),
+          });
           result.matches = found.matches;
           for (const foundHit of found.hits) {
             const entry = foundHit.candidate as Capture;
@@ -412,7 +418,7 @@ export async function createRecallArchive(options: {
               tokens.set(token, { classId, path, expires: now() + RECALL_REQUEST_TTL_MS, bytes,
                 records: readback.records, hit, offset: 0, line: 1, previous: null });
               stagedBytes += bytes;
-              result.preview = { token, sourceBytes: reading.bytes, servedBytes: bytes,
+              result.preview = { previewId: token, sourceBytes: reading.bytes, servedBytes: bytes,
                 records: readback.records, sourceDigest: reading.sourceDigest };
             } catch (error) {
               try {

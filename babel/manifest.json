@@ -22,7 +22,7 @@
       "reason": "a Babel run is a Code session: Code owns the profile (model, thinking level, account) and posts the omp job through its runSession door, which Babel calls with ctx.actions.call"
     }
   },
-  "dataVersion": { "major": 1, "minor": 10 },
+  "dataVersion": { "major": 1, "minor": 11 },
   "database": { "maxBytes": 1073741824 },
   "purges": ["storage"],
   "contributes": {
@@ -269,6 +269,49 @@
           "memoryBytes": 1073741824,
           "processes": 64,
           "outputBytes": 67108864
+        },
+        "stdin": false
+      },
+      "atyrode.babel.recall": {
+        "argv": [
+          { "literal": "/job/artifact" },
+          { "literal": "recall" },
+          { "literal": "--input" },
+          { "literal": "/inputs/input" }
+        ],
+        "input": { "input": { "type": "string", "required": true, "maxLength": 65536 } },
+        "inputFiles": {
+          "input": { "input": "input" },
+          "recall-service-bearer": { "generated": "service-bearer" },
+          "restic": {
+            "literal": "{\"url\":\"\",\"bearer\":\"\"}",
+            "jsonValues": [
+              { "path": ["url"], "serviceId": "atyrode.babel.restic", "value": "url" },
+              { "path": ["bearer"], "serviceId": "atyrode.babel.restic", "value": "bearer" }
+            ]
+          }
+        },
+        "services": [
+          { "serviceId": "atyrode.babel.restic", "revision": "1", "operationIds": ["storage"] }
+        ],
+        "environment": {
+          "BABEL_RECALL_CACHE_DIR": "/home/job/.cache/recall",
+          "BABEL_RECALL_SERVICE_BEARER_FILE": "/inputs/recall-service-bearer",
+          "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic"
+        },
+        "runtimeTools": ["bun", "restic", "system"],
+        "executable": { "runtimeTool": "bun" },
+        "locations": [
+          { "locationId": "atyrode.babel.cache", "access": "write" }
+        ],
+        "outputs": [],
+        "providesService": true,
+        "network": "host",
+        "limits": {
+          "timeoutMs": 3600000,
+          "memoryBytes": 1073741824,
+          "processes": 64,
+          "outputBytes": 1048576
         },
         "stdin": false
       }

@@ -6,6 +6,8 @@ import { drainDoors, type DrainDoorDeps } from "./drain.ts";
 import { exportDoors } from "./export.ts";
 import { launchDoors, type LaunchDeps } from "./launch.ts";
 import { readDoors } from "./read.ts";
+import { recallDoors } from "./recall.ts";
+import { recallServiceDoors } from "./recall-services.ts";
 import { searchDoors } from "./search.ts";
 import { serviceDoors, type DeclaredService } from "./services.ts";
 import { suggestDoors } from "./suggest.ts";
@@ -56,12 +58,14 @@ export function babelDoors(
   const doors: readonly Door[] = [
     ...readDoors(store),
     ...searchDoors(store),
+    ...recallDoors(store),
     ...actDoors(store, concurrentJobs, deps.jobs),
     ...suggestDoors(store),
     ...exportDoors(store),
     ...launchDoors(store, deps),
     ...drainDoors(store, drain),
     ...serviceDoors(services),
+    ...recallServiceDoors(),
   ];
   for (const door of doors) {
     const { name } = door.action;

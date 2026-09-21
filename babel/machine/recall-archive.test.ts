@@ -183,10 +183,10 @@ withRestic("size-first preview pages reconstruct every verified byte with sequen
     expect(preview.hits).toEqual([]);
     expect(preview.preview?.sourceBytes).toBe(Buffer.byteLength(SOURCE));
     expect(preview.preview?.servedBytes).toBe(Buffer.byteLength(SOURCE));
-    const token = preview.preview?.token;
+    const token = preview.preview?.previewId;
     if (token === undefined) throw new Error("missing preview token");
-    expect((await archive.execute("private", request({ kind: "session", previewToken: token }))).refusal).toBe("disclosure");
-    expect((await archive.execute("public", request({ kind: "session", previewToken: token, offset: 1 }))).refusal).toBe("invalid-offset");
+    expect((await archive.execute("private", request({ kind: "session", previewId: token }))).refusal).toBe("disclosure");
+    expect((await archive.execute("public", request({ kind: "session", previewId: token, offset: 1 }))).refusal).toBe("invalid-offset");
     const relative = (await readdir(cacheDir, { recursive: true })).find(path => path.endsWith(".records"));
     if (relative === undefined) throw new Error("missing kept stream");
     const keptPath = join(cacheDir, relative);
@@ -197,7 +197,7 @@ withRestic("size-first preview pages reconstruct every verified byte with sequen
     for (;;) {
       // Force one page to start with U+FEFF: decoding must not silently strip an interior BOM.
       const maxBytes = offset === 0 ? Buffer.byteLength(SOURCE.slice(0, SOURCE.indexOf("\ufeff"))) : 17;
-      const input = request({ kind: "session", previewToken: token, offset, maxBytes });
+      const input = request({ kind: "session", previewId: token, offset, maxBytes });
       const page = await archive.execute("public", input);
       expect(RecallResultSchema.parse(page).refusal).toBeNull();
       expect(page.page?.offset).toBe(offset);
@@ -215,11 +215,11 @@ withRestic("size-first preview pages reconstruct every verified byte with sequen
     }
     const reconstructed = chunks.join("");
     expect(reconstructed).toBe(SOURCE);
-    expect(`sha256:${new Bun.CryptoHasher("sha256").update(reconstructed).digest("hex")}`).toBe(preview.preview?.sourceDigest);
-    expect((await archive.execute("public", request({ kind: "session", previewToken: token, offset: 0 }))).refusal).toBe("invalid-offset");
+    expect(`sha256:${new Bun.CryptoHasher("sha256").update(reconstructed).digest("hex")}`).toBe(preview.preview!.sourceDigest);
+    expect((await archive.execute("public", request({ kind: "session", previewId: token, offset: 0 }))).refusal).toBe("invalid-offset");
     await Bun.write(keptPath, SOURCE);
     clock.now += RECALL_REQUEST_TTL_MS;
-    expect((await archive.execute("public", request({ kind: "session", previewToken: token, offset }))).refusal).toBe("preview-expired");
+    expect((await archive.execute("public", request({ kind: "session", previewId: token, offset }))).refusal).toBe("preview-expired");
     const second = await archive.execute("public", request({ kind: "preview", locator }));
     expect(second.preview).toBeDefined();
     await archive.close();
@@ -259,18 +259,18 @@ withRestic("redaction precedes indexing and widening, and full sessions are not 
     const locator = found.hits[0]?.locator;
     if (locator === undefined) throw new Error("missing locator");
     const preview = await archive.execute("public", request({ kind: "preview", locator }));
-    const token = preview.preview?.token;
+    const token = preview.preview?.previewId;
     if (token === undefined) throw new Error("missing token");
     let offset = 0;
     let full = "";
     do {
-      const page = await archive.execute("public", request({ kind: "session", previewToken: token, offset }));
+      const page = await archive.execute("public", request({ kind: "session", previewId: token, offset }));
       if (page.page === undefined) throw new Error("missing page");
       full += page.hits[0]?.excerpt.text ?? "";
       offset = page.page.nextOffset;
       if (page.page.complete) break;
     } while (offset < (preview.preview?.servedBytes ?? 0));
-    expect(Buffer.byteLength(full)).toBe(preview.preview?.servedBytes);
+    expect(Buffer.byteLength(full)).toBe(preview.preview!.servedBytes);
     expect(full).not.toContain(secret);
     expect(full).toContain("[[babel-redacted:");
     expect(full.endsWith(message("long tail " + "archivedword ".repeat(1600)))).toBe(true);

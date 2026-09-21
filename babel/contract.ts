@@ -2164,6 +2164,8 @@ export const MATERIAL_ROOT = `/inputs/${MATERIAL_OUTPUT}`;
 export const MATERIAL_INDEX = "index.json";
 /** The directory the per-session files live in, one file per session in the index. */
 export const MATERIAL_SESSIONS = "sessions";
+/** Bounded record hits beside the sealed sessions, never in the hub receipt's body. */
+export const MATERIAL_RETRIEVAL = "retrieval.json";
 /** The shape of `index.json`, recorded in it so a reader never guesses which layout it has. */
 export const MATERIAL_SCHEMA = "babel.material/1";
 
@@ -2240,6 +2242,7 @@ export const MaterialIndexSchema = z.strictObject({
   preparedAt: z.string(),
   machineId: z.string(),
   sessions: z.array(MaterialEntrySchema),
+  retrievalFile: z.literal(MATERIAL_RETRIEVAL).optional(),
 });
 export type MaterialIndex = z.infer<typeof MaterialIndexSchema>;
 
@@ -4129,6 +4132,8 @@ export const RECALL_MAX_HITS = 10;
 export const RECALL_SEARCH_EXCERPT_BYTES = 2048;
 export const RECALL_MAX_EXCERPT_BYTES = 8192;
 export const RECALL_MAX_RESULT_BYTES = 80 * 1024;
+export const RECALL_MAX_REQUEST_BYTES = 24 * 1024;
+export const RECALL_MAX_REQUEST_BODY_BYTES = 64 * 1024;
 export const RECALL_MAX_FETCH_BYTES = MAX_MATERIAL_BYTES;
 export const RECALL_MAX_SERVED_BYTES = 512 * 1024 * 1024;
 export const RECALL_REQUEST_TTL_MS = 60 * 60 * 1000;
@@ -4169,6 +4174,7 @@ export const RecallPolicySchema = z.strictObject({
 }).refine(policy => new Set(policy.classes.map(entry => entry.id)).size === policy.classes.length,
   "Disclosure class ids must be unique.");
 export type RecallPolicy = z.infer<typeof RecallPolicySchema>;
+export const RecallRuntimeInputSchema = z.strictObject({ policy: RecallPolicySchema });
 
 export const RecallLocatorSchema = z.strictObject({
   coordinates: z.literal(SESSION_RECORD_COORDINATES),
@@ -4216,6 +4222,7 @@ export const RecallShowRequestSchema = z.strictObject({
   ]).default({ kind: "around", records: 2 }),
   maxBytes: z.number().int().min(1).max(RECALL_MAX_EXCERPT_BYTES).default(RECALL_MAX_EXCERPT_BYTES),
 });
+export type RecallShowRequest = z.infer<typeof RecallShowRequestSchema>;
 export const RecallPreviewRequestSchema = z.strictObject({
   kind: z.literal("preview"),
   locator: RecallLocatorSchema,
@@ -4223,7 +4230,7 @@ export const RecallPreviewRequestSchema = z.strictObject({
 export const RecallSessionRequestSchema = z.strictObject({
   kind: z.literal("session"),
   /** Returned only by a size preview; bound to the capture, class and this service lifetime. */
-  previewToken: z.uuid(),
+  previewId: z.uuid(),
   offset: recallBytes.default(0),
   maxBytes: z.number().int().min(4).max(RECALL_MAX_EXCERPT_BYTES).default(RECALL_MAX_EXCERPT_BYTES),
 });
@@ -4248,6 +4255,21 @@ export const RecallExcerptSchema = z.strictObject({
   lastRecord: z.number().int().nonnegative(),
 });
 export type RecallExcerpt = z.infer<typeof RecallExcerptSchema>;
+
+/** The worker reads the same bounded excerpts; citations still name the sealed session file. */
+export const MaterialRetrievalSchema = z.strictObject({
+  schema: z.literal("babel.material-retrieval/1"),
+  queryDigest: recallDigest,
+  matches: recallBytes,
+  omitted: recallBytes,
+  hits: z.array(MaterialEntrySchema.pick({
+    selector: true, harness: true, captureDigest: true, sourceDigest: true, file: true,
+  }).extend({
+    record: SessionRecordPositionSchema,
+    excerpt: RecallExcerptSchema,
+  })).max(RECALL_MAX_HITS),
+});
+export type MaterialRetrieval = z.infer<typeof MaterialRetrievalSchema>;
 export const RecallHitSchema = z.strictObject({
   locator: RecallLocatorSchema,
   snapshotAt: z.iso.datetime(),
@@ -4284,6 +4306,7 @@ export const RecallResultSchema = z.strictObject({
   }),
   matches: recallBytes.nullable(),
   omitted: recallBytes,
+  omittedSubjects: recallBytes,
   refusedSubjects: z.array(z.string().max(120)).max(256),
   refusal: z.enum([
     "disclosure", "unclassified", "archive-unavailable", "index-busy", "source-unavailable",
@@ -4292,18 +4315,18 @@ export const RecallResultSchema = z.strictObject({
   ]).nullable(),
   hits: z.array(RecallHitSchema).max(RECALL_MAX_HITS),
   preview: z.strictObject({
-    token: z.uuid(),
+    previewId: z.uuid(),
     sourceBytes: recallBytes,
     servedBytes: recallBytes,
     records: recallBytes,
     sourceDigest: recallDigest,
-  }).nullable(),
+  }).optional(),
   page: z.strictObject({
     offset: recallBytes,
     nextOffset: recallBytes,
     totalBytes: recallBytes,
     complete: z.boolean(),
-  }).nullable(),
+  }).optional(),
 });
 export type RecallResult = z.infer<typeof RecallResultSchema>;
 
@@ -4312,12 +4335,29 @@ export const RecallServiceRequestSchema = z.strictObject({
   request: z.union([RecallRequestSchema, z.strictObject({ kind: z.literal("poll") })]),
 });
 export type RecallServiceRequest = z.infer<typeof RecallServiceRequestSchema>;
+export const RecallServiceBodySchema = z.strictObject({
+  request: z.string().max(RECALL_MAX_REQUEST_BYTES).refine(
+    value => new TextEncoder().encode(value).byteLength <= RECALL_MAX_REQUEST_BYTES,
+    "Recall request exceeds its byte bound.",
+  ),
+});
 export const RecallReplySchema = z.strictObject({
   requestId: z.uuid(),
-  state: z.enum(["pending", "complete", "expired", "busy"]),
-  result: RecallResultSchema.nullable(),
-});
+  state: z.enum(["pending", "complete", "expired", "busy", "failed", "unavailable"]),
+  result: RecallResultSchema.optional(),
+}).refine(reply => (reply.state === "complete") === (reply.result !== undefined),
+  "Only a complete Recall reply carries a result.");
 export type RecallReply = z.infer<typeof RecallReplySchema>;
+
+/** The durable derived outcome has coordinates and cost, never excerpts or a widening token. */
+export const RecallTraceSchema = z.strictObject({
+  state: RecallReplySchema.shape.state,
+  result: RecallResultSchema.omit({ hits: true, preview: true }).extend({
+    locators: z.array(RecallLocatorSchema).max(RECALL_MAX_HITS),
+    preview: RecallResultSchema.shape.preview.unwrap().omit({ previewId: true }).optional(),
+  }).optional(),
+});
+export type RecallTrace = z.infer<typeof RecallTraceSchema>;
 
 export const RecallTargetSchema = z.strictObject({
   kind: z.literal("service"),
@@ -4377,15 +4417,15 @@ export const RecallSkillSchema = z.strictObject({
 });
 
 /** All leaves, never raw-result fallback. Shared by service policy and agent result projection. */
-export const RECALL_RESULT_FIELDS: readonly (readonly string[])[] = [
+export const RECALL_RESULT_FIELDS: string[][] = [
   ["requestId"], ["state"],
-  ...["operation", "observedAt", "newestSnapshotAt", "matches", "omitted", "refusal"]
+  ...["operation", "observedAt", "newestSnapshotAt", "matches", "omitted", "omittedSubjects", "refusal"]
     .map(key => ["result", key]),
   ["result", "refusedSubjects", "*"],
   ...["fetchedFiles", "fetchedBytes", "cacheHits", "indexedFiles", "listedSnapshots", "listedEntries"]
     .map(key => ["result", "cost", key]),
   ...["eligible", "indexed", "complete", "overBound"].map(key => ["result", "coverage", key]),
-  ...["token", "sourceBytes", "servedBytes", "records", "sourceDigest"]
+  ...["previewId", "sourceBytes", "servedBytes", "records", "sourceDigest"]
     .map(key => ["result", "preview", key]),
   ...["offset", "nextOffset", "totalBytes", "complete"].map(key => ["result", "page", key]),
   ...["snapshotAt", "title", "workspace", "repository", "metadataOrigin"]

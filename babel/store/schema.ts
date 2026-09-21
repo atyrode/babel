@@ -22,7 +22,40 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 10 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 11 } as const;
+
+/** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
+const RECALL_TRACE_SCHEMA: readonly string[] = [
+  `CREATE TABLE recall_requests(
+     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+     id TEXT NOT NULL UNIQUE,
+     principal_id TEXT NOT NULL,
+     operation TEXT NOT NULL CHECK(operation IN ('search', 'show', 'preview', 'session')),
+     target TEXT NOT NULL,
+     service_revision TEXT NOT NULL,
+     redacted_request TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE INDEX recall_requests_by_principal ON recall_requests(principal_id, seq DESC)`,
+  `CREATE TABLE recall_outcomes(
+     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+     request_id TEXT NOT NULL REFERENCES recall_requests(id),
+     state TEXT NOT NULL,
+     summary TEXT NOT NULL,
+     preview_digest TEXT,
+     created_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE INDEX recall_outcomes_by_request ON recall_outcomes(request_id, seq DESC)`,
+  `CREATE INDEX recall_outcomes_by_preview ON recall_outcomes(preview_digest) WHERE preview_digest IS NOT NULL`,
+  ...["recall_requests", "recall_outcomes"].flatMap(table => [
+    `CREATE TRIGGER ${table}_no_update BEFORE UPDATE ON ${table} BEGIN
+       SELECT RAISE(ABORT, 'Recall traces are append-only');
+     END`,
+    `CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN
+       SELECT RAISE(ABORT, 'Recall traces are append-only');
+     END`,
+  ]),
+];
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -906,6 +939,7 @@ export const SCHEMA_V1: readonly string[] = [
   // After `records`, because the trigger names that table, and before the crossing, because the
   // importer's own inserts are what the trigger first fires for.
   ...CORPUS_INDEX_SCHEMA,
+  ...RECALL_TRACE_SCHEMA,
 
   // ---------------------------------------------------------------- a drain (#258)
   // No index, and now for one reason rather than two: a deployment accumulates drains at the
@@ -1042,6 +1076,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // above — and the one addition in this file that names a VIRTUAL table, which `sqlite_master`
   // answers for by name exactly as it does for an ordinary one.
   ...CORPUS_INDEX_SCHEMA.map(objectAddition),
+  ...RECALL_TRACE_SCHEMA.map(objectAddition),
   // #169: the models that have answered a running job, JSON, in the order it first heard from
   // each. A column and not a table, because the table above already arrives by addition for a
   // store created before #261 — and an addition keyed only on the table's name would have left

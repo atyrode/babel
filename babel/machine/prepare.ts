@@ -61,8 +61,12 @@ import { stat } from "node:fs/promises";
 import { z } from "zod";
 import {
   MATERIAL_SCHEMA,
+  MATERIAL_RETRIEVAL,
+  MaterialRetrievalSchema,
   MAX_MATERIAL_BYTES,
   PREFLIGHT_SCHEMA,
+  RECALL_MAX_HITS,
+  RECALL_MAX_RESULT_BYTES,
   PreflightModeSchema,
   RUN_STAGES,
   SessionContentQuerySchema,
@@ -70,6 +74,7 @@ import {
   termsQuery,
   type MaterialEntry,
   type MaterialIndex,
+  type MaterialRetrieval,
   type PreflightMode,
   type PreflightReport,
   type Receipt,
@@ -87,11 +92,13 @@ import {
   type SecretScan,
 } from "./preflight.ts";
 import { SILENT, type ProgressChannel } from "./progress.ts";
+import { recallRecordReader } from "./recall-records.ts";
 import { recordReader, sessionDigester, type SessionDigests } from "./session-records.ts";
 import {
   sessionIndex,
   SessionIndexError,
   type IndexedSession,
+  type IndexedRecord,
   type SessionIndex,
 } from "./session-index.ts";
 
@@ -440,6 +447,7 @@ export async function prepare(
   const scans: { readonly selector: string; readonly report: ScanReport }[] = [];
   /** The material's own index, built as the loop seals each session's stream. */
   const sealed: MaterialEntry[] = [];
+  const retrievalHits: MaterialRetrieval["hits"] = [];
   let preparation: Preparation | null = null;
   let closure: Receipt["closure"] = "completed";
   let reason = "";
@@ -549,6 +557,10 @@ export async function prepare(
         // half way leaves no half-written stream a later reader could mistake for a session.
         const file = materialFile(sealed.length, session.selector);
         const reused = cache === null ? null : await cache.reuse(session, seen);
+        const record = queried?.hits.get(session.selector);
+        const excerpt = record === undefined ? null : recallRecordReader({
+          harness: session.harness, anchor: record.position,
+        });
         let measured: SessionDigests;
         let found: ScanReport | null;
         if (cache !== null && reused !== null) {
@@ -564,7 +576,7 @@ export async function prepare(
           succeeds — and the alternative, sealing bytes nothing verified into a material a model
           reads, is the one outcome worth failing a run over.
         */
-          const seal = (await deps.material?.session(file)) ?? null;
+          const seal = teeRecords((await deps.material?.session(file)) ?? null, excerpt?.sink ?? null);
           let digested = reused.sourceDigest;
           try {
             if (seal !== null) digested = await cache.replay(reused, seal);
@@ -592,7 +604,7 @@ export async function prepare(
           found = reused.report;
           counts.reused++;
         } else {
-          const seal = (await deps.material?.session(file)) ?? null;
+          const seal = teeRecords((await deps.material?.session(file)) ?? null, excerpt?.sink ?? null);
           // The reading is kept in the SAME pass, off the same bytes, for the reason the scan is
           // in it: a second pass to fill a cache would have paid the cost the cache exists to
           // avoid.
@@ -646,6 +658,17 @@ export async function prepare(
             reason = refusalMessage(session.selector, found);
             break;
           }
+        }
+        if (excerpt !== null && record !== undefined) {
+          const read = await excerpt.finish();
+          if (!read.anchorMatches || measured.sourceDigest !== record.sourceDigest ||
+              measured.captureDigest !== record.captureDigest)
+            throw new Error("content selection evidence changed before sealing");
+          retrievalHits.push({
+            selector: session.selector, harness: session.harness, file,
+            captureDigest: measured.captureDigest, sourceDigest: measured.sourceDigest,
+            record: record.position, excerpt: read.excerpt,
+          });
         }
         counts.bytes += measured.bytes;
         counts.records += measured.records;
@@ -723,8 +746,26 @@ export async function prepare(
           preparedAt: preparation.preparedAt,
           machineId: input.machineId,
           sessions: sealed,
+          ...(queried !== null && input.preflight !== "off" && deps.material != null
+            ? { retrievalFile: MATERIAL_RETRIEVAL } : {}),
         }
       : null;
+  if (index?.retrievalFile !== undefined && deps.material != null &&
+      queried !== null && retrieval !== undefined) {
+    const body = MaterialRetrievalSchema.parse({
+      schema: "babel.material-retrieval/1", queryDigest: retrieval.query.digest,
+      matches: queried.recordMatches, omitted: queried.recordMatches - retrievalHits.length,
+      hits: retrievalHits,
+    });
+    let encoded = JSON.stringify(body);
+    while (Buffer.byteLength(encoded) > RECALL_MAX_RESULT_BYTES && body.hits.length > 0) {
+      body.hits.pop();
+      body.omitted++;
+      encoded = JSON.stringify(body);
+    }
+    const sidecar = await deps.material.session(MATERIAL_RETRIEVAL);
+    try { sidecar.write(encoded); } finally { await sidecar.close(); }
+  }
   if (index !== null && deps.material != null) await deps.material.index(index);
   const preflight = preflightReport(input.preflight, scans);
   const receipt: Receipt = {
@@ -771,9 +812,12 @@ async function contentSelection(
   readonly chosen: readonly SessionRef[];
   readonly failure: string;
   readonly observations: ReadonlyMap<string, Observation>;
+  readonly hits: ReadonlyMap<string, IndexedRecord>;
+  readonly recordMatches: number;
 }> {
   const observations = new Map<string, Observation>();
-  const refuse = (reason: string) => ({ chosen: [], failure: reason, observations });
+  const hits = new Map<string, IndexedRecord>();
+  const refuse = (reason: string) => ({ chosen: [], failure: reason, observations, hits, recordMatches: 0 });
   if (input.selectors.length > 0) {
     retrieval.status = "unavailable";
     return refuse("content selection refused: a query cannot be combined with explicit selectors");
@@ -901,7 +945,16 @@ async function contentSelection(
     const found = index.search(query.text, eligible, query.limit, MAX_MATERIAL_BYTES);
     retrieval.matches = found.matches;
     retrieval.overBound = found.overBound;
-    return { chosen: found.selection, failure: "", observations };
+    let recordMatches = 0;
+    if (input.preflight !== "off") {
+      const selected = new Set(found.selection.map(session => session.primaryPath));
+      const records = index.searchRecords(query.text,
+        eligible.filter(candidate => selected.has(candidate.session.primaryPath)), RECALL_MAX_HITS);
+      recordMatches = records.matches;
+      for (const record of records.hits)
+        if (!hits.has(record.candidate.session.selector)) hits.set(record.candidate.session.selector, record);
+    }
+    return { chosen: found.selection, failure: "", observations, hits, recordMatches };
   } catch (error) {
     retrieval.status = error instanceof SessionIndexError ? error.kind : "unavailable";
     retrieval.unavailable = Math.max(1, eligible.length - retrieval.indexed - retrieval.reused);

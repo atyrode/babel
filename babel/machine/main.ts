@@ -12,10 +12,10 @@ import { claim, discover, existingRoots } from "./adapters/index.ts";
 /*
   THE MACHINE HALF'S ENTRY POINT (plan §2, §4).
 
-  One binary, three operations, one shape each: read a JSON input document, write the
-  JOB_OUTPUT_FILES of what you produced into an output directory, hand the receipt to the sink
-  last and return it. This file is the dispatcher and nothing else — it holds no knowledge of
-  what an operation does, only where its input and its outputs are and which module owns it.
+  Finite operations read one JSON document, write JOB_OUTPUT_FILES and return a receipt.
+  Recall is the owner-managed native service: it adopts the SDK channel, announces readiness
+  and serves bounded requests until its owner stops it. It has no output lease or run receipt.
+  This dispatcher holds no operation-specific retrieval or disclosure logic.
 
     babel-machine <operation> --input <file> --out <directory> [--material <directory>]
 
@@ -46,7 +46,7 @@ import { claim, discover, existingRoots } from "./adapters/index.ts";
 */
 
 export interface Invocation {
-  operation: OperationWord;
+  operation: keyof typeof MACHINE_OPERATIONS;
   inputPath: string;
   outputDir: string;
   /** Where the material is sealed; empty for an invocation that bound no such lease. */
@@ -115,7 +115,7 @@ const DISPATCH: Record<
 };
 
 export function parseArgv(argv: readonly string[]): Invocation {
-  let operation: OperationWord | null = null;
+  let operation: keyof typeof MACHINE_OPERATIONS | null = null;
   let inputPath = process.env["BABEL_JOB_INPUT"]?.trim() ?? "";
   let outputDir = process.env["BABEL_JOB_OUTPUT_DIR"]?.trim() ?? "";
   let materialDir = process.env["BABEL_JOB_MATERIAL_DIR"]?.trim() ?? "";
@@ -139,13 +139,14 @@ export function parseArgv(argv: readonly string[]): Invocation {
     }
     if (argument.startsWith("-")) throw new Error(`unknown flag ${argument}\n${USAGE}`);
     if (operation !== null) throw new Error(`unexpected argument ${argument}\n${USAGE}`);
-    if (!(argument in MACHINE_OPERATIONS))
+    if (!Object.hasOwn(MACHINE_OPERATIONS, argument))
       throw new Error(`unknown operation ${argument}\n${USAGE}`);
-    operation = argument as OperationWord;
+    operation = argument as keyof typeof MACHINE_OPERATIONS;
   }
   if (operation === null) throw new Error(`no operation named\n${USAGE}`);
   if (inputPath === "") throw new Error(`${operation} needs --input <file>\n${USAGE}`);
-  if (outputDir === "") throw new Error(`${operation} needs --out <directory>\n${USAGE}`);
+  if (operation !== "recall" && outputDir === "")
+    throw new Error(`${operation} needs --out <directory>\n${USAGE}`);
   return { operation, inputPath, outputDir, materialDir };
 }
 
@@ -161,7 +162,17 @@ export function parseArgv(argv: readonly string[]): Invocation {
 export async function run(
   invocation: Invocation,
   progress: ProgressChannel = openProgress(),
-): Promise<Receipt> {
+): Promise<Receipt | void> {
+  if (invocation.operation === "recall") {
+    try {
+      const { runRecallService } = await import("./recall-service.ts");
+      await runRecallService(await Bun.file(invocation.inputPath).json());
+    } catch {
+      // Service configuration and native bindings are private, including parser diagnostics.
+      throw new Error("Recall service could not start or lost its native owner.");
+    }
+    return;
+  }
   const sink = directorySink(invocation.outputDir);
   const material = invocation.materialDir === "" ? null : materialSink(invocation.materialDir);
   const startedAt = new Date().toISOString();
@@ -193,7 +204,7 @@ if (import.meta.main) {
   const argv = process.argv[1] === import.meta.path ? process.argv.slice(2) : process.argv.slice(1);
   try {
     const receipt = await run(parseArgv(argv));
-    process.stdout.write(JSON.stringify(receipt) + "\n");
+    if (receipt !== undefined) process.stdout.write(JSON.stringify(receipt) + "\n");
   } catch (cause) {
     process.stderr.write((cause instanceof Error ? cause.message : String(cause)) + "\n");
     process.exit(1);
