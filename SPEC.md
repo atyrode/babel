@@ -791,11 +791,12 @@ Stop cannot safely release that slot while an unidentified Code job may still be
 Code API cannot recover its job id from Babel's request, so a permanently lost response can hold
 the slot indefinitely; neither timeout nor lease expiry proves the session ended.
 
-The run's budget is the hard stopping condition. Policy supplies bounded per-item spending,
-cooldowns, and a response to repeated skips, so unreachable items and persistent disagreement
-cannot consume the whole allowance. Allocation across concurrent runs uses shared claims and
-reservations with a fence, not a per-process copy of the budget. A claimed-but-interrupted
-assignment does not count as a review and its reservation is reconciled.
+Admission is bounded by recorded spend plus outstanding reservations, across concurrent runs,
+through shared claims with a fence rather than a per-process budget copy. These are admission
+ceilings, not a monetary maximum enforced inside an already-running Code session: a settled
+overrun is recorded in full and prevents further admission. Policy also supplies item cooldowns
+and a response to repeated skips, so unreachable items and persistent disagreement cannot create
+an unbounded retry obligation. An interrupted assignment does not count as a review.
 
 Periodic coverage checks complement random selection: reserve initial-review attention for the
 oldest due, eligible unreviewed artifacts, independently of their popularity. Exact weights,
@@ -923,6 +924,62 @@ no native work. A subsequent request-id poll resumes the ordinary path.
 The versioned `recallSkill` door and managed skill share one body. The supported SDK exposes
 data only for exact reviewed source-profile approvals; its text leaves preserve evidence bytes
 without bypassing input or held-credential checks. Installation grants no live corpus access.
+
+#### 6.3.2 Transcript maps: navigation at several levels of detail
+
+**Design contract — implementation in progress (#223).** A map belongs to an immutable capture
+of one transcript. Its root summarizes the session, progressively finer children summarize
+contiguous sections and steps, and the leaves lead to exact transcript spans. Cross-transcript
+search can find sessions or nodes; it does not replace this within-transcript hierarchy.
+
+Maps are derived navigation artifacts in the existing hub database, not frontier records or a
+second storage service. A summary is model-produced inference, never evidence. It is labelled as
+such wherever served, and its identifier cannot satisfy a claim's evidence contract. Exact source
+locators and independently available raw lexical search remain the paths to evidence. A summary
+omission never makes the underlying transcript unreachable.
+
+Segmentation is deterministic and versioned. It uses the capture's canonical mandatory-redacted
+records, contiguous spans, structural boundaries and a bounded input size; only the prose comes
+from a model. Fanout and depth are policy-versioned and bounded, with at most four summary levels
+and fewer for smaller inputs. A transcript small enough to read directly needs no model summary.
+An oversized or unsupported span is an explicit gap, not silently dropped material.
+
+Every node retains its source snapshot, path, capture and source digests, exact record and byte
+range, and span digest. Map and summary provenance retain the segmentation contract, producing
+Code profile and revision, recipe and version, input identity, and run receipt. Source growth,
+recipe changes and corrections create explicit versions rather than overwriting prior summaries.
+Levels from different producing contracts are not silently blended. A historical map remains
+historical: newer captures and any unknown or unmapped tail are stated, not filled from a live
+session.
+
+Search returns bounded summary hits. A reader can expand their children, inspect an ancestor as
+orientation beside a source span, and drill down to the actual bytes. Coverage distinguishes
+directly readable, summarized, partially mapped, unmapped and stale captures. Retrieval traces
+distinguish summaries served from source material served; reading an inference is never recorded
+as reading its evidence. Summary storage, search and expansion preserve the source disclosure
+boundary, including after another class warms a cache.
+
+Mapping is separate from analysis and from read-only Recall. Every eligible captured session
+enters an idempotent mapping queue; unavailable authority or exhausted budgets leave a visible
+backlog. A separately enabled conductor allocation runs the work through an explicitly configured
+Code profile and versioned recipes. The profile is the operator's choice, including its price;
+Babel neither chooses a provider nor holds its credentials. Redaction applies before material
+reaches the model and before generated prose is retained or served.
+
+Generation, quality review and bounded corrections share one mapping subcap inside the
+conductor's overall daily allowance. Both are atomic admission ceilings over recorded spend and
+reservations, with the in-flight overrun boundary of §5.8. Mapping grants no additive allowance.
+An uncertain posting retains its reservation and cannot be bought again under a fresh identity.
+
+Only a summary actually served to a consumer becomes eligible for automated quality review.
+Serving records eligibility; it does not start paid work. Review and correction attempts have
+explicit finite bounds, target exact versions, and preserve earlier receipts and summaries.
+Reviewing a node cannot itself mark more nodes as served or create a recursive review obligation.
+A correction that needs another model run returns to the same queue, claim and budget machinery.
+
+Installation enables no paid mapping, installs no source classification and grants no corpus
+access. Activation, the source disclosure route and the producing Code profile remain separately
+authorized configuration.
 
 ### 6.4 Deterministic preflight
 
