@@ -375,6 +375,13 @@ or unavailable coverage refuses the query rather than substituting recency. `mat
 means the query was not run. The receipt identifies the normalized literal-term query by its
 SHA-256 digest and limit, never by copying the search text.
 
+Preparation normalization is schema 3: a newline or 4,194,304 UTF-16 code units, whichever comes
+first, ends a source record; a Unicode surrogate pair crossing that bound starts the next piece
+intact. This decision depends on content, not read chunk boundaries. The raw
+capture digest still covers every original byte, while the source digest covers the normalized
+stream after the selected preflight mode. A different normalization schema invalidates cached
+readings rather than reusing an earlier stream under a new identity.
+
 This is an opt-in machine preparation input, not a new panel control, launch preset, semantic
 session search or external-agent Recall API. Existing catalog-driven launches and automatic
 reviews retain their current selection rules. [`docs/parity.md`](docs/parity.md) records the two

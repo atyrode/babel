@@ -70,7 +70,10 @@ export function recordReader(onRecord: (normalized: string, line: number) => voi
  * sink. Scanning precedes both source hashing and sealing: a redacted reading describes the
  * bytes its consumer receives, not the original secrets. The caller owns the sink's lifetime.
  */
-export function sessionDigester(seal?: RecordSink, scan?: SecretScan): {
+export function sessionDigester(
+  seal?: RecordSink,
+  scan?: SecretScan,
+): {
   write(chunk: Uint8Array): void;
   finish(): SessionDigests;
 } {

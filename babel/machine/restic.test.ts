@@ -173,22 +173,27 @@ test("dumpTo forwards exact binary bytes in order and awaits its sink", async ()
   await withDumpChild(async (streaming, exited, expected) => {
     let offset = 0;
     let pending = false;
-    const result = await streaming.dumpTo("latest", "/session.jsonl", async (chunk) => {
-      expect(pending).toBe(false);
-      pending = true;
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(Buffer.from(chunk).equals(expected.subarray(offset, offset + chunk.byteLength))).toBe(
-        true,
-      );
-      offset += chunk.byteLength;
-      pending = false;
-    }, { maxBytes: expected.byteLength });
+    const result = await streaming.dumpTo(
+      "latest",
+      "/session.jsonl",
+      async (chunk) => {
+        expect(pending).toBe(false);
+        pending = true;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(
+          Buffer.from(chunk).equals(expected.subarray(offset, offset + chunk.byteLength)),
+        ).toBe(true);
+        offset += chunk.byteLength;
+        pending = false;
+      },
+      { maxBytes: expected.byteLength },
+    );
     expect(result).toEqual({ bytes: expected.byteLength });
     expect(offset).toBe(expected.byteLength);
     expect(readFileSync(exited, "utf8")).toBe("0");
-    expect(await streaming.dump("latest", "/session.jsonl", { maxBytes: expected.byteLength })).toEqual(
-      new Uint8Array(expected),
-    );
+    expect(
+      await streaming.dump("latest", "/session.jsonl", { maxBytes: expected.byteLength }),
+    ).toEqual(new Uint8Array(expected));
   });
 }, 15_000);
 
@@ -196,9 +201,14 @@ test("dumpTo refuses before forwarding an over-bound chunk and settles both pipe
   await withDumpChild(async (streaming, exited) => {
     let forwarded = 0;
     await expect(
-      streaming.dumpTo("latest", "/session.jsonl", (chunk) => {
-        forwarded += chunk.byteLength;
-      }, { maxBytes: 0 }),
+      streaming.dumpTo(
+        "latest",
+        "/session.jsonl",
+        (chunk) => {
+          forwarded += chunk.byteLength;
+        },
+        { maxBytes: 0 },
+      ),
     ).rejects.toMatchObject({ kind: "refused" });
     expect(forwarded).toBe(0);
     expect(readFileSync(exited, "utf8")).toBe("0");
@@ -239,9 +249,9 @@ test("dumpTo preserves even an undefined synchronous sink failure after settling
 
 test("dump retains restic's exit error ahead of a size refusal", async () => {
   await withDumpChild(async (streaming, exited) => {
-    await expect(
-      streaming.dump("latest", "/session.jsonl", { maxBytes: 0 }),
-    ).rejects.toMatchObject({ kind: "exit", code: 12 });
+    await expect(streaming.dump("latest", "/session.jsonl", { maxBytes: 0 })).rejects.toMatchObject(
+      { kind: "exit", code: 12 },
+    );
     expect(readFileSync(exited, "utf8")).toBe("12");
   }, 12);
 }, 15_000);
@@ -278,10 +288,19 @@ withRepository(
     const dumped = await repo.dump(snapshotId, sourcePath, { maxBytes: LOG.byteLength });
     expect(Buffer.from(dumped).equals(LOG)).toBe(true);
     let streamed = 0;
-    expect(await repo.dumpTo(snapshotId, sourcePath, (chunk) => {
-      expect(Buffer.from(chunk).equals(LOG.subarray(streamed, streamed + chunk.byteLength))).toBe(true);
-      streamed += chunk.byteLength;
-    }, { maxBytes: LOG.byteLength })).toEqual({ bytes: LOG.byteLength });
+    expect(
+      await repo.dumpTo(
+        snapshotId,
+        sourcePath,
+        (chunk) => {
+          expect(
+            Buffer.from(chunk).equals(LOG.subarray(streamed, streamed + chunk.byteLength)),
+          ).toBe(true);
+          streamed += chunk.byteLength;
+        },
+        { maxBytes: LOG.byteLength },
+      ),
+    ).toEqual({ bytes: LOG.byteLength });
     expect(streamed).toBe(LOG.byteLength);
 
     const target = mkdtempSync(join(home, "restored-"));

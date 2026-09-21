@@ -93,8 +93,9 @@ test("concurrent builders never duplicate a source read and readers retain the c
       old.session,
     ]);
     expect(second.search("replacement", [old], 10, MAX_MATERIAL_BYTES).matches).toBe(0);
-    expect(second.searchRecords("previous", [old], 10).hits[0]?.position.digest)
-      .toBe(digest('{"text":"previous"}\n'));
+    expect(second.searchRecords("previous", [old], 10).hits[0]?.position.digest).toBe(
+      digest('{"text":"previous"}\n'),
+    );
     expect(second.searchRecords("replacement", [old], 10).matches).toBe(0);
     expect(reads).toBe(1);
   } finally {
@@ -343,7 +344,7 @@ test("normalized record positions hash exact Unicode bytes and physical LF bound
   const lines = [
     '{"text":"café 東京 🚀","timestamp":"2026-09-20T12:00:00+02:00"}\n',
     "\n",
-    '!opaque café\\n🚀\n',
+    "!opaque café\\n🚀\n",
     '{"text":"escaped \\ud83d\\ude80"}',
   ];
   const stream = lines.join("");
@@ -363,7 +364,7 @@ test("normalized record positions hash exact Unicode bytes and physical LF bound
   const expected = lines.map((line, index) => ({
     text: line.endsWith("\n") ? line.slice(0, -1) : line,
     position: positions[index]!,
-    parsed: index === 0 || index === 3 ? JSON.parse(line) as unknown : undefined,
+    parsed: index === 0 || index === 3 ? (JSON.parse(line) as unknown) : undefined,
   }));
   const collect = async (chunks: Iterable<string | Uint8Array>) => {
     const records: { text: string; position: SessionRecordPosition; parsed: unknown }[] = [];
@@ -377,7 +378,9 @@ test("normalized record positions hash exact Unicode bytes and physical LF bound
   };
   expect(await collect([stream])).toEqual(expected);
   // UTF-16 string writes can split surrogate pairs just as byte writes split UTF-8 codepoints.
-  expect(await collect(stream.split("").flatMap((char) => [char, new Uint8Array()]))).toEqual(expected);
+  expect(await collect(stream.split("").flatMap((char) => [char, new Uint8Array()]))).toEqual(
+    expected,
+  );
   expect(await collect(Array.from(bytes, (byte) => Uint8Array.of(byte)))).toEqual(expected);
   for (let cut = 0; cut <= bytes.length; cut += 1)
     expect(await collect([bytes.subarray(0, cut), bytes.subarray(cut)])).toEqual(expected);
@@ -399,10 +402,12 @@ test("namespaces keep live and archive slots separate while only the current imm
   expect(index.holds(live)).toBe(true);
   expect(index.holds(archived)).toBe(true);
   expect(index.holds(next)).toBe(false);
-  expect(await index.build(next, async (sink) => {
-    sink.write('{"text":"unpublished"}\n');
-    return { reading: reading(next.seen), after: archived.seen };
-  })).toBe("changed");
+  expect(
+    await index.build(next, async (sink) => {
+      sink.write('{"text":"unpublished"}\n');
+      return { reading: reading(next.seen), after: archived.seen };
+    }),
+  ).toBe("changed");
   expect(index.searchRecords("oldword", [archived], 10).matches).toBe(1);
   expect(index.searchRecords("unpublished", [archived], 10).matches).toBe(0);
   expect(await index.build(next, content(next, "newword"))).toBe("indexed");
@@ -423,7 +428,7 @@ test("record search counts distinct records, bounds metadata, and exposes replay
   const lines = [
     `${JSON.stringify({ text: `needle ${"padding ".repeat(3000)}`, another: "needle" })}\n`,
     "\n",
-    '!needle café 🚀\n',
+    "!needle café 🚀\n",
     '{"text":"unmatched"}\n',
   ];
   const stream = lines.join("");
@@ -437,7 +442,7 @@ test("record search counts distinct records, bounds metadata, and exposes replay
       hit.position.byteOffset,
       hit.position.byteOffset + hit.position.byteLength,
     );
-    expect(bytes.toString()).toBe(lines[hit.position.line - 1]);
+    expect(bytes.toString()).toBe(lines[hit.position.line - 1]!);
     expect(hit).toEqual({
       candidate: entry,
       position: {
@@ -456,7 +461,9 @@ test("record search counts distinct records, bounds metadata, and exposes replay
     matches: 2,
   });
   expect(index.search("needle", [entry], 120, 100)).toEqual({
-    selection: [entry.session], matches: 1, overBound: 0,
+    selection: [entry.session],
+    matches: 1,
+    overBound: 0,
   });
   const { index: reopened } = await open(dir);
   expect(reopened.searchRecords("needle", [entry], 120)).toEqual(result);
@@ -478,12 +485,18 @@ test("record windows use recognized archived timestamps and exclude unknown time
     { text: "needle", timestamp: "2026-09-20T10:00:00" },
     { text: "needle", timestamp: "2026-02-30T10:00:00Z" },
     { text: "needle", ts: 253402300800 },
-  ].map((record) => `${JSON.stringify(record)}\n`).join("");
+  ]
+    .map((record) => `${JSON.stringify(record)}\n`)
+    .join("");
   await index.build(entry, normalized(entry, stream));
   const result = index.searchRecords("needle", [entry], 120);
   expect(result.matches).toBe(9);
-  expect(result.hits.filter((hit) => hit.position.time === null).map((hit) => hit.position.line).sort())
-    .toEqual([4, 5, 6, 7, 8, 9]);
+  expect(
+    result.hits
+      .filter((hit) => hit.position.time === null)
+      .map((hit) => hit.position.line)
+      .sort(),
+  ).toEqual([4, 5, 6, 7, 8, 9]);
   const cases = [
     { window: { since: "2026-09-20T10:00:00Z" }, lines: [1, 2, 3] },
     { window: { until: "2026-09-20T11:00:00Z" }, lines: [1, 2] },

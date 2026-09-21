@@ -18,6 +18,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   The full frozen gate passes 1,060 tests, and a disposable engine installs all eleven bundles,
   dispatches their doors and verifies Babel's store creation and purge.
 
+- **A long session record has the same boundary however its bytes arrive.** Preparation now
+  segments oversized records in content order, preserving Unicode pairs rather than letting a
+  filesystem chunk decide the normalized stream. Preparation identity advances to schema 3, so
+  earlier cached readings cannot be mistaken for the corrected form. Chunk-boundary regressions
+  and an isolated real-restic exercise prove unchanged raw capture identity and identical
+  redacted bytes, source digests and record locators through live preparation and archive replay.
+
 - **A refused next-action decision leaves no ruling behind.** A malformed historical record
   reference is rejected before the append or its event, rather than failing response validation
   after the decision was already written. Strict identifiers and historical rows stay unchanged.

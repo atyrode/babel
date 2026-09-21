@@ -99,7 +99,10 @@ test("a newline arriving with an oversized chunk cannot bypass fixed record segm
 test("a complete JSON record exactly at the limit stays whole", () => {
   const record = `"${"a".repeat(LIMIT - 2)}"`;
   const bytes = encoder.encode(`${record}\nfalse`);
-  const expected: [string, number][] = [[`${record}\n`, 1], ["false\n", 2]];
+  const expected: [string, number][] = [
+    [`${record}\n`, 1],
+    ["false\n", 2],
+  ];
   expect(records(bytes)).toEqual(expected);
   expect(records(bytes, [LIMIT - 1, LIMIT, LIMIT + 1])).toEqual(expected);
 });
@@ -107,7 +110,10 @@ test("a complete JSON record exactly at the limit stays whole", () => {
 test("size segmentation preserves a Unicode pair even when its UTF-8 bytes arrive separately", () => {
   const prefix = "x".repeat(LIMIT - 1);
   const bytes = encoder.encode(`${prefix}😀tail\n`);
-  const expected: [string, number][] = [[`!${prefix}\n`, 1], ["!😀tail\n", 2]];
+  const expected: [string, number][] = [
+    [`!${prefix}\n`, 1],
+    ["!😀tail\n", 2],
+  ];
   for (const cuts of [[], [LIMIT - 1, LIMIT, LIMIT + 1, LIMIT + 2, LIMIT + 3]]) {
     expect(records(bytes, cuts)).toEqual(expected);
     const { measured, body } = digest(bytes, cuts);
@@ -121,7 +127,10 @@ test("decoder flush applies the size rule to an incomplete final UTF-8 sequence"
   const bytes = new Uint8Array(LIMIT + 2);
   bytes.fill(0x78, 0, LIMIT);
   bytes.set([0xf0, 0x9f], LIMIT);
-  const expected: [string, number][] = [[`!${"x".repeat(LIMIT)}\n`, 1], ["!\ufffd\n", 2]];
+  const expected: [string, number][] = [
+    [`!${"x".repeat(LIMIT)}\n`, 1],
+    ["!\ufffd\n", 2],
+  ];
   expect(records(bytes)).toEqual(expected);
   expect(records(bytes, [LIMIT, LIMIT + 1])).toEqual(expected);
 });
