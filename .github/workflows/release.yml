@@ -46,7 +46,7 @@ jobs:
   # revision and move together (.github/workflows/manifold-plugins.yml says why). `deps:code`
   # builds the dependency closure first, because verify composes omp, then Code, then Babel.
   plugins:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@743ee75a92b64b75b4a97244ebd58297c1287164
+    uses: atyrode/manifold/.github/workflows/plugins.yml@89b065d0ff60718121629a72d8633ea348da91d6
     with:
       plugins-dir: "."
       prepare-command: bun run deps:code

@@ -2,7 +2,7 @@ name: manifold-plugins
 
 # Babel IS a manifold plugin family, and this repository is that family: the gate is the one that says
 # the artifact composes. The whole job lives in manifold's reusable workflow, which checks this
-# repository out beside atyrode/manifold at the revision in plugins/MANIFOLD_REV — the sibling
+# repository out beside atyrode/manifold at the revision in MANIFOLD_REV — the sibling
 # layout tsconfig.json and pack.sh resolve on a developer's machine — then runs
 # `check`, `test`, `pack` and `verify` from package.json and uploads dist/ as the
 # `manifold-plugins` artifact.
@@ -34,14 +34,14 @@ permissions:
 
 jobs:
   bundles:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@743ee75a92b64b75b4a97244ebd58297c1287164
+    uses: atyrode/manifold/.github/workflows/plugins.yml@89b065d0ff60718121629a72d8633ea348da91d6
     with:
       # The repository IS the plugin family: there is no `plugins/` wrapper, so the caller
       # directory the reusable workflow works in is the checkout root.
       plugins-dir: ""
       # `atyrode.babel` declares `atyrode.code` a REQUIRED dependency, so `verify` cannot
       # compose Babel on the disposable engine until Code — and omp beneath it — are on disk.
-      # `deps:code` fetches atyrode/code at plugins/CODE_REV, arranges the sibling layout
+      # `deps:code` fetches atyrode/code at CODE_REV, arranges the sibling layout
       # Code's own `prepare:integration` expects, and runs CODE'S packers: this repository
       # builds no other family's bundles itself. It needs no second `actions/checkout`,
       # because the fetch is the script's own and the manifold sibling this workflow already
