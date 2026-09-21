@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { JobLimitsSchema } from "@manifold/protocol";
 
 /*
   THE VOCABULARY OF THE atyrode.babel PLUGIN FAMILY, spelled once. Every id, door name, event
@@ -5106,6 +5107,32 @@ export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type TranscriptMapJobReceipt = z.infer<typeof TranscriptMapJobReceiptSchema>;
+
+/** Hub-owned catalog progress is retained with the run intent, never in a native receipt. */
+export const TranscriptMapCatalogProgressSchema = z.strictObject({
+  appliedAt: z.iso.datetime({ offset: true }),
+  context: TranscriptMapContextSchema.nullable(),
+  nextCursor: z.string().min(1).max(1024).nullable(),
+  afterCaptureId: TranscriptMapCaptureIdSchema.nullable(),
+  catalogCompletedAt: z.iso.datetime({ offset: true }).nullable(),
+  gap: z.string().max(400).nullable(),
+});
+export type TranscriptMapCatalogProgress = z.infer<typeof TranscriptMapCatalogProgressSchema>;
+
+/** The exact native request and its attempted-post boundary survive acknowledgement loss. */
+export const TranscriptMapCatalogRunSchema = z.strictObject({
+  route: TranscriptMapConfigSchema,
+  input: TranscriptMapCatalogInputSchema,
+  afterCaptureId: TranscriptMapCaptureIdSchema.nullable(),
+  context: TranscriptMapContextSchema.nullable(),
+  catalogCompletedAt: z.iso.datetime({ offset: true }).nullable(),
+  limits: JobLimitsSchema,
+  installationRevision: z.string().optional(),
+  artifactSha256: z.string().optional(),
+  attempts: z.number().int().nonnegative(),
+  progress: TranscriptMapCatalogProgressSchema.nullable(),
+});
+export type TranscriptMapCatalogRun = z.infer<typeof TranscriptMapCatalogRunSchema>;
 
 /**
  * The 62 primitive leaves of the public native map reader. Full plan/export packets travel

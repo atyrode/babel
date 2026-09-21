@@ -6186,6 +6186,7 @@ async function catalogDeployment() {
   const db = openDatabase();
   const store = openStore(db);
   const fleet = new Fleet();
+  const jobs: JobsSlice = fleet;
   const draws = new Draws(db);
   draws.review = ROUTE;
   const route = TranscriptMapPolicySchema.parse({
@@ -6210,7 +6211,7 @@ async function catalogDeployment() {
     readSession: unexpectedCode, cancelSession: unexpectedCode,
   };
   const tick = () => conductor({
-    store, coordinator: draws as unknown as Coordinator, jobs: fleet, engine,
+    store, coordinator: draws as unknown as Coordinator, jobs, engine,
     machines: new Folders(), keys: new Keys(), plan: PLAN, catalogPlan: UNMETERED_PLAN,
     now: () => clock,
   }).tick();
@@ -6249,7 +6250,7 @@ async function catalogDeployment() {
       closure: "completed", counts: {}, mapping,
     } });
   }
-  return { db, store, fleet, draws, route, context, captures, entries, trees, finish, tick, codeCalls };
+  return { db, store, fleet, jobs, draws, route, context, captures, entries, trees, finish, tick, codeCalls };
 }
 
 test("free catalog resumes bounded inventory and plan pages without Recall or Code", async () => {
@@ -6334,7 +6335,7 @@ test("terminally refused capture advances the sweep and is retried only on a lat
   await f.tick();
   const retry = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
   expect(retry.request).toMatchObject({ kind: "map-plan", capture: f.captures[0] });
-  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE json_extract(payload,'$.catalogGap') IS NOT NULL`)).toEqual([{ n: 1n }]);
+  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE json_extract(preparation,'$.progress.gap') IS NOT NULL`)).toEqual([{ n: 1n }]);
   expect(f.codeCalls).toEqual([]);
 });
 
@@ -6349,7 +6350,7 @@ test("stale native catalog receipt cannot overwrite a newer authorization contex
   f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null });
   await f.tick();
   expect(await f.db.query(`SELECT count(*) n FROM transcript_map_captures`)).toEqual([{ n: 0n }]);
-  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE json_extract(payload,'$.catalogGap') IS NOT NULL`)).toEqual([{ n: 1n }]);
+  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE json_extract(preparation,'$.progress.gap') IS NOT NULL`)).toEqual([{ n: 1n }]);
   expect(f.fleet.launched).toHaveLength(1);
 });
 
@@ -6418,5 +6419,167 @@ test("a late duplicate catalog projector cannot rewind a newer page's context or
   } finally {
     resume();
     await Promise.all([first, duplicate]);
+  }
+});
+
+test("late native ingestion cannot reopen an applied catalog receipt after the next page advances", async () => {
+  const f = await catalogDeployment();
+  await f.tick();
+  const first = f.fleet.launched[0]!;
+  const input = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(first.input[INPUT_FIELD])));
+  f.finish({ kind: "catalog", context: f.context, entries: f.entries.slice(0, 2), nextCursor: "page-two" });
+  const sealed = f.fleet.status({ jobId: first.jobId }).result!.outputs;
+  await f.tick();
+  clock += 1000;
+  const newer = { ...f.context, observedAt: new Date(clock).toISOString() };
+  f.finish({ kind: "catalog", context: newer, entries: f.entries.slice(2), nextCursor: null });
+  await f.tick();
+  const currentPlan = f.fleet.launched.at(-1)!;
+  await ingestOutputs(f.store, f.jobs, {
+    runId: input.runId, jobId: first.jobId, machineId: MACHINE, operationId: OPERATIONS.mapCatalog,
+    outputs: sealed, closure: "completed",
+  });
+  await f.tick();
+  const state = await transcriptMaps(f.store).catalogState(MACHINE);
+  expect(state.context).toEqual(newer);
+  expect(state.nextCursor).toBeNull();
+  expect(f.fleet.launched).toHaveLength(3);
+  expect(f.fleet.launched.at(-1)!.jobId).toBe(currentPlan.jobId);
+});
+
+test.each(["captures", "nodes"] as const)("interrupted %s projection replays the same sealed receipt without another native read", async (boundary) => {
+  const f = await catalogDeployment();
+  await f.tick();
+  if (boundary === "nodes") {
+    f.finish({ kind: "catalog", context: { ...f.context, eligibleCaptures: 1 },
+      entries: f.entries.slice(0, 1), nextCursor: null });
+    await f.tick();
+    const tree = f.trees[0]!;
+    f.finish({ kind: "catalog", context: { ...f.context, eligibleCaptures: 1 },
+      entries: [], nextCursor: null, access: f.entries[0]!.access,
+      plan: { header: tree.header, nodes: tree.nodes, offset: 0, nextOffset: null } });
+  } else {
+    f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null });
+  }
+  const launched = f.fleet.launched.length;
+  const batch = f.db.batch.bind(f.db);
+  let interrupted = false;
+  f.db.batch = async (statements) => {
+    if (!interrupted && statements.some((statement) =>
+      statement.sql.startsWith(`INSERT OR IGNORE INTO transcript_map_${boundary}`))) {
+      interrupted = true;
+      await batch(statements.slice(0, boundary === "captures" ? 2 : 1));
+      throw new Error("database transport interrupted after a committed projection chunk");
+    }
+    return batch(statements);
+  };
+  await f.tick();
+  expect(f.fleet.launched).toHaveLength(launched);
+  expect(await f.db.query(`SELECT count(*) n FROM transcript_map_${boundary}`)).toEqual([{ n: 1n }]);
+  await f.tick();
+  expect(await f.db.query(`SELECT count(*) n FROM transcript_map_${boundary}`)).toEqual([{ n: 3n }]);
+  if (boundary === "nodes") {
+    expect(f.fleet.launched).toHaveLength(launched);
+    expect(await f.db.query(`SELECT count(*) n FROM transcript_map_work WHERE state='queued'`)).toEqual([{ n: 2n }]);
+  } else {
+    expect(f.fleet.launched).toHaveLength(launched + 1);
+    const next = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
+    expect(next.request.kind).toBe("map-plan");
+  }
+  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE json_extract(preparation,'$.progress.gap') IS NOT NULL`)).toEqual([{ n: 0n }]);
+  expect(f.codeCalls).toEqual([]);
+});
+
+test("editing an unrelated ordinary recipe does not restart free inventory pagination", async () => {
+  const f = await catalogDeployment();
+  await f.tick();
+  f.finish({ kind: "catalog", context: f.context, entries: f.entries.slice(0, 2), nextCursor: "page-two" });
+  f.draws.review = { ...ROUTE, recipes: [...ROUTE.recipes,
+    { id: "ordinary-exploration", version: 2, body: "An unrelated ordinary method." }] };
+  await f.tick();
+  const next = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
+  expect(next.request).toMatchObject({ kind: "map-inventory", cursor: "page-two" });
+  f.finish({ kind: "catalog", context: f.context, entries: f.entries.slice(2), nextCursor: null });
+  await f.tick();
+  const plan = TranscriptMapCatalogInputSchema.parse(JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])));
+  expect(plan.request).toMatchObject({ kind: "map-plan", capture: f.captures[0] });
+  expect(f.codeCalls).toEqual([]);
+});
+
+test("disablement cannot retire a native catalog post still arriving at the hub", async () => {
+  const f = await catalogDeployment();
+  const execute = f.fleet.execute.bind(f.fleet);
+  const status = f.fleet.status.bind(f.fleet);
+  let arrived!: () => void;
+  const attempted = new Promise<void>((resolve) => { arrived = resolve; });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let posts = 0;
+  f.jobs.execute = async (launch) => {
+    posts++;
+    arrived();
+    await held;
+    return execute(launch);
+  };
+  f.jobs.status = (node) => {
+    if (!f.fleet.jobs.has(node.jobId)) throw new HostCallError("jobs.status", "job_not_started");
+    return status(node);
+  };
+  const posting = f.tick();
+  try {
+    await attempted;
+    f.draws.enabled = false;
+    await f.tick();
+    expect(posts).toBe(1);
+    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([{ n: 1n }]);
+    release();
+    await posting;
+    await f.tick();
+    expect(posts).toBe(1);
+    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([{ n: 1n }]);
+    f.fleet.kill(f.fleet.launched[0]!.jobId, "interrupted");
+    await f.tick();
+    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([{ n: 0n }]);
+  } finally {
+    release();
+    await posting;
+  }
+});
+
+test("a newer different disclosure class fences stale context insertion at the database boundary", async () => {
+  const f = await catalogDeployment();
+  const maps = transcriptMaps(f.store);
+  const batch = f.db.batch.bind(f.db);
+  let arrived!: () => void;
+  const paused = new Promise<void>((resolve) => { arrived = resolve; });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  f.db.batch = async (statements) => {
+    if (statements.some((statement) =>
+      statement.sql.startsWith("INSERT INTO transcript_map_contexts") &&
+      statement.params?.[1] === f.context.classId)) {
+      arrived();
+      await held;
+    }
+    return batch(statements);
+  };
+  const stale = maps.recordCatalog({ machineId: MACHINE, context: f.context,
+    entries: f.entries, nextCursor: "obsolete", now: new Date(clock).toISOString(),
+  }).then(() => null, (error: unknown) => error);
+  try {
+    await paused;
+    const newer = { ...f.context, classId: "public", ceiling: 0, eligibleCaptures: 0,
+      digest: `sha256:${"b".repeat(64)}`, observedAt: new Date(clock + 1000).toISOString() };
+    await maps.recordCatalog({ machineId: MACHINE, context: newer, entries: [],
+      nextCursor: null, now: newer.observedAt });
+    release();
+    expect(await stale).toBeInstanceOf(Error);
+    const state = await maps.catalogState(MACHINE);
+    expect(state.context).toEqual(newer);
+    expect(state.nextCursor).toBeNull();
+    expect(await f.db.query(`SELECT count(*) n FROM transcript_map_captures`)).toEqual([{ n: 0n }]);
+  } finally {
+    release();
+    await stale;
   }
 });

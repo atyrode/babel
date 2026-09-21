@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { JobLimitsSchema, MACHINE_REPOSITORY_REASONS } from "@manifold/protocol";
+import { MACHINE_REPOSITORY_REASONS } from "@manifold/protocol";
 import type { PluginDatabase, SqlParam, SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
 import type { CycleReportSchema, IngestibleTable } from "../contract.ts";
@@ -20,8 +20,11 @@ import {
   RUN_STAGES,
   ReceiptSchema,
   TallyReasonSchema,
-  TranscriptMapCatalogInputSchema,
-  TranscriptMapPolicySchema,
+  TranscriptMapCatalogRunSchema,
+  TranscriptMapCatalogProgressSchema,
+  TranscriptMapConfigSchema,
+  type TranscriptMapCatalogRun,
+  type TranscriptMapCatalogProgress,
   type TranscriptMapCatalogInput,
   modelList,
   type GapReason,
@@ -43,7 +46,7 @@ import type {
   Stop,
 } from "../store/coordinator.ts";
 import { mappingPolicy, perMachineBound } from "../store/coordinator.ts";
-import { transcriptMaps } from "../store/transcript-maps.ts";
+import { transcriptMaps, TranscriptMapProjectionRefusal } from "../store/transcript-maps.ts";
 import {
   materialJobId,
   nativeAdmissionRefusal,
@@ -1138,8 +1141,10 @@ function runStatement(
     job_id: target.jobId,
     recipe_id: receipt?.recipeId,
     profile: receipt?.profile === undefined ? undefined : JSON.stringify(receipt.profile),
+    // Catalog intent/progress belongs to the hub; even a delayed native receipt cannot replace it.
     preparation:
-      receipt?.preparation === undefined ? undefined : JSON.stringify(receipt.preparation),
+      target.operationId === OPERATIONS.mapCatalog || receipt?.preparation === undefined
+        ? undefined : JSON.stringify(receipt.preparation),
     started_at: receipt?.startedAt ?? "",
     finished_at: receipt?.finishedAt ?? "",
     closure,
@@ -1584,21 +1589,10 @@ export async function ingestOutputs(
 }
 
 // ---------------------------------------------------------------------------- the loop
-/** Durable free work lives in runs, beside its eventual native receipt. */
-const CatalogIntentSchema = z.object({
-  route: TranscriptMapPolicySchema,
-  input: TranscriptMapCatalogInputSchema,
-  afterCaptureId: z.string().nullable(),
-  expectedContext: z.string().nullable(),
-  limits: JobLimitsSchema,
-  installationRevision: z.string().optional(),
-  artifactSha256: z.string().optional(),
-});
-type CatalogIntent = z.infer<typeof CatalogIntentSchema>;
 
-function catalogIntent(preparation: string | null): CatalogIntent | null {
+function catalogIntent(preparation: string | null): TranscriptMapCatalogRun | null {
   try {
-    const parsed = CatalogIntentSchema.safeParse(JSON.parse(preparation ?? "null"));
+    const parsed = TranscriptMapCatalogRunSchema.safeParse(JSON.parse(preparation ?? "null"));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -1914,22 +1908,28 @@ export function conductor(deps: ConductorDeps): Conductor {
   const maps = transcriptMaps(store);
 
   /** Retry only an authoritatively absent native job, with the original ID and exact request. */
-  async function postCatalog(runId: string, jobId: string, intent: CatalogIntent, notes: string[]): Promise<void> {
+  async function postCatalog(runId: string, jobId: string, intent: TranscriptMapCatalogRun, notes: string[]): Promise<void> {
     const current = (await coordinator.policy()).policy;
-    const configured = current.enabled ? mappingPolicy(current) : null;
-    const route = configured === null ? null : TranscriptMapPolicySchema.parse(configured);
+    const route = current.enabled && current.mapping !== undefined
+      ? TranscriptMapConfigSchema.parse(current.mapping) : null;
     if (route === null || JSON.stringify(route) !== JSON.stringify(intent.route)) {
+      // An absent status does not rule out an earlier execute still reaching the hub.
+      // Only an intent that has never crossed the attempted-post boundary can be closed here.
       await store.db.run(
-        `UPDATE runs SET closure='failed',finished_at=?,payload=? WHERE id=? AND closure IS NULL`,
+        `UPDATE runs SET closure='failed',finished_at=?,payload=? WHERE id=? AND closure IS NULL
+         AND json_extract(preparation,'$.attempts')=0`,
         [new Date(deps.now()).toISOString(),
          JSON.stringify({ closure: "failed", reason: "mapping configuration was disabled or replaced before posting" }), runId],
       );
       return;
     }
-    const open = await store.db.query<{ id: string }>(
-      `SELECT id FROM runs WHERE id=? AND closure IS NULL`, [runId],
+    const owned = await store.db.run(
+      `UPDATE runs SET preparation=json_set(preparation,'$.attempts',?)
+       WHERE id=? AND closure IS NULL AND json_extract(preparation,'$.progress') IS NULL
+         AND json_extract(preparation,'$.attempts')=?`,
+      [intent.attempts + 1, runId, intent.attempts],
     );
-    if (!open.length) return;
+    if (!owned.changes) return;
     try {
       await jobs.execute({
         jobId,
@@ -1944,13 +1944,15 @@ export function conductor(deps: ConductorDeps): Conductor {
     } catch (error) {
       const reason = `catalog posting: ${message(error)}`;
       notes.push(`${jobId}: ${reason}`);
-      if (nativeAdmissionRefusal(error)) {
+      // A refusal on a replay cannot disprove the earlier, still uncertain attempt.
+      if (intent.attempts === 0 && nativeAdmissionRefusal(error)) {
         try {
           await jobs.status({ kind: "job", machineId: intent.input.machineId, operationId: OPERATIONS.mapCatalog, jobId });
         } catch (statusError) {
           if (nativeFailureToken(statusError, "jobs.status") === "job_not_started") {
             await store.db.run(
-              `UPDATE runs SET closure='failed',finished_at=?,payload=? WHERE id=? AND closure IS NULL`,
+              `UPDATE runs SET closure='failed',finished_at=?,payload=? WHERE id=? AND closure IS NULL
+               AND json_extract(preparation,'$.attempts')=1`,
               [new Date(deps.now()).toISOString(), JSON.stringify({ closure: "failed", reason }), runId],
             );
           }
@@ -1965,47 +1967,57 @@ export function conductor(deps: ConductorDeps): Conductor {
    * Cursor commits follow capture writes, never the other way around.
    */
   async function catalogReceipts(policy: Policy, at: number, notes: string[]): Promise<void> {
-    const configured = policy.enabled ? mappingPolicy(policy) : null;
-    const route = configured === null ? null : TranscriptMapPolicySchema.parse(configured);
+    const route = policy.enabled && policy.mapping !== undefined
+      ? TranscriptMapConfigSchema.parse(policy.mapping) : null;
     const rows = await store.db.query<{ id: string; preparation: string | null; payload: string; closure: string }>(
       `SELECT id,preparation,payload,closure FROM runs WHERE kind=? AND closure IS NOT NULL
-       AND json_extract(payload,'$.catalogApplied') IS NULL ORDER BY started_at,id LIMIT 8`,
+       AND json_extract(preparation,'$.progress') IS NULL ORDER BY started_at,id LIMIT 8`,
       [OPERATIONS.mapCatalog],
     );
     for (const row of rows) {
       const intent = catalogIntent(row.preparation);
-      let afterCaptureId = intent?.afterCaptureId ?? null;
-      let gap: string | null = null;
+      if (!intent) {
+        notes.push(`catalog ${row.id}: retained intent is unavailable; projection remains pending`);
+        continue;
+      }
+      const request = intent.input.request;
+      const now = new Date(at).toISOString();
+      const progress: TranscriptMapCatalogProgress = {
+        appliedAt: now,
+        context: intent.context,
+        nextCursor: null,
+        afterCaptureId: request.kind === "map-plan" ? request.capture.id : null,
+        catalogCompletedAt: intent.catalogCompletedAt,
+        gap: null,
+      };
       try {
-        if (!intent) throw new Error("catalog intent is unavailable");
-        const request = intent.input.request;
-        if (request.kind === "map-plan") afterCaptureId = request.capture.id;
         if (!route || JSON.stringify(route) !== JSON.stringify(intent.route))
-          throw new Error("mapping configuration was disabled or replaced");
+          throw new TranscriptMapProjectionRefusal("mapping configuration was disabled or replaced");
         const receipt = ReceiptSchema.parse(JSON.parse(row.payload));
         if (row.closure !== "completed" || receipt.closure !== "completed" ||
             receipt.runId !== row.id || receipt.machineId !== route.machineId ||
             receipt.kind !== "mapCatalog" || receipt.mapping?.kind !== "catalog")
-          throw new Error("native catalog did not return the requested completed receipt");
+          throw new TranscriptMapProjectionRefusal("native catalog did not return the requested completed receipt");
         const result = receipt.mapping;
-        if (intent.expectedContext !== null && result.context.digest !== intent.expectedContext)
-          throw new Error("catalog context changed while the page was in flight");
-        const now = new Date(at).toISOString();
+        if (intent.context !== null && result.context.digest !== intent.context.digest)
+          throw new TranscriptMapProjectionRefusal("catalog context changed while the page was in flight");
         const scope = {
           machineId: route.machineId, context: result.context, now,
           guard: {
-            sql: `EXISTS (SELECT 1 FROM runs WHERE id=? AND json_extract(payload,'$.catalogApplied') IS NULL)`,
+            sql: `EXISTS (SELECT 1 FROM runs WHERE id=? AND json_extract(preparation,'$.progress') IS NULL)`,
             params: [row.id],
           },
         };
         if (request.kind === "map-inventory") {
           if (result.plan !== undefined || result.entries.length > request.maxCaptures ||
               (result.nextCursor !== null && result.nextCursor === request.cursor))
-            throw new Error("native inventory did not advance the requested page");
-          // recordAccess preserves the old cursor through every bounded capture batch.
+            throw new TranscriptMapProjectionRefusal("native inventory did not advance the requested page");
+          // Any interrupted capture batch leaves the same sealed receipt pending. Commit its
+          // cursor only after all capture writes, under the same receipt guard as the context.
           await maps.recordAccess({ ...scope, entries: result.entries });
           await maps.recordCatalog({ ...scope, entries: [], nextCursor: result.nextCursor });
-          afterCaptureId = null;
+          progress.nextCursor = result.nextCursor;
+          progress.catalogCompletedAt = result.nextCursor === null ? now : null;
         } else {
           const page = result.plan;
           const { coordinates: _coordinates, captureDigest: _captureDigest, sourceDigest: _sourceDigest,
@@ -2013,80 +2025,74 @@ export function conductor(deps: ConductorDeps): Conductor {
           if (!page || !result.access || page.offset !== request.offset ||
               JSON.stringify(capture) !== JSON.stringify(request.capture) ||
               JSON.stringify(page.header.segmentation) !== JSON.stringify(request.segmentation))
-            throw new Error("native plan does not match the requested capture and segmentation");
+            throw new TranscriptMapProjectionRefusal("native plan does not match the requested capture and segmentation");
           const recorded = await maps.recordPlan({
             ...scope, access: result.access, plan: page.header, nodes: page.nodes,
             offset: page.offset, nextOffset: page.nextOffset,
           });
-          if (!recorded.complete) afterCaptureId = intent.afterCaptureId;
+          if (!recorded.complete) progress.afterCaptureId = intent.afterCaptureId;
         }
+        progress.context = result.context;
       } catch (error) {
-        gap = message(error);
-        notes.push(`catalog ${row.id}: ${gap}`);
+        if (!(error instanceof TranscriptMapProjectionRefusal) &&
+            !(error instanceof z.ZodError) && !(error instanceof SyntaxError)) {
+          notes.push(`catalog ${row.id} projection remains pending: ${message(error)}`);
+          continue;
+        }
+        progress.gap = message(error).slice(0, DETAIL_KEPT);
+        notes.push(`catalog ${row.id}: ${progress.gap}`);
       }
       await store.db.run(
-        `UPDATE runs SET payload=json_set(payload,'$.catalogApplied',json('true'),
-         '$.catalogAfter',?,'$.catalogGap',?),
-         finished_at=CASE WHEN finished_at IS NULL OR finished_at='' THEN ? ELSE finished_at END
-         WHERE id=? AND json_extract(payload,'$.catalogApplied') IS NULL`,
-        [afterCaptureId, gap, new Date(at).toISOString(), row.id],
+        `UPDATE runs SET preparation=json_set(preparation,'$.progress',json(?))
+         WHERE id=? AND json_extract(preparation,'$.progress') IS NULL`,
+        [JSON.stringify(TranscriptMapCatalogProgressSchema.parse(progress)), row.id],
       );
     }
   }
 
   /** One free native job at a time; paid admission, profile calls and Recall are not involved. */
   async function advanceCatalog(policy: Policy, at: number, notes: string[]): Promise<number> {
-    const configured = policy.enabled ? mappingPolicy(policy) : null;
-    if (configured === null || deps.catalogPlan === undefined) return 0;
-    const route = TranscriptMapPolicySchema.parse(configured);
-    await maps.refreshWork(route, new Date(at).toISOString(), 32);
+    if (!policy.enabled || policy.mapping === undefined || deps.catalogPlan === undefined) return 0;
+    const route = TranscriptMapConfigSchema.parse(policy.mapping);
+    const paidPolicy = mappingPolicy(policy);
+    if (paidPolicy !== null) await maps.refreshWork(paidPolicy, new Date(at).toISOString(), 32);
     const held = await store.db.query<{ n: number }>(
       `SELECT count(*) n FROM runs WHERE kind=? AND
-       (closure IS NULL OR json_extract(payload,'$.catalogApplied') IS NULL)`,
+       (closure IS NULL OR json_extract(preparation,'$.progress') IS NULL)`,
       [OPERATIONS.mapCatalog],
     );
     if (Number(held[0]?.n) > 0) return 0;
-    const latest = await store.db.query<{ id: string; preparation: string; payload: string; finished_at: string }>(
-      `SELECT id,preparation,payload,finished_at FROM runs WHERE kind=? AND machine_id=?
+    const latest = await store.db.query<{ id: string; preparation: string }>(
+      `SELECT id,preparation FROM runs WHERE kind=? AND machine_id=?
        ORDER BY rowid DESC LIMIT 1`, [OPERATIONS.mapCatalog, route.machineId],
     );
     const prior = latest[0];
     const previous = prior ? catalogIntent(prior.preparation) : null;
     const sameRoute = previous !== null && JSON.stringify(previous.route) === JSON.stringify(route);
-    const progress = prior ? JSON.parse(prior.payload) as {
-      catalogAfter?: string | null;
-      catalogGap?: string | null;
-      mapping?: { context: { digest: string }; nextCursor: string | null };
-    } : null;
+    const progress = previous?.progress;
     const state = await maps.catalogState(route.machineId);
-    const sameContext = sameRoute &&
-      (progress?.mapping?.context.digest ?? previous.expectedContext) === state.context?.digest;
-    // The newest run receipt is the progression ledger. An overlapping replay of an older
-    // page may repeat store writes, but cannot rewind this selection cursor.
+    const sameContext = sameRoute && progress?.context != null &&
+      progress.context.digest === state.context?.digest;
     const nextCursor = sameContext && previous.input.request.kind === "map-inventory"
-      ? progress?.mapping?.nextCursor ?? null : null;
-    let afterCaptureId = sameContext ? progress?.catalogAfter ?? null : null;
+      ? progress?.nextCursor ?? null : null;
+    const afterCaptureId = sameContext ? progress?.afterCaptureId ?? null : null;
     let request: TranscriptMapCatalogInput["request"];
-    let expectedContext: string | null = null;
-    // A failed page records a gap and waits for the normal beat rather than hot-looping.
-    if (sameRoute && progress?.catalogGap && at - (instantOf(prior!.finished_at) ?? 0) < policy.cadenceSeconds * 1000)
+    let context: TranscriptMapCatalogRun["context"] = null;
+    if (sameRoute && progress?.gap && at - (instantOf(progress.appliedAt) ?? 0) < policy.cadenceSeconds * 1000)
       return 0;
-    if (!state.context || !sameContext || (previous.input.request.kind === "map-inventory" && progress?.catalogGap)) {
+    if (!state.context || !sameContext || (previous.input.request.kind === "map-inventory" && progress?.gap)) {
       request = { kind: "map-inventory", maxCaptures: 64 };
-      afterCaptureId = null;
     } else if (nextCursor !== null) {
       request = { kind: "map-inventory", cursor: nextCursor, maxCaptures: 64 };
-      expectedContext = state.context.digest;
-      afterCaptureId = null;
+      context = state.context;
     } else {
       const next = await maps.nextPlan(route.machineId, route.segmentation, afterCaptureId);
       if (next) {
         request = { kind: "map-plan", capture: next.capture, segmentation: route.segmentation, offset: next.offset, maxNodes: 128 };
-        expectedContext = state.context.digest;
+        context = state.context;
       } else {
-        if (at - (instantOf(state.completedAt ?? "") ?? 0) < policy.cadenceSeconds * 1000) return 0;
+        if (at - (instantOf(progress?.catalogCompletedAt ?? "") ?? 0) < policy.cadenceSeconds * 1000) return 0;
         request = { kind: "map-inventory", maxCaptures: 64 };
-        afterCaptureId = null;
       }
     }
     const described = await describeHost(jobs, route.machineId, OPERATIONS.mapCatalog);
@@ -2094,13 +2100,15 @@ export function conductor(deps: ConductorDeps): Conductor {
       notes.push(`catalog cannot be posted: ${described.refused}`);
       return 0;
     }
-    const token = createHash("sha256").update(JSON.stringify([route, request, prior?.finished_at ?? null, at])).digest("hex");
+    const token = createHash("sha256").update(JSON.stringify([route, request, prior?.id ?? null, at])).digest("hex");
     const runId = `run_map_${token}`;
     const jobId = `map_${token}`;
     const installation = described.readiness.installation;
-    const intent: CatalogIntent = {
-      route, input: { runId, machineId: route.machineId, request }, afterCaptureId, expectedContext,
-      limits: deps.catalogPlan.limits,
+    const intent: TranscriptMapCatalogRun = {
+      route, input: { runId, machineId: route.machineId, request },
+      afterCaptureId: request.kind === "map-plan" ? afterCaptureId : null,
+      context, catalogCompletedAt: progress?.catalogCompletedAt ?? null,
+      attempts: 0, progress: null, limits: deps.catalogPlan.limits,
       ...(installation === null ? {} : { installationRevision: installation.revision, artifactSha256: installation.artifactSha256 }),
     };
     // Atomic selection prevents overlapping wakes from retaining competing catalog intents.
@@ -2108,10 +2116,10 @@ export function conductor(deps: ConductorDeps): Conductor {
     const retained = await store.db.run(
       `INSERT OR IGNORE INTO runs(id,kind,machine_id,job_id,authority_kind,authority_id,preparation,started_at,records,payload)
        SELECT ?,?,?,?,'conductor',?,?,?,0,? WHERE
-       NOT EXISTS (SELECT 1 FROM runs WHERE kind=? AND (closure IS NULL OR json_extract(payload,'$.catalogApplied') IS NULL))
+       NOT EXISTS (SELECT 1 FROM runs WHERE kind=? AND (closure IS NULL OR json_extract(preparation,'$.progress') IS NULL))
        AND (SELECT count(*) FROM runs WHERE machine_id=? AND closure IS NULL) < ?
        AND coalesce((SELECT id FROM runs WHERE kind=? AND machine_id=? ORDER BY rowid DESC LIMIT 1),'')=?`,
-      [runId, OPERATIONS.mapCatalog, route.machineId, jobId, policy.version, JSON.stringify(intent),
+      [runId, OPERATIONS.mapCatalog, route.machineId, jobId, policy.version, JSON.stringify(TranscriptMapCatalogRunSchema.parse(intent)),
        new Date(at).toISOString(), JSON.stringify({ closure: null, requestedAt: at }),
        OPERATIONS.mapCatalog, route.machineId, perMachineBound(policy),
        OPERATIONS.mapCatalog, route.machineId, prior?.id ?? ""],
@@ -2299,6 +2307,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       // cycle for ever: the run row is the loop's memory of what it has already dealt with, and
       // a job nobody requested (the beat) has none until this writes one.
       notes.push(`job ${target.jobId} outputs were refused: ${message(error)}`);
+      // A catalog's sealed output is its replay source. Transport/DB interruption is not
+      // a native refusal and must not retire that source in favor of another job.
+      if (target.operationId === OPERATIONS.mapCatalog) return;
       const failed = JSON.stringify({ closure: "failed", reason: message(error) });
       await store.db.run(
         `INSERT INTO runs(id, kind, machine_id, job_id, started_at, finished_at, closure, records, payload)

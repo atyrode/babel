@@ -40,6 +40,9 @@ import {
   transcriptMapPlanId,
 } from "../transcript-map-identity.ts";
 
+/** A terminal native proof refusal, unlike an interrupted database projection. */
+export class TranscriptMapProjectionRefusal extends Error {}
+
 export interface TranscriptMapStore {
   readonly db: PluginDatabase;
   readonly touch?: () => void;
@@ -258,21 +261,18 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     guard?: TranscriptMapCondition,
   ): Promise<void> {
     const context = TranscriptMapContextSchema.parse(scope.context);
-    const newer = await db.query<{ n: number }>(
-      `SELECT count(*) n FROM transcript_map_contexts WHERE machine_id=? AND observed_at>? AND digest!=?
-       AND (${guard?.sql ?? "1"})`,
-      [scope.machineId, context.observedAt, context.digest, ...(guard?.params ?? [])],
-    );
-    if (Number(newer[0]?.n) > 0) throw new Error("stale transcript map context");
-    await db.batch([
+    const fresh = `NOT EXISTS (SELECT 1 FROM transcript_map_contexts newer
+      WHERE newer.machine_id=? AND newer.observed_at>? AND newer.digest!=?)`;
+    const freshness = [scope.machineId, context.observedAt, context.digest];
+    const result = await db.batch([
       {
         sql: `DELETE FROM transcript_map_contexts WHERE machine_id=? AND digest!=? AND observed_at<=?
-          AND (${guard?.sql ?? "1"})`,
-        params: [scope.machineId, context.digest, context.observedAt, ...(guard?.params ?? [])],
+          AND (${guard?.sql ?? "1"}) AND ${fresh}`,
+        params: [scope.machineId, context.digest, context.observedAt, ...(guard?.params ?? []), ...freshness],
       },
       {
         sql: `INSERT INTO transcript_map_contexts(machine_id,class_id,digest,ceiling,observed_at,payload,next_cursor,cataloged_at,completed_at,mapping,mapping_payload)
-        SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE (${guard?.sql ?? "1"})
+        SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE (${guard?.sql ?? "1"}) AND ${fresh}
         ON CONFLICT(machine_id,class_id) DO UPDATE SET digest=excluded.digest,
         ceiling=excluded.ceiling,observed_at=max(observed_at,excluded.observed_at),
         payload=CASE WHEN excluded.observed_at>=observed_at THEN excluded.payload ELSE payload END,
@@ -295,11 +295,17 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           mapping ? 1 : 0,
           mapping ? json(context) : null,
           ...(guard?.params ?? []),
+          ...freshness,
           preserveCursor ? 1 : 0,
           preserveCursor ? 1 : 0,
         ],
       },
+      {
+        sql: `SELECT 1 AS refused WHERE (${guard?.sql ?? "1"}) AND NOT (${fresh})`,
+        params: [...(guard?.params ?? []), ...freshness],
+      },
     ]);
+    if (result[2]?.length) throw new TranscriptMapProjectionRefusal("stale transcript map context");
   }
   async function recordCatalog(
     input: TranscriptMapCatalogInput,
@@ -307,7 +313,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     mapping = true,
   ): Promise<void> {
     if (input.entries.length > TRANSCRIPT_MAP_MAX_CAPTURES)
-      throw new Error("transcript catalog page exceeds bound");
+      throw new TranscriptMapProjectionRefusal("transcript catalog page exceeds bound");
     await rememberContext(input, input.nextCursor, preserveCursor, mapping, input.now, input.guard);
     const statements: SqlStatement[] = [];
     for (const entry of input.entries) {
@@ -319,9 +325,9 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         access.contextDigest !== input.context.digest ||
         access.sensitivity > input.context.ceiling
       )
-        throw new Error("invalid transcript map access attestation");
+        throw new TranscriptMapProjectionRefusal("invalid transcript map access attestation");
       const previous = await one("transcript_map_captures", capture.id);
-      if (previous && json(previous) !== json(capture)) throw new Error("capture identity changed");
+      if (previous && json(previous) !== json(capture)) throw new TranscriptMapProjectionRefusal("capture identity changed");
       statements.push({
         sql: `INSERT OR IGNORE INTO transcript_map_captures(id,host,harness,session,captured_at,payload) VALUES(?,?,?,?,?,?)`,
         params: [
@@ -394,7 +400,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   async function recordPlan(input: TranscriptMapPlanInput): Promise<{ complete: boolean }> {
     const plan = TranscriptMapPlanSchema.parse(input.plan);
     if (plan.id !== transcriptMapPlanId(plan.source, plan.segmentation))
-      throw new Error("invalid transcript plan identity");
+      throw new TranscriptMapProjectionRefusal("invalid transcript plan identity");
     const {
       coordinates: _coordinates,
       captureDigest: _captureDigest,
@@ -408,7 +414,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       true,
     );
     const old = await one<TranscriptMapPlan>("transcript_map_plans", plan.id);
-    if (old && json(old) !== json(plan)) throw new Error("immutable transcript plan changed");
+    if (old && json(old) !== json(plan)) throw new TranscriptMapProjectionRefusal("immutable transcript plan changed");
     if (
       !Number.isSafeInteger(input.offset) ||
       input.offset < 0 ||
@@ -420,7 +426,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           input.nextOffset >= plan.nodeCount ||
           !input.nodes.length)
     )
-      throw new Error("invalid transcript plan page");
+      throw new TranscriptMapProjectionRefusal("invalid transcript plan page");
     await db.run(
       `INSERT OR IGNORE INTO transcript_map_plans(id,capture_id,payload,created_at) VALUES(?,?,?,?)`,
       [plan.id, plan.source.id, json(plan), input.now],
@@ -451,7 +457,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
             node.span.byteLength <= plan.segmentation.leafBytes)) ||
         node.children.length > plan.segmentation.fanout
       )
-        throw new Error("invalid transcript map node");
+        throw new TranscriptMapProjectionRefusal("invalid transcript map node");
       statements.push({
         sql: `INSERT OR IGNORE INTO transcript_map_nodes(id,plan_id,position,parent_node_id,level,ordinal,byte_offset,byte_length,gap,payload) VALUES(?,?,?,?,?,?,?,?,?,?)`,
         params: [
@@ -498,7 +504,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         `SELECT payload,position FROM transcript_map_nodes WHERE plan_id=? AND position>=? ORDER BY position LIMIT ?`,
         [plan.id, position, PAGE],
       );
-      if (!rows.length) throw new Error("missing transcript plan page");
+      if (!rows.length) throw new TranscriptMapProjectionRefusal("missing transcript plan page");
       for (const row of rows) {
         const node = TranscriptMapNodeSchema.parse(JSON.parse(row.payload));
         if (
@@ -506,7 +512,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           node.level < previousLevel ||
           node.ordinal !== (node.level === previousLevel ? previousOrdinal + 1 : 0)
         )
-          throw new Error("unordered transcript manifest");
+          throw new TranscriptMapProjectionRefusal("unordered transcript manifest");
         previousLevel = node.level;
         previousOrdinal = node.ordinal;
         hash.update(position === 0 ? "" : ",").update(json(node));
@@ -521,7 +527,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
             node.span.lastRecord !== plan.source.records ||
             node.span.digest !== plan.source.sourceDigest
           )
-            throw new Error("invalid transcript root");
+            throw new TranscriptMapProjectionRefusal("invalid transcript root");
         } else {
           const parent = await one<TranscriptMapNode>("transcript_map_nodes", node.parentId);
           if (
@@ -530,7 +536,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
             parent.level <= node.level ||
             !parent.children.includes(node.id)
           )
-            throw new Error("invalid transcript parent link");
+            throw new TranscriptMapProjectionRefusal("invalid transcript parent link");
         }
         if (!node.children.length) {
           // All terminal spans (including explicit depth gaps) are checked separately by offset below.
@@ -548,7 +554,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
               child.span.byteOffset !== byteEnd ||
               child.span.firstRecord !== lastRecord + 1
             )
-              throw new Error("noncontiguous transcript child span");
+              throw new TranscriptMapProjectionRefusal("noncontiguous transcript child span");
             byteEnd += child.span.byteLength;
             lastRecord = child.span.lastRecord;
           }
@@ -556,7 +562,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
             byteEnd !== node.span.byteOffset + node.span.byteLength ||
             lastRecord !== node.span.lastRecord
           )
-            throw new Error("transcript children do not cover parent");
+            throw new TranscriptMapProjectionRefusal("transcript children do not cover parent");
         }
       }
     }
@@ -569,7 +575,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       for (const row of leaves) {
         const node = TranscriptMapNodeSchema.parse(JSON.parse(row.payload));
         if (node.span.byteOffset !== leafEnd || node.span.firstRecord !== recordEnd + 1)
-          throw new Error("transcript terminal spans overlap or omit records");
+          throw new TranscriptMapProjectionRefusal("transcript terminal spans overlap or omit records");
         leafEnd += node.span.byteLength;
         recordEnd = node.span.lastRecord;
         after = Number(row.byte_offset);
@@ -585,7 +591,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       (plan.rootId === null) !== (plan.source.bytes === 0) ||
       plan.direct !== plan.source.bytes <= plan.segmentation.directBytes
     )
-      throw new Error("transcript plan manifest verification failed");
+      throw new TranscriptMapProjectionRefusal("transcript plan manifest verification failed");
   }
   async function ensureVersion(
     planId: string,
