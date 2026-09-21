@@ -150,6 +150,24 @@ test("a failed replacement rolls back its tokens and releases the writer for ano
   expect(other.search("complete", [next], 10, 100).selection).toEqual([next.session]);
 });
 
+test("invalid normalized UTF-8 cannot publish replacement records, including a torn final codepoint", async () => {
+  const { index } = await open();
+  const old = candidate("invalid-utf8");
+  const next = { ...old, seen: { ...old.seen, modifiedAt: 2000 } };
+  await index.build(old, content(old, "retained"));
+  for (const bytes of [Uint8Array.of(0x21, 0xff, 0x0a), Uint8Array.of(0x21, 0xf0, 0x9f)]) {
+    const failure = index.build(next, async (sink) => {
+      sink.write('{"text":"partial"}\n');
+      sink.write(bytes);
+      return { reading: reading(next.seen), after: next.seen };
+    });
+    await expect(failure).rejects.toMatchObject({ kind: "unavailable" });
+    expect(index.holds(next)).toBe(false);
+    expect(index.searchRecords("retained", [old], 10).matches).toBe(1);
+    expect(index.searchRecords("partial", [old], 10).matches).toBe(0);
+  }
+});
+
 test("a changed observation or incomplete byte count cannot publish a replacement", async () => {
   const { index } = await open();
   const old = candidate("changed");
@@ -457,12 +475,15 @@ test("record windows use recognized archived timestamps and exclude unknown time
     { text: "needle", timestamp: "unparseable", createdAt: "2026-09-20T10:00:00Z" },
     { text: "needle", payload: { timestamp: "2026-09-20T10:00:00Z" } },
     { text: "needle" },
+    { text: "needle", timestamp: "2026-09-20T10:00:00" },
+    { text: "needle", timestamp: "2026-02-30T10:00:00Z" },
+    { text: "needle", ts: 253402300800 },
   ].map((record) => `${JSON.stringify(record)}\n`).join("");
   await index.build(entry, normalized(entry, stream));
   const result = index.searchRecords("needle", [entry], 120);
-  expect(result.matches).toBe(6);
+  expect(result.matches).toBe(9);
   expect(result.hits.filter((hit) => hit.position.time === null).map((hit) => hit.position.line).sort())
-    .toEqual([4, 5, 6]);
+    .toEqual([4, 5, 6, 7, 8, 9]);
   const cases = [
     { window: { since: "2026-09-20T10:00:00Z" }, lines: [1, 2, 3] },
     { window: { until: "2026-09-20T11:00:00Z" }, lines: [1, 2] },

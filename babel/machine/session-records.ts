@@ -13,6 +13,7 @@ export interface SessionDigests {
 /** A record's size limit in UTF-16 code units. A surrogate pair crossing the limit starts
  *  the next piece intact, so opaque records never lose a decoded Unicode character. */
 const MAX_RECORD_CHARS = 4 << 20;
+const encoder = new TextEncoder();
 
 /**
  * Normalized, newline-terminated records from bytes supplied by the caller. There is no source
@@ -80,8 +81,13 @@ export function sessionDigester(seal?: RecordSink, scan?: SecretScan): {
   const reader = recordReader((normalized, line) => {
     records = line;
     const served = scan === undefined ? normalized : scan.redact(normalized, line);
-    source.update(served);
-    seal?.write(served);
+    if (seal === undefined) source.update(served);
+    else {
+      // The digest, index and file sinks share one encoding of the bytes actually served.
+      const encoded = encoder.encode(served);
+      source.update(encoded);
+      seal.write(encoded);
+    }
   });
   return {
     write: (chunk) => {

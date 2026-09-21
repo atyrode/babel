@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { chmod, lstat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { z } from "zod";
 
 import { MAX_MATERIAL_BYTES, termsQuery, type SessionRecordPosition } from "../contract.ts";
 import { SESSION_INDEX_SCHEMA } from "../store/schema.ts";
@@ -60,6 +61,7 @@ const CHUNK_CHARS = 16 * 1024;
 // Normalization already bounds source records. Leave room for JSON escaping and redaction;
 // malformed/custom callbacks that exceed this bound refuse instead of publishing a truncation.
 const MAX_RECORD_CHARS = 64 * 1024 * 1024;
+const RecordTimestampSchema = z.iso.datetime({ offset: true });
 
 function busy(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
@@ -112,14 +114,20 @@ function* objectStrings(value: object): Generator<unknown> {
   }
 }
 
+function utcTime(value: string | number): string | null {
+  const at = new Date(value);
+  const year = at.getUTCFullYear();
+  // The public locator carries a four-digit UTC ISO year, never an extended Date spelling.
+  return year >= 0 && year <= 9999 ? at.toISOString() : null;
+}
+
 /** Only archived fields recognized by the harness adapters supply a record's time. */
 function recordTime(parsed: unknown): string | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const fields = parsed as Record<string, unknown>;
   const iso = (value: unknown): string | null => {
-    if (typeof value !== "string" || value === "") return null;
-    const at = new Date(value);
-    return Number.isNaN(at.getTime()) ? null : at.toISOString();
+    if (typeof value !== "string" || !RecordTimestampSchema.safeParse(value).success) return null;
+    return utcTime(value);
   };
   const timestamp = iso(fields["timestamp"]);
   if (timestamp !== null) return timestamp;
@@ -131,8 +139,7 @@ function recordTime(parsed: unknown): string | null {
   // Codex's history.jsonl records seconds since the epoch rather than an ISO timestamp.
   const seconds = fields["ts"];
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return null;
-  const at = new Date(seconds * 1000);
-  return Number.isNaN(at.getTime()) ? null : at.toISOString();
+  return utcTime(seconds * 1000);
 }
 
 /**
@@ -143,7 +150,7 @@ function recordTime(parsed: unknown): string | null {
 export function readNormalizedRecords(
   visit: (text: string, position: SessionRecordPosition, parsed: unknown) => void,
 ): RecordSink {
-  const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+  const decoder = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
   const encoder = new TextEncoder();
   const parts: string[] = [];
   let hash = new Bun.CryptoHasher("sha256");
