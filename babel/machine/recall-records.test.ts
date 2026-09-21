@@ -33,6 +33,11 @@ test("UTF-8 prefixes never split Unicode or spend unused bytes on a later charac
   expect(() => clipUtf8(text, Number.POSITIVE_INFINITY)).toThrow(RangeError);
 });
 
+test("clipping preserves an archived U+FEFF at the start of a page", () => {
+  expect(clipUtf8("\ufeffabc", 4)).toEqual({ text: "\ufeffa", bytes: 4, truncated: true });
+  expect(clipUtf8("\ufeffabc", 2)).toEqual({ text: "", bytes: 0, truncated: true });
+});
+
 test("full-record preflight precedes prefix clipping for both evidence and metadata", async () => {
   const key = `${"AKIA"}IOSFODNN7SYNTH01`;
   const raw = stream([

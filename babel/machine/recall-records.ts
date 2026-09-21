@@ -22,7 +22,7 @@ import type { RecordSink } from "./output.ts";
 import { readNormalizedRecords } from "./session-index.ts";
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 const titleBytes = RecallMetadataSchema.shape.title.unwrap().maxLength!;
 const workspaceBytes = RecallMetadataSchema.shape.workspace.unwrap().maxLength!;
 
