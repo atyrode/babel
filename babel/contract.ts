@@ -4868,7 +4868,7 @@ export const TranscriptMapViewSchema = z.strictObject({
 export type TranscriptMapView = z.infer<typeof TranscriptMapViewSchema>;
 
 export const TRANSCRIPT_MAP_NATIVE_KINDS = [
-  "map-context", "map-inventory", "map-plan", "map-authorize",
+  "map-context", "map-inventory", "map-plan", "map-node", "map-authorize",
   "map-span", "map-preview", "map-page", "map-release",
 ] as const;
 export const TranscriptMapInventoryRequestSchema = z.strictObject({
@@ -4887,6 +4887,12 @@ export const TranscriptMapNativeRequestSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("map-context") }),
   TranscriptMapInventoryRequestSchema,
   TranscriptMapPlanRequestSchema,
+  z.strictObject({
+    kind: z.literal("map-node"),
+    source: TranscriptMapSourceSchema,
+    segmentation: TranscriptMapSegmentationSchema,
+    nodeId: TranscriptMapNodeIdSchema,
+  }),
   z.strictObject({
     kind: z.literal("map-authorize"),
     captures: z.array(TranscriptMapCaptureSchema).min(1).max(TRANSCRIPT_MAP_MAX_CAPTURES),
@@ -4986,10 +4992,12 @@ export const TranscriptMapPrepareInputSchema = z.strictObject({
   runId: refId,
   machineId: refId,
   source: TranscriptMapSourceSchema,
-  node: TranscriptMapNodeSchema,
+  nodeId: TranscriptMapNodeIdSchema,
+  segmentation: TranscriptMapSegmentationSchema,
   expectedPolicyDigest: recallDigest,
   mode: z.enum(TRANSCRIPT_MAP_MODES),
-  children: z.array(TranscriptMapChildSummarySchema).max(TRANSCRIPT_MAP_MAX_CHILDREN),
+  children: z.array(TranscriptMapChildSummarySchema.omit({ nodeId: true }))
+    .max(TRANSCRIPT_MAP_MAX_CHILDREN),
   baseSummary: z.strictObject({
     id: TranscriptMapSummaryIdSchema,
     text: transcriptMapText,
@@ -5019,3 +5027,51 @@ export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type TranscriptMapJobReceipt = z.infer<typeof TranscriptMapJobReceiptSchema>;
+
+/** Map reads have their own exact grant; installing them never widens a raw Recall grant. */
+export const TRANSCRIPT_MAP_READ_OPERATION_PREFIX = "map.";
+export const TranscriptMapTargetSchema = RecallTargetSchema.extend({
+  operationId: z.string().regex(/^map\.[a-z][a-z0-9-]{0,47}$/),
+});
+export type TranscriptMapTarget = z.infer<typeof TranscriptMapTargetSchema>;
+export function transcriptMapReadTarget(machineId: string, classId: string): TranscriptMapTarget {
+  return {
+    kind: "service",
+    machineId,
+    serviceId: RECALL_SERVICE_ID,
+    operationId: `${TRANSCRIPT_MAP_READ_OPERATION_PREFIX}${classId}`,
+  };
+}
+
+/**
+ * The 62 primitive leaves of the public native map reader. Full plan/export packets travel
+ * only through the explicitly configured job proxy, never through a reader's invocation grant.
+ */
+export const TRANSCRIPT_MAP_RESULT_FIELDS: string[][] = [
+  ["requestId"],
+  ["state"],
+  ...["operation", "refusal", "nextCursor"].map((key) => ["result", key]),
+  ...TranscriptMapContextSchema.keyof().options.map((key) => ["result", "context", key]),
+  ...RecallResultSchema.shape.cost.keyof().options.map((key) => ["result", "cost", key]),
+  ...TranscriptMapCaptureSchema.keyof().options.map((key) => [
+    "result", "entries", "*", "capture", key,
+  ]),
+  ...TranscriptMapAccessSchema.keyof().options.flatMap((key) => [
+    ["result", "entries", "*", "access", key],
+    ["result", "accesses", "*", key],
+  ]),
+  ...TranscriptMapSourceSchema.keyof().options.map((key) => ["result", "span", "source", key]),
+  ...TranscriptMapSpanSchema.keyof().options.filter((key) => key !== "anchor")
+    .map((key) => ["result", "span", "span", key]),
+  ...SessionRecordPositionSchema.keyof().options.map((key) => [
+    "result", "span", "span", "anchor", key,
+  ]),
+  ...RecallExcerptSchema.keyof().options.map((key) => ["result", "span", "excerpt", key]),
+];
+export const TRANSCRIPT_MAP_RESULT_PROJECTION = {
+  kind: "projected-json" as const,
+  fields: TRANSCRIPT_MAP_RESULT_FIELDS,
+  textFields: [["result", "span", "excerpt", "text"]],
+  maxArrayItems: TRANSCRIPT_MAP_MAX_CAPTURES,
+  maxResultBytes: RECALL_MAX_RESULT_BYTES,
+};
