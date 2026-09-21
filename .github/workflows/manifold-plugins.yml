@@ -46,4 +46,7 @@ jobs:
       # builds no other family's bundles itself. It needs no second `actions/checkout`,
       # because the fetch is the script's own and the manifold sibling this workflow already
       # lays out is the one `manifold-dir.sh` resolves.
-      prepare-command: bun run deps:code
+      prepare-command: |
+        sudo apt-get update
+        sudo apt-get install --yes restic
+        bun run deps:code

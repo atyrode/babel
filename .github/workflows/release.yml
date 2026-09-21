@@ -49,7 +49,10 @@ jobs:
     uses: atyrode/manifold/.github/workflows/plugins.yml@3e8510c473d84175568ac81012763635112ed7d3
     with:
       plugins-dir: "."
-      prepare-command: bun run deps:code
+      prepare-command: |
+        sudo apt-get update
+        sudo apt-get install --yes restic
+        bun run deps:code
 
   # Babel requires Code, and Code requires omp (docs/building.md "Code is a second pin"): a
   # preview that receives Babel alone refuses composition. This job builds the exact dependency

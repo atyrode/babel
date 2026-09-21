@@ -37,7 +37,7 @@ import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
 
 const READ = {
-  caps: [],
+  caps: ["services:invoke"],
   delegates: ["services:invoke"],
   requirements: [{ cap: "services:invoke", target: ["target"] }],
   trace: "opaque",

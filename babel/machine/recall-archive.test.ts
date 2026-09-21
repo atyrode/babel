@@ -57,7 +57,6 @@ const SOURCE =
 const request = (value: unknown): RecallRequest => RecallRequestSchema.parse(value);
 const search = (extra: object = {}): RecallRequest =>
   request({ kind: "search", query: "needle", ...extra });
-const withRestic = Bun.which("restic") === null ? test.skip : test;
 const TIMEOUT = 120_000;
 
 interface Fixture {
@@ -76,6 +75,8 @@ async function fixture(
     policy?: RecallPolicy;
   } = {},
 ): Promise<void> {
+  const binary = Bun.which("restic");
+  if (binary === null) throw new Error("Recall archive tests require restic on PATH.");
   const home = await mkdtemp(join(tmpdir(), "babel-recall-archive-"));
   const root = join(home, ".omp", "agent", "sessions", "synthetic-project");
   const cacheDir = join(home, "kept");
@@ -92,7 +93,7 @@ async function fixture(
     const repo = openRepo({
       repository: join(home, "repo"),
       password: "synthetic-test-password",
-      binary: Bun.which("restic") ?? "/missing-restic",
+      binary,
       cacheDir: join(home, "restic-cache"),
       objectStore: null,
     });
@@ -114,7 +115,7 @@ async function fixture(
   }
 }
 
-withRestic(
+test(
   "cold and warm search use immutable redacted archive bytes, never changed live sources",
   async () => {
     await fixture(async ({ archive, source }) => {
@@ -143,7 +144,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "newest captures replace indexed bytes and refuse old locators even when the path stays fixed",
   async () => {
     await fixture(async ({ archive, source, repo }) => {
@@ -170,7 +171,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "a bounded cold scope converges across requests and does not claim exhaustive matches",
   async () => {
     await fixture(
@@ -196,7 +197,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "filters use archived metadata and record timestamps, excluding unknown record times",
   async () => {
     await fixture(
@@ -234,7 +235,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "owner associations are labelled and cannot upgrade a subject's disclosure class",
   async () => {
     const policy: RecallPolicy = {
@@ -261,7 +262,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "show verifies record locators and serves surrounding records or explicit user turns",
   async () => {
     await fixture(async ({ archive }) => {
@@ -296,7 +297,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "size-first preview pages reconstruct every verified byte with sequential and retry-safe offsets",
   async () => {
     await fixture(async ({ archive, clock, cacheDir }) => {
@@ -376,7 +377,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "corrupt replay refuses before publishing any hit or widening token and can refetch",
   async () => {
     await fixture(async ({ archive, cacheDir }) => {
@@ -403,7 +404,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "redaction precedes indexing and widening, and full sessions are not silently truncated",
   async () => {
     const secret = "synthetic-super-secret-password-42";
@@ -443,7 +444,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "near-bound ranked results reserve the service envelope instead of failing delivery",
   async () => {
     const policy: RecallPolicy = {
@@ -601,7 +602,7 @@ test("highest matching owner sensitivity and unknown subjects refuse before dump
   }
 });
 
-withRestic(
+test(
   "identical selectors on separate hosts never share a cache stream or index capture",
   async () => {
     const otherHost = "synthetic-other-host";
@@ -636,7 +637,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "an unavailable selected repository yields only fixed refusal words, never a live fallback",
   async () => {
     await fixture(async ({ archive, home }) => {
@@ -652,7 +653,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "a corrupt kept stream retains capture-changed while rebuilding a missing index",
   async () => {
     await fixture(async ({ archive, cacheDir, repo, home }) => {
@@ -685,7 +686,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "a busy index record sink retains index-busy without leaking its cause",
   async () => {
     await fixture(async ({ archive }) => {
@@ -722,7 +723,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "held metadata survives restart and safely rebuilds malformed or stale sidecars",
   async () => {
     await fixture(async ({ archive, cacheDir, repo, home }) => {
@@ -786,7 +787,7 @@ withRestic(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "widening lives in owned scratch and closing one archive preserves another's pages",
   async () => {
     await fixture(async ({ archive, cacheDir, repo, home }) => {
@@ -1277,7 +1278,7 @@ test(
   TIMEOUT,
 );
 
-withRestic(
+test(
   "owner metadata and refused labels are scanned without changing locator identity",
   async () => {
     const secret = "synthetic-super-secret-password-42";

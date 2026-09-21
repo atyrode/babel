@@ -42,6 +42,11 @@ approvals copied from a live hub. After deliberately changing a projection, run
 SDK runner as immutable source artifacts. It does not select an origin, retrieve credentials,
 create grants or install a service. Owner setup is `docs/runbook.md` §9.1.
 
+`bun test` requires `restic` on `PATH` for Recall's disposable synthetic archive fixtures; a
+missing binary fails those tests rather than skipping them. Both the pull-request gate and
+release gate install that test prerequisite before building the dependency closure. These
+fixtures provision no live storage service and read no real conversations.
+
 The web halves are **in-realm React** (`docs/PLUGINS.md` §10): a part's `web.tsx` —
 `babel/feed/web.tsx` and `babel/watch/web.tsx` — default-exports `{ id, panels }`
 of ordinary components on `@manifold/ui`'s layout primitives, with the skin in a `styles.css`
