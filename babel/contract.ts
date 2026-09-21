@@ -4904,7 +4904,7 @@ export const TranscriptMapNativeRequestSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     kind: z.literal("map-authorize"),
-    captures: z.array(TranscriptMapCaptureSchema).min(1).max(TRANSCRIPT_MAP_MAX_CAPTURES),
+    captures: z.array(TranscriptMapCaptureSchema).max(TRANSCRIPT_MAP_MAX_CAPTURES),
   }),
   z.strictObject({
     kind: z.literal("map-span"),
@@ -4935,7 +4935,7 @@ export const TranscriptMapPlanPageSchema = z.strictObject({
 });
 export const TranscriptMapNativeResultSchema = z.strictObject({
   operation: z.enum(TRANSCRIPT_MAP_NATIVE_KINDS),
-  context: TranscriptMapContextSchema.nullable(),
+  context: TranscriptMapContextSchema.optional(),
   entries: z.array(TranscriptMapCatalogEntrySchema).max(TRANSCRIPT_MAP_MAX_CAPTURES),
   nextCursor: z.string().min(1).max(1024).nullable(),
   accesses: z.array(TranscriptMapAccessSchema).max(TRANSCRIPT_MAP_MAX_CAPTURES),
@@ -5149,8 +5149,10 @@ export const TranscriptMapReadViewSchema = TranscriptMapViewSchema.omit({
   inference: true,
   coverage: true,
   node: true,
+  summary: true,
 }).extend({
   node: TranscriptMapNodeSchema.omit({ planId: true }),
+  summary: TranscriptMapSummaryViewSchema.optional(),
 });
 export const TranscriptMapReadResultSchema = z.strictObject({
   operation: z.enum(["search", "node", "children", "ancestors", "coverage", "status"]),

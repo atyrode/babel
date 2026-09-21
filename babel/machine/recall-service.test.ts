@@ -369,7 +369,7 @@ test("raw, map-read and job-only mapping routes cannot poll or execute across ca
       calls.push(`${classId}/${privileged}`);
       entered.resolve();
       await release.promise;
-      return { operation: request.kind, context: null, entries: [], accesses: [], nextCursor: null, cost: result().cost, refusal: null };
+      return { operation: request.kind, entries: [], accesses: [], nextCursor: null, cost: result().cost, refusal: null };
     },
     close: async () => {},
   };

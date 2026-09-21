@@ -162,7 +162,7 @@ export function transcriptMapArchive(options: {
   return {
     expire,
     async execute(classId: string, input: TranscriptMapNativeRequest, privileged: boolean): Promise<TranscriptMapNativeResult> {
-      const result: TranscriptMapNativeResult = { operation: input.kind, context: null, entries: [], nextCursor: null, accesses: [], cost: { fetchedFiles: 0, fetchedBytes: 0, replayedBytes: 0, cacheHits: 0, indexedFiles: 0, listedSnapshots: 0, listedEntries: 0 }, refusal: null };
+      const result: TranscriptMapNativeResult = { operation: input.kind, entries: [], nextCursor: null, accesses: [], cost: { fetchedFiles: 0, fetchedBytes: 0, replayedBytes: 0, cacheHits: 0, indexedFiles: 0, listedSnapshots: 0, listedEntries: 0 }, refusal: null };
       try {
         const request = TranscriptMapNativeRequestSchema.parse(input);
         const disclosure = options.policy.classes.find((value) => value.id === classId);

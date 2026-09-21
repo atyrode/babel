@@ -3,11 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { RecallRequestSchema, TranscriptMapSegmentationSchema, RECALL_REQUEST_TTL_MS, type RecallPolicy, type TranscriptMapNativeRequest } from "../contract.ts";
+import { RecallRequestSchema, TranscriptMapSegmentationSchema, RECALL_REQUEST_TTL_MS, type RecallPolicy, type TranscriptMapNativeRequest, TRANSCRIPT_MAP_RESULT_PROJECTION, TranscriptMapNativeReplySchema } from "../contract.ts";
 import { createRecallArchive } from "./recall-archive.ts";
 import { BABEL_TAG, type Repo, type Snapshot } from "./restic.ts";
 import { mapPrepare, mapCatalog } from "./transcript-map-jobs.ts";
 import { directorySink, materialSink } from "./output.ts";
+import { projectJson, compileJsonProjection } from "@manifold/protocol";
 
 const path = "/synthetic/.omp/agent/sessions/project/2026-09-01T00-00-00-000Z_fixture.jsonl";
 const host = "synthetic-map-host";
@@ -52,6 +53,21 @@ test("mapping enumerates retained history while raw Recall stays newest-only", a
     expect(repaired.span?.excerpt.text).toContain("historicalneedle");
     expect(f.dumps()).toBe(before);
     expect(repaired.cost.replayedBytes).toBe(span.byteLength);
+  } finally { await f.close(); }
+});
+
+test("native refusals without a context survive the SDK primitive-leaf projection", async () => {
+  const f = await fixture();
+  try {
+    const result = await f.archive.executeMap("unconfigured", { kind: "map-context" });
+    const projection = TRANSCRIPT_MAP_RESULT_PROJECTION;
+    const delivered = TranscriptMapNativeReplySchema.parse(projectJson(
+      { requestId: crypto.randomUUID(), state: "complete", result },
+      compileJsonProjection(projection.fields, projection.textFields), projection.maxArrayItems,
+    ));
+    expect(delivered.result?.refusal).toBe("disclosure");
+    expect(delivered.result?.context).toBeUndefined();
+    expect(delivered.result?.entries).toEqual([]);
   } finally { await f.close(); }
 });
 

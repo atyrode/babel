@@ -83,7 +83,7 @@ import manifestJson from "./manifest.json";
  * `2026-09-14-store-v1-run-calls` — recorded under the same key by the enable before
  * it — is its predecessor.
  */
-const STORE_MIGRATION = "2026-09-21-store-v1-recall-traces";
+const STORE_MIGRATION = "2026-09-21-store-v1-transcript-maps";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */

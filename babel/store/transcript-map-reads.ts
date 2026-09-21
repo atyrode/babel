@@ -16,7 +16,7 @@ const digest = (input: unknown) => createHash("sha256").update(JSON.stringify(in
 const now = () => new Date().toISOString();
 
 export function transcriptMapReads(store: TranscriptMapStore) {
-  async function locate(principal: string, reference: { requestId?: string; traceId?: number }): Promise<MapReadRequest | null> {
+  async function locate(principal: string, reference: { requestId?: string | undefined; traceId?: number | undefined }): Promise<MapReadRequest | null> {
     const rows = await store.db.query<{
       id: string; operation: MapReadRequest["operation"]; target: string; service_revision: string; request_digest: string;
     }>(`SELECT id,operation,target,service_revision,request_digest FROM transcript_map_requests

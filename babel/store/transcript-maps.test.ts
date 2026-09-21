@@ -18,11 +18,13 @@ import {
   type TranscriptMapNode,
   type TranscriptMapPlan,
   type TranscriptMapWork,
+  TRANSCRIPT_MAP_READ_RESULT_PROJECTION,
 } from "../contract.ts";
 import { transcriptMapCaptureId, transcriptMapManifestDigest, transcriptMapNodeId, transcriptMapPlanId } from "../transcript-map-identity.ts";
 import { transcriptMaps, type TranscriptMaps } from "./transcript-maps.ts";
 import { openTestStore, type TestStore } from "./testdb.ts";
 import { transcriptMapDoors } from "../doors/transcript-maps.ts";
+import { projectJson, compileJsonProjection } from "@manifold/protocol";
 
 const NOW = "2026-09-20T10:00:00.000Z";
 const LATER = "2026-09-20T10:02:00.000Z";
@@ -181,7 +183,7 @@ test("identical captures and unchanged prefix spans bind original prose without 
   const v3 = await publish(db.maps, extended);
   await db.maps.refreshWork(policy, NOW, 128);
   const offered = await db.maps.offers(policy, NOW);
-  expect(offered.map((item) => item.nodeId)).toEqual([extended.nodes[2]?.id]);
+  expect(offered.map((item) => item.nodeId)).toEqual([extended.nodes[2]!.id]);
   expect((await db.maps.node(scope, v3.id, extended.nodes[0]?.id ?? ""))?.summary?.id).toBe(original?.summary?.id);
   const coverage = await db.maps.coverage(scope, extended.plan.source.id);
   expect(coverage.summarizedBytes).toBe(2048);
@@ -216,6 +218,7 @@ test("only actual serving buys a bounded review, including when artifacts have m
   const correction = (await db.maps.offers(policy, NOW)).find((item) => item.mode === "correct");
   if (!correction) throw new Error("missing correction");
   const correctedId = await settle(db, db.maps, correction, { kind: "summary", text: "Navigation with the qualification preserved." });
+  if (correctedId === null) throw new Error("The correction did not publish a summary.");
   await db.maps.refreshWork(policy, NOW, 128);
   const next = await db.maps.offers(policy, NOW);
   expect(next.some((item) => item.mode === "review" && item.baseSummaryId === correctedId)).toBe(false);
@@ -389,6 +392,25 @@ function reader(db: TestStore, data: MapFixture) {
   return { target, control, posted, knock };
 }
 
+test("unmapped nodes remain navigable through the actual SDK result projection", async () => {
+  const db = await setup();
+  const data = fixture(1);
+  const version = await publish(db.maps, data);
+  const f = reader(db, data);
+  const reply = await f.knock(ACTIONS.mapRead, {
+    target: f.target,
+    request: { kind: "node", versionId: version.id, nodeId: data.nodes[0]!.id },
+  }, 91);
+  const projection = TRANSCRIPT_MAP_READ_RESULT_PROJECTION;
+  const delivered = TranscriptMapReadReplySchema.parse(projectJson(
+    reply, compileJsonProjection(projection.fields, projection.textFields), projection.maxArrayItems,
+  ));
+  expect(delivered.result?.views[0]?.node.id).toBe(data.nodes[0]!.id);
+  expect(delivered.result?.views[0]?.summary).toBeUndefined();
+  expect(delivered.result?.coverage.unmappedBytes).toBe(data.plan.source.bytes);
+  expect(await db.db.query("SELECT summary_id FROM transcript_map_served")).toEqual([]);
+});
+
 test("map readers reauthorize candidates independently of worker inventory and only disclosed summaries become reviewable", async () => {
   const db = await setup();
   const data = fixture();
@@ -466,6 +488,7 @@ test("bounded child disclosure advances only over included items and retains his
   const version = await publish(db.maps, data);
   await generate(db, db.maps);
   const first = await db.maps.node(scope, version.id, data.nodes[0]!.id);
+  if (!first?.summary) throw new Error("The original version has no summary.");
   await db.maps.regenerate({ captureId: data.plan.source.id, requestId: "newer-generation", reason: "Update", now: LATER });
   await db.maps.ensureVersion(data.plan.id, policy, LATER);
   const f = reader(db, data);
@@ -477,7 +500,7 @@ test("bounded child disclosure advances only over included items and retains his
   expect(result.views.length).toBeLessThan(16);
   expect(result.nextOffset).toBe(result.views.length);
   expect(result.coverage).toMatchObject({ partial: true, stale: true, tailBytes: null });
-  expect(result.views[0]?.summary).toEqual(first?.summary);
+  expect(result.views[0]?.summary).toEqual(first.summary);
   const served = await db.db.query<{ summary_id: string }>("SELECT summary_id FROM transcript_map_served ORDER BY summary_id");
   expect(served.map((row) => row.summary_id)).toEqual(result.views.map((view) => view.summary!.id).sort());
 });

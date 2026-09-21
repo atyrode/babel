@@ -22,7 +22,7 @@
       "reason": "a Babel run is a Code session: Code owns the profile (model, thinking level, account) and posts the omp job through its runSession door, which Babel calls with ctx.actions.call"
     }
   },
-  "dataVersion": { "major": 1, "minor": 11 },
+  "dataVersion": { "major": 1, "minor": 12 },
   "database": { "maxBytes": 1073741824 },
   "purges": ["storage"],
   "contributes": {

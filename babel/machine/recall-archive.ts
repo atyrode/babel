@@ -358,7 +358,7 @@ export async function createRecallArchive(options: {
     result: Pick<RecallResult, "cost" | "newestSnapshotAt" | "refusedSubjects">,
     ceiling: number,
     all = false,
-    inventory?: Snapshot[],
+    inventory?: readonly Snapshot[],
   ): Promise<Capture[]> => {
     const refused = new Set<string>();
     const newest = new Map<string, Capture>();

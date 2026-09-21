@@ -141,7 +141,7 @@ export const POLICY: PolicyResult = {
   reason: "raised the day's ceiling",
   ceilings: { perRunUsd: 2, perDayUsd: 20, concurrent: 3 },
   spentTodayUsd: 4.5,
-  activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0 },
+  activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0, mapping: 0 },
   lanes: [
     { lane: "coverage", role: "evidence-checker", share: 0.4 },
     { lane: "exploration", role: "", share: 0.35 },

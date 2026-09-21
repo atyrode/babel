@@ -11,6 +11,7 @@ import { recallServiceDoors } from "./recall-services.ts";
 import { searchDoors } from "./search.ts";
 import { serviceDoors, type DeclaredService } from "./services.ts";
 import { suggestDoors } from "./suggest.ts";
+import { transcriptMapDoors } from "./transcript-maps.ts";
 
 /*
   EVERY DOOR OF THE BASELINE, in one list. The kit takes a plugin's actions and its handlers as
@@ -59,6 +60,7 @@ export function babelDoors(
     ...readDoors(store),
     ...searchDoors(store),
     ...recallDoors(store),
+    ...transcriptMapDoors(store),
     ...actDoors(store, concurrentJobs, deps.jobs),
     ...suggestDoors(store),
     ...exportDoors(store),

@@ -13,7 +13,7 @@ import type { MaterialSink, OutputSink } from "./output.ts";
 import { PREFLIGHT_DETECTORS, secretScan } from "./preflight.ts";
 
 export type TranscriptMapClient = (request: TranscriptMapNativeRequest) => Promise<TranscriptMapNativeResult>;
-const fail = (): never => { throw new Error("Mapping native material is unavailable or no longer authorized."); };
+function fail(): never { throw new Error("Mapping native material is unavailable or no longer authorized."); }
 const sha = (text: string): string => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 
 /** The engine materializes this job-only proxy binding. No restic/provider credentials,

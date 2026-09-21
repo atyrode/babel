@@ -35,7 +35,7 @@ async function currentRevision(ctx: GuestCtx, target: TranscriptMapTarget): Prom
 class Interrupted extends Error {
   constructor(readonly state: Exclude<TranscriptMapNativeReply["state"], "complete">) { super(state); }
 }
-type Input = { target: TranscriptMapTarget; requestId?: string } & (
+type Input = { target: TranscriptMapTarget; requestId?: string | undefined } & (
   { operation: "read"; request: TranscriptMapReadRequest } |
   { operation: "source"; versionId: string; nodeId: string; maxBytes: number } |
   { operation: "regenerate"; captureId: string; reason: string }
@@ -186,9 +186,9 @@ export function transcriptMapDoors(store: BabelStore): readonly Door[] {
       for (const view of views) { coverage.stale ||= view.coverage.stale; coverage.partial ||= view.coverage.partial; }
       if (inventoryPartial) { coverage.partial = true; coverage.tailBytes = null; }
       const result: TranscriptMapReadResult = {
-        operation: read.kind, inference: true, views: views.map(({ inference: _inference, coverage: _coverage, node, ...view }) => {
+        operation: read.kind, inference: true, views: views.map(({ inference: _inference, coverage: _coverage, node, summary, ...view }) => {
           const { planId: _planId, ...compact } = node;
-          return { ...view, node: compact };
+          return { ...view, node: compact, ...(summary === null ? {} : { summary }) };
         }), coverage, status: await maps.status(scope),
         nextOffset: read.kind === "children" && read.offset + views.length < childCount ? read.offset + views.length : null,
       };
