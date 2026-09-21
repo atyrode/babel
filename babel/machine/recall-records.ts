@@ -87,12 +87,8 @@ type Selection = RecallShowRequest["selection"];
 type Harness = "omp" | "codex" | "claude";
 
 /** Whether this record begins an actual user exchange, rather than tool traffic. */
-function startsTurn(harness: Harness, fields: Record<string, unknown>): boolean {
-  if (harness === "codex") {
-    const payload = object(fields["payload"]);
-    return fields["type"] === "response_item" && payload?.["type"] === "message" &&
-      payload["role"] === "user";
-  }
+function startsTurn(harness: Harness, fields: Record<string, unknown>, codexRequest: string | null): boolean {
+  if (harness === "codex") return codexRequest !== null && !injectedBlock(codexRequest);
   const message = object(fields["message"]);
   if (message?.["role"] !== "user") return false;
   if (harness === "omp") return fields["type"] === "message";
@@ -151,7 +147,7 @@ export function recallRecordReader(options: {
     firstRecord: 0, lastRecord: 0,
   };
 
-  const observeMetadata = (fields: Record<string, unknown>): void => {
+  const observeMetadata = (fields: Record<string, unknown>, codexRequest: string | null): void => {
     if (options.harness === "omp") {
       if (fields["type"] === "title") {
         const title = metadataText(fields["title"], titleBytes);
@@ -196,11 +192,10 @@ export function recallRecordReader(options: {
         if (cwd !== null) metadata.workspace = cwd;
       } else if (fields["type"] === "event_msg" && body["type"] === "user_message") {
         if (codex.request === "") codex.request = requestText(body);
-      } else if (fields["type"] === "response_item" && body["type"] === "message" &&
-        body["role"] === "user" && codex.requestFallback === "" && fallbackTried < MAX_REQUEST_CANDIDATES) {
+      } else if (codexRequest !== null && codex.requestFallback === "" &&
+        fallbackTried < MAX_REQUEST_CANDIDATES) {
         fallbackTried++;
-        const text = requestText(body);
-        if (text.trim() !== "" && !injectedBlock(text)) codex.requestFallback = text;
+        if (codexRequest.trim() !== "" && !injectedBlock(codexRequest)) codex.requestFallback = codexRequest;
       }
     }
   };
@@ -216,8 +211,11 @@ export function recallRecordReader(options: {
     }
     const fields = object(parsed);
     if (fields !== null) {
-      observeMetadata(fields);
-      if (startsTurn(options.harness, fields)) turns++;
+      const body = options.harness === "codex" ? object(fields["payload"]) : null;
+      const codexRequest = fields["type"] === "response_item" && body?.["type"] === "message" &&
+        body["role"] === "user" ? requestText(body) : null;
+      observeMetadata(fields, codexRequest);
+      if (startsTurn(options.harness, fields, codexRequest)) turns++;
     }
     const selection = options.selection;
     const selected = selection?.kind === "turns"

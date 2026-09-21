@@ -169,7 +169,7 @@ export async function runRecallService(raw: unknown): Promise<void> {
     context = openWorkerContext({ signal: controller.signal });
     await context.ready;
     const config = await resticConfig({ credentialFile: RESTIC_CREDENTIAL_FILE, env: process.env });
-    archive = await createRecallArchive({ repo: openRepo(config), cacheDir, policy });
+    archive = await createRecallArchive({ repo: openRepo(config), cacheDir, temporaryDir: "/tmp", policy });
     const bearer: unknown = await Bun.file(bearerFile).json();
     if (typeof bearer !== "string") throw new Error("Recall service binding is unavailable.");
     service = openRecallService({ archive, policy, bearer });

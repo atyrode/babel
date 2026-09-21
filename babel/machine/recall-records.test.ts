@@ -140,6 +140,27 @@ test("Codex counts canonical user messages once, not duplicate delivery events",
   expect(result.metadata.title).toBe("first request");
 });
 
+test("Codex injected context does not shift requested user turns", async () => {
+  const message = (content: string) => ({
+    type: "response_item", payload: { type: "message", role: "user", content },
+  });
+  const records = [
+    message("<environment_context>\n<cwd>/saved</cwd>\n</environment_context>"),
+    message("<user_instructions>\nRepository policy\n</user_instructions>"),
+    message("first actual request"),
+    { type: "response_item", payload: { type: "message", role: "assistant", content: "first answer" } },
+    message("<environment_context>\n<cwd>/saved</cwd>\n</environment_context>"),
+    message("second actual request"),
+    { type: "response_item", payload: { type: "message", role: "assistant", content: "second answer" } },
+  ];
+  const reader = recallRecordReader({ harness: "codex", selection: { kind: "turns", first: 2, last: 2 } });
+  reader.sink.write(stream(records));
+  const result = await reader.finish();
+  expect(result.turns).toBe(2);
+  expect(result.excerpt.text).toBe(stream(records.slice(5)));
+  expect(result.metadata.title).toBe("first actual request");
+});
+
 test("Claude tool-result-only wrappers stay in their exchange but mixed user input starts another", async () => {
   const records = [
     { type: "user", message: { role: "user", content: [{ type: "text", text: "first" }] } },

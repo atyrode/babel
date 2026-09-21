@@ -4132,6 +4132,8 @@ export const RECALL_MAX_HITS = 10;
 export const RECALL_SEARCH_EXCERPT_BYTES = 2048;
 export const RECALL_MAX_EXCERPT_BYTES = 8192;
 export const RECALL_MAX_RESULT_BYTES = 80 * 1024;
+/** Leaves room for the UUID/state/result transport envelope inside the same public byte bound. */
+export const RECALL_MAX_PAYLOAD_BYTES = RECALL_MAX_RESULT_BYTES - 256;
 export const RECALL_MAX_REQUEST_BYTES = 24 * 1024;
 export const RECALL_MAX_REQUEST_BODY_BYTES = 64 * 1024;
 export const RECALL_MAX_FETCH_BYTES = MAX_MATERIAL_BYTES;
@@ -4242,6 +4244,14 @@ export const RecallRequestSchema = z.discriminatedUnion("kind", [
 ]);
 export type RecallRequest = z.infer<typeof RecallRequestSchema>;
 
+/** Derived widening intent retains correlation, never the live preview handle. */
+export const RecallTraceRequestSchema = z.discriminatedUnion("kind", [
+  RecallSearchRequestSchema,
+  RecallShowRequestSchema,
+  RecallPreviewRequestSchema,
+  RecallSessionRequestSchema.omit({ previewId: true }).extend({ previewDigest: z.hash("sha256") }),
+]);
+
 /** A turn begins with a user message; tool-result wrappers are not new user turns. */
 export const RecallExcerptSchema = z.strictObject({
   trust: z.literal("archived-untrusted"),
@@ -4289,6 +4299,8 @@ export const RecallResultSchema = z.strictObject({
   operation: z.enum(["search", "show", "preview", "session"]),
   observedAt: z.iso.datetime(),
   newestSnapshotAt: z.iso.datetime().nullable(),
+  /** The authorized class's share of retained whole-session staging capacity. */
+  previewByteLimit: z.number().int().positive().max(RECALL_MAX_SERVED_BYTES),
   cost: z.strictObject({
     fetchedFiles: recallBytes,
     /** Logical bytes forwarded by restic, not a claim about compressed network traffic. */
@@ -4297,6 +4309,7 @@ export const RecallResultSchema = z.strictObject({
     indexedFiles: recallBytes,
     listedSnapshots: recallBytes,
     listedEntries: recallBytes,
+    replayedBytes: recallBytes,
   }),
   coverage: z.strictObject({
     eligible: recallBytes,
@@ -4419,10 +4432,10 @@ export const RecallSkillSchema = z.strictObject({
 /** All leaves, never raw-result fallback. Shared by service policy and agent result projection. */
 export const RECALL_RESULT_FIELDS: string[][] = [
   ["requestId"], ["state"],
-  ...["operation", "observedAt", "newestSnapshotAt", "matches", "omitted", "omittedSubjects", "refusal"]
+  ...["operation", "observedAt", "newestSnapshotAt", "previewByteLimit", "matches", "omitted", "omittedSubjects", "refusal"]
     .map(key => ["result", key]),
   ["result", "refusedSubjects", "*"],
-  ...["fetchedFiles", "fetchedBytes", "cacheHits", "indexedFiles", "listedSnapshots", "listedEntries"]
+  ...["fetchedFiles", "fetchedBytes", "cacheHits", "indexedFiles", "listedSnapshots", "listedEntries", "replayedBytes"]
     .map(key => ["result", "cost", key]),
   ...["eligible", "indexed", "complete", "overBound"].map(key => ["result", "coverage", key]),
   ...["previewId", "sourceBytes", "servedBytes", "records", "sourceDigest"]

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   RecallResultSchema,
   RecallTargetSchema,
+  RecallTraceRequestSchema,
   RecallTraceSchema,
   type RecallReply,
   type RecallRequest,
@@ -20,11 +21,15 @@ export async function startRecall(
   request: RecallRequest,
 ): Promise<string> {
   const id = crypto.randomUUID();
+  const recorded = request.kind === "session"
+    ? { kind: request.kind, previewDigest: previewDigest(request.previewId), offset: request.offset, maxBytes: request.maxBytes }
+    : request;
+  const redactedRequest = secretScan().redact(JSON.stringify(RecallTraceRequestSchema.parse(recorded)), 1);
   await store.db.run(
     `INSERT INTO recall_requests(id, principal_id, operation, target, service_revision, redacted_request, created_at)
      VALUES(?, ?, ?, ?, ?, ?, ?)`,
     [id, principalId, request.kind, JSON.stringify(target), revision,
-      secretScan().redact(JSON.stringify(request), 1), new Date(store.now()).toISOString()],
+      redactedRequest, new Date(store.now()).toISOString()],
   );
   return id;
 }
