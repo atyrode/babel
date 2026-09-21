@@ -1,11 +1,13 @@
 import { defineServerAction, type GuestCtx, type ServerActionDef } from "@manifold/plugin-kit/server";
+import { z } from "zod";
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   RECALL_MAX_REQUEST_BODY_BYTES,
-  RECALL_MAX_RESULT_BYTES,
-  RECALL_RESULT_FIELDS,
+  RECALL_RESULT_PROJECTION,
   RECALL_SERVICE_ID,
+  RECALL_SKILL_PROJECTION,
+  RECALL_SKILL_VERSION,
   RecallPollInputSchema,
   RecallPreviewInputSchema,
   RecallReplySchema,
@@ -13,11 +15,13 @@ import {
   RecallServiceBodySchema,
   RecallSessionInputSchema,
   RecallShowInputSchema,
+  RecallSkillSchema,
   type RecallReply,
   type RecallRequest,
   type RecallServiceRequest,
   type RecallTarget,
 } from "../contract.ts";
+import recallSkillBody from "../recall-skill.md" with { type: "text" };
 import { ownsRecallPreview, readRecallRequest, recordRecallOutcome, startRecall } from "../store/recall.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
@@ -28,12 +32,7 @@ const READ = {
   requirements: [{ cap: "services:invoke", target: ["target"] }],
   trace: "opaque",
   result: RecallReplySchema,
-  resultProjection: {
-    kind: "projected-json",
-    fields: RECALL_RESULT_FIELDS,
-    maxArrayItems: 256,
-    maxResultBytes: RECALL_MAX_RESULT_BYTES,
-  },
+  resultProjection: RECALL_RESULT_PROJECTION,
 } satisfies Pick<ServerActionDef, "caps" | "delegates" | "requirements" | "trace" | "result" | "resultProjection">;
 
 async function currentRevision(ctx: GuestCtx, target: RecallTarget): Promise<string | null> {
@@ -107,6 +106,15 @@ async function begin(
 
 export function recallDoors(store: BabelStore): readonly Door[] {
   return [
+    defineDoor(defineServerAction({
+      name: ACTIONS.recallSkill,
+      title: "Read the versioned archived Recall skill",
+      caps: [],
+      trace: "opaque",
+      input: z.strictObject({}),
+      result: RecallSkillSchema,
+      resultProjection: RECALL_SKILL_PROJECTION,
+    }), async () => ({ version: RECALL_SKILL_VERSION, body: recallSkillBody })),
     defineDoor(defineServerAction({
       ...READ, name: ACTIONS.recallSearch, title: "Search authorized archived conversations",
       input: RecallSearchInputSchema,
