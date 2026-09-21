@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { z } from "zod";
 import { join } from "node:path";
 import {
-  MAX_MATERIAL_BYTES, RECALL_MAX_HITS, RECALL_MAX_PAYLOAD_BYTES, RECALL_MAX_SERVED_BYTES,
+  MAX_MATERIAL_BYTES, RECALL_MAX_HITS, RECALL_MAX_PAYLOAD_BYTES, RECALL_MAX_REQUESTS, RECALL_MAX_SERVED_BYTES,
   RECALL_REQUEST_TTL_MS, RECALL_SEARCH_EXCERPT_BYTES, RECALL_UNTRUSTED_BEGIN,
   RECALL_UNTRUSTED_END, SESSION_RECORD_COORDINATES, RecallMetadataSchema, RecallPolicySchema,
   RecallRequestSchema, type RecallFilter, type RecallHit, type RecallLocator,
@@ -38,7 +38,7 @@ interface Capture extends IndexedSession {
 }
 interface Widening {
   classId: string;
-  path: string;
+  path: string | null;
   expires: number;
   bytes: number;
   records: number;
@@ -91,7 +91,9 @@ export async function createRecallArchive(options: {
   // One bounded, rebuildable sidecar per kept session, never transcript bytes in the catalog.
   const tokens = new Map<string, Widening>();
   let staging: string | null = null;
-  let stagedBytes = 0;
+  const previewByteLimit = Math.floor(RECALL_MAX_SERVED_BYTES / policy.classes.length);
+  const previewHandleLimit = Math.floor(RECALL_MAX_REQUESTS / policy.classes.length);
+  const stagedBytes = new Map(policy.classes.map(entry => [entry.id, 0]));
   let closed = false;
   const cacheFor = (host: string): ReadingCache => {
     let cache = caches.get(host);
@@ -114,20 +116,27 @@ export async function createRecallArchive(options: {
   };
   const remember = async (key: string, reading: ReusedReading, value: RecallMetadata): Promise<void> => {
     const document = JSON.stringify(CachedMetadataSchema.parse({ key, value }));
-    if (Buffer.byteLength(document) > METADATA_MAX_BYTES) throw new Refused("source-unavailable");
+    if (Buffer.byteLength(document) > METADATA_MAX_BYTES) return;
     const path = `${reading.stream}.recall-metadata.json`;
     const temporary = `${path}.${crypto.randomUUID()}`;
     try {
       await Bun.write(temporary, document, { mode: 0o600 });
       await rename(temporary, path);
-    } finally { await rm(temporary, { force: true }); }
+    } catch {
+      // Metadata is a rebuildable optimization, never a condition of source eligibility.
+    } finally { await rm(temporary, { force: true }).catch(() => undefined); }
+  };
+  const release = async (entry: Widening): Promise<void> => {
+    if (entry.path === null) return;
+    await rm(entry.path, { force: true });
+    entry.path = null;
+    stagedBytes.set(entry.classId, stagedBytes.get(entry.classId)! - entry.bytes);
   };
   const expire = async (): Promise<void> => {
     for (const [token, entry] of tokens) {
       if (entry.expires > now()) continue;
-      await rm(entry.path, { force: true });
+      await release(entry);
       tokens.delete(token);
-      stagedBytes -= entry.bytes;
     }
   };
   const association = (entry: Capture, archived: RecallMetadata): RecallMetadata => {
@@ -216,12 +225,12 @@ export async function createRecallArchive(options: {
     const snapshots = (await options.repo.snapshots()).filter(snapshot =>
       snapshot.tags.includes(BABEL_TAG) && /^[0-9a-f]{64}$/.test(snapshot.id) &&
       Number.isFinite(Date.parse(snapshot.time)) && snapshot.host.length > 0 && snapshot.host.length <= 128 &&
-      (filter.host === undefined || filter.host === snapshot.host));
+      (filter.host === undefined || filter.host === snapshot.host) &&
+      // Unknown hosts cannot acquire authority or disclose freshness through archived metadata.
+      policy.subjects.some(subject => subject.host === snapshot.host));
     snapshots.sort((a, b) => Date.parse(b.time) - Date.parse(a.time) || a.id.localeCompare(b.id));
     result.newestSnapshotAt = snapshots[0] === undefined ? null : new Date(snapshots[0].time).toISOString();
     for (const snapshot of snapshots) {
-      // Unknown hosts cannot acquire authority through archived metadata.
-      if (!policy.subjects.some(subject => subject.host === snapshot.host)) continue;
       result.cost.listedSnapshots++;
       const directories = new Set<string>();
       const deferred: ArchivedEntry[] = [];
@@ -304,6 +313,7 @@ export async function createRecallArchive(options: {
     async execute(classId, input) {
       const result: RecallResult = {
         operation: input.kind, observedAt: new Date(now()).toISOString(), newestSnapshotAt: null,
+        previewByteLimit,
         cost: { fetchedFiles: 0, fetchedBytes: 0, replayedBytes: 0, cacheHits: 0, indexedFiles: 0, listedSnapshots: 0, listedEntries: 0 },
         coverage: { eligible: 0, indexed: 0, complete: false, overBound: 0 }, matches: null,
         omitted: 0, omittedSubjects: 0, refusedSubjects: [], refusal: null, hits: [],
@@ -328,7 +338,8 @@ export async function createRecallArchive(options: {
             const overhead = Buffer.byteLength(JSON.stringify({ ...result, hits: [token.hit] })) + 2048;
             const pageBytes = Math.min(request.maxBytes, Math.floor((RECALL_MAX_PAYLOAD_BYTES - overhead) / 6));
             if (pageBytes < 4) throw new Refused("response-bound");
-            const bytes = new Uint8Array(await Bun.file(token.path).slice(token.offset, Math.min(token.bytes, token.offset + pageBytes + 3)).arrayBuffer());
+            const bytes = token.path === null ? new Uint8Array(0) :
+              new Uint8Array(await Bun.file(token.path).slice(token.offset, Math.min(token.bytes, token.offset + pageBytes + 3)).arrayBuffer());
             const clipped = clipUtf8(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0,
               utf8End(bytes, Math.min(pageBytes, bytes.length)))), pageBytes);
             if (clipped.bytes === 0 && token.offset < token.bytes) throw new Refused("source-unavailable");
@@ -348,8 +359,13 @@ export async function createRecallArchive(options: {
               newestSnapshotAt: token.hit.snapshotAt,
               coverage: { eligible: 1, indexed: 1, complete: true, overBound: 0 } })) > RECALL_MAX_PAYLOAD_BYTES)
               throw new Refused("response-bound");
-            token.previous = { offset: token.offset, hit, page };
-            token.offset = next; token.line += newlines;
+            // A terminal-offset probe must not replace the retained final content page.
+            if (token.path !== null) {
+              if (page.complete) await release(token);
+              token.previous = { offset: token.offset, hit, page };
+              if (next > token.offset) token.expires = now() + RECALL_REQUEST_TTL_MS;
+              token.offset = next; token.line += newlines;
+            }
             result.hits = [hit]; result.page = page;
           }
           result.newestSnapshotAt = token.hit.snapshotAt;
@@ -457,6 +473,14 @@ export async function createRecallArchive(options: {
             // No content leaves this branch. Token publication follows the whole replay's digest.
             if (reading.captureDigest !== target.captureDigest || reading.sourceDigest !== target.sourceDigest)
               throw new Refused("locator-mismatch");
+            let owned = 0;
+            let completed: string | undefined;
+            for (const [token, widening] of tokens) {
+              if (widening.classId !== classId) continue;
+              owned++;
+              if (completed === undefined && widening.path === null) completed = token;
+            }
+            if (owned >= previewHandleLimit && completed === undefined) throw new Refused("fetch-bound");
             // The native service supplies its private /tmp tmpfs: Manifold 89b065d,
             // packages/agent/src/job-linux.ts:229-230,742-747. That mount disappears with the
             // job, even on a crash. Never sweep another service's staging or durable cache.
@@ -472,7 +496,7 @@ export async function createRecallArchive(options: {
               await verify(entry, reading, {
                 write(chunk) {
                   bytes += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
-                  if (bytes > RECALL_MAX_SERVED_BYTES - stagedBytes) throw new Refused("fetch-bound");
+                  if (bytes > previewByteLimit - stagedBytes.get(classId)!) throw new Refused("fetch-bound");
                   writer.write(chunk); reader.sink.write(chunk);
                 },
                 close: async () => { await writer.end(); ended = true; await reader.sink.close(); },
@@ -482,9 +506,11 @@ export async function createRecallArchive(options: {
               const hit: RecallHit = { locator: target, snapshotAt: new Date(entry.snapshot.time).toISOString(),
                 ...publishedMetadata(association(entry, readback.metadata)), excerpt: { ...readback.excerpt, text: "", bytes: 0,
                   firstRecord: 0, lastRecord: 0, truncated: false } };
+              // Completed handles are replay cache entries, not a lifetime admission quota.
+              if (owned >= previewHandleLimit && completed !== undefined) tokens.delete(completed);
               tokens.set(token, { classId, path, expires: now() + RECALL_REQUEST_TTL_MS, bytes,
                 records: readback.records, hit, offset: 0, line: 1, previous: null });
-              stagedBytes += bytes;
+              stagedBytes.set(classId, stagedBytes.get(classId)! + bytes);
               result.preview = { previewId: token, sourceBytes: reading.bytes, servedBytes: bytes,
                 records: readback.records, sourceDigest: reading.sourceDigest };
             } catch (error) {
@@ -512,6 +538,7 @@ export async function createRecallArchive(options: {
       try { index.close(); }
       finally {
         tokens.clear();
+        stagedBytes.clear();
         if (staging !== null) await rm(staging, { recursive: true, force: true });
       }
     },

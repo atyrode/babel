@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
-  RECALL_MAX_PAYLOAD_BYTES, RECALL_MAX_RESULT_BYTES, RECALL_REQUEST_TTL_MS, RecallRequestSchema, RecallResultSchema,
+  RECALL_MAX_PAYLOAD_BYTES, RECALL_MAX_RESULT_BYTES, RECALL_MAX_SERVED_BYTES, RECALL_REQUEST_TTL_MS, RecallRequestSchema, RecallResultSchema,
   SESSION_RECORD_COORDINATES, type RecallLocator, type RecallPolicy, type RecallRequest,
 } from "../contract.ts";
 import { claim } from "./adapters/index.ts";
@@ -17,6 +17,10 @@ const POLICY: RecallPolicy = {
   version: 1,
   classes: [{ id: "public", label: "Public", ceiling: 0 }, { id: "private", label: "Private", ceiling: 3 }],
   subjects: [{ name: "synthetic sessions", host: HOST, harness: "omp", sensitivity: 0 }],
+};
+const PARTITIONED_POLICY: RecallPolicy = {
+  ...POLICY,
+  classes: Array.from({ length: 16 }, (_, index) => ({ id: `class-${index}`, label: `Class ${index}`, ceiling: 0 })),
 };
 const HEADER = '{"cwd":"/archived/work","timestamp":"2026-09-01T00:00:00.000Z","title":"Archived title","type":"session","version":3}\n';
 function message(text: string, time: string | null = TIME, role = "user"): string {
@@ -510,6 +514,226 @@ function listedRepo(entries: ArchivedEntry[], source: string): Repo {
     dumpTo: async (_snapshot, _path, sink) => { await sink(bytes); return { bytes: bytes.byteLength }; },
   };
 }
+
+async function listedFixture(
+  body: (fixture: Pick<Fixture, "home" | "cacheDir" | "repo" | "archive" | "clock">) => Promise<void>,
+  options: { source?: string; policy?: RecallPolicy } = {},
+): Promise<void> {
+  const home = await mkdtemp(join(tmpdir(), "babel-recall-listed-"));
+  const cacheDir = join(home, "cache");
+  const source = options.source ?? SOURCE;
+  const repo = listedRepo([{
+    path: "/synthetic/.omp/agent/sessions/project/2026-09-01T00-00-00-000Z_fixture.jsonl",
+    type: "file", size: Buffer.byteLength(source), modifiedAt: TIME,
+  }], source);
+  const clock = { now: Date.parse(TIME) };
+  const archive = await createRecallArchive({ repo, cacheDir, policy: options.policy ?? POLICY,
+    temporaryDir: home, now: () => clock.now });
+  try { await body({ home, cacheDir, repo, archive, clock }); }
+  finally { await archive.close(); await rm(home, { recursive: true, force: true }); }
+}
+
+test("widening reserves class bytes, reclaims completed staging and never decrements it twice", async () => {
+  const size = 16 * 1024 * 1024;
+  const prefix = HEADER + message("needle");
+  const block = JSON.stringify({ padding: "x".repeat(64 * 1024) }) + "\n";
+  const count = Math.floor((size - prefix.length) / block.length);
+  const remaining = size - prefix.length - count * block.length;
+  const source = prefix + block.repeat(count) +
+    JSON.stringify({ padding: "x".repeat(remaining - (JSON.stringify({ padding: "" }).length + 1)) }) + "\n";
+  await listedFixture(async ({ archive, clock, home }) => {
+    const found = await archive.execute("class-0", search());
+    expect(found.previewByteLimit).toBe(32 * 1024 * 1024);
+    const locator = found.hits[0]?.locator;
+    if (locator === undefined) throw new Error("missing locator");
+    const preview = async (classId: string): Promise<string> => {
+      const result = await archive.execute(classId, request({ kind: "preview", locator }));
+      expect(result.refusal).toBeNull();
+      expect(result.preview?.servedBytes).toBe(size);
+      if (result.preview === undefined) throw new Error("missing preview");
+      return result.preview.previewId;
+    };
+    const first = await preview("class-0");
+    const second = await preview("class-0");
+    const full = await archive.execute("class-0", request({ kind: "preview", locator }));
+    expect(full.refusal).toBe("fetch-bound");
+    expect(full.previewByteLimit).toBe(RECALL_MAX_SERVED_BYTES / PARTITIONED_POLICY.classes.length);
+    expect(full.preview).toBeUndefined();
+    const other = await preview("class-1");
+    let offset = 0;
+    const digest = new Bun.CryptoHasher("sha256");
+    for (;;) {
+      const result = await archive.execute("class-0", request({ kind: "session", previewId: first, offset }));
+      expect(result.refusal).toBeNull();
+      if (result.page === undefined || result.hits[0] === undefined) throw new Error("missing page");
+      digest.update(result.hits[0].excerpt.text);
+      offset = result.page.nextOffset;
+      if (result.page.complete) break;
+    }
+    expect(offset).toBe(size);
+    expect(`sha256:${digest.digest("hex")}`).toBe(locator.sourceDigest);
+    const scratch = (await readdir(home)).find(path => path.startsWith("babel-recall-widening-"));
+    if (scratch === undefined) throw new Error("missing owned scratch");
+    expect(await Bun.file(join(home, scratch, first)).exists()).toBe(false);
+    expect(await Bun.file(join(home, scratch, second)).exists()).toBe(true);
+    clock.now += RECALL_REQUEST_TTL_MS / 2;
+    // Keep both active classes alive while the completed handle ages out.
+    for (const [classId, previewId] of [["class-0", second], ["class-1", other]] as const) {
+      const result = await archive.execute(classId, request({ kind: "session", previewId, maxBytes: 17 }));
+      expect(result.refusal).toBeNull();
+      expect(result.hits[0]?.excerpt.text).toBe(source.slice(0, 17));
+    }
+    await preview("class-0");
+    clock.now += RECALL_REQUEST_TTL_MS / 2;
+    expect((await archive.execute("class-0", request({ kind: "session", previewId: first, offset }))).refusal)
+      .toBe("preview-expired");
+    // Expiring the already-released first handle must not free a second 16 MiB.
+    expect((await archive.execute("class-0", request({ kind: "preview", locator }))).refusal).toBe("fetch-bound");
+    expect((await archive.execute("class-1", request({ kind: "session", previewId: other, offset: 17, maxBytes: 17 }))).refusal)
+      .toBeNull();
+    await archive.close();
+    expect((await readdir(home)).filter(path => path.startsWith("babel-recall-widening-"))).toEqual([]);
+  }, { source, policy: PARTITIONED_POLICY });
+}, TIMEOUT);
+
+test("class handle capacity evicts only completed replays and preserves final pages after unlink", async () => {
+  await listedFixture(async ({ archive, home }) => {
+    const locator = (await archive.execute("class-0", search())).hits[0]?.locator;
+    if (locator === undefined) throw new Error("missing locator");
+    const preview = async (classId: string): Promise<string> => {
+      const result = await archive.execute(classId, request({ kind: "preview", locator }));
+      expect(result.refusal).toBeNull();
+      if (result.preview === undefined) throw new Error("missing preview");
+      return result.preview.previewId;
+    };
+    const active: string[] = [];
+    for (let index = 0; index < 8; index++) active.push(await preview("class-0"));
+    expect((await archive.execute("class-0", request({ kind: "preview", locator }))).refusal).toBe("fetch-bound");
+    const other = await preview("class-1");
+    const scratch = (await readdir(home)).find(path => path.startsWith("babel-recall-widening-"));
+    if (scratch === undefined) throw new Error("missing owned scratch");
+    let completed = active[3]!;
+    // More than one class's handle budget can complete without completed retries blocking new work.
+    for (let index = 0; index < 16; index++) {
+      const input = request({ kind: "session", previewId: completed });
+      const final = await archive.execute("class-0", input);
+      expect(final.refusal).toBeNull();
+      expect(final.hits[0]?.excerpt.text).toBe(SOURCE);
+      expect(final.page?.complete).toBe(true);
+      expect(await Bun.file(join(home, scratch, completed)).exists()).toBe(false);
+      const terminal = await archive.execute("class-0", request({
+        kind: "session", previewId: completed, offset: Buffer.byteLength(SOURCE),
+      }));
+      expect(terminal.refusal).toBeNull();
+      expect(terminal.page).toEqual({
+        offset: Buffer.byteLength(SOURCE), nextOffset: Buffer.byteLength(SOURCE),
+        totalBytes: Buffer.byteLength(SOURCE), complete: true,
+      });
+      expect(terminal.hits[0]?.excerpt.text).toBe("");
+      const retry = await archive.execute("class-0", input);
+      expect(retry.page).toEqual(final.page);
+      expect(retry.hits).toEqual(final.hits);
+      const replacement = await preview("class-0");
+      expect((await archive.execute("class-0", input)).refusal).toBe("preview-expired");
+      completed = replacement;
+    }
+    for (const [classId, previewId] of [["class-0", active[0]!], ["class-1", other]] as const) {
+      const result = await archive.execute(classId, request({ kind: "session", previewId, maxBytes: 17 }));
+      expect(result.refusal).toBeNull();
+      expect(result.hits[0]?.excerpt.text).toBe(SOURCE.slice(0, 17));
+    }
+  }, { policy: PARTITIONED_POLICY });
+});
+
+test("only successful page progress renews the idle widening deadline", async () => {
+  await listedFixture(async ({ archive, clock }) => {
+    const locator = (await archive.execute("public", search())).hits[0]?.locator;
+    if (locator === undefined) throw new Error("missing locator");
+    const preview = await archive.execute("public", request({ kind: "preview", locator }));
+    const previewId = preview.preview?.previewId;
+    if (previewId === undefined) throw new Error("missing preview");
+    clock.now += RECALL_REQUEST_TTL_MS * 3 / 4;
+    const first = await archive.execute("public", request({ kind: "session", previewId, maxBytes: 17 }));
+    expect(first.refusal).toBeNull();
+    clock.now += RECALL_REQUEST_TTL_MS * 3 / 4;
+    // This is past the original fixed deadline, but not past the last progress's idle deadline.
+    const input = request({ kind: "session", previewId, offset: 17, maxBytes: 17 });
+    const second = await archive.execute("public", input);
+    expect(second.refusal).toBeNull();
+    expect(second.page?.nextOffset).toBe(34);
+    clock.now += RECALL_REQUEST_TTL_MS * 3 / 4;
+    expect((await archive.execute("public", request({ kind: "session", previewId, offset: 35 }))).refusal)
+      .toBe("invalid-offset");
+    expect((await archive.execute("public", search())).refusal).toBeNull();
+    const retry = await archive.execute("public", input);
+    expect(retry.hits).toEqual(second.hits);
+    expect(retry.page).toEqual(second.page);
+    clock.now += RECALL_REQUEST_TTL_MS / 4;
+    expect((await archive.execute("public", request({ kind: "session", previewId, offset: 34 }))).refusal)
+      .toBe("preview-expired");
+  });
+});
+
+test("an unwritable metadata sidecar never excludes a verified held or rebuilt index", async () => {
+  await listedFixture(async ({ archive, cacheDir, repo, home }) => {
+    expect((await archive.execute("public", search())).matches).toBe(1);
+    await archive.close();
+    const files = await readdir(cacheDir, { recursive: true });
+    const sidecar = files.find(path => path.endsWith(".recall-metadata.json"));
+    const database = files.find(path => path.endsWith("tokens.sqlite"));
+    if (sidecar === undefined || database === undefined) throw new Error("missing cache files");
+    const path = join(cacheDir, sidecar);
+    await rm(path);
+    // Unlike permissions under root, renaming a regular file over this directory always fails.
+    await mkdir(path);
+    await Bun.write(join(path, "unowned"), "must remain");
+    for (const rebuild of [false, true]) {
+      if (rebuild) await rm(dirname(join(cacheDir, database)), { recursive: true });
+      const reopened = await createRecallArchive({ repo, cacheDir, policy: POLICY, temporaryDir: home });
+      try {
+        const result = await reopened.execute("public", search({
+          maxFetchBytes: 0, filter: { workspace: "/archived/work" },
+        }));
+        expect(result.refusal).toBeNull();
+        expect(result.coverage).toEqual({ eligible: 1, indexed: 1, complete: true, overBound: 0 });
+        expect(result.matches).toBe(1);
+        expect(result.hits[0]?.workspace).toBe("/archived/work");
+        expect(result.hits[0]?.excerpt.text).toContain("needle");
+        expect(result.cost.fetchedBytes).toBe(0);
+        expect(result.cost.indexedFiles).toBe(rebuild ? 1 : 0);
+        expect(await Bun.file(join(path, "unowned")).text()).toBe("must remain");
+        expect((await readdir(cacheDir, { recursive: true })).filter(name => name.startsWith(`${sidecar}.`))).toEqual([]);
+      } finally { await reopened.close(); }
+    }
+  });
+});
+
+test("snapshot freshness excludes unknown hosts and follows the enumeration host filter", async () => {
+  await listedFixture(async ({ archive, repo }) => {
+    const [known] = await repo.snapshots();
+    if (known === undefined) throw new Error("missing snapshot");
+    const unknownHost = "unclassified-host";
+    repo.snapshots = async () => [
+      known,
+      { ...known, id: "c".repeat(64), host: unknownHost, time: "2026-09-20T00:00:00.000Z" },
+      { ...known, id: "d".repeat(64), tags: [], time: "2026-09-19T00:00:00.000Z" },
+      { ...known, id: "not-a-snapshot", time: "2026-09-18T00:00:00.000Z" },
+    ];
+    const unfiltered = await archive.execute("public", search());
+    expect(unfiltered.newestSnapshotAt).toBe(TIME);
+    expect(unfiltered.cost.listedSnapshots).toBe(1);
+    expect(unfiltered.matches).toBe(1);
+    const filtered = await archive.execute("public", search({ filter: { host: HOST } }));
+    expect(filtered.newestSnapshotAt).toBe(TIME);
+    expect(filtered.cost.listedSnapshots).toBe(1);
+    const unknown = await archive.execute("public", search({ filter: { host: unknownHost } }));
+    expect(unknown.refusal).toBeNull();
+    expect(unknown.newestSnapshotAt).toBeNull();
+    expect(unknown.coverage).toEqual({ eligible: 0, indexed: 0, complete: true, overBound: 0 });
+    expect(unknown.cost.listedSnapshots).toBe(0);
+    expect(unknown.matches).toBe(0);
+  });
+});
 
 test("archived history eligibility is listing-order independent and ignores live sibling directories", async () => {
   const home = await mkdtemp(join(tmpdir(), "babel-recall-listing-"));
