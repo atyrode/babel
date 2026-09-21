@@ -4595,3 +4595,257 @@ export const RECALL_SKILL_PROJECTION = {
   maxArrayItems: 1,
   maxResultBytes: RECALL_MAX_RESULT_BYTES,
 };
+
+// ---------------------------------------------------------------------------- transcript maps
+
+/** One recipe format for paid work, whether its output is a record or a navigation artifact. */
+export const PolicyRecipeSchema = z.strictObject({
+  id: z.string().trim().min(1).max(200),
+  version: z.number().int().min(0),
+  title: z.string().max(400).optional(),
+  looksFor: z.string().max(2_000).optional(),
+  enabled: z.boolean().optional(),
+  body: z.string().trim().min(1).max(64 * 1024),
+});
+export type PolicyRecipe = z.infer<typeof PolicyRecipeSchema>;
+
+export const TRANSCRIPT_MAP_SEGMENTATION_VERSION = "babel.transcript-map-segmentation/1";
+export const TRANSCRIPT_MAP_MAX_DEPTH = 4;
+export const TRANSCRIPT_MAP_MAX_SPAN_BYTES = RECALL_MAX_EXCERPT_BYTES;
+export const TRANSCRIPT_MAP_MAX_CHILDREN = 64;
+export const TRANSCRIPT_MAP_MAX_SUMMARY_BYTES = 512;
+export const TRANSCRIPT_MAP_NATIVE_PAGE_NODES = 128;
+export const TRANSCRIPT_MAP_JOB_PAGE_NODES = 4096;
+export const TRANSCRIPT_MAP_MAX_CAPTURES = 64;
+export const TRANSCRIPT_MAP_MAX_PAGE_BYTES = 32 * 1024;
+export const TRANSCRIPT_MAP_SERVICE_OPERATION = "mapping";
+export const TRANSCRIPT_MAP_SERVICE_FILE = "mapping-service";
+export const TRANSCRIPT_MAP_OUTPUT_FILE = "transcript-map.json";
+export const TRANSCRIPT_MAP_ROLES = {
+  generate: "mapping:generate",
+  review: "mapping:review",
+  correct: "mapping:correct",
+} as const;
+export const TRANSCRIPT_MAP_MODES = ["generate", "review", "correct"] as const;
+export type TranscriptMapMode = (typeof TRANSCRIPT_MAP_MODES)[number];
+export type TranscriptMapRole = (typeof TRANSCRIPT_MAP_ROLES)[TranscriptMapMode];
+
+export const TranscriptMapCaptureIdSchema = z.string().regex(/^tmcap_[0-9a-f]{64}$/);
+export const TranscriptMapPlanIdSchema = z.string().regex(/^tmplan_[0-9a-f]{64}$/);
+export const TranscriptMapNodeIdSchema = z.string().regex(/^tmnode_[0-9a-f]{64}$/);
+export const TranscriptMapVersionIdSchema = z.string().regex(/^tmver_[0-9a-f]{64}$/);
+export const TranscriptMapSummaryIdSchema = z.string().regex(/^tmsum_[0-9a-f]{64}$/);
+export const TranscriptMapWorkIdSchema = z.string().regex(/^tmwork_[0-9a-f]{64}$/);
+
+export const TranscriptMapSegmentationSchema = z
+  .strictObject({
+    version: z.literal(TRANSCRIPT_MAP_SEGMENTATION_VERSION).default(TRANSCRIPT_MAP_SEGMENTATION_VERSION),
+    leafBytes: z.number().int().min(1024).max(TRANSCRIPT_MAP_MAX_SPAN_BYTES).default(8192),
+    directBytes: z.number().int().nonnegative().max(TRANSCRIPT_MAP_MAX_SPAN_BYTES).default(4096),
+    fanout: z.number().int().min(2).max(TRANSCRIPT_MAP_MAX_CHILDREN).default(64),
+    maxDepth: z.number().int().min(1).max(TRANSCRIPT_MAP_MAX_DEPTH).default(4),
+  })
+  .refine((value) => value.directBytes <= value.leafBytes, "Direct reading cannot exceed a leaf.");
+export type TranscriptMapSegmentation = z.infer<typeof TranscriptMapSegmentationSchema>;
+
+/** A capture is not the mutable newest entry of the raw lexical index. */
+export const TranscriptMapCaptureSchema = z.strictObject({
+  id: TranscriptMapCaptureIdSchema,
+  host: z.string().min(1).max(128),
+  harness: recallHarness,
+  session: recallSelector,
+  snapshot: recallSnapshot,
+  path: z.string().min(1).max(4096),
+  capturedAt: z.iso.datetime({ offset: true }),
+});
+export type TranscriptMapCapture = z.infer<typeof TranscriptMapCaptureSchema>;
+
+export const TranscriptMapSourceSchema = TranscriptMapCaptureSchema.extend({
+  coordinates: z.literal(SESSION_RECORD_COORDINATES),
+  captureDigest: recallDigest,
+  sourceDigest: recallDigest,
+  bytes: recallBytes,
+  records: recallBytes,
+});
+export type TranscriptMapSource = z.infer<typeof TranscriptMapSourceSchema>;
+
+/** Every node names a contiguous range of complete canonical records, including their newlines. */
+export const TranscriptMapSpanSchema = z
+  .strictObject({
+    firstRecord: z.number().int().positive(),
+    lastRecord: z.number().int().positive(),
+    byteOffset: recallBytes,
+    byteLength: z.number().int().positive(),
+    digest: recallDigest,
+    anchor: SessionRecordPositionSchema,
+  })
+  .refine(
+    (span) =>
+      span.lastRecord >= span.firstRecord &&
+      span.anchor.line === span.firstRecord &&
+      span.anchor.byteOffset === span.byteOffset &&
+      span.anchor.byteLength <= span.byteLength,
+    "The anchor must start the declared complete-record span.",
+  );
+export type TranscriptMapSpan = z.infer<typeof TranscriptMapSpanSchema>;
+
+export const TranscriptMapNodeSchema = z.strictObject({
+  id: TranscriptMapNodeIdSchema,
+  planId: TranscriptMapPlanIdSchema,
+  parentId: TranscriptMapNodeIdSchema.nullable(),
+  level: z.number().int().nonnegative().max(TRANSCRIPT_MAP_MAX_DEPTH - 1),
+  ordinal: z.number().int().nonnegative(),
+  span: TranscriptMapSpanSchema,
+  children: z.array(TranscriptMapNodeIdSchema).max(TRANSCRIPT_MAP_MAX_CHILDREN),
+  gap: z.enum(["record-too-large", "depth-bound"]).nullable(),
+});
+export type TranscriptMapNode = z.infer<typeof TranscriptMapNodeSchema>;
+
+export const TranscriptMapPlanSchema = z.strictObject({
+  id: TranscriptMapPlanIdSchema,
+  source: TranscriptMapSourceSchema,
+  segmentation: TranscriptMapSegmentationSchema,
+  rootId: TranscriptMapNodeIdSchema.nullable(),
+  nodeCount: recallBytes,
+  digest: recallDigest,
+  direct: z.boolean(),
+  gapBytes: recallBytes,
+});
+export type TranscriptMapPlan = z.infer<typeof TranscriptMapPlanSchema>;
+
+/** Native attestations are invalidated by either classification or archive inventory changes. */
+export const TranscriptMapContextSchema = z.strictObject({
+  digest: recallDigest,
+  policyDigest: recallDigest,
+  classId: recallId,
+  ceiling: z.number().int().min(0).max(3),
+  eligibleCaptures: recallBytes,
+  observedAt: z.iso.datetime({ offset: true }),
+});
+export type TranscriptMapContext = z.infer<typeof TranscriptMapContextSchema>;
+export const TranscriptMapAccessSchema = z.strictObject({
+  captureId: TranscriptMapCaptureIdSchema,
+  contextDigest: recallDigest,
+  sensitivity: z.number().int().min(0).max(3),
+});
+export type TranscriptMapAccess = z.infer<typeof TranscriptMapAccessSchema>;
+export const TranscriptMapCatalogEntrySchema = z.strictObject({
+  capture: TranscriptMapCaptureSchema,
+  access: TranscriptMapAccessSchema,
+});
+export type TranscriptMapCatalogEntry = z.infer<typeof TranscriptMapCatalogEntrySchema>;
+
+export const TranscriptMapPolicySchema = z.strictObject({
+  machineId: refId,
+  profile: CodeProfileSchema,
+  dailyCost: z.number().finite().nonnegative(),
+  generateRecipe: z.string().trim().min(1).max(200),
+  reviewRecipe: z.string().trim().min(1).max(200),
+  recipes: z.array(PolicyRecipeSchema).min(1).max(32),
+  segmentation: TranscriptMapSegmentationSchema.default(TranscriptMapSegmentationSchema.parse({})),
+  maxAttempts: z.number().int().min(1).max(3).default(2),
+  maxReviews: z.number().int().nonnegative().max(3).default(1),
+  maxCorrections: z.number().int().nonnegative().max(2).default(1),
+});
+export type TranscriptMapPolicy = z.infer<typeof TranscriptMapPolicySchema>;
+
+/** Source access is revalidated separately; a classification change never buys the prose again. */
+export const TranscriptMapVersionSchema = z.strictObject({
+  id: TranscriptMapVersionIdSchema,
+  planId: TranscriptMapPlanIdSchema,
+  contractDigest: recallDigest,
+  profile: CodeProfileSchema,
+  generateRecipe: PolicyRecipeSchema,
+  reviewRecipe: PolicyRecipeSchema,
+  generation: z.number().int().nonnegative(),
+  supersedes: TranscriptMapVersionIdSchema.nullable(),
+  createdAt: z.iso.datetime({ offset: true }),
+});
+export type TranscriptMapVersion = z.infer<typeof TranscriptMapVersionSchema>;
+
+const transcriptMapEncoder = new TextEncoder();
+const transcriptMapText = z
+  .string()
+  .trim()
+  .min(1)
+  .max(TRANSCRIPT_MAP_MAX_SUMMARY_BYTES)
+  .refine(
+    (text) => transcriptMapEncoder.encode(text).byteLength <= TRANSCRIPT_MAP_MAX_SUMMARY_BYTES,
+    "A navigation summary exceeds its UTF-8 byte allowance.",
+  );
+export const TranscriptMapChildSummarySchema = z.strictObject({
+  nodeId: TranscriptMapNodeIdSchema,
+  summaryId: TranscriptMapSummaryIdSchema.nullable(),
+  text: transcriptMapText.nullable(),
+  gap: z.enum(["record-too-large", "depth-bound", "unmapped"]).nullable(),
+});
+export type TranscriptMapChildSummary = z.infer<typeof TranscriptMapChildSummarySchema>;
+export const TranscriptMapSummarySchema = z.strictObject({
+  id: TranscriptMapSummaryIdSchema,
+  versionId: TranscriptMapVersionIdSchema,
+  nodeId: TranscriptMapNodeIdSchema,
+  text: transcriptMapText,
+  runId: refId,
+  recipeId: z.string().min(1).max(200),
+  recipeVersion: z.number().int().nonnegative(),
+  recipeDigest: recallDigest,
+  profile: CodeProfileSchema,
+  children: z.array(TranscriptMapChildSummarySchema).max(TRANSCRIPT_MAP_MAX_CHILDREN),
+  supersedes: TranscriptMapSummaryIdSchema.nullable(),
+  correctionDepth: z.number().int().nonnegative().max(2),
+  createdAt: z.iso.datetime({ offset: true }),
+});
+export type TranscriptMapSummary = z.infer<typeof TranscriptMapSummarySchema>;
+export const TranscriptMapModelResultSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("summary"), text: transcriptMapText }),
+  z.strictObject({
+    kind: z.literal("review"),
+    verdict: z.enum(["keep", "correct", "reject"]),
+    reason: transcriptMapText,
+  }),
+]);
+export type TranscriptMapModelResult = z.infer<typeof TranscriptMapModelResultSchema>;
+
+export const TranscriptMapWorkSchema = z.strictObject({
+  id: TranscriptMapWorkIdSchema,
+  versionId: TranscriptMapVersionIdSchema,
+  nodeId: TranscriptMapNodeIdSchema,
+  mode: z.enum(TRANSCRIPT_MAP_MODES),
+  baseSummaryId: TranscriptMapSummaryIdSchema.nullable(),
+  children: z.array(TranscriptMapChildSummarySchema).max(TRANSCRIPT_MAP_MAX_CHILDREN),
+  correctionDepth: z.number().int().nonnegative().max(2),
+  attempt: z.number().int().positive().max(3),
+  createdAt: z.iso.datetime({ offset: true }),
+});
+export type TranscriptMapWork = z.infer<typeof TranscriptMapWorkSchema>;
+
+export const TranscriptMapCoverageSchema = z.strictObject({
+  sourceBytes: recallBytes,
+  summarizedBytes: recallBytes,
+  directBytes: recallBytes,
+  unmappedBytes: recallBytes,
+  gapBytes: recallBytes,
+  levels: z.array(z.number().int().nonnegative().max(TRANSCRIPT_MAP_MAX_DEPTH - 1)).max(4),
+  partial: z.boolean(),
+  stale: z.boolean(),
+  tailBytes: recallBytes.nullable(),
+});
+export type TranscriptMapCoverage = z.infer<typeof TranscriptMapCoverageSchema>;
+
+/** Input prose is not implicitly served when a reader asks for one summary. */
+export const TranscriptMapSummaryViewSchema = TranscriptMapSummarySchema.omit({
+  children: true,
+}).extend({
+  inputSummaryIds: z.array(TranscriptMapSummaryIdSchema).max(TRANSCRIPT_MAP_MAX_CHILDREN),
+});
+export type TranscriptMapSummaryView = z.infer<typeof TranscriptMapSummaryViewSchema>;
+export const TranscriptMapViewSchema = z.strictObject({
+  inference: z.literal(true),
+  versionId: TranscriptMapVersionIdSchema,
+  source: TranscriptMapSourceSchema,
+  node: TranscriptMapNodeSchema,
+  summary: TranscriptMapSummaryViewSchema.nullable(),
+  reused: z.boolean(),
+  coverage: TranscriptMapCoverageSchema,
+});
+export type TranscriptMapView = z.infer<typeof TranscriptMapViewSchema>;
