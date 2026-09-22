@@ -642,13 +642,38 @@ posting job `722d2c40-bbb5-40fa-9ba4-964f35a1ebc3`; that job exited 0, and its o
 SHA-256 verified (`31d06cafdfeea1386be33308c2513c0f9804aceb6f9e3e174184fc42aa0e45a1`).
 It listed `anthropic/claude-3-haiku-20240307`, `anthropic/claude-haiku-4-5`, and
 `anthropic/claude-haiku-4-5-20251001`. Artifact recovery is not a successful Code consumer path.
+Catalog membership is not provider availability: Anthropic lists
+`claude-3-haiku-20240307` as [retired since 2026-04-20](https://platform.claude.com/docs/en/about-claude/model-deprecations),
+so it is not a cheap fallback for this rehearsal.
+
+The inventory refusal was reproduced without posting another job. The installed OMP root
+bundle `f72c104a1c794499b9846bbf78e671d142ee9ab2b337bae1853d588d2fc9fc3c` was built against
+Manifold `743ee75a92b64b75b4a97244ebd58297c1287164`. Its strict public-job schema rejected
+the exact retained native status receipt solely for the root `limits` key. The current
+native schema against Manifold `7b5fe3015c3308532de634c2b2d8068ec2f0e451` accepted that same receipt.
+Both output APIs are valid; no output-reader workaround is indicated. A compatible deployment
+and normal inventory start/read smoke are still required.
+
+**Offline native proof on dev-01, 2026-09-22:** the
+[packaged verifier at native revision `74c0759`](https://github.com/atyrode/manifold-omp/blob/74c0759/plugins/sdk-host/test/packaged-sdk-host.ts#L365-L397)
+observed model progress before an isolated synthetic response completed in both CLI 18.1.14 and
+SDK-host 18.2.7 one-shot paths, with stdout and sealed session receipts intact. The full native
+gate passed (181 tests, zero failures). This proves those runtimes, not the governed
+Babel → Code → OMP launch/follow/result path or a real-provider rehearsal.
+
+Reviewed service-call and recorded-usage limits do not bound every provider-internal retry or
+its in-flight response. The
+[reviewed overlay at native revision `74c0759`](https://github.com/atyrode/manifold-omp/blob/74c0759/plugins/api/index.ts#L128-L165)
+has no supported per-request token cap reaching the preserved gateway. A remaining account
+balance or a low expected call price does
+not replace that exposure bound.
 
 No provider inference, benchmark, exploration, rehearsal or live bundle replacement was made.
 The inspected 222 retained native sessions on the three enrolled machines were all terminal;
 their latest start was 2026-09-18, before the shared verification grant. This does not reconcile
 possible out-of-band #315 consumption. The enabled standing conductor, compatible deployed
 closure, exact dedicated profile, complete shared ledger, conservative retry/token exposure and
-native model-stage reporting still require resolution before admission. This partial inspection
+deployed native model-stage reporting still require resolution before admission. This partial inspection
 does not mark the rehearsal, 90-second go/no-go, Watch, Stop or final-receipt procedures exercised.
 Track the execution receipt and failures in #264 and atyrode/manifold-omp#71.
 

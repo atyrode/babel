@@ -5001,6 +5001,42 @@ test("a transcript without an owner meter corroborates spend but never supplies 
   expect(absent.receipt?.["inference"]).toBeUndefined();
 });
 
+test("coalesced native model turns retain their own clock without restarting on repeated snapshots", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const store = openReadStore(db, () => clock);
+  const draws = new Draws(db);
+  const { runId } = await sessionInFlight(db);
+  let stageAt = clock;
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({
+      state: "started",
+      sealed: false,
+      activity: {
+        inferenceUsage: { ...SESSION_METER, calls: 1, lastModel: null },
+        progress: { stage: RUN_STAGES.atModel, at: stageAt },
+      },
+    }),
+  }));
+  try {
+    await wakeOn(store, draws, code).tick();
+    clock += 100_000;
+    stageAt = clock;
+    expect((await wakeOn(store, draws, code).tick()).runs.stalled).toBe(0);
+    expect((await store.run(runId)).run?.progress?.since).toBe(new Date(stageAt).toISOString());
+
+    clock += 60_000;
+    expect((await wakeOn(store, draws, code).tick()).runs.stalled).toBe(0);
+    expect((await store.run(runId)).run?.progress?.since).toBe(new Date(stageAt).toISOString());
+    clock += 30_000;
+    expect((await wakeOn(store, draws, code).tick()).runs.stalled).toBe(1);
+  } finally {
+    clock = started;
+  }
+});
+
 test("native live snapshots replace spend and yield to the terminal meter exactly once", async () => {
   const db = openDatabase();
   await seed(db);
