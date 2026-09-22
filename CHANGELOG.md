@@ -21,6 +21,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   existence or a fabricated one-call count. These source changes do not establish the live
   rehearsal or its shared spending envelope (#264, atyrode/code#170).
 
+- **Native model progress keeps the current turn's clock.** Code's native worker reports
+  redacted phases from the actual published one-shot event stream. Babel keeps the owner's
+  observation time when intermediate tool phases are coalesced away, without restarting the
+  clock on repeated snapshots or marking a new turn stalled because of an older call.
+  Deployed readiness and the shared-cost live rehearsal remain separate acceptance (#264).
+
 - **Recall brings bounded archived evidence to any agent, without lending it the archive.**
   An owner-managed native service fixes disclosure classes; search and locator windows share
   preparation's redaction, record identities and UTF-8 bounds. Whole sessions need a size preview

@@ -3290,7 +3290,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       message: progress === null ? (held?.message ?? "") : (progress.message ?? ""),
       fraction: progress === null ? (held?.fraction ?? null) : (progress.fraction ?? null),
       since:
-        progress !== null && progress.stage !== held?.stage
+        progress !== null
           ? new Date(progress.at).toISOString()
           : held?.since || (stage === "" ? "" : observedAt),
       calls: usage?.calls ?? Number(held?.calls ?? 0),
@@ -3306,7 +3306,12 @@ export function conductor(deps: ConductorDeps): Conductor {
       seq: Number(held?.seq ?? 0),
       models: JSON.stringify(models),
     };
-    const waitingSince = instantOf(folded.last_call_at === "" ? folded.since : folded.last_call_at);
+    // Coalescing can hide the tool phase between identical model stages. The native
+    // observation carries the new turn's clock; an older call cannot make it stalled.
+    const stageSince = instantOf(folded.since);
+    const lastCallAt = instantOf(folded.last_call_at);
+    const waitingSince =
+      lastCallAt === null ? stageSince : Math.max(lastCallAt, stageSince ?? lastCallAt);
     const stalled =
       (usage !== null || folded.calls > 0) &&
       folded.stage === RUN_STAGES.atModel &&
