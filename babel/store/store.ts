@@ -618,7 +618,7 @@ function runFreshness(
  */
 function runProgress(row: SqlRow, nowMs: number): RunProgress | null {
   const since = text(row["progress_since"]);
-  if (since === "") return null;
+  if (since === "" && text(row["progress_updated_at"]) === "") return null;
   const fraction = row["progress_fraction"];
   const updatedAt = text(row["progress_updated_at"]);
   const confirmed = instant(updatedAt);

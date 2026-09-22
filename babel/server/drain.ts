@@ -181,6 +181,9 @@ export function drainInput(row: DrainRow): LaunchInput {
     ...(row.knobs.entityId === undefined ? {} : { entityId: row.knobs.entityId }),
     ...(row.knobs.minutes === undefined ? {} : { minutes: row.knobs.minutes }),
     ...(row.knobs.agentSessions === undefined ? {} : { agentSessions: row.knobs.agentSessions }),
+    ...(row.knobs.inferenceLimits === undefined
+      ? {}
+      : { inferenceLimits: row.knobs.inferenceLimits }),
   };
 }
 
@@ -201,6 +204,9 @@ export function drainIdentity(row: DrainRow, ordinal: number): LaunchIdentity {
 
 /** What one fold wrote, and what the read of this drain's jobs could not account for. */
 export interface Folded {
+  /** The snapshot and reconciliation that won the fold, refreshed after a competing write. */
+  readonly row: DrainRow;
+  readonly seen: Reconciled;
   /** Everything this drain has metered: the receipts that landed, plus what its live jobs report. */
   readonly spent: DrainSpend;
   /** Jobs held with no run row, named: their slots were released rather than held for ever. */
@@ -228,6 +234,9 @@ export async function foldDrain(
   seen: Reconciled,
   at: number,
 ): Promise<Folded> {
+  if (row.state !== "running" && row.state !== "closing") {
+    return { row, seen, spent: row.spent, notes: [] };
+  }
   const notes: string[] = [];
   const journaled: DrainNote[] = [];
   for (const gone of seen.missing) {
@@ -263,7 +272,7 @@ export async function foldDrain(
     // run it is on is one this drain will have forgotten by the time anybody asks.
     if (run.refusal !== null) refusals[run.refusal] = (refusals[run.refusal] ?? 0) + 1;
   }
-  await saveFold(store, row.id, {
+  const saved = await saveFold(store, row, {
     live: seen.holding,
     spent: settledSpend,
     closures,
@@ -277,7 +286,12 @@ export async function foldDrain(
     ),
     settledNow: seen.settled.length,
   });
-  return { spent, notes };
+  if (!saved) {
+    const current = await readDrain(store, row.id);
+    if (current === null) throw new Error(`drain ${row.id} disappeared during its fold`);
+    return await foldDrain(store, current, await reconcileLive(store, current.live), at);
+  }
+  return { row, seen, spent, notes };
 }
 
 /** What ending a drain did: the state it is in now, what was cancelled, and what it could not do. */
@@ -328,6 +342,7 @@ interface RunLane {
   readonly container: string;
   readonly jobId: string;
   readonly prepareJobId: string;
+  readonly posting: boolean;
 }
 
 async function laneOf(store: DrainDeps["store"], runId: string): Promise<RunLane> {
@@ -335,12 +350,18 @@ async function laneOf(store: DrainDeps["store"], runId: string): Promise<RunLane
     container_id: string | null;
     job_id: string | null;
     prepare_job_id: string | null;
-  }>(`SELECT container_id, job_id, prepare_job_id FROM runs WHERE id = ?`, [runId]);
+    posting: number | bigint | null;
+  }>(
+    `SELECT container_id, job_id, prepare_job_id, json_extract(payload, '$.posting') AS posting
+       FROM runs WHERE id = ?`,
+    [runId],
+  );
   const row = rows[0];
   return {
     container: row?.container_id ?? "",
     jobId: row?.job_id ?? "",
     prepareJobId: row?.prepare_job_id ?? "",
+    posting: Number(row?.posting) === 1,
   };
 }
 
@@ -355,11 +376,14 @@ async function laneOf(store: DrainDeps["store"], runId: string): Promise<RunLane
  */
 async function closeIntent(deps: DrainDeps, runId: string, reason: string): Promise<void> {
   const at = new Date(deps.now()).toISOString();
-  await deps.store.db.run(
+  const closed = await deps.store.db.run(
     `UPDATE runs SET closure = 'stopped', finished_at = ?, payload = ?
-      WHERE id = ? AND closure IS NULL AND job_id IS NULL`,
+      WHERE id = ? AND closure IS NULL AND job_id IS NULL
+        AND COALESCE(json_extract(payload, '$.posting'), 0) = 0`,
     [at, JSON.stringify({ closure: "stopped", reason, stoppedAt: at }), runId],
   );
+  if (closed.changes === 0)
+    throw new Error(`${runId} changed during cancellation; its session may be live`);
 }
 /**
  * WHAT A DRAIN'S END DOES TO WHAT IT IS HOLDING: asks for each live job to be cancelled, in
@@ -390,6 +414,8 @@ export async function endDrain(
           jobId: job.jobId,
         });
       } else if (lane.jobId === "") {
+        if (lane.posting)
+          throw new Error(`${job.runId} has an unresolved Code posting; its session may be live`);
         /*
           INTENT: the preparation is in flight and no session exists yet. Cancelling the
           PREPARATION is only half of it — `postPrepared` walks every open row whose material
@@ -432,7 +458,7 @@ export async function endDrain(
       journaled.push({ at, kind: "cancel", detail: `${job.jobId}: ${message(error)}` });
     }
   }
-  const closed = await closeDrain(deps.store, row.id, ending, reason, live);
+  const closed = await closeDrain(deps.store, row.id, ending, reason);
   if (closed === "already") {
     notes.push(`drain ${row.id} had already ended when this tick closed it`);
   }
@@ -557,10 +583,22 @@ async function indexDuty(
  */
 async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   const at = deps.now();
-  const seen = await reconcileLive(deps.store, row.live);
-  const folded = await foldDrain(deps.store, row, seen, at);
+  const folded = await foldDrain(deps.store, row, await reconcileLive(deps.store, row.live), at);
+  row = folded.row;
+  const seen = folded.seen;
   const notes: string[] = [...folded.notes];
   const spent = folded.spent;
+  if (row.state !== "running" && row.state !== "closing") {
+    return {
+      drainId: row.id,
+      launched: 0,
+      settled: 0,
+      live: row.live.length,
+      state: row.state,
+      reason: row.reason,
+      notes,
+    };
+  }
 
   if (row.state === "closing") {
     const ending = row.ending === "" ? "stopped" : row.ending;
@@ -637,6 +675,32 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       notes: [...notes, ...ended.notes],
     };
   }
+  // Exhausting admissions stops refills, not the jobs already admitted. Their receipts still
+  // belong to this drain, including refusals and jobs that spent nothing.
+  if (row.knobs.maxJobs !== undefined && row.jobsLaunched >= row.knobs.maxJobs) {
+    const why = `the admission bound of ${String(row.knobs.maxJobs)} jobs is exhausted`;
+    if (seen.holding.length > 0) {
+      return {
+        drainId: row.id,
+        launched: 0,
+        settled: seen.settled.length,
+        live: seen.holding.length,
+        state: "running",
+        reason: why,
+        notes,
+      };
+    }
+    const ended = await endDrain(deps, row, "target", why, []);
+    return {
+      drainId: row.id,
+      launched: 0,
+      settled: seen.settled.length,
+      live: 0,
+      state: ended.state,
+      reason: why,
+      notes: [...notes, ...ended.notes],
+    };
+  }
 
   const operationId = drainOperation(row.preset);
   // The session is the drain's own, every time: the model and the account the operator named
@@ -651,6 +715,7 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   let launched = 0;
   let refused = "";
   for (let slot = holding.length; slot < row.concurrent; slot += 1) {
+    if (row.knobs.maxJobs !== undefined && row.jobsLaunched + launched >= row.knobs.maxJobs) break;
     const identity = drainIdentity(row, row.jobsLaunched + launched);
     const started = SPENDING.includes(row.preset)
       ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, input, plan)
@@ -689,7 +754,12 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
         const adopted = `${identity.jobId} was already posted by an earlier tick, and is taken back`;
         notes.push(adopted);
         journaled.push({ at, kind: "adopted", detail: adopted });
-        await recordLaunch(deps.store, row.id, job, holding);
+        const recorded = await recordLaunch(deps.store, row.id, job, row.jobsLaunched + launched);
+        if (!recorded) {
+          const current = await readDrain(deps.store, row.id);
+          holding.splice(0, holding.length, ...(current?.live ?? []));
+          break;
+        }
         holding.push(job);
         launched += 1;
         continue;
@@ -717,9 +787,13 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       });
       break;
     }
-    // The row is written before the array grows, so what it stores is what this tick actually
-    // holds: the write is `live` plus this job, counted once whatever a retry does.
-    await recordLaunch(deps.store, row.id, job, holding);
+    // The persisted admission cursor decides whether this wake, or another one, recorded it.
+    const recorded = await recordLaunch(deps.store, row.id, job, row.jobsLaunched + launched);
+    if (!recorded) {
+      const current = await readDrain(deps.store, row.id);
+      holding.splice(0, holding.length, ...(current?.live ?? []));
+      break;
+    }
     holding.push(job);
     launched += 1;
   }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { actionSchemas } from "@atyrode/manifold-code";
 
 /*
   THE VOCABULARY OF THE atyrode.babel PLUGIN FAMILY, spelled once. Every id, door name, event
@@ -2441,6 +2442,8 @@ export const LaunchInputSchema = z.strictObject({
    * preset names none, so the requirement is stated where it is true.
    */
   profile: CodeProfileSchema.optional(),
+  /** Reviewed per-session limits, owned and enforced by Code. */
+  inferenceLimits: actionSchemas.runSession.input.shape.inferenceLimits,
 });
 export type LaunchInput = z.infer<typeof LaunchInputSchema>;
 
@@ -3753,6 +3756,9 @@ export const DrainStartInputSchema = z.strictObject({
    */
   profile: CodeProfileSchema,
   concurrent: z.number().int().min(1).max(DRAIN_CONCURRENT_MAX),
+  /** Cumulative admission bound; admitted jobs keep running until they settle. */
+  maxJobs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+  inferenceLimits: actionSchemas.runSession.input.shape.inferenceLimits,
   target: DrainTargetSchema,
   reason: z.string().trim().min(1).max(2000),
   /** For `explore-topic`: the entity whose cited sessions become the preparation. */

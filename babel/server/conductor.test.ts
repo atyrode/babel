@@ -1192,6 +1192,14 @@ const NO_CODE: CodeEngine = {
   },
 };
 
+const SESSION_METER: InferenceUsage = {
+  calls: 3,
+  inputTokens: 20_000,
+  outputTokens: 1_500,
+  cachedInputTokens: 800,
+  costMicros: 410_000,
+};
+
 /**
  * One Code session as `readSession` answers for it: where the job is, and what it yielded.
  *
@@ -1207,6 +1215,8 @@ function sessionRead(over: {
   readonly finalMessage?: string;
   readonly exitCode?: number;
   readonly usage?: SessionUsage | null;
+  readonly inference?: InferenceUsage;
+  readonly activity?: SessionRead["activity"];
   readonly model?: string;
   /** The transcript this session sealed, which is the locator a call row keeps (#349). */
   readonly sessionId?: string;
@@ -1219,7 +1229,32 @@ function sessionRead(over: {
       operationId: "atyrode.omp.session",
       pluginId: "atyrode.omp",
       state: over.state,
+      ...(over.inference === undefined
+        ? {}
+        : {
+            result: {
+              jobId: over.jobId ?? "job_code_1",
+              requestDigest: "d".repeat(64),
+              ownerId: "owner",
+              ownerGeneration: 1,
+              state: over.state,
+              exitCode: over.exitCode ?? 0,
+              reason: null,
+              startedAt: clock,
+              finishedAt: clock,
+              usage: {
+                elapsedMs: 1_000,
+                memoryBytes: 0,
+                processes: 1,
+                outputBytes: 0,
+                inference: over.inference,
+              },
+              limits: { timeoutMs: 60_000, memoryBytes: 1024, processes: 1, outputBytes: 1024 },
+              outputs: [],
+            },
+          }),
     },
+    ...(over.activity === undefined ? {} : { activity: over.activity }),
     session:
       over.sealed === false
         ? null
@@ -2918,6 +2953,7 @@ test("a drawn review is blinded, fenced, settled, and promotes granular refineme
     state: "exited",
     model: FIXTURE_MODEL,
     usage: { input: 4200, output: 300, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    inference: SESSION_METER,
     finalMessage:
       "```json\n" +
       JSON.stringify({
@@ -2935,7 +2971,12 @@ test("a drawn review is blinded, fenced, settled, and promotes granular refineme
   });
   const settled = await loop.tick();
   expect(settled.notes).toEqual([]);
-  expect(settled.settled.map((row) => [row.outcome, row.cost])).toEqual([["completed", 0]]);
+  expect(settled.settled.map((row) => [row.outcome, row.cost])).toEqual([["completed", 0.41]]);
+  expect((await store.run(`run_${ASSIGNMENT.id}_2`)).run).toMatchObject({
+    calls: 3,
+    costUsd: 0.41,
+    tokens: 21_500,
+  });
   const reviewed = await store.record(ASSIGNMENT.recordId);
   expect(reviewed?.reception.byRole).toEqual([
     { role: "reception", support: 1, oppose: 0, unsure: 0, opposingRationales: [] },
@@ -3262,14 +3303,9 @@ test("a stale review completion retains usage without writing or settling the ne
   expect(JSON.parse(run.payload)).toMatchObject({
     closure: "failed",
     counts: {},
-    inference: {
-      calls: 1,
-      inputTokens: 12_000,
-      outputTokens: 900,
-      cachedInputTokens: 400,
-      costMicros: 310_000,
-    },
+    costUsd: 0.31,
   });
+  expect((await store.run(`run_${ASSIGNMENT.id}_1`)).run?.calls).toBeNull();
   expect(
     await db.query<{ id: string; fence: bigint; job_id: string; finished_at: string | null }>(
       `SELECT id, fence, job_id, finished_at FROM claims WHERE id = ?`,
@@ -3891,6 +3927,7 @@ test("a finished Code session whose citations the material served writes its rec
     ok: true,
     value: sessionRead({
       state: "exited",
+      inference: SESSION_METER,
       finalMessage: answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST),
     }),
   }));
@@ -3925,20 +3962,18 @@ test("a finished Code session whose citations the material served writes its rec
     provider: "anthropic",
     identityKey: "victorballu@gmail.com",
   });
-  // ONE CALL, because a posted session is omp's one-shot; the tokens and the cost are the
-  // meter's, in the same columns a metered Babel job writes.
-  expect(receipt["inference"]).toEqual({
-    calls: 1,
-    inputTokens: 12_000,
-    outputTokens: 900,
-    cachedInputTokens: 400,
-    costMicros: 310_000,
-  });
-  expect(run["cost_usd"]).toBeCloseTo(0.31, 6);
-  expect(Number(run["tokens"])).toBe(12_900);
+  // The terminal owner meter wins even when the transcript reports different totals.
+  expect(receipt["inference"]).toEqual(SESSION_METER);
+  expect(receipt["costUsd"]).toBe(0.31);
+  expect(run["cost_usd"]).toBeCloseTo(0.41, 6);
+  expect(Number(run["tokens"])).toBe(21_500);
+  expect((await traceOf(db, runId)).calls).toMatchObject([
+    { seq: 1, inputTokens: 20_000, outputTokens: 1_500, cacheReadTokens: 800, costMicros: 410_000 },
+  ]);
+  expect((await traceOf(db, runId)).calls).toHaveLength(1);
 
   expect(report.settled).toEqual([
-    { claimId, outcome: "completed", cost: 0.31, overrun: false, refused: null, reason: null },
+    { claimId, outcome: "completed", cost: 0.41, overrun: false, refused: null, reason: null },
   ]);
   expect(report.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
 });
@@ -4381,7 +4416,8 @@ test("a Code session still running leaves its run open and settles nothing", asy
     now: () => clock,
   }).tick();
 
-  expect(report.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
+  expect(report.runs).toEqual({ running: 1, atModel: 0, stalled: 0 });
+  expect(await db.query(`SELECT run_id FROM run_progress WHERE run_id = ?`, [runId])).toEqual([]);
   expect(report.settled).toEqual([]);
   const run = (await db.query(`SELECT closure FROM runs WHERE id = ?`, [runId]))[0]!;
   expect(run["closure"]).toBeNull();
@@ -4427,7 +4463,8 @@ test("a session Code cancelled closes as stopped with no receipt, and its claim 
   // cancelled session sealed no transcript (#169).
   expect(receipt["model"]).toBe("anthropic/claude-opus-4-1");
   expect(receipt["models"]).toBeUndefined();
-  expect(run["cost_usd"]).toBe(0);
+  expect(run["cost_usd"]).toBeNull();
+  expect(receipt["inference"]).toBeUndefined();
   // …and the claim is SKIPPED rather than failed: nobody answered, so there is no paid
   // refusal here and the park heuristic must not read a streak of operator stops as a lane
   // that is broken.
@@ -4894,6 +4931,156 @@ async function traceOf(db: PluginDatabase, runId: string): Promise<RunTrace> {
   return read;
 }
 
+test.each(["explore", "title"] as const)(
+  "a charged %s failure keeps its meter without a transcript",
+  async (kind) => {
+    const db = openDatabase();
+    await seed(db);
+    const store = openReadStore(db, () => clock);
+    const draws = new Draws(db);
+    const { runId, jobId } =
+      kind === "explore" ? await sessionInFlight(db) : await titlingInFlight(db);
+    const code = codeAnswering(() => ({
+      ok: true,
+      value: sessionRead({ jobId, state: "exited", sealed: false, inference: SESSION_METER }),
+    }));
+
+    const report = await wakeOn(store, draws, code).tick();
+
+    expect((await store.run(runId)).run).toMatchObject({
+      state: "failed",
+      costUsd: 0.41,
+      tokens: 21_500,
+      calls: 3,
+      progress: null,
+      records: 0,
+    });
+    expect(report.ingested.find((run) => run.runId === runId)).toMatchObject({
+      closure: "failed",
+      costUsd: 0.41,
+    });
+    if (kind === "explore")
+      expect(report.settled).toMatchObject([{ outcome: "failed", cost: 0.41 }]);
+    expect((await traceOf(db, runId)).calls).toMatchObject([
+      {
+        seq: 1,
+        costMicros: 410_000,
+        inputTokens: 20_000,
+        outputTokens: 1_500,
+        closure: "failed",
+        response: { digest: "", bytes: 0 },
+        transcript: { host: "", sessionId: "", path: "" },
+      },
+    ]);
+    expect(report.pulse.tick.refusals.paid).toEqual({ empty: 1 });
+  },
+);
+
+test("a transcript without an owner meter corroborates spend but never supplies calls", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openReadStore(db, () => clock);
+  const draws = new Draws(db);
+  const { runId } = await sessionInFlight(db);
+  const unknown = await anotherSession(db, "unknown");
+  const code = codeReplying({
+    job_code_1: sessionRead({
+      state: "exited",
+      finalMessage: answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST),
+    }),
+    [unknown.jobId]: sessionRead({ jobId: unknown.jobId, state: "exited", sealed: false }),
+  });
+
+  await wakeOn(store, draws, code).tick();
+
+  const corroborated = await store.run(runId);
+  expect(corroborated.run).toMatchObject({ calls: null, costUsd: 0.31, tokens: 12_900 });
+  expect(corroborated.receipt?.["inference"]).toBeUndefined();
+  const absent = await store.run(unknown.runId);
+  expect(absent.run).toMatchObject({ calls: null, costUsd: null, tokens: null, state: "failed" });
+  expect(absent.receipt?.["inference"]).toBeUndefined();
+});
+
+test("native live snapshots replace spend and yield to the terminal meter exactly once", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openReadStore(db, () => clock);
+  const draws = new Draws(db);
+  const { runId } = await sessionInFlight(db);
+  let read = sessionRead({
+    state: "started",
+    sealed: false,
+    activity: {
+      inferenceUsage: {
+        calls: 1,
+        inputTokens: 1_000,
+        outputTokens: 100,
+        cachedInputTokens: 50,
+        costMicros: 100_000,
+        lastModel: FIXTURE_MODEL,
+      },
+      progress: null,
+    },
+  });
+  const code = codeAnswering(() => ({ ok: true, value: read }));
+
+  expect((await wakeOn(store, draws, code).tick()).runs).toEqual({
+    running: 1,
+    atModel: 0,
+    stalled: 0,
+  });
+  await wakeOn(store, draws, code).tick();
+  expect((await store.run(runId)).run?.progress).toMatchObject({
+    stage: "",
+    calls: 1,
+    inputTokens: 1_000,
+    outputTokens: 100,
+    costUsd: 0.1,
+    lastModel: FIXTURE_MODEL,
+  });
+  read = sessionRead({
+    state: "started",
+    sealed: false,
+    activity: {
+      inferenceUsage: null,
+      progress: { stage: "reading material", at: clock, message: "opening sources", fraction: 0.5 },
+    },
+  });
+  expect((await wakeOn(store, draws, code).tick()).runs.atModel).toBe(0);
+  expect((await store.run(runId)).run?.progress).toMatchObject({
+    stage: "reading material",
+    message: "opening sources",
+    fraction: 0.5,
+    calls: 1,
+    costUsd: 0.1,
+  });
+  read = sessionRead({ state: "started", sealed: false });
+  await wakeOn(store, draws, code).tick();
+  expect((await store.run(runId)).run?.progress).toMatchObject({
+    stage: "reading material",
+    calls: 1,
+    costUsd: 0.1,
+  });
+  read = sessionRead({
+    state: "exited",
+    finalMessage: answered(`sessions/${SERVED_FILE}`, SERVED_DIGEST),
+    inference: SESSION_METER,
+  });
+  const settled = await wakeOn(store, draws, code).tick();
+  expect(settled.settled).toMatchObject([{ outcome: "completed", cost: 0.41 }]);
+  expect((await store.run(runId)).run).toMatchObject({
+    calls: 3,
+    costUsd: 0.41,
+    tokens: 21_500,
+    progress: null,
+  });
+  expect((await wakeOn(store, draws, code).tick()).settled).toEqual([]);
+  expect((await traceOf(db, runId)).calls).toHaveLength(1);
+  expect(await db.query(`SELECT actual_cost FROM claims WHERE job_id = 'job_code_1'`)).toEqual([
+    { actual_cost: 0.41 },
+  ]);
+});
+
 test("a settled session leaves a call row: what it cost, how it ended, and where the bytes are", async () => {
   const db = openDatabase();
   await seed(db);
@@ -5295,6 +5482,7 @@ test("a titling session names the sessions it read, marks them inferred, and is 
     value: sessionRead({
       state: "exited",
       jobId,
+      inference: SESSION_METER,
       finalMessage: namedAnswer([
         { selector: "codex/untitled-a", title: "Restic retention on dev-01" },
         { selector: "codex/untitled-b", error: "the log holds one aborted turn and no request" },
@@ -5344,10 +5532,14 @@ test("a titling session names the sessions it read, marks them inferred, and is 
     await db.query(`SELECT closure, cost_usd, payload FROM runs WHERE id = ?`, [runId])
   )[0]!;
   expect(run["closure"]).toBe("completed");
-  expect(run["cost_usd"]).toBe(0.31);
+  expect(run["cost_usd"]).toBe(0.41);
   const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
   expect(receipt["kind"]).toBe("title");
   expect(receipt["counts"]).toEqual({ offered: 2, named: 1, unnamed: 1 });
+  expect(receipt["inference"]).toEqual(SESSION_METER);
+  expect((await traceOf(db, runId)).calls).toMatchObject([
+    { seq: 1, inputTokens: 20_000, outputTokens: 1_500, costMicros: 410_000 },
+  ]);
 
   // A SECOND WAKE OVER THE SAME RUN CHANGES NOTHING. The run is settled, so nothing reads the
   // session again; and were the settlement itself replayed, the ledger's first answer stands.

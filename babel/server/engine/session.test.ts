@@ -272,6 +272,103 @@ test("a session is posted with its material bound, and Code's own schema takes t
   });
 });
 
+test("settlement between read and follow cannot turn a pending receipt into a failed run", async () => {
+  const inference = {
+    calls: 3,
+    inputTokens: 100,
+    outputTokens: 20,
+    cachedInputTokens: 0,
+    costMicros: 900,
+  };
+  const settled = {
+    ...POSTED,
+    state: "exited",
+    result: {
+      jobId: POSTED.jobId,
+      requestDigest: "d".repeat(64),
+      ownerId: "owner",
+      ownerGeneration: 1,
+      state: "exited",
+      exitCode: 0,
+      reason: null,
+      startedAt: 1_000,
+      finishedAt: 2_000,
+      usage: { elapsedMs: 1_000, memoryBytes: 100, processes: 1, outputBytes: 20, inference },
+      outputs: [],
+      limits: { timeoutMs: 600_000, memoryBytes: 1 << 30, processes: 64, outputBytes: 1 << 20 },
+    },
+  };
+  const receipt = {
+    sessionId: "session-7",
+    sessionPath: "/outputs/session/session.jsonl",
+    model: "anthropic/haiku",
+    finalMessage: "Analysis complete.",
+    usage: null,
+    exitCode: 0,
+    failure: null,
+    configuredModel: "anthropic/haiku",
+  };
+  let reads = 0;
+  const engine = codeEngine(
+    actions(({ action }) => {
+      if (action === "readSession") {
+        return ++reads === 1
+          ? { job: { ...POSTED, state: "started" }, session: null, silence: "omp_session_running" }
+          : { job: settled, session: receipt, silence: null };
+      }
+      if (action === "cancelSession") return { job: settled };
+      if (action === "followSession") {
+        return {
+          job: settled,
+          inferenceUsage: { ...inference, lastModel: "anthropic/haiku" },
+          progress: { stage: "at the model", at: 1_100 },
+          inferenceCalls: [],
+          seq: 4,
+          firstSeq: 1,
+          unavailable: null,
+        };
+      }
+      throw new Error(`Unexpected action ${action}`);
+    }),
+  );
+  const first = await engine.readSession({ containerId: "ctr_a", jobId: POSTED.jobId });
+  expect(first.ok).toBe(true);
+  if (!first.ok) return;
+  expect(first.value.job.state).toBe("started");
+  expect(first.value.session).toBeNull();
+  expect(first.value.activity?.inferenceUsage?.calls).toBe(3);
+  const next = await engine.readSession({ containerId: "ctr_a", jobId: POSTED.jobId });
+  expect(next.ok).toBe(true);
+  if (!next.ok) return;
+  expect(next.value.job.state).toBe("exited");
+  expect(next.value.session?.finalMessage).toBe("Analysis complete.");
+  expect(next.value.job.result?.usage?.inference).toEqual(inference);
+  const cancelled = await engine.cancelSession({ containerId: "ctr_a", jobId: POSTED.jobId });
+  expect(cancelled.ok).toBe(true);
+  if (!cancelled.ok) return;
+  expect(cancelled.value.jobId).toBe(POSTED.jobId);
+  expect(cancelled.value.result?.usage?.inference).toEqual(inference);
+});
+
+test("missing activity cannot erase a confirmed live session", async () => {
+  const engine = codeEngine(
+    actions(({ action }) => {
+      if (action === "readSession")
+        return {
+          job: { ...POSTED, state: "started" },
+          session: null,
+          silence: "omp_session_running",
+        };
+      throw new ActionCallError("dependency_unavailable: atyrode.code");
+    }),
+  );
+  const read = await engine.readSession({ containerId: "ctr_a", jobId: POSTED.jobId });
+  expect(read.ok).toBe(true);
+  if (!read.ok) return;
+  expect(read.value.job.state).toBe("started");
+  expect(read.value.activity).toBeUndefined();
+});
+
 /*
   THE SPEND GATE (#255).
 
