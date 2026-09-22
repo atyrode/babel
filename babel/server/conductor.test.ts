@@ -6263,17 +6263,21 @@ test.each(["missing", "known", "retained"] as const)(
   },
 );
 
-test("a retained analysis preparation remains occupied through repeated transport silence", async () => {
+test("withdrawing all activity stops the beat but retains a silent preparation", async () => {
   const { db, coordinator, fleet, loop } = await weightedCycle("challenge");
   const first = await loop.tick();
+  expect(first.schedule).toBe("registered");
   const requested = first.requested[0]!;
   fleet.silent.add(requested.jobId);
   await db.run(`UPDATE policies SET payload = json_set(payload, '$.activityWeights', json(?))`, [
     JSON.stringify({ review: 0, explore: 0, challenge: 0, synthesize: 0 }),
   ]);
   await db.run(`UPDATE claims SET expires_at = ?`, [new Date(clock - 1).toISOString()]);
-  await loop.tick();
-  await loop.tick();
+  const withdrawn = await loop.tick();
+  expect(withdrawn.schedule).toBe("unregistered");
+  expect(fleet.disabled).toEqual([{ scheduleId: CONDUCTOR_SCHEDULE_ID, revision: POLICY.version }]);
+  expect(withdrawn.requested).toEqual([]);
+  expect((await loop.tick()).schedule).toBe("absent");
   expect(
     await db.query(`SELECT finished_at FROM claims WHERE id = ?`, [requested.claimId]),
   ).toEqual([{ finished_at: null }]);

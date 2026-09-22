@@ -632,6 +632,14 @@ still require a conservative exposure reservation in the shared ledger before ad
 >    **Success:** two jobs reach the stage `at the model` within 90 s of launch and settle with
 >    `usage.inference.calls > 0`.
 
+For a manual-only rehearsal, first quiesce existing work, then retain the policy's `review`
+block and recipes with `enabled: true` and every `activityWeights` value set to zero. This
+withdraws the standing scan beat and suppresses new autonomous title preparation without
+blocking an explicit exploration or drain. It does not cancel or discard previously admitted
+work. Setting the whole policy to `enabled: false` also fences deferred manual model admission,
+so use that state before and after the bounded run, not while its material is preparing.
+Restoring a configuration must not silently restart standing work.
+
 **Partial pre-flight observed on dev-01, 2026-09-22, integrated preview
 `https://preview.manifold.tyrode.dev` (protocol 42, build `0.17.0+65.g7b5fe30`).**
 Native destination, account broker and gateway setup reads reported ready under the inspected

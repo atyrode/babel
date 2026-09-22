@@ -4,6 +4,7 @@ import type { PluginDatabase, SqlParam, SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
 import type { CycleReportSchema, IngestibleTable } from "../contract.ts";
 import {
+  ACTIVITIES,
   BABEL_PLUGIN_ID,
   AnalysisWorkSchema,
   type AnalysisBriefRecord,
@@ -1936,7 +1937,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
     const registered = listed.filter((row) => row.scheduleId === CONDUCTOR_SCHEDULE_ID);
     const machines = beatMachines(policy, registered);
-    if (!policy.enabled) {
+    if (!policy.enabled || !ACTIVITIES.some((activity) => policy.activityWeights[activity] > 0)) {
       try {
         for (const row of registered) {
           await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
