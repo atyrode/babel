@@ -57,7 +57,12 @@ import {
   type ActionsSlice,
   type CodeEngine,
 } from "../server/engine/session.ts";
-import { describeHost, type InferenceUsage, type JobLaunch, type RunPlan } from "../server/conductor.ts";
+import {
+  describeHost,
+  type InferenceUsage,
+  type JobLaunch,
+  type RunPlan,
+} from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
@@ -1707,8 +1712,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         });
         if (!answered.ok) {
           // A lost or unusable posting response is not proof that Code bought no session.
-          if (answered.code === ENGINE_REFUSALS.unconfirmed)
-            throw new Error(answered.refused);
+          if (answered.code === ENGINE_REFUSALS.unconfirmed) throw new Error(answered.refused);
           // A REFUSAL HERE IS FINAL, not a thing to retry on every wake for ever: the material
           // is sealed and immutable, the profile was named at the press, and nothing a later
           // wake could do changes what Code just said. The run closes carrying the sentence.
@@ -2032,13 +2036,20 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         if (!answered.ok) return { refused: answered.refused };
         const cancelled = answered.value;
         if (cancelled.jobId !== jobId || cancelled.machineId !== machineId) {
-          return { refused: `${runId} cancellation answered a different job; no closure was applied` };
+          return {
+            refused: `${runId} cancellation answered a different job; no closure was applied`,
+          };
         }
         // A cancellation acknowledgement is not a settlement. Leave the row and its progress
         // reachable by the conductor until the owner's final meter can be read.
         if (!["exited", "interrupted", "cancelled", "refused"].includes(cancelled.state)) {
           return {
             refused: `${runId} cancellation was requested, but its job is still ${cancelled.state}; its reservation remains held`,
+          };
+        }
+        if (cancelled.state === "exited" && cancelled.result?.exitCode === 0) {
+          return {
+            refused: `${runId} completed before cancellation; its receipt and charge await reconciliation`,
           };
         }
         inference = cancelled.result?.usage?.inference ?? null;

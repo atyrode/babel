@@ -701,7 +701,11 @@ test("an exhausted admission bound waits for refused and zero-meter jobs without
   const drainId = String((await start({ concurrent: 2, maxJobs: 2 }))["drainId"]);
   await harness.db.run(
     `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
-    [stamp(NOW), JSON.stringify({ closure: "failed", reason: "Code refused admission" }), `run_${drainId}_0`],
+    [
+      stamp(NOW),
+      JSON.stringify({ closure: "failed", reason: "Code refused admission" }),
+      `run_${drainId}_0`,
+    ],
   );
   const [waiting] = await drainTick(deps);
   expect(waiting).toMatchObject({ launched: 0, settled: 1, live: 1, state: "running" });
@@ -1245,9 +1249,7 @@ async function sealDrainJob(drainId: string, ordinal: number): Promise<void> {
 test("a bounded fan recovers a lost admission write without buying a third Code job", async () => {
   const machinery = realLaunch();
   const inferenceLimits = { calls: 2, costMicros: 50_000 };
-  const drainId = String(
-    (await start({ concurrent: 2, maxJobs: 2, inferenceLimits }))["drainId"],
-  );
+  const drainId = String((await start({ concurrent: 2, maxJobs: 2, inferenceLimits }))["drainId"]);
   const row = (await readDrain(harness.store, drainId))!;
   // The second preparation and parent survived, but recordLaunch did not.
   await harness.db.run(`UPDATE drains SET live = ?, jobs_launched = 1 WHERE id = ?`, [
@@ -1280,9 +1282,7 @@ test("a bounded fan recovers a lost admission write without buying a third Code 
 test("a later wake replays reviewed limits and stops refilling at the cumulative bound", async () => {
   let machinery = realLaunch();
   const inferenceLimits = { calls: 1, outputTokens: 1000, costMicros: 75_000 };
-  const drainId = String(
-    (await start({ concurrent: 1, maxJobs: 2, inferenceLimits }))["drainId"],
-  );
+  const drainId = String((await start({ concurrent: 1, maxJobs: 2, inferenceLimits }))["drainId"]);
   await sealDrainJob(drainId, 0);
   await machinery.postPrepared(fleet, code, PLAN);
   await settleJob(`run_${drainId}_0`, { costMicros: 0, outputTokens: 0 });
@@ -1324,8 +1324,9 @@ test("an unresolved ordinary Code admission remains held across wakes and drain 
   expect(code.cancelled).toEqual([]);
   expect(fleet.cancelled).toEqual([]);
   expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 2, state: "closing" });
-  expect(await harness.db.query(`SELECT closure FROM runs WHERE kind = ?`, [OPERATIONS.explore]))
-    .toEqual([{ closure: null }, { closure: null }]);
+  expect(
+    await harness.db.query(`SELECT closure FROM runs WHERE kind = ?`, [OPERATIONS.explore]),
+  ).toEqual([{ closure: null }, { closure: null }]);
   expect(await readDrainReport(harness.store, drainId)).toBeNull();
   expect(fleet.executed).toHaveLength(2);
 });

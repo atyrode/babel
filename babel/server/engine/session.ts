@@ -66,7 +66,7 @@ export interface CodeJob {
   readonly machineId: string;
   readonly operationId: string;
   readonly pluginId: string;
-  readonly state: string;
+  readonly state: ActionResult<"runSession">["state"];
   readonly result?: ActionResult<"runSession">["result"];
 }
 
@@ -394,7 +394,9 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
         expectedRevision: request.profile.expectedRevision,
         prompt: request.prompt,
         ...(request.prepareJobId === undefined ? {} : materialInput(request.prepareJobId)),
-        ...(request.inferenceLimits === undefined ? {} : { inferenceLimits: request.inferenceLimits }),
+        ...(request.inferenceLimits === undefined
+          ? {}
+          : { inferenceLimits: request.inferenceLimits }),
       });
     },
 
@@ -403,7 +405,10 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
       jobId: string;
     }): Promise<EngineAnswer<SessionRead>> => {
       const read = await call("readSession", args);
-      if (!read.ok || ["exited", "interrupted", "cancelled", "refused"].includes(read.value.job.state))
+      if (
+        !read.ok ||
+        ["exited", "interrupted", "cancelled", "refused"].includes(read.value.job.state)
+      )
         return read;
       const followed = await call("followSession", args);
       if (!followed.ok) return read;
@@ -415,7 +420,9 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
     cancelSession: async (args: {
       containerId: string;
       jobId: string;
-    }): Promise<EngineAnswer<CodeJob>> =>
-      (await call("cancelSession", args)) as EngineAnswer<CodeJob>,
+    }): Promise<EngineAnswer<CodeJob>> => {
+      const cancelled = await call("cancelSession", args);
+      return cancelled.ok ? { ok: true, value: cancelled.value.job } : cancelled;
+    },
   };
 }

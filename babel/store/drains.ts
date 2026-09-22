@@ -395,9 +395,7 @@ function knobsOf(text: string): DrainKnobs {
   const profile = CodeProfileSchema.safeParse(row["profile"]);
   // A malformed safety bound must never become an unbounded replay.
   const maxJobs = DrainStartInputSchema.shape.maxJobs.parse(row["maxJobs"]);
-  const inferenceLimits = DrainStartInputSchema.shape.inferenceLimits.parse(
-    row["inferenceLimits"],
-  );
+  const inferenceLimits = DrainStartInputSchema.shape.inferenceLimits.parse(row["inferenceLimits"]);
   return {
     recipes,
     ...(maxJobs === undefined ? {} : { maxJobs }),
@@ -599,7 +597,7 @@ export async function saveFold(
     `UPDATE drains SET live = ?, spent = ?, closures = ?, refusals = ?, samples = ?,
                        jobs_settled = jobs_settled + ?
       WHERE id = ? AND state = ? AND state IN ('running', 'closing')
-        AND live = ? AND jobs_launched = ? AND jobs_settled = ?
+        AND jobs_launched = ? AND jobs_settled = ?
       RETURNING id`,
     [
       JSON.stringify(fold.live),
@@ -610,7 +608,6 @@ export async function saveFold(
       fold.settledNow,
       row.id,
       row.state,
-      JSON.stringify(row.live),
       row.jobsLaunched,
       row.jobsSettled,
     ],

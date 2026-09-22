@@ -964,14 +964,14 @@ function chargedSession(): CodeJob {
     machineId: MACHINE,
     operationId: "atyrode.omp.session",
     pluginId: "atyrode.omp",
-    state: "exited",
+    state: "cancelled",
     result: {
       jobId: "job_code_1",
       requestDigest: "d".repeat(64),
       ownerId: "owner",
       ownerGeneration: 1,
-      state: "exited",
-      exitCode: 0,
+      state: "cancelled",
+      exitCode: null,
       reason: null,
       startedAt: NOW - HOUR,
       finishedAt: NOW,
@@ -1018,6 +1018,25 @@ test("Stop racing a charged terminal Code job keeps its meter and charges the fu
   expect(await coordinator(harness.store, () => NOW, 16).spend()).toMatchObject({ total: 0.41 });
 });
 
+test("Stop cannot discard a successful session awaiting receipt ingestion", async () => {
+  await stoppableSession();
+  const terminal = chargedSession();
+  if (!terminal.result) throw new Error("charged fixture needs a terminal result");
+  const completed: CodeJob = {
+    ...terminal,
+    state: "exited",
+    result: { ...terminal.result, state: "exited", exitCode: 0 },
+  };
+  code.cancelSession = async () => ({ ok: true, value: completed });
+  expect(
+    await halt("run_session", { operationId: OPERATIONS.explore, jobId: "job_code_1" }),
+  ).toHaveProperty("refused");
+  expect((await harness.store.run("run_session")).run?.state).toBe("running");
+  expect(
+    await harness.db.query(`SELECT actual_cost, finished_at FROM claims WHERE id = 'asg_session'`),
+  ).toEqual([{ actual_cost: null, finished_at: null }]);
+});
+
 test("Stop without a terminal Code meter charges the reservation instead of claiming free work", async () => {
   await stoppableSession();
 
@@ -1056,9 +1075,9 @@ test("a live Code cancellation acknowledgement keeps the run and reservation rea
   code.cancelSession = async () => ({ ok: true, value: terminal });
   await halt("run_session", { operationId: OPERATIONS.explore, jobId: "job_code_1" });
   expect((await harness.store.run("run_session")).run).toMatchObject({ costUsd: 0.41, calls: 3 });
-  expect(
-    await harness.db.query(`SELECT actual_cost FROM claims WHERE id = 'asg_session'`),
-  ).toEqual([{ actual_cost: 0.41 }]);
+  expect(await harness.db.query(`SELECT actual_cost FROM claims WHERE id = 'asg_session'`)).toEqual(
+    [{ actual_cost: 0.41 }],
+  );
 });
 
 test("stopping a run that is still preparing cancels the preparation and closes the row", async () => {

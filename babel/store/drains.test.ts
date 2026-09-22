@@ -131,6 +131,9 @@ test("a stale fold cannot drop a newer admission or count the same receipt twice
   await recordLaunch(harness.store, "drn_one", first, 0);
   const stale = (await readDrain(harness.store, "drn_one"))!;
   await recordLaunch(harness.store, "drn_one", second, 1);
+  await harness.db.run(`UPDATE drains SET live = ? WHERE id = 'drn_one'`, [
+    JSON.stringify([first, second], null, 2),
+  ]);
   const folded = {
     live: [],
     spent: { calls: 1, inputTokens: 10, outputTokens: 20, costMicros: 30 },
@@ -162,9 +165,7 @@ test("a stale fold cannot drop a newer admission or count the same receipt twice
 
 test("a drain holding nothing ends at once, and ends only once", async () => {
   await open("drn_one");
-  expect(await closeDrain(harness.store, "drn_one", "target", "the target was met")).toBe(
-    "ended",
-  );
+  expect(await closeDrain(harness.store, "drn_one", "target", "the target was met")).toBe("ended");
   expect(await closeDrain(harness.store, "drn_one", "stopped", "and again")).toBe("already");
   const row = await readDrain(harness.store, "drn_one");
   expect(row?.state).toBe("target");

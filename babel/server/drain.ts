@@ -583,12 +583,7 @@ async function indexDuty(
  */
 async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   const at = deps.now();
-  const folded = await foldDrain(
-    deps.store,
-    row,
-    await reconcileLive(deps.store, row.live),
-    at,
-  );
+  const folded = await foldDrain(deps.store, row, await reconcileLive(deps.store, row.live), at);
   row = folded.row;
   const seen = folded.seen;
   const notes: string[] = [...folded.notes];
@@ -707,7 +702,6 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
     };
   }
 
-
   const operationId = drainOperation(row.preset);
   // The session is the drain's own, every time: the model and the account the operator named
   // when they started it, not whatever a later default would be (#267, #279).
@@ -721,8 +715,7 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   let launched = 0;
   let refused = "";
   for (let slot = holding.length; slot < row.concurrent; slot += 1) {
-    if (row.knobs.maxJobs !== undefined && row.jobsLaunched + launched >= row.knobs.maxJobs)
-      break;
+    if (row.knobs.maxJobs !== undefined && row.jobsLaunched + launched >= row.knobs.maxJobs) break;
     const identity = drainIdentity(row, row.jobsLaunched + launched);
     const started = SPENDING.includes(row.preset)
       ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, input, plan)

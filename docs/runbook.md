@@ -632,6 +632,26 @@ still require a conservative exposure reservation in the shared ledger before ad
 >    **Success:** two jobs reach the stage `at the model` within 90 s of launch and settle with
 >    `usage.inference.calls > 0`.
 
+**Partial pre-flight observed on dev-01, 2026-09-22, integrated preview
+`https://preview.manifold.tyrode.dev` (protocol 42, build `0.17.0+65.g7b5fe30`).**
+Native destination, account broker and gateway setup reads reported ready under the inspected
+owner authority. Both saved Code catalogs lacked Haiku/Luna entries. A non-inference native
+inventory request with one configured Anthropic account returned `omp_invalid_request` after
+posting job `722d2c40-bbb5-40fa-9ba4-964f35a1ebc3`; that job exited 0, and its ordinary
+`readInventory` still refused. The sealed native stdout was recovered diagnostically with its
+SHA-256 verified (`31d06cafdfeea1386be33308c2513c0f9804aceb6f9e3e174184fc42aa0e45a1`).
+It listed `anthropic/claude-3-haiku-20240307`, `anthropic/claude-haiku-4-5`, and
+`anthropic/claude-haiku-4-5-20251001`. Artifact recovery is not a successful Code consumer path.
+
+No provider inference, benchmark, exploration, rehearsal or live bundle replacement was made.
+The inspected 222 retained native sessions on the three enrolled machines were all terminal;
+their latest start was 2026-09-18, before the shared verification grant. This does not reconcile
+possible out-of-band #315 consumption. The enabled standing conductor, compatible deployed
+closure, exact dedicated profile, complete shared ledger, conservative retry/token exposure and
+native model-stage reporting still require resolution before admission. This partial inspection
+does not mark the rehearsal, 90-second go/no-go, Watch, Stop or final-receipt procedures exercised.
+Track the execution receipt and failures in #264 and atyrode/manifold-omp#71.
+
 ### 11.3 Go / no-go (T-0)
 
 > **OPERATOR STEP — go / no-go (not executed).**
