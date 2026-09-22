@@ -2047,7 +2047,10 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
             refused: `${runId} cancellation was requested, but its job is still ${cancelled.state}; its reservation remains held`,
           };
         }
-        if (cancelled.state === "exited" && cancelled.result?.exitCode === 0) {
+        if (
+          cancelled.state === "exited" &&
+          (cancelled.result?.exitCode == null || cancelled.result.exitCode === 0)
+        ) {
           return {
             refused: `${runId} completed before cancellation; its receipt and charge await reconciliation`,
           };

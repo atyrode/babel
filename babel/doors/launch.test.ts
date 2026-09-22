@@ -1018,24 +1018,29 @@ test("Stop racing a charged terminal Code job keeps its meter and charges the fu
   expect(await coordinator(harness.store, () => NOW, 16).spend()).toMatchObject({ total: 0.41 });
 });
 
-test("Stop cannot discard a successful session awaiting receipt ingestion", async () => {
-  await stoppableSession();
-  const terminal = chargedSession();
-  if (!terminal.result) throw new Error("charged fixture needs a terminal result");
-  const completed: CodeJob = {
-    ...terminal,
-    state: "exited",
-    result: { ...terminal.result, state: "exited", exitCode: 0 },
-  };
-  code.cancelSession = async () => ({ ok: true, value: completed });
-  expect(
-    await halt("run_session", { operationId: OPERATIONS.explore, jobId: "job_code_1" }),
-  ).toHaveProperty("refused");
-  expect((await harness.store.run("run_session")).run?.state).toBe("running");
-  expect(
-    await harness.db.query(`SELECT actual_cost, finished_at FROM claims WHERE id = 'asg_session'`),
-  ).toEqual([{ actual_cost: null, finished_at: null }]);
-});
+test.each([0, null])(
+  "Stop preserves a completed session with exit code %p for receipt ingestion",
+  async (exitCode) => {
+    await stoppableSession();
+    const terminal = chargedSession();
+    if (!terminal.result) throw new Error("charged fixture needs a terminal result");
+    const completed: CodeJob = {
+      ...terminal,
+      state: "exited",
+      result: { ...terminal.result, state: "exited", exitCode },
+    };
+    code.cancelSession = async () => ({ ok: true, value: completed });
+    expect(
+      await halt("run_session", { operationId: OPERATIONS.explore, jobId: "job_code_1" }),
+    ).toHaveProperty("refused");
+    expect((await harness.store.run("run_session")).run?.state).toBe("running");
+    expect(
+      await harness.db.query(
+        `SELECT actual_cost, finished_at FROM claims WHERE id = 'asg_session'`,
+      ),
+    ).toEqual([{ actual_cost: null, finished_at: null }]);
+  },
+);
 
 test("Stop without a terminal Code meter charges the reservation instead of claiming free work", async () => {
   await stoppableSession();
