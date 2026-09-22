@@ -24,11 +24,11 @@ import {
 const MACHINE = "recall-owner";
 const REVISION = "a".repeat(64);
 const MOVED = "b".repeat(64);
-const RUNTIME: RecallRuntime = {
+const RUNTIME = {
   installationRevision: "babel-install-1",
   artifactSha256: "c".repeat(64),
   resourceBindingDigest: "d".repeat(64),
-};
+} satisfies RecallRuntime;
 const POLICY: RecallPolicy = {
   version: 1,
   classes: [

@@ -23,6 +23,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   native fixture discovered a second capture without reactivation and stopped on policy disablement.
   Same-owner native activation and the paid isolated dispatcher are not yet delivered (#223).
 
+- **Bounded drains retain admission and inference limits across wakes.** `maxJobs` caps total
+  admitted ordinals, not just concurrency; refused attempts consume a slot, and reaching the cap
+  waits for held jobs instead of refilling. Launch and drain preparation preserve Code's reviewed
+  `inferenceLimits`. Unconfirmed posts stay fenced rather than being mistaken for safe retries.
+  Native settled inference totals now account for exploration, review and title jobs, including
+  charged failures without transcripts; missing meters remain unknown. Live cumulative usage and
+  retained progress come through Code's provenance-checked follow door, never from process
+  existence or a fabricated one-call count. These source changes do not establish the live
+  rehearsal or its shared spending envelope (#264, atyrode/code#170).
+
+- **Native model progress keeps the current turn's clock.** Code's native worker reports
+  redacted phases from the actual published one-shot event stream. Babel keeps the owner's
+  observation time when intermediate tool phases are coalesced away, without restarting the
+  clock on repeated snapshots or marking a new turn stalled because of an older call.
+  Deployed readiness and the shared-cost live rehearsal remain separate acceptance (#264).
+
 - **Recall brings bounded archived evidence to any agent, without lending it the archive.**
   An owner-managed native service fixes disclosure classes; search and locator windows share
   preparation's redaction, record identities and UTF-8 bounds. Whole sessions need a size preview

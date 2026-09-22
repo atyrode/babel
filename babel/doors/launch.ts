@@ -10,6 +10,7 @@ import {
   INPUT_FIELD,
   MAX_MATERIAL_BYTES,
   LaunchRequestSchema,
+  LaunchInputSchema,
   LaunchResultSchema,
   MATERIAL_OUTPUT,
   OPERATIONS,
@@ -59,7 +60,13 @@ import {
   type ActionsSlice,
   type CodeEngine,
 } from "../server/engine/session.ts";
-import { describeHost, describeMapHost, type JobLaunch, type RunPlan } from "../server/conductor.ts";
+import {
+  describeHost,
+  describeMapHost,
+  type InferenceUsage,
+  type JobLaunch,
+  type RunPlan,
+} from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
@@ -1276,6 +1283,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     return JSON.stringify({
       containerId: profile.containerId,
       expectedRevision: profile.expectedRevision,
+      ...(input.inferenceLimits === undefined ? {} : { inferenceLimits: input.inferenceLimits }),
       ...(session === undefined
         ? {}
         : {
@@ -1533,7 +1541,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    *
    * Each waiting parent is claimed atomically after readiness checks and before posting.
    * Overlapping wakes can read the same row, but only one may post: Code has no caller
-   * idempotency key. An interrupted analysis post stays reserved, never retried.
+   * idempotency key. An interrupted post stays reserved, never retried.
    *
    * A PREPARATION THAT DID NOT COMPLETE CLOSES ITS RUN. There is no material to bind and no
    * second attempt that would change that: the selection is fixed and the machine has already
@@ -1573,6 +1581,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           continue;
         }
         const report = documentOf(run.profile);
+        const inferenceLimits = LaunchInputSchema.shape.inferenceLimits.parse(
+          report["inferenceLimits"],
+        );
         const intent = documentOf(run.preparation);
         const parsed =
           intent["analysis"] === undefined
@@ -1701,11 +1712,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           machineId: run.machine_id ?? "",
           prompt: composed.prompt,
           prepareJobId: run.prepare_job_id ?? "",
+          ...(inferenceLimits === undefined ? {} : { inferenceLimits }),
         });
         if (!answered.ok) {
           // A lost or unusable posting response is not proof that Code bought no session.
-          if (analysis !== undefined && answered.code === ENGINE_REFUSALS.unconfirmed)
-            throw new Error(answered.refused);
+          if (answered.code === ENGINE_REFUSALS.unconfirmed) throw new Error(answered.refused);
           // A REFUSAL HERE IS FINAL, not a thing to retry on every wake for ever: the material
           // is sealed and immutable, the profile was named at the press, and nothing a later
           // wake could do changes what Code just said. The run closes carrying the sentence.
@@ -1800,10 +1811,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             runId: run.id,
             refused: `session ${unconfirmedJob} remains unconfirmed and its grant is retained: ${message(error)}`,
           });
-        } else if (
-          modelRequested &&
-          AnalysisWorkSchema.safeParse(documentOf(run.preparation)["analysis"]).success
-        ) {
+        } else if (modelRequested) {
           // No returned job id means an interrupted transport, not a confirmed rejection.
           // Keep the durable posting marker and the parent reservation: retrying could buy
           // another session while the first is still running.
@@ -2056,6 +2064,8 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         posting the session anyway — the operator pressing stop and the account spending
         afterwards, which is the 2026-09-13 failure this lane exists not to repeat.
       */
+      let inference: InferenceUsage | null = null;
+      let cost: number | null = preparing || container === "" ? 0 : null;
       if (preparing || container === "") {
         // BABEL'S OWN JOB, either way: the beat's, or the preparation of a run that has not
         // reached a session. `job` is the node the caller was admitted at and the row just
@@ -2071,20 +2081,42 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
           jobId,
         });
         if (!answered.ok) return { refused: answered.refused };
+        const cancelled = answered.value;
+        if (cancelled.jobId !== jobId || cancelled.machineId !== machineId) {
+          return {
+            refused: `${runId} cancellation answered a different job; no closure was applied`,
+          };
+        }
+        // A cancellation acknowledgement is not a settlement. Leave the row and its progress
+        // reachable by the conductor until the owner's final meter can be read.
+        if (!["exited", "interrupted", "cancelled", "refused"].includes(cancelled.state)) {
+          return {
+            refused: `${runId} cancellation was requested, but its job is still ${cancelled.state}; its reservation remains held`,
+          };
+        }
+        if (
+          cancelled.state === "exited" &&
+          (cancelled.result?.exitCode == null || cancelled.result.exitCode === 0)
+        ) {
+          return {
+            refused: `${runId} completed before cancellation; its receipt and charge await reconciliation`,
+          };
+        }
+        inference = cancelled.result?.usage?.inference ?? null;
+        cost = inference === null ? null : inference.costMicros / 1_000_000;
       }
-      // The run is closed here rather than left for the loop to notice: the operator asked for
-      // it to stop, and a row that kept saying `running` until the next cycle would be the
-      // interface disagreeing with the act he just performed. Closing it also releases what it
-      // reserved, which is why the claim is settled in the same breath.
+      // Close only after cancellation is terminal. A missing Code meter is unknown spend,
+      // not a free run: keep the run's cost null and charge each claim's reservation.
       const at = new Date(deps.now()).toISOString();
       const closed = await store.db.run(
         // `AND closure IS NULL` for the same reason the read above refuses a closed run: two
         // stops, or a stop racing the run's own ending, write the first closure and not the
         // second. For a PREPARING run this write is the whole stop: it is the row the posting
         // wake reads, so once it is closed no session can be posted for it.
-        `UPDATE runs SET closure = 'stopped', finished_at = ?, payload = ?
+        `UPDATE runs SET closure = 'stopped', finished_at = ?, payload = ?, cost_usd = ?, tokens = ?
           WHERE id = ? AND closure IS NULL
-            AND (NOT ? OR (job_id IS NULL AND COALESCE(json_extract(payload, '$.posting'), 0) = 0))`,
+            AND (NOT ? OR (job_id IS NULL AND COALESCE(json_extract(payload, '$.posting'), 0) = 0))
+            AND job_id IS ? AND machine_id IS ? AND container_id IS ? AND kind = ?`,
         [
           at,
           JSON.stringify({
@@ -2092,9 +2124,16 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
             stoppedBy: ctx.principal.id,
             reason,
             stoppedAt: at,
+            ...(inference === null ? {} : { inference }),
           }),
+          cost,
+          inference === null ? null : inference.inputTokens + inference.outputTokens,
           runId,
           preparing ? 1 : 0,
+          run.job_id,
+          run.machine_id,
+          run.container_id,
+          run.kind,
         ],
       );
       if (closed.changes === 0) {
@@ -2105,8 +2144,13 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         };
       }
       await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [runId]);
-      const open = await store.db.query<{ id: string; run_id: string; fence: number }>(
-        `SELECT id, run_id, fence FROM claims WHERE job_id = ? AND finished_at IS NULL`,
+      const open = await store.db.query<{
+        id: string;
+        run_id: string;
+        fence: number | bigint;
+        reserved_cost: number;
+      }>(
+        `SELECT id, run_id, fence, reserved_cost FROM claims WHERE job_id = ? AND finished_at IS NULL`,
         [jobId],
       );
       for (const claim of open) {
@@ -2114,7 +2158,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
           id: claim.id,
           runId: claim.run_id,
           fence: claim.fence,
-          cost: 0,
+          cost: cost ?? Number(claim.reserved_cost),
           outcome: "skipped",
         });
       }

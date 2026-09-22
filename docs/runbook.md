@@ -580,13 +580,22 @@ one run.
 Two bounds are structural rather than advisory. **A drawn preset cannot be fanned out**: the
 coordinator arbitrates a draw under a claim and a fence, and fanning it would be a second
 implementation of that arbitration — so `drainStart` takes the directly-launched presets only
-(`babel/server/drain.ts`). And **a drain without a target and a deadline is not a
-drain; it is a loop** — a drain that names no deadline is given one two hours out, and a fan above
-the manifest's `concurrentJobs` for the operation it posts is refused at the door rather than
-discovered one refused job at a time.
+(`babel/server/drain.ts`). And **a drain without a finite bound is a loop**:
+`drainStart` requires a target, deadline or positive `maxJobs`; omission of the deadline still
+gives it one two hours out. A fan above the manifest's `concurrentJobs` for the operation it posts
+is refused at the door rather than discovered one refused job at a time.
 
-A drain is not a governor and sets no overlay: the standing policy and the budgets table are
-untouched, its jobs take no claim, and what one run may spend stays the standing policy's ceiling.
+`concurrent` limits simultaneous work, not total launches. `maxJobs` bounds admission ordinals
+across wakes and recovery, including refused and zero-usage attempts. At that bound the drain
+waits for its held jobs and folds their results without cancelling them or refilling the fan.
+Optional `inferenceLimits` use Code's published schema and are retained through preparation and
+every refill. Ordinary `launch` accepts the same ephemeral limits. Malformed retained limits
+refuse rather than replaying an unbounded request.
+
+A drain is not a governor and sets no policy overlay: the standing policy and budgets table
+are untouched, and its jobs take no claim. Native token/cost thresholds are checked before a
+call, so an accepted response can overshoot. Provider-internal retries and charged failures
+still require a conservative exposure reservation in the shared ledger before admission.
 
 ### 11.2 Pre-flight (T-24h, rehearsal)
 
@@ -616,10 +625,57 @@ untouched, its jobs take no claim, and what one run may spend stays the standing
 >    Code's bound or the analysis contract, never a narrower window.
 > 5. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names a
 >    blocker for this machine is a no-go.
-> 6. A five-minute rehearsal: `drainStart` with `concurrent: 2`, the Code profile from item 2,
->    `target.costMicros` equal to one exploration's price, `deadline` = now + 5 min.
+> 6. A five-minute rehearsal: `drainStart` with `concurrent: 2`, `maxJobs: 2`, the Code profile
+>    from item 2, reviewed per-job `inferenceLimits`, `target.costMicros` equal to one exploration's
+>    price, and `deadline` = now + 5 min. Reconcile cumulative spend and reserve worst-case
+>    in-flight exposure first; the target is not a hard spending ceiling.
 >    **Success:** two jobs reach the stage `at the model` within 90 s of launch and settle with
 >    `usage.inference.calls > 0`.
+
+**Partial pre-flight observed on dev-01, 2026-09-22, integrated preview
+`https://preview.manifold.tyrode.dev` (protocol 42, build `0.17.0+65.g7b5fe30`).**
+Native destination, account broker and gateway setup reads reported ready under the inspected
+owner authority. Both saved Code catalogs lacked Haiku/Luna entries. A non-inference native
+inventory request with one configured Anthropic account returned `omp_invalid_request` after
+posting job `722d2c40-bbb5-40fa-9ba4-964f35a1ebc3`; that job exited 0, and its ordinary
+`readInventory` still refused. The sealed native stdout was recovered diagnostically with its
+SHA-256 verified (`31d06cafdfeea1386be33308c2513c0f9804aceb6f9e3e174184fc42aa0e45a1`).
+It listed `anthropic/claude-3-haiku-20240307`, `anthropic/claude-haiku-4-5`, and
+`anthropic/claude-haiku-4-5-20251001`. Artifact recovery is not a successful Code consumer path.
+Catalog membership is not provider availability: Anthropic lists
+`claude-3-haiku-20240307` as [retired since 2026-04-20](https://platform.claude.com/docs/en/about-claude/model-deprecations),
+so it is not a cheap fallback for this rehearsal.
+
+The inventory refusal was reproduced without posting another job. The installed OMP root
+bundle `f72c104a1c794499b9846bbf78e671d142ee9ab2b337bae1853d588d2fc9fc3c` was built against
+Manifold `743ee75a92b64b75b4a97244ebd58297c1287164`. Its strict public-job schema rejected
+the exact retained native status receipt solely for the root `limits` key. The current
+native schema against Manifold `7b5fe3015c3308532de634c2b2d8068ec2f0e451` accepted that same receipt.
+Both output APIs are valid; no output-reader workaround is indicated. A compatible deployment
+and normal inventory start/read smoke are still required.
+
+**Offline native proof on dev-01, 2026-09-22:** the
+[packaged verifier at native revision `74c0759`](https://github.com/atyrode/manifold-omp/blob/74c0759/plugins/sdk-host/test/packaged-sdk-host.ts#L365-L397)
+observed model progress before an isolated synthetic response completed in both CLI 18.1.14 and
+SDK-host 18.2.7 one-shot paths, with stdout and sealed session receipts intact. The full native
+gate passed (181 tests, zero failures). This proves those runtimes, not the governed
+Babel → Code → OMP launch/follow/result path or a real-provider rehearsal.
+
+Reviewed service-call and recorded-usage limits do not bound every provider-internal retry or
+its in-flight response. The
+[reviewed overlay at native revision `74c0759`](https://github.com/atyrode/manifold-omp/blob/74c0759/plugins/api/index.ts#L128-L165)
+has no supported per-request token cap reaching the preserved gateway. A remaining account
+balance or a low expected call price does
+not replace that exposure bound.
+
+No provider inference, benchmark, exploration, rehearsal or live bundle replacement was made.
+The inspected 222 retained native sessions on the three enrolled machines were all terminal;
+their latest start was 2026-09-18, before the shared verification grant. This does not reconcile
+possible out-of-band #315 consumption. The enabled standing conductor, compatible deployed
+closure, exact dedicated profile, complete shared ledger, conservative retry/token exposure and
+deployed native model-stage reporting still require resolution before admission. This partial inspection
+does not mark the rehearsal, 90-second go/no-go, Watch, Stop or final-receipt procedures exercised.
+Track the execution receipt and failures in #264 and atyrode/manifold-omp#71.
 
 ### 11.3 Go / no-go (T-0)
 
