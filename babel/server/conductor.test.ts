@@ -6400,20 +6400,21 @@ test("catalog receipts cannot substitute either the source owner or executor", a
   }
 });
 
-test("replacing a source binding fences a pending receipt even when its requested IDs match", async () => {
-  const f = await catalogDeployment();
-  await f.tick();
-  f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: "old-cursor" });
-  f.nativeBinding.revision = "source-revision-2";
-  f.bindingState.digest = "c".repeat(64);
-  await f.tick();
-  expect(await f.db.query(`SELECT id FROM transcript_map_captures`)).toEqual([]);
-  const replacement = TranscriptMapCatalogInputSchema.parse(
-    JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
-  );
-  expect(replacement.request).toEqual({ kind: "map-inventory", maxCaptures: 64 });
-  expect(f.fleet.launched.at(-1)!.resourceBindingDigest).toBe(f.bindingState.digest);
-  expect(f.codeCalls).toEqual([]);
+test("source binding replacement fences receipts in both layouts, even with an unchanged local policy digest", async () => {
+  for (const sourceMachineId of ["map-source", MACHINE]) {
+    const f = await catalogDeployment(sourceMachineId);
+    await f.tick();
+    f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: "old-cursor" });
+    f.nativeBinding.revision = "source-revision-2";
+    if (sourceMachineId !== MACHINE) f.bindingState.digest = "c".repeat(64);
+    await f.tick();
+    expect(await f.db.query(`SELECT id FROM transcript_map_captures`)).toEqual([]);
+    const replacement = TranscriptMapCatalogInputSchema.parse(
+      JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+    );
+    expect(replacement.request).toEqual({ kind: "map-inventory", maxCaptures: 64 });
+    expect(f.codeCalls).toEqual([]);
+  }
 });
 
 test("same-machine catalog preserves explicit source identity and remains free", async () => {
@@ -7035,6 +7036,24 @@ test("overlapping catalog posts that all refuse do not strand the native slot", 
   } finally {
     release();
     await Promise.all([posting, replay]);
+  }
+});
+
+test("atomic service-binding admission refusals release a never-started catalog slot without paid work", async () => {
+  for (const reason of ["service_bindings_changed", "service_bindings_protocol_unsupported"]) {
+    const f = await catalogDeployment(MACHINE);
+    const execute = f.fleet.execute.bind(f.fleet);
+    f.jobs.execute = () => { throw new HostCallError("jobs.execute", reason); };
+    f.jobs.status = () => { throw new HostCallError("jobs.status", "job_not_started"); };
+    await f.tick();
+    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([{ n: 0n }]);
+    expect(f.fleet.launched).toEqual([]);
+    await f.tick();
+    f.jobs.execute = execute;
+    clock += POLICY.cadenceSeconds * 1000;
+    await f.tick();
+    expect(f.fleet.launched).toHaveLength(1);
+    expect(f.codeCalls).toEqual([]);
   }
 });
 

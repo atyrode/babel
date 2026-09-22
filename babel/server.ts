@@ -15,6 +15,7 @@ import {
   DRAIN_CONCURRENT_MAX,
   INPUT_FIELD,
   MACHINE_OPERATIONS,
+  RECALL_SERVICE_ID,
   type OperationName,
   TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY,
   TranscriptMapCatalogAdmissionSchema,
@@ -366,6 +367,7 @@ async function catalogSchedule(
       outputs: [],
       limits,
       resourceBindingDigest: described.resourceBindingDigest,
+      expectedServiceBindings: { [RECALL_SERVICE_ID]: admission.serviceBinding },
       ...(installation === null
         ? {}
         : {

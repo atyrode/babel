@@ -983,8 +983,10 @@ Disabling policy or replacing either route identity invalidates the saved admiss
 the old cadence on its next owned settlement; another route requires a new explicit start.
 Admission binds the native operation's resolved instance reference (source owner, configuration
 revision and policy digest) and resource-binding digest, rather than trusting requested IDs
-echoed by a worker. The conductor pins that digest at native execution and revalidates the
-retained binding before posting, continuing pages or projecting a receipt. A replacement binding
+echoed by a worker. The conductor pins both that digest and the exact expected instance reference
+at native execution and scheduling, including same-owner revision changes whose policy bytes are
+unchanged. It revalidates the retained binding before posting, continuing pages or projecting a
+receipt. Owners without the atomic expected-reference contract refuse admission. A replacement binding
 cannot resume an old cursor or apply an old receipt under a new source owner.
 
 The conductor retains each request before posting, recovers an uncertain post under the same

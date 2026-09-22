@@ -296,6 +296,7 @@ export interface JobLaunch {
   readonly installationRevision?: string | undefined;
   readonly artifactSha256?: string | undefined;
   readonly resourceBindingDigest?: string | undefined;
+  readonly expectedServiceBindings?: Readonly<Record<string, TranscriptMapServiceBinding>> | undefined;
 }
 
 /** `JobScheduleTiming`, restated so the loop compiles against the slice rather than the host. */
@@ -2016,6 +2017,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         outputs: [{ name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [runId] }],
         limits: intent.limits,
         resourceBindingDigest: intent.resourceBindingDigest,
+        expectedServiceBindings: { [RECALL_SERVICE_ID]: intent.serviceBinding },
         ...(intent.installationRevision === undefined
           ? {}
           : { installationRevision: intent.installationRevision }),
@@ -2025,7 +2027,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       const reason = `catalog posting: ${message(error)}`;
       notes.push(`${jobId}: ${reason}`);
       // Retain uncertainty until every attempted post has returned an admission refusal.
-      if (nativeAdmissionRefusal(error)) {
+      const refusal = nativeFailureToken(error, "jobs.execute");
+      if (nativeAdmissionRefusal(error) ||
+          refusal === "service_bindings_changed" ||
+          refusal === "service_bindings_protocol_unsupported") {
         try {
           await jobs.status({
             kind: "job",
