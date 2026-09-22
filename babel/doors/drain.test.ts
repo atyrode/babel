@@ -98,6 +98,9 @@ const code: CodeEngine & {
       expectedRevision: request.profile.expectedRevision,
       prompt: request.prompt,
       ...(request.prepareJobId === undefined ? {} : materialInput(request.prepareJobId)),
+      ...(request.inferenceLimits === undefined
+        ? {}
+        : { inferenceLimits: request.inferenceLimits }),
     });
     if (!parsed.success) {
       throw new Error(`Babel built a request Code refuses: ${parsed.error.message}`);
@@ -682,6 +685,46 @@ test("a settlement relaunches: the fan is refilled and the spend is folded once"
   expect((await readDrain(harness.store, drainId))?.spent.costMicros).toBe(250_000);
 });
 
+test("maxJobs bounds the first fan even when it is smaller than concurrent", async () => {
+  const answer = await start({ concurrent: 3, maxJobs: 1, target: {} });
+  const drainId = String(answer["drainId"]);
+  expect(answer["launched"]).toBe(1);
+  expect(fleet.executed.map((job) => job.jobId)).toEqual([`job_${drainId}_0`]);
+  expect((await drainTick(deps))[0]?.state).toBe("running");
+  expect(code.cancelled).toEqual([]);
+  await settleJob(`run_${drainId}_0`, { costMicros: 0, outputTokens: 0 });
+  expect((await drainTick(deps))[0]?.state).toBe("target");
+  expect(fleet.executed).toHaveLength(1);
+});
+
+test("an exhausted admission bound waits for refused and zero-meter jobs without cancelling", async () => {
+  const drainId = String((await start({ concurrent: 2, maxJobs: 2 }))["drainId"]);
+  await harness.db.run(
+    `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
+    [stamp(NOW), JSON.stringify({ closure: "failed", reason: "Code refused admission" }), `run_${drainId}_0`],
+  );
+  const [waiting] = await drainTick(deps);
+  expect(waiting).toMatchObject({ launched: 0, settled: 1, live: 1, state: "running" });
+  expect(code.cancelled).toEqual([]);
+  expect(fleet.cancelled).toEqual([]);
+  expect((await readDrain(harness.store, drainId))?.finishedAt).toBe("");
+  expect(await readDrainReport(harness.store, drainId)).toBeNull();
+
+  await settleJob(`run_${drainId}_1`, { costMicros: 240_000, outputTokens: 700 });
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 0, state: "target" });
+  expect(fleet.executed).toHaveLength(2);
+  const ended = await readDrain(harness.store, drainId);
+  expect(ended).toMatchObject({
+    jobsLaunched: 2,
+    jobsSettled: 2,
+    spent: { costMicros: 240_000, outputTokens: 700 },
+    closures: { failed: 1, completed: 1 },
+  });
+  expect((await readDrainReport(harness.store, drainId))?.ending).toBe("target");
+  expect(await drainTick(deps)).toEqual([]);
+  expect(fleet.executed).toHaveLength(2);
+});
+
 test("the target stops the drain and it closes on the job it cancelled, ending when that settles", async () => {
   const answer = await start({ concurrent: 2, target: { costMicros: 500_000 } });
   const drainId = String(answer["drainId"]);
@@ -1122,6 +1165,117 @@ test("the job the hub already holds is taken back by the hub's word, not by its 
   ]);
   // Nothing was posted a second time, and the refusal never reached the operator's sentence.
   expect(fleet.executed).toHaveLength(1);
+});
+
+function realLaunch() {
+  const machinery = launchMachinery(harness.store, {
+    coordinator: deps.coordinator,
+    jobs: () => fleet,
+    engine: () => deps.engine,
+    cookbook: async () =>
+      await Promise.resolve({
+        "code-health": { id: "code-health", version: 3, body: "look for what keeps breaking" },
+      }),
+    plan: () => PLAN,
+    now: () => harness.store.now(),
+  });
+  deps = { ...deps, launch: machinery };
+  return machinery;
+}
+
+async function sealDrainJob(drainId: string, ordinal: number): Promise<void> {
+  await harness.db.run(
+    `UPDATE runs SET closure = 'completed', finished_at = ?, payload = ? WHERE job_id = ?`,
+    [stamp(NOW), sealedMaterial(), `job_${drainId}_${String(ordinal)}_material`],
+  );
+}
+
+test("a bounded fan recovers a lost admission write without buying a third Code job", async () => {
+  const machinery = realLaunch();
+  const inferenceLimits = { calls: 2, costMicros: 50_000 };
+  const drainId = String(
+    (await start({ concurrent: 2, maxJobs: 2, inferenceLimits }))["drainId"],
+  );
+  const row = (await readDrain(harness.store, drainId))!;
+  // The second preparation and parent survived, but recordLaunch did not.
+  await harness.db.run(`UPDATE drains SET live = ?, jobs_launched = 1 WHERE id = ?`, [
+    JSON.stringify(row.live.slice(0, 1)),
+    drainId,
+  ]);
+  fleet.refusal = "this identity is already admitted";
+  fleet.refusalWord = "job_digest_conflict";
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 1, live: 2 });
+  fleet.refusal = "";
+  fleet.refusalWord = "";
+  await sealDrainJob(drainId, 0);
+  await sealDrainJob(drainId, 1);
+  await machinery.postPrepared(fleet, code, PLAN);
+  expect(code.posted.map((request) => request.inferenceLimits)).toEqual([
+    inferenceLimits,
+    inferenceLimits,
+  ]);
+  await settleJob(`run_${drainId}_0`, { costMicros: 0, outputTokens: 0 });
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 1, state: "running" });
+  expect(code.cancelled).toEqual([]);
+  await settleJob(`run_${drainId}_1`, { costMicros: 0, outputTokens: 0 });
+  expect((await drainTick(deps))[0]?.state).toBe("target");
+  await machinery.postPrepared(fleet, code, PLAN);
+  expect(code.posted).toHaveLength(2);
+  expect(fleet.executed).toHaveLength(2);
+  expect((await readDrain(harness.store, drainId))?.jobsSettled).toBe(2);
+});
+
+test("a later wake replays reviewed limits and stops refilling at the cumulative bound", async () => {
+  let machinery = realLaunch();
+  const inferenceLimits = { calls: 1, outputTokens: 1000, costMicros: 75_000 };
+  const drainId = String(
+    (await start({ concurrent: 1, maxJobs: 2, inferenceLimits }))["drainId"],
+  );
+  await sealDrainJob(drainId, 0);
+  await machinery.postPrepared(fleet, code, PLAN);
+  await settleJob(`run_${drainId}_0`, { costMicros: 0, outputTokens: 0 });
+
+  machinery = realLaunch();
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 1, live: 1 });
+  await sealDrainJob(drainId, 1);
+  await machinery.postPrepared(fleet, code, PLAN);
+  expect(code.posted.map((request) => request.inferenceLimits)).toEqual([
+    inferenceLimits,
+    inferenceLimits,
+  ]);
+  await settleJob(`run_${drainId}_1`, { costMicros: 30_000, outputTokens: 300 });
+  expect((await drainTick(deps))[0]?.state).toBe("target");
+  expect((await readDrain(harness.store, drainId))?.spent.costMicros).toBe(30_000);
+  expect(code.posted).toHaveLength(2);
+  expect(fleet.executed).toHaveLength(2);
+  expect(code.cancelled).toEqual([]);
+});
+
+test("an unresolved ordinary Code admission remains held across wakes and drain Stop", async () => {
+  const machinery = realLaunch();
+  const drainId = String((await start({ concurrent: 2, maxJobs: 2 }))["drainId"]);
+  await sealDrainJob(drainId, 0);
+  await sealDrainJob(drainId, 1);
+  let attempts = 0;
+  const uncertain: CodeEngine = {
+    ...code,
+    runSession: async () => {
+      attempts += 1;
+      throw new Error("Code posting response lost");
+    },
+  };
+  await machinery.postPrepared(fleet, uncertain, PLAN);
+  await machinery.postPrepared(fleet, uncertain, PLAN);
+  expect(attempts).toBe(2);
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 2, state: "running" });
+  await halt(drainId);
+  expect(code.cancelled).toEqual([]);
+  expect(fleet.cancelled).toEqual([]);
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 2, state: "closing" });
+  expect(await harness.db.query(`SELECT closure FROM runs WHERE kind = ?`, [OPERATIONS.explore]))
+    .toEqual([{ closure: null }, { closure: null }]);
+  expect(await readDrainReport(harness.store, drainId)).toBeNull();
+  expect(fleet.executed).toHaveLength(2);
 });
 
 test("a refusal Babel wrote itself ends the round, whatever words it happens to contain", async () => {

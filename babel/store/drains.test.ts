@@ -87,6 +87,19 @@ test("a drain row keeps what a relaunch needs and reads back as it was written",
   expect(await drainOnMachine(harness.store, "m-other")).toBeNull();
 });
 
+test.each([
+  { recipes: [], maxJobs: "2", inferenceLimits: { calls: 1 } },
+  { recipes: [], maxJobs: 2, inferenceLimits: { calls: "one" } },
+  null,
+])("persisted safety bounds cannot silently become an unbounded replay: %j", async (knobs) => {
+  await open("drn_one");
+  await harness.db.run(`UPDATE drains SET knobs = ? WHERE id = ?`, [
+    JSON.stringify(knobs),
+    "drn_one",
+  ]);
+  await expect(readDrain(harness.store, "drn_one")).rejects.toThrow();
+});
+
 test("a launch is counted once however many times the same job is recorded", async () => {
   await open("drn_one");
   const job = { runId: "run_a", jobId: "job_a", launchedAt: NOW };

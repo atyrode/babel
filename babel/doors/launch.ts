@@ -10,6 +10,7 @@ import {
   INPUT_FIELD,
   MAX_MATERIAL_BYTES,
   LaunchRequestSchema,
+  LaunchInputSchema,
   LaunchResultSchema,
   MATERIAL_OUTPUT,
   OPERATIONS,
@@ -1273,6 +1274,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     return JSON.stringify({
       containerId: profile.containerId,
       expectedRevision: profile.expectedRevision,
+      ...(input.inferenceLimits === undefined ? {} : { inferenceLimits: input.inferenceLimits }),
       ...(session === undefined
         ? {}
         : {
@@ -1530,7 +1532,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    *
    * Each waiting parent is claimed atomically after readiness checks and before posting.
    * Overlapping wakes can read the same row, but only one may post: Code has no caller
-   * idempotency key. An interrupted analysis post stays reserved, never retried.
+   * idempotency key. An interrupted post stays reserved, never retried.
    *
    * A PREPARATION THAT DID NOT COMPLETE CLOSES ITS RUN. There is no material to bind and no
    * second attempt that would change that: the selection is fixed and the machine has already
@@ -1570,6 +1572,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           continue;
         }
         const report = documentOf(run.profile);
+        const inferenceLimits = LaunchInputSchema.shape.inferenceLimits.parse(
+          report["inferenceLimits"],
+        );
         const intent = documentOf(run.preparation);
         const parsed =
           intent["analysis"] === undefined
@@ -1698,10 +1703,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           machineId: run.machine_id ?? "",
           prompt: composed.prompt,
           prepareJobId: run.prepare_job_id ?? "",
+          ...(inferenceLimits === undefined ? {} : { inferenceLimits }),
         });
         if (!answered.ok) {
           // A lost or unusable posting response is not proof that Code bought no session.
-          if (analysis !== undefined && answered.code === ENGINE_REFUSALS.unconfirmed)
+          if (answered.code === ENGINE_REFUSALS.unconfirmed)
             throw new Error(answered.refused);
           // A REFUSAL HERE IS FINAL, not a thing to retry on every wake for ever: the material
           // is sealed and immutable, the profile was named at the press, and nothing a later
@@ -1797,10 +1803,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             runId: run.id,
             refused: `session ${unconfirmedJob} remains unconfirmed and its grant is retained: ${message(error)}`,
           });
-        } else if (
-          modelRequested &&
-          AnalysisWorkSchema.safeParse(documentOf(run.preparation)["analysis"]).success
-        ) {
+        } else if (modelRequested) {
           // No returned job id means an interrupted transport, not a confirmed rejection.
           // Keep the durable posting marker and the parent reservation: retrying could buy
           // another session while the first is still running.

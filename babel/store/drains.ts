@@ -11,6 +11,7 @@ import {
   DrainReportSchema,
   DrainSpendSchema,
   DrainProfileSchema,
+  DrainStartInputSchema,
   MACHINE_OPERATIONS,
   RUN_STAGES,
   type DrainEnding,
@@ -24,6 +25,7 @@ import {
   type DrainTarget,
   type DrainTokens,
   type DrainProfile,
+  type LaunchInput,
 } from "../contract.ts";
 import { createHash } from "node:crypto";
 import { refusalCode } from "../machine/results.ts";
@@ -191,6 +193,8 @@ export interface DrainKnobs {
   readonly entityId?: string | undefined;
   readonly minutes?: number | undefined;
   readonly agentSessions?: boolean | undefined;
+  readonly maxJobs?: number | undefined;
+  readonly inferenceLimits?: LaunchInput["inferenceLimits"];
   /**
    * THE CODE PROFILE EVERY JOB OF THIS DRAIN IS POSTED ON (#279). It is a knob rather than a
    * column for the reason the others are: it is the launch input's own field, kept verbatim so
@@ -378,8 +382,9 @@ function journalOf(text: string): DrainJournal {
  * documented request, instead of reading a `"3"` as three days somewhere downstream.
  */
 function knobsOf(text: string): DrainKnobs {
-  const held = parsed(text);
-  if (held === null || typeof held !== "object") return { recipes: [] };
+  const held: unknown = JSON.parse(text);
+  if (held === null || typeof held !== "object" || Array.isArray(held))
+    throw new Error("the drain's stored knobs are not an object");
   const row = held as Record<string, unknown>;
   const recipes = Array.isArray(row["recipes"])
     ? row["recipes"].filter((entry): entry is string => typeof entry === "string")
@@ -388,8 +393,15 @@ function knobsOf(text: string): DrainKnobs {
   // container id and a revision are what `runSession` is pinned by, and a half-read pair would
   // post a session against a revision nobody was shown.
   const profile = CodeProfileSchema.safeParse(row["profile"]);
+  // A malformed safety bound must never become an unbounded replay.
+  const maxJobs = DrainStartInputSchema.shape.maxJobs.parse(row["maxJobs"]);
+  const inferenceLimits = DrainStartInputSchema.shape.inferenceLimits.parse(
+    row["inferenceLimits"],
+  );
   return {
     recipes,
+    ...(maxJobs === undefined ? {} : { maxJobs }),
+    ...(inferenceLimits === undefined ? {} : { inferenceLimits }),
     ...(typeof row["sinceDays"] === "number" ? { sinceDays: row["sinceDays"] } : {}),
     ...(typeof row["entityId"] === "string" ? { entityId: row["entityId"] } : {}),
     ...(typeof row["minutes"] === "number" ? { minutes: row["minutes"] } : {}),

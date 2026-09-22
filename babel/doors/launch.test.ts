@@ -501,6 +501,58 @@ test("an explore seals its material and records the intent; the session waits fo
   expect(JSON.parse(explore.preparation)["recipes"]).toEqual([{ id: "code-health", version: 3 }]);
 });
 
+test("reviewed limits survive the preparation wake and still govern the posted session", async () => {
+  const inferenceLimits = { calls: 2, inputTokens: 10_000, costMicros: 50_000 };
+  const answer = await start({
+    preset: "read-whats-new",
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+    inferenceLimits,
+  });
+  const runId = String(answer["runId"]);
+  const prepareJobId = String(answer["jobId"]);
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+  await sealStage("completed", prepareJobId);
+  let posts = 0;
+  code.posting = (request) => {
+    posts += 1;
+    if (JSON.stringify(request.inferenceLimits) !== JSON.stringify(inferenceLimits))
+      return refusedByCode("engine_forbidden", "the reviewed inference bounds changed");
+    return stageJob();
+  };
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([
+    { runId, jobId: "job_stage_code" },
+  ]);
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+  expect(posts).toBe(1);
+  expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = ?`, [runId])).toEqual([
+    { job_id: "job_stage_code" },
+  ]);
+});
+
+test("a malformed persisted inference bound refuses before buying an unbounded session", async () => {
+  const answer = await start({
+    preset: "read-whats-new",
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+    inferenceLimits: { calls: 2 },
+  });
+  const runId = String(answer["runId"]);
+  await sealStage("completed", String(answer["jobId"]));
+  await harness.db.run(
+    `UPDATE runs SET profile = json_set(profile, '$.inferenceLimits.calls', 'two') WHERE id = ?`,
+    [runId],
+  );
+  let posts = 0;
+  code.posting = () => {
+    posts += 1;
+    return stageJob();
+  };
+  expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+  expect(posts).toBe(0);
+  expect(await harness.db.query(`SELECT closure FROM runs WHERE id = ?`, [runId])).toEqual([
+    { closure: "failed" },
+  ]);
+});
+
 /*
   THE OFFER BEHIND A BLANK COVERAGE CELL POSTS THIS (#330): one lens, scoped to one topic. The
   panel's own test pins the document it sends; this pins what the door then DOES with it, which
@@ -1459,9 +1511,9 @@ async function stageLaunch(
   return { analysis, start };
 }
 
-async function sealStage(closure = "completed") {
+async function sealStage(closure = "completed", jobId = "job_stage_material") {
   await harness.db.run(
-    `UPDATE runs SET closure = ?, finished_at = ?, payload = ? WHERE job_id = 'job_stage_material'`,
+    `UPDATE runs SET closure = ?, finished_at = ?, payload = ? WHERE job_id = ?`,
     [
       closure,
       stamp(NOW),
@@ -1486,6 +1538,7 @@ async function sealStage(closure = "completed") {
           ],
         },
       }),
+      jobId,
     ],
   );
 }

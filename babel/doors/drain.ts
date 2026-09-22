@@ -163,12 +163,13 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       if (
         input.target.costMicros === undefined &&
         input.target.outputTokens === undefined &&
-        input.target.deadline === undefined
+        input.target.deadline === undefined &&
+        input.maxJobs === undefined
       ) {
         return {
           refused:
-            "a drain needs a target: a cost in micro-dollars, a number of output tokens, or a " +
-            "deadline. A drain without one is not a drain, it is a loop (runbook §11.1)",
+            "a drain needs a target: a cost in micro-dollars, a number of output tokens, a " +
+            "deadline, or maxJobs. A drain without one is not a drain, it is a loop (runbook §11.1)",
         };
       }
       const requested =
@@ -203,11 +204,11 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       // A PRESET THAT SPENDS NOTHING CANNOT MEET A SPEND TARGET, so one is refused rather than
       // started as a fan nothing will ever stop: `keep-going` is a `scan`, it reaches no model,
       // and its metered spend is zero for as long as it runs.
-      if (!SPENDING.includes(input.preset) && requested === null) {
+      if (!SPENDING.includes(input.preset) && requested === null && input.maxJobs === undefined) {
         return {
           refused:
             `the ${input.preset} preset reaches no model, so its metered spend stays at zero ` +
-            `and a cost or token target is never met: give this drain a deadline`,
+            `and a cost or token target is never met: give this drain a deadline or maxJobs`,
         };
       }
       const held = await drainOnMachine(store, input.machineId);
@@ -268,6 +269,8 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         ...(input.entityId === undefined ? {} : { entityId: input.entityId }),
         ...(input.minutes === undefined ? {} : { minutes: input.minutes }),
         ...(input.agentSessions === undefined ? {} : { agentSessions: input.agentSessions }),
+        ...(input.maxJobs === undefined ? {} : { maxJobs: input.maxJobs }),
+        ...(input.inferenceLimits === undefined ? {} : { inferenceLimits: input.inferenceLimits }),
       };
 
       /*
@@ -334,7 +337,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       const request = drainInput(row);
       const live: { runId: string; jobId: string; launchedAt: number }[] = [];
       let refused = "";
-      for (let slot = 0; slot < input.concurrent; slot += 1) {
+      for (let slot = 0; slot < Math.min(input.concurrent, input.maxJobs ?? Infinity); slot += 1) {
         const identity = drainIdentity(row, slot);
         const started = SPENDING.includes(input.preset)
           ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, request, plan)
