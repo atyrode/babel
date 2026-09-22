@@ -6231,7 +6231,7 @@ test("retained analysis claims do not hide a real orphan behind the reaper work 
   expect(report.notes.some((note) => note.includes("dead claims were released"))).toBe(false);
 });
 
-async function catalogDeployment() {
+async function catalogDeployment(sourceMachineId = "map-source") {
   const db = openDatabase();
   const store = openStore(db);
   const fleet = new Fleet();
@@ -6239,7 +6239,7 @@ async function catalogDeployment() {
   const draws = new Draws(db);
   draws.review = ROUTE;
   const route = TranscriptMapPolicySchema.parse({
-    sourceMachineId: "map-source",
+    sourceMachineId,
     executorMachineId: MACHINE,
     profile: ROUTE.profile,
     dailyCost: 0,
@@ -6413,6 +6413,22 @@ test("replacing a source binding fences a pending receipt even when its requeste
   );
   expect(replacement.request).toEqual({ kind: "map-inventory", maxCaptures: 64 });
   expect(f.fleet.launched.at(-1)!.resourceBindingDigest).toBe(f.bindingState.digest);
+  expect(f.codeCalls).toEqual([]);
+});
+
+test("same-machine catalog preserves explicit source identity and remains free", async () => {
+  const f = await catalogDeployment(MACHINE);
+  await f.tick();
+  f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null });
+  await f.tick();
+  expect((await transcriptMaps(f.store).catalogState(MACHINE)).context).toEqual(f.context);
+  const plan = TranscriptMapCatalogInputSchema.parse(
+    JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+  );
+  expect(plan).toMatchObject({
+    sourceMachineId: MACHINE, executorMachineId: MACHINE,
+    request: { kind: "map-plan", capture: f.captures[0] },
+  });
   expect(f.codeCalls).toEqual([]);
 });
 

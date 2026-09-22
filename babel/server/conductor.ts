@@ -1896,7 +1896,6 @@ export async function describeMapHost(
   const operation = readiness.operations?.[operationId];
   const binding = TranscriptMapServiceBindingSchema.safeParse(operation?.serviceBindings?.[RECALL_SERVICE_ID]);
   if (
-    route.sourceMachineId === route.executorMachineId ||
     !readiness.connected || !readiness.installation?.enabled || !readiness.installation.ready ||
     operation?.ready !== true || !binding.success ||
     binding.data.machineId !== route.sourceMachineId ||

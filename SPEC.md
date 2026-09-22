@@ -967,10 +967,9 @@ Babel neither chooses a provider nor holds its credentials. Redaction applies be
 reaches the model and before generated prose is retained or served.
 
 The mapping configuration explicitly names `sourceMachineId` (the Recall owner) and
-`executorMachineId` (native catalog/preparation and eventual Code execution). The current native
-admission proof requires distinct machines: its remote service reference binds the source's
-instance revision into the execution digest. Same-owner activation requires an equivalent
-atomic native instance-revision pin; echoing an owner in a worker receipt is not that proof.
+`executorMachineId` (native catalog/preparation and eventual Code execution). Both same-machine
+and separate-executor layouts require an atomic native instance-revision admission pin;
+echoing an owner in a worker receipt is not that proof.
 Map reads and source grants remain at the source owner; an executor grant never discloses the
 source's maps. Changing executor selects new producing versions without relabelling historical
 artifacts or buying unchanged summaries again. Capture IDs cannot be claimed by a replacement
