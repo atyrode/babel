@@ -16,6 +16,10 @@ import {
   INPUT_FIELD,
   MACHINE_OPERATIONS,
   type OperationName,
+  TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY,
+  TranscriptMapCatalogAdmissionSchema,
+  TranscriptMapConfigSchema,
+  type TranscriptMapCatalogAdmission,
 } from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
 import { declaredServices } from "./doors/services.ts";
@@ -26,7 +30,7 @@ import { drainTick, type DrainDeps } from "./server/drain.ts";
 import { embedder, type EmbeddingServices } from "./server/embed.ts";
 import {
   conductor,
-  describeHost,
+  describeMapHost,
   SCHEDULE_LIFETIME_MS,
   type Conductor,
   type KeysSlice,
@@ -302,6 +306,7 @@ async function catalogSchedule(
   jobs: BabelJobs,
   machineId: string,
   policy: Policy,
+  admission: TranscriptMapCatalogAdmission | null,
 ): Promise<string[]> {
   const notes: string[] = [];
   const machineKey = createHash("sha256").update(machineId).digest("hex").slice(0, 32);
@@ -313,20 +318,31 @@ async function catalogSchedule(
         row.machineId === machineId &&
         row.operationId === MACHINE_OPERATIONS.mapCatalog,
     );
-    if (!policy.enabled || policy.mapping?.machineId !== machineId) {
+    if (!policy.enabled || policy.mapping?.executorMachineId !== machineId || admission === null) {
       for (const row of registered)
         await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
       return notes;
     }
     const intervalMs = policy.cadenceSeconds * 1000;
-    const described = await describeHost(jobs, machineId, MACHINE_OPERATIONS.mapCatalog);
+    const described = await describeMapHost(jobs, policy.mapping, MACHINE_OPERATIONS.mapCatalog);
     if ("refused" in described) return [`catalog cadence: ${described.refused}`];
+    if (JSON.stringify(admission.route) !== JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping)) ||
+        admission.resourceBindingDigest !== described.resourceBindingDigest ||
+        JSON.stringify(admission.serviceBinding) !== JSON.stringify(described.serviceBinding)) {
+      for (const row of registered)
+        await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+      return ["catalog admission changed; startMapCatalog is required again"];
+    }
     const installation = described.readiness.installation;
     const limits = planFor(policy, MACHINE_OPERATIONS.mapCatalog).limits;
     const configuration = createHash("sha256")
       .update(
         JSON.stringify({
           machineId,
+          sourceMachineId: policy.mapping.sourceMachineId,
+          route: policy.mapping,
+          serviceBinding: described.serviceBinding,
+          resourceBindingDigest: described.resourceBindingDigest,
           intervalMs,
           limits,
           installationRevision: installation?.revision,
@@ -346,9 +362,10 @@ async function catalogSchedule(
       jobId: `catalog_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
       machineId,
       operationId: MACHINE_OPERATIONS.mapCatalog,
-      input: { [INPUT_FIELD]: JSON.stringify({ kind: "catalog-wake", machineId }) },
+      input: { [INPUT_FIELD]: JSON.stringify({ kind: "catalog-wake", sourceMachineId: policy.mapping.sourceMachineId, executorMachineId: machineId }) },
       outputs: [],
       limits,
+      resourceBindingDigest: described.resourceBindingDigest,
       ...(installation === null
         ? {}
         : {
@@ -370,9 +387,22 @@ async function catalogSchedule(
 }
 
 /** Only the explicitly admitted machine may continue this free lane, including after settlement. */
-async function catalogCycle(jobs: BabelJobs, machineId: string): Promise<readonly string[]> {
+async function catalogCycle(
+  jobs: BabelJobs,
+  machineId: string,
+  explicitAdmission?: TranscriptMapCatalogAdmission,
+): Promise<readonly string[]> {
   const { policy, standing } = await coordinated.policy();
-  const notes = await catalogSchedule(jobs, machineId, standing);
+  const parsed = TranscriptMapCatalogAdmissionSchema.safeParse(
+    explicitAdmission ?? JSON.parse((await keys.get(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY)) ?? "null"),
+  );
+  const admission = parsed.success && policy.enabled && policy.mapping !== undefined &&
+    parsed.data.route.executorMachineId === machineId &&
+    JSON.stringify(parsed.data.route) === JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping))
+      ? parsed.data : null;
+  if (explicitAdmission !== undefined && admission !== null)
+    await keys.set(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY, JSON.stringify(admission));
+  const notes = await catalogSchedule(jobs, machineId, standing, admission);
   return [
     ...notes,
     ...(await loop(
@@ -381,7 +411,7 @@ async function catalogCycle(jobs: BabelJobs, machineId: string): Promise<readonl
       undefined,
       planFor(policy, MACHINE_OPERATIONS.scan),
       planFor(policy, MACHINE_OPERATIONS.mapCatalog),
-    ).tickCatalog(machineId)),
+    ).tickCatalog(machineId, admission ?? undefined)),
   ];
 }
 
@@ -563,10 +593,11 @@ const doors = babelDoors(
   // `services` block on `archive` and `verify` is the declaration; the composer behind the two
   // owner doors turns it into the policy, so the binding and the policy cannot be edited apart.
   declaredServices(manifest),
-  async (ctx, machineId) =>
+  async (ctx, admission) =>
     await catalogCycle(
       jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
-      machineId,
+      admission.route.executorMachineId,
+      admission,
     ),
 );
 

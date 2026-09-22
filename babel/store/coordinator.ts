@@ -2292,7 +2292,7 @@ export function coordinator(
       ...new Set([
         ...(policy.review === undefined ? (request.machines ?? []) : [policy.review.machineId]),
         ...(policy.activityWeights.mapping > 0 && policy.mapping !== undefined
-          ? [policy.mapping.machineId]
+          ? [policy.mapping.executorMachineId]
           : []),
       ]),
     ];
@@ -2316,7 +2316,7 @@ export function coordinator(
       policy.mapping === undefined
         ? null
         : admitSpend(policy, active, spent.byRun[request.runId] ?? 0, spent.total, [
-            policy.mapping.machineId,
+            policy.mapping.executorMachineId,
           ]);
     const mappingBudget =
       policy.mapping !== undefined &&
@@ -2735,8 +2735,9 @@ export function coordinator(
         },
       };
     }
-    const machine =
-      (assignment.activity === "mapping" ? policy.mapping : policy.review)?.machineId ?? "";
+    const machine = (assignment.activity === "mapping"
+      ? policy.mapping?.executorMachineId
+      : policy.review?.machineId) ?? "";
 
     const admission = admitSpend(
       policy,

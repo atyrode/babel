@@ -210,7 +210,7 @@ function owned(outputs: JobLaunch["outputs"]): {
 export function jobsSlice(jobs: GuestHookJobs, follow?: GuestJobs["follow"]): BabelJobs {
   return {
     describe: async (args): Promise<MachineReadiness> =>
-      await jobs.describe({ machineId: args.machineId, pluginId: args.pluginId }),
+      await jobs.describe(args),
     execute: async (args: JobLaunch): Promise<JobRunState> =>
       await jobs.execute({ ...args, outputs: owned(args.outputs) }),
     status: async (node: JobRef): Promise<JobRunState> => await jobs.status(node),

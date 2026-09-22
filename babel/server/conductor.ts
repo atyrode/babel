@@ -23,6 +23,11 @@ import {
   TranscriptMapCatalogRunSchema,
   TranscriptMapCatalogProgressSchema,
   TranscriptMapConfigSchema,
+  TranscriptMapServiceBindingSchema,
+  RECALL_SERVICE_ID,
+  type TranscriptMapServiceBinding,
+  type TranscriptMapConfig,
+  type TranscriptMapCatalogAdmission,
   type TranscriptMapCatalogRun,
   type TranscriptMapCatalogProgress,
   type TranscriptMapCatalogInput,
@@ -247,7 +252,12 @@ export interface FollowRead {
 export interface MachineReadiness {
   readonly connected: boolean;
   readonly operations?:
-    | Readonly<Record<string, { readonly ready: boolean; readonly reason: string | null }>>
+    | Readonly<Record<string, {
+        readonly ready: boolean;
+        readonly reason: string | null;
+        readonly resourceBindingDigest?: string;
+        readonly serviceBindings?: Readonly<Record<string, Omit<TranscriptMapServiceBinding, "serviceId"> & { serviceId: string }>>;
+      }>>
     | undefined;
   readonly installation: {
     readonly revision: string;
@@ -285,6 +295,7 @@ export interface JobLaunch {
   readonly limits?: JobLimits | undefined;
   readonly installationRevision?: string | undefined;
   readonly artifactSha256?: string | undefined;
+  readonly resourceBindingDigest?: string | undefined;
 }
 
 /** `JobScheduleTiming`, restated so the loop compiles against the slice rather than the host. */
@@ -317,7 +328,7 @@ export interface ScheduleRow extends ScheduleTiming {
  * than pretending to (#261).
  */
 export interface JobsSlice {
-  describe(args: { machineId: string; pluginId: string }): Awaitable<MachineReadiness>;
+  describe(args: { machineId: string; pluginId: string; includeServiceBindings?: boolean }): Awaitable<MachineReadiness>;
   execute(args: JobLaunch): Awaitable<JobRunState>;
   status(node: JobRef): Awaitable<JobRunState>;
   listRuns(args: {
@@ -588,7 +599,7 @@ export interface TickReport {
 export interface Conductor {
   tick(): Promise<TickReport>;
   /** Free catalog continuation under admission for this machine, never ordinary scan authority. */
-  tickCatalog(machineId: string): Promise<readonly string[]>;
+  tickCatalog(machineId: string, admission?: TranscriptMapCatalogAdmission): Promise<readonly string[]>;
 }
 
 // ---------------------------------------------------------------------------- constants
@@ -1863,6 +1874,38 @@ export async function describeHost(
   return { readiness: described };
 }
 
+/** The SDK resolves the exact instance behind the executor's installed native operation. */
+export async function describeMapHost(
+  jobs: Pick<JobsSlice, "describe">,
+  route: Pick<TranscriptMapConfig, "sourceMachineId" | "executorMachineId">,
+  operationId: typeof OPERATIONS.mapCatalog | typeof OPERATIONS.mapPrepare,
+): Promise<
+  | { readiness: MachineReadiness; serviceBinding: TranscriptMapServiceBinding; resourceBindingDigest: string }
+  | { refused: string }
+> {
+  let readiness: MachineReadiness;
+  try {
+    readiness = await jobs.describe({
+      machineId: route.executorMachineId,
+      pluginId: BABEL_PLUGIN_ID,
+      includeServiceBindings: true,
+    });
+  } catch (error) {
+    return { refused: `mapping native binding is unavailable: ${message(error)}` };
+  }
+  const operation = readiness.operations?.[operationId];
+  const binding = TranscriptMapServiceBindingSchema.safeParse(operation?.serviceBindings?.[RECALL_SERVICE_ID]);
+  if (
+    route.sourceMachineId === route.executorMachineId ||
+    !readiness.connected || !readiness.installation?.enabled || !readiness.installation.ready ||
+    operation?.ready !== true || !binding.success ||
+    binding.data.machineId !== route.sourceMachineId ||
+    !/^[0-9a-f]{64}$/.test(operation.resourceBindingDigest ?? "")
+  )
+    return { refused: "mapping executor has no ready native binding to the configured source owner" };
+  return { readiness, serviceBinding: binding.data, resourceBindingDigest: operation.resourceBindingDigest! };
+}
+
 /**
  * THE MACHINES A CYCLE MAY NAME TO THE HUB, and every one of them is an ID.
  *
@@ -1910,6 +1953,7 @@ interface ScheduleReconciliation {
 export function conductor(deps: ConductorDeps): Conductor {
   const { store, coordinator, jobs, machines, keys, plan, engine } = deps;
   let cycle = 0;
+  let catalogAdmission: TranscriptMapCatalogAdmission | undefined;
 
   const maps = transcriptMaps(store);
 
@@ -1925,7 +1969,17 @@ export function conductor(deps: ConductorDeps): Conductor {
       current.enabled && current.mapping !== undefined
         ? TranscriptMapConfigSchema.parse(current.mapping)
         : null;
-    if (route === null || JSON.stringify(route) !== JSON.stringify(intent.route)) {
+    const described = route === null || JSON.stringify(route) !== JSON.stringify(intent.route)
+      ? null : await describeMapHost(jobs, route, OPERATIONS.mapCatalog);
+    if (described !== null && "refused" in described) {
+      notes.push(`catalog cannot be posted: ${described.refused}`);
+      return;
+    }
+    if (route === null || JSON.stringify(route) !== JSON.stringify(intent.route) ||
+        described === null || described.resourceBindingDigest !== intent.resourceBindingDigest ||
+        JSON.stringify(described.serviceBinding) !== JSON.stringify(intent.serviceBinding) ||
+        described.readiness.installation?.revision !== intent.installationRevision ||
+        described.readiness.installation?.artifactSha256 !== intent.artifactSha256) {
       // An absent status does not rule out an earlier execute still reaching the hub.
       // Only an intent that has never crossed the attempted-post boundary can be closed here.
       await store.db.run(
@@ -1935,13 +1989,18 @@ export function conductor(deps: ConductorDeps): Conductor {
           new Date(deps.now()).toISOString(),
           JSON.stringify({
             closure: "failed",
-            reason: "mapping configuration was disabled or replaced before posting",
+            reason: "mapping configuration or native binding was disabled or replaced before posting",
           }),
           runId,
         ],
       );
       return;
     }
+    if (catalogAdmission === undefined ||
+        JSON.stringify(catalogAdmission.route) !== JSON.stringify(intent.route) ||
+        catalogAdmission.resourceBindingDigest !== intent.resourceBindingDigest ||
+        JSON.stringify(catalogAdmission.serviceBinding) !== JSON.stringify(intent.serviceBinding))
+      return;
     const owned = await store.db.run(
       `UPDATE runs SET preparation=json_set(preparation,'$.attempts',?)
        WHERE id=? AND closure IS NULL AND json_extract(preparation,'$.progress') IS NULL
@@ -1952,11 +2011,12 @@ export function conductor(deps: ConductorDeps): Conductor {
     try {
       await jobs.execute({
         jobId,
-        machineId: intent.input.machineId,
+        machineId: intent.input.executorMachineId,
         operationId: OPERATIONS.mapCatalog,
         input: { [INPUT_FIELD]: JSON.stringify(intent.input) },
         outputs: [{ name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [runId] }],
         limits: intent.limits,
+        resourceBindingDigest: intent.resourceBindingDigest,
         ...(intent.installationRevision === undefined
           ? {}
           : { installationRevision: intent.installationRevision }),
@@ -1970,7 +2030,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         try {
           await jobs.status({
             kind: "job",
-            machineId: intent.input.machineId,
+            machineId: intent.input.executorMachineId,
             operationId: OPERATIONS.mapCatalog,
             jobId,
           });
@@ -2062,13 +2122,22 @@ export function conductor(deps: ConductorDeps): Conductor {
           throw new TranscriptMapProjectionRefusal(
             "mapping configuration was disabled or replaced",
           );
+        const described = await describeMapHost(jobs, route, OPERATIONS.mapCatalog);
+        if ("refused" in described) throw new Error(described.refused);
+        if (described.resourceBindingDigest !== intent.resourceBindingDigest ||
+            JSON.stringify(described.serviceBinding) !== JSON.stringify(intent.serviceBinding) ||
+            described.readiness.installation?.revision !== intent.installationRevision ||
+            described.readiness.installation?.artifactSha256 !== intent.artifactSha256)
+          throw new TranscriptMapProjectionRefusal("mapping native binding was replaced");
         const receipt = ReceiptSchema.parse(payload);
         if (
           receipt.closure !== "completed" ||
           receipt.runId !== row.id ||
-          receipt.machineId !== route.machineId ||
+          receipt.machineId !== intent.input.executorMachineId ||
           receipt.kind !== "mapCatalog" ||
-          receipt.mapping?.kind !== "catalog"
+          receipt.mapping?.kind !== "catalog" ||
+          receipt.mapping.sourceMachineId !== intent.input.sourceMachineId ||
+          receipt.mapping.executorMachineId !== intent.input.executorMachineId
         )
           throw new TranscriptMapProjectionRefusal(
             "native catalog did not return the requested completed receipt",
@@ -2079,12 +2148,13 @@ export function conductor(deps: ConductorDeps): Conductor {
             "catalog context changed while the page was in flight",
           );
         const scope = {
-          machineId: route.machineId,
+          machineId: intent.input.sourceMachineId,
           context: result.context,
           now,
           guard: {
-            sql: `EXISTS (SELECT 1 FROM runs WHERE id=? AND json_extract(preparation,'$.progress') IS NULL)`,
-            params: [row.id],
+            sql: `EXISTS (SELECT 1 FROM runs WHERE id=? AND json_extract(preparation,'$.progress') IS NULL)
+              AND NOT EXISTS (SELECT 1 FROM policies WHERE seq=(SELECT max(seq) FROM policies) AND version!=?)`,
+            params: [row.id, policy.version],
           },
         };
         if (request.kind === "map-inventory") {
@@ -2147,8 +2217,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
       await store.db.run(
         `UPDATE runs SET preparation=json_set(preparation,'$.progress',json(?))
-         WHERE id=? AND json_extract(preparation,'$.progress') IS NULL`,
-        [JSON.stringify(TranscriptMapCatalogProgressSchema.parse(progress)), row.id],
+         WHERE id=? AND json_extract(preparation,'$.progress') IS NULL
+           AND NOT EXISTS (SELECT 1 FROM policies WHERE seq=(SELECT max(seq) FROM policies) AND version!=?)`,
+        [JSON.stringify(TranscriptMapCatalogProgressSchema.parse(progress)), row.id, policy.version],
       );
     }
   }
@@ -2165,16 +2236,30 @@ export function conductor(deps: ConductorDeps): Conductor {
       [OPERATIONS.mapCatalog],
     );
     if (Number(held[0]?.n) > 0) return 0;
+    const described = await describeMapHost(jobs, route, OPERATIONS.mapCatalog);
+    if ("refused" in described) {
+      notes.push(`catalog cannot be posted: ${described.refused}`);
+      return 0;
+    }
+    if (catalogAdmission === undefined ||
+        JSON.stringify(catalogAdmission.route) !== JSON.stringify(route) ||
+        catalogAdmission.resourceBindingDigest !== described.resourceBindingDigest ||
+        JSON.stringify(catalogAdmission.serviceBinding) !== JSON.stringify(described.serviceBinding)) {
+      notes.push("catalog admission changed; startMapCatalog is required again");
+      return 0;
+    }
     const latest = await store.db.query<{ id: string; preparation: string }>(
       `SELECT id,preparation FROM runs WHERE kind=? AND machine_id=?
        ORDER BY rowid DESC LIMIT 1`,
-      [OPERATIONS.mapCatalog, route.machineId],
+      [OPERATIONS.mapCatalog, route.executorMachineId],
     );
     const prior = latest[0];
     const previous = prior ? catalogIntent(prior.preparation) : null;
-    const sameRoute = previous !== null && JSON.stringify(previous.route) === JSON.stringify(route);
+    const sameRoute = previous !== null && JSON.stringify(previous.route) === JSON.stringify(route) &&
+      previous.resourceBindingDigest === described.resourceBindingDigest &&
+      JSON.stringify(previous.serviceBinding) === JSON.stringify(described.serviceBinding);
     const progress = previous?.progress;
-    const state = await maps.catalogState(route.machineId);
+    const state = await maps.catalogState(route.sourceMachineId);
     const sameContext =
       sameRoute && progress?.context != null && progress.context.digest === state.context?.digest;
     const nextCursor =
@@ -2200,7 +2285,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       request = { kind: "map-inventory", cursor: nextCursor, maxCaptures: 64 };
       context = state.context;
     } else {
-      const next = await maps.nextPlan(route.machineId, route.segmentation, afterCaptureId);
+      const next = await maps.nextPlan(route.sourceMachineId, route.segmentation, afterCaptureId);
       if (next) {
         request = {
           kind: "map-plan",
@@ -2219,11 +2304,6 @@ export function conductor(deps: ConductorDeps): Conductor {
         request = { kind: "map-inventory", maxCaptures: 64 };
       }
     }
-    const described = await describeHost(jobs, route.machineId, OPERATIONS.mapCatalog);
-    if ("refused" in described) {
-      notes.push(`catalog cannot be posted: ${described.refused}`);
-      return 0;
-    }
     const token = createHash("sha256")
       .update(JSON.stringify([route, request, prior?.id ?? null, at]))
       .digest("hex");
@@ -2232,7 +2312,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     const installation = described.readiness.installation;
     const intent: TranscriptMapCatalogRun = {
       route,
-      input: { runId, machineId: route.machineId, request },
+      input: { runId, sourceMachineId: route.sourceMachineId, executorMachineId: route.executorMachineId, request },
       afterCaptureId: request.kind === "map-plan" ? afterCaptureId : null,
       context,
       catalogCompletedAt: progress?.catalogCompletedAt ?? null,
@@ -2240,6 +2320,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       refusedAttempts: 0,
       progress: null,
       limits: deps.catalogPlan.limits,
+      serviceBinding: described.serviceBinding,
+      resourceBindingDigest: described.resourceBindingDigest,
       ...(installation === null
         ? {}
         : {
@@ -2258,17 +2340,17 @@ export function conductor(deps: ConductorDeps): Conductor {
       [
         runId,
         OPERATIONS.mapCatalog,
-        route.machineId,
+        route.executorMachineId,
         jobId,
         policy.version,
         JSON.stringify(TranscriptMapCatalogRunSchema.parse(intent)),
         new Date(at).toISOString(),
         JSON.stringify({ closure: null, requestedAt: at }),
         OPERATIONS.mapCatalog,
-        route.machineId,
+        route.executorMachineId,
         perMachineBound(policy),
         OPERATIONS.mapCatalog,
-        route.machineId,
+        route.executorMachineId,
         prior?.id ?? "",
       ],
     );
@@ -4798,14 +4880,16 @@ export function conductor(deps: ConductorDeps): Conductor {
   }
 
   return {
-    async tickCatalog(machineId: string): Promise<readonly string[]> {
+    async tickCatalog(machineId: string, admission?: TranscriptMapCatalogAdmission): Promise<readonly string[]> {
+      catalogAdmission = admission?.route.executorMachineId === machineId ? admission : undefined;
       const at = deps.now();
       const policy = (await coordinator.policy(at)).policy;
       const notes: string[] = [];
       await reconcileRuns(at, [], [], [], notes, { paid: new Map(), free: new Map() }, machineId);
       await catalogReceipts(policy, at, notes, machineId);
       // An old settlement cannot transfer its admission when policy moves to another host.
-      if (policy.mapping?.machineId === machineId) await advanceCatalog(policy, at, notes);
+      if (catalogAdmission !== undefined && policy.mapping?.executorMachineId === machineId)
+        await advanceCatalog(policy, at, notes);
       return notes;
     },
     async tick(): Promise<TickReport> {

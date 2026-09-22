@@ -946,7 +946,7 @@ An oversized or unsupported span is an explicit gap, not silently dropped materi
 
 Every node retains its source snapshot, path, capture and source digests, exact record and byte
 range, and span digest. Map and summary provenance retain the segmentation contract, producing
-Code profile and revision, recipe and version, input identity, and run receipt. Source growth,
+Code profile and revision, source owner, executor, recipe and version, input identity, and run receipt. Source growth,
 recipe changes and corrections create explicit versions rather than overwriting prior summaries.
 Levels from different producing contracts are not silently blended. A historical map remains
 historical: newer captures and any unknown or unmapped tail are stated, not filled from a live
@@ -966,12 +966,27 @@ Code profile and versioned recipes. The profile is the operator's choice, includ
 Babel neither chooses a provider nor holds its credentials. Redaction applies before material
 reaches the model and before generated prose is retained or served.
 
+The mapping configuration explicitly names `sourceMachineId` (the Recall owner) and
+`executorMachineId` (native catalog/preparation and eventual Code execution). The current native
+admission proof requires distinct machines: its remote service reference binds the source's
+instance revision into the execution digest. Same-owner activation requires an equivalent
+atomic native instance-revision pin; echoing an owner in a worker receipt is not that proof.
+Map reads and source grants remain at the source owner; an executor grant never discloses the
+source's maps. Changing executor selects new producing versions without relabelling historical
+artifacts or buying unchanged summaries again. Capture IDs cannot be claimed by a replacement
+owner: a collision is refused, including an older draft capture whose owner was not recorded.
+
 Catalog and plan pages are free, bounded native work, not model admissions or side effects of a
-read. `startMapCatalog` requires authority for the configured machine's catalog operation and
-private mapping target; its continuation never enters the ordinary scan or paid Code paths.
+read. `startMapCatalog` requires authority for the executor's catalog operation and the source
+owner's private mapping target; its continuation never enters the ordinary scan or paid Code paths.
 The native cadence emits a liveness receipt on stdout without acquiring a filesystem lease.
-Disabling policy, or moving its mapping machine, disables the old cadence on its next owned
-settlement; admission for another machine requires a new start.
+Disabling policy or replacing either route identity invalidates the saved admission and disables
+the old cadence on its next owned settlement; another route requires a new explicit start.
+Admission binds the native operation's resolved instance reference (source owner, configuration
+revision and policy digest) and resource-binding digest, rather than trusting requested IDs
+echoed by a worker. The conductor pins that digest at native execution and revalidates the
+retained binding before posting, continuing pages or projecting a receipt. A replacement binding
+cannot resume an old cursor or apply an old receipt under a new source owner.
 
 The conductor retains each request before posting, recovers an uncertain post under the same
 identity, and replays a sealed receipt after an interrupted projection. Only the named result

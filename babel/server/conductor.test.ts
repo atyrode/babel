@@ -19,6 +19,7 @@ import {
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   RUN_STAGES,
+  RECALL_SERVICE_ID,
   TranscriptMapCatalogInputSchema,
   TranscriptMapPolicySchema,
   type TranscriptMapJobReceipt,
@@ -6238,7 +6239,8 @@ async function catalogDeployment() {
   const draws = new Draws(db);
   draws.review = ROUTE;
   const route = TranscriptMapPolicySchema.parse({
-    machineId: MACHINE,
+    sourceMachineId: "map-source",
+    executorMachineId: MACHINE,
     profile: ROUTE.profile,
     dailyCost: 0,
     generateRecipe: ROUTE.recipes[0]!.id,
@@ -6249,11 +6251,22 @@ async function catalogDeployment() {
   const { recipes: _recipes, ...mapping } = route;
   draws.mapping = mapping;
   const describe = fleet.describe.bind(fleet);
+  const nativeBinding = {
+    machineId: route.sourceMachineId,
+    serviceId: RECALL_SERVICE_ID,
+    revision: "source-revision-1",
+    policySha256: "a".repeat(64),
+  };
+  const bindingState = { digest: "b".repeat(64), available: true };
   fleet.describe = (args) => {
     const ready = describe(args);
     return {
       ...ready,
-      operations: { ...ready.operations, [OPERATIONS.mapCatalog]: { ready: true, reason: null } },
+      operations: { ...ready.operations, [OPERATIONS.mapCatalog]: {
+        ready: true, reason: null,
+        resourceBindingDigest: bindingState.digest,
+        ...(bindingState.available ? { serviceBindings: { [RECALL_SERVICE_ID]: { ...nativeBinding } } } : {}),
+      } },
     };
   };
   const codeCalls: string[] = [];
@@ -6280,7 +6293,11 @@ async function catalogDeployment() {
       catalogPlan: UNMETERED_PLAN,
       now: () => clock,
     });
-  const tick = (machineId = MACHINE) => loop().tickCatalog(machineId);
+  const tick = (machineId = MACHINE) => loop().tickCatalog(machineId, {
+    route: draws.mapping!,
+    serviceBinding: { ...nativeBinding },
+    resourceBindingDigest: bindingState.digest,
+  });
   const ordinaryTick = () => loop().tick();
   const digest = `sha256:${"a".repeat(64)}`;
   const context = {
@@ -6324,7 +6341,7 @@ async function catalogDeployment() {
       });
     }),
   );
-  function finish(mapping: TranscriptMapJobReceipt) {
+  function finish(mapping: Omit<Extract<TranscriptMapJobReceipt, { kind: "catalog" }>, "sourceMachineId" | "executorMachineId"> & Partial<Pick<TranscriptMapJobReceipt, "sourceMachineId" | "executorMachineId">>) {
     const launch = fleet.launched.at(-1)!;
     const input = TranscriptMapCatalogInputSchema.parse(
       JSON.parse(String(launch.input[INPUT_FIELD])),
@@ -6338,7 +6355,7 @@ async function catalogDeployment() {
         finishedAt: new Date(clock).toISOString(),
         closure: "completed",
         counts: {},
-        mapping,
+        mapping: { sourceMachineId: input.sourceMachineId, executorMachineId: input.executorMachineId, ...mapping },
       },
     });
   }
@@ -6349,6 +6366,8 @@ async function catalogDeployment() {
     jobs,
     draws,
     route,
+    nativeBinding,
+    bindingState,
     context,
     captures,
     entries,
@@ -6359,6 +6378,43 @@ async function catalogDeployment() {
     codeCalls,
   };
 }
+
+test("catalog refuses a native binding to another source before any job is posted", async () => {
+  const f = await catalogDeployment();
+  f.nativeBinding.machineId = "wrong-owner";
+  await f.tick();
+  expect(f.fleet.launched).toEqual([]);
+  expect(await f.db.query(`SELECT id FROM runs WHERE kind=?`, [OPERATIONS.mapCatalog])).toEqual([]);
+  expect(f.codeCalls).toEqual([]);
+});
+
+test("catalog receipts cannot substitute either the source owner or executor", async () => {
+  for (const field of ["sourceMachineId", "executorMachineId"] as const) {
+    const f = await catalogDeployment();
+    await f.tick();
+    f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null, [field]: "wrong-machine" });
+    await f.tick();
+    expect(await f.db.query(`SELECT id FROM transcript_map_captures`)).toEqual([]);
+    expect(f.fleet.launched).toHaveLength(1);
+    expect(f.codeCalls).toEqual([]);
+  }
+});
+
+test("replacing a source binding fences a pending receipt even when its requested IDs match", async () => {
+  const f = await catalogDeployment();
+  await f.tick();
+  f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: "old-cursor" });
+  f.nativeBinding.revision = "source-revision-2";
+  f.bindingState.digest = "c".repeat(64);
+  await f.tick();
+  expect(await f.db.query(`SELECT id FROM transcript_map_captures`)).toEqual([]);
+  const replacement = TranscriptMapCatalogInputSchema.parse(
+    JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
+  );
+  expect(replacement.request).toEqual({ kind: "map-inventory", maxCaptures: 64 });
+  expect(f.fleet.launched.at(-1)!.resourceBindingDigest).toBe(f.bindingState.digest);
+  expect(f.codeCalls).toEqual([]);
+});
 
 test("free catalog resumes bounded inventory and plan pages without Recall or Code", async () => {
   const f = await catalogDeployment();
@@ -6575,7 +6631,7 @@ test("stale native catalog receipt cannot overwrite a newer authorization contex
   const f = await catalogDeployment();
   await f.tick();
   await transcriptMaps(f.store).recordAccess({
-    machineId: MACHINE,
+    machineId: f.route.sourceMachineId,
     context: {
       ...f.context,
       digest: `sha256:${"b".repeat(64)}`,
@@ -6645,7 +6701,7 @@ test("catalog admission cannot move with policy to another machine or reconcile 
   await f.tick();
   f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null });
   const other = "another-machine";
-  f.draws.mapping = { ...f.draws.mapping!, machineId: other };
+  f.draws.mapping = { ...f.draws.mapping!, executorMachineId: other };
   await f.tick();
   expect(f.fleet.launched).toHaveLength(1);
   expect(f.codeCalls).toEqual([]);
@@ -6720,7 +6776,7 @@ test("a late duplicate catalog projector cannot rewind a newer page's context or
     await f.tick();
     resume();
     await Promise.all([first, duplicate]);
-    const state = await transcriptMaps(f.store).catalogState(MACHINE);
+    const state = await transcriptMaps(f.store).catalogState(f.route.sourceMachineId);
     expect(state.context).toEqual(newer);
     expect(state.nextCursor).toBeNull();
     expect(state.completedAt).toBe(new Date(clock).toISOString());
@@ -6758,7 +6814,7 @@ test("late native ingestion cannot reopen an applied catalog receipt after the n
     closure: "completed",
   });
   await f.tick();
-  const state = await transcriptMaps(f.store).catalogState(MACHINE);
+  const state = await transcriptMaps(f.store).catalogState(f.route.sourceMachineId);
   expect(state.context).toEqual(newer);
   expect(state.nextCursor).toBeNull();
   expect(f.fleet.launched).toHaveLength(3);
@@ -7028,7 +7084,7 @@ test("a newer different disclosure class fences stale context insertion at the d
   };
   const stale = maps
     .recordCatalog({
-      machineId: MACHINE,
+      machineId: f.route.sourceMachineId,
       context: f.context,
       entries: f.entries,
       nextCursor: "obsolete",
@@ -7049,7 +7105,7 @@ test("a newer different disclosure class fences stale context insertion at the d
       observedAt: new Date(clock + 1000).toISOString(),
     };
     await maps.recordCatalog({
-      machineId: MACHINE,
+      machineId: f.route.sourceMachineId,
       context: newer,
       entries: [],
       nextCursor: null,
@@ -7057,7 +7113,7 @@ test("a newer different disclosure class fences stale context insertion at the d
     });
     release();
     expect(await stale).toBeInstanceOf(Error);
-    const state = await maps.catalogState(MACHINE);
+    const state = await maps.catalogState(f.route.sourceMachineId);
     expect(state.context).toEqual(newer);
     expect(state.nextCursor).toBeNull();
     expect(await f.db.query(`SELECT count(*) n FROM transcript_map_captures`)).toEqual([{ n: 0n }]);

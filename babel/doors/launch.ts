@@ -24,6 +24,7 @@ import {
   StopResultSchema,
   StartMapCatalogRequestSchema,
   StartMapCatalogResultSchema,
+  type TranscriptMapCatalogAdmission,
   VerifyRequestSchema,
   VerifyResultSchema,
   MaterialIndexSchema,
@@ -58,7 +59,7 @@ import {
   type ActionsSlice,
   type CodeEngine,
 } from "../server/engine/session.ts";
-import { describeHost, type JobLaunch, type RunPlan } from "../server/conductor.ts";
+import { describeHost, describeMapHost, type JobLaunch, type RunPlan } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
@@ -1868,7 +1869,7 @@ function materialOf(payload: string): MaterialIndex | null {
  */
 export function mapCatalogDoor(
   coordinator: Coordinator,
-  advance: (ctx: GuestCtx, machineId: string) => Promise<readonly string[]>,
+  advance: (ctx: GuestCtx, admission: TranscriptMapCatalogAdmission) => Promise<readonly string[]>,
 ): Door {
   return defineDoor(
     defineServerAction({
@@ -1886,16 +1887,20 @@ export function mapCatalogDoor(
       result: StartMapCatalogResultSchema,
     }),
     async (ctx, { operation, target }) => {
-      if (operation.machineId !== target.machineId)
-        return {
-          refused: "The catalog operation and private mapping service must name one machine.",
-        };
       const { policy } = await coordinator.policy();
-      if (!policy.enabled || policy.mapping?.machineId !== operation.machineId)
-        return { refused: "The enabled mapping policy must name the requested catalog machine." };
+      if (!policy.enabled || policy.mapping?.executorMachineId !== operation.machineId ||
+          policy.mapping.sourceMachineId !== target.machineId)
+        return { refused: "The enabled mapping policy must name the requested source owner and executor." };
+      const binding = await describeMapHost(ctx.jobs, policy.mapping, OPERATIONS.mapCatalog);
+      if ("refused" in binding) return binding;
       return {
-        machineId: operation.machineId,
-        notes: [...(await advance(ctx, operation.machineId))],
+        sourceMachineId: target.machineId,
+        executorMachineId: operation.machineId,
+        notes: [...(await advance(ctx, {
+          route: policy.mapping,
+          serviceBinding: binding.serviceBinding,
+          resourceBindingDigest: binding.resourceBindingDigest,
+        }))],
       };
     },
   );

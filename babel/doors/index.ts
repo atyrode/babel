@@ -1,4 +1,6 @@
 import type { GuestCtx, ServerActionDef, ServerHandler } from "@manifold/plugin-kit/server";
+import type { TranscriptMapCatalogAdmission } from "../contract.ts";
+
 import type { BabelStore } from "../store/store.ts";
 import { actDoors } from "./acts.ts";
 import type { Door } from "./door.ts";
@@ -53,7 +55,7 @@ export function babelDoors(
   drain: DrainDoorDeps,
   concurrentJobs: number | null,
   services: readonly DeclaredService[],
-  advanceCatalog: (ctx: GuestCtx, machineId: string) => Promise<readonly string[]>,
+  advanceCatalog: (ctx: GuestCtx, admission: TranscriptMapCatalogAdmission) => Promise<readonly string[]>,
 ): BabelDoors {
   const actions: ServerActionDef[] = [];
   const handlers: Record<string, ServerHandler> = {};

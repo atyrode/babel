@@ -4691,7 +4691,8 @@ export const StartMapCatalogRequestSchema = z.strictObject({
   }),
 });
 export const StartMapCatalogResultSchema = z.strictObject({
-  machineId: refId,
+  sourceMachineId: refId,
+  executorMachineId: refId,
   /** The conductor's account of this wake, including a refusal or work already in flight. */
   notes: z.array(z.string()),
 });
@@ -4815,8 +4816,11 @@ export const TranscriptMapCatalogEntrySchema = z.strictObject({
 });
 export type TranscriptMapCatalogEntry = z.infer<typeof TranscriptMapCatalogEntrySchema>;
 
-export const TranscriptMapPolicySchema = z.strictObject({
-  machineId: refId,
+const separateMapMachines = (route: { sourceMachineId: string; executorMachineId: string }) =>
+  route.sourceMachineId !== route.executorMachineId;
+const TranscriptMapPolicyFields = z.strictObject({
+  sourceMachineId: refId,
+  executorMachineId: refId,
   profile: CodeProfileSchema,
   dailyCost: z.number().finite().nonnegative(),
   generateRecipe: z.string().trim().min(1).max(200),
@@ -4827,9 +4831,10 @@ export const TranscriptMapPolicySchema = z.strictObject({
   maxReviews: z.number().int().nonnegative().max(3).default(1),
   maxCorrections: z.number().int().nonnegative().max(2).default(1),
 });
+export const TranscriptMapPolicySchema = TranscriptMapPolicyFields.refine(separateMapMachines, "Mapping requires a separate executor and Recall source owner.");
 export type TranscriptMapPolicy = z.infer<typeof TranscriptMapPolicySchema>;
 /** Stored configuration names methods in the one authoritative policy.review.recipes library. */
-export const TranscriptMapConfigSchema = TranscriptMapPolicySchema.omit({ recipes: true });
+export const TranscriptMapConfigSchema = TranscriptMapPolicyFields.omit({ recipes: true }).refine(separateMapMachines, "Mapping requires a separate executor and Recall source owner.");
 export type TranscriptMapConfig = z.infer<typeof TranscriptMapConfigSchema>;
 
 /** Source access is revalidated separately; a classification change never buys the prose again. */
@@ -4837,6 +4842,8 @@ export const TranscriptMapVersionSchema = z.strictObject({
   id: TranscriptMapVersionIdSchema,
   planId: TranscriptMapPlanIdSchema,
   contractDigest: recallDigest,
+  sourceMachineId: refId,
+  executorMachineId: refId,
   profile: CodeProfileSchema,
   generateRecipe: PolicyRecipeSchema,
   reviewRecipe: PolicyRecipeSchema,
@@ -5073,19 +5080,21 @@ export type ArchiveServiceReply = z.infer<typeof ArchiveServiceReplySchema>;
 
 export const TranscriptMapCatalogInputSchema = z.strictObject({
   runId: refId,
-  machineId: refId,
+  sourceMachineId: refId,
+  executorMachineId: refId,
   request: z.discriminatedUnion("kind", [
     TranscriptMapInventoryRequestSchema,
     TranscriptMapPlanRequestSchema,
   ]),
-});
+}).refine(separateMapMachines, "Mapping requires a separate executor and Recall source owner.");
 export type TranscriptMapCatalogInput = z.infer<typeof TranscriptMapCatalogInputSchema>;
 
 /** Native scheduler liveness only: no archive request, plan, or catalog projection. */
 export const TranscriptMapCatalogWakeInputSchema = z.strictObject({
   kind: z.literal("catalog-wake"),
-  machineId: refId,
-});
+  sourceMachineId: refId,
+  executorMachineId: refId,
+}).refine(separateMapMachines, "Mapping requires a separate executor and Recall source owner.");
 export type TranscriptMapCatalogWakeInput = z.infer<typeof TranscriptMapCatalogWakeInputSchema>;
 export const TranscriptMapCatalogJobInputSchema = z.union([
   TranscriptMapCatalogInputSchema,
@@ -5094,7 +5103,8 @@ export const TranscriptMapCatalogJobInputSchema = z.union([
 
 export const TranscriptMapPrepareInputSchema = z.strictObject({
   runId: refId,
-  machineId: refId,
+  sourceMachineId: refId,
+  executorMachineId: refId,
   source: TranscriptMapSourceSchema,
   nodeId: TranscriptMapNodeIdSchema,
   segmentation: TranscriptMapSegmentationSchema,
@@ -5110,11 +5120,13 @@ export const TranscriptMapPrepareInputSchema = z.strictObject({
     })
     .optional(),
   feedback: transcriptMapText.optional(),
-});
+}).refine(separateMapMachines, "Mapping requires a separate executor and Recall source owner.");
 export type TranscriptMapPrepareInput = z.infer<typeof TranscriptMapPrepareInputSchema>;
 export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("catalog"),
+    sourceMachineId: refId,
+    executorMachineId: refId,
     context: TranscriptMapContextSchema,
     entries: z.array(TranscriptMapCatalogEntrySchema).max(TRANSCRIPT_MAP_MAX_CAPTURES),
     nextCursor: z.string().min(1).max(1024).nullable(),
@@ -5125,6 +5137,8 @@ export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     kind: z.literal("material"),
+    sourceMachineId: refId,
+    executorMachineId: refId,
     context: TranscriptMapContextSchema,
     access: TranscriptMapAccessSchema,
     source: TranscriptMapSourceSchema,
@@ -5146,10 +5160,27 @@ export const TranscriptMapCatalogProgressSchema = z.strictObject({
 });
 export type TranscriptMapCatalogProgress = z.infer<typeof TranscriptMapCatalogProgressSchema>;
 
+/** Native resolved instance reference, obtained from opt-in operation readiness, never a receipt echo. */
+export const TranscriptMapServiceBindingSchema = z.strictObject({
+  machineId: refId,
+  serviceId: z.literal(RECALL_SERVICE_ID),
+  revision: refId,
+  policySha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type TranscriptMapServiceBinding = z.infer<typeof TranscriptMapServiceBindingSchema>;
+
+export const TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY = "mapping:catalog-admission";
+export const TranscriptMapCatalogAdmissionSchema = z.strictObject({
+  route: TranscriptMapConfigSchema,
+  serviceBinding: TranscriptMapServiceBindingSchema,
+  resourceBindingDigest: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type TranscriptMapCatalogAdmission = z.infer<typeof TranscriptMapCatalogAdmissionSchema>;
+
 /** The exact native request and its attempted-post boundary survive acknowledgement loss. */
 export const TranscriptMapCatalogRunSchema = z
   .strictObject({
-    route: TranscriptMapConfigSchema,
+    ...TranscriptMapCatalogAdmissionSchema.shape,
     input: TranscriptMapCatalogInputSchema,
     afterCaptureId: TranscriptMapCaptureIdSchema.nullable(),
     context: TranscriptMapContextSchema.nullable(),
@@ -5161,7 +5192,10 @@ export const TranscriptMapCatalogRunSchema = z
     refusedAttempts: z.number().int().nonnegative(),
     progress: TranscriptMapCatalogProgressSchema.nullable(),
   })
-  .refine((run) => run.refusedAttempts <= run.attempts);
+  .refine((run) => run.refusedAttempts <= run.attempts &&
+    run.input.sourceMachineId === run.route.sourceMachineId &&
+    run.input.executorMachineId === run.route.executorMachineId &&
+    run.serviceBinding.machineId === run.route.sourceMachineId);
 export type TranscriptMapCatalogRun = z.infer<typeof TranscriptMapCatalogRunSchema>;
 
 /**

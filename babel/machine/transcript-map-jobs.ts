@@ -106,7 +106,7 @@ export function mapCatalogWake(input: TranscriptMapCatalogWakeInput): Receipt {
   const at = new Date().toISOString();
   return ReceiptSchema.parse({
     runId: "run_" + crypto.randomUUID().replaceAll("-", ""),
-    machineId: input.machineId,
+    machineId: input.executorMachineId,
     kind: "mapCatalog",
     startedAt: at,
     finishedAt: at,
@@ -153,7 +153,7 @@ export async function mapCatalog(
     }
     const receipt = ReceiptSchema.parse({
       runId: parsed.runId,
-      machineId: parsed.machineId,
+      machineId: parsed.executorMachineId,
       kind: "mapCatalog",
       startedAt,
       finishedAt: new Date().toISOString(),
@@ -161,6 +161,8 @@ export async function mapCatalog(
       counts: { captures: result.entries.length, nodes: plan?.nodes.length ?? 0 },
       mapping: {
         kind: "catalog",
+        sourceMachineId: parsed.sourceMachineId,
+        executorMachineId: parsed.executorMachineId,
         context: result.context,
         entries: result.entries,
         nextCursor: result.nextCursor,
@@ -305,7 +307,7 @@ export async function mapPrepare(
     const report = scan.report();
     const receipt = ReceiptSchema.parse({
       runId: parsed.runId,
-      machineId: parsed.machineId,
+      machineId: parsed.executorMachineId,
       kind: "mapPrepare",
       startedAt,
       finishedAt: new Date().toISOString(),
@@ -316,6 +318,8 @@ export async function mapPrepare(
       },
       mapping: {
         kind: "material",
+        sourceMachineId: parsed.sourceMachineId,
+        executorMachineId: parsed.executorMachineId,
         ...authorized,
         source: parsed.source,
         node,

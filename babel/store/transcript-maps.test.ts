@@ -44,7 +44,8 @@ const NOW = "2026-09-20T10:00:00.000Z";
 const LATER = "2026-09-20T10:02:00.000Z";
 const hash = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 const policy = TranscriptMapPolicySchema.parse({
-  machineId: "machine-map",
+  sourceMachineId: "machine-map",
+  executorMachineId: "machine-executor",
   profile: { containerId: "profile-map", expectedRevision: 1 },
   dailyCost: 2,
   generateRecipe: "mapping-generate",
@@ -66,7 +67,7 @@ const context: TranscriptMapContext = {
   eligibleCaptures: 1,
   observedAt: NOW,
 };
-const scope = { machineId: policy.machineId, context };
+const scope = { machineId: policy.sourceMachineId, context };
 const opened: TestStore[] = [];
 afterEach(() => {
   for (const db of opened.splice(0)) db.close();
@@ -219,6 +220,57 @@ async function generate(db: TestStore, maps: TranscriptMaps) {
   }
 }
 
+test("executor replacement preserves source ownership and historical producing provenance", async () => {
+  const db = await setup();
+  const data = fixture(1);
+  const original = await publish(db.maps, data);
+  await generate(db, db.maps);
+  const originalView = await db.maps.node(scope, original.id, data.nodes[0]!.id);
+  const moved = { ...policy, executorMachineId: "replacement-executor" };
+  await db.maps.refreshWork(moved, LATER, 128);
+  expect(await db.maps.offers(moved, LATER)).toEqual([]);
+  const selected = await db.maps.ensureVersion(data.plan.id, moved, LATER);
+  expect(selected.id).not.toBe(original.id);
+  expect(selected.sourceMachineId).toBe(original.sourceMachineId);
+  expect(selected.executorMachineId).toBe(moved.executorMachineId);
+  const view = await db.maps.node(scope, selected.id, data.nodes[0]!.id);
+  expect(view?.summary?.id).toBe(originalView?.summary?.id);
+  expect(view?.summary?.versionId).toBe(original.id);
+  expect(await db.maps.node({ ...scope, machineId: moved.executorMachineId }, selected.id, data.nodes[0]!.id)).toBeNull();
+  expect(await db.maps.candidates(moved.executorMachineId, { captureId: data.plan.source.id })).toEqual([]);
+  expect(await db.maps.ensureVersion(data.plan.id, policy, NOW)).toEqual(original);
+});
+
+test("a replacement source cannot claim another owner's capture or historical plan", async () => {
+  const db = await setup();
+  const data = fixture(1);
+  const original = await publish(db.maps, data);
+  const replacement = { ...policy, sourceMachineId: "replacement-source" };
+  await expect(db.maps.recordPlan({
+    ...scope, machineId: replacement.sourceMachineId, ...data,
+    offset: 0, nextOffset: null, now: LATER,
+  })).rejects.toThrow();
+  await expect(db.maps.ensureVersion(data.plan.id, replacement, LATER)).rejects.toThrow();
+  expect(await db.maps.reference(replacement.sourceMachineId, original.id, data.nodes[0]!.id)).toBeNull();
+  expect(await db.maps.candidates(replacement.sourceMachineId, { captureId: data.plan.source.id })).toEqual([]);
+  expect((await db.maps.node(scope, original.id, data.nodes[0]!.id))?.source.id).toBe(data.plan.source.id);
+});
+
+test("a draft capture with no recorded source owner is never adopted by a new route", async () => {
+  const db = await setup();
+  const data = fixture(1);
+  const { coordinates: _coordinates, captureDigest: _captureDigest, sourceDigest: _sourceDigest,
+    bytes: _bytes, records: _records, ...capture } = data.plan.source;
+  await db.db.run(
+    `INSERT INTO transcript_map_captures(id,host,harness,session,captured_at,payload) VALUES(?,?,?,?,?,?)`,
+    [capture.id, capture.host, capture.harness, capture.session, capture.capturedAt, JSON.stringify(capture)],
+  );
+  await expect(publish(db.maps, data)).rejects.toThrow();
+  expect(await db.maps.candidates(policy.sourceMachineId, { captureId: capture.id })).toEqual([]);
+  expect(await db.db.query(`SELECT source_machine_id FROM transcript_map_captures WHERE id=?`, [capture.id]))
+    .toEqual([{ source_machine_id: "" }]);
+});
+
 test("paged plans stay invisible until manifest verification and never authorize another class", async () => {
   const db = await setup();
   const data = fixture();
@@ -265,7 +317,7 @@ test("paged plans stay invisible until manifest verification and never authorize
   expect((await db.maps.status(denied)).verifiedMappedCaptures).toBe(0);
   const changed = { ...context, digest: hash("changed classifications"), observedAt: LATER };
   await db.maps.recordCatalog({
-    machineId: policy.machineId,
+    machineId: policy.sourceMachineId,
     context: changed,
     entries: [],
     nextCursor: null,
@@ -578,7 +630,7 @@ test("read attestations preserve worker inventory progress and planning resumes 
     eligibleCaptures: 0,
   };
   await db.maps.recordAccess({
-    machineId: policy.machineId,
+    machineId: policy.sourceMachineId,
     context: reading,
     entries: [],
     now: LATER,
@@ -589,12 +641,12 @@ test("read attestations preserve worker inventory progress and planning resumes 
     entries: [],
     now: LATER,
   });
-  expect(await db.maps.catalogState(policy.machineId)).toEqual({
+  expect(await db.maps.catalogState(policy.sourceMachineId)).toEqual({
     context,
     nextCursor: "inventory-page-two",
     completedAt: null,
   });
-  expect(await db.maps.nextPlan(policy.machineId, policy.segmentation)).toEqual({
+  expect(await db.maps.nextPlan(policy.sourceMachineId, policy.segmentation)).toEqual({
     capture,
     offset: 0,
   });
@@ -606,11 +658,11 @@ test("read attestations preserve worker inventory progress and planning resumes 
     nextOffset: 1,
     now: LATER,
   });
-  expect(await db.maps.nextPlan(policy.machineId, policy.segmentation)).toEqual({
+  expect(await db.maps.nextPlan(policy.sourceMachineId, policy.segmentation)).toEqual({
     capture,
     offset: 1,
   });
-  expect(await db.maps.catalogState(policy.machineId)).toEqual({
+  expect(await db.maps.catalogState(policy.sourceMachineId)).toEqual({
     context,
     nextCursor: "inventory-page-two",
     completedAt: null,
@@ -623,15 +675,15 @@ test("read attestations preserve worker inventory progress and planning resumes 
     nextOffset: null,
     now: LATER,
   });
-  expect(await db.maps.nextPlan(policy.machineId, policy.segmentation)).toBeNull();
+  expect(await db.maps.nextPlan(policy.sourceMachineId, policy.segmentation)).toBeNull();
   await db.maps.recordCatalog({ ...scope, entries: [], nextCursor: null, now: LATER });
-  expect((await db.maps.catalogState(policy.machineId)).completedAt).toBe(LATER);
+  expect((await db.maps.catalogState(policy.sourceMachineId)).completedAt).toBe(LATER);
   await db.maps.refreshWork(policy, LATER);
   const offered = (await db.maps.offers(policy, LATER))[0];
   if (!offered) throw new Error("missing attested work");
   expect((await db.maps.work(offered.id))?.context).toEqual(context);
   await db.maps.recordAccess({
-    machineId: policy.machineId,
+    machineId: policy.sourceMachineId,
     context: {
       ...reading,
       digest: hash("new archive inventory"),
@@ -640,7 +692,7 @@ test("read attestations preserve worker inventory progress and planning resumes 
     entries: [],
     now: "2026-09-20T10:03:00.000Z",
   });
-  expect(await db.maps.catalogState(policy.machineId)).toEqual({
+  expect(await db.maps.catalogState(policy.sourceMachineId)).toEqual({
     context: null,
     nextCursor: null,
     completedAt: null,
@@ -652,7 +704,7 @@ test("read attestations preserve worker inventory progress and planning resumes 
 // A native service seam retains completed jobs, including replies lost after dispatch.
 // The hub still uses the real temporary SQL store, immutable artifacts and public door schemas.
 function reader(db: TestStore, data: MapFixture) {
-  const target = transcriptMapReadTarget(policy.machineId, "private");
+  const target = transcriptMapReadTarget(policy.sourceMachineId, "private");
   const control = {
     allowed: true,
     write: false,
@@ -687,7 +739,7 @@ function reader(db: TestStore, data: MapFixture) {
       },
       services: {
         describeInstance: async () => ({
-          owner: { machineId: policy.machineId },
+          owner: { machineId: policy.sourceMachineId },
           configuration: { pluginId: BABEL_PLUGIN_ID, enabled: true, revision: control.revision },
         }),
         invokeInstance: async (args: {
@@ -772,6 +824,24 @@ function reader(db: TestStore, data: MapFixture) {
   return { target, control, posted, knock };
 }
 
+test("an executor's map grant neither navigates nor reads its source owner's archive", async () => {
+  const db = await setup();
+  const data = fixture(1);
+  const version = await publish(db.maps, data);
+  const f = reader(db, data);
+  const executorTarget = transcriptMapReadTarget(policy.executorMachineId, "private");
+  const source = { versionId: version.id, nodeId: data.nodes[0]!.id, maxBytes: 23 };
+  expect(await f.knock(ACTIONS.mapSource, { ...source, target: executorTarget }, 81)).toHaveProperty("refused");
+  expect(await f.knock(ACTIONS.mapRead, {
+    target: executorTarget, request: { kind: "node", versionId: version.id, nodeId: source.nodeId },
+  }, 82)).toHaveProperty("refused");
+  expect(f.posted.size).toBe(0);
+  const reply = TranscriptMapNativeReplySchema.parse(
+    await f.knock(ACTIONS.mapSource, { ...source, target: f.target }, 83),
+  );
+  expect(reply.result?.span?.excerpt.bytes).toBe(23);
+});
+
 test("unmapped nodes remain navigable through the actual SDK result projection", async () => {
   const db = await setup();
   const data = fixture(1);
@@ -815,7 +885,7 @@ test("map readers reauthorize candidates independently of worker inventory and o
       limit: 1,
     },
   };
-  expect((await db.maps.candidates(policy.machineId, { query: "Navigation" }))[0]?.id).toBe(
+  expect((await db.maps.candidates(policy.sourceMachineId, { query: "Navigation" }))[0]?.id).toBe(
     data.plan.source.id,
   );
   expect(await db.db.query("SELECT summary_id FROM transcript_map_served")).toEqual([]);

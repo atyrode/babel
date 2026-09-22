@@ -429,7 +429,8 @@ test("finite material sealing uses exact leaves but only ordered summaries/gaps 
     const receipt = await mapCatalog(
       {
         runId: "catalog-synthetic",
-        machineId: "machine-synthetic",
+        sourceMachineId: "source-synthetic",
+        executorMachineId: "machine-synthetic",
         request: { kind: "map-plan", capture, segmentation, offset: 0, maxNodes: 1 },
       },
       directorySink(join(f.directory, "catalog")),
@@ -443,7 +444,8 @@ test("finite material sealing uses exact leaves but only ordered summaries/gaps 
     const parent = plan.nodes.find((node) => node.children.length)!;
     const input = {
       runId: "material-synthetic",
-      machineId: "machine-synthetic",
+      sourceMachineId: "source-synthetic",
+      executorMachineId: "machine-synthetic",
       source: plan.header.source,
       nodeId: parent.id,
       segmentation,
@@ -524,7 +526,7 @@ test("catalog cadences complete without a filesystem lease or Recall binding", a
     const outputDir = join(directory, "unbound-output");
     await Bun.write(outputDir, "not a native output lease");
     const inputPath = join(directory, "wake.json");
-    await Bun.write(inputPath, JSON.stringify({ kind: "catalog-wake", machineId: "synthetic" }));
+    await Bun.write(inputPath, JSON.stringify({ kind: "catalog-wake", sourceMachineId: "source-synthetic", executorMachineId: "synthetic" }));
     const first = await run({
       operation: "mapCatalog",
       inputPath,

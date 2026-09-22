@@ -767,7 +767,8 @@ test("explicit catalog admission posts free work without settling or launching p
     payload: JSON.stringify({
       ...policy,
       mapping: {
-        machineId: MACHINE,
+        sourceMachineId: "source-machine",
+        executorMachineId: MACHINE,
         profile: { containerId: "ctr_workbench", expectedRevision: 1 },
         dailyCost: 0,
         generateRecipe: "triage",
@@ -782,7 +783,14 @@ test("explicit catalog admission posts free work without settling or launching p
   const native = {
     describe: () => ({
       connected: true,
-      operations: { [OPERATIONS.mapCatalog]: { ready: true, reason: null } },
+      operations: { [OPERATIONS.mapCatalog]: {
+        ready: true, reason: null,
+        resourceBindingDigest: "b".repeat(64),
+        serviceBindings: { [RECALL_SERVICE_ID]: {
+          machineId: "source-machine", serviceId: RECALL_SERVICE_ID,
+          revision: "source-revision-1", policySha256: "c".repeat(64),
+        } },
+      } },
       installation: {
         revision: "rev-7",
         artifactSha256: "a".repeat(64),
@@ -811,6 +819,16 @@ test("explicit catalog admission posts free work without settling or launching p
   };
   const ctx = context(harness.db as unknown as GuestDatabase, jobs);
   const action = plugin.actions.find((entry) => entry.name === ACTIONS.startMapCatalog)!;
+  for (const [executor, source] of [[MACHINE, MACHINE], ["wrong-executor", "source-machine"]]) {
+    expect(await plugin.handlers[ACTIONS.startMapCatalog]!(
+      { ...ctx, jobs: native as unknown as GuestCtx["jobs"] },
+      action.input.parse({
+        operation: { kind: "operation", machineId: executor, operationId: OPERATIONS.mapCatalog },
+        target: { kind: "service", machineId: source, serviceId: RECALL_SERVICE_ID, operationId: TRANSCRIPT_MAP_SERVICE_OPERATION },
+      }) as never,
+    )).toHaveProperty("refused");
+  }
+  expect(executed).toEqual([]);
   let paidCalls = 0;
   const result = await plugin.handlers[ACTIONS.startMapCatalog]!(
     {
@@ -827,7 +845,7 @@ test("explicit catalog admission posts free work without settling or launching p
       operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.mapCatalog },
       target: {
         kind: "service",
-        machineId: MACHINE,
+        machineId: "source-machine",
         serviceId: RECALL_SERVICE_ID,
         operationId: TRANSCRIPT_MAP_SERVICE_OPERATION,
       },
@@ -844,7 +862,7 @@ test("explicit catalog admission posts free work without settling or launching p
   );
   expect(intent).toEqual([{ request: "map-inventory", closure: null }]);
   expect(scheduled.map((job) => JSON.parse(String(job.input["input"])))).toEqual([
-    { kind: "catalog-wake", machineId: MACHINE },
+    { kind: "catalog-wake", sourceMachineId: "source-machine", executorMachineId: MACHINE },
   ]);
   expect(scheduled[0]!.offlinePolicy).toBe("coalesce-one");
 
@@ -856,17 +874,39 @@ test("explicit catalog admission posts free work without settling or launching p
   expect(scheduled).toHaveLength(1);
   expect(executed).toHaveLength(1);
 
+  // A replacement source on the same executor also needs its own explicit admission.
+  await insert(harness.db, "policies", {
+    version: "p3", seq: 3, actor_id: "operator",
+    reason: "replace source owner", recorded_at: stamp(NOW),
+    payload: JSON.stringify({
+      ...policy,
+      mapping: {
+        sourceMachineId: "replacement-source", executorMachineId: MACHINE,
+        profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+        dailyCost: 0, generateRecipe: "triage", reviewRecipe: "triage",
+      },
+    }),
+  });
+  await plugin.lifecycle?.onJobSettled?.(
+    { ...ctx, jobs: native } as never,
+    settled({ machineId: MACHINE, operationId: OPERATIONS.mapCatalog }),
+  );
+  expect(disabled).toEqual([scheduled[0]!.revision]);
+  expect(executed).toHaveLength(1);
+  expect(scheduled).toHaveLength(1);
+
   // Moving the policy cannot spend the old machine's continuation on the new machine.
   await insert(harness.db, "policies", {
-    version: "p3",
-    seq: 3,
+    version: "p4",
+    seq: 4,
     actor_id: "operator",
     reason: "move the mapping route",
     recorded_at: stamp(NOW),
     payload: JSON.stringify({
       ...policy,
       mapping: {
-        machineId: "another-machine",
+        sourceMachineId: "source-machine",
+        executorMachineId: "another-machine",
         profile: { containerId: "ctr_workbench", expectedRevision: 1 },
         dailyCost: 0,
         generateRecipe: "triage",

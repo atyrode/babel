@@ -2651,7 +2651,8 @@ function mapPolicy(over: Partial<Policy> = {}): Policy {
       ],
     },
     mapping: {
-      machineId: "mapping-host",
+      sourceMachineId: "mapping-source",
+      executorMachineId: "mapping-host",
       profile: { containerId: "mapping-profile", expectedRevision: 2 },
       dailyCost: 4,
       generateRecipe: "generate",
@@ -2722,7 +2723,7 @@ async function mapCapture(db: GuestDatabase, policy: Policy, session: string): P
     observedAt: now,
   };
   await transcriptMaps({ db }).recordPlan({
-    machineId: route.machineId,
+    machineId: route.sourceMachineId,
     context,
     plan,
     nodes: [node],

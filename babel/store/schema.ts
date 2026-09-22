@@ -510,6 +510,10 @@ export const SESSION_INDEX_SCHEMA: readonly string[] = [
    )`,
 ];
 
+// Applied after table creation in both paths, including upgrades that create map tables now.
+const TRANSCRIPT_MAP_OWNER_COLUMN =
+  `ALTER TABLE transcript_map_captures ADD COLUMN source_machine_id TEXT NOT NULL DEFAULT ''`;
+
 /**
  * Per-capture navigation artifacts (#223). None of these identifiers name frontier records.
  * Prose and its producing inputs are immutable; bindings and heads are disposable selections.
@@ -1080,6 +1084,7 @@ export const SCHEMA_V1: readonly string[] = [
   ...CORPUS_INDEX_SCHEMA,
   ...RECALL_TRACE_SCHEMA,
   ...TRANSCRIPT_MAP_SCHEMA,
+  TRANSCRIPT_MAP_OWNER_COLUMN,
   ...TRANSCRIPT_MAP_READ_SCHEMA,
 
   // ---------------------------------------------------------------- a drain (#258)
@@ -1219,6 +1224,12 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   ...CORPUS_INDEX_SCHEMA.map(objectAddition),
   ...RECALL_TRACE_SCHEMA.map(objectAddition),
   ...TRANSCRIPT_MAP_SCHEMA.map(objectAddition),
+  // Earlier draft captures have no provable owner. Keep them unowned, never infer a new one.
+  {
+    object: "transcript_map_captures",
+    column: "source_machine_id",
+    sql: TRANSCRIPT_MAP_OWNER_COLUMN,
+  },
   ...TRANSCRIPT_MAP_READ_SCHEMA.map(objectAddition),
   // #169: the models that have answered a running job, JSON, in the order it first heard from
   // each. A column and not a table, because the table above already arrives by addition for a

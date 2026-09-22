@@ -203,7 +203,7 @@ function recipes(policy: TranscriptMapPolicy) {
 }
 function contract(policy: TranscriptMapPolicy): string {
   const selected = recipes(policy);
-  return digest([policy.profile, selected.generate, selected.review, policy.segmentation]);
+  return digest([policy.sourceMachineId, policy.executorMachineId, policy.profile, selected.generate, selected.review, policy.segmentation]);
 }
 function emptyCoverage(): TranscriptMapCoverage {
   return {
@@ -237,6 +237,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     return {
       sql: `EXISTS (SELECT 1 FROM transcript_map_access a JOIN transcript_map_contexts c
         ON c.machine_id=a.machine_id AND c.digest=a.context_digest
+        JOIN transcript_map_captures owned ON owned.id=a.capture_id AND owned.source_machine_id=a.machine_id
         WHERE a.machine_id=? AND a.capture_id=${captureColumn} AND a.context_digest=? AND a.sensitivity<=?)
         AND NOT EXISTS (SELECT 1 FROM transcript_map_contexts c WHERE c.machine_id=?
           AND c.observed_at>? AND c.digest!=?)
@@ -321,6 +322,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     if (input.entries.length > TRANSCRIPT_MAP_MAX_CAPTURES)
       throw new TranscriptMapProjectionRefusal("transcript catalog page exceeds bound");
     await rememberContext(input, input.nextCursor, preserveCursor, mapping, input.now, input.guard);
+    if (input.entries.length === 0) return;
     const statements: SqlStatement[] = [];
     for (const entry of input.entries) {
       const capture = TranscriptMapCaptureSchema.parse(entry.capture);
@@ -332,11 +334,15 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         access.sensitivity > input.context.ceiling
       )
         throw new TranscriptMapProjectionRefusal("invalid transcript map access attestation");
-      const previous = await one("transcript_map_captures", capture.id);
-      if (previous && json(previous) !== json(capture))
-        throw new TranscriptMapProjectionRefusal("capture identity changed");
+      const previous = await db.query<{ payload: string; source_machine_id: string }>(
+        `SELECT payload,source_machine_id FROM transcript_map_captures WHERE id=?`,
+        [capture.id],
+      );
+      if (previous[0] && (previous[0].payload !== json(capture) || previous[0].source_machine_id !== input.machineId))
+        throw new TranscriptMapProjectionRefusal("capture identity or source owner changed");
       statements.push({
-        sql: `INSERT OR IGNORE INTO transcript_map_captures(id,host,harness,session,captured_at,payload) VALUES(?,?,?,?,?,?)`,
+        sql: `INSERT OR IGNORE INTO transcript_map_captures(id,host,harness,session,captured_at,payload,source_machine_id)
+          SELECT ?,?,?,?,?,?,? WHERE (${input.guard?.sql ?? "1"})`,
         params: [
           capture.id,
           capture.host,
@@ -344,15 +350,24 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           capture.session,
           capture.capturedAt,
           json(capture),
+          input.machineId,
+          ...(input.guard?.params ?? []),
         ],
       });
       statements.push({
-        sql: `INSERT INTO transcript_map_access(machine_id,capture_id,context_digest,sensitivity) VALUES(?,?,?,?)
+        sql: `INSERT INTO transcript_map_access(machine_id,capture_id,context_digest,sensitivity)
+        SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM transcript_map_captures WHERE id=? AND source_machine_id=?)
+          AND (${input.guard?.sql ?? "1"})
         ON CONFLICT(machine_id,capture_id,context_digest) DO UPDATE SET sensitivity=max(sensitivity,excluded.sensitivity)`,
-        params: [input.machineId, capture.id, access.contextDigest, access.sensitivity],
+        params: [input.machineId, capture.id, access.contextDigest, access.sensitivity, capture.id, input.machineId, ...(input.guard?.params ?? [])],
       });
     }
     await batch(statements);
+    const collisions = await db.query<{ id: string }>(
+      `SELECT id FROM transcript_map_captures WHERE id IN (SELECT value FROM json_each(?)) AND source_machine_id!=? LIMIT 1`,
+      [json(input.entries.map((entry) => entry.capture.id)), input.machineId],
+    );
+    if (collisions.length) throw new TranscriptMapProjectionRefusal("capture source owner collision");
   }
   async function recordAccess(input: TranscriptMapAccessInput): Promise<void> {
     await recordCatalog({ ...input, nextCursor: null }, true, false);
@@ -436,8 +451,9 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     )
       throw new TranscriptMapProjectionRefusal("invalid transcript plan page");
     await db.run(
-      `INSERT OR IGNORE INTO transcript_map_plans(id,capture_id,payload,created_at) VALUES(?,?,?,?)`,
-      [plan.id, plan.source.id, json(plan), input.now],
+      `INSERT OR IGNORE INTO transcript_map_plans(id,capture_id,payload,created_at)
+        SELECT ?,?,?,? WHERE (${input.guard?.sql ?? "1"})`,
+      [plan.id, plan.source.id, json(plan), input.now, ...(input.guard?.params ?? [])],
     );
     const statements: SqlStatement[] = [];
     for (let index = 0; index < input.nodes.length; index += 1) {
@@ -467,7 +483,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       )
         throw new TranscriptMapProjectionRefusal("invalid transcript map node");
       statements.push({
-        sql: `INSERT OR IGNORE INTO transcript_map_nodes(id,plan_id,position,parent_node_id,level,ordinal,byte_offset,byte_length,gap,payload) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+        sql: `INSERT OR IGNORE INTO transcript_map_nodes(id,plan_id,position,parent_node_id,level,ordinal,byte_offset,byte_length,gap,payload)
+          SELECT ?,?,?,?,?,?,?,?,?,? WHERE (${input.guard?.sql ?? "1"})`,
         params: [
           node.id,
           plan.id,
@@ -479,6 +496,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           node.span.byteLength,
           node.gap,
           json(node),
+          ...(input.guard?.params ?? []),
         ],
       });
     }
@@ -494,7 +512,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     );
     if (Number(published[0]?.complete) === 1) return { complete: true };
     await verifyPlan(plan);
-    await db.run(`UPDATE transcript_map_plans SET complete=1 WHERE id=?`, [plan.id]);
+    await db.run(`UPDATE transcript_map_plans SET complete=1 WHERE id=? AND (${input.guard?.sql ?? "1"})`,
+      [plan.id, ...(input.guard?.params ?? [])]);
     store.touch?.();
     return { complete: true };
   }
@@ -612,6 +631,12 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     const policy = TranscriptMapPolicySchema.parse(raw);
     const plan = await one<TranscriptMapPlan>("transcript_map_plans", planId);
     if (!plan) throw new Error("unknown transcript map plan");
+    const owner = await db.query<{ source_machine_id: string }>(
+      `SELECT source_machine_id FROM transcript_map_captures WHERE id=?`,
+      [plan.source.id],
+    );
+    if (owner[0]?.source_machine_id !== policy.sourceMachineId)
+      throw new TranscriptMapProjectionRefusal("transcript plan belongs to another source owner");
     const complete = await db.query<{ complete: number }>(
       `SELECT complete FROM transcript_map_plans WHERE id=?`,
       [planId],
@@ -629,14 +654,14 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     if (!Number.isSafeInteger(gen) || gen < 0 || gen > Number(requests[0]?.generation ?? 0))
       throw new Error("generation requires an explicit regeneration request");
     const key = contract(policy);
-    const id = identity("tmver", [policy.machineId, planId, key, gen]);
+    const id = identity("tmver", [policy.sourceMachineId, planId, key, gen]);
     const held = await one<TranscriptMapVersion>("transcript_map_versions", id);
     if (held) {
       if (gen === Number(requests[0]?.generation ?? 0))
         await db.run(
           `INSERT INTO transcript_map_heads(machine_id,plan_id,version_id)
         VALUES(?,?,?) ON CONFLICT(machine_id,plan_id) DO UPDATE SET version_id=excluded.version_id`,
-          [policy.machineId, planId, held.id],
+          [policy.sourceMachineId, planId, held.id],
         );
       return held;
     }
@@ -644,13 +669,15 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       throw new Error("cannot create an obsolete generation");
     const heads = await db.query<{ version_id: string }>(
       `SELECT version_id FROM transcript_map_heads WHERE machine_id=? AND plan_id=?`,
-      [policy.machineId, planId],
+      [policy.sourceMachineId, planId],
     );
     const selected = recipes(policy);
     const version = TranscriptMapVersionSchema.parse({
       id,
       planId,
       contractDigest: key,
+      sourceMachineId: policy.sourceMachineId,
+      executorMachineId: policy.executorMachineId,
       profile: policy.profile,
       generateRecipe: selected.generate,
       reviewRecipe: selected.review,
@@ -661,11 +688,11 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     await db.batch([
       {
         sql: `INSERT OR IGNORE INTO transcript_map_versions(id,plan_id,machine_id,contract_digest,generation,payload,policy,created_at) VALUES(?,?,?,?,?,?,?,?)`,
-        params: [id, planId, policy.machineId, key, gen, json(version), json(policy), now],
+        params: [id, planId, policy.sourceMachineId, key, gen, json(version), json(policy), now],
       },
       {
         sql: `INSERT INTO transcript_map_heads(machine_id,plan_id,version_id) VALUES(?,?,?) ON CONFLICT(machine_id,plan_id) DO UPDATE SET version_id=excluded.version_id`,
-        params: [policy.machineId, planId, id],
+        params: [policy.sourceMachineId, planId, id],
       },
     ]);
     store.touch?.();
@@ -714,7 +741,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       plan.source.host,
       plan.source.harness,
       plan.source.session,
-      version.contractDigest,
+      [version.sourceMachineId, version.profile, version.generateRecipe, version.reviewRecipe, plan.segmentation],
       version.generation === 0 ? null : [plan.source.id, version.generation],
       item.level,
       item.span.digest,
@@ -725,6 +752,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   }
   const liveAccess = `EXISTS (SELECT 1 FROM transcript_map_access a JOIN transcript_map_contexts c
     ON c.machine_id=a.machine_id AND c.digest=a.context_digest
+    JOIN transcript_map_captures owned ON owned.id=a.capture_id AND owned.source_machine_id=a.machine_id
     WHERE a.capture_id=p.capture_id AND a.machine_id=v.machine_id AND a.sensitivity<=c.ceiling AND c.mapping=1
       AND NOT EXISTS (SELECT 1 FROM transcript_map_contexts newer WHERE newer.machine_id=c.machine_id
         AND newer.observed_at>c.observed_at AND newer.digest!=c.digest))`;
@@ -891,18 +919,20 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     const cap = bound(limit, MAX_SCAN);
     const plans = await db.query<{ id: string }>(
       `SELECT p.id FROM transcript_map_plans p
-      WHERE p.complete=1 AND EXISTS (SELECT 1 FROM transcript_map_access a WHERE a.capture_id=p.capture_id AND a.machine_id=?)
+      WHERE p.complete=1 AND EXISTS (SELECT 1 FROM transcript_map_access a
+        JOIN transcript_map_captures owned ON owned.id=a.capture_id AND owned.source_machine_id=a.machine_id
+        WHERE a.capture_id=p.capture_id AND a.machine_id=?)
       AND json_extract(p.payload,'$.segmentation')=json(?)
       AND NOT EXISTS (SELECT 1 FROM transcript_map_heads h JOIN transcript_map_versions v ON v.id=h.version_id
         WHERE h.plan_id=p.id AND h.machine_id=? AND v.contract_digest=?
           AND v.generation=(SELECT coalesce(max(generation),0) FROM transcript_map_regenerations WHERE capture_id=p.capture_id))
       ORDER BY p.created_at,p.id LIMIT ?`,
-      [policy.machineId, json(policy.segmentation), policy.machineId, key, Math.min(cap, 8)],
+      [policy.sourceMachineId, json(policy.segmentation), policy.sourceMachineId, key, Math.min(cap, 8)],
     );
     for (const row of plans) await ensureVersion(row.id, policy, now);
     const cursor = await db.query<{ version_cursor: number; node_cursor: number }>(
       `SELECT version_cursor,node_cursor FROM transcript_map_scan WHERE machine_id=? AND contract_digest=?`,
-      [policy.machineId, key],
+      [policy.sourceMachineId, key],
     );
     const rows = await db.query<{ version_id: string; node_id: string; vr: number; nr: number }>(
       `SELECT v.id version_id,n.id node_id,v.rowid vr,n.rowid nr FROM transcript_map_heads h
@@ -910,7 +940,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
        JOIN transcript_map_nodes n ON n.plan_id=p.id
        WHERE h.machine_id=? AND v.contract_digest=? AND p.complete=1 AND ${liveAccess}
        AND (v.rowid,n.rowid)>(?,?) ORDER BY v.rowid,n.rowid LIMIT ?`,
-      [policy.machineId, key, cursor[0]?.version_cursor ?? 0, cursor[0]?.node_cursor ?? 0, cap],
+      [policy.sourceMachineId, key, cursor[0]?.version_cursor ?? 0, cursor[0]?.node_cursor ?? 0, cap],
     );
     let added = 0;
     for (const row of rows) {
@@ -1014,7 +1044,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     await db.run(
       `INSERT INTO transcript_map_scan(machine_id,contract_digest,version_cursor,node_cursor) VALUES(?,?,?,?)
       ON CONFLICT(machine_id,contract_digest) DO UPDATE SET version_cursor=excluded.version_cursor,node_cursor=excluded.node_cursor`,
-      [policy.machineId, key, last?.vr ?? 0, last?.nr ?? 0],
+      [policy.sourceMachineId, key, last?.vr ?? 0, last?.nr ?? 0],
     );
     if (added) store.touch?.();
     return added;
@@ -1031,7 +1061,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       WHERE v.machine_id=? AND v.contract_digest=? AND w.state='queued' AND w.ready_at<=? AND w.attempt<=?
       AND p.complete=1 AND ${liveAccess}
       ORDER BY w.ready_at,w.created_at,w.id LIMIT ?`,
-      [policy.machineId, contract(policy), now, policy.maxAttempts, MAX_SCAN],
+      [policy.sourceMachineId, contract(policy), now, policy.maxAttempts, MAX_SCAN],
     );
     const result: TranscriptMapWork[] = [];
     for (const row of rows) {
@@ -1475,8 +1505,11 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       input.versionId === undefined &&
       input.nodeId === undefined
     ) {
-      const capture = await one<TranscriptMapCapture>("transcript_map_captures", input.captureId);
-      return capture ? [capture] : [];
+      const rows = await db.query<{ payload: string }>(
+        `SELECT payload FROM transcript_map_captures WHERE id=? AND source_machine_id=?`,
+        [input.captureId, machineId],
+      );
+      return rows.map((row) => TranscriptMapCaptureSchema.parse(JSON.parse(row.payload)));
     }
     const match = input.query === undefined ? null : termsQuery(input.query);
     if (input.query !== undefined && !match) return [];
@@ -1490,7 +1523,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         JOIN transcript_map_terms ON transcript_map_terms.summary_id=b.summary_id`
           : ""
       }
-      WHERE v.machine_id=? AND p.complete=1
+      WHERE v.machine_id=? AND c.source_machine_id=v.machine_id AND p.complete=1
       ${
         match
           ? `AND transcript_map_terms MATCH ?
@@ -1521,6 +1554,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     const rows = await db.query<{ plan: string; node: string }>(
       `SELECT p.payload plan,n.payload node
       FROM transcript_map_versions v JOIN transcript_map_plans p ON p.id=v.plan_id
+      JOIN transcript_map_captures c ON c.id=p.capture_id AND c.source_machine_id=v.machine_id
       JOIN transcript_map_nodes n ON n.plan_id=p.id WHERE v.machine_id=? AND v.id=? AND n.id=? AND p.complete=1`,
       [machineId, versionId, nodeId],
     );
