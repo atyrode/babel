@@ -646,13 +646,13 @@ Catalog membership is not provider availability: Anthropic lists
 `claude-3-haiku-20240307` as [retired since 2026-04-20](https://platform.claude.com/docs/en/about-claude/model-deprecations),
 so it is not a cheap fallback for this rehearsal.
 
-The inventory refusal was reproduced without posting another job. The installed OMP root
+The initial inventory refusal was reproduced without posting another job. The then-installed OMP root
 bundle `f72c104a1c794499b9846bbf78e671d142ee9ab2b337bae1853d588d2fc9fc3c` was built against
 Manifold `743ee75a92b64b75b4a97244ebd58297c1287164`. Its strict public-job schema rejected
 the exact retained native status receipt solely for the root `limits` key. The current
 native schema against Manifold `7b5fe3015c3308532de634c2b2d8068ec2f0e451` accepted that same receipt.
-Both output APIs are valid; no output-reader workaround is indicated. A compatible deployment
-and normal inventory start/read smoke are still required.
+Both output APIs are valid; no output-reader workaround was needed. The compatible deployment
+and normal inventory start/read smoke below subsequently passed.
 
 **Offline native proof on dev-01, 2026-09-22:** the
 [packaged verifier at native revision `74c0759`](https://github.com/atyrode/manifold-omp/blob/74c0759/plugins/sdk-host/test/packaged-sdk-host.ts#L365-L397)
@@ -668,14 +668,44 @@ has no supported per-request token cap reaching the preserved gateway. A remaini
 balance or a low expected call price does
 not replace that exposure bound.
 
-No provider inference, benchmark, exploration, rehearsal or live bundle replacement was made.
-The inspected 222 retained native sessions on the three enrolled machines were all terminal;
-their latest start was 2026-09-18, before the shared verification grant. This does not reconcile
-possible out-of-band #315 consumption. The enabled standing conductor, compatible deployed
-closure, exact dedicated profile, complete shared ledger, conservative retry/token exposure and
-deployed native model-stage reporting still require resolution before admission. This partial inspection
-does not mark the rehearsal, 90-second go/no-go, Watch, Stop or final-receipt procedures exercised.
-Track the execution receipt and failures in #264 and atyrode/manifold-omp#71.
+**Compatible preview deployment qualified on dev-01, 2026-09-22.** The ten existing
+OMP, Code and Babel family bundles were replaced through the supported receiver, retaining their
+hardening settings. The installed root SHA-256 values are:
+
+| Root  | Qualified bundle SHA-256                                           |
+| ----- | ------------------------------------------------------------------ |
+| OMP   | `0f69f37bac23a2ac4eb132e5ff630ae7d66f41d1ac3c555d5d068ef0ea21bd2c` |
+| Code  | `8aa40792b7572686a255e2359c4e5bd2c1bbfc1be48e0580d3427a1dba20303c` |
+| Babel | `526744e6c5b2ba281778d6cc91acadb6f91a4368776d6429011003650849a0c3` |
+
+Policy `qualification-264-paused-20260922`, sequence 185, has `enabled: false`; its other
+policy fields were preserved. The dependency-ordered pause preceded replacement. Babel
+[#445](https://github.com/atyrode/babel/pull/445) makes that activation fence atomic with
+deferred posting. The views were restored without restarting standing work, and an explicit
+disabled-policy pulse left the native job count unchanged with no active work. On
+`https://preview.manifold.tyrode.dev`, open **Watch → Ceilings**: the expected policy version
+is `qualification-264-paused-20260922`. Do not press Start as part of this inspection.
+
+Native replacement invalidated the old runtime approvals. The account broker and gateway
+were reviewed and renewed in place, retaining client-listener configuration and existing
+pricing configuration. Both report ready; eight accounts are visible again, and both saved
+Code profiles retain revisions 15 and 3 and their selected models. Native OMP approval on
+dev-01 was renewed for inventory only, not benchmark or model-session execution.
+
+The ordinary `startInventory` and `readInventory` doors succeeded for job
+`79c5465e-7f79-4a64-8847-976665fe82a9`: CLI 18.1.14, exit 0, 12,191 ms, 24 models, and
+authoritative inference usage of zero calls, zero tokens and zero cost. Haiku 4.5's catalog
+metadata reports US$1/M input, US$5/M output, a 200,000-token context and a 64,000-token
+maximum output; this is still not a provider reachability or worst-case exposure proof.
+
+The shared verification ledger is US$0 spent, US$0 reserved and US$5 remaining. No provider
+inference, benchmark, exploration or rehearsal was executed. The deployed gateway has no
+reviewed price schedule; the dedicated profile, conservative provider retry/token exposure,
+paid-operation approval and complete Babel → Code → OMP consumer proof remain admission
+prerequisites. No new OMP patch was introduced. The rehearsal, 90-second go/no-go, live-model
+Watch, Stop and final-result procedures remain unexecuted. Track their receipt in #264 and
+atyrode/code#170; the inventory compatibility diagnosis and successful smoke are recorded
+separately in atyrode/manifold-omp#71.
 
 ### 11.3 Go / no-go (T-0)
 
