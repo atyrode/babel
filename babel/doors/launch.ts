@@ -1660,11 +1660,15 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         }
         // The parent is the serialization boundary; neither AsyncLocalStorage nor Code's
         // runSession deduplicates concurrent calls. Claim it only after readiness checks.
+        // Activation is checked in the same transaction so disablement during preparation
+        // leaves an unposted intent resumable instead of authorizing a new model session.
         const owned = await store.db.batch([
           {
             sql: `UPDATE runs SET payload = json_set(payload, '$.posting', json('true'))
              WHERE id = ? AND job_id IS NULL AND closure IS NULL
                AND COALESCE(json_extract(payload, '$.posting'), 0) = 0
+               AND (SELECT json_extract(payload, '$.enabled')
+                      FROM policies ORDER BY seq DESC LIMIT 1) = 1
              ${
                analysis === undefined
                  ? ""

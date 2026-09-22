@@ -11,6 +11,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Disabling policy fences deferred model admission.** An ordinary exploration whose material
+  finished preparing cannot buy its Code session under a disabled policy. Activation is checked
+  atomically with the posting claim, so disablement during preparation cannot slip through a
+  stale check. An unclaimed intent remains resumable after re-enablement; already claimed or
+  uncertain work keeps its existing accounting fence. Regressions cover both disablement
+  boundaries and exactly-once resumption (#444).
+
 - **Bounded drains retain admission and inference limits across wakes.** `maxJobs` caps total
   admitted ordinals, not just concurrency; refused attempts consume a slot, and reaching the cap
   waits for held jobs instead of refilling. Launch and drain preparation preserve Code's reviewed

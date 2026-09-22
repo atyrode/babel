@@ -528,6 +528,54 @@ test("reviewed limits survive the preparation wake and still govern the posted s
   ]);
 });
 
+test.each(["before-wake", "before-claim"] as const)(
+  "%s disablement leaves an ordinary prepared session unposted until re-enabled",
+  async (timing) => {
+    const answer = await start({
+      preset: "read-whats-new",
+      profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+    });
+    const runId = String(answer["runId"]);
+    await sealStage("completed", String(answer["jobId"]));
+    const activation = async (enabled: boolean, seq: number) =>
+      await insert(harness.db, "policies", {
+        version: `activation-${String(seq)}`,
+        seq,
+        actor_id: "operator",
+        reason: "changing activation",
+        payload: JSON.stringify({ enabled, perCycleCost: 0.25, batchSize: 4, dailyCost: 2 }),
+        recorded_at: stamp(NOW),
+      });
+    let posts = 0;
+    code.posting = () => {
+      posts += 1;
+      return stageJob();
+    };
+    const batch = harness.db.batch.bind(harness.db);
+    let pauseAtWrite = timing === "before-claim";
+    harness.db.batch = async (statements) => {
+      if (pauseAtWrite) {
+        pauseAtWrite = false;
+        await activation(false, 2);
+      }
+      return await batch(statements);
+    };
+    try {
+      if (timing === "before-wake") await activation(false, 2);
+      expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+      expect(posts).toBe(0);
+    } finally {
+      harness.db.batch = batch;
+    }
+    await activation(true, 3);
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([
+      { runId, jobId: "job_stage_code" },
+    ]);
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+    expect(posts).toBe(1);
+  },
+);
+
 test("a malformed persisted inference bound refuses before buying an unbounded session", async () => {
   const answer = await start({
     preset: "read-whats-new",
