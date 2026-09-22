@@ -10,8 +10,7 @@
   material bound. These tests distinguish a refused launch, a preparation in flight and the
   later session posting; none may be recorded as another.
 
-  `stop` is unchanged and still fully exercised: a run this deployment already started can be
-  running when the plugin is upgraded, and ending it releases what it reserved.
+  Stop preserves terminal Code accounting and holds reservations until cancellation settles.
 */
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -171,7 +170,7 @@ class Code implements CodeEngine {
     return await Promise.resolve(this.posting(request));
   }
 
-  /** What a Stop reaches for on a Code session; the launch tests never press one. */
+  /** What a Stop reaches for on a Code session. */
   cancelled: { containerId: string; jobId: string }[] = [];
 
   async cancelSession(args: {
@@ -922,6 +921,144 @@ test("stopping a Code session cancels it through Code, never through the hub's o
   expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_code_1" }]);
   expect(fleet.cancelled).toEqual([]);
   expect((await harness.store.run("run_session")).run).toMatchObject({ state: "stopped" });
+});
+
+async function stoppableSession(): Promise<void> {
+  await insert(harness.db, "runs", {
+    id: "run_session",
+    kind: OPERATIONS.explore,
+    machine_id: MACHINE,
+    job_id: "job_code_1",
+    container_id: "ctr_workbench",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null }),
+  });
+  await insert(harness.db, "claims", {
+    id: "asg_session",
+    record_id: RECORD,
+    role: "reception",
+    lane: "coverage",
+    policy_version: "p1",
+    job_id: "job_code_1",
+    run_id: "cyc_1",
+    fence: 1,
+    reserved_cost: 0.0625,
+    granted_at: stamp(NOW - HOUR),
+    expires_at: stamp(NOW + HOUR),
+  });
+  await insert(harness.db, "run_progress", {
+    run_id: "run_session",
+    job_id: "job_code_1",
+    stage: "reading",
+    message: "Still reading material",
+    since: stamp(NOW - HOUR),
+    updated_at: stamp(NOW),
+    cost_usd: 0.025,
+  });
+}
+
+function chargedSession(): CodeJob {
+  return {
+    jobId: "job_code_1",
+    machineId: MACHINE,
+    operationId: "atyrode.omp.session",
+    pluginId: "atyrode.omp",
+    state: "exited",
+    result: {
+      jobId: "job_code_1",
+      requestDigest: "d".repeat(64),
+      ownerId: "owner",
+      ownerGeneration: 1,
+      state: "exited",
+      exitCode: 0,
+      reason: null,
+      startedAt: NOW - HOUR,
+      finishedAt: NOW,
+      usage: {
+        elapsedMs: HOUR,
+        memoryBytes: 0,
+        processes: 1,
+        outputBytes: 0,
+        inference: {
+          calls: 3,
+          inputTokens: 20_000,
+          outputTokens: 1_500,
+          cachedInputTokens: 5_000,
+          costMicros: 410_000,
+        },
+      },
+      limits: { timeoutMs: HOUR, memoryBytes: 1024, processes: 1, outputBytes: 1024 },
+      outputs: [],
+    },
+  };
+}
+
+test("Stop racing a charged terminal Code job keeps its meter and charges the full overrun", async () => {
+  await stoppableSession();
+  const terminal = chargedSession();
+  code.cancelSession = async () => ({ ok: true, value: terminal });
+
+  expect(
+    await halt("run_session", { operationId: OPERATIONS.explore, jobId: "job_code_1" }),
+  ).toMatchObject({ closure: "stopped" });
+
+  const result = await harness.store.run("run_session");
+  expect(result.run).toMatchObject({
+    state: "stopped",
+    costUsd: 0.41,
+    tokens: 21_500,
+    calls: 3,
+    progress: null,
+  });
+  expect(result.receipt).toMatchObject({ inference: terminal.result?.usage?.inference });
+  expect(
+    await harness.db.query(`SELECT actual_cost, outcome FROM claims WHERE id = 'asg_session'`),
+  ).toEqual([{ actual_cost: 0.41, outcome: "skipped" }]);
+  expect(await coordinator(harness.store, () => NOW, 16).spend()).toMatchObject({ total: 0.41 });
+});
+
+test("Stop without a terminal Code meter charges the reservation instead of claiming free work", async () => {
+  await stoppableSession();
+
+  expect(
+    await halt("run_session", { operationId: OPERATIONS.explore, jobId: "job_code_1" }),
+  ).toMatchObject({ closure: "stopped" });
+
+  const result = await harness.store.run("run_session");
+  expect(result.run).toMatchObject({ state: "stopped", costUsd: null, tokens: null, calls: null });
+  expect(result.receipt).not.toHaveProperty("inference");
+  expect(
+    await harness.db.query(`SELECT actual_cost, outcome FROM claims WHERE id = 'asg_session'`),
+  ).toEqual([{ actual_cost: 0.0625, outcome: "skipped" }]);
+  expect(await coordinator(harness.store, () => NOW, 16).spend()).toMatchObject({ total: 0.0625 });
+});
+
+test("a live Code cancellation acknowledgement keeps the run and reservation reachable until settlement", async () => {
+  await stoppableSession();
+  const terminal = chargedSession();
+  code.cancelSession = async () => ({
+    ok: true,
+    value: { ...terminal, state: "started", result: null },
+  });
+
+  expect(
+    await halt("run_session", { operationId: OPERATIONS.explore, jobId: "job_code_1" }),
+  ).toHaveProperty("refused");
+  expect((await harness.store.run("run_session")).run).toMatchObject({
+    state: "running",
+    progress: { costUsd: 0.025 },
+  });
+  expect(
+    await harness.db.query(`SELECT actual_cost, finished_at FROM claims WHERE id = 'asg_session'`),
+  ).toEqual([{ actual_cost: null, finished_at: null }]);
+
+  code.cancelSession = async () => ({ ok: true, value: terminal });
+  await halt("run_session", { operationId: OPERATIONS.explore, jobId: "job_code_1" });
+  expect((await harness.store.run("run_session")).run).toMatchObject({ costUsd: 0.41, calls: 3 });
+  expect(
+    await harness.db.query(`SELECT actual_cost FROM claims WHERE id = 'asg_session'`),
+  ).toEqual([{ actual_cost: 0.41 }]);
 });
 
 test("stopping a run that is still preparing cancels the preparation and closes the row", async () => {
