@@ -1231,6 +1231,20 @@ const CALL_COLUMNS = [
  */
 const UNCLASSIFIED_REFUSAL = "refused";
 
+/** Only the terminal owner's meter supplies calls; transcript totals remain a fallback. */
+function sessionAccounting(read: SessionRead) {
+  const inference = read.job.result?.usage?.inference ?? null;
+  const usage = read.session?.usage ?? null;
+  return {
+    inference,
+    costUsd: inference === null ? (usage?.cost ?? null) : inference.costMicros / 1_000_000,
+    receiptUsage: {
+      ...(usage?.cost === null || usage?.cost === undefined ? {} : { costUsd: usage.cost }),
+      ...(usage === null ? {} : { tokens: usage.input + usage.output }),
+    },
+  };
+}
+
 /**
  * ONE SETTLED SESSION AS A CALL ROW: what it cost, how it ended, and where its bytes are.
  *
@@ -1248,6 +1262,7 @@ function sessionCall(input: {
   readonly at: number;
   readonly machineId: string;
   readonly session: SessionReceipt | null;
+  readonly inference: InferenceUsage | null;
   readonly closure: Receipt["closure"];
   readonly reason: string;
 }): RunCall {
@@ -1256,16 +1271,15 @@ function sessionCall(input: {
   const message = session?.finalMessage ?? "";
   return {
     runId: input.runId,
-    // ONE CALL PER SETTLEMENT, for the reason `settleSession` states about `inference`: a posted
-    // session is omp's one-shot and the turns inside it are summed before Babel is told of any.
+    // One aggregate transcript locator, not one row per inference call.
     seq: 1,
     recordedAt: new Date(input.at).toISOString(),
     model: session?.model ?? "",
-    inputTokens: usage?.input ?? 0,
-    outputTokens: usage?.output ?? 0,
-    cacheReadTokens: usage?.cacheRead ?? 0,
+    inputTokens: input.inference?.inputTokens ?? usage?.input ?? 0,
+    outputTokens: input.inference?.outputTokens ?? usage?.output ?? 0,
+    cacheReadTokens: input.inference?.cachedInputTokens ?? usage?.cacheRead ?? 0,
     cacheWriteTokens: usage?.cacheWrite ?? 0,
-    costMicros: Math.round((usage?.cost ?? 0) * 1_000_000),
+    costMicros: input.inference?.costMicros ?? Math.round((usage?.cost ?? 0) * 1_000_000),
     exitCode: session?.exitCode ?? null,
     closure: input.closure,
     refusal: input.reason === "" ? "" : (refusalCode(input.reason) ?? UNCLASSIFIED_REFUSAL),
@@ -2399,18 +2413,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     refusals: Refusals,
   ): Promise<void> {
     const session = read.session;
-    const usage = session?.usage ?? null;
-    const inference: InferenceUsage | null =
-      usage === null
-        ? null
-        : {
-            calls: 1,
-            inputTokens: usage.input,
-            outputTokens: usage.output,
-            cachedInputTokens: usage.cacheRead,
-            costMicros: Math.round((usage.cost ?? 0) * 1_000_000),
-          };
-    const costUsd = usage?.cost ?? 0;
+    const { inference, costUsd: knownCost, receiptUsage } = sessionAccounting(read);
+    const costUsd = knownCost ?? 0;
     let reason = "";
     let skippedResult = false;
     let refusedContributions: RefusedContribution[] = [];
@@ -2518,8 +2522,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       finishedAt: new Date(at).toISOString(),
       closure: receiptClosure,
       ...(reason === "" ? {} : { reason }),
-      costUsd,
-      tokens: usage === null ? 0 : usage.input + usage.output,
+      ...receiptUsage,
       counts,
     };
     // `counts` itself stays the per-file row count the ingest reports; the refused contributions
@@ -2566,6 +2569,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       at,
       machineId: run.machine_id,
       session,
+      inference,
       closure: receipt.closure,
       reason,
     } as const;
@@ -2627,7 +2631,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         ? skippedResult
           ? "skipped"
           : "completed"
-        : session === null
+        : session === null && read.job.state === "cancelled"
           ? "skipped"
           : "failed";
     const finished = await coordinator.finish({
@@ -2701,18 +2705,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     refusals: Refusals,
   ): Promise<void> {
     const session = read.session;
-    const usage = session?.usage ?? null;
-    const inference: InferenceUsage | null =
-      usage === null
-        ? null
-        : {
-            calls: 1,
-            inputTokens: usage.input,
-            outputTokens: usage.output,
-            cachedInputTokens: usage.cacheRead,
-            costMicros: Math.round((usage.cost ?? 0) * 1_000_000),
-          };
-    const costUsd = usage?.cost ?? 0;
+    const { inference, costUsd: knownCost, receiptUsage } = sessionAccounting(read);
+    const costUsd = knownCost ?? 0;
 
     // The sessions the preparation actually sealed. An offered selector missing from the index
     // is a log that went away between the catalog and the machine: the model was never shown
@@ -2770,8 +2764,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       finishedAt: new Date(at).toISOString(),
       closure: reason === "" ? "completed" : session === null ? closure : "failed",
       ...(reason === "" ? {} : { reason }),
-      costUsd,
-      tokens: usage === null ? 0 : usage.input + usage.output,
+      ...receiptUsage,
       ...(session === null ? {} : { models: [session.model] }),
       counts,
     };
@@ -2809,6 +2802,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           at,
           machineId: run.machine_id,
           session,
+          inference,
           closure: receipt.closure,
           reason,
         }),
@@ -2911,29 +2905,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       await settleTitleSession(at, run, read, closure, offered, ingested, notes, refusals);
       return;
     }
-    /*
-      A RECEIPT ONLY EXISTS FOR A JOB THAT EXITED 0 AND SEALED ITS TRANSCRIPT. Code answers
-      `session: null` for a job it cancelled, interrupted or that exited non-zero, and that is
-      a successful READ of a run that produced nothing to read — not a fault, and not a run
-      whose spend is knowable. It settles at zero with the closure the job itself reported,
-      because a receipt is the only thing that could have said what it cost.
-    */
+    // A missing transcript says nothing about spend; the terminal meter survives failures.
     const session = read.session;
-    // ONE CALL, because a Code session posted by `runSession` is omp's one-shot: `usage` is the
-    // whole run's, there is no per-call frame to count, and writing `calls: 0` beside real
-    // tokens would make a metered run read as one that never reached a model.
-    const usage = session?.usage ?? null;
-    const inference: InferenceUsage | null =
-      usage === null
-        ? null
-        : {
-            calls: 1,
-            inputTokens: usage.input,
-            outputTokens: usage.output,
-            cachedInputTokens: usage.cacheRead,
-            costMicros: Math.round((usage.cost ?? 0) * 1_000_000),
-          };
-    const costUsd = usage?.cost ?? 0;
+    const { inference, costUsd: knownCost, receiptUsage } = sessionAccounting(read);
+    const costUsd = knownCost ?? 0;
 
     // WHAT THE ANSWER WAS WORTH, AND THE ROWS IT CLAIMED. A session that never sealed a
     // transcript submitted nothing, and the reason says which of the job's own endings that was
@@ -3093,8 +3068,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       // a failure is how a stop looks like a fault.
       closure: reason === "" ? "completed" : session === null ? closure : "failed",
       ...(reason === "" ? {} : { reason }),
-      costUsd,
-      tokens: usage === null ? 0 : usage.input + usage.output,
+      ...receiptUsage,
       ...(session === null ? {} : { models: [session.model] }),
       // `counts` itself stays the per-file row count the ingest reports; the refused items are
       // counted onto the RECEIPT's copy of it, where "how did this run's spend land" is read.
@@ -3144,6 +3118,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       at,
       machineId: run.machine_id,
       session,
+      inference,
       closure: receipt.closure,
       reason,
     };
@@ -3197,12 +3172,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       rows: counts,
       skipped: 0,
     });
-    /*
-      WHAT THE CLAIM IS WORTH. A refused SUBMISSION is `failed` and costs what the model was
-      paid; a session that sealed no transcript at all is `skipped` — nobody answered, nothing
-      was submitted, and calling it a failure would feed the park heuristic a streak that is
-      really an operator pressing Stop.
-    */
+    // Cancellation skips the claim; a failure remains failed even without a transcript.
     if (analysisParse !== undefined && !analysisParse.success) return;
     if (!authorized && analysis === undefined) return;
     // A rejected bind followed by failed cancellation can leave the same grant on
@@ -3210,8 +3180,12 @@ export function conductor(deps: ConductorDeps): Conductor {
     // verifies and transfers that terminal ledger binding; this grants no result authority.
     await settleClaims(
       run.job_id,
-      analysis !== undefined && session === null ? null : costUsd,
-      reason === "" ? "completed" : session === null ? "skipped" : "failed",
+      analysis !== undefined && knownCost === null ? null : costUsd,
+      reason === ""
+        ? "completed"
+        : session === null && read.job.state === "cancelled"
+          ? "skipped"
+          : "failed",
       settled,
       analysis?.claim,
       analysis === undefined || run.prepare_job_id === null
@@ -3243,7 +3217,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     settled: SettledClaim[],
     notes: string[],
     refusals: Refusals,
-  ): Promise<{ readonly inFlight: boolean }> {
+  ): Promise<{ readonly inFlight: boolean; readonly stage?: string; readonly stalled?: boolean }> {
     const containerId = run.container_id ?? "";
     const answered = await engine.readSession({ containerId, jobId: run.job_id });
     if (!answered.ok) {
@@ -3259,7 +3233,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           run.id,
         ]);
         store.touch();
-        return { inFlight: true };
+        return { inFlight: true, ...(await foldSession(at, run)) };
       }
       await store.db.run(
         `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
@@ -3277,9 +3251,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
     await silence(run.id, Number(run.unreadable), true);
     /*
-      CODE ANSWERS FOR A JOB IN ANY STATE, and the vocabulary is the hub's own. A job that is
-      not terminal is still going, and this loop folds no progress for it — the replay ring
-      belongs to `atyrode.omp`'s job and `ctx.jobs.follow` on it is not Babel's to open.
+      Code owns the replay ring. Babel consumes only the activity snapshot Code returns,
+      never inferring model work from the presence of a running job.
 
       A TERMINAL ONE CARRIES ITS OWN ENDING, which is what the receipt records when Code
       sealed no transcript: `cancelled` is an operator's Stop and closes `stopped`, anything
@@ -3287,10 +3260,63 @@ export function conductor(deps: ConductorDeps): Conductor {
       difference between a stop that looks like a stop and one that looks like a fault.
     */
     const job = answered.value.job;
-    if (TERMINAL_STATES[job.state] !== true) return { inFlight: true };
+    if (TERMINAL_STATES[job.state] !== true)
+      return { inFlight: true, ...(await foldSession(at, run, answered.value.activity)) };
     const closure: Receipt["closure"] = job.state === "cancelled" ? "stopped" : "failed";
     await settleSession(at, run, answered.value, closure, ingested, settled, notes, refusals);
     return { inFlight: false };
+  }
+
+  /** Native activity is a cumulative snapshot, not a delta to add at every wake. */
+  async function foldSession(at: number, run: PendingRun, activity?: SessionRead["activity"]) {
+    const held = (
+      await store.db.query<RunProgressRow & { stalled: number | bigint }>(
+        `SELECT * FROM run_progress WHERE run_id = ?`,
+        [run.id],
+      )
+    )[0];
+    const progress = activity?.progress ?? null;
+    const usage = activity?.inferenceUsage ?? null;
+    if (progress === null && usage === null)
+      return { stage: held?.stage ?? "", stalled: Number(held?.stalled ?? 0) === 1 };
+    const observedAt = new Date(at).toISOString();
+    let models = modelList(held?.models);
+    const lastModel = usage?.lastModel ?? held?.last_model ?? "";
+    if (lastModel !== "" && !models.includes(lastModel) && models.length < MODELS_KEPT)
+      models = [...models, lastModel];
+    const stage =
+      progress?.stage ??
+      (held?.stage || ((usage?.calls ?? 0) > 0 ? RUN_STAGES.atModel : ""));
+    const folded: RunProgressRow = {
+      stage,
+      message: progress === null ? (held?.message ?? "") : (progress.message ?? ""),
+      fraction: progress === null ? (held?.fraction ?? null) : (progress.fraction ?? null),
+      // With no native stage timestamp, this is when metered work was first observed.
+      since:
+        progress !== null && progress.stage !== held?.stage
+          ? new Date(progress.at).toISOString()
+          : held?.since || (stage === "" ? "" : observedAt),
+      calls: usage?.calls ?? Number(held?.calls ?? 0),
+      input_tokens: usage?.inputTokens ?? Number(held?.input_tokens ?? 0),
+      output_tokens: usage?.outputTokens ?? Number(held?.output_tokens ?? 0),
+      cache_tokens: usage?.cachedInputTokens ?? Number(held?.cache_tokens ?? 0),
+      cost_usd: usage === null ? Number(held?.cost_usd ?? 0) : usage.costMicros / 1_000_000,
+      last_model: lastModel,
+      last_call_at:
+        usage !== null && usage.calls > Number(held?.calls ?? 0)
+          ? observedAt
+          : (held?.last_call_at ?? ""),
+      seq: Number(held?.seq ?? 0),
+      models: JSON.stringify(models),
+    };
+    const waitingSince = instantOf(folded.last_call_at === "" ? folded.since : folded.last_call_at);
+    const stalled =
+      (usage !== null || folded.calls > 0) &&
+      folded.stage === RUN_STAGES.atModel &&
+      waitingSince !== null &&
+      at - waitingSince >= STALLED_AFTER_MS;
+    await saveProgress(at, run, folded, stalled);
+    return { stage: folded.stage, stalled };
   }
 
   /**
@@ -3467,6 +3493,15 @@ export function conductor(deps: ConductorDeps): Conductor {
       folded.stage === RUN_STAGES.atModel &&
       waitingSince !== null &&
       at - waitingSince >= STALLED_AFTER_MS;
+    await saveProgress(at, run, folded, stalled);
+    return { stage: folded.stage, stalled };
+  }
+  async function saveProgress(
+    at: number,
+    run: PendingRun,
+    folded: RunProgressRow,
+    stalled: boolean,
+  ): Promise<void> {
     await store.db.run(
       `INSERT INTO run_progress(run_id, job_id, stage, message, fraction, since, calls,
                                 input_tokens, output_tokens, cache_tokens, cost_usd, last_model,
@@ -3500,8 +3535,8 @@ export function conductor(deps: ConductorDeps): Conductor {
         new Date(at).toISOString(),
       ],
     );
-    return { stage: folded.stage, stalled };
   }
+
   /** Keep the same reservation through native preparation and its Code continuation. */
   async function renewAnalysis(jobId: string, at: number): Promise<void> {
     const policy = (await coordinator.policy(at)).policy;
@@ -3565,10 +3600,8 @@ export function conductor(deps: ConductorDeps): Conductor {
         const reconciled = await reconcileSession(at, run, ingested, settled, notes, refusals);
         if (reconciled.inFlight) {
           inFlight += 1;
-          // A Code session is at the model from the moment it starts: Babel composes nothing
-          // and the job's only work is the turn. There is no replay ring of Babel's to fold, so
-          // the count is the honest one rather than a stage nobody read.
-          atModel += 1;
+          if (reconciled.stage === RUN_STAGES.atModel) atModel += 1;
+          if (reconciled.stalled === true) stalled += 1;
         }
         continue;
       }
