@@ -545,9 +545,9 @@ export async function insertDrain(store: DrainsStore, drain: NewDrain): Promise<
 /**
  * One job this drain has just posted, added to what it is holding.
  *
- * The write is the whole array rather than an append, because the row is the controller's only
- * memory and two ticks in the same second must do the work of one: `live` is read, the job added
- * if it is not already there, and the array written back with the launch counted once.
+ * The ordinal is the durable admission cursor, not the caller's stale `live` array. Appending
+ * and advancing it happen in one statement against the persisted row. A second wake adopting
+ * the same ordinal does nothing, even if that job has already settled and left `live`.
  *
  * A CLOSING DRAIN HOLDS IT TOO, because recording a launch is not launching: by the time this is
  * called the hub has ALREADY taken the job and it is running. A launch is two writes —
@@ -561,14 +561,18 @@ export async function recordLaunch(
   store: DrainsStore,
   id: string,
   job: LiveJob,
-  live: readonly LiveJob[],
-): Promise<void> {
-  if (live.some((entry) => entry.jobId === job.jobId)) return;
-  await store.db.run(
-    `UPDATE drains SET live = ?, jobs_launched = jobs_launched + 1
-      WHERE id = ? AND state IN ('running', 'closing')`,
-    [JSON.stringify([...live, job]), id],
+  ordinal: number,
+): Promise<boolean> {
+  const rows = await store.db.query<{ id: string }>(
+    `UPDATE drains SET live = json_insert(live, '$[#]', json(?)),
+                       jobs_launched = jobs_launched + 1
+      WHERE id = ? AND state IN ('running', 'closing') AND jobs_launched = ?
+        AND NOT EXISTS (SELECT 1 FROM json_each(drains.live)
+                         WHERE json_extract(value, '$.jobId') = ?)
+      RETURNING id`,
+    [JSON.stringify(job), id, ordinal, job.jobId],
   );
+  return rows.length > 0;
 }
 
 /** What one tick folded: the jobs still held, the settled totals, the tallies and the journal. */
@@ -582,15 +586,21 @@ export interface DrainFold {
 }
 
 /**
- * The projections of one tick, written in one statement. A `closing` drain is folded by the same
- * statement as a running one: what its last jobs metered is still its own spend, and the only
- * thing it may not do is launch.
+ * The projections of one tick, compared against the snapshot it reconciled. A competing fold
+ * may already have consumed the receipts; a launch may have appended a job. Neither may be
+ * overwritten by this older view. The caller re-reads and reconciles when the comparison loses.
  */
-export async function saveFold(store: DrainsStore, id: string, fold: DrainFold): Promise<void> {
-  await store.db.run(
+export async function saveFold(
+  store: DrainsStore,
+  row: DrainRow,
+  fold: DrainFold,
+): Promise<boolean> {
+  const rows = await store.db.query<{ id: string }>(
     `UPDATE drains SET live = ?, spent = ?, closures = ?, refusals = ?, samples = ?,
                        jobs_settled = jobs_settled + ?
-      WHERE id = ? AND state IN ('running', 'closing')`,
+      WHERE id = ? AND state = ? AND state IN ('running', 'closing')
+        AND live = ? AND jobs_launched = ? AND jobs_settled = ?
+      RETURNING id`,
     [
       JSON.stringify(fold.live),
       JSON.stringify(fold.spent),
@@ -598,9 +608,14 @@ export async function saveFold(store: DrainsStore, id: string, fold: DrainFold):
       JSON.stringify(fold.refusals),
       JSON.stringify(fold.journal),
       fold.settledNow,
-      id,
+      row.id,
+      row.state,
+      JSON.stringify(row.live),
+      row.jobsLaunched,
+      row.jobsSettled,
     ],
   );
+  return rows.length > 0;
 }
 
 /**
@@ -695,27 +710,18 @@ export async function closeDrain(
   id: string,
   ending: DrainEnding,
   reason: string,
-  live: readonly LiveJob[],
 ): Promise<Closed> {
-  if (live.length > 0) {
-    // `closing` → `closing` is the ordinary second close: an operator stopping a drain that had
-    // already met its target cancels its stragglers and changes nothing about why it ended, so
-    // the statement is idempotent rather than a refusal the caller would report as a failure.
-    const closing = await store.db.query<{ id: string }>(
-      `UPDATE drains SET state = 'closing', ending = ?, reason = ?, live = ?
-        WHERE id = ? AND state IN ('running', 'closing')
-        RETURNING id`,
-      [ending, reason, JSON.stringify(live), id],
-    );
-    return closing.length > 0 ? "closing" : "already";
-  }
-  const rows = await store.db.query<{ id: string }>(
-    `UPDATE drains SET state = ?, ending = ?, reason = ?, finished_at = ?, live = '[]'
+  const rows = await store.db.query<{ state: string }>(
+    `UPDATE drains
+        SET state = CASE WHEN live = '[]' THEN ? ELSE 'closing' END,
+            ending = ?, reason = ?,
+            finished_at = CASE WHEN live = '[]' THEN ? ELSE NULL END
       WHERE id = ? AND state IN ('running', 'closing')
-      RETURNING id`,
+      RETURNING state`,
     [ending, ending, reason, new Date(store.now()).toISOString(), id],
   );
-  return rows.length > 0 ? "ended" : "already";
+  const row = rows[0];
+  return row === undefined ? "already" : row.state === "closing" ? "closing" : "ended";
 }
 
 /**

@@ -347,7 +347,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
           break;
         }
         const job = { runId: started.runId, jobId: started.jobId, launchedAt: at };
-        await recordLaunch(store, drainId, job, live);
+        await recordLaunch(store, drainId, job, slot);
         live.push(job);
       }
       if (live.length === 0) {
@@ -422,7 +422,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       result: DrainStopResultSchema,
     }),
     async (ctx, input) => {
-      const row = await readDrain(store, input.drainId);
+      let row = await readDrain(store, input.drainId);
       if (row === null) return { refused: `no drain ${input.drainId}` };
       // A CLOSING DRAIN IS STILL STOPPABLE, and this is the only door that can do it: it has
       // stopped launching, but the jobs it could not cancel — a settlement's tick holds no
@@ -451,14 +451,15 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       // as a failure of the stop.
       const seen = await reconcileLive(store, row.live);
       /*
-        AND WHAT SETTLED IN THAT WINDOW IS FOLDED BEFORE THE ROW IS CLOSED. `closeDrain` writes
-        `live` as what is still running, so a receipt that landed since the last tick — one
-        cycle's own window between the conductor's closure write and the drain's fold, or a settle
-        hook cut off by its two-second lease — would leave the row unfolded and unreachable, and
-        the total the operator reads at the end would be short by exactly what that job metered
-        (the review of #285). The fold is `server/drain.ts`'s own, so the stop and the tick agree.
+        AND WHAT SETTLED IN THAT WINDOW IS FOLDED BEFORE THE ROW IS CLOSED. Only the fold
+        releases settled jobs; closing uses the persisted held set so an overlapping launch
+        cannot be lost. The fold refreshes its snapshot if another wake changed that set.
       */
       const folded = await foldDrain(store, row, seen, doorDeps.now());
+      row = folded.row;
+      if (row.state !== "running" && row.state !== "closing") {
+        return { refused: `${input.drainId} already ended as ${row.state}: ${row.reason}` };
+      }
       const reason =
         row.state === "closing"
           ? row.reason
@@ -466,7 +467,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
             ? `stopped by ${ctx.principal.id}`
             : input.reason;
       const ending = row.state === "closing" && row.ending !== "" ? row.ending : "stopped";
-      const ended = await endDrain(doorDeps.deps(ctx), row, ending, reason, seen.holding);
+      const ended = await endDrain(doorDeps.deps(ctx), row, ending, reason, folded.seen.holding);
       ctx.emit(OWN_NODE, EVENTS.runChanged, {
         drainId: row.id,
         machineId: row.machineId,

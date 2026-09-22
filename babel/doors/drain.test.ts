@@ -1126,6 +1126,58 @@ test("a job the hub already holds under this id is taken back rather than re-pos
   expect((await readDrain(harness.store, drainId))?.spent.costMicros).toBe(420_000);
 });
 
+test("overlapping wakes adopt one lost admission once and still admit all three bounded jobs", async () => {
+  const drainId = String((await start({ concurrent: 1, maxJobs: 3 }))["drainId"]);
+  await settleJob(`run_${drainId}_0`, { costMicros: 0, outputTokens: 0 });
+  await drainTick(deps);
+  await harness.db.run(`UPDATE drains SET live = '[]', jobs_launched = 1 WHERE id = ?`, [drainId]);
+  fleet.refusal = "job_digest_conflict";
+
+  // Both wakes finish their fold and ask to adopt ordinal 1 before either records it.
+  const launch = deps.launch;
+  let arrivals = 0;
+  let release: (() => void) | undefined;
+  const both = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  deps = {
+    ...deps,
+    launch: {
+      ...launch,
+      startExplore: async (...args) => {
+        arrivals += 1;
+        if (arrivals === 2) release?.();
+        await both;
+        return await launch.startExplore(...args);
+      },
+    },
+  };
+  const wakes = await Promise.all([drainTick(deps), drainTick(deps)]);
+  deps = { ...deps, launch };
+  expect(wakes.map((reports) => reports[0]?.launched).sort()).toEqual([0, 1]);
+  const adopted = (await readDrain(harness.store, drainId))!;
+  expect(adopted.jobsLaunched).toBe(2);
+  expect(adopted.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1_material`]);
+  expect(adopted.jobsSettled).toBe(1);
+
+  fleet.refusal = "";
+  await settleJob(`run_${drainId}_1`, { costMicros: 0, outputTokens: 0 });
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 1, live: 1 });
+  expect(fleet.executed.map((job) => job.jobId)).toEqual([
+    `job_${drainId}_0`,
+    `job_${drainId}_1`,
+    `job_${drainId}_2`,
+  ]);
+  await settleJob(`run_${drainId}_2`, { costMicros: 0, outputTokens: 0 });
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 0, state: "target" });
+  expect(await readDrain(harness.store, drainId)).toMatchObject({
+    jobsLaunched: 3,
+    jobsSettled: 3,
+    live: [],
+  });
+  expect(fleet.executed).toHaveLength(3);
+});
+
 test("the job the hub already holds is taken back by the hub's word, not by its wording", async () => {
   /*
     THE SAME RECOVERY, OVER THE REAL LAUNCH PATH AND A HUB THAT WORDS ITS REFUSAL ITS OWN WAY

@@ -103,10 +103,10 @@ test.each([
 test("a launch is counted once however many times the same job is recorded", async () => {
   await open("drn_one");
   const job = { runId: "run_a", jobId: "job_a", launchedAt: NOW };
-  await recordLaunch(harness.store, "drn_one", job, []);
-  // A RETRIED TICK POSTS THE SAME JOB, because its ids are derived rather than minted: recording
-  // it twice must not make the drain believe it holds two.
-  await recordLaunch(harness.store, "drn_one", job, [job]);
+  await Promise.all([
+    recordLaunch(harness.store, "drn_one", job, 0),
+    recordLaunch(harness.store, "drn_one", job, 0),
+  ]);
   const row = await readDrain(harness.store, "drn_one");
   expect(row?.live).toEqual([job]);
   expect(row?.jobsLaunched).toBe(1);
@@ -114,28 +114,58 @@ test("a launch is counted once however many times the same job is recorded", asy
   // A CLOSING DRAIN HOLDS WHAT THE HUB ALREADY TOOK. A launch is `jobs.execute` and then this
   // write, and a stop can land between them: a write that only landed under `running` left that
   // job running off the row, with nothing to fold its receipt onto (the review of #285).
-  expect(await closeDrain(harness.store, "drn_one", "stopped", "stopped mid-launch", [job])).toBe(
+  expect(await closeDrain(harness.store, "drn_one", "stopped", "stopped mid-launch")).toBe(
     "closing",
   );
   const late = { runId: "run_b", jobId: "job_b", launchedAt: NOW };
-  await recordLaunch(harness.store, "drn_one", late, [job]);
+  await recordLaunch(harness.store, "drn_one", late, 1);
   const closing = await readDrain(harness.store, "drn_one");
   expect(closing?.live).toEqual([job, late]);
   expect(closing?.jobsLaunched).toBe(2);
+});
 
-  // …and a drain that has ENDED holds nothing more: its receipts are all in, and a row nobody
-  // folds again is not one a late write may reopen.
-  expect(await closeDrain(harness.store, "drn_one", "stopped", "and it is over", [])).toBe("ended");
-  await recordLaunch(harness.store, "drn_one", late, []);
-  expect((await readDrain(harness.store, "drn_one"))?.live).toEqual([]);
+test("a stale fold cannot drop a newer admission or count the same receipt twice", async () => {
+  await open("drn_one");
+  const first = { runId: "run_a", jobId: "job_a", launchedAt: NOW };
+  const second = { runId: "run_b", jobId: "job_b", launchedAt: NOW };
+  await recordLaunch(harness.store, "drn_one", first, 0);
+  const stale = (await readDrain(harness.store, "drn_one"))!;
+  await recordLaunch(harness.store, "drn_one", second, 1);
+  const folded = {
+    live: [],
+    spent: { calls: 1, inputTokens: 10, outputTokens: 20, costMicros: 30 },
+    closures: { completed: 1 },
+    refusals: {},
+    journal: NO_JOURNAL,
+    settledNow: 1,
+  };
+  expect(await saveFold(harness.store, stale, folded)).toBe(false);
+  const current = (await readDrain(harness.store, "drn_one"))!;
+  expect(current.live).toEqual([first, second]);
+  expect(current.jobsSettled).toBe(0);
+  expect(await saveFold(harness.store, current, { ...folded, live: [second] })).toBe(true);
+  expect(await saveFold(harness.store, current, { ...folded, live: [second] })).toBe(false);
+
+  // An older wake can return from launch after its job has already settled. The durable
+  // ordinal, not membership in today's live set, keeps it from consuming another slot.
+  expect(await recordLaunch(harness.store, "drn_one", first, 0)).toBe(false);
+  const held = (await readDrain(harness.store, "drn_one"))!;
+  expect(held.live).toEqual([second]);
+  expect(held.jobsLaunched).toBe(2);
+  expect(held.jobsSettled).toBe(1);
+  expect(held.spent).toEqual(folded.spent);
+  expect(await closeDrain(harness.store, "drn_one", "stopped", "stop after the fold")).toBe(
+    "closing",
+  );
+  expect((await readDrain(harness.store, "drn_one"))?.live).toEqual([second]);
 });
 
 test("a drain holding nothing ends at once, and ends only once", async () => {
   await open("drn_one");
-  expect(await closeDrain(harness.store, "drn_one", "target", "the target was met", [])).toBe(
+  expect(await closeDrain(harness.store, "drn_one", "target", "the target was met")).toBe(
     "ended",
   );
-  expect(await closeDrain(harness.store, "drn_one", "stopped", "and again", [])).toBe("already");
+  expect(await closeDrain(harness.store, "drn_one", "stopped", "and again")).toBe("already");
   const row = await readDrain(harness.store, "drn_one");
   expect(row?.state).toBe("target");
   expect(row?.reason).toBe("the target was met");
@@ -143,7 +173,7 @@ test("a drain holding nothing ends at once, and ends only once", async () => {
   expect(row?.live).toEqual([]);
   expect(await activeDrains(harness.store)).toEqual([]);
   // …and the fold of a drain that has ended writes nothing: the guard is the WHERE clause.
-  await saveFold(harness.store, "drn_one", {
+  await saveFold(harness.store, row!, {
     live: [{ runId: "run_z", jobId: "job_z", launchedAt: NOW }],
     spent: { calls: 9, inputTokens: 9, outputTokens: 9, costMicros: 9 },
     closures: {},
@@ -153,6 +183,13 @@ test("a drain holding nothing ends at once, and ends only once", async () => {
   });
   expect((await readDrain(harness.store, "drn_one"))?.live).toEqual([]);
   expect((await readDrain(harness.store, "drn_one"))?.spent.costMicros).toBe(0);
+  await recordLaunch(
+    harness.store,
+    "drn_one",
+    { runId: "run_z", jobId: "job_z", launchedAt: NOW },
+    0,
+  );
+  expect((await readDrain(harness.store, "drn_one"))?.live).toEqual([]);
 });
 
 test("a drain that still holds a job closes onto it: the fold goes on until the last receipt", async () => {
@@ -164,7 +201,10 @@ test("a drain that still holds a job closes onto it: the fold goes on until the 
     { runId: "run_a", jobId: "job_a", launchedAt: NOW },
     { runId: "run_b", jobId: "job_b", launchedAt: NOW },
   ];
-  expect(await closeDrain(harness.store, "drn_one", "target", "the target was met", held)).toBe(
+  for (const [ordinal, job] of held.entries()) {
+    await recordLaunch(harness.store, "drn_one", job, ordinal);
+  }
+  expect(await closeDrain(harness.store, "drn_one", "target", "the target was met")).toBe(
     "closing",
   );
   const closing = await readDrain(harness.store, "drn_one");
@@ -175,7 +215,7 @@ test("a drain that still holds a job closes onto it: the fold goes on until the 
   // A closing drain is one a tick still has work for: its receipts are owed to its total.
   expect((await activeDrains(harness.store)).map((entry) => entry.id)).toEqual(["drn_one"]);
   // It cannot finish while it holds one…
-  await saveFold(harness.store, "drn_one", {
+  await saveFold(harness.store, closing!, {
     live: [held[1] as LiveJob],
     spent: { calls: 3, inputTokens: 10, outputTokens: 900, costMicros: 600_000 },
     closures: { completed: 1 },
@@ -188,7 +228,7 @@ test("a drain that still holds a job closes onto it: the fold goes on until the 
 
   // …and when the last one has settled it takes the ending it was closed with, with the reason
   // and the spend written while it was closing.
-  await saveFold(harness.store, "drn_one", {
+  await saveFold(harness.store, (await readDrain(harness.store, "drn_one"))!, {
     live: [],
     spent: { calls: 6, inputTokens: 20, outputTokens: 1_800, costMicros: 1_500_000 },
     closures: { completed: 2 },

@@ -204,6 +204,9 @@ export function drainIdentity(row: DrainRow, ordinal: number): LaunchIdentity {
 
 /** What one fold wrote, and what the read of this drain's jobs could not account for. */
 export interface Folded {
+  /** The snapshot and reconciliation that won the fold, refreshed after a competing write. */
+  readonly row: DrainRow;
+  readonly seen: Reconciled;
   /** Everything this drain has metered: the receipts that landed, plus what its live jobs report. */
   readonly spent: DrainSpend;
   /** Jobs held with no run row, named: their slots were released rather than held for ever. */
@@ -231,6 +234,9 @@ export async function foldDrain(
   seen: Reconciled,
   at: number,
 ): Promise<Folded> {
+  if (row.state !== "running" && row.state !== "closing") {
+    return { row, seen, spent: row.spent, notes: [] };
+  }
   const notes: string[] = [];
   const journaled: DrainNote[] = [];
   for (const gone of seen.missing) {
@@ -266,7 +272,7 @@ export async function foldDrain(
     // run it is on is one this drain will have forgotten by the time anybody asks.
     if (run.refusal !== null) refusals[run.refusal] = (refusals[run.refusal] ?? 0) + 1;
   }
-  await saveFold(store, row.id, {
+  const saved = await saveFold(store, row, {
     live: seen.holding,
     spent: settledSpend,
     closures,
@@ -280,7 +286,12 @@ export async function foldDrain(
     ),
     settledNow: seen.settled.length,
   });
-  return { spent, notes };
+  if (!saved) {
+    const current = await readDrain(store, row.id);
+    if (current === null) throw new Error(`drain ${row.id} disappeared during its fold`);
+    return await foldDrain(store, current, await reconcileLive(store, current.live), at);
+  }
+  return { row, seen, spent, notes };
 }
 
 /** What ending a drain did: the state it is in now, what was cancelled, and what it could not do. */
@@ -447,7 +458,7 @@ export async function endDrain(
       journaled.push({ at, kind: "cancel", detail: `${job.jobId}: ${message(error)}` });
     }
   }
-  const closed = await closeDrain(deps.store, row.id, ending, reason, live);
+  const closed = await closeDrain(deps.store, row.id, ending, reason);
   if (closed === "already") {
     notes.push(`drain ${row.id} had already ended when this tick closed it`);
   }
@@ -572,10 +583,27 @@ async function indexDuty(
  */
 async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   const at = deps.now();
-  const seen = await reconcileLive(deps.store, row.live);
-  const folded = await foldDrain(deps.store, row, seen, at);
+  const folded = await foldDrain(
+    deps.store,
+    row,
+    await reconcileLive(deps.store, row.live),
+    at,
+  );
+  row = folded.row;
+  const seen = folded.seen;
   const notes: string[] = [...folded.notes];
   const spent = folded.spent;
+  if (row.state !== "running" && row.state !== "closing") {
+    return {
+      drainId: row.id,
+      launched: 0,
+      settled: 0,
+      live: row.live.length,
+      state: row.state,
+      reason: row.reason,
+      notes,
+    };
+  }
 
   if (row.state === "closing") {
     const ending = row.ending === "" ? "stopped" : row.ending;
@@ -733,7 +761,12 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
         const adopted = `${identity.jobId} was already posted by an earlier tick, and is taken back`;
         notes.push(adopted);
         journaled.push({ at, kind: "adopted", detail: adopted });
-        await recordLaunch(deps.store, row.id, job, holding);
+        const recorded = await recordLaunch(deps.store, row.id, job, row.jobsLaunched + launched);
+        if (!recorded) {
+          const current = await readDrain(deps.store, row.id);
+          holding.splice(0, holding.length, ...(current?.live ?? []));
+          break;
+        }
         holding.push(job);
         launched += 1;
         continue;
@@ -761,9 +794,13 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       });
       break;
     }
-    // The row is written before the array grows, so what it stores is what this tick actually
-    // holds: the write is `live` plus this job, counted once whatever a retry does.
-    await recordLaunch(deps.store, row.id, job, holding);
+    // The persisted admission cursor decides whether this wake, or another one, recorded it.
+    const recorded = await recordLaunch(deps.store, row.id, job, row.jobsLaunched + launched);
+    if (!recorded) {
+      const current = await readDrain(deps.store, row.id);
+      holding.splice(0, holding.length, ...(current?.live ?? []));
+      break;
+    }
     holding.push(job);
     launched += 1;
   }
