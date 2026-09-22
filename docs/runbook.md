@@ -580,13 +580,22 @@ one run.
 Two bounds are structural rather than advisory. **A drawn preset cannot be fanned out**: the
 coordinator arbitrates a draw under a claim and a fence, and fanning it would be a second
 implementation of that arbitration — so `drainStart` takes the directly-launched presets only
-(`babel/server/drain.ts`). And **a drain without a target and a deadline is not a
-drain; it is a loop** — a drain that names no deadline is given one two hours out, and a fan above
-the manifest's `concurrentJobs` for the operation it posts is refused at the door rather than
-discovered one refused job at a time.
+(`babel/server/drain.ts`). And **a drain without a finite bound is a loop**:
+`drainStart` requires a target, deadline or positive `maxJobs`; omission of the deadline still
+gives it one two hours out. A fan above the manifest's `concurrentJobs` for the operation it posts
+is refused at the door rather than discovered one refused job at a time.
 
-A drain is not a governor and sets no overlay: the standing policy and the budgets table are
-untouched, its jobs take no claim, and what one run may spend stays the standing policy's ceiling.
+`concurrent` limits simultaneous work, not total launches. `maxJobs` bounds admission ordinals
+across wakes and recovery, including refused and zero-usage attempts. At that bound the drain
+waits for its held jobs and folds their results without cancelling them or refilling the fan.
+Optional `inferenceLimits` use Code's published schema and are retained through preparation and
+every refill. Ordinary `launch` accepts the same ephemeral limits. Malformed retained limits
+refuse rather than replaying an unbounded request.
+
+A drain is not a governor and sets no policy overlay: the standing policy and budgets table
+are untouched, and its jobs take no claim. Native token/cost thresholds are checked before a
+call, so an accepted response can overshoot. Provider-internal retries and charged failures
+still require a conservative exposure reservation in the shared ledger before admission.
 
 ### 11.2 Pre-flight (T-24h, rehearsal)
 
@@ -616,8 +625,10 @@ untouched, its jobs take no claim, and what one run may spend stays the standing
 >    Code's bound or the analysis contract, never a narrower window.
 > 5. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names a
 >    blocker for this machine is a no-go.
-> 6. A five-minute rehearsal: `drainStart` with `concurrent: 2`, the Code profile from item 2,
->    `target.costMicros` equal to one exploration's price, `deadline` = now + 5 min.
+> 6. A five-minute rehearsal: `drainStart` with `concurrent: 2`, `maxJobs: 2`, the Code profile
+>    from item 2, reviewed per-job `inferenceLimits`, `target.costMicros` equal to one exploration's
+>    price, and `deadline` = now + 5 min. Reconcile cumulative spend and reserve worst-case
+>    in-flight exposure first; the target is not a hard spending ceiling.
 >    **Success:** two jobs reach the stage `at the model` within 90 s of launch and settle with
 >    `usage.inference.calls > 0`.
 

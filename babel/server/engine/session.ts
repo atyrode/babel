@@ -67,6 +67,7 @@ export interface CodeJob {
   readonly operationId: string;
   readonly pluginId: string;
   readonly state: string;
+  readonly result?: ActionResult<"runSession">["result"];
 }
 
 /** What one session's transcript yielded, as omp's receipt records it. */
@@ -98,6 +99,7 @@ export interface SessionReceipt {
 export interface SessionRead {
   readonly job: CodeJob;
   readonly session: SessionReceipt | null;
+  readonly activity?: Pick<ActionResult<"followSession">, "inferenceUsage" | "progress">;
 }
 
 /** One sealed output bound into a session's sandbox, as the job request carries it. */
@@ -161,6 +163,7 @@ export interface SessionRequest {
   readonly prompt: string;
   /** The `prepare` job whose sealed `material` output this run reads, when one is needed. */
   readonly prepareJobId?: string | undefined;
+  readonly inferenceLimits?: ActionInput<"runSession">["inferenceLimits"];
 }
 
 export interface CodeEngine {
@@ -391,13 +394,23 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
         expectedRevision: request.profile.expectedRevision,
         prompt: request.prompt,
         ...(request.prepareJobId === undefined ? {} : materialInput(request.prepareJobId)),
+        ...(request.inferenceLimits === undefined ? {} : { inferenceLimits: request.inferenceLimits }),
       });
     },
 
     readSession: async (args: {
       containerId: string;
       jobId: string;
-    }): Promise<EngineAnswer<SessionRead>> => await call("readSession", args),
+    }): Promise<EngineAnswer<SessionRead>> => {
+      const read = await call("readSession", args);
+      if (!read.ok || ["exited", "interrupted", "cancelled", "refused"].includes(read.value.job.state))
+        return read;
+      const followed = await call("followSession", args);
+      if (!followed.ok) return read;
+      // A follow can observe settlement after the read. Keep that read's lifecycle state so
+      // its missing transcript is not mistaken for a terminal failure before the next read.
+      return { ok: true, value: { ...read.value, activity: followed.value } };
+    },
 
     cancelSession: async (args: {
       containerId: string;

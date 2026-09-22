@@ -5026,12 +5026,12 @@ test("native live snapshots replace spend and yield to the terminal meter exactl
 
   expect((await wakeOn(store, draws, code).tick()).runs).toEqual({
     running: 1,
-    atModel: 1,
+    atModel: 0,
     stalled: 0,
   });
   await wakeOn(store, draws, code).tick();
   expect((await store.run(runId)).run?.progress).toMatchObject({
-    stage: RUN_STAGES.atModel,
+    stage: "",
     calls: 1,
     inputTokens: 1_000,
     outputTokens: 100,

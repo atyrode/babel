@@ -3284,14 +3284,11 @@ export function conductor(deps: ConductorDeps): Conductor {
     const lastModel = usage?.lastModel ?? held?.last_model ?? "";
     if (lastModel !== "" && !models.includes(lastModel) && models.length < MODELS_KEPT)
       models = [...models, lastModel];
-    const stage =
-      progress?.stage ??
-      (held?.stage || ((usage?.calls ?? 0) > 0 ? RUN_STAGES.atModel : ""));
+    const stage = progress?.stage ?? held?.stage ?? "";
     const folded: RunProgressRow = {
       stage,
       message: progress === null ? (held?.message ?? "") : (progress.message ?? ""),
       fraction: progress === null ? (held?.fraction ?? null) : (progress.fraction ?? null),
-      // With no native stage timestamp, this is when metered work was first observed.
       since:
         progress !== null && progress.stage !== held?.stage
           ? new Date(progress.at).toISOString()
