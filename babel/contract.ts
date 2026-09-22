@@ -4688,6 +4688,8 @@ export const TRANSCRIPT_MAP_MAX_PAGE_BYTES = 32 * 1024;
 export const TRANSCRIPT_MAP_SERVICE_OPERATION = "mapping";
 export const TRANSCRIPT_MAP_SERVICE_FILE = "mapping-service";
 export const TRANSCRIPT_MAP_OUTPUT_FILE = "transcript-map.json";
+/** Encoded material document, including JSON framing and metadata, not just the source span. */
+export const TRANSCRIPT_MAP_MAX_MATERIAL_BYTES = 1024 * 1024;
 
 /** The caller names both native targets before admission; neither is inferred from a read. */
 export const StartMapCatalogRequestSchema = z.strictObject({
@@ -5148,6 +5150,7 @@ export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
     node: TranscriptMapNodeSchema,
     mode: z.enum(TRANSCRIPT_MAP_MODES),
     inputDigest: recallDigest,
+    materialBytes: z.number().int().positive().max(TRANSCRIPT_MAP_MAX_MATERIAL_BYTES),
   }),
 ]);
 export type TranscriptMapJobReceipt = z.infer<typeof TranscriptMapJobReceiptSchema>;

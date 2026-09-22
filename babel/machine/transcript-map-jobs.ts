@@ -6,6 +6,7 @@ import {
   RECALL_REQUEST_TTL_MS,
   TRANSCRIPT_MAP_SERVICE_FILE,
   TRANSCRIPT_MAP_OUTPUT_FILE,
+  TRANSCRIPT_MAP_MAX_MATERIAL_BYTES,
   TRANSCRIPT_MAP_JOB_PAGE_NODES,
   TRANSCRIPT_MAP_NATIVE_PAGE_NODES,
   TRANSCRIPT_MAP_MAX_PAGE_BYTES,
@@ -304,6 +305,8 @@ export async function mapPrepare(
       feedback,
     });
     const inputDigest = sha(document);
+    const materialBytes = Buffer.byteLength(document, "utf8");
+    if (materialBytes > TRANSCRIPT_MAP_MAX_MATERIAL_BYTES) fail();
     const report = scan.report();
     const receipt = ReceiptSchema.parse({
       runId: parsed.runId,
@@ -325,6 +328,7 @@ export async function mapPrepare(
         node,
         mode: parsed.mode,
         inputDigest,
+        materialBytes,
       },
       preflight: {
         schema: PREFLIGHT_SCHEMA,

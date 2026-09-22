@@ -455,7 +455,7 @@ test("finite material sealing uses exact leaves but only ordered summaries/gaps 
         index === 0
           ? {
               summaryId: `tmsum_${"c".repeat(64)}`,
-              text: "Previously summarized navigation.",
+              text: "Previously summarized navigation: café 日本語.",
               gap: null,
             }
           : { summaryId: null, text: null, gap: "unmapped" as const },
@@ -481,6 +481,10 @@ test("finite material sealing uses exact leaves but only ordered summaries/gaps 
         .update(await Bun.file(join(material, "transcript-map.json")).text())
         .digest("hex")}`,
     );
+    expect(prepared.mapping.materialBytes).toBe(
+      (await Bun.file(join(material, "transcript-map.json")).arrayBuffer()).byteLength,
+    );
+    expect(prepared.mapping.materialBytes).toBeGreaterThan(JSON.stringify(document).length);
     await expect(
       mapPrepare(
         { ...input, expectedPolicyDigest: `sha256:${"f".repeat(64)}` },
@@ -515,6 +519,11 @@ test("finite material sealing uses exact leaves but only ordered summaries/gaps 
       leaf.span.digest,
     );
     expect(leafReceipt.counts.suppliedBytes).toBe(leaf.span.byteLength);
+    if (leafReceipt.mapping?.kind !== "material") throw new Error("Missing material receipt.");
+    expect(leafReceipt.mapping.materialBytes).toBe(
+      (await Bun.file(join(leafMaterial, "transcript-map.json")).arrayBuffer()).byteLength,
+    );
+    expect(leafReceipt.mapping.materialBytes).toBeGreaterThan(leaf.span.byteLength);
   } finally {
     await f.close();
   }
