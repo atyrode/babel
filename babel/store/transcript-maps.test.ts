@@ -241,6 +241,20 @@ test("executor replacement preserves source ownership and historical producing p
   expect(await db.maps.ensureVersion(data.plan.id, policy, NOW)).toEqual(original);
 });
 
+test("reviewed inference bounds create a new producing contract without relabeling historical summaries", async () => {
+  const db = await setup();
+  const data = fixture(1);
+  const original = await publish(db.maps, data);
+  await generate(db, db.maps);
+  const before = await db.maps.node(scope, original.id, data.nodes[0]!.id);
+  const bounded = { ...policy, inferenceLimits: { calls: 1 } };
+  await db.maps.refreshWork(bounded, LATER, 128);
+  const selected = await db.maps.ensureVersion(data.plan.id, bounded, LATER);
+  expect((await db.maps.offers(bounded, LATER)).map((item) => item.mode)).toEqual(["generate"]);
+  expect((await db.maps.node(scope, selected.id, data.nodes[0]!.id))?.summary).toBeNull();
+  expect((await db.maps.node(scope, original.id, data.nodes[0]!.id))?.summary).toEqual(before?.summary);
+});
+
 test("a replacement source cannot claim another owner's capture or historical plan", async () => {
   const db = await setup();
   const data = fixture(1);

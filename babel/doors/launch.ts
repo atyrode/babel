@@ -14,6 +14,7 @@ import {
   LaunchResultSchema,
   MATERIAL_OUTPUT,
   OPERATIONS,
+  TRANSCRIPT_MAP_SESSION_OPERATION,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   PRESET_OPERATIONS,
@@ -1563,6 +1564,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
          FROM runs r JOIN runs p ON p.job_id = r.prepare_job_id
         WHERE r.closure IS NULL AND r.job_id IS NULL AND r.container_id IS NOT NULL
           AND p.closure IS NOT NULL
+          AND r.kind != '${TRANSCRIPT_MAP_SESSION_OPERATION}'
         ORDER BY r.started_at`,
     );
     const posted: Posted[] = [];
@@ -2038,7 +2040,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       // The caller was admitted at the node it POSTED; the row says which job this run is. A
       // request that authorized one job and named another is refused rather than reconciled.
       const node = preparing
-        ? { jobId: prepareJobId, operationId: OPERATIONS.prepare as string }
+        ? { jobId: prepareJobId, operationId: run.kind === TRANSCRIPT_MAP_SESSION_OPERATION ? OPERATIONS.mapPrepare : OPERATIONS.prepare }
         : { jobId, operationId: run.kind };
       if (
         job.jobId !== node.jobId ||

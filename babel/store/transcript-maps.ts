@@ -203,7 +203,7 @@ function recipes(policy: TranscriptMapPolicy) {
 }
 function contract(policy: TranscriptMapPolicy): string {
   const selected = recipes(policy);
-  return digest([policy.sourceMachineId, policy.executorMachineId, policy.profile, selected.generate, selected.review, policy.segmentation]);
+  return digest([policy.sourceMachineId, policy.executorMachineId, policy.profile, selected.generate, selected.review, policy.segmentation, policy.inferenceLimits ?? null]);
 }
 function emptyCoverage(): TranscriptMapCoverage {
   return {
@@ -679,6 +679,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       sourceMachineId: policy.sourceMachineId,
       executorMachineId: policy.executorMachineId,
       profile: policy.profile,
+      ...(policy.inferenceLimits === undefined ? {} : { inferenceLimits: policy.inferenceLimits }),
       generateRecipe: selected.generate,
       reviewRecipe: selected.review,
       generation: gen,
@@ -741,7 +742,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       plan.source.host,
       plan.source.harness,
       plan.source.session,
-      [version.sourceMachineId, version.profile, version.generateRecipe, version.reviewRecipe, plan.segmentation],
+      [version.sourceMachineId, version.profile, version.generateRecipe, version.reviewRecipe, plan.segmentation, version.inferenceLimits ?? null],
       version.generation === 0 ? null : [plan.source.id, version.generation],
       item.level,
       item.span.digest,
