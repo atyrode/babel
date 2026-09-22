@@ -11,6 +11,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Zero autonomous activity weights also stop auxiliary work.** The conductor withdraws its
+  scan beat and posts no new title-generation preparation. Explicit explorations and drains keep
+  their routed recipes and ordinary admission checks; already admitted work still reconciles.
+  Regressions cover beat withdrawal, retained preparation and manual-only exploration (#264).
+
+- **The Code/omp closure includes optional gateway request bounds.** Reviewed configuration can
+  cap provider attempts and output tokens per call, including SDK retries and credential replay.
+  The dependency gate and compiled worker verification pass; a deployed spending bound still
+  requires matching runtime approval, explicit prices and job limits (#264, atyrode/code#170).
+
 - **Disabling policy fences deferred model admission.** An ordinary exploration whose material
   finished preparing cannot buy its Code session under a disabled policy. Activation is checked
   atomically with the posting claim, so disablement during preparation cannot slip through a

@@ -1361,6 +1361,32 @@ async function nameless(sourceId: string, over: Record<string, unknown> = {}): P
 /** The launch path the cycle drives, over the same deps the doors were built with. */
 let machinery: LaunchMachinery;
 
+test("zero autonomous weights suppress titling without blocking an explicit exploration", async () => {
+  await route();
+  await nameless("manual-only");
+  await insert(harness.db, "policies", {
+    version: "manual-only",
+    seq: 3,
+    actor_id: "operator",
+    reason: "explicit runs only",
+    payload: JSON.stringify({
+      ...ROUTED,
+      activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0 },
+    }),
+    recorded_at: stamp(NOW),
+  });
+
+  expect(await machinery.inferTitles(fleet, code, "cyc_manual")).toBeNull();
+  expect(fleet.executed).toEqual([]);
+
+  await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: ROUTED.review.profile,
+  });
+  expect(fleet.executed.map((job) => job.operationId)).toEqual([OPERATIONS.prepare]);
+});
+
 test("a refused titling profile leaves the batch unprepared and available after correction", async () => {
   await route();
   await nameless("retry");

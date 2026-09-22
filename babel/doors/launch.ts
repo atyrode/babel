@@ -3,6 +3,7 @@ import { HostCallError } from "@manifold/plugin-kit/errors";
 import { defineServerAction, type GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
+  ACTIVITIES,
   AnalysisWorkSchema,
   AnalysisClaimSchema,
   ANALYSIS_BRIEF_BYTE_LIMIT,
@@ -885,6 +886,8 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * reached for a second one would be a second spend nobody metered; one titling run at a
    * time, deployment-wide, because concurrency here buys nothing an operator asked for; the
    * ceilings; and finally a session that actually needs a name.
+   * A routed cookbook remains available to explicit runs when every autonomous activity has
+   * zero weight; keeping those recipes is not permission to name sessions in the background.
    */
   async function inferTitles(
     jobs: BabelJobs,
@@ -893,7 +896,12 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
   ): Promise<Posted | null> {
     const policy = (await deps.coordinator.policy()).policy;
     const route = policy.review;
-    if (!policy.enabled || route === undefined) return null;
+    if (
+      !policy.enabled ||
+      route === undefined ||
+      !ACTIVITIES.some((activity) => policy.activityWeights[activity] > 0)
+    )
+      return null;
     const open = await store.db.query<{ n: number | bigint }>(
       `SELECT COUNT(*) AS n FROM runs WHERE kind = ? AND closure IS NULL`,
       [OPERATIONS.title],
