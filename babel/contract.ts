@@ -5200,44 +5200,51 @@ export const TranscriptMapCatalogRunSchema = z
     refusedAttempts: z.number().int().nonnegative(),
     progress: TranscriptMapCatalogProgressSchema.nullable(),
   })
-  .refine((run) => run.refusedAttempts <= run.attempts &&
-    run.input.sourceMachineId === run.route.sourceMachineId &&
-    run.input.executorMachineId === run.route.executorMachineId &&
-    run.serviceBinding.machineId === run.route.sourceMachineId);
+  .refine(
+    (run) =>
+      run.refusedAttempts <= run.attempts &&
+      run.input.sourceMachineId === run.route.sourceMachineId &&
+      run.input.executorMachineId === run.route.executorMachineId &&
+      run.serviceBinding.machineId === run.route.sourceMachineId,
+  );
 export type TranscriptMapCatalogRun = z.infer<typeof TranscriptMapCatalogRunSchema>;
 
 export const TRANSCRIPT_MAP_SESSION_OPERATION = "atyrode.omp.material-session";
 export const TRANSCRIPT_MAP_PROMPT_VERSION = "babel.transcript-map/1";
 /** Paid authority is retained before either native preparation or Code may be posted. */
-export const TranscriptMapRunSchema = z.strictObject({
-  policyVersion: z.string().min(1),
-  route: TranscriptMapPolicySchema,
-  claim: z.strictObject({ id: refId, runId: refId, fence: z.number().int().positive() }),
-  details: z.strictObject({
-    work: TranscriptMapWorkSchema,
-    plan: TranscriptMapPlanSchema,
-    node: TranscriptMapNodeSchema,
-    version: TranscriptMapVersionSchema,
-    baseSummary: TranscriptMapSummarySchema.nullable(),
-    feedback: z.string().nullable(),
-    context: TranscriptMapContextSchema.nullable(),
-  }),
-  input: TranscriptMapPrepareInputSchema,
-  resourceBindingDigest: z.string().regex(/^[0-9a-f]{64}$/),
-  expectedServiceBindings: z.record(z.string(), TranscriptMapServiceBindingSchema),
-  installationRevision: z.string(),
-  artifactSha256: z.string(),
-  limits: JobLimitsSchema.omit({ inference: true }),
-  promptVersion: z.literal(TRANSCRIPT_MAP_PROMPT_VERSION),
-  material: TranscriptMapJobReceiptSchema.options[1].optional(),
-}).refine((run) =>
-  run.input.sourceMachineId === run.route.sourceMachineId &&
-  run.input.executorMachineId === run.route.executorMachineId &&
-  run.details.version.sourceMachineId === run.route.sourceMachineId &&
-  run.details.version.executorMachineId === run.route.executorMachineId &&
-  run.details.work.versionId === run.details.version.id &&
-  run.input.nodeId === run.details.node.id &&
-  run.expectedServiceBindings[RECALL_SERVICE_ID]?.machineId === run.route.sourceMachineId);
+export const TranscriptMapRunSchema = z
+  .strictObject({
+    policyVersion: z.string().min(1),
+    route: TranscriptMapPolicySchema,
+    claim: z.strictObject({ id: refId, runId: refId, fence: z.number().int().positive() }),
+    details: z.strictObject({
+      work: TranscriptMapWorkSchema,
+      plan: TranscriptMapPlanSchema,
+      node: TranscriptMapNodeSchema,
+      version: TranscriptMapVersionSchema,
+      baseSummary: TranscriptMapSummarySchema.nullable(),
+      feedback: z.string().nullable(),
+      context: TranscriptMapContextSchema.nullable(),
+    }),
+    input: TranscriptMapPrepareInputSchema,
+    resourceBindingDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    expectedServiceBindings: z.record(z.string(), TranscriptMapServiceBindingSchema),
+    installationRevision: z.string(),
+    artifactSha256: z.string(),
+    limits: JobLimitsSchema.omit({ inference: true }),
+    promptVersion: z.literal(TRANSCRIPT_MAP_PROMPT_VERSION),
+    material: TranscriptMapJobReceiptSchema.options[1].optional(),
+  })
+  .refine(
+    (run) =>
+      run.input.sourceMachineId === run.route.sourceMachineId &&
+      run.input.executorMachineId === run.route.executorMachineId &&
+      run.details.version.sourceMachineId === run.route.sourceMachineId &&
+      run.details.version.executorMachineId === run.route.executorMachineId &&
+      run.details.work.versionId === run.details.version.id &&
+      run.input.nodeId === run.details.node.id &&
+      run.expectedServiceBindings[RECALL_SERVICE_ID]?.machineId === run.route.sourceMachineId,
+  );
 export type TranscriptMapRun = z.infer<typeof TranscriptMapRunSchema>;
 
 /**

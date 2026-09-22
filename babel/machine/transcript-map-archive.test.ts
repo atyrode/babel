@@ -535,7 +535,14 @@ test("catalog cadences complete without a filesystem lease or Recall binding", a
     const outputDir = join(directory, "unbound-output");
     await Bun.write(outputDir, "not a native output lease");
     const inputPath = join(directory, "wake.json");
-    await Bun.write(inputPath, JSON.stringify({ kind: "catalog-wake", sourceMachineId: "source-synthetic", executorMachineId: "synthetic" }));
+    await Bun.write(
+      inputPath,
+      JSON.stringify({
+        kind: "catalog-wake",
+        sourceMachineId: "source-synthetic",
+        executorMachineId: "synthetic",
+      }),
+    );
     const first = await run({
       operation: "mapCatalog",
       inputPath,

@@ -178,6 +178,7 @@ function loop(
   actions: ActionsSlice | undefined,
   plan: RunPlan,
   catalogPlan: RunPlan,
+  mapPreparePlan: RunPlan,
 ): Conductor {
   const engine = codeEngine(actions);
   return conductor({
@@ -218,6 +219,7 @@ function loop(
     keys,
     plan,
     catalogPlan,
+    mapPreparePlan,
     now: () => store.now(),
   });
 }
@@ -327,9 +329,12 @@ async function catalogSchedule(
     const intervalMs = policy.cadenceSeconds * 1000;
     const described = await describeMapHost(jobs, policy.mapping, MACHINE_OPERATIONS.mapCatalog);
     if ("refused" in described) return [`catalog cadence: ${described.refused}`];
-    if (JSON.stringify(admission.route) !== JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping)) ||
-        admission.resourceBindingDigest !== described.resourceBindingDigest ||
-        JSON.stringify(admission.serviceBinding) !== JSON.stringify(described.serviceBinding)) {
+    if (
+      JSON.stringify(admission.route) !==
+        JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping)) ||
+      admission.resourceBindingDigest !== described.resourceBindingDigest ||
+      JSON.stringify(admission.serviceBinding) !== JSON.stringify(described.serviceBinding)
+    ) {
       for (const row of registered)
         await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
       return ["catalog admission changed; startMapCatalog is required again"];
@@ -363,7 +368,13 @@ async function catalogSchedule(
       jobId: `catalog_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
       machineId,
       operationId: MACHINE_OPERATIONS.mapCatalog,
-      input: { [INPUT_FIELD]: JSON.stringify({ kind: "catalog-wake", sourceMachineId: policy.mapping.sourceMachineId, executorMachineId: machineId }) },
+      input: {
+        [INPUT_FIELD]: JSON.stringify({
+          kind: "catalog-wake",
+          sourceMachineId: policy.mapping.sourceMachineId,
+          executorMachineId: machineId,
+        }),
+      },
       outputs: [],
       limits,
       resourceBindingDigest: described.resourceBindingDigest,
@@ -396,12 +407,18 @@ async function catalogCycle(
 ): Promise<readonly string[]> {
   const { policy, standing } = await coordinated.policy();
   const parsed = TranscriptMapCatalogAdmissionSchema.safeParse(
-    explicitAdmission ?? JSON.parse((await keys.get(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY)) ?? "null"),
+    explicitAdmission ??
+      JSON.parse((await keys.get(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY)) ?? "null"),
   );
-  const admission = parsed.success && policy.enabled && policy.mapping !== undefined &&
+  const admission =
+    parsed.success &&
+    policy.enabled &&
+    policy.mapping !== undefined &&
     parsed.data.route.executorMachineId === machineId &&
-    JSON.stringify(parsed.data.route) === JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping))
-      ? parsed.data : null;
+    JSON.stringify(parsed.data.route) ===
+      JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping))
+      ? parsed.data
+      : null;
   if (explicitAdmission !== undefined && admission !== null)
     await keys.set(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY, JSON.stringify(admission));
   const notes = await catalogSchedule(jobs, machineId, standing, admission);
@@ -413,6 +430,7 @@ async function catalogCycle(
       undefined,
       planFor(policy, MACHINE_OPERATIONS.scan),
       planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+      planFor(policy, MACHINE_OPERATIONS.mapPrepare),
     ).tickCatalog(machineId, admission ?? undefined)),
   ];
 }
@@ -471,6 +489,7 @@ async function cycle(
     actions,
     plan,
     planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+    planFor(policy, MACHINE_OPERATIONS.mapPrepare),
   ).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that

@@ -2735,9 +2735,10 @@ export function coordinator(
         },
       };
     }
-    const machine = (assignment.activity === "mapping"
-      ? policy.mapping?.executorMachineId
-      : policy.review?.machineId) ?? "";
+    const machine =
+      (assignment.activity === "mapping"
+        ? policy.mapping?.executorMachineId
+        : policy.review?.machineId) ?? "";
 
     const admission = admitSpend(
       policy,

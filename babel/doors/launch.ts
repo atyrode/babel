@@ -1898,19 +1898,26 @@ export function mapCatalogDoor(
     }),
     async (ctx, { operation, target }) => {
       const { policy } = await coordinator.policy();
-      if (!policy.enabled || policy.mapping?.executorMachineId !== operation.machineId ||
-          policy.mapping.sourceMachineId !== target.machineId)
-        return { refused: "The enabled mapping policy must name the requested source owner and executor." };
+      if (
+        !policy.enabled ||
+        policy.mapping?.executorMachineId !== operation.machineId ||
+        policy.mapping.sourceMachineId !== target.machineId
+      )
+        return {
+          refused: "The enabled mapping policy must name the requested source owner and executor.",
+        };
       const binding = await describeMapHost(ctx.jobs, policy.mapping, OPERATIONS.mapCatalog);
       if ("refused" in binding) return binding;
       return {
         sourceMachineId: target.machineId,
         executorMachineId: operation.machineId,
-        notes: [...(await advance(ctx, {
-          route: policy.mapping,
-          serviceBinding: binding.serviceBinding,
-          resourceBindingDigest: binding.resourceBindingDigest,
-        }))],
+        notes: [
+          ...(await advance(ctx, {
+            route: policy.mapping,
+            serviceBinding: binding.serviceBinding,
+            resourceBindingDigest: binding.resourceBindingDigest,
+          })),
+        ],
       };
     },
   );
@@ -2040,7 +2047,13 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       // The caller was admitted at the node it POSTED; the row says which job this run is. A
       // request that authorized one job and named another is refused rather than reconciled.
       const node = preparing
-        ? { jobId: prepareJobId, operationId: run.kind === TRANSCRIPT_MAP_SESSION_OPERATION ? OPERATIONS.mapPrepare : OPERATIONS.prepare }
+        ? {
+            jobId: prepareJobId,
+            operationId:
+              run.kind === TRANSCRIPT_MAP_SESSION_OPERATION
+                ? OPERATIONS.mapPrepare
+                : OPERATIONS.prepare,
+          }
         : { jobId, operationId: run.kind };
       if (
         job.jobId !== node.jobId ||

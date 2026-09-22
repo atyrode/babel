@@ -236,8 +236,16 @@ test("executor replacement preserves source ownership and historical producing p
   const view = await db.maps.node(scope, selected.id, data.nodes[0]!.id);
   expect(view?.summary?.id).toBe(originalView?.summary?.id);
   expect(view?.summary?.versionId).toBe(original.id);
-  expect(await db.maps.node({ ...scope, machineId: moved.executorMachineId }, selected.id, data.nodes[0]!.id)).toBeNull();
-  expect(await db.maps.candidates(moved.executorMachineId, { captureId: data.plan.source.id })).toEqual([]);
+  expect(
+    await db.maps.node(
+      { ...scope, machineId: moved.executorMachineId },
+      selected.id,
+      data.nodes[0]!.id,
+    ),
+  ).toBeNull();
+  expect(
+    await db.maps.candidates(moved.executorMachineId, { captureId: data.plan.source.id }),
+  ).toEqual([]);
   expect(await db.maps.ensureVersion(data.plan.id, policy, NOW)).toEqual(original);
 });
 
@@ -252,7 +260,9 @@ test("reviewed inference bounds create a new producing contract without relabeli
   const selected = await db.maps.ensureVersion(data.plan.id, bounded, LATER);
   expect((await db.maps.offers(bounded, LATER)).map((item) => item.mode)).toEqual(["generate"]);
   expect((await db.maps.node(scope, selected.id, data.nodes[0]!.id))?.summary).toBeNull();
-  expect((await db.maps.node(scope, original.id, data.nodes[0]!.id))?.summary).toEqual(before?.summary);
+  expect((await db.maps.node(scope, original.id, data.nodes[0]!.id))?.summary).toEqual(
+    before?.summary,
+  );
 });
 
 test("a replacement source cannot claim another owner's capture or historical plan", async () => {
@@ -260,29 +270,57 @@ test("a replacement source cannot claim another owner's capture or historical pl
   const data = fixture(1);
   const original = await publish(db.maps, data);
   const replacement = { ...policy, sourceMachineId: "replacement-source" };
-  await expect(db.maps.recordPlan({
-    ...scope, machineId: replacement.sourceMachineId, ...data,
-    offset: 0, nextOffset: null, now: LATER,
-  })).rejects.toThrow();
+  await expect(
+    db.maps.recordPlan({
+      ...scope,
+      machineId: replacement.sourceMachineId,
+      ...data,
+      offset: 0,
+      nextOffset: null,
+      now: LATER,
+    }),
+  ).rejects.toThrow();
   await expect(db.maps.ensureVersion(data.plan.id, replacement, LATER)).rejects.toThrow();
-  expect(await db.maps.reference(replacement.sourceMachineId, original.id, data.nodes[0]!.id)).toBeNull();
-  expect(await db.maps.candidates(replacement.sourceMachineId, { captureId: data.plan.source.id })).toEqual([]);
-  expect((await db.maps.node(scope, original.id, data.nodes[0]!.id))?.source.id).toBe(data.plan.source.id);
+  expect(
+    await db.maps.reference(replacement.sourceMachineId, original.id, data.nodes[0]!.id),
+  ).toBeNull();
+  expect(
+    await db.maps.candidates(replacement.sourceMachineId, { captureId: data.plan.source.id }),
+  ).toEqual([]);
+  expect((await db.maps.node(scope, original.id, data.nodes[0]!.id))?.source.id).toBe(
+    data.plan.source.id,
+  );
 });
 
 test("a draft capture with no recorded source owner is never adopted by a new route", async () => {
   const db = await setup();
   const data = fixture(1);
-  const { coordinates: _coordinates, captureDigest: _captureDigest, sourceDigest: _sourceDigest,
-    bytes: _bytes, records: _records, ...capture } = data.plan.source;
+  const {
+    coordinates: _coordinates,
+    captureDigest: _captureDigest,
+    sourceDigest: _sourceDigest,
+    bytes: _bytes,
+    records: _records,
+    ...capture
+  } = data.plan.source;
   await db.db.run(
     `INSERT INTO transcript_map_captures(id,host,harness,session,captured_at,payload) VALUES(?,?,?,?,?,?)`,
-    [capture.id, capture.host, capture.harness, capture.session, capture.capturedAt, JSON.stringify(capture)],
+    [
+      capture.id,
+      capture.host,
+      capture.harness,
+      capture.session,
+      capture.capturedAt,
+      JSON.stringify(capture),
+    ],
   );
   await expect(publish(db.maps, data)).rejects.toThrow();
   expect(await db.maps.candidates(policy.sourceMachineId, { captureId: capture.id })).toEqual([]);
-  expect(await db.db.query(`SELECT source_machine_id FROM transcript_map_captures WHERE id=?`, [capture.id]))
-    .toEqual([{ source_machine_id: "" }]);
+  expect(
+    await db.db.query(`SELECT source_machine_id FROM transcript_map_captures WHERE id=?`, [
+      capture.id,
+    ]),
+  ).toEqual([{ source_machine_id: "" }]);
 });
 
 test("paged plans stay invisible until manifest verification and never authorize another class", async () => {
@@ -845,10 +883,19 @@ test("an executor's map grant neither navigates nor reads its source owner's arc
   const f = reader(db, data);
   const executorTarget = transcriptMapReadTarget(policy.executorMachineId, "private");
   const source = { versionId: version.id, nodeId: data.nodes[0]!.id, maxBytes: 23 };
-  expect(await f.knock(ACTIONS.mapSource, { ...source, target: executorTarget }, 81)).toHaveProperty("refused");
-  expect(await f.knock(ACTIONS.mapRead, {
-    target: executorTarget, request: { kind: "node", versionId: version.id, nodeId: source.nodeId },
-  }, 82)).toHaveProperty("refused");
+  expect(
+    await f.knock(ACTIONS.mapSource, { ...source, target: executorTarget }, 81),
+  ).toHaveProperty("refused");
+  expect(
+    await f.knock(
+      ACTIONS.mapRead,
+      {
+        target: executorTarget,
+        request: { kind: "node", versionId: version.id, nodeId: source.nodeId },
+      },
+      82,
+    ),
+  ).toHaveProperty("refused");
   expect(f.posted.size).toBe(0);
   const reply = TranscriptMapNativeReplySchema.parse(
     await f.knock(ACTIONS.mapSource, { ...source, target: f.target }, 83),

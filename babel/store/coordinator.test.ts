@@ -2958,7 +2958,7 @@ test("an unknown mapping posting stays occupied after expiry and retained mappin
       })
     ).outcome,
   ).toBe("refused");
-  await runOn(db, "retained-code", policy.mapping!.machineId);
+  await runOn(db, "retained-code", policy.mapping!.executorMachineId);
   await db.run(`UPDATE runs SET preparation=?,closure='failed' WHERE job_id='retained-code'`, [
     JSON.stringify({
       mapping: {

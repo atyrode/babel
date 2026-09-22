@@ -511,8 +511,7 @@ export const SESSION_INDEX_SCHEMA: readonly string[] = [
 ];
 
 // Applied after table creation in both paths, including upgrades that create map tables now.
-const TRANSCRIPT_MAP_OWNER_COLUMN =
-  `ALTER TABLE transcript_map_captures ADD COLUMN source_machine_id TEXT NOT NULL DEFAULT ''`;
+const TRANSCRIPT_MAP_OWNER_COLUMN = `ALTER TABLE transcript_map_captures ADD COLUMN source_machine_id TEXT NOT NULL DEFAULT ''`;
 
 /**
  * Per-capture navigation artifacts (#223). None of these identifiers name frontier records.

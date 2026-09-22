@@ -650,7 +650,8 @@ test("mapping-only methods are unavailable to ordinary exploration", async () =>
   const policy = PolicySchema.parse(JSON.parse(stored[0]!.payload));
   if (policy.review === undefined) throw new Error("the fixture has no review route");
   const mapping = {
-    machineId: MACHINE,
+    sourceMachineId: MACHINE,
+    executorMachineId: MACHINE,
     profile: policy.review.profile,
     dailyCost: 1,
     generateRecipe: "map-generation-only",
@@ -783,14 +784,21 @@ test("explicit catalog admission posts free work without settling or launching p
   const native = {
     describe: () => ({
       connected: true,
-      operations: { [OPERATIONS.mapCatalog]: {
-        ready: true, reason: null,
-        resourceBindingDigest: "b".repeat(64),
-        serviceBindings: { [RECALL_SERVICE_ID]: {
-          machineId: "source-machine", serviceId: RECALL_SERVICE_ID,
-          revision: "source-revision-1", policySha256: "c".repeat(64),
-        } },
-      } },
+      operations: {
+        [OPERATIONS.mapCatalog]: {
+          ready: true,
+          reason: null,
+          resourceBindingDigest: "b".repeat(64),
+          serviceBindings: {
+            [RECALL_SERVICE_ID]: {
+              machineId: "source-machine",
+              serviceId: RECALL_SERVICE_ID,
+              revision: "source-revision-1",
+              policySha256: "c".repeat(64),
+            },
+          },
+        },
+      },
       installation: {
         revision: "rev-7",
         artifactSha256: "a".repeat(64),
@@ -819,14 +827,24 @@ test("explicit catalog admission posts free work without settling or launching p
   };
   const ctx = context(harness.db as unknown as GuestDatabase, jobs);
   const action = plugin.actions.find((entry) => entry.name === ACTIONS.startMapCatalog)!;
-  for (const [executor, source] of [[MACHINE, MACHINE], ["wrong-executor", "source-machine"]]) {
-    expect(await plugin.handlers[ACTIONS.startMapCatalog]!(
-      { ...ctx, jobs: native as unknown as GuestCtx["jobs"] },
-      action.input.parse({
-        operation: { kind: "operation", machineId: executor, operationId: OPERATIONS.mapCatalog },
-        target: { kind: "service", machineId: source, serviceId: RECALL_SERVICE_ID, operationId: TRANSCRIPT_MAP_SERVICE_OPERATION },
-      }) as never,
-    )).toHaveProperty("refused");
+  for (const [executor, source] of [
+    [MACHINE, MACHINE],
+    ["wrong-executor", "source-machine"],
+  ]) {
+    expect(
+      await plugin.handlers[ACTIONS.startMapCatalog]!(
+        { ...ctx, jobs: native as unknown as GuestCtx["jobs"] },
+        action.input.parse({
+          operation: { kind: "operation", machineId: executor, operationId: OPERATIONS.mapCatalog },
+          target: {
+            kind: "service",
+            machineId: source,
+            serviceId: RECALL_SERVICE_ID,
+            operationId: TRANSCRIPT_MAP_SERVICE_OPERATION,
+          },
+        }) as never,
+      ),
+    ).toHaveProperty("refused");
   }
   expect(executed).toEqual([]);
   let paidCalls = 0;
@@ -876,14 +894,20 @@ test("explicit catalog admission posts free work without settling or launching p
 
   // A replacement source on the same executor also needs its own explicit admission.
   await insert(harness.db, "policies", {
-    version: "p3", seq: 3, actor_id: "operator",
-    reason: "replace source owner", recorded_at: stamp(NOW),
+    version: "p3",
+    seq: 3,
+    actor_id: "operator",
+    reason: "replace source owner",
+    recorded_at: stamp(NOW),
     payload: JSON.stringify({
       ...policy,
       mapping: {
-        sourceMachineId: "replacement-source", executorMachineId: MACHINE,
+        sourceMachineId: "replacement-source",
+        executorMachineId: MACHINE,
         profile: { containerId: "ctr_workbench", expectedRevision: 1 },
-        dailyCost: 0, generateRecipe: "triage", reviewRecipe: "triage",
+        dailyCost: 0,
+        generateRecipe: "triage",
+        reviewRecipe: "triage",
       },
     }),
   });

@@ -24,6 +24,7 @@ import {
   DrainStartRequestSchema,
   DrainStopInputSchema,
   OPERATIONS,
+  TRANSCRIPT_MAP_SESSION_OPERATION,
   PRESETS,
   PRESET_OPERATIONS,
   PRESET_START,
@@ -309,10 +310,8 @@ export function accountsClause(profile: {
  * and the job — so the panel posts the node rather than asking the door to look one up, because
  * the requirement is discharged against these arguments before the door is entered.
  *
- * A RUN STILL PREPARING NAMES ITS PREPARATION (#592). A run is started in two wakes and the
- * first posts only `atyrode.babel.prepare`, so until Code's session id lands there is exactly
- * one job to stop and it is that one — at its own operation, because a node is an operation on
- * a machine and the explore node has no job behind it yet.
+ * A run still preparing names the exact native preparation operation rather than the
+ * not-yet-posted Code session. Mapping has its own preparation operation and cancel grant.
  */
 export function stopInput(run: RunRow, reason = ""): z.infer<typeof StopInputSchema> {
   const preparing = run.jobId === "" && run.prepareJobId !== "";
@@ -321,7 +320,11 @@ export function stopInput(run: RunRow, reason = ""): z.infer<typeof StopInputSch
     job: {
       kind: "job",
       machineId: run.machineId,
-      operationId: preparing ? OPERATIONS.prepare : run.kind,
+      operationId: preparing
+        ? run.kind === TRANSCRIPT_MAP_SESSION_OPERATION
+          ? OPERATIONS.mapPrepare
+          : OPERATIONS.prepare
+        : run.kind,
       jobId: preparing ? run.prepareJobId : run.jobId,
     },
     reason,

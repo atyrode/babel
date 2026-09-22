@@ -23,6 +23,7 @@ import {
   TranscriptMapCatalogInputSchema,
   TranscriptMapPolicySchema,
   type TranscriptMapJobReceipt,
+  type TranscriptMapServiceBinding,
   TranscriptMapPrepareInputSchema,
   TRANSCRIPT_MAP_SESSION_OPERATION,
   type TranscriptMapModelResult,
@@ -654,7 +655,7 @@ const POLICY = {
   explorationShare: 0.2,
   discoveryShare: 0.2,
   filingShare: 0.1,
-  activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0 },
+  activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0, mapping: 0 },
   backlogShare: 0.1,
   maxItemReviews: 6,
   perCycleCost: 0.5,
@@ -6482,7 +6483,7 @@ async function catalogDeployment(sourceMachineId = "map-source") {
   const { recipes: _recipes, ...mapping } = route;
   draws.mapping = mapping;
   const describe = fleet.describe.bind(fleet);
-  const nativeBinding = {
+  const nativeBinding: TranscriptMapServiceBinding = {
     machineId: route.sourceMachineId,
     serviceId: RECALL_SERVICE_ID,
     revision: "source-revision-1",
@@ -6493,11 +6494,17 @@ async function catalogDeployment(sourceMachineId = "map-source") {
     const ready = describe(args);
     return {
       ...ready,
-      operations: { ...ready.operations, [OPERATIONS.mapCatalog]: {
-        ready: true, reason: null,
-        resourceBindingDigest: bindingState.digest,
-        ...(bindingState.available ? { serviceBindings: { [RECALL_SERVICE_ID]: { ...nativeBinding } } } : {}),
-      } },
+      operations: {
+        ...ready.operations,
+        [OPERATIONS.mapCatalog]: {
+          ready: true,
+          reason: null,
+          resourceBindingDigest: bindingState.digest,
+          ...(bindingState.available
+            ? { serviceBindings: { [RECALL_SERVICE_ID]: { ...nativeBinding } } }
+            : {}),
+        },
+      },
     };
   };
   const codeCalls: string[] = [];
@@ -6524,11 +6531,17 @@ async function catalogDeployment(sourceMachineId = "map-source") {
       catalogPlan: UNMETERED_PLAN,
       now: () => clock,
     });
-  const tick = (machineId = MACHINE) => loop().tickCatalog(machineId, {
-    route: draws.mapping!,
-    serviceBinding: { ...nativeBinding },
-    resourceBindingDigest: bindingState.digest,
-  });
+  const tick = (machineId = MACHINE) =>
+    loop().tickCatalog(
+      machineId,
+      draws.mapping === undefined
+        ? undefined
+        : {
+            route: draws.mapping,
+            serviceBinding: { ...nativeBinding },
+            resourceBindingDigest: bindingState.digest,
+          },
+    );
   const ordinaryTick = () => loop().tick();
   const digest = `sha256:${"a".repeat(64)}`;
   const context = {
@@ -6572,7 +6585,13 @@ async function catalogDeployment(sourceMachineId = "map-source") {
       });
     }),
   );
-  function finish(mapping: Omit<Extract<TranscriptMapJobReceipt, { kind: "catalog" }>, "sourceMachineId" | "executorMachineId"> & Partial<Pick<TranscriptMapJobReceipt, "sourceMachineId" | "executorMachineId">>) {
+  function finish(
+    mapping: Omit<
+      Extract<TranscriptMapJobReceipt, { kind: "catalog" }>,
+      "sourceMachineId" | "executorMachineId"
+    > &
+      Partial<Pick<TranscriptMapJobReceipt, "sourceMachineId" | "executorMachineId">>,
+  ) {
     const launch = fleet.launched.at(-1)!;
     const input = TranscriptMapCatalogInputSchema.parse(
       JSON.parse(String(launch.input[INPUT_FIELD])),
@@ -6586,7 +6605,11 @@ async function catalogDeployment(sourceMachineId = "map-source") {
         finishedAt: new Date(clock).toISOString(),
         closure: "completed",
         counts: {},
-        mapping: { sourceMachineId: input.sourceMachineId, executorMachineId: input.executorMachineId, ...mapping },
+        mapping: {
+          sourceMachineId: input.sourceMachineId,
+          executorMachineId: input.executorMachineId,
+          ...mapping,
+        },
       },
     });
   }
@@ -6623,7 +6646,13 @@ test("catalog receipts cannot substitute either the source owner or executor", a
   for (const field of ["sourceMachineId", "executorMachineId"] as const) {
     const f = await catalogDeployment();
     await f.tick();
-    f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null, [field]: "wrong-machine" });
+    f.finish({
+      kind: "catalog",
+      context: f.context,
+      entries: f.entries,
+      nextCursor: null,
+      [field]: "wrong-machine",
+    });
     await f.tick();
     expect(await f.db.query(`SELECT id FROM transcript_map_captures`)).toEqual([]);
     expect(f.fleet.launched).toHaveLength(1);
@@ -6658,7 +6687,8 @@ test("same-machine catalog preserves explicit source identity and remains free",
     JSON.parse(String(f.fleet.launched.at(-1)!.input[INPUT_FIELD])),
   );
   expect(plan).toMatchObject({
-    sourceMachineId: MACHINE, executorMachineId: MACHINE,
+    sourceMachineId: MACHINE,
+    executorMachineId: MACHINE,
     request: { kind: "map-plan", capture: f.captures[0] },
   });
   expect(f.codeCalls).toEqual([]);
@@ -7274,10 +7304,16 @@ test("atomic service-binding admission refusals release a never-started catalog 
   for (const reason of ["service_bindings_changed", "service_bindings_protocol_unsupported"]) {
     const f = await catalogDeployment(MACHINE);
     const execute = f.fleet.execute.bind(f.fleet);
-    f.jobs.execute = () => { throw new HostCallError("jobs.execute", reason); };
-    f.jobs.status = () => { throw new HostCallError("jobs.status", "job_not_started"); };
+    f.jobs.execute = () => {
+      throw new HostCallError("jobs.execute", reason);
+    };
+    f.jobs.status = () => {
+      throw new HostCallError("jobs.status", "job_not_started");
+    };
     await f.tick();
-    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([{ n: 0n }]);
+    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+      { n: 0n },
+    ]);
     expect(f.fleet.launched).toEqual([]);
     await f.tick();
     f.jobs.execute = execute;
@@ -7393,27 +7429,51 @@ test("a newer different disclosure class fences stale context insertion at the d
 async function paidMapDeployment(sourceMachineId = "map-source") {
   clock = Date.parse("2026-09-22T09:00:00.000Z");
   const f = await catalogDeployment(sourceMachineId);
-  const route = { ...f.route, dailyCost: 5, inferenceLimits: { calls: 1 } };
+  const route = { ...f.route, dailyCost: 5 };
   const { recipes: _recipes, ...mapping } = route;
-  const policy = { ...POLICY, batchSize: 1, review: ROUTE, mapping,
-    activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0, mapping: 1 } };
-  await f.db.run(`INSERT INTO policies(version,seq,actor_id,reason,payload,recorded_at)
+  const policy = {
+    ...POLICY,
+    batchSize: 1,
+    review: ROUTE,
+    mapping,
+    activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0, mapping: 1 },
+  };
+  await f.db.run(
+    `INSERT INTO policies(version,seq,actor_id,reason,payload,recorded_at)
     VALUES(?,1,'operator','synthetic mapping',?,?)`,
-    [policy.version, JSON.stringify(policy), new Date(clock).toISOString()]);
+    [policy.version, JSON.stringify(policy), new Date(clock).toISOString()],
+  );
   const maps = transcriptMaps(f.store);
-  await maps.recordCatalog({ machineId: route.sourceMachineId, context: f.context,
-    entries: [f.entries[0]!], nextCursor: null, now: new Date(clock).toISOString() });
+  await maps.recordCatalog({
+    machineId: route.sourceMachineId,
+    context: f.context,
+    entries: [f.entries[0]!],
+    nextCursor: null,
+    now: new Date(clock).toISOString(),
+  });
   const tree = f.trees[0]!;
-  await maps.recordPlan({ machineId: route.sourceMachineId, context: f.context,
-    access: f.entries[0]!.access, plan: tree.header, nodes: tree.nodes,
-    offset: 0, nextOffset: null, now: new Date(clock).toISOString() });
+  await maps.recordPlan({
+    machineId: route.sourceMachineId,
+    context: f.context,
+    access: f.entries[0]!.access,
+    plan: tree.header,
+    nodes: tree.nodes,
+    offset: 0,
+    nextOffset: null,
+    now: new Date(clock).toISOString(),
+  });
   const version = await maps.ensureVersion(tree.header.id, route, new Date(clock).toISOString());
   const coordinator = governed(f.store, () => clock, 16);
   const describe = f.fleet.describe.bind(f.fleet);
   f.fleet.describe = (args) => {
     const ready = describe(args);
-    return { ...ready, operations: { ...ready.operations,
-      [OPERATIONS.mapPrepare]: ready.operations![OPERATIONS.mapCatalog]! } };
+    return {
+      ...ready,
+      operations: {
+        ...ready.operations,
+        [OPERATIONS.mapPrepare]: ready.operations![OPERATIONS.mapCatalog]!,
+      },
+    };
   };
   const posted: SessionRequest[] = [];
   const readings = new Map<string, SessionRead>();
@@ -7423,14 +7483,21 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
     checkProfile: async () => ({ ok: true, value: null }),
     async runSession(request) {
       posted.push(request);
-      const job = { jobId: `map_code_${posted.length}`, machineId: request.machineId,
-        operationId: TRANSCRIPT_MAP_SESSION_OPERATION, pluginId: "atyrode.omp", state: "started" as const };
+      const job = {
+        jobId: `map_code_${posted.length}`,
+        machineId: request.machineId,
+        operationId: TRANSCRIPT_MAP_SESSION_OPERATION,
+        pluginId: "atyrode.omp",
+        state: "started" as const,
+      };
       readings.set(job.jobId, { job, session: null });
       return { ok: true, value: job };
     },
     async readSession({ jobId }) {
       const value = readings.get(jobId);
-      return value ? { ok: true, value } : refusedByCode("engine_unavailable", "synthetic read unavailable");
+      return value
+        ? { ok: true, value }
+        : refusedByCode("engine_unavailable", "synthetic read unavailable");
     },
     async cancelSession({ jobId }) {
       cancelled.push(jobId);
@@ -7442,85 +7509,165 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
   };
   const tick = () => {
     clock += 1_000;
-    return conductor({ store: f.store, coordinator, jobs: f.fleet, engine,
-      machines: new Folders(), keys: new Keys(), plan: PLAN, mapPreparePlan: UNMETERED_PLAN,
-      now: () => clock }).tick();
+    return conductor({
+      store: f.store,
+      coordinator,
+      jobs: f.fleet,
+      engine,
+      machines: new Folders(),
+      keys: new Keys(),
+      plan: PLAN,
+      mapPreparePlan: UNMETERED_PLAN,
+      now: () => clock,
+    }).tick();
   };
   const seal = () => {
     const launch = f.fleet.launched.at(-1)!;
-    const input = TranscriptMapPrepareInputSchema.parse(JSON.parse(String(launch.input[INPUT_FIELD])));
+    const input = TranscriptMapPrepareInputSchema.parse(
+      JSON.parse(String(launch.input[INPUT_FIELD])),
+    );
     const node = tree.nodes.find((candidate) => candidate.id === input.nodeId)!;
-    const document = JSON.stringify({ inference: true, source: input.source, node, mode: input.mode,
+    const document = JSON.stringify({
+      inference: true,
+      source: input.source,
+      node,
+      mode: input.mode,
       text: node.children.length === 0 ? "synthetic retained source" : null,
-      children: input.children, baseSummary: input.baseSummary ?? null, feedback: input.feedback ?? null });
-    f.fleet.finish(launch.jobId, 0, { [JOB_OUTPUT_FILES.receipt]: {
-      runId: input.runId, machineId: route.executorMachineId, kind: "mapPrepare",
-      startedAt: new Date(clock).toISOString(), finishedAt: new Date(clock).toISOString(),
-      closure: "completed", counts: {}, mapping: {
-        kind: "material", sourceMachineId: route.sourceMachineId, executorMachineId: route.executorMachineId,
-        source: input.source, node, mode: input.mode, context: f.context, access: f.entries[0]!.access,
-        inputDigest: `sha256:${createHash("sha256").update(document).digest("hex")}`,
-        materialBytes: Buffer.byteLength(document),
+      children: input.children,
+      baseSummary: input.baseSummary ?? null,
+      feedback: input.feedback ?? null,
+    });
+    f.fleet.finish(launch.jobId, 0, {
+      [JOB_OUTPUT_FILES.receipt]: {
+        runId: input.runId,
+        machineId: route.executorMachineId,
+        kind: "mapPrepare",
+        startedAt: new Date(clock).toISOString(),
+        finishedAt: new Date(clock).toISOString(),
+        closure: "completed",
+        counts: {},
+        mapping: {
+          kind: "material",
+          sourceMachineId: route.sourceMachineId,
+          executorMachineId: route.executorMachineId,
+          source: input.source,
+          node,
+          mode: input.mode,
+          context: f.context,
+          access: f.entries[0]!.access,
+          inputDigest: `sha256:${createHash("sha256").update(document).digest("hex")}`,
+          materialBytes: Buffer.byteLength(document),
+        },
       },
-    } });
+    });
     return input;
   };
   const answer = (result: TranscriptMapModelResult | string, cost = 0.02) => {
     const jobId = `map_code_${posted.length}`;
     const previous = readings.get(jobId)!;
-    const value = sessionRead({ state: "exited", jobId,
-      finalMessage: typeof result === "string" ? result : `\`\`\`json\n${JSON.stringify(result)}\n\`\`\``,
-      inference: { calls: 1, inputTokens: 90, outputTokens: 20, cachedInputTokens: 0, costMicros: cost * 1_000_000 },
-      usage: { input: 90, output: 20, cacheRead: 0, cacheWrite: 0, cost: 99 } });
-    readings.set(jobId, { ...value, job: { ...value.job, machineId: previous.job.machineId,
-      operationId: previous.job.operationId } });
+    const value = sessionRead({
+      state: "exited",
+      jobId,
+      finalMessage:
+        typeof result === "string" ? result : `\`\`\`json\n${JSON.stringify(result)}\n\`\`\``,
+      inference: {
+        calls: 1,
+        inputTokens: 90,
+        outputTokens: 20,
+        cachedInputTokens: 0,
+        costMicros: cost * 1_000_000,
+      },
+      usage: { input: 90, output: 20, cacheRead: 0, cacheWrite: 0, cost: 99 },
+    });
+    readings.set(jobId, {
+      ...value,
+      job: {
+        ...value.job,
+        machineId: previous.job.machineId,
+        operationId: previous.job.operationId,
+      },
+    });
   };
-  return { ...f, maps, route, version, coordinator, engine, posted, readings, cancelled, tick, seal, answer };
+  return {
+    ...f,
+    maps,
+    route,
+    version,
+    coordinator,
+    engine,
+    posted,
+    readings,
+    cancelled,
+    tick,
+    seal,
+    answer,
+  };
 }
 
-test.each([MACHINE, "map-source"])("paid map leaf/parent generation, served review and bounded correction survive fresh wakes (%s)", async (source) => {
-  const f = await paidMapDeployment(source);
-  await f.tick();
-  for (let index = 0; index < 3; index++) {
-    const input = f.seal();
-    expect(input.children.length > 0).toBe(index === 2);
+test.each([MACHINE, "map-source"])(
+  "paid map leaf/parent generation, served review and bounded correction survive fresh wakes (%s)",
+  async (source) => {
+    const f = await paidMapDeployment(source);
     await f.tick();
-    f.answer({ kind: "summary", text: `Navigation ${index}` });
+    for (let index = 0; index < 3; index++) {
+      const input = f.seal();
+      expect(input.children.length > 0).toBe(index === 2);
+      await f.tick();
+      f.answer({ kind: "summary", text: `Navigation ${index}` });
+      await f.tick();
+    }
+    expect(
+      await f.db.query(`SELECT state,count(*) n FROM transcript_map_work GROUP BY state`),
+    ).toEqual([{ state: "complete", n: 3n }]);
+    expect(f.posted).toHaveLength(3);
+    const scope = { machineId: source, context: f.context };
+    const root = (await f.maps.node(scope, f.version.id, f.trees[0]!.header.rootId!))!;
+    expect(root.coverage.partial).toBe(false);
+    const original = root.summary!;
+    await f.maps.noteServed({
+      readId: "synthetic-consumer",
+      summaryIds: [original.id],
+      now: new Date(clock).toISOString(),
+    });
     await f.tick();
-  }
-  expect(await f.db.query(`SELECT state,count(*) n FROM transcript_map_work GROUP BY state`)).toEqual([{ state: "complete", n: 3n }]);
-  expect(f.posted).toHaveLength(3);
-  const scope = { machineId: source, context: f.context };
-  const root = (await f.maps.node(scope, f.version.id, f.trees[0]!.header.rootId!))!;
-  expect(root.coverage.partial).toBe(false);
-  const original = root.summary!;
-  await f.maps.noteServed({ readId: "synthetic-consumer", summaryIds: [original.id], now: new Date(clock).toISOString() });
-  await f.tick();
-  expect(f.seal().mode).toBe("review");
-  await f.tick();
-  f.answer({ kind: "review", verdict: "correct", reason: "Preserve the source qualification." });
-  await f.tick();
-  expect(f.seal().mode).toBe("correct");
-  await f.tick();
-  f.answer({ kind: "summary", text: "Navigation with the qualification preserved." });
-  await f.tick();
-  const corrected = (await f.maps.node(scope, f.version.id, root.node.id))!.summary!;
-  expect(corrected.supersedes).toBe(original.id);
-  expect(corrected.versionId).toBe(original.versionId);
-  expect(await f.maps.offers(f.route, new Date(clock).toISOString())).toEqual([]);
-  expect((await f.coordinator.spend(clock)).mapping).toBeCloseTo(0.1);
-  expect(await f.db.query(`SELECT count(*) n FROM transcript_map_summaries`)).toEqual([{ n: 4n }]);
-  expect(await f.db.query(`SELECT count(*) n FROM run_calls`)).toEqual([{ n: 5n }]);
-  await f.maps.noteServed({ readId: "served-correction", summaryIds: [corrected.id], now: new Date(clock).toISOString() });
-  await f.tick(); f.seal(); await f.tick();
-  f.answer({ kind: "review", verdict: "reject", reason: "The corrected navigation still misses the qualification." });
-  await f.tick();
-  expect(await f.maps.offers(f.route, new Date(clock).toISOString())).toEqual([]);
-  const exhausted = (await f.maps.node(scope, f.version.id, root.node.id))!;
-  expect(exhausted.summary).toBeNull();
-  expect(exhausted.coverage.stale).toBe(true);
-  expect(f.posted).toHaveLength(6);
-});
+    expect(f.seal().mode).toBe("review");
+    await f.tick();
+    f.answer({ kind: "review", verdict: "correct", reason: "Preserve the source qualification." });
+    await f.tick();
+    expect(f.seal().mode).toBe("correct");
+    await f.tick();
+    f.answer({ kind: "summary", text: "Navigation with the qualification preserved." });
+    await f.tick();
+    const corrected = (await f.maps.node(scope, f.version.id, root.node.id))!.summary!;
+    expect(corrected.supersedes).toBe(original.id);
+    expect(corrected.versionId).toBe(original.versionId);
+    expect(await f.maps.offers(f.route, new Date(clock).toISOString())).toEqual([]);
+    expect((await f.coordinator.spend(clock)).mapping).toBeCloseTo(0.1);
+    expect(await f.db.query(`SELECT count(*) n FROM transcript_map_summaries`)).toEqual([
+      { n: 4n },
+    ]);
+    expect(await f.db.query(`SELECT count(*) n FROM run_calls`)).toEqual([{ n: 5n }]);
+    await f.maps.noteServed({
+      readId: "served-correction",
+      summaryIds: [corrected.id],
+      now: new Date(clock).toISOString(),
+    });
+    await f.tick();
+    f.seal();
+    await f.tick();
+    f.answer({
+      kind: "review",
+      verdict: "reject",
+      reason: "The corrected navigation still misses the qualification.",
+    });
+    await f.tick();
+    expect(await f.maps.offers(f.route, new Date(clock).toISOString())).toEqual([]);
+    const exhausted = (await f.maps.node(scope, f.version.id, root.node.id))!;
+    expect(exhausted.summary).toBeNull();
+    expect(exhausted.coverage.stale).toBe(true);
+    expect(f.posted).toHaveLength(6);
+  },
+);
 
 test("binding replacement before inference releases without spend; late paid answers cannot publish", async () => {
   const f = await paidMapDeployment();
@@ -7529,7 +7676,9 @@ test("binding replacement before inference releases without spend; late paid ans
   f.nativeBinding.revision = "replacement";
   await f.tick();
   expect(f.posted).toEqual([]);
-  expect(await f.db.query(`SELECT actual_cost FROM claims WHERE finished_at IS NOT NULL`)).toEqual([{ actual_cost: 0 }]);
+  expect(await f.db.query(`SELECT actual_cost FROM claims WHERE finished_at IS NOT NULL`)).toEqual([
+    { actual_cost: 0 },
+  ]);
   f.seal();
   await f.tick();
   const jobId = `map_code_${f.posted.length}`;
@@ -7540,7 +7689,9 @@ test("binding replacement before inference releases without spend; late paid ans
   await f.tick();
   expect(await f.db.query(`SELECT id FROM transcript_map_summaries`)).toEqual([]);
   expect((await f.coordinator.spend(clock)).mapping).toBeGreaterThanOrEqual(0.12);
-  expect(await f.db.query(`SELECT actual_cost FROM claims WHERE job_id=?`, [jobId])).toEqual([{ actual_cost: 0.12 }]);
+  expect(await f.db.query(`SELECT actual_cost FROM claims WHERE job_id=?`, [jobId])).toEqual([
+    { actual_cost: 0.12 },
+  ]);
 });
 
 test("unconfirmed Code post remains visible and reserved across restart, disablement and reaping", async () => {
@@ -7558,9 +7709,13 @@ test("unconfirmed Code post remains visible and reserved across restart, disable
   await f.db.run(`UPDATE policies SET payload=json_set(payload,'$.enabled',json('false'))`);
   await f.tick();
   expect(calls).toBe(1);
-  expect(await f.db.query(`SELECT actual_cost,finished_at FROM claims`)).toEqual([{ actual_cost: null, finished_at: null }]);
+  expect(await f.db.query(`SELECT actual_cost,finished_at FROM claims`)).toEqual([
+    { actual_cost: null, finished_at: null },
+  ]);
   expect((await f.coordinator.spend(clock)).mapping).toBe(0.5);
-  expect(await f.db.query(`SELECT stage FROM run_progress`)).toEqual([{ stage: "posting unconfirmed" }]);
+  expect(await f.db.query(`SELECT stage FROM run_progress`)).toEqual([
+    { stage: "posting unconfirmed" },
+  ]);
 });
 
 test("malformed paid answers back off, exhaust attempts and charge the terminal owner rather than transcript estimates", async () => {
@@ -7568,27 +7723,61 @@ test("malformed paid answers back off, exhaust attempts and charge the terminal 
   await f.tick();
   const first = f.fleet.launched[0]!;
   const input = TranscriptMapPrepareInputSchema.parse(JSON.parse(String(first.input[INPUT_FIELD])));
-  await f.db.run(`UPDATE transcript_map_work SET state='obsolete' WHERE node_id!=?`, [input.nodeId]);
+  await f.db.run(`UPDATE transcript_map_work SET state='obsolete' WHERE node_id!=?`, [
+    input.nodeId,
+  ]);
   for (let attempt = 0; attempt < 2; attempt++) {
     f.seal();
     await f.tick();
     f.answer("not a JSON answer", 0.07);
     await f.tick();
-    if (attempt === 0) { clock += 61_000; await f.tick(); }
+    if (attempt === 0) {
+      clock += 61_000;
+      await f.tick();
+    }
   }
-  expect(await f.db.query(`SELECT state,attempt FROM transcript_map_work WHERE node_id=?`, [input.nodeId])).toEqual([{ state: "failed", attempt: 2n }]);
+  expect(
+    await f.db.query(`SELECT state,attempt FROM transcript_map_work WHERE node_id=?`, [
+      input.nodeId,
+    ]),
+  ).toEqual([{ state: "failed", attempt: 2n }]);
   expect(await f.db.query(`SELECT id FROM transcript_map_summaries`)).toEqual([]);
   expect((await f.coordinator.spend(clock)).mapping).toBeCloseTo(0.14);
 });
 
+test("an already-bound mapping session retains earned settlement authority after lease expiry", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  await f.tick();
+  clock += POLICY.leaseSeconds * 2_000;
+  await f.tick();
+  expect(f.cancelled).toEqual([]);
+  f.answer({ kind: "summary", text: "Navigation earned by the original bound session." }, 0.07);
+  await f.tick();
+  expect(
+    await f.db.query(`SELECT outcome,actual_cost FROM claims WHERE job_id='map_code_1'`),
+  ).toEqual([{ outcome: "completed", actual_cost: 0.07 }]);
+  expect(
+    await f.db.query(`SELECT state FROM transcript_map_work WHERE run_id IN
+    (SELECT id FROM runs WHERE job_id='map_code_1')`),
+  ).toEqual([{ state: "complete" }]);
+});
+
 test("terminal mapping cancellation charges conservative exposure and clears running work", async () => {
   const f = await paidMapDeployment();
-  await f.tick(); f.seal(); await f.tick();
+  await f.tick();
+  f.seal();
+  await f.tick();
   await f.db.run(`UPDATE policies SET payload=json_set(payload,'$.enabled',json('false'))`);
   await f.tick();
   expect(f.cancelled).toEqual(["map_code_1"]);
-  expect(await f.db.query(`SELECT state FROM transcript_map_work WHERE run_id IS NOT NULL`)).toEqual([]);
-  expect(await f.db.query(`SELECT actual_cost,outcome FROM claims`)).toEqual([{ actual_cost: 0.5, outcome: "failed" }]);
+  expect(
+    await f.db.query(`SELECT state FROM transcript_map_work WHERE run_id IS NOT NULL`),
+  ).toEqual([]);
+  expect(await f.db.query(`SELECT actual_cost,outcome FROM claims`)).toEqual([
+    { actual_cost: 0.5, outcome: "failed" },
+  ]);
   expect(await f.db.query(`SELECT id FROM transcript_map_summaries`)).toEqual([]);
 });
 
@@ -7612,8 +7801,12 @@ test("native ambiguous post resumes the same preparation identity, while definit
   expect(f.fleet.launched.map((job) => job.jobId)).toEqual([first]);
   expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 1n }]);
   const g = await paidMapDeployment();
-  g.fleet.execute = () => { throw new HostCallError("jobs.execute", "service_bindings_changed"); };
-  g.fleet.status = () => { throw new HostCallError("jobs.status", "job_not_started"); };
+  g.fleet.execute = () => {
+    throw new HostCallError("jobs.execute", "service_bindings_changed");
+  };
+  g.fleet.status = () => {
+    throw new HostCallError("jobs.status", "job_not_started");
+  };
   await g.tick();
   expect((await g.coordinator.spend(clock)).mapping).toBe(0);
   expect(g.posted).toEqual([]);
@@ -7621,18 +7814,22 @@ test("native ambiguous post resumes the same preparation identity, while definit
 
 test("mapping reconciles earned spend after a crash between artifact projection and ledger finish", async () => {
   const f = await paidMapDeployment();
-  await f.tick(); f.seal(); await f.tick();
+  await f.tick();
+  f.seal();
+  await f.tick();
   f.answer({ kind: "summary", text: "Durable synthetic navigation." }, 0.09);
   const finish = f.coordinator.finish.bind(f.coordinator);
-  f.coordinator.finish = async () => { throw new Error("synthetic ledger interruption"); };
+  f.coordinator.finish = async () => {
+    throw new Error("synthetic ledger interruption");
+  };
   await expect(f.tick()).rejects.toThrow("synthetic ledger interruption");
   expect(await f.db.query(`SELECT count(*) n FROM transcript_map_summaries`)).toEqual([{ n: 1n }]);
   expect(await f.db.query(`SELECT actual_cost FROM claims`)).toEqual([{ actual_cost: null }]);
   f.coordinator.finish = finish;
   await f.tick();
-  expect(await f.db.query(`SELECT actual_cost,outcome FROM claims WHERE job_id='map_code_1'`)).toEqual([
-    { actual_cost: 0.09, outcome: "completed" },
-  ]);
+  expect(
+    await f.db.query(`SELECT actual_cost,outcome FROM claims WHERE job_id='map_code_1'`),
+  ).toEqual([{ actual_cost: 0.09, outcome: "completed" }]);
   expect(await f.db.query(`SELECT count(*) n FROM transcript_map_summaries`)).toEqual([{ n: 1n }]);
 });
 
@@ -7640,7 +7837,8 @@ test.each(["source", "executor", "profile", "recipe", "bounds", "lease"] as cons
   "prepared mapping cannot borrow changed %s authority",
   async (changed) => {
     const f = await paidMapDeployment();
-    await f.tick(); f.seal();
+    await f.tick();
+    f.seal();
     if (changed === "lease") clock += POLICY.leaseSeconds * 2_000;
     else {
       const rows = await f.db.query<{ payload: string }>(`SELECT payload FROM policies`);
@@ -7655,7 +7853,9 @@ test.each(["source", "executor", "profile", "recipe", "bounds", "lease"] as cons
     }
     await f.tick();
     expect(f.posted).toEqual([]);
-    expect(await f.db.query(`SELECT actual_cost FROM claims WHERE finished_at IS NOT NULL`)).toEqual([{ actual_cost: 0 }]);
+    expect(
+      await f.db.query(`SELECT actual_cost FROM claims WHERE finished_at IS NOT NULL`),
+    ).toEqual([{ actual_cost: 0 }]);
     expect(await f.db.query(`SELECT id FROM transcript_map_summaries`)).toEqual([]);
   },
 );
@@ -7673,18 +7873,21 @@ test("an expired mapping claim that crashed before its durable intent is reaped 
   f.coordinator.claim = claim;
   clock += POLICY.leaseSeconds * 3_000;
   await f.tick();
-  expect(await f.db.query(`SELECT actual_cost,outcome FROM claims WHERE id=?`, [held[0]!.id])).toEqual([
-    { actual_cost: 0, outcome: "failed" },
-  ]);
+  expect(
+    await f.db.query(`SELECT actual_cost,outcome FROM claims WHERE id=?`, [held[0]!.id]),
+  ).toEqual([{ actual_cost: 0, outcome: "failed" }]);
   expect(f.posted).toEqual([]);
 });
 
 test("a completed material receipt cannot authorize inference after its native job failed", async () => {
   const f = await paidMapDeployment();
-  await f.tick(); f.seal();
+  await f.tick();
+  f.seal();
   f.fleet.jobs.get(f.fleet.launched.at(-1)!.jobId)!.exitCode = 7;
   await f.tick();
   expect(f.posted).toEqual([]);
-  expect(await f.db.query(`SELECT actual_cost FROM claims WHERE finished_at IS NOT NULL`)).toEqual([{ actual_cost: 0 }]);
+  expect(await f.db.query(`SELECT actual_cost FROM claims WHERE finished_at IS NOT NULL`)).toEqual([
+    { actual_cost: 0 },
+  ]);
   expect(await f.db.query(`SELECT id FROM transcript_map_summaries`)).toEqual([]);
 });

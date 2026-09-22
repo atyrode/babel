@@ -55,7 +55,10 @@ export function babelDoors(
   drain: DrainDoorDeps,
   concurrentJobs: number | null,
   services: readonly DeclaredService[],
-  advanceCatalog: (ctx: GuestCtx, admission: TranscriptMapCatalogAdmission) => Promise<readonly string[]>,
+  advanceCatalog: (
+    ctx: GuestCtx,
+    admission: TranscriptMapCatalogAdmission,
+  ) => Promise<readonly string[]>,
 ): BabelDoors {
   const actions: ServerActionDef[] = [];
   const handlers: Record<string, ServerHandler> = {};
