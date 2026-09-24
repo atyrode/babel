@@ -14,15 +14,18 @@ import {
   MATERIAL_EXPORT,
   MATERIAL_OUTPUT,
   MAX_MATERIAL_BYTES,
+  MaterialIndexSchema,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   PANELS,
   MACHINE_OPERATIONS,
   PRESET_OPERATIONS,
+  PrepareInputSchema,
   RESTIC_SERVICE,
   RUNTIME_TOOLS,
   RUNTIME_SCRATCH_BYTES,
+  SessionRowSchema,
   WATCH_PLUGIN_ID,
   asLaunchRequest,
 } from "../babel/contract.ts";
@@ -93,6 +96,10 @@ describe("the baseline's manifest spells the contract", () => {
     // being evidence about anything.
     expect(INGESTIBLE_TABLES).not.toContain("dispositions");
     expect(INGESTIBLE_TABLES).not.toContain("next_action_rulings");
+    // Nor may a run say what an archive label means (#453): the mapping decides which machine
+    // every capture under the label is hosted at, and only the operator's `rehostSessions`
+    // records it.
+    expect(INGESTIBLE_TABLES).not.toContain("archive_labels");
     // And every name in it is a table the migration actually creates, so the boundary cannot be
     // widened by a typo into a table nothing would refuse.
     const tables = Object.keys(importableTables());
@@ -253,6 +260,119 @@ describe("what a press posts", () => {
       operationId: PRESET_OPERATIONS["explore-topic"],
     });
     expect(cell.profile).toEqual(profile);
+  });
+});
+
+/*
+  THE CAPTURE CONTRACT (#453). The hub selects captures and the machine half reads exactly those;
+  the machine half catalogues captures and the hub ingests them. Each shape below is written on
+  one side and read on the other, so what one side may not say is refused by the shape itself
+  rather than by whichever side happens to check.
+*/
+describe("the capture contract", () => {
+  const SNAPSHOT = "a".repeat(64);
+  const CATALOGUED = {
+    selector: "omp/-work-project/s1",
+    harness: "omp",
+    source_id: "-work-project/s1",
+    kind: "operator",
+    archive_label: "dev-01",
+    archive_path: "/home/operator/.omp/agent/sessions/-work-project/s1.jsonl",
+    snapshot_id: SNAPSHOT,
+    archived_at: "2026-09-24T22:13:00.000Z",
+    size: 1000,
+    modified_at: "2026-09-24T22:12:59.123Z",
+  };
+
+  test("a session row names one capture in one spelling, and nothing a machine may not say", () => {
+    expect(SessionRowSchema.safeParse(CATALOGUED).success).toBe(true);
+    expect(
+      SessionRowSchema.safeParse({
+        ...CATALOGUED,
+        content_digest: `sha256:${"d".repeat(64)}`,
+        title: "Port the catalog",
+        title_provenance: "recorded",
+        workspace: "/work/project",
+        total_tokens: 1200,
+      }).success,
+    ).toBe(true);
+    for (const refused of [
+      // restic's own spelling of an instant: the backing machine's offset and nanoseconds. The
+      // hub compares these as text and turns them into epoch milliseconds and back, and only
+      // `toISOString`'s spelling survives both.
+      { archived_at: "2026-09-25T00:13:00.123456789+02:00" },
+      { modified_at: "2026-09-24T22:12:59Z" },
+      // A host is the hub's to derive from the label; a machine never states one.
+      { host: "m-dev-01" },
+      // A capture never moves.
+      { live: 1 },
+      // Only the hub's title lane infers a title.
+      { title: "Named by a model", title_provenance: "inferred" },
+      // A title without its provenance, and the identity out of step with itself.
+      { title: "Port the catalog" },
+      { selector: "omp/-work-project/s2" },
+      // An abbreviated snapshot id names no capture exactly.
+      { snapshot_id: SNAPSHOT.slice(0, 8) },
+    ]) {
+      expect({
+        refused,
+        parsed: SessionRowSchema.safeParse({ ...CATALOGUED, ...refused }).success,
+      }).toEqual({ refused, parsed: false });
+    }
+  });
+
+  test("a preparation is handed captures and names each session once", () => {
+    const session = {
+      harness: "omp",
+      sourceId: "-work-project/s1",
+      path: CATALOGUED.archive_path,
+      size: 1000,
+      modifiedAt: Date.parse(CATALOGUED.modified_at),
+    };
+    const group = { snapshotId: SNAPSHOT, label: "dev-01", sessions: [session] };
+    expect(PrepareInputSchema.safeParse({ machineId: "m-dev-01", captures: [group] }).success).toBe(
+      true,
+    );
+    // The catalogued instant and the epoch milliseconds a preparation is handed are one value.
+    expect(new Date(session.modifiedAt).toISOString()).toBe(CATALOGUED.modified_at);
+    // Selectors and discovery are gone: an input in the old shape is refused, not reinterpreted.
+    expect(
+      PrepareInputSchema.safeParse({ machineId: "m-dev-01", selectors: ["omp/s1"] }).success,
+    ).toBe(false);
+    // One session in two snapshots would be two readings of one selector in one material.
+    expect(
+      PrepareInputSchema.safeParse({
+        machineId: "m-dev-01",
+        captures: [group, { ...group, snapshotId: "b".repeat(64) }],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("a material sealed before captures had an origin still parses beside one that has it", () => {
+    const entry = {
+      selector: CATALOGUED.selector,
+      harness: "omp",
+      sourceId: CATALOGUED.source_id,
+      captureDigest: `sha256:${"d".repeat(64)}`,
+      sourceDigest: `sha256:${"e".repeat(64)}`,
+      file: "sessions/0001-omp-work-project-s1.jsonl",
+      records: 3,
+      bytes: 1000,
+    };
+    const material = (sessions: readonly object[]) => ({
+      schema: "babel.material/1",
+      preparationId: "prep-1",
+      preparedAt: "2026-09-24T22:30:00.000Z",
+      machineId: "m-dev-01",
+      sessions,
+    });
+    const origin = { label: "dev-01", snapshotId: SNAPSHOT, path: CATALOGUED.archive_path };
+    expect(MaterialIndexSchema.safeParse(material([entry])).success).toBe(true);
+    expect(MaterialIndexSchema.safeParse(material([{ ...entry, origin }])).success).toBe(true);
+    expect(
+      MaterialIndexSchema.safeParse(material([{ ...entry, origin: { ...origin, path: "rel" } }]))
+        .success,
+    ).toBe(false);
   });
 });
 

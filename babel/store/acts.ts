@@ -491,8 +491,13 @@ export type Imported = z.infer<typeof ImportedSchema>;
 export const SessionsRehostedSchema = z.strictObject({
   from: z.string(),
   to: z.string(),
-  /** Catalogued sessions now reachable: the rows this act moved. */
+  /** Catalogued sessions now hosted at `to` that were not before: the rows this act moved. */
   sessions: z.number().int().nonnegative(),
+  /**
+   * Catalogued sessions captured under the label `from`, which are hosted at `to` now and will
+   * be at every later ingestion, because the mapping is recorded.
+   */
+  labelled: z.number().int().nonnegative(),
 });
 export type SessionsRehosted = z.infer<typeof SessionsRehostedSchema>;
 
@@ -2780,7 +2785,9 @@ export async function importLedger(store: ActsStore, chunk: ImportChunk): Promis
 }
 
 /**
- * Re-host a catalogued corpus: every session row carrying one `host` value takes another (#310).
+ * Re-host a catalogued corpus and record what a label means: every session hosted at `from` or
+ * captured under the label `from` takes the host `to`, and the label `from` maps to the machine
+ * `to` from now on (#310, #453).
  *
  * THE VALUE IT LEAVES IS A MACHINE ID THE HUB HAS JUST DESCRIBED — the door checks that before
  * calling here, because the defect being repaired is a `host` no machine answers to, and writing
@@ -2788,27 +2795,45 @@ export async function importLedger(store: ActsStore, chunk: ImportChunk): Promis
  * be resolved (the hub resolves none, and no door a plugin is served lists machines), so the
  * operator states the mapping and this writes exactly that.
  *
- * A no-op is reported rather than refused. `sessions: 0` is the truthful answer for a `from`
- * nothing was catalogued under, and it is what makes the act idempotent: running it twice moves
- * the rows once and says so the second time.
+ * THE MAPPING IS WHAT MAKES IT STICK. The Go-era rows only needed their `host` rewritten once; a
+ * label is written again by every capture the collector makes, and `store/sessions.ts` hosts each
+ * one where `archive_labels` maps its label. `from` may therefore equal `to`: a label that is
+ * itself a machine id — what `archive` backs up under — still has to be recorded before a capture
+ * under it is hosted anywhere. Mapping a label again replaces the mapping, and moves the rows
+ * captured under it with it.
+ *
+ * One transaction: the mapping, the count, the move and what the label holds commit together. A
+ * no-op is reported rather than refused. `sessions: 0` is the truthful answer when nothing was
+ * left to move, and it is what makes the act idempotent: running it twice moves the rows once
+ * and says so the second time.
  */
 export async function rehostSessions(
   store: ActsStore,
   move: { from: string; to: string },
 ): Promise<SessionsRehosted> {
-  if (move.from === move.to) {
-    throw new ActRefused(
-      "a re-host needs two different hosts; this one names the same value twice",
-    );
-  }
-  const [counted] = await store.db.query<{ sessions: number | bigint }>(
-    `SELECT COUNT(*) AS sessions FROM sessions WHERE host = ?`,
-    [move.from],
-  );
-  const sessions = Number(counted?.sessions ?? 0);
-  if (sessions > 0) {
-    await store.db.run(`UPDATE sessions SET host = ? WHERE host = ?`, [move.to, move.from]);
-    store.touch();
-  }
-  return { from: move.from, to: move.to, sessions };
+  const moving = `(host = ? OR archive_label = ?) AND host <> ?`;
+  const [, counted, , held] = await store.db.batch([
+    {
+      sql:
+        `INSERT INTO archive_labels(label, machine_id, mapped_at) VALUES(?, ?, ?) ` +
+        `ON CONFLICT(label) DO UPDATE SET machine_id = excluded.machine_id, ` +
+        `mapped_at = excluded.mapped_at WHERE machine_id <> excluded.machine_id`,
+      params: [move.from, move.to, stamp(store.now())],
+    },
+    {
+      sql: `SELECT COUNT(*) AS n FROM sessions WHERE ${moving}`,
+      params: [move.from, move.from, move.to],
+    },
+    {
+      sql: `UPDATE sessions SET host = ? WHERE ${moving}`,
+      params: [move.to, move.from, move.from, move.to],
+    },
+    {
+      sql: `SELECT COUNT(*) AS n FROM sessions WHERE archive_label = ?`,
+      params: [move.from],
+    },
+  ]);
+  const sessions = Number(counted?.[0]?.["n"] ?? 0);
+  if (sessions > 0) store.touch();
+  return { from: move.from, to: move.to, sessions, labelled: Number(held?.[0]?.["n"] ?? 0) };
 }

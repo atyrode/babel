@@ -11,6 +11,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Catalogued sessions record their archive capture, and `rehostSessions` maps restic host
+  labels.** The store moves to data version 1.12. Each session gains `archive_label` and
+  `archive_path` beside its snapshot, and a new `archive_labels` table holds the operator's
+  mapping of restic host labels to hub machine ids. `rehostSessions` records that mapping in the
+  same transaction as the move and reports `labelled`, so later captures under the label are
+  hosted on that machine. A label may map to itself. The capture-aware upsert
+  (`babel/store/sessions.ts`) keeps a session on its newest capture and keeps the digest of an
+  unchanged observation. The contract now fixes the capture, `prepare`/`catalog` input, session
+  row and receipt shapes the archive slices implement. No operation is declared, rebound or
+  retired yet. Regressions cover the upsert rules, label mapping and the 1.12 migration (#453).
+
 - **Zero autonomous activity weights also stop auxiliary work.** The conductor withdraws its
   scan beat and posts no new title-generation preparation. Explicit explorations and drains keep
   their routed recipes and ordinary admission checks; already admitted work still reconciles.

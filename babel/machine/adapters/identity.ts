@@ -1,5 +1,11 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  HARNESSES,
+  TITLE_PROVENANCES,
+  type Harness,
+  type TitleProvenance,
+} from "../../contract.ts";
 
 /*
   THE HARNESS SOURCE-ADAPTER PORT, ported from v0.4.0:internal/adapter (SPEC.md §3).
@@ -22,11 +28,7 @@ import { join } from "node:path";
     never produces one.
 */
 
-export const HARNESSES = ["omp", "codex", "claude"] as const;
-export type Harness = (typeof HARNESSES)[number];
-
-export const TITLE_PROVENANCES = ["recorded", "derived", "inferred"] as const;
-export type TitleProvenance = (typeof TITLE_PROVENANCES)[number];
+export { HARNESSES, TITLE_PROVENANCES, type Harness, type TitleProvenance };
 
 /** One discovered session: the identity the catalog files it under, and where its log is. */
 export interface SessionRef {
