@@ -282,22 +282,38 @@ above, and the operator reads a value out of custody only when he is about to us
 
 ## 5. Backing up the store itself
 
-The hub holds Babel's one durable store: a SQLite file at
-`<data>/babel/data.db`, created by the enable hook and deleted by a purge
-(`docs/building.md`). Records, edges, rulings, assessments, filings, the ledger and every receipt
-live there and nowhere else. There is no second copy, no publication and nothing to reconcile:
-`docs/parity.md` records publication, the shared catalog and the object store as absent by decision.
+The hub holds Babel's one store: a SQLite file at `<data>/plugins/atyrode.babel/data.db` (on the
+preview hub, `/data/plugins/atyrode.babel/data.db` inside the Manifold container), created by the
+enable hook and deleted by a purge (`docs/building.md`). Records, edges, rulings, assessments,
+filings, the ledger and every receipt live there and nowhere else. There is no publication and
+nothing to reconcile: `docs/parity.md` records publication, the shared catalog and the object
+store as absent by decision, and no second Babel-owned store is added in their place.
 
-Two consequences an operator must hold at once:
+**That store is currently a single copy.** Neither of Manifold's own copies answers for it.
+`data.db.backup` is the fixed path a database migration stages its rollback image at, beside
+`data.db` on the same volume (atyrode/manifold at `7b5fe301`, `docs/PLUGINS.md:1000-1006`): it
+recovers a failed migration and is lost with the volume. Litestream replicates `manifold.db` and
+excludes every per-plugin `data.db` (`docs/SELF-HOST.md:902-904` there). The backup of `<data>/`
+that would include it (`docs/PLUGINS.md:1135-1137`) is a `tar` an operator takes by hand
+(`docs/SELF-HOST.md:745-751`), and nothing schedules one. Two consequences an operator must hold
+at once:
 
 - **The sessions are safe without it.** Every archived session is restorable from restic with the
   password alone (§2), and the catalog rows that point at snapshots are rederivable by re-running
   `scan` and `archive` on each machine.
-- **Babel's own analysis is not.** A hypothesis, a finding, a ruling or a receipt exists in
-  `data.db` and nowhere else. **Nothing in Babel backs that file up**, and no procedure here
-  invents one: backing up the hub's data directory is the hub's own operational question, and
-  until it is answered the honest statement is that losing the hub's volume loses every record
-  Babel has produced or imported.
+- **Babel's own analysis is not, yet.** A hypothesis, a finding, a ruling or a receipt exists in
+  `data.db` and nowhere else, so until the backup below has run, losing the hub's volume loses
+  every record Babel has produced or imported.
+
+**The backup is open work, tracked in #454, and its destination is decided**: the restic
+repository that already holds the session transcripts — the one the storage document names (§4)
+— under its own tag, `babel-store`. Never `babel`: snapshots tagged `babel` are read as session
+transcripts, and a store image among them would be read as one. The backup belongs to the
+deployment, placed on the hub's host by dotfiles, and is not a Babel operation. It takes a
+consistent image of the live database rather than a byte copy of a WAL-mode file, and it is a copy
+of the one store, never a second store Babel reads or writes. The procedure and a proven restore
+are recorded here, with host, date and observed output, once they have run; until then nothing in
+this section is exercised.
 
 ---
 
@@ -311,10 +327,17 @@ the hub owner's or the machine's declaration.
    bundle and needs no binding; `development` carries `git`; `system` is the reviewed native
    closure the pinned bun is dynamically linked against; `restic` is the owner's, by name, and only
    `archive` asks for it.
-3. **Its anchors exist.** The `home` anchor needs `~/.omp/agent/sessions`, `~/.codex` and
-   `~/.claude` to exist — a job whose read location is missing fails to start, and `mkdir -p` is the
-   whole fix — and the `runtime` anchor must be a dedicated bounded tmpfs, since the named-output
-   lease is cut from it.
+3. **Its anchors exist, and `home` is where the sessions are.** The `runtime` anchor must be a
+   dedicated bounded tmpfs, since the named-output lease is cut from it. The `home` anchor needs
+   `~/.omp/agent/sessions`, `~/.codex` and `~/.claude` beneath it, or a job whose read location is
+   missing fails to start. **Creating them does not make the sessions readable on a native
+   Manifold worker** (the NixOS module): there the `home` anchor is the service account's
+   workload home, `/var/lib/manifold-workload/home`, hard-coded by the module (atyrode/manifold at
+   `7b5fe301`, `infra/native/module.nix:10,23-31`), and an operator may also protect `/home` from
+   workloads with `execution.protectedDirectories`. `mkdir -p` there makes `scan`, `archive` and
+   `prepare` start and read an empty tree. Local roots are only for the machine that holds the
+   sessions, with its `home` anchor at the home that holds them; reading every machine's sessions
+   from the archive instead is #453.
 4. **Its consents are recorded** at the nodes §1 names, plus `machines:run` at the operation node
    for anything that launches.
 
@@ -550,6 +573,11 @@ readable as the contract its assessments were formed under.
 ---
 
 ## 11. Draining a usage window
+
+**This section applies when the operator asks to drain a paid usage window**, and only then.
+Running Babel's ordinary work — reviews, the analysis stages, the conductor's cycle — on any
+model, a free one included, is ordinary operation (`AGENTS.md`, Boundaries): it runs under the
+standing policy and budgets and needs none of the pre-flight, go/no-go or reporting rules below.
 
 **Nothing in this section has been run on a real hub.** It was written after the 2026-09-13 drain
 (`docs/postmortem-2026-09-13-drain.md`), which recorded 50 reviews in two hours and fourteen

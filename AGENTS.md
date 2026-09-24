@@ -150,19 +150,25 @@ missing capability proof, but a local skip is not a pass.
   operation and get approval for that occasion; an approval covers what it named and not the
   class. Production plugin installation (`manifold.tyrode.dev`) is the operator's, by hand.
 - **Running Babel is ordinary operation, not a mutation to be asked about.** Launching an
-  explore, the conductor's cycle, the `scan`, `prepare` and `archive` machine operations —
-  including the `init`, `backup` and `snapshots` that `archive` runs against the deployment's own
-  configured repository — and a drain inside its declared target are normal work inside whatever
-  the operator asked for. They append; they destroy nothing. Refusing them because something
-  downstream writes is the failure mode this bullet exists to stop.
-- **There is no publication step, because there is nowhere to publish to.** The standalone
-  product's `babel sync` retired with the product. The hub's own SQLite file is where a record
-  lives, and `babel/store/schema.ts` says so — "nothing is sealed and nothing is
-  synced. The hub is the one place" — while `docs/parity.md` records the retired `sync/` package
-  as absent by decision. A settled run's records are durable the instant the settlement writes
-  them, so nothing is ever owed downstream and no publication has to be asked about. The restic
-  archive holds session transcripts, not Babel's records; keeping the hub's store safe is the
-  deployment's backup concern and not an act of Babel's.
+  explore, a review or an analysis stage, the conductor's cycle, the `scan`, `prepare` and
+  `archive` machine operations — including the `init`, `backup` and `snapshots` that `archive`
+  runs against the deployment's own configured repository — are normal work inside whatever the
+  operator asked for, on whatever model the profile names, a free one included. They append;
+  they destroy nothing, and they need no drain pre-flight. Refusing them because something
+  downstream writes is the failure mode this bullet exists to stop. `docs/runbook.md` §11's
+  ceremony applies when the operator asks to drain a paid usage window, and then the drain runs
+  inside its declared target.
+- **There is no publication step, and the hub's store is the one Babel-owned store.** The
+  standalone product's `babel sync` retired with the product and nothing replaces it: the hub's
+  own SQLite file is where a record lives, and `babel/store/schema.ts` says so — "nothing is
+  sealed and nothing is synced. The hub is the one place" — while `docs/parity.md` records the
+  retired `sync/` package as absent by decision. No second Babel-owned store, mirror or sync
+  step is added to make up for what follows. That store is currently a single copy: Manifold's
+  `data.db.backup` is the rollback image a migration stages on the same volume, not a backup,
+  so losing the hub's volume loses every record. Backing it up is open work (#454), and the
+  approved destination is the restic repository that holds the session transcripts, under its
+  own `babel-store` tag and never `babel`, which is read as transcripts. The backup is the
+  deployment's, placed by dotfiles, and a copy of the one store rather than a second one.
 - Disposable synthetic temporary fixtures may be created, mutated and cleaned up for tests. The
   suites open a temporary store of their own and must keep doing so. Isolate HOME, XDG
   configuration/state and repository selection; never inherit production endpoints, credentials
@@ -190,9 +196,10 @@ missing capability proof, but a local skip is not a pass.
   `review.recipes` block, which is what a prompt writes verbatim. A claim cites a recipe as
   `id@version`, so a changed body and its version move together and the seed is regenerated
   rather than hand-edited. The tool prints a policy block and installs nothing.
-- **Drains and harvests:** read the drain procedure in `docs/runbook.md` and the open
-  atyrode/babel issues labelled `drain` before starting one; the pre-flight, the 90-second
-  go/no-go and the reporting rules there are mandatory, for an agent as for a person.
+- **Drains and harvests:** when the operator asks to drain a paid usage window, read the drain
+  procedure in `docs/runbook.md` and the open atyrode/babel issues labelled `drain` before
+  starting one; the pre-flight, the 90-second go/no-go and the reporting rules there are
+  mandatory, for an agent as for a person. Ordinary running is not a drain (Boundaries).
 - **Panels:** a change under `babel/feed/` or `babel/watch/` is
   proved by actual rendered interaction on a preview hub through `bun run dev`, not by the panel
   tests alone. Every CSS selector a part ships stays rooted at that plugin's own class, and
