@@ -1801,6 +1801,11 @@ export const ParkReasonSchema = z.enum(PARK_REASONS);
 
 // ---------------------------------------------------------------------------- the pulse
 
+/**
+ * The most host labels one `catalog` receipt, or one pulse, lists by name; the rest are counted.
+ */
+export const ARCHIVE_LABELS_REPORTED = 64;
+
 /** What the STORE can answer about the pulse: today's counts, off its own tables. */
 export const PulseTodaySchema = z.strictObject({
   since: z.string(),
@@ -1815,6 +1820,19 @@ export const PulseTodaySchema = z.strictObject({
   reviewing: z.array(
     z.strictObject({ id: z.string(), kind: z.string(), title: z.string(), since: z.string() }),
   ),
+  /**
+   * THE ARCHIVE LABELS NO MACHINE ANSWERS FOR (#453): each host label the catalog has filed
+   * sessions under and no `archive_labels` row maps, with how many sessions it holds, most
+   * first, at most {@link ARCHIVE_LABELS_REPORTED} of them and `omitted` counting the rest.
+   * Those sessions are still selected and prepared; what an unmapped label loses is the hub's
+   * repository question, and `rehostSessions` is what maps one.
+   */
+  archive: z.strictObject({
+    unmapped: z
+      .array(z.strictObject({ label: z.string(), sessions: z.number().int().min(1) }))
+      .max(ARCHIVE_LABELS_REPORTED),
+    omitted: z.number().int().nonnegative(),
+  }),
 });
 
 /**
@@ -1914,6 +1932,15 @@ export const MACHINE_OPERATIONS = {
   verify: `${BABEL_PLUGIN_ID}.verify`,
   /** Owner-managed service, never a caller-authorized archive job. */
   recall: `${BABEL_PLUGIN_ID}.recall`,
+} as const;
+
+/**
+ * OPERATIONS THIS BUNDLE NO LONGER DECLARES, whose runs the store still holds (#453). `scan`
+ * catalogued a machine's local session files; `catalog` lists the fleet archive instead. A
+ * historic run row keeps its `kind`, and a reader still names it by this table.
+ */
+export const RETIRED_OPERATIONS = {
+  scan: `${BABEL_PLUGIN_ID}.scan`,
 } as const;
 
 /**
@@ -3104,9 +3131,6 @@ export const PREPARE_REFUSALS = {
   archive: "archive_unavailable",
 } as const;
 export type PrepareRefusal = (typeof PREPARE_REFUSALS)[keyof typeof PREPARE_REFUSALS];
-
-/** The most host labels one `catalog` receipt lists by name; the rest are counted. */
-export const ARCHIVE_LABELS_REPORTED = 64;
 
 // ---------------------------------------------------------------------------- job outputs
 

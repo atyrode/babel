@@ -627,7 +627,7 @@ export function Drain({
             />
           ) : (
             <Spinner
-              label="Each scan runs"
+              label="Each catalog runs"
               unit="minutes"
               value={draft.minutes}
               bounds={{ min: 5, max: 24 * 60, step: 5 }}

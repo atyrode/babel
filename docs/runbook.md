@@ -19,43 +19,65 @@ Where this runbook says _nothing does this_, that document says the same in a ro
 
 ---
 
-## 1. Backing up: the `archive` operation
+## 1. Collecting: the fleet collector, and the `archive` operation
 
-The archive is `atyrode.babel.archive`, one of the operations the machine half implements
-(`babel/machine/main.ts`; `MACHINE_OPERATIONS` in
-`babel/contract.ts`). It runs `restic backup` over this machine's session roots —
-OMP, Codex, Claude Code, and Babel's own — **one snapshot per root**, tagged `babel`, attributed
-to the machine's own id as restic's `--host` (`babel/machine/archive.ts`). Per-root
-snapshots keep each root's parent chain stable when a machine gains a harness, let one unreadable
-root fail alone, and make restoring one harness a restore of one snapshot.
+Everything Babel analyses is read out of one restic repository, from any enrolled machine that
+holds the archive binding (§4, §6). Collection is the one step that happens on the machine that
+holds the sessions (`SPEC.md` §2.3, §6.1), and whatever collects follows one contract: every
+snapshot tagged `babel`, attributed to the machine's stable host label, covering whole session
+roots, never forgotten or pruned, into the repository that already exists.
 
-What it writes back into the store is the one fact a backup learns and nothing else can: which
-snapshot holds each session, and when (`sessions.snapshot_id`, `store/schema.ts`).
+**What collects today is the dotfiles collector.** An hourly user timer on each machine backs its
+session roots up with restic under the machine's registry name as the host label — `dev-01` on
+dev-01 — in one snapshot of all roots; the catalog reads that shape as well as one per root.
+dotfiles #710 (`c06abd3`, merged 2026-09-24) runs it in local mode, writing to the repository
+and to nothing else, and the operator recorded its first push after activation as snapshot
+`ff302a6c` at 2026-09-24T22:13Z. It is the deployment's, placed by dotfiles, and not a Babel
+operation.
+
+**`atyrode.babel.archive` is Babel's own collector, and cannot reach the sessions yet.** It is one
+of the operations the machine half implements (`babel/machine/main.ts`; `MACHINE_OPERATIONS` in
+`babel/contract.ts`). It runs `restic backup` over this machine's session roots — OMP, Codex,
+Claude Code, and Babel's own — **one snapshot per root**, tagged `babel`, attributed to the
+machine's own id as restic's `--host` (`babel/machine/archive.ts`). Per-root snapshots keep each
+root's parent chain stable when a machine gains a harness, let one unreadable root fail alone,
+and make restoring one harness a restore of one snapshot. Its roots are the `home` anchor's, and
+on a native Manifold worker that anchor is the workload home rather than the operator's (§6), so
+it backs up an empty tree there. It collects for real once it reads the roots through a read-only
+anchor the operator declares to Manifold (atyrode/manifold#839), and a later change retargets it
+there. Its machine-id label and the timer's registry name would be two chains for one machine;
+the recommendation for that change is to back up under the label `archive_labels` maps to the
+machine. Until then an id-shaped label is mapped with `rehostSessions {from: <id>, to: <id>}`
+(§6).
+
+It writes no session rows. The `catalog` beat (§7.1) lists its snapshots like any other `babel`
+snapshot, so the catalog has one writer of captures whichever collector took them.
 
 **It never creates a repository.** A repository is created once, by hand, for the deployment. A
 silent creation turns a mistyped locator into a second empty archive that grows happily while the
-real one appears to stop, and two concurrent creations corrupt a fresh one.
+real one appears to stop, and two concurrent creations corrupt a fresh one. Its `backup` is the
+only write any Babel operation makes to the repository; every other operation only reads (§2.3).
 
 **Nothing in Babel schedules it.** The conductor registers exactly one schedule, and it is the
-`scan` beat (§7). No door posts an `archive` job, no preset names one, and the hourly systemd timer
-died with the Go binary it wrapped. Today an archive runs when the hub's owner posts the job for
-that operation on that machine, or registers a cadence for it with the hub's own schedule verbs.
-That gap is real: a deployment that posts nothing archives nothing, and no surface says so.
+`catalog` beat (§7). No door posts an `archive` job and no preset names one. Today an archive runs
+when the hub's owner posts the job for that operation on that machine, or registers a cadence for
+it with the hub's own schedule verbs.
 
 > **OPERATOR STEP — post an archive (prerequisites in §4 and §6).**
 > **Prerequisites:** the machine is enrolled; the `atyrode.babel.restic` service policy is
-> installed on it and its binding fingerprint matches the installed job (§4); the `restic` runtime
-> tool is bound on that machine; the `home` anchor's roots exist; consent is recorded for
+> installed on it with a storage document that may write, and its binding fingerprint matches the
+> installed job (§4); the `restic` runtime tool is bound on that machine; the `home` anchor holds
+> the operator's session roots — which a native worker's does not (§6); consent is recorded for
 > `services:invoke` at
 > `manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage` and for
 > `network:host` at `manifold://machine/<machine>/operation/atyrode.babel.archive`.
 > **Success:** the job settles `completed` and its receipt carries `kind: "archive"`, a non-zero
-> `roots` count and one snapshot id per root; the `sessions` rows for that machine carry the new
-> `snapshot_id` and `archived_at`. An `archive` that reports zero roots is not a backup — it is a
-> machine whose session directories do not exist (§6).
+> `roots` count and one snapshot id per root; the next `catalog` receipt lists that machine's label
+> with the new snapshots. An `archive` that reports zero roots is not a backup — it is a machine
+> whose session directories do not exist (§6).
 
-A machine that binds no `restic` runs `scan` and `prepare` unchanged: requirements are
-per-operation, so a missing tool disables `archive` alone (`docs/building.md`).
+A machine that binds no `restic` runs none of Babel's operations: since #453 every one of them
+reads or writes the archive (`docs/building.md`).
 
 ---
 
@@ -64,13 +86,15 @@ per-operation, so a missing tool disables `archive` alone (`docs/building.md`).
 There are two paths, and the second is the one that must never stop working.
 
 **Through Babel.** `atyrode.babel.verify` reads the repository back: `restic check`, structurally
-or over every stored byte, and one catalogued session restored from a named snapshot and compared
-byte for byte against the digest `scan` recorded (`babel/machine/verify.ts`). The
-`atyrode.babel.verify` door posts it and the run's receipt carries the verdict. It is the path for
-the routine question — is the archive sound, and does this session still come back — because it
-takes the snapshot and the digest out of the catalog rather than out of somebody's memory, it
+or over every stored byte, and one catalogued session restored from its catalogued snapshot and
+path and compared byte for byte against the digest the catalog recorded
+(`babel/machine/verify.ts`). The `atyrode.babel.verify` door posts it, on any machine that holds
+the archive binding, and the run's receipt carries the verdict. It is the path for the routine
+question — is the archive sound, and does this session still come back — because it takes the
+snapshot, the path and the digest out of the catalog rather than out of somebody's memory, it
 deletes nothing and cannot (the verbs restic may be asked for are a closed set that holds no
-`forget`, `prune`, `repair` or `unlock`), and it leaves a receipt a reviewer can read later.
+`forget`, `prune`, `repair` or `unlock`), it takes no lock, and it leaves a receipt a reviewer can
+read later.
 
 **By hand.** `restic`, with the repository and the password out of custody (§3). Use it when there
 is no hub or the store is lost; when the machine that took the snapshot is gone, or was never
@@ -81,33 +105,39 @@ property this runbook cares most about: _archive recovery does not depend on the
 Babel._ It never did.
 
 > **OPERATOR STEP — verify the archive from the hub (prerequisites in §4 and §6).**
-> **Prerequisites:** those of an archive (§1), at this operation's own node: the
-> `atyrode.babel.restic` service policy installed and its fingerprint matching the installed job,
-> the `restic` runtime tool bound, consent for `services:invoke` at
+> **Prerequisites:** at this operation's own node, on any enrolled machine: the
+> `atyrode.babel.restic` service policy installed and its fingerprint matching the installed job
+> (§4) — a read-only object-store key is enough — the `restic` runtime tool bound, consent for
+> `services:invoke` at
 > `manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage` and for
 > `network:host` at `manifold://machine/<machine>/operation/atyrode.babel.verify`.
 > **Call:** `atyrode.babel.verify` with the machine, `readData` — `false` for the structure,
 > `true` for every stored byte, or a subset such as `"10%"` — and, to prove one session, its
-> catalogued `selector`. The door reads that session's snapshot and digest out of `sessions`; a
-> snapshot named in the call overrides the catalogued one.
+> catalogued `selector`. The door reads that session's snapshot, path and digest out of
+> `sessions`; a snapshot named in the call overrides the catalogued one.
 > **Success:** the run settles `completed` and its receipt carries `kind: "verify"`,
 > `counts.checked: 1`, `counts.checkErrors: 0`, and — when a session was named —
 > `counts.restored: 1` beside `counts.digestCompared: 1`. A `failed` receipt's reason names what
 > disagreed: the repository's own errors, or the two digests that did not match.
-> **A stale lock fails this step.** `restic check` wants the repository quiescent and takes an
-> exclusive lock to get it, so a stranded lock is diagnosed and cleared by hand (§2.3) before a
-> verification will run at all.
+> **A lock does not stop it.** Every read verb runs with `--no-lock`, `check` included, so a
+> stranded lock neither blocks a verification nor is left behind by one. A `check` taken while a
+> collector is backing up may report transient unreferenced packs; run it again once the backup
+> has finished before reading that as damage.
 
 ### 2.1 Find what to restore
 
-`sessions` in the store is the index: a row per session with its harness, selector, host and the
-snapshot that holds it. Read it from Babel's own surfaces, or ask restic directly, which needs
-nothing of Babel's at all:
+`sessions` in the store is the index: a row per session with its harness, selector, the host
+label it was archived under (`archive_label`), and the snapshot and path of its newest capture
+(`snapshot_id`, `archive_path`), which the `catalog` beat keeps current (§7.1). Read it from
+Babel's own surfaces, or ask restic directly, which needs nothing of Babel's at all:
 
 ```sh
-restic snapshots --tag babel                 # what this deployment has archived, by host
-restic ls <snapshot-id>                      # what one snapshot holds
+restic snapshots --no-lock --tag babel       # what this deployment has archived, by host label
+restic ls --no-lock <snapshot-id>            # what one snapshot holds
 ```
+
+`--tag babel` is matched exactly, so the hub store's own backups, tagged `babel-store` (§5), are
+not among them.
 
 ### 2.2 Restore
 
@@ -150,9 +180,9 @@ the repository quiescent. `restic check --no-lock` then reported 44 snapshots an
 > **OPERATOR STEP — clear a stale lock (never automated, never an agent's to run).**
 > **Prerequisites:** the lock's holder is confirmed dead, by host as well as PID; a lock naming
 > another host is never judged by local PID liveness. Nothing in Babel inspects or removes a
-> repository lock — a verification's own `restic check` takes one and releases it, and nothing
-> else — and `.omp/skills/babel-cli/SKILL.md` forbids an agent from running `restic unlock` at
-> all.
+> repository lock, and only `archive`'s `backup` takes one — restic's ordinary lock, released when
+> it ends; every read runs with `--no-lock` — and `.omp/skills/babel-cli/SKILL.md` forbids an agent
+> from running `restic unlock` at all.
 > **Success:** `restic list locks --no-lock` shows the lock gone and `restic check --no-lock`
 > exits 0. Measured against restic 0.19.1, plain `restic unlock` removes a stale lock including an
 > exclusive one; `--remove-all` is what a lock that is _not_ stale needs, and it removes every lock
@@ -211,8 +241,9 @@ placement, not today's custody.
 
 ## 4. The storage document, and how a job reaches it
 
-The `archive` operation reads the repository and the secrets that open it from **one Manifold
-service**, `atyrode.babel.restic`, and from nowhere else (`babel/machine/restic.ts`;
+Every Babel operation that touches the archive — `catalog`, `prepare`, `verify` and `archive`,
+and Recall's native service — reads the repository and the secrets that open it from **one
+Manifold service**, `atyrode.babel.restic`, and from nowhere else (`babel/machine/restic.ts`;
 `docs/building.md` owns the install shape). The document it answers with is
 
 ```
@@ -220,7 +251,11 @@ service**, `atyrode.babel.restic`, and from nowhere else (`babel/machine/restic.
 ```
 
 — the object-store pair required for an `s3:` locator and refused in halves, so a half-installed
-policy fails as itself rather than as an unexplained restic exit.
+policy fails as itself rather than as an unexplained restic exit. Only `archive` writes: `catalog`,
+`prepare` and `verify` run every restic verb with `--no-lock`, so on a machine that only analyses,
+the document may carry a read-only object-store key, and that is the preferred hardening. The
+preview hub (dev-01) reads the real archive with the storage document its collector already uses
+there: its analysis takes no lock, though that key could write.
 
 Four properties of that path are the security contract, and each is enforced in code rather than
 by procedure:
@@ -233,9 +268,11 @@ by procedure:
 - Every child gets a minimal environment — the repository coordinates, the object-store credential
   when there is one, and `HOME`/`PATH`/`TMPDIR`. Ambient `RESTIC_*` variables cannot redirect an
   archive.
-- The one value the manifest fixes is `BABEL_RESTIC_CACHE_DIR=/home/job/.cache/restic`, inside the
-  managed cache location the operation may write. Without an index cache every backup re-reads
-  every byte it already archived.
+- The values the manifest fixes are cache directories inside the managed cache location the
+  operations may write: `BABEL_RESTIC_CACHE_DIR=/home/job/.cache/restic` (without an index cache
+  every backup re-reads every byte it already archived, and every catalog re-downloads every
+  tree), the catalog's memory of listed snapshots under `/home/job/.cache/catalog`, and each
+  preparation's redacted readings under `/home/job/.cache/prepare`. All of it is rebuildable.
 
 > **OPERATOR STEP — install the storage service on a machine (per machine, by the hub's owner).**
 > **Prerequisites:** the deployment's storage document is served by the operator's own store over
@@ -254,7 +291,7 @@ by procedure:
 > at. A preview that has gone stale is refused naming why rather than overwritten. Then install
 > the job with `resourceBindings.services["atyrode.babel.restic"]` carrying the fingerprint
 > `engine.jobs.describe` reports for that policy; that half is still by hand.
-> **Success:** the section reports the service as `ready`, and an `archive` job admits rather than
+> **Success:** the section reports the service as `ready`, and a `catalog` job admits rather than
 > refusing `service_binding_mismatch`. A policy the operator changed is a new installation, never
 > a silent upgrade — the mismatch is the point.
 
@@ -289,72 +326,122 @@ filings, the ledger and every receipt live there and nowhere else. There is no p
 nothing to reconcile: `docs/parity.md` records publication, the shared catalog and the object
 store as absent by decision, and no second Babel-owned store is added in their place.
 
-**That store is currently a single copy.** Neither of Manifold's own copies answers for it.
-`data.db.backup` is the fixed path a database migration stages its rollback image at, beside
-`data.db` on the same volume (atyrode/manifold at `7b5fe301`, `docs/PLUGINS.md:1000-1006`): it
-recovers a failed migration and is lost with the volume. Litestream replicates `manifold.db` and
-excludes every per-plugin `data.db` (`docs/SELF-HOST.md:902-904` there). The backup of `<data>/`
-that would include it (`docs/PLUGINS.md:1135-1137`) is a `tar` an operator takes by hand
-(`docs/SELF-HOST.md:745-751`), and nothing schedules one. Two consequences an operator must hold
-at once:
+**Manifold's own copies do not answer for it.** `data.db.backup` is the fixed path a database
+migration stages its rollback image at, beside `data.db` on the same volume (atyrode/manifold at
+`7b5fe301`, `docs/PLUGINS.md:1000-1006`): it recovers a failed migration and is lost with the
+volume. Litestream replicates `manifold.db` and excludes every per-plugin `data.db`
+(`docs/SELF-HOST.md:902-904` there). The backup of `<data>/` that would include it
+(`docs/PLUGINS.md:1135-1137`) is a `tar` an operator takes by hand (`docs/SELF-HOST.md:745-751`).
+Two consequences an operator must hold at once:
 
 - **The sessions are safe without it.** Every archived session is restorable from restic with the
-  password alone (§2), and the catalog rows that point at snapshots are rederivable by re-running
-  `scan` and `archive` on each machine.
-- **Babel's own analysis is not, yet.** A hypothesis, a finding, a ruling or a receipt exists in
-  `data.db` and nowhere else, so until the backup below has run, losing the hub's volume loses
-  every record Babel has produced or imported.
+  password alone (§2), and the catalog rows that point at captures are rederivable: a `catalog`
+  with `full: true` lists the repository again, and a capture's title, workspace and usage are
+  read again by its next preparation.
+- **Babel's own analysis is not.** A hypothesis, a finding, a ruling or a receipt exists in
+  `data.db` and in the store backups below, nowhere else, so losing the hub's volume loses every
+  record written since the newest store backup — and every record, while no backup runs.
 
-**The backup is open work, tracked in #454, and its destination is decided**: the restic
-repository that already holds the session transcripts — the one the storage document names (§4)
-— under its own tag, `babel-store`. Never `babel`: snapshots tagged `babel` are read as session
-transcripts, and a store image among them would be read as one. The backup belongs to the
-deployment, placed on the hub's host by dotfiles, and is not a Babel operation. It takes a
-consistent image of the live database rather than a byte copy of a WAL-mode file, and it is a copy
-of the one store, never a second store Babel reads or writes. The procedure and a proven restore
-are recorded here, with host, date and observed output, once they have run; until then nothing in
-this section is exercised.
+**The store is backed up into the transcripts' repository, under its own tag `babel-store`**
+(#454). Never `babel`: snapshots tagged `babel` are read as session transcripts, and the catalog
+matches that tag exactly, so it never lists a store image. The backup belongs to the deployment,
+placed on the hub's host by dotfiles, and is not a Babel operation: dotfiles #712 (`b8a9a1f`,
+merged 2026-09-24) declares a nightly `babel-store-backup` user timer on dev-01. It has the
+container's Bun serialize the live database through `bun:sqlite` in one read transaction and
+streams that image into `restic backup --stdin-from-command`, stored as
+`/manifold-dev/plugins/atyrode.babel/data.db` under the host label `dev-01` and the tag
+`babel-store`, with no temporary file and no byte copy of the WAL-mode file. It is a copy of the
+one store, never a second store Babel reads or writes.
+
+**Recorded in dotfiles #712, on dev-01, before its merge:** a hand run of the built service
+against the configured repository left one `babel-store` snapshot (host `dev-01`, one file of
+170,835,968 bytes); restored with `restic dump` into a mode-0700 directory it passed
+`PRAGMA integrity_check` (`ok`) and held 462 `assessments` rows, and the restored copy was then
+deleted. That proves the path, not the schedule.
+
+> **OPERATOR STEP — arm the store backup (not executed here).**
+> **Prerequisites:** an authorized apply of dotfiles at or after `b8a9a1f` on dev-01; the storage
+> document the archive timer uses is placed there (the timer is conditioned on it).
+> **Success:** `systemctl --user list-timers babel-store-backup.timer` lists the timer, and after
+> its first run `restic snapshots --no-lock --tag babel-store` shows a new snapshot from `dev-01`.
+
+> **OPERATOR STEP — restore the store from its backup (not executed).**
+> **Prerequisites:** custody (§3); the hub's Manifold container stopped, so nothing holds the file.
+> **Procedure:** pick a snapshot from `restic snapshots --no-lock --tag babel-store`, then
+> `restic dump --no-lock <snapshot-id> /manifold-dev/plugins/atyrode.babel/data.db` into a file in
+> a mode-0700 directory; `PRAGMA integrity_check` on it must answer `ok`. Put it in place of
+> `<data>/plugins/atyrode.babel/data.db`, removing any `-wal` and `-shm` beside the old file, and
+> start the hub.
+> **Success:** Feed and Watch read the restored records, and the `catalog` beat's next receipt
+> lists labels as before.
 
 ---
 
 ## 6. Enrolling a machine
 
-A machine runs Babel's jobs when four things are true of it. None is a Babel command; all four are
-the hub owner's or the machine's declaration.
+A machine catalogues and prepares any archived session — whichever machine recorded it — once
+five things are true of it. None is a Babel command; all five are the hub owner's or the
+machine's declaration, and none concerns the sessions the machine itself holds, which are
+collected by §1.
 
 1. **It is enrolled in the hub** and online.
 2. **It binds the tools each operation names** (`docs/building.md`): `bun` is pinned by Babel's own
-   bundle and needs no binding; `development` carries `git`; `system` is the reviewed native
-   closure the pinned bun is dynamically linked against; `restic` is the owner's, by name, and only
-   `archive` asks for it.
-3. **Its anchors exist, and `home` is where the sessions are.** The `runtime` anchor must be a
-   dedicated bounded tmpfs, since the named-output lease is cut from it. The `home` anchor needs
-   `~/.omp/agent/sessions`, `~/.codex` and `~/.claude` beneath it, or a job whose read location is
-   missing fails to start. **Creating them does not make the sessions readable on a native
-   Manifold worker** (the NixOS module): there the `home` anchor is the service account's
-   workload home, `/var/lib/manifold-workload/home`, hard-coded by the module (atyrode/manifold at
-   `7b5fe301`, `infra/native/module.nix:10,23-31`), and an operator may also protect `/home` from
-   workloads with `execution.protectedDirectories`. `mkdir -p` there makes `scan`, `archive` and
-   `prepare` start and read an empty tree. Local roots are only for the machine that holds the
-   sessions, with its `home` anchor at the home that holds them; reading every machine's sessions
-   from the archive instead is #453.
-4. **Its consents are recorded** at the nodes §1 names, plus `machines:run` at the operation node
-   for anything that launches.
+   bundle and needs no binding; `system` is the reviewed native closure the pinned bun is
+   dynamically linked against; `restic` is the owner's, by name, and every Babel operation asks
+   for it. No Babel operation names `development` since `scan` retired.
+3. **Its runtime scratch is a dedicated bounded tmpfs**, sized below, since every named-output
+   lease is cut from it.
+4. **The `atyrode.babel.restic` service is installed on it** for the existing repository, and the
+   job install carries that policy's fingerprint (§4).
+5. **Its consents are recorded:** `services:invoke` at
+   `manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage`, `network:host`
+   at `manifold://machine/<machine>/operation/atyrode.babel.catalog`, `…/atyrode.babel.prepare`
+   and `…/atyrode.babel.verify` — and `…/atyrode.babel.archive` on a machine that collects — plus
+   `machines:run` at the operation node for anything that launches.
 
-> **OPERATOR STEP — join a machine (not executed against the current fleet).**
-> **Prerequisites:** items 1–4 above, and §4's service install if this machine is to archive.
-> **Success:** a `scan` job settles and its sessions appear in the store under that machine's id;
-> then an `archive` job settles with a snapshot per root. A successful `scan` with no roots is not
-> proof of anything but an empty machine.
+**No `home` anchor is needed to analyse.** `catalog` and `prepare` declare no `home` location and
+open no file of the machine they run on. The `home` anchor matters to `archive` alone, which reads
+`~/.omp/agent/sessions`, `~/.codex` and `~/.claude` beneath it, and a job whose read location is
+missing fails to start. **Creating them does not make the sessions readable on a native Manifold
+worker** (the NixOS module): there the `home` anchor is the service account's workload home,
+`/var/lib/manifold-workload/home`, hard-coded by the module (atyrode/manifold at `7b5fe301`,
+`infra/native/module.nix:10,23-31`), and an operator may also protect `/home` from workloads with
+`execution.protectedDirectories`. `mkdir -p` there makes `archive` start and back up an empty
+tree, until it reads the roots through the operator-declared anchor of atyrode/manifold#839.
+
+> **OPERATOR STEP — enroll a machine for analysis (not executed against the current fleet).**
+> **Prerequisites:** items 1–2 above, and a hub running the Babel bundle whose operations declare
+> `outputBytes` 1 GiB — installed **before** the scratch is raised, since an older bundle's
+> 64 MiB operations are refused on any larger one.
+> **Procedure:**
+>
+> 1. In the machine's dotfiles module, bind `runtimeTools.restic` and its closure and set
+>    `execution.outputBytes = 805306368` with `outputInodes = 10000` (the Nix block in
+>    `docs/building.md`), plus `serviceCredentials.babel-restic` only if the storage document's
+>    store needs a token; then activate. Merging is not activation.
+> 2. Install `atyrode.babel.restic` on the machine (§4) and install the jobs with its fingerprint.
+> 3. Record item 5's consents.
+> 4. Map the machine's archive label to its id (§6.1).
+> 5. Name it for the beat: the policy's `review.machineId` (§7.1).
+>
+> **Success:** `engine.jobs.reviewDeployment` no longer lists `tools/restic` as missing and
+> `findmnt /var/lib/manifold-output` shows `size=786432k`; a `catalog` job is admitted rather
+> than refused `service_binding_mismatch`, and its receipt lists labels with `counts.listed`
+> above zero, later beats bringing `counts.pending` to zero; the first explore from Watch's Start
+> leaves a `prepare` receipt with `counts.fetched` above zero whose material entries carry their
+> `origin`, and a second identical explore shows `counts.fetched` 0, every session reused.
 
 **Item 3's runtime scratch has one size.** Every operation that writes the `runtime` anchor —
-Babel's `scan`, `archive`, `prepare` and `verify`, and `atyrode.omp.session` — declares
+Babel's `catalog`, `archive`, `prepare` and `verify`, and `atyrode.omp.session` — declares
 `outputBytes` 1 GiB. The runtime refuses a job whose `outputBytes` is below the scratch's
 capacity (`bounded-output-storage-required`) and gives stdout and stderr only what is above it
 (`docs/building.md`, the machine half). So the scratch is 768 MiB (`RUNTIME_SCRATCH_BYTES`),
-which leaves each of them 256 MiB of stdio, and never the full 1 GiB, which would leave none.
+which leaves each of them 256 MiB of stdio, and never the full 1 GiB, which would leave none. The
+hub bounds each material by the capacity the machine last measured, divided among the materials
+a lane may hold at once (`docs/building.md`). dev-01's scratch is 768 MiB: dotfiles #711
+(`46ae639`, merged 2026-09-24), which the operator reports active.
 
-> **OPERATOR STEP — size a native machine's runtime scratch (not executed).**
+> **OPERATOR STEP — size a native machine's runtime scratch (not executed here).**
 > **Prerequisites:** the hub runs a Babel bundle whose four runtime-writing operations declare
 > 1 GiB; an older one's `scan`, `archive` and `verify` declared 64 MiB and are refused on any
 > larger scratch. Every other operation installed for that machine that writes the `runtime`
@@ -363,17 +450,38 @@ which leaves each of them 256 MiB of stdio, and never the full 1 GiB, which woul
 > `services.manifold.execution.outputBytes = 805306368;` and `outputInodes = 10000;`, then
 > activate. Merging the configuration is not activation.
 > **Success:** `findmnt -no OPTIONS /var/lib/manifold-output` shows `size=786432k` and
-> `nr_inodes=10000`, and a `scan` and a `prepare` on that machine settle rather than refusing
+> `nr_inodes=10000`, and a `catalog` and a `prepare` on that machine settle rather than refusing
 > `bounded-output-storage-required`.
 
+### 6.1 Archive labels are not machine ids
+
 **A machine id is not a host name.** Every column Babel keys on a machine — `sessions.host`,
-`runs.machine_id`, `drains.machine_id` and `run_calls.transcript_host` — holds the id
-`core.machines.list` publishes, and the hub resolves no names. The crossing refuses a chunk whose
-machine column names something the hub cannot describe, and it reads that list of columns out of
-the migration rather than out of a list of its own, so a column added under either spelling is
-guarded from the day it exists. The imported Go-era corpus carries the old deployment's host name
-instead, which is what the `rehostSessions` door exists to repair: it rewrites one `host` value to
-one machine id the hub has just described (`babel/contract.ts`).
+`runs.machine_id`, `drains.machine_id`, `run_calls.transcript_host` and
+`archive_labels.machine_id` — holds the id `core.machines.list` publishes, or `''` for a capture
+whose label no one has mapped yet, and the hub resolves no names. The crossing refuses a chunk
+whose machine column names something the hub cannot describe, and it reads that list of columns
+out of the migration rather than out of a list of its own, so a column added under either
+spelling is guarded from the day it exists.
+
+A capture's host label is a name: restic's `--host`, as the collector spelled it — the clan
+machine name (`dev-01`) for the dotfiles collector, historical hostnames such as
+`workstation-linux` and `alex-x86_64-linux-wsl` for machines that no longer exist, and the machine
+id for `archive`. The catalog keeps it verbatim in `sessions.archive_label`, and it becomes a
+machine id only through `archive_labels`, which the owner records. An unmapped label's sessions
+are still selected and prepared; what they lose is the hub's repository question, which is asked
+of a machine. Watch's **Archive** line lists each unmapped label with its session count. Map only
+the labels of enrolled machines: a retired machine's label stays unmapped on purpose.
+
+> **OPERATOR STEP — map an archive label to its machine (per enrolled machine, owner only).**
+> **Prerequisites:** the machine is enrolled and `engine.jobs.describe` answers for its id.
+> **Call:** `rehostSessions {from: "<label>", to: "<machine id>"}`. On the preview hub that is
+> `rehostSessions {from: "dev-01", to: "<dev-01's machine id>"}`: one call repairs the imported
+> Go-era rows, whose `host` is still the Go host name `dev-01`, and maps every capture the timer
+> takes under that label, now and later. An id-shaped label — what `archive` backs up under —
+> is mapped with `from` equal to `to`. The door describes `to` before it writes anything.
+> **Success:** the door answers `sessions` (rows moved) and `labelled` (rows under the label),
+> Watch's Archive line no longer lists the label, and the next `catalog` files that label's
+> captures under the machine id.
 
 ---
 
@@ -382,9 +490,20 @@ one machine id the hub has just described (`babel/contract.ts`).
 ### 7.1 The one schedule
 
 `engine.jobs.schedule` schedules a job on a machine, so the loop's beat is the cheapest useful job
-Babel owns: `scan` (`BEAT_OPERATION`, `babel/server/conductor.ts`). It spends no
-model money, refreshes the catalog every cadence, and its settlement is what wakes the hub — a
-plugin has no clock of its own and may not poll as an alternate scheduler.
+Babel owns: `catalog`, the `keep-going` preset's operation (`PRESET_OPERATIONS` in
+`babel/contract.ts`), registered by `babel/server/conductor.ts`. It spends no model money and
+opens no transcript: each beat lists the `babel` snapshots it has not listed before — at most
+`maxSnapshots` a run, the newest of each chain first, the rest counted as `pending` for the next
+beat — and files one `sessions` row per session naming its newest capture. Its settlement is
+what wakes the hub — a plugin has no clock of its own and may not poll as an alternate scheduler
+— and its receipt is what the hub reads the machine's measured scratch capacity
+(`outputCapacity`) and the archive's labels from. `scan`, the beat before #453, read the beat
+machine's local session files and is retired.
+
+The catalog's memory of what it has listed lives in the machine's managed cache and is
+rebuildable: losing it costs one full listing, and a `catalog` posted with `full: true` sets it
+aside on purpose. The first beats on a fresh hub work through the whole repository, `maxSnapshots`
+at a time; `counts.pending` reaching zero is the sign the backfill is done.
 
 The beat is registered only while the policy is enabled, at the policy's `cadenceSeconds`, on the
 machine the policy names, for a bounded lifetime the loop renews. A policy change re-registers it,
@@ -670,9 +789,14 @@ still require a conservative exposure reservation in the shared ledger before ad
 >    or a corpus of non-ASCII selectors, is how that stops being true. **Success:** no run in the
 >    drain closes `prompt_too_large`; if one does, the row carries both figures, and what moves is
 >    Code's bound or the analysis contract, never a narrower window.
-> 5. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names a
+> 5. **The drain's machine reads the archive.** Every job the drain posts prepares from archived
+>    captures on that machine, so an archive it cannot read refuses every one of them whole.
+>    **Success:** the machine meets §6, its newest `catalog` receipt settled `completed` with
+>    `counts.pending` 0, and one explore on it leaves a `prepare` receipt whose captures were
+>    fetched or reused rather than refused `archive_unavailable`.
+> 6. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names a
 >    blocker for this machine is a no-go.
-> 6. A five-minute rehearsal: `drainStart` with `concurrent: 2`, `maxJobs: 2`, the Code profile
+> 7. A five-minute rehearsal: `drainStart` with `concurrent: 2`, `maxJobs: 2`, the Code profile
 >    from item 2, reviewed per-job `inferenceLimits`, `target.costMicros` equal to one exploration's
 >    price, and `deadline` = now + 5 min. Reconcile cumulative spend and reserve worst-case
 >    in-flight exposure first; the target is not a hard spending ceiling.
@@ -681,7 +805,7 @@ still require a conservative exposure reservation in the shared ledger before ad
 
 For a manual-only rehearsal, first quiesce existing work, then retain the policy's `review`
 block and recipes with `enabled: true` and every `activityWeights` value set to zero. This
-withdraws the standing scan beat and suppresses new autonomous title preparation without
+withdraws the standing catalog beat and suppresses new autonomous title preparation without
 blocking an explicit exploration or drain. It does not cancel or discard previously admitted
 work. Setting the whole policy to `enabled: false` also fences deferred manual model admission,
 so use that state before and after the bounded run, not while its material is preparing.
@@ -882,7 +1006,7 @@ owed, in order:
 > 2. One exploration, by hand, from the Start section. **Success:** the run takes a Code job id,
 >    `code.readSession` answers it on a later cycle, and the receipt carries the model, the account
 >    and what it spent.
-> 3. §11.2 item 6, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`, target
+> 3. §11.2 item 7, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`, target
 >    one exploration's price, deadline now + 5 min. **Success:** two rows reach `at the model` within
 >    90 s and settle with calls > 0; record host, date and the drain row here.
 > 4. **OPERATOR STEP — the first live drawn review.** Install the review-enabled bundle, then use
@@ -903,15 +1027,21 @@ None of the dated observations above establishes current fleet state. These rema
 1. Independent custody backup and recovery (§3), and any derived generation, encrypted commit and
    per-machine apply. Preserve the existing password and the whole append-only ring; missing
    placement is not a reason to rotate.
-2. The `atyrode.babel.restic` service install and its job binding on each machine that archives
-   (§4), followed by a first `archive` whose receipt is read (§1).
-3. The hub store's backup (§5, #454): a scheduled image of `data.db`, the only copy of everything
-   Babel knows, in the transcripts' restic repository under `babel-store`, and one proven restore.
-4. A cadence for `archive`. Babel schedules only the `scan` beat, so today an archive happens when
-   someone posts one.
+2. The archive readers of §6 on each machine that analyses: the `restic` tool, the
+   `atyrode.babel.restic` service install and its job binding (§4) and the consents — dev-01's
+   scratch is already sized (dotfiles #711) — then its label mapped (§6.1) and it named for the
+   beat (§7.1). The preview proof, recorded here with host, date and receipts once it has run: a
+   `catalog` receipt listing labels with `snapshot_id` present on catalogued rows; one explore
+   whose `prepare` receipt shows `counts.fetched` above zero, its material entries carrying their
+   `origin`; and a repeated explore showing `counts.fetched` 0.
+3. The hub store's backup (§5, #454): dotfiles #712's nightly timer armed on dev-01 and one
+   restore through §5's procedure.
+4. Babel's own collector: the operator-declared read-only anchor (atyrode/manifold#839), the
+   change that retargets `archive` onto it under the machine's mapped label (§1), and a cadence
+   for it. Babel schedules only the `catalog` beat, and until then the dotfiles timer collects.
 5. A full restore-to-service on a clean machine: recover custody, restore a historical source tree
    with restic (§2), enroll the machine (§6), and confirm the restored bytes match the chosen
    snapshot. The 2026-08-31 cross-machine restore proves its own part and not this composition.
 6. The drain rehearsal and the four owed steps of §11.7.
-7. Each native machine's runtime scratch sized to 768 MiB (§6), after the bundle declaring 1 GiB
-   on every runtime-writing operation is installed.
+7. Each other native machine's runtime scratch sized to 768 MiB (§6), after the bundle declaring
+   1 GiB on every runtime-writing operation is installed.

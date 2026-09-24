@@ -361,14 +361,14 @@ export function Start({
         {card?.takesRecipes === true ? (
           <RecipePicks draft={draft} recipes={recipes} onDraft={onDraft} />
         ) : null}
-        {/* `keep-going` is a scan of Babel's own and reaches no model, so it is offered without
-            a profile rather than with one nothing would read. */}
+        {/* `keep-going` is a catalog of the archive, Babel's own, and reaches no model, so it is
+            offered without a profile rather than with one nothing would read. */}
         {reaches ? (
           <Profiles draft={draft} profiles={profiles} onDraft={onDraft} onOpen={onOpen} />
         ) : (
           <p className="plugin-atyrode_babel_watch__muted" data-field="no-profile-needed">
-            Keep going is one <code>scan</code> of Babel&rsquo;s own. It reaches no model, so it
-            needs no Code profile and spends nothing.
+            Keep going is one <code>catalog</code> of the archive, Babel&rsquo;s own. It reaches no
+            model, so it needs no Code profile and spends nothing.
           </p>
         )}
         <Cluster gap="var(--babel-space-3)">

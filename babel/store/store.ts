@@ -32,6 +32,7 @@ import {
   POST_KINDS,
   NextActionDecisionSchema,
   UNHEARD_AFTER_MS,
+  ARCHIVE_LABELS_REPORTED,
   NextActionSchema,
   REPOSITORY_PROVENANCES,
   ROLES,
@@ -1722,7 +1723,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   /**
-   * What Babel did today, and what it is doing at this instant.
+   * What Babel did today, what it is doing at this instant, and which archive labels no machine
+   * answers for.
    *
    * Every number is read from its own source and none is derived from another: a count assembled
    * by summing two others is a number that goes wrong silently when either changes. One instant
@@ -1823,6 +1825,23 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
             : 0,
     );
 
+    // The labels the catalog filed sessions under that no mapping names, most sessions first.
+    // The window counts every such label before the limit cuts the list, so `omitted` is what
+    // the list left out rather than a guess from its length.
+    const labels = await db.query(
+      `SELECT label, n, COUNT(*) OVER () AS labels FROM (
+         SELECT s.archive_label AS label, COUNT(*) AS n FROM sessions s
+          WHERE s.archive_label IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM archive_labels m WHERE m.label = s.archive_label)
+          GROUP BY s.archive_label)
+        ORDER BY n DESC, label LIMIT ?`,
+      [ARCHIVE_LABELS_REPORTED],
+    );
+    const unmapped = labels.map((row) => ({
+      label: text(row["label"]),
+      sessions: count(row["n"]),
+    }));
+
     return {
       since,
       today: {
@@ -1834,6 +1853,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         ruled: count(ruled?.["n"]),
       },
       reviewing,
+      archive: { unmapped, omitted: count(labels[0]?.["labels"]) - unmapped.length },
     };
   };
 
