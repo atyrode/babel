@@ -806,7 +806,7 @@ test("a window offering nothing the lease can hold is refused by name, not as an
 
   const refused = String(answer["refused"]);
   expect(refused).toStartWith("material_too_large:");
-  expect(refused).toContain("448 MiB");
+  expect(refused).toContain(`${String(MAX_MATERIAL_BYTES / (1024 * 1024))} MiB`);
   expect(refused).not.toContain("has catalogued no session");
   expect(fleet.executed).toEqual([]);
 });

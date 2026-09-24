@@ -42,20 +42,20 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "7505618e7f012521c8093cd5f828a5376849dd1fd5dac0136e24bf8d1220ffbc",
+        "sha256": "60b20f934262d33953bbf6d1f30550eb4f27eae7eb681ccfc9ac5c340fff6712",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "7505618e7f012521c8093cd5f828a5376849dd1fd5dac0136e24bf8d1220ffbc",
+        "entrySha256": "60b20f934262d33953bbf6d1f30550eb4f27eae7eb681ccfc9ac5c340fff6712",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "7505618e7f012521c8093cd5f828a5376849dd1fd5dac0136e24bf8d1220ffbc",
+        "sha256": "60b20f934262d33953bbf6d1f30550eb4f27eae7eb681ccfc9ac5c340fff6712",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "7505618e7f012521c8093cd5f828a5376849dd1fd5dac0136e24bf8d1220ffbc",
+        "entrySha256": "60b20f934262d33953bbf6d1f30550eb4f27eae7eb681ccfc9ac5c340fff6712",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -148,7 +148,7 @@
           "timeoutMs": 600000,
           "memoryBytes": 1073741824,
           "processes": 64,
-          "outputBytes": 67108864
+          "outputBytes": 1073741824
         },
         "stdin": false
       },
@@ -191,7 +191,7 @@
           "timeoutMs": 600000,
           "memoryBytes": 1073741824,
           "processes": 64,
-          "outputBytes": 67108864
+          "outputBytes": 1073741824
         },
         "stdin": false
       },
@@ -225,7 +225,7 @@
           "timeoutMs": 1800000,
           "memoryBytes": 1073741824,
           "processes": 64,
-          "outputBytes": 536870912
+          "outputBytes": 1073741824
         },
         "stdin": false
       },
@@ -268,7 +268,7 @@
           "timeoutMs": 3600000,
           "memoryBytes": 1073741824,
           "processes": 64,
-          "outputBytes": 67108864
+          "outputBytes": 1073741824
         },
         "stdin": false
       },

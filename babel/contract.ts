@@ -189,7 +189,26 @@ export const CHALLENGE_RELATION = "challenges";
 export const ANALYSIS_BRIEF_LIMIT = 24;
 export const ANALYSIS_BRIEF_BYTE_LIMIT = 16 * 1024;
 export const ANALYSIS_SOURCE_LIMIT = 16;
-/** Leave 64 MiB of prepare's 512 MiB output bound for framing, receipts and output streams. */
+/**
+ * THE RUNTIME SCRATCH A BABEL MACHINE IS SIZED FOR: the capacity of the named-output tmpfs its
+ * `runtime` anchor mounts (`services.manifold.execution.outputBytes` on a native worker, with
+ * `outputInodes` 10000). Every operation writing `OUTPUT_LOCATION` cuts its leases from it, and
+ * so does `atyrode.omp.session`. The runtime refuses a job with
+ * `bounded-output-storage-required` when that capacity exceeds its `limits.outputBytes`, then
+ * charges the whole capacity before stdout and stderr (atyrode/manifold at `7b5fe301`,
+ * `packages/agent/src/job-linux.ts:440-453,804`). So each such operation declares 1 GiB, the
+ * per-job ceiling (`packages/protocol/src/jobs.ts:86`) and the session's own declaration, and
+ * 768 MiB leaves every one of them 256 MiB of stdio. A scratch of the full 1 GiB would admit
+ * them with none, and their first byte of stdout would end the job `output-limit`.
+ */
+export const RUNTIME_SCRATCH_BYTES = 768 * 1024 * 1024;
+/**
+ * The most catalogued bytes one preparation seals: 64 MiB under the 512 MiB `inputBytes` into
+ * which `atyrode.omp.session` extracts a bound material (atyrode/manifold-omp at `4470475`,
+ * `plugins/atyrode.omp/manifest.json:992-993`), and well inside the runtime scratch with the
+ * receipt lease beside it. Concurrent jobs share that scratch, so two materials at this bound do
+ * not fit it together; a bound per lane's concurrency is #453's.
+ */
 export const MAX_MATERIAL_BYTES = 448 * 1024 * 1024;
 
 /** Immutable prior claims, not newly served evidence or an instruction source. */

@@ -60,12 +60,12 @@ tmpfs home and the artifacts the operation declares — so it carries no libc un
 names the machine's native closure, and what is not declared does not exist inside. The manifest
 is the whole of what each operation may touch, and it is committed, reviewed code.
 
-| Operation | Reads                                         | Writes                                                                      | Network  | Ceilings                                       |
-| --------- | --------------------------------------------- | --------------------------------------------------------------------------- | -------- | ---------------------------------------------- |
-| `scan`    | `~/.omp`, `~/.codex`, `~/.claude`, read-only  | the sealed output lease                                                     | **none** | 10 min, 1 GiB, 64 processes, 64 MiB of output  |
-| `prepare` | the same three, read-only                     | the sealed output lease                                                     | **none** | 30 min, 1 GiB, 64 processes, 512 MiB of output |
-| `archive` | the same three, read-only                     | the sealed output lease, and the restic repository                          | **host** | 10 min, 1 GiB, 64 processes                    |
-| `verify`  | the restic repository, and none of the corpus | the sealed output lease, and a restore target inside a location it declares | **host** | 60 min, 1 GiB, 64 processes                    |
+| Operation | Reads                                         | Writes                                                                      | Network  | Ceilings                                     |
+| --------- | --------------------------------------------- | --------------------------------------------------------------------------- | -------- | -------------------------------------------- |
+| `scan`    | `~/.omp`, `~/.codex`, `~/.claude`, read-only  | the sealed output lease                                                     | **none** | 10 min, 1 GiB, 64 processes, 1 GiB of output |
+| `prepare` | the same three, read-only                     | the sealed output lease                                                     | **none** | 30 min, 1 GiB, 64 processes, 1 GiB of output |
+| `archive` | the same three, read-only                     | the sealed output lease, and the restic repository                          | **host** | 10 min, 1 GiB, 64 processes, 1 GiB of output |
+| `verify`  | the restic repository, and none of the corpus | the sealed output lease, and a restore target inside a location it declares | **host** | 60 min, 1 GiB, 64 processes, 1 GiB of output |
 
 Five properties of that table carry the weight:
 

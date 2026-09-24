@@ -22,6 +22,7 @@ import {
   PRESET_OPERATIONS,
   RESTIC_SERVICE,
   RUNTIME_TOOLS,
+  RUNTIME_SCRATCH_BYTES,
   WATCH_PLUGIN_ID,
   asLaunchRequest,
 } from "../babel/contract.ts";
@@ -357,19 +358,22 @@ describe("the machine half is declared as the machine half is built", () => {
     /*
       THE HUB'S OWN BOUND IS UNDER THE MACHINE'S, WITH ROOM. `doors/launch.ts` refuses a
       selection whose catalogued bytes exceed `MAX_MATERIAL_BYTES`, BEFORE a job is posted;
-      the machine refuses at the seal, AFTER it has read every log in the selection. The
-      first must be the one that fires, or the operator learns his window was too wide from a
-      twenty-minute job that failed at the end.
+      the machine refuses when its runtime scratch fills or at the seal, AFTER it has read every
+      log in the selection. The first must be the one that fires, or the operator learns his
+      window was too wide from a twenty-minute job that failed at the end.
 
-      And `<=` would not be enough: `outputBytes` is the AGGREGATE the owner seals against —
-      stdout, stderr and BOTH of this operation's leases come out of one running budget, and
-      each lease is a ustar archive carrying 512 bytes of header and padding per member
-      (`agent/src/job-owner.ts`). A selection admitted at exactly the job's bound packs to it
-      and is refused `output_collection_refused` after the full read. A tenth of the job is
-      the margin this pins; the constant currently leaves an eighth.
+      Two bounds are the machine's. The leases are written into the runtime scratch, which is
+      smaller than the job's `outputBytes` by design (below). And `outputBytes` is the AGGREGATE
+      the owner seals against — stdout, stderr and BOTH of this operation's leases come out of
+      one running budget, and each lease is a ustar archive carrying 512 bytes of header and
+      padding per member (`agent/src/job-owner.ts`). A selection admitted at exactly either
+      bound fills it and fails after the full read, so `<=` would not be enough: a tenth of the
+      smaller bound is the margin this pins.
     */
-    const outputBytes = machine.operations[OPERATIONS.prepare]!.limits?.outputBytes ?? 0;
-    expect(MAX_MATERIAL_BYTES).toBeLessThanOrEqual(Math.floor(outputBytes * 0.9));
+    const outputBytes = machine.operations[OPERATIONS.prepare]!.limits.outputBytes;
+    expect(MAX_MATERIAL_BYTES).toBeLessThanOrEqual(
+      Math.floor(Math.min(outputBytes, RUNTIME_SCRATCH_BYTES) * 0.9),
+    );
     const prepare = machine.operations[OPERATIONS.prepare]!;
     expect(prepare.outputs).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
     expect(prepare.exports).toEqual([MATERIAL_EXPORT]);
@@ -382,6 +386,36 @@ describe("the machine half is declared as the machine half is built", () => {
     // …and no other operation exports anything: `scan` and `archive` write for this hub alone.
     for (const operation of [OPERATIONS.scan, OPERATIONS.archive]) {
       expect(machine.operations[operation]!.exports ?? []).toEqual([]);
+    }
+  });
+
+  /*
+    ONE RUNTIME SCRATCH, AND EVERY OPERATION THAT WRITES IT DECLARES MORE THAN IT HOLDS. The
+    leases of every operation writing a `runtime`-anchored location are cut from the one
+    named-output tmpfs that anchor mounts. The runtime refuses a job whose `outputBytes` is
+    below that capacity (`bounded-output-storage-required`) and leaves stdio only what is above
+    it. So a machine sized to `RUNTIME_SCRATCH_BYTES` runs all of them only if each declares
+    strictly more. When three of them declared 64 MiB and `prepare` 512 MiB, no size both
+    admitted `scan`, `archive` and `verify` and held a material above 64 MiB.
+  */
+  test("every operation writing the runtime scratch declares more than the scratch holds", () => {
+    const locations = machine.locations ?? {};
+    // The named output is on the runtime anchor, so the operations below are the ones it binds.
+    expect(locations[OUTPUT_LOCATION]?.anchor).toBe("runtime");
+    const writesRuntime = (operation: string): boolean => {
+      const op = machine.operations[operation]!;
+      return (
+        op.outputs.length > 0 ||
+        op.locations.some(
+          (bind) => bind.access !== "read" && locations[bind.locationId]?.anchor === "runtime",
+        )
+      );
+    };
+    for (const operation of declared.filter(writesRuntime)) {
+      expect({
+        operation,
+        aboveScratch: machine.operations[operation]!.limits.outputBytes > RUNTIME_SCRATCH_BYTES,
+      }).toEqual({ operation, aboveScratch: true });
     }
   });
 
@@ -494,11 +528,10 @@ describe("the machine half is declared as the machine half is built", () => {
     // The loop launches with the operation's own limits; the hub refuses anything above them.
     // These three numbers are therefore the whole answer to "how long can this run".
     //
-    // `prepare` is thirty minutes and half a gigabyte because it SEALS THE MATERIAL now
-    // (#279): it reads every selected log and writes the normalized record stream into a
-    // second lease, and the bound `doors/launch.ts` refuses a selection against
-    // (`MAX_MATERIAL_BYTES`) has to fit under this one or the machine is what discovers the
-    // window was too wide.
+    // `prepare` is thirty minutes because it SEALS THE MATERIAL now (#279): it reads every
+    // selected log and writes the normalized record stream into a second lease. Its bytes are
+    // not a figure of its own: every operation writing the runtime scratch declares more than
+    // the scratch holds, and the material bound fits under both (above).
     const minutes = (operation: string): number =>
       machine.operations[operation]!.limits.timeoutMs / 60_000;
     expect(minutes(OPERATIONS.scan)).toBe(10);
@@ -508,7 +541,6 @@ describe("the machine half is declared as the machine half is built", () => {
     // which is the whole point of asking for it; the door posts under this ceiling and the
     // structural check that most verifications ask for finishes in a fraction of it.
     expect(minutes(MACHINE_OPERATIONS.verify)).toBe(60);
-    expect(machine.operations[OPERATIONS.prepare]!.limits.outputBytes).toBe(512 * 1024 * 1024);
   });
 
   test("every operation asks the machine only for resources the fleet advertises", () => {
