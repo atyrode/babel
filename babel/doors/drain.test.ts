@@ -14,6 +14,7 @@
 */
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { PluginManifestSchema } from "@manifold/protocol";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
@@ -33,11 +34,12 @@ import type {
   RunPlan,
 } from "../server/conductor.ts";
 import { drainTick, type DrainDeps, type DrainLaunch } from "../server/drain.ts";
-import type { BabelJobs } from "../server/plan.ts";
+import { runPlan, type BabelJobs } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { drainReportId, readDrain, readDrainReport } from "../store/drains.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
+import manifestJson from "../manifest.json";
 import type { Door } from "./door.ts";
 import { drainDoors } from "./drain.ts";
 import { hubRefusal, launchMachinery, type LaunchIdentity, type Started } from "./launch.ts";
@@ -522,24 +524,25 @@ test("the roster is a start, a dry read and a stop, and none of them names a nod
   // `machines:run` at the explore operation: the host discharges that before the handler runs
   // and no installation declares the operation, so the dispatch was refused "explicit
   // version-bound consent required" and the operator never heard `engine_pending`. The governed
-  // requirement returns with Code's node. What it does carry is the machine read its own first
-  // fan makes: `startExplore`/`startBeat` describe the machine through `ready` before posting,
-  // and a describe outside the door's ceiling is refused `job_capability_absent:machines:read`
-  // before any slot is filled.
+  // requirement returns with Code's node. What it does carry is what its own first fan needs:
+  // `startExplore`/`startBeat` describe the machine through `ready` before posting, and then post
+  // Babel's own `prepare` or `scan` — a describe outside the door's ceiling is refused
+  // `job_capability_absent:machines:read`, and a posting outside it `authority_or_consent_refused`
+  // at `execute` (#448), before any slot is filled.
   expect(begin?.action.caps).toEqual(["containers:read"]);
   expect(begin?.action.requirements).toBeUndefined();
-  expect(begin?.action.delegates).toEqual(["machines:read"]);
+  expect(begin?.action.delegates).toEqual(["machines:read", "machines:run"]);
 
   // The dry read asks no machine anything ITSELF, so it carries no governed capability and no
   // target — the panel polls it every five seconds while the operator watches. It DOES delegate
-  // `jobs:read` and `machines:read`, because a cycle follows it (`server.ts`'s `WAKES`) and the
-  // dispatcher attenuates `ctx.jobs` to what the door declared: without the first that cycle can
-  // read back no job, nothing settles and the `run_progress` fold this wake exists for never
-  // happens; without the second it can describe no machine and the loop's beat is never
-  // registered on one.
+  // `jobs:read`, `machines:read` and `machines:run`, because a cycle follows it (`server.ts`'s
+  // `WAKES`) and the dispatcher attenuates `ctx.jobs` to what the door declared: without the first
+  // that cycle can read back no job, nothing settles and the `run_progress` fold this wake exists
+  // for never happens; without the second it can describe no machine and the loop's beat is never
+  // registered on one; without the third it relaunches no settled slot (#448).
   expect(read?.action.caps).toEqual(["containers:read"]);
   expect(read?.action.requirements).toBeUndefined();
-  expect(read?.action.delegates).toEqual(["jobs:read", "machines:read"]);
+  expect(read?.action.delegates).toEqual(["jobs:read", "machines:read", "machines:run"]);
 
   // A stop closes this plugin's own row and reaches its jobs through its OWN ceiling. It
   // asked `jobs:cancel` at the operation they share, and that operation is one no
@@ -1301,6 +1304,37 @@ test("a later wake replays reviewed limits and stops refilling at the cumulative
   expect(code.posted).toHaveLength(2);
   expect(fleet.executed).toHaveLength(2);
   expect(code.cancelled).toEqual([]);
+});
+
+test("a drain's first slot and its relaunch post their preparations within prepare's own ceiling", async () => {
+  // The drain plans each round for the operation its press posts (#449), and the hub judges that
+  // posting against the MANIFEST's declaration — so the plan here is `runPlan` over the shipped
+  // manifest, the way `server.ts` plans a real drain, rather than this file's one fixed answer.
+  const manifest = PluginManifestSchema.parse(manifestJson);
+  let machinery = realLaunch();
+  const planned: DrainDeps["plan"] = (policy, operationId) =>
+    runPlan({ manifest, policy, operationId });
+  deps = { ...deps, plan: planned };
+  const drainId = String((await start({ concurrent: 1, maxJobs: 2 }))["drainId"]);
+  await sealDrainJob(drainId, 0);
+  await machinery.postPrepared(fleet, code, PLAN);
+  await settleJob(`run_${drainId}_0`, { costMicros: 0, outputTokens: 0 });
+
+  machinery = realLaunch();
+  deps = { ...deps, plan: planned };
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 1 });
+
+  const ceiling = manifest.machine?.operations[OPERATIONS.prepare]?.limits;
+  expect(ceiling).toBeDefined();
+  expect(fleet.executed.map((job) => job.operationId)).toEqual([
+    OPERATIONS.prepare,
+    OPERATIONS.prepare,
+  ]);
+  for (const job of fleet.executed) {
+    expect(job.limits?.timeoutMs ?? Infinity).toBeLessThanOrEqual(ceiling?.timeoutMs ?? 0);
+    expect(job.limits?.memoryBytes ?? Infinity).toBeLessThanOrEqual(ceiling?.memoryBytes ?? 0);
+    expect(job.limits?.outputBytes ?? Infinity).toBeLessThanOrEqual(ceiling?.outputBytes ?? 0);
+  }
 });
 
 test("an unresolved ordinary Code admission remains held across wakes and drain Stop", async () => {

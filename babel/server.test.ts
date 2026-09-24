@@ -192,13 +192,16 @@ function context(
 
 /**
  * What the bridge asks of one job verb before it is served, as `job-service.ts` asks it: the
- * reads a cycle ingests with, and the machine read a cadence is registered from.
+ * reads a cycle ingests with, the machine read a cadence is registered from, and the run a
+ * posting or a schedule is discharged against (#448).
  */
 const VERB_CAPS: Record<string, string> = {
   status: "jobs:read",
   follow: "jobs:read",
   listRuns: "jobs:read",
   describe: "machines:read",
+  execute: "machines:run",
+  schedule: "machines:run",
 };
 
 /**
@@ -451,7 +454,10 @@ test("the cycle behind a read describes a machine, so the loop keeps its own cad
     delegates, and `machines:read` could not be delegated at all until #740, so every describe
     behind a read was refused `job_capability_absent:machines:read` however privileged the
     caller: `reconcileSchedule` noted that the beat could not be registered and registered
-    nothing, and Babel beat for exactly as long as somebody kept pressing something.
+    nothing, and Babel beat for exactly as long as somebody kept pressing something. The
+    schedule itself is then discharged against `machines:run`, which no wake carried either
+    (#448): on the integrated preview every cycle logged `the beat cannot be registered:
+    job_capability_absent:machines:run`.
   */
   await pending();
   const ctx = context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.pulse));
@@ -499,6 +505,31 @@ test("the doors that ask a machine what it can run are lent that read, and no ot
   // capability to be told whether the machine Babel was deployed to is ready.
   for (const action of plugin.actions) {
     expect(action.caps).not.toContain("machines:read");
+  }
+});
+
+test("the doors whose wake or press starts Babel's own jobs are lent machines:run, and no others are", () => {
+  /*
+    WHO POSTS, AND THEREFORE WHO IS LENT IT (#448). `engine.jobs.execute` and `schedule` discharge
+    `machines:run` against the dispatch's attenuated bridge, so a door that starts work without it
+    is refused `authority_or_consent_refused` however privileged its caller — on the integrated
+    preview the beat never registered and no explicit explore, drain slot or analysis stage was
+    ever admitted. The cycle behind every wake registers the beat, posts analysis preparations and
+    relaunches a drain's settled slot; `launch`, `drainStart` and `verify` post on their own
+    account. Nothing else starts anything, and it is a delegate everywhere, never a cap the
+    caller is asked to hold.
+  */
+  const posts: Record<string, true> = {
+    ...WAKES,
+    [ACTIONS.drainStart]: true,
+    [ACTIONS.verify]: true,
+  };
+  for (const action of plugin.actions) {
+    expect({ door: action.name, runs: (action.delegates ?? []).includes("machines:run") }).toEqual({
+      door: action.name,
+      runs: Object.hasOwn(posts, action.name),
+    });
+    expect(action.caps).not.toContain("machines:run");
   }
 });
 

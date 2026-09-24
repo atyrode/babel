@@ -942,6 +942,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Babel can post its own jobs again.** `launch`, `drainStart`, `verify` and the three doors a
+  cycle follows (`pulse`, `runs`, `drainStatus`) now delegate `machines:run`, the capability
+  `engine.jobs.execute` and `schedule` discharge a posting against. Without it the integrated
+  preview refused every Babel job `authority_or_consent_refused` and every cycle logged `the beat
+  cannot be registered: job_capability_absent:machines:run`, so no scan, explicit explore, drain
+  slot, drain relaunch or analysis stage ever ran; only Code-posted reviews did. The host still
+  intersects the delegate with the caller's own capabilities and requires the operator's
+  version-bound consent at each operation node. The server regression drives a `pulse` through a
+  job slice attenuated the way the host attenuates it and fails without the delegate (#448).
+
+- **An explicit explore's preparation is posted under `prepare`'s own limits.** The operator's
+  press and the drain planned an explore for the undeclared `atyrode.babel.explore`, fell back to
+  `DEFAULT_LIMITS` (an hour, 2 GiB) and posted the preparation above `prepare`'s declared thirty
+  minutes and 1 GiB, which the hub refused `limit_exceeded`. They now plan for the operation the
+  press posts, as the conductor already did; the launch and drain regressions plan through
+  `runPlan` over the shipped manifest and fail on the old plan (#449).
+
 - **Old malformed identifiers no longer poison a whole search.** Retrieval excludes unnameable
   records before its candidate limit, reports their count in coverage, and keeps topics and
   pending-suggestion reads usable without weakening the import guard. The regression includes

@@ -46,7 +46,7 @@ import { defineServerAction, type GuestStorage } from "@manifold/plugin-kit/serv
 const READ_CAPS = ["containers:read"] as const;
 
 /*
-  THE TWO READS THAT WAKE THE LOOP CARRY TWO NATIVE CEILINGS, AND NEITHER IS A SECOND PERMISSION.
+  THE TWO READS THAT WAKE THE LOOP CARRY THREE NATIVE CEILINGS, AND NONE IS A SECOND PERMISSION.
 
   `pulse` and `runs` are the doors a cycle follows (server.ts's `WAKES`), and the half of a cycle
   that matters when no settlement arrived — a hook that overran, a hub restarted mid-run — is
@@ -77,19 +77,27 @@ const READ_CAPS = ["containers:read"] as const;
   question a cycle asks through `ctx.machines` (#535) is served against; a delegate is the
   per-door ceiling underneath that grant, never a replacement for it.
 
-  BOTH ARE DELEGATES, NOT CAPS: a delegate is the native ceiling this door's job authority may
+  ALL THREE ARE DELEGATES, NOT CAPS: a delegate is the native ceiling this door's job authority may
   reach, while a cap is what the caller must hold. The caller is unchanged — it still needs only
   `containers:read`, and a reader asking for his own pulse is not asking a machine anything — and
   nothing is widened, because the ceiling is intersected with the CALLER's own capabilities and
   with the plugin's install grant before any job verb runs, and the engine still requires the
   operator's version-bound consent at each operation node before it answers.
 
-  STARTING work is deliberately not reachable from here. `machines:run` is absent from this
-  ceiling, so a cycle behind a five-second poll cannot dispatch: only `launch`, which discharges
-  it at the effect for the one operation this manifest declares, and `onJobSettled`, which
-  carries the credential the job ran under, can ask a machine to run anything.
+  STARTING WORK IS REACHABLE FROM HERE, BECAUSE THE CYCLE IS WHERE WORK STARTS (#448). The cycle
+  registers the beat (`engine.jobs.schedule`), posts an analysis stage's preparation, relaunches
+  a drain's slot when one has settled and names untitled sessions, and every one of those is
+  `engine.jobs.execute` or `schedule` of one of Babel's own operations, which the host discharges
+  against this bridge's `machines:run`. Without the delegate each was refused
+  `job_capability_absent:machines:run` whatever the caller held: on the integrated preview the
+  beat never registered and no drain ever relaunched. #310 withheld it so that a five-second poll
+  could not dispatch; what bounds that is not the absent delegate but the wake floor
+  (`server.ts`'s `WAKE_FLOOR_MS`), the policy's own activation gate and ceilings, and the three
+  checks the host still makes: the ceiling is intersected with the CALLER's capabilities, so a
+  reader holding no `machines:run` still starts nothing, and the operator's version-bound
+  consent is required at each operation node.
 */
-const WAKING_DELEGATES = ["jobs:read", "machines:read"] as const;
+const WAKING_DELEGATES = ["jobs:read", "machines:read", "machines:run"] as const;
 
 /** `pulse` and `topics` are asked without arguments; a strict empty object says so on the wire. */
 const NoQuerySchema = z.strictObject({});

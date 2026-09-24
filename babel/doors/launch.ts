@@ -119,10 +119,11 @@ import { defineDoor, type Door } from "./door.ts";
   Code's own door. A requirement here would be consent at a node that cannot exist, and a
   refusal the caller cannot reach is not a refusal.
 
-  The beat is the one job this file still posts itself, and it posts it as `atyrode.babel.scan`
-  — an operation this manifest DOES declare. `machines:run` for it is discharged where every
-  other job of this plugin's discharges it: at the effect, by `engine.jobs.execute`, against the
-  authority this door's delegates carry.
+  The press posts Babel's OWN jobs — an explore's preparation (`atyrode.babel.prepare`) and the
+  beat (`atyrode.babel.scan`), both operations this manifest DOES declare — and `machines:run`
+  for them is discharged at the effect, by `engine.jobs.execute`, against the authority this
+  door's delegates carry. That is why `machines:run` is one of them (#448): without it the hub
+  refused every posting `authority_or_consent_refused` however privileged the caller was.
 */
 
 /** A dry act on this plugin's own rows plus one call onto Code, which reads containers. */
@@ -145,12 +146,18 @@ const LAUNCH_CAPS = ["containers:read"] as const;
  * job_capability_absent:machines:read`, and the operator's press is refused before the machine
  * is ever asked — whatever authority his own key holds, because a delegate is the door's
  * ceiling and not the caller's grant. `doors/read.ts` carries the whole reasoning.
+ *
+ * `machines:run` IS WHAT THE POSTING ITSELF IS DISCHARGED AGAINST (#448). `engine.jobs.execute`
+ * admits Babel's own `prepare` or `scan` only when this bridge carries it; the host still
+ * intersects it with the caller's own capabilities and still requires the operator's
+ * version-bound consent at the operation node, so it lends nothing the caller does not hold.
  */
 const LAUNCH_DELEGATES = [
   "jobs:read",
   "locations:read",
   "locations:write",
   "machines:read",
+  "machines:run",
 ] as const;
 
 /** Reading Code's saved profiles is a read of containers and nothing else. */
@@ -209,6 +216,22 @@ const PRESET_PLANS: Record<LaunchInput["preset"], PresetPlan> = {
     start: PRESET_START["keep-going"],
   },
 };
+
+/**
+ * THE OPERATION A PRESS'S OWN JOB RUNS UNDER, which is the one its limits are planned for (#449).
+ *
+ * A preset's `operationId` names what the run IS — `atyrode.babel.explore` for an explore — and
+ * no installation declares that operation any more (#279): the only job an explore posts itself
+ * is the preparation that seals its material. Planning an explore press for the explore operation
+ * fell back to `DEFAULT_LIMITS`, above `prepare`'s declared ceiling, and the hub refused every
+ * preparation `limit_exceeded`. The conductor's analysis stages already plan for `prepare`; the
+ * operator's press and the drain now plan for the same operation, through this one answer.
+ */
+export function pressOperation(preset: LaunchInput["preset"]): OperationName {
+  return PRESET_PLANS[preset].start === "explore"
+    ? OPERATIONS.prepare
+    : PRESET_PLANS[preset].operationId;
+}
 
 /**
  * A drawn review is scheduled by the conductor rather than selected by this operator door.
@@ -1944,7 +1967,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         authorityId: ctx.principal.id,
       };
       const jobs = deps.jobs(ctx);
-      const plan = deps.plan(inForce.policy, preset.operationId);
+      const plan = deps.plan(inForce.policy, pressOperation(input.preset));
       const started =
         preset.start === "beat"
           ? await machinery.startBeat(identity, jobs, input, plan)
