@@ -886,8 +886,8 @@ None of the dated observations above establishes current fleet state. These rema
    placement is not a reason to rotate.
 2. The `atyrode.babel.restic` service install and its job binding on each machine that archives
    (§4), followed by a first `archive` whose receipt is read (§1).
-3. An answer to §5: what backs up the hub's `data.db`, which is the only copy of everything Babel
-   knows.
+3. The hub store's backup (§5, #454): a scheduled image of `data.db`, the only copy of everything
+   Babel knows, in the transcripts' restic repository under `babel-store`, and one proven restore.
 4. A cadence for `archive`. Babel schedules only the `scan` beat, so today an archive happens when
    someone posts one.
 5. A full restore-to-service on a clean machine: recover custody, restore a historical source tree
