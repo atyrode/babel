@@ -521,17 +521,22 @@ test("a re-host moves a catalogued corpus onto an id the hub knows, and refuses 
     );
   }
   // A destination the hub cannot describe is refused: writing it would leave the rows exactly as
-  // unreachable as the name they already carry, which is the defect and not the repair.
+  // unreachable as the name they already carry, which is the defect and not the repair — and
+  // recording it as what the label means would repeat the defect for every later capture.
   expect(await refusal(owner, ACTIONS.rehostSessions, { from: "dev-01", to: "dev-02" })).toMatch(
     /dev-02 is not a machine this hub can describe/,
   );
   expect(
     await owner.store.db.query<{ host: string }>(`SELECT DISTINCT host FROM sessions`),
   ).toEqual([{ host: "dev-01" }]);
+  expect(await owner.store.db.query(`SELECT label FROM archive_labels`)).toEqual([]);
   expect(await knock(owner, ACTIONS.rehostSessions, { from: "dev-01", to: machineId })).toEqual({
     from: "dev-01",
     to: machineId,
     sessions: 2,
+    // The Go-era rows name no capture, so no label holds anything yet; the mapping is recorded
+    // all the same, for the captures the catalog will find under it (#453).
+    labelled: 0,
   });
   expect(
     await owner.store.db.query<{ host: string }>(`SELECT DISTINCT host FROM sessions`),

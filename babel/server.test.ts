@@ -18,9 +18,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx, GuestDatabase, GuestHookJobs } from "@manifold/plugin-kit/server";
 import type { SettledJob } from "@manifold/protocol";
-import { ACTIONS, BABEL_PLUGIN_ID, OPERATIONS, RUN_STAGES } from "./contract.ts";
+import { ACTIONS, BABEL_PLUGIN_ID, OPERATIONS, RUN_STAGES, SessionRowSchema } from "./contract.ts";
 import { WAKES, plugin } from "./server.ts";
 import { stamp } from "./store/feedindex.ts";
+import { upsertSessionRows } from "./store/sessions.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
@@ -699,5 +700,57 @@ test("enabling a store made before the trace adds run_calls, triggers and all", 
   await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
   expect(await db.query(`SELECT seq FROM run_calls WHERE run_id = 'run_traced'`)).toEqual([
     { seq: 1n },
+  ]);
+});
+
+test("enabling a store made before archive captures adds their columns, the label map and the recency index", async () => {
+  const { db } = harness;
+  // A store exactly as the shape before #453 left it, holding one session the crossing hosted
+  // at a host NAME. Every row an earlier shape wrote must read as naming no capture yet.
+  await db.run(`DROP INDEX sessions_by_modified`);
+  await db.run(`DROP TABLE archive_labels`);
+  await db.run(`ALTER TABLE sessions DROP COLUMN archive_label`);
+  await db.run(`ALTER TABLE sessions DROP COLUMN archive_path`);
+  await insert(db, "sessions", {
+    selector: "omp/older",
+    host: "dev-01",
+    harness: "omp",
+    source_id: "older",
+    seen_at: stamp(NOW - HOUR),
+  });
+
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+  // A second enable is the ordinary case and must find nothing missing.
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+
+  expect(
+    await db.query(
+      `SELECT name FROM sqlite_master WHERE name IN ('archive_labels', 'sessions_by_modified')
+        ORDER BY name`,
+    ),
+  ).toEqual([{ name: "archive_labels" }, { name: "sessions_by_modified" }]);
+  // And what the columns are for works on the row the store already held: a mapped label
+  // hosts its first capture at the machine, where the crossing had left a name.
+  await db.run(`INSERT INTO archive_labels(label, machine_id, mapped_at) VALUES('dev-01', ?, ?)`, [
+    MACHINE,
+    stamp(NOW),
+  ]);
+  const row = SessionRowSchema.parse({
+    selector: "omp/older",
+    harness: "omp",
+    source_id: "older",
+    kind: "operator",
+    archive_label: "dev-01",
+    archive_path: "/home/operator/.omp/agent/sessions/older.jsonl",
+    snapshot_id: "a".repeat(64),
+    archived_at: "2026-09-12T11:00:00.000Z",
+    size: 10,
+    modified_at: "2026-09-12T10:00:00.000Z",
+  });
+  expect(
+    await upsertSessionRows({ db, touch: () => undefined }, [row], new Date(NOW).toISOString()),
+  ).toMatchObject({ moved: 1 });
+  expect(await db.query(`SELECT host, archive_label, archive_path FROM sessions`)).toEqual([
+    { host: MACHINE, archive_label: "dev-01", archive_path: row.archive_path },
   ]);
 });
