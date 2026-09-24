@@ -1094,15 +1094,19 @@ test("an abandoned review drawn again is granted at the next fence, its dead epo
   }
   if (again === undefined) throw new Error(`no draw offered the ${assignment.role} role again`);
   expect(again.id).toBe(assignment.id);
-  const second = await coord.claim({
-    assignment: again,
-    runId: "run_b",
-    jobId: "job_b",
-    now: NOW + 1000,
-  });
-  if (second.outcome !== "granted") throw new Error(second.refusal.detail);
+  // Two workers reaching for the reopened epoch get one winner and one conflict.
+  const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
+  const raced = await Promise.all([
+    coord.claim({ assignment: again, runId: "run_b", jobId: "job_b", now: NOW + 1000 }),
+    other.claim({ assignment: again, runId: "run_x", jobId: "job_x", now: NOW + 1000 }),
+  ]);
+  expect(raced.map((result) => result.outcome).sort()).toEqual(["granted", "refused"]);
+  const loser = raced.find((result) => result.outcome === "refused");
+  expect(loser?.outcome === "refused" ? loser.refusal.reason : null).toBe("conflict");
+  const second = raced.find((result) => result.outcome === "granted");
+  if (second?.outcome !== "granted") throw new Error("no worker was granted the reopened epoch");
   expect(second.claim.fence).toBe(2);
-  expect(second.claim.runId).toBe("run_b");
+  const winner = second.claim.runId;
 
   // The dead epoch keeps its charge on its own row and cannot report into the new one.
   const archived = await db.query<{ outcome: string; run_id: string }>(
@@ -1126,7 +1130,7 @@ test("an abandoned review drawn again is granted at the next fence, its dead epo
   // A claim that finished any other way is still finished.
   const done = await coord.finish({
     id: assignment.id,
-    runId: "run_b",
+    runId: winner,
     fence: 2,
     cost: 0.01,
     outcome: "completed",

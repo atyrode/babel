@@ -974,11 +974,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   as finished, and the conductor stops a cycle at its first refused dispatch. Once the eligible
   pool thinned, every cycle drew the dead assignment first and launched nothing until the policy
   version changed. On the integrated preview, launches fell from 44 to about 1 per ten minutes.
-  The draw now treats an abandoned receipt as free, and `claim` takes the abandoned epoch over
-  at the next fence, exactly as it takes over an expired lease: the dead epoch keeps its charge
-  on its own `~fence` row. A completed, skipped or failed claim is still finished.
-  `coordinator.test.ts` drives it: abandon, redraw, re-grant at fence 2, spend charged once per
-  epoch. It fails without the change.
+  The draw now treats an abandoned review as free, and `claim` takes the abandoned epoch over at
+  the next fence, exactly as it takes over an expired lease: the dead epoch keeps its charge on
+  its own `~fence` row. A completed, skipped or failed claim is still finished. An abandoned
+  analysis stays settled, as before: its identity is its context, and unchanged context never
+  receives another paid sample. `coordinator.test.ts` drives the review path: abandon, redraw,
+  two workers racing for fence 2 (one winner, one conflict), spend charged once per epoch. It
+  fails without the change.
 
 - **A Code-backed review runs the model its profile names, or does not run.** `CODE_REV` and
   `@atyrode/manifold-code` move to atyrode/code#219, whose omp closure carries

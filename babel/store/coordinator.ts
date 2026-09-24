@@ -2494,13 +2494,18 @@ export function coordinator(
     handedOut.delete(assignment.id);
     const expires = moment + policy.leaseSeconds * 1000;
     const existing = await readClaim(assignment.id);
-    // An ABANDONED epoch is closed and charged, and it withholds nothing (#259): the draw offers
+    // An ABANDONED REVIEW is closed and charged, and it withholds nothing (#259): the draw offers
     // the same record and role again, under the same assignment id, because the ordinal that
-    // names an assignment does not count abandonments. Refusing it as finished wedged the
-    // conductor — every cycle drew it first, was refused, and stopped — until the policy version
-    // changed. It is taken over at the next fence instead, exactly as an expired lease is.
+    // names a review does not count abandonments. Refusing it as finished wedged the conductor —
+    // every cycle drew it first, was refused, and stopped — until the policy version changed. It
+    // is taken over at the next fence instead, exactly as an expired lease is. An analysis is not:
+    // its identity is its context, an abandoned attempt may have spent, and `buildAnalysis`
+    // settles it, because unchanged context never receives another paid sample.
     const reopened =
-      existing !== null && existing.finishedAt !== null && existing.outcome === "abandoned";
+      assignment.activity === "review" &&
+      existing !== null &&
+      existing.finishedAt !== null &&
+      existing.outcome === "abandoned";
 
     if (existing !== null) {
       if (existing.recordId !== assignment.recordId || existing.role !== assignment.role) {
