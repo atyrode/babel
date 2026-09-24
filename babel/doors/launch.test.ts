@@ -14,6 +14,7 @@
 */
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { PluginManifestSchema } from "@manifold/protocol";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
 import { HostCallError } from "@manifold/plugin-kit/errors";
 import {
@@ -29,7 +30,7 @@ import {
   ENGINE_REFUSALS,
 } from "../contract.ts";
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
-import type { BabelJobs } from "../server/plan.ts";
+import { runPlan, type BabelJobs } from "../server/plan.ts";
 import {
   type CodeEngine,
   type CodeJob,
@@ -40,6 +41,7 @@ import type { Recipe } from "../server/engine/prompts.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
+import manifestJson from "../manifest.json";
 import type { Door } from "./door.ts";
 import {
   DRAW_MANAGED,
@@ -209,6 +211,7 @@ let fleet: Fleet;
 let code: Code;
 let cookbook: Record<string, Recipe>;
 let doors: readonly Door[];
+let deps: LaunchDeps;
 
 let minted = 0;
 const ctx = {
@@ -293,7 +296,7 @@ beforeEach(async () => {
   });
   code = new Code();
   cookbook = { ...RECIPES };
-  const deps: LaunchDeps = {
+  deps = {
     coordinator: coordinator(store, () => store.now(), 16),
     jobs: () => fleet,
     engine: () => code,
@@ -330,11 +333,12 @@ test("the roster is profiles, launch, verify and stop, and none is governed at a
   expect(profiles?.action.caps).toEqual(["containers:read"]);
   expect(profiles?.action.requirements).toBeUndefined();
 
-  // A launch posts Babel's OWN `prepare` job and asks Code to post the session, so it keeps
-  // the delegates that posting needs — reading the job back, the locations the sealed leases are
-  // cut from, and the machine read `ready` describes with before anything is posted — and names
-  // no governed node, because the operations a requirement would name (`explore`, `evaluate`)
-  // are declared by nobody.
+  // A launch posts Babel's OWN `prepare` or `scan` job and asks Code to post the session, so it
+  // keeps the delegates that posting needs — reading the job back, the locations the sealed
+  // leases are cut from, the machine read `ready` describes with before anything is posted, and
+  // the `machines:run` the posting itself is discharged against (#448) — and names no governed
+  // node, because the operations a requirement would name (`explore`, `evaluate`) are declared
+  // by nobody.
   expect(launch?.action.caps).toEqual(["containers:read"]);
   expect(launch?.action.requirements).toBeUndefined();
   expect(launch?.action.delegates).toEqual([
@@ -342,6 +346,7 @@ test("the roster is profiles, launch, verify and stop, and none is governed at a
     "locations:read",
     "locations:write",
     "machines:read",
+    "machines:run",
   ]);
 
   // Verifying the archive posts one of Babel's OWN jobs and writes its run row, so it carries
@@ -354,6 +359,7 @@ test("the roster is profiles, launch, verify and stop, and none is governed at a
     "locations:read",
     "locations:write",
     "machines:read",
+    "machines:run",
   ]);
 
   // A stop closes this plugin's own rows and reaches a job through its OWN ceiling: a delegate
@@ -526,6 +532,36 @@ test("reviewed limits survive the preparation wake and still govern the posted s
   expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = ?`, [runId])).toEqual([
     { job_id: "job_stage_code" },
   ]);
+});
+
+test("an explicit explore posts its preparation within prepare's own declared ceiling", async () => {
+  /*
+    THE LIMITS THE HUB JUDGES A POSTING AGAINST ARE THE MANIFEST'S (#449). This file's fixed plan
+    answers every operation alike, which is how an explore press planned for the undeclared
+    `atyrode.babel.explore` went unseen: the production plan fell back to `DEFAULT_LIMITS` for it
+    — an hour and 2 GiB — and posted the preparation under them, above `prepare`'s declared
+    thirty minutes and 1 GiB, so the hub refused every one `limit_exceeded`. So this press is
+    planned by `runPlan` over the shipped manifest, the way `server.ts` plans a real one.
+  */
+  const manifest = PluginManifestSchema.parse(manifestJson);
+  doors = launchDoors(harness.store, {
+    ...deps,
+    plan: (policy, operationId) => runPlan({ manifest, policy, operationId }),
+  });
+  const answer = await start({
+    preset: "read-whats-new",
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+  expect(answer["refused"]).toBeUndefined();
+  const [preparation] = fleet.executed;
+  expect(preparation?.operationId).toBe(OPERATIONS.prepare);
+  const ceiling = manifest.machine?.operations[OPERATIONS.prepare]?.limits;
+  expect(ceiling).toBeDefined();
+  const limits = preparation?.limits;
+  expect(limits?.timeoutMs ?? Infinity).toBeLessThanOrEqual(ceiling?.timeoutMs ?? 0);
+  expect(limits?.memoryBytes ?? Infinity).toBeLessThanOrEqual(ceiling?.memoryBytes ?? 0);
+  expect(limits?.processes ?? Infinity).toBeLessThanOrEqual(ceiling?.processes ?? 0);
+  expect(limits?.outputBytes ?? Infinity).toBeLessThanOrEqual(ceiling?.outputBytes ?? 0);
 });
 
 test.each(["before-wake", "before-claim"] as const)(
