@@ -18,7 +18,14 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx, GuestDatabase, GuestHookJobs } from "@manifold/plugin-kit/server";
 import type { SettledJob } from "@manifold/protocol";
-import { ACTIONS, BABEL_PLUGIN_ID, OPERATIONS, RUN_STAGES, SessionRowSchema } from "./contract.ts";
+import {
+  ACTIONS,
+  BABEL_PLUGIN_ID,
+  OPERATIONS,
+  PRESET_OPERATIONS,
+  RUN_STAGES,
+  SessionRowSchema,
+} from "./contract.ts";
 import { WAKES, plugin } from "./server.ts";
 import { stamp } from "./store/feedindex.ts";
 import { upsertSessionRows } from "./store/sessions.ts";
@@ -41,7 +48,7 @@ class Jobs {
     this.described += 1;
     return {
       connected: true,
-      operations: { [OPERATIONS.scan]: { ready: true, reason: null } },
+      operations: { [PRESET_OPERATIONS["keep-going"]]: { ready: true, reason: null } },
       installation: {
         revision: "rev-7",
         artifactSha256: "a".repeat(64),

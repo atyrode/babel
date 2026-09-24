@@ -7,9 +7,10 @@ import {
   AnalysisWorkSchema,
   AnalysisClaimSchema,
   ANALYSIS_BRIEF_BYTE_LIMIT,
+  ArchiveLabelSchema,
+  CaptureSessionSchema,
   type AnalysisWork,
   INPUT_FIELD,
-  MAX_MATERIAL_BYTES,
   LaunchRequestSchema,
   LaunchInputSchema,
   LaunchResultSchema,
@@ -17,16 +18,19 @@ import {
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
+  PREPARE_INPUT_MAX_BYTES,
   PRESET_OPERATIONS,
   PRESET_START,
   ProfilesQuerySchema,
   ProfilesResultSchema,
   MACHINE_OPERATIONS,
+  SnapshotIdSchema,
   StopInputSchema,
   StopResultSchema,
   VerifyRequestSchema,
   VerifyResultSchema,
   MaterialIndexSchema,
+  type CaptureGroup,
   type CodeProfile,
   type LaunchInput,
   type MaterialIndex,
@@ -35,7 +39,8 @@ import {
   type VerifyInput,
   ENGINE_REFUSALS,
 } from "../contract.ts";
-import type { Coordinator, Policy } from "../store/coordinator.ts";
+import { ARCHIVED_CAPTURE, materialBound } from "../store/analysis.ts";
+import { perMachineBound, type Coordinator, type Policy } from "../store/coordinator.ts";
 import {
   carriedSteering,
   composeExplorePrompt,
@@ -80,8 +85,8 @@ import { defineDoor, type Door } from "./door.ts";
 
   WHAT BABEL STILL OWNS, and it is the whole of what a Babel run IS:
 
-    the SELECTION   which of this machine's catalogued sessions the run reads, and which it may
-                    not (`live`, and Babel's own transcripts — #262)
+    the SELECTION   which archived captures the run reads, and which it may not (a session the
+                    catalog has not listed from the archive, and Babel's own transcripts — #262)
     the MATERIAL    that selection SEALED, as `prepare`'s own second output, so the session's
                     sandbox can bind it read-only at `/inputs/material`
     the PROMPT      the recipes, the answering protocol, the stage's schema and the material's
@@ -91,11 +96,11 @@ import { defineDoor, type Door } from "./door.ts";
 
   WHICH PRESET BECOMES WHAT:
 
-    read-whats-new   explore   one Code session over the sessions this machine saw in the window
+    read-whats-new   explore   one Code session over the sessions written in the window
     explore-topic    explore   one Code session over the sessions the topic's own records cite
     review-backlog   evaluate  a policy-managed draw; this door does not select its own work
     file-and-tidy    evaluate  the same draw
-    keep-going       conductor the beat: one `atyrode.babel.scan`, Babel's own job, posted here
+    keep-going       conductor the beat: one archive catalog, Babel's own job, posted here
 
   THE DRAWN PRESETS ARE POLICY-MANAGED. A review is drawn by the coordinator — the lane, the
   fence, the reservation, the day's allowance — and dispatched with a blinded projection of
@@ -120,7 +125,7 @@ import { defineDoor, type Door } from "./door.ts";
   refusal the caller cannot reach is not a refusal.
 
   The press posts Babel's OWN jobs — an explore's preparation (`atyrode.babel.prepare`) and the
-  beat (`atyrode.babel.scan`), both operations this manifest DOES declare — and `machines:run`
+  beat (`keep-going`'s operation), both operations this manifest DOES declare — and `machines:run`
   for them is discharged at the effect, by `engine.jobs.execute`, against the authority this
   door's delegates carry. That is why `machines:run` is one of them (#448): without it the hub
   refused every posting `authority_or_consent_refused` however privileged the caller was.
@@ -148,7 +153,7 @@ const LAUNCH_CAPS = ["containers:read"] as const;
  * ceiling and not the caller's grant. `doors/read.ts` carries the whole reasoning.
  *
  * `machines:run` IS WHAT THE POSTING ITSELF IS DISCHARGED AGAINST (#448). `engine.jobs.execute`
- * admits Babel's own `prepare` or `scan` only when this bridge carries it; the host still
+ * admits Babel's own `prepare` or its beat only when this bridge carries it; the host still
  * intersects it with the caller's own capabilities and still requires the operator's
  * version-bound consent at the operation node, so it lends nothing the caller does not hold.
  */
@@ -172,7 +177,7 @@ const STOP_DELEGATES = ["jobs:cancel"] as const;
 const VERIFY_CAPS = ["containers:write"] as const;
 
 /**
- * The two catalogued values a restore is built from, as restic and `scan` spell them.
+ * The two catalogued values a restore is built from, as restic and the catalog spell them.
  *
  * They are checked at the door rather than trusted because `sessions` holds IMPORTED rows too
  * (`tools/import.ts`), and the Go deployment's snapshot and digest columns are its own
@@ -244,12 +249,15 @@ export const DRAW_MANAGED =
   "the policy cadence.";
 
 /**
- * How many catalogued sessions one run is prepared over. The `prepare` job's whole input record
- * is bounded at 65,536 bytes (`JobRequestSchema.input`) and the selectors are the part of that
- * document which grows with the corpus; 120 of them is about 8 KB. A window holding more is
- * reported as what was taken out of what was there.
+ * How many catalogued sessions one run is prepared over. It is the ceiling on the window's rows;
+ * what one preparation is actually handed is bounded again by its encoded input
+ * (`PREPARE_INPUT_MAX_BYTES`) and by the material bound, and a window holding more is reported
+ * as what was taken out of what was there.
  */
 const MAX_SELECTION = 120;
+
+/** When a session was last written, as far as the store can say: the archive's word first. */
+const RECENT = "COALESCE(s.modified_at, s.archived_at, s.seen_at)";
 
 /**
  * THE PREPARATION'S JOB ID, derived from the run's own so a retried start posts the same
@@ -323,12 +331,15 @@ export type Verified =
 
 /**
  * What {@link LaunchMachinery.postPrepared} did about one waiting run: the Code job it posted,
- * or the sentence the run was closed with. Both are reported, because a wake nobody watched
- * has to leave its account on the row AND in the cycle's notes.
+ * the sentence the run was closed with, or the sentence it settled with when nothing was left
+ * for a model to do (a titling run whose sessions all recorded their own titles, #453). All are
+ * reported, because a wake nobody watched has to leave its account on the row AND in the
+ * cycle's notes.
  */
 export type Posted =
   | { readonly runId: string; readonly jobId: string }
-  | { readonly runId: string; readonly refused: string };
+  | { readonly runId: string; readonly refused: string }
+  | { readonly runId: string; readonly settled: string };
 
 export interface LaunchMachinery {
   /**
@@ -345,7 +356,7 @@ export interface LaunchMachinery {
     plan: RunPlan,
     analysis?: AnalysisWork,
   ): Promise<Started>;
-  /** One beat — an `atyrode.babel.scan`, Babel's own job. It reaches no model and needs no Code. */
+  /** One beat — `keep-going`'s operation, Babel's own job. It reaches no model and needs no Code. */
   startBeat(
     identity: LaunchIdentity,
     jobs: BabelJobs,
@@ -356,7 +367,7 @@ export interface LaunchMachinery {
    * ONE VERIFICATION of the archive (#338) — an `atyrode.babel.verify`, Babel's own job, which
    * reads the repository and restores nothing into it. It is here beside the other two because
    * a run row is written for it by the same statement: one path posts this plugin's jobs, so
-   * the conductor settles a verification exactly as it settles a scan.
+   * the conductor settles a verification exactly as it settles the beat.
    */
   startVerify(
     identity: LaunchIdentity,
@@ -409,115 +420,196 @@ export interface LaunchDeps {
   now(): number;
 }
 
-/** One catalogued session as the selection reads it; a type, so it is a row the store can hold. */
+/** One archived capture as the selection reads it; a type, so it is a row the store can hold. */
 type SessionRow = {
   selector: string;
   harness: string;
   source_id: string;
-  content_digest: string | null;
-  snapshot_id: string | null;
-  seen_at: string;
-  /** What `scan` measured the log at. The only figure the hub has before `prepare` runs. */
-  size: number | bigint | null;
+  archive_label: string;
+  archive_path: string;
+  snapshot_id: string;
+  /** The catalogued observation: the bytes restic recorded, and the file's own modification
+   *  time in `CaptureInstantSchema`'s one spelling. The only figures the hub has before
+   *  `prepare` runs. */
+  size: number | bigint;
+  modified_at: string;
 };
 
-/** What one preset's window offered: the scope, its size, and what it was not allowed to read. */
-interface Selected {
+/** What one preset's window held: its captures newest first, and what it could not offer. */
+interface Window {
   readonly rows: readonly SessionRow[];
   /** Every catalogued session the window held, selectable or not. */
   readonly held: number;
-  /** How many of those are live or Babel's own, and so were never candidates (#262). */
+  /** How many of those name no archived capture or are Babel's own, so were never candidates. */
   readonly excluded: number;
-  /** The catalogued bytes of the rows actually taken, which bounds the sealed material. */
+}
+
+/** What one preparation is handed out of a window, under both of its bounds. */
+interface Captured {
+  /** The captures, grouped by the snapshot that holds them: `prepare`'s own input. */
+  readonly captures: readonly CaptureGroup[];
+  /** The sessions taken, newest first: the run row's list, and an analysis's exact scope. */
+  readonly selectors: readonly string[];
+  /** The catalogued bytes of the captures taken, which bounds the sealed material. */
   readonly bytes: number;
-  /** How many selectable sessions the byte bound left out, on top of `MAX_SELECTION`. */
+  /** The material bound they were taken under, for the sentence that reports it. */
+  readonly bound: number;
+  /** How many candidates a bound left out, on top of `MAX_SELECTION`. */
   readonly overBound: number;
+  /** Rows the store holds as captures in a shape `prepare` would refuse; never handed over. */
+  readonly unreadable: number;
+}
+
+const ENCODER = new TextEncoder();
+
+/** The bytes `text` adds to a job's input record once it is part of the one input string. */
+function encodedBytes(text: string): number {
+  return ENCODER.encode(JSON.stringify(text)).byteLength - 2;
+}
+
+/**
+ * THE CAPTURES ONE PREPARATION IS HANDED, newest first, until a bound is reached (#453).
+ *
+ * TWO BOUNDS, BOTH MEASURED BEFORE ANYTHING IS POSTED. The material bound is catalogued bytes:
+ * 120 sessions at the corpus's own average is over a gigabyte, and a selection that overran
+ * what the machine's scratch can seal would be discovered after the machine had fetched every
+ * one of them. A capture that would carry the material past `bound` is left out and counted,
+ * and a smaller, older one may still fit. The input bound is the record `document` posts: each
+ * capture adds its path and observation, and its snapshot's group the first time, to
+ * `prepare`'s one input string, and the selection stops at the first capture that would carry
+ * the encoded record past `PREPARE_INPUT_MAX_BYTES`, counting it and every one after it. Both
+ * land in `overBound`, so the operator reads a narrower window rather than an
+ * `output_too_large` or an oversized job input.
+ *
+ * The encoded length is kept exactly rather than re-encoded per row: JSON escapes a string one
+ * character at a time, so a record's encoded length is its pieces' encoded lengths added up.
+ * `base` is the rest of the document, which the captures are added to last.
+ */
+function captureSelection(
+  base: Readonly<Record<string, unknown>>,
+  rows: readonly SessionRow[],
+  bound: number,
+): Captured {
+  const groups = new Map<string, CaptureGroup>();
+  const selectors: string[] = [];
+  let encoded = ENCODER.encode(
+    JSON.stringify({ [INPUT_FIELD]: JSON.stringify({ ...base, captures: [] }) }),
+  ).byteLength;
+  let bytes = 0;
+  let overBound = 0;
+  let unreadable = 0;
+  for (const [index, row] of rows.entries()) {
+    const session = CaptureSessionSchema.safeParse({
+      harness: row.harness,
+      sourceId: row.source_id,
+      path: row.archive_path,
+      size: Number(row.size),
+      modifiedAt: Date.parse(row.modified_at),
+    });
+    const snapshotId = SnapshotIdSchema.safeParse(row.snapshot_id);
+    const label = ArchiveLabelSchema.safeParse(row.archive_label);
+    if (!session.success || !snapshotId.success || !label.success) {
+      unreadable += 1;
+      continue;
+    }
+    if (bytes + session.data.size > bound) {
+      overBound += 1;
+      continue;
+    }
+    const group = groups.get(snapshotId.data);
+    const added =
+      group === undefined
+        ? encodedBytes(
+            (groups.size === 0 ? "" : ",") +
+              JSON.stringify({
+                snapshotId: snapshotId.data,
+                label: label.data,
+                sessions: [session.data],
+              }),
+          )
+        : encodedBytes(`,${JSON.stringify(session.data)}`);
+    if (encoded + added > PREPARE_INPUT_MAX_BYTES) {
+      overBound += rows.length - index;
+      break;
+    }
+    encoded += added;
+    if (group === undefined) {
+      groups.set(snapshotId.data, {
+        snapshotId: snapshotId.data,
+        label: label.data,
+        sessions: [session.data],
+      });
+    } else {
+      group.sessions.push(session.data);
+    }
+    selectors.push(row.selector);
+    bytes += session.data.size;
+  }
+  return { captures: [...groups.values()], selectors, bytes, bound, overBound, unreadable };
 }
 
 export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMachinery {
   /**
-   * The sessions one run is prepared over, newest first, how many the window held, and how many
-   * of those a preparation may not read.
+   * The captures one run may be prepared over, newest first, how many sessions the window held,
+   * and how many of those a preparation may not read.
    *
-   * WHAT IT NEVER SELECTS (#262). A row `scan` marked `live` is a log that was still being
-   * appended when it was catalogued: its digest is already stale and a run reading it would
-   * report "changed since the preparation was fixed", which is what every explore of 2026-09-13
-   * reported. That one is unconditional — a moving file is not a scope. A row marked
-   * `kind = 'agent'` is one of Babel's own runs' transcripts, catalogued and archived like every
-   * other session (#177) and left out of a preset that reads the operator's work; `agentSessions`
-   * is how a preset that studies Babel itself (#270) asks for them.
+   * WHAT IT NEVER SELECTS. A session whose row names no archived capture: a preparation reads
+   * the archive and nothing else (#453), so a row the catalog has not listed yet — an imported
+   * one, most often — is catalogued and not a candidate. A row marked `kind = 'agent'` is one of
+   * Babel's own runs' transcripts, catalogued and archived like every other session (#177) and
+   * left out of a preset that reads the operator's work; `agentSessions` is how a preset that
+   * studies Babel itself (#270) asks for them. A `live` row never is, and no capture is live.
+   *
+   * THERE IS NO MACHINE IN IT. Any machine holding the archive binding prepares any capture, so
+   * the window is the archive's and not the launch machine's. "Recent" is when the session was
+   * last written — the archived file's own modification time, else when it was archived — and
+   * not `seen_at`, which is now the catalog's clock and would make every session look new.
    *
    * `held` is what the window CONTAINED, exclusions included, so `excluded` is a number both the
    * run row and the refusal can state: "there is nothing here" and "there is nothing here a run
    * may read" are different facts, and the day this lane comes from was two hours of reading an
    * adjacent number as the one that was asked for.
    */
-  async function selection(input: LaunchInput, analysis?: AnalysisWork): Promise<Selected> {
+  async function selection(input: LaunchInput, analysis?: AnalysisWork): Promise<Window> {
     const cited = `FROM filings f
          JOIN edges e ON e.from_id = f.record_id AND e.kind = 'cites' AND e.to_kind = 'session'
          JOIN sessions s ON s.selector = e.to_id
-        WHERE f.entity_id = ? AND f.withdrawn = 0 AND s.host = ?`;
-    const recent = `FROM sessions s WHERE s.host = ? AND s.seen_at >= ?`;
+        WHERE f.entity_id = ? AND f.withdrawn = 0`;
+    const recent = `FROM sessions s WHERE ${RECENT} >= ?`;
     const topic = input.preset === "explore-topic";
     const scope =
       analysis === undefined
         ? topic
           ? cited
           : recent
-        : `FROM sessions s WHERE s.host = ? AND s.selector IN (${analysis.selectors.map(() => "?").join(", ")})`;
+        : `FROM sessions s WHERE s.selector IN (${analysis.selectors.map(() => "?").join(", ")})`;
     const params: readonly string[] =
       analysis !== undefined
-        ? [input.machineId, ...analysis.selectors]
+        ? [...analysis.selectors]
         : topic
-          ? [input.entityId ?? "", input.machineId]
-          : [input.machineId, new Date(deps.now() - (input.sinceDays ?? 1) * DAY_MS).toISOString()];
-    const allowed = `AND s.live = 0${input.agentSessions && analysis === undefined ? "" : " AND s.kind = 'operator'"}`;
+          ? [input.entityId ?? ""]
+          : [new Date(deps.now() - (input.sinceDays ?? 1) * DAY_MS).toISOString()];
+    const allowed = `${ARCHIVED_CAPTURE}${input.agentSessions && analysis === undefined ? "" : " AND s.kind = 'operator'"}`;
 
     const rows = await store.db.query<SessionRow>(
       `SELECT DISTINCT s.selector AS selector, s.harness AS harness, s.source_id AS source_id,
-              s.content_digest AS content_digest, s.snapshot_id AS snapshot_id,
-              s.seen_at AS seen_at, s.size AS size
-         ${scope} ${allowed}
-        ORDER BY s.seen_at DESC, s.selector
+              s.archive_label AS archive_label, s.archive_path AS archive_path,
+              s.snapshot_id AS snapshot_id, s.size AS size, s.modified_at AS modified_at,
+              ${RECENT} AS recent
+         ${scope} AND ${allowed}
+        ORDER BY recent DESC, s.selector
         LIMIT ?`,
-      [...params, MAX_SELECTION + 1],
+      [...params, MAX_SELECTION],
     );
     const counted = await store.db.query<{ held: number; selectable: number }>(
       `SELECT count(DISTINCT s.selector) AS held,
-              count(DISTINCT CASE WHEN s.live = 0${input.agentSessions ? "" : " AND s.kind = 'operator'"}
-                                  THEN s.selector END) AS selectable
+              count(DISTINCT CASE WHEN ${allowed} THEN s.selector END) AS selectable
          ${scope}`,
       [...params],
     );
     const held = Number(counted[0]?.held ?? 0);
     const selectable = Number(counted[0]?.selectable ?? 0);
-
-    /*
-      NEWEST FIRST UNTIL THE MATERIAL IS FULL. The count is not a bound on bytes: 120 sessions
-      at the corpus's own average is over a gigabyte, and a selection that overran
-      `prepare`'s `outputBytes` would be discovered by the machine AFTER it had read every one
-      of those logs. Taking rows in the order they are already sorted — newest first, which is
-      what every preset asks for — stops at the bound and SAYS how many it left, so the
-      operator reads a narrower window rather than an `output_too_large`.
-
-      A row with no catalogued size counts as nothing: `scan` measured every log it catalogued,
-      so a NULL is an imported row, and refusing the run for a figure the crossing never
-      carried would make old corpora unusable. It is the one place this bound is approximate,
-      and `prepare` still refuses the lease if the seal really does overrun.
-    */
-    const taken: SessionRow[] = [];
-    let bytes = 0;
-    let overBound = 0;
-    for (const row of rows.slice(0, MAX_SELECTION)) {
-      const size = Number(row.size ?? 0);
-      if (bytes + size > MAX_MATERIAL_BYTES) {
-        overBound += 1;
-        continue;
-      }
-      taken.push(row);
-      bytes += size;
-    }
-    return { rows: taken, held, excluded: Math.max(0, held - selectable), bytes, overBound };
+    return { rows, held, excluded: Math.max(0, held - selectable) };
   }
 
   /**
@@ -674,16 +766,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     const preset = PRESET_PLANS[input.preset];
     const admitted = await ready(jobs, input.machineId, preset.operationId);
     if ("refused" in admitted) return admitted;
-    // Keep going: the beat is what wakes the hub, so starting the loop is starting one `scan`.
+    // Keep going: the beat is what wakes the hub, so starting the loop is starting one beat.
     // `minutes` is the operator's own bound on it, under the operation's ceiling.
     const asked = (input.minutes ?? 0) * 60_000;
     const timeoutMs = asked > 0 ? Math.min(asked, plan.limits.timeoutMs) : plan.limits.timeoutMs;
-    const built = document({
-      runId: identity.runId,
-      machineId: input.machineId,
-      roots: [],
-      harnesses: [],
-    });
+    const built = document({ runId: identity.runId, machineId: input.machineId });
     if ("refused" in built) return built;
     const refusal = await post(
       jobs,
@@ -713,14 +800,17 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
   /**
    * ONE VERIFICATION of the archive on one machine (#338), and the session it proves.
    *
-   * THE SNAPSHOT AND THE DIGEST COME OUT OF THE CATALOG, not out of the request. `sessions`
-   * already holds which snapshot took a session and what `scan` measured its bytes to be, so
-   * the operator asks with a selector and the machine is told two facts this hub can be held
-   * to. A request that named its own digest would be a comparison against whatever the asker
-   * believed, which proves nothing about the archive.
+   * THE CAPTURE AND THE DIGEST COME OUT OF THE CATALOG, not out of the request. `sessions`
+   * already holds which snapshot and path hold a session and what a reading of those bytes
+   * digested to, so the operator asks with a selector and the machine is told facts this hub can
+   * be held to. A request that named its own digest would be a comparison against whatever the
+   * asker believed, which proves nothing about the archive.
    *
-   * The session's row also says which machine holds it: a snapshot is attributed to its own
-   * host, so verifying it somewhere else would read a repository that never took it.
+   * ANY MACHINE HOLDING THE ARCHIVE BINDING MAY VERIFY ANY CAPTURE (#453): the repository is one,
+   * and a snapshot reads the same from every machine that can open it. The catalogued path is
+   * passed when the catalogued snapshot is the one read, so the machine lists that path rather
+   * than the whole snapshot; a snapshot the operator names instead is listed whole, because the
+   * path the catalog recorded belongs to a different capture.
    */
   async function startVerify(
     identity: LaunchIdentity,
@@ -728,32 +818,30 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     input: VerifyInput,
     plan: RunPlan,
   ): Promise<Verified> {
-    let restore: { snapshotId: string; selector: string; digest: string; target: string } | null =
-      null;
+    let restore: {
+      snapshotId: string;
+      selector: string;
+      digest: string;
+      target: string;
+      path?: string;
+    } | null = null;
     if (input.session !== undefined) {
       const asked = input.session;
       const rows = await store.db.query<{
-        host: string;
         snapshot_id: string | null;
+        archive_path: string | null;
         content_digest: string | null;
-      }>(`SELECT host, snapshot_id, content_digest FROM sessions WHERE selector = ?`, [
+      }>(`SELECT snapshot_id, archive_path, content_digest FROM sessions WHERE selector = ?`, [
         asked.selector,
       ]);
       const row = rows[0];
       if (row === undefined) return { refused: `no catalogued session ${asked.selector}` };
-      if (row.host !== input.machineId) {
-        return {
-          refused:
-            `${asked.selector} is catalogued on ${row.host} and this verification asks ` +
-            `${input.machineId}: a snapshot is read where it was taken`,
-        };
-      }
       const snapshotId = asked.snapshotId !== "" ? asked.snapshotId : (row.snapshot_id ?? "");
       if (snapshotId === "") {
         return {
           refused:
             `${asked.selector} names no archived snapshot, so there is nothing to restore it ` +
-            `from; archive this machine first, or name a snapshot`,
+            `from; wait for the catalog to list it from the archive, or name a snapshot`,
         };
       }
       if (!RESTIC_SNAPSHOT.test(snapshotId)) {
@@ -772,11 +860,13 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       // its digest column is the Go deployment's spelling — and it is also the session most
       // likely to be worth restoring, so refusing it outright would be the wrong trade.
       const catalogued = row.content_digest ?? "";
+      const path = snapshotId === row.snapshot_id ? (row.archive_path ?? "") : "";
       restore = {
         snapshotId,
         selector: asked.selector,
         digest: CONTENT_DIGEST.test(catalogued) ? catalogued : "",
         target: asked.target,
+        ...(path === "" ? {} : { path }),
       };
     }
 
@@ -822,7 +912,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
   }
 
   /**
-   * THE UNTITLED SESSIONS THIS MACHINE HOLDS, NEWEST FIRST, AND NOTHING ELSE (#342).
+   * THE UNTITLED ARCHIVED SESSIONS, NEWEST FIRST, AND NOTHING ELSE (#342).
    *
    * `title IS NULL` and not "no good title": a title the harness recorded and one this tree
    * derived offline are both free and both outrank a guess that costs money, so neither is
@@ -830,22 +920,25 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * that answer was — a title, or the reason there is none — because the second half of
    * "inferred once" is that a session the model declined is not re-offered on the next wake.
    *
-   * The two exclusions are `prepare`'s own. A `live` log is still being appended and its
-   * digest is stale before the job starts; a session of `kind = 'agent'` is one of Babel's own
-   * runs' transcripts, which `prepare` refuses by name unless a caller asked for them — and
-   * naming Babel's own analysis logs is not what this lane is for.
+   * The catalog reads no transcript, so a capture's recorded title arrives only when a
+   * preparation reads it (#453): the lane's `prepare` is also what finds the titles the harness
+   * recorded, and {@link postPrepared} asks the model about the rest alone. The exclusions are
+   * `prepare`'s own: only an archived capture can be read, from whichever label recorded it,
+   * and a session of `kind = 'agent'` is one of Babel's own runs' transcripts, which `prepare`
+   * refuses by name unless a caller asked for them — and naming Babel's own analysis logs is
+   * not what this lane is for.
    */
-  async function untitled(machineId: string): Promise<readonly SessionRow[]> {
+  async function untitled(): Promise<readonly SessionRow[]> {
     return await store.db.query<SessionRow>(
       `SELECT s.selector AS selector, s.harness AS harness, s.source_id AS source_id,
-              s.content_digest AS content_digest, s.snapshot_id AS snapshot_id,
-              s.seen_at AS seen_at, s.size AS size
+              s.archive_label AS archive_label, s.archive_path AS archive_path,
+              s.snapshot_id AS snapshot_id, s.size AS size, s.modified_at AS modified_at
          FROM sessions s
-        WHERE s.host = ? AND s.title IS NULL AND s.live = 0 AND s.kind = 'operator'
+        WHERE ${ARCHIVED_CAPTURE} AND s.kind = 'operator' AND s.title IS NULL
           AND NOT EXISTS (SELECT 1 FROM session_titles t WHERE t.selector = s.selector)
-        ORDER BY s.modified_at DESC, s.selector
+        ORDER BY ${RECENT} DESC, s.selector
         LIMIT ?`,
-      [machineId, MAX_TITLE_BATCH],
+      [MAX_TITLE_BATCH],
     );
   }
 
@@ -932,19 +1025,24 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     if (Number(open[0]?.n ?? 0) > 0) return null;
 
     const at = deps.now();
-    const candidates = await untitled(route.machineId);
+    const candidates = await untitled();
     if (candidates.length === 0) return null;
+    const runId = `run_title_${String(at)}`;
+    // The lane shares the routed machine's scratch with the conductor's other lanes, so its
+    // material is bounded to the same per-machine share theirs is.
+    const base = { runId: `${runId}_material`, machineId: route.machineId };
+    const captured = captureSelection(
+      base,
+      candidates,
+      await materialBound(store.db, route.machineId, perMachineBound(policy)),
+    );
+    if (captured.selectors.length === 0) return null;
     const admitted = await admitTitling(policy, cycleRunId, at);
     if ("refused" in admitted) return { runId: "", refused: admitted.refused };
 
-    const runId = `run_title_${String(at)}`;
     const prepareJobId = materialJobId(`job_title_${String(at)}`);
-    const selectors = candidates.map((row) => row.selector);
-    const built = document({
-      runId: `${runId}_material`,
-      machineId: route.machineId,
-      selectors,
-    });
+    const selectors = captured.selectors;
+    const built = document({ ...base, captures: captured.captures });
     if ("refused" in built) return { runId, refused: built.refused };
     const checked = await engine.checkProfile(route.profile);
     if (!checked.ok) return { runId: "", refused: checked.refused };
@@ -1019,7 +1117,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
   /**
    * ONE EXPLORE, IN THE FIVE STEPS A BABEL RUN IS MADE OF.
    *
-   *   1. the SELECTION, from this machine's catalog and nothing else;
+   *   1. the SELECTION, archived captures from the catalog and nothing else;
    *   2. the RECIPES, the methods this hub holds;
    *   3. the MATERIAL: one `atyrode.babel.prepare` job, posted here, which seals the selection as
    *      its own output — this is the run's evidence and it exists before the session does.
@@ -1073,54 +1171,61 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             : `this hub holds no recipe called ${asked.join(", ")}`,
       };
     }
-    const prepared = await selection(input, analysis);
+    const window = await selection(input, analysis);
+    // What the preparation is handed besides its captures, which are added to it last.
+    const base = {
+      runId: `${identity.runId}_material`,
+      machineId: input.machineId,
+      ...(input.agentSessions === undefined ? {} : { agentSessions: input.agentSessions }),
+    };
+    const prepared = captureSelection(
+      base,
+      window.rows,
+      await materialBound(store.db, input.machineId, plan.materials ?? 1),
+    );
+    const excluded = window.excluded + prepared.unreadable;
     if (
       analysis !== undefined &&
-      (prepared.rows.length !== new Set(analysis.selectors).size || prepared.overBound > 0)
+      (prepared.selectors.length !== new Set(analysis.selectors).size || prepared.overBound > 0)
     ) {
       return {
         refused: "the exact analysis selection is no longer available within the material bound",
       };
     }
-    if (prepared.rows.length === 0) {
+    if (prepared.selectors.length === 0) {
       // A window can hold sessions and offer none, in three ways that need three answers. A
-      // log still being written, or one of Babel's own runs', is catalogued and not a
-      // candidate (#262); a session larger than the whole material bound is a candidate the
-      // lease cannot hold. Which of the three it is decides what the operator does next.
+      // session the catalog has not listed from the archive, or one of Babel's own runs', is
+      // catalogued and not a candidate (#262, #453); a session larger than the whole material
+      // bound is a candidate the lease cannot hold. Which of the three it is decides what the
+      // operator does next.
       if (prepared.overBound > 0) {
         return {
           refused:
             `material_too_large: every session this window offers is larger than the ` +
-            `${String(Math.round(MAX_MATERIAL_BYTES / (1024 * 1024)))} MiB one preparation may ` +
-            `seal (${String(prepared.overBound)} left out). A run reads what a job's sealed ` +
-            `output can hold; ask for a narrower window, or archive the log that is too big to ` +
-            `read in one piece.`,
+            `${String(Math.round(prepared.bound / (1024 * 1024)))} MiB one preparation on ` +
+            `${input.machineId} may seal (${String(prepared.overBound)} left out). A run reads ` +
+            `what a job's sealed output on that machine can hold; ask for a narrower window.`,
         };
       }
       const left =
-        prepared.excluded === 0
+        excluded === 0
           ? ""
-          : ` (${String(prepared.excluded)} of ${String(prepared.held)} catalogued there are ` +
-            `still being written or Babel's own runs', which a preparation does not read)`;
+          : ` (${String(excluded)} of ${String(window.held)} catalogued there name no archived ` +
+            `capture yet or are Babel's own runs', which a preparation does not read)`;
       return {
         refused:
           input.preset === "explore-topic"
-            ? `no session on ${input.machineId} is cited by anything filed under ${input.entityId ?? ""}${left}`
-            : `${input.machineId} has catalogued no session in the last ${String(input.sinceDays ?? 1)} days${left}`,
+            ? `no archived session is cited by anything filed under ${input.entityId ?? ""}${left}`
+            : `the archive holds no session written in the last ${String(input.sinceDays ?? 1)} days${left}`,
       };
     }
 
-    // THE MATERIAL IS ITS OWN JOB, and it is Babel's: `prepare` reads the machine's logs, seals
-    // the normalized record stream per session and writes the index a citation's digest comes
-    // from. Its id is DERIVED from the run's so a retried start posts the same preparation
-    // rather than a second one over the same sessions.
+    // THE MATERIAL IS ITS OWN JOB, and it is Babel's: `prepare` streams the selected captures
+    // out of the archive, seals the normalized record stream per session and writes the index a
+    // citation's digest comes from. Its id is DERIVED from the run's so a retried start posts
+    // the same preparation rather than a second one over the same sessions.
     const prepareJobId = identity.materialJobId ?? materialJobId(identity.jobId);
-    const built = document({
-      runId: `${identity.runId}_material`,
-      machineId: input.machineId,
-      selectors: prepared.rows.map((row) => row.selector),
-      ...(input.agentSessions === undefined ? {} : { agentSessions: input.agentSessions }),
-    });
+    const built = document({ ...base, captures: prepared.captures });
     if ("refused" in built) return built;
     // Check locally eligible work before spending time sealing its material (#255).
     const checked = await engine.checkProfile(profile);
@@ -1165,10 +1270,10 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           JSON.stringify({
             preset: input.preset,
             ...(analysis === undefined ? {} : { analysis }),
-            selectors: prepared.rows.map((row) => row.selector),
-            selected: prepared.rows.length,
-            available: prepared.held,
-            excluded: prepared.excluded,
+            selectors: prepared.selectors,
+            selected: prepared.selectors.length,
+            available: window.held,
+            excluded,
             bytes: prepared.bytes,
             overBound: prepared.overBound,
             promptVersion: PROMPT_VERSION,
@@ -1228,9 +1333,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         preparation: {
           preset: input.preset,
           for: identity.runId,
-          selected: prepared.rows.length,
-          available: prepared.held,
-          excluded: prepared.excluded,
+          selected: prepared.selectors.length,
+          available: window.held,
+          excluded,
           bytes: prepared.bytes,
           overBound: prepared.overBound,
         },
@@ -1329,12 +1434,17 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * Both kinds are composed HERE and not at the press, and for the same reason: the prompt is
    * built from the index `prepare` actually wrote — the real file names — rather than from
    * selectors the press could only guess the layout of.
+   *
+   * A titling run may need no prompt at all: its preparation read every sealed session's own
+   * recorded title, and those are answered by the capture rather than by a model. It says how
+   * many, and which named sessions are still unanswered, so the run settles without a session.
    */
   async function composeFor(
     run: PreparedRun,
     material: MaterialIndex,
   ): Promise<
     | { readonly prompt: string; readonly preparation: Record<string, unknown> }
+    | { readonly recorded: number; readonly unanswered: readonly string[] }
     | { readonly refused: string }
   > {
     const intent = documentOf(run.preparation);
@@ -1350,24 +1460,54 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       // catalog and the machine is not in the material and cannot be titled; it is still on
       // the run's own list, and the settlement answers it with the reason rather than leaving
       // it for the next cycle to offer again.
-      const offered = new Set(offeredSelectors(intent));
+      //
+      // AND ONLY THE ONES STILL UNTITLED (#453). The catalog reads no transcript, so this run's
+      // own preparation is what read the titles the harness recorded, and the hub ingested its
+      // `sessions.json` before this wake: a session holding a title now is answered by its own
+      // log, and paying a model to name it would be the guess outranking the session's word
+      // about itself. It leaves the run's list, so the settlement answers exactly the sessions
+      // the model was asked about and the ones it could not be.
+      const offered = offeredSelectors(intent);
+      const recorded = new Set(
+        offered.length === 0
+          ? []
+          : (
+              await store.db.query<{ selector: string }>(
+                `SELECT selector FROM sessions WHERE title IS NOT NULL
+                    AND selector IN (${offered.map(() => "?").join(", ")})`,
+                offered,
+              )
+            ).map((row) => row.selector),
+      );
+      const asked = offered.filter((selector) => !recorded.has(selector));
+      const open = new Set(asked);
       const subjects = material.sessions
-        .filter((entry) => offered.has(entry.selector))
+        .filter((entry) => open.has(entry.selector))
         .map((entry) => ({ selector: entry.selector, file: entry.file }));
       if (subjects.length === 0) {
+        if (recorded.size > 0) return { recorded: recorded.size, unanswered: asked };
         return {
           refused:
             `the preparation ${run.prepare_job_id ?? ""} sealed none of the ` +
-            `${String(offered.size)} session(s) this run was to name`,
+            `${String(offered.length)} session(s) this run was to name`,
         };
       }
+      const titles = intent["titles"];
       return {
         prompt: composeTitlePrompt({
           subjects,
           preparationId: material.preparationId,
           params: { [PARAM.runId]: run.id, [PARAM.preparation]: material.preparationId },
         }),
-        preparation: intent,
+        preparation: {
+          ...intent,
+          titles: {
+            ...(typeof titles === "object" && titles !== null && !Array.isArray(titles)
+              ? titles
+              : {}),
+            selectors: asked,
+          },
+        },
       };
     }
     const asked = new Set(
@@ -1521,6 +1661,43 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     return [{ runId: run.id, refused: reason }];
   }
 
+  /**
+   * ONE TITLING RUN SETTLED WITHOUT A SESSION, because its preparation found every sealed
+   * session's own recorded title and no model has anything left to name (#453).
+   *
+   * It completes at no cost, which is the truth — nothing reached a model — and what keeps the
+   * day's title allowance from counting a reservation nobody spent. The sessions it named and
+   * could not read are answered with the reason, as a closed run answers them, so none is
+   * offered again; the titled ones need no answer, because their title is the catalog's now.
+   */
+  async function settleRecorded(
+    run: PreparedRun,
+    at: string,
+    recorded: number,
+    unanswered: readonly string[],
+  ): Promise<readonly Posted[]> {
+    const reason = `the preparation ${run.prepare_job_id ?? ""} sealed no reading of this session`;
+    const closed = await store.db.batch([
+      {
+        sql: `UPDATE runs SET closure = 'completed', finished_at = ?, cost_usd = 0, payload = ?
+              WHERE id = ? AND job_id IS NULL AND closure IS NULL
+                AND COALESCE(json_extract(payload, '$.posting'), 0) = 0
+              RETURNING id`,
+        params: [at, JSON.stringify({ closure: "completed", counts: { recorded } }), run.id],
+      },
+      ...titleStatements({ runId: run.id, at, titles: declinedTitles(unanswered, reason) }),
+    ]);
+    if ((closed[0]?.length ?? 0) === 0) return [];
+    await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+    store.touch();
+    return [
+      {
+        runId: run.id,
+        settled: `every session this run sealed recorded its own title (${String(recorded)}), so no model was asked`,
+      },
+    ];
+  }
+
   /** A continuation spends only while the same live grant and route still authorize it. */
   async function analysisAuthority(
     analysis: AnalysisWork,
@@ -1631,6 +1808,10 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           continue;
         }
         const composed = await composeFor(run, material);
+        if ("recorded" in composed) {
+          posted.push(...(await settleRecorded(run, at, composed.recorded, composed.unanswered)));
+          continue;
+        }
         if ("refused" in composed) {
           posted.push(...(await close(run, at, composed.refused)));
           continue;
