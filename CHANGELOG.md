@@ -968,6 +968,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   bundle first and then scratch. The contract test holds every runtime-writing operation above
   the scratch and the material bound under it, and fails on the old declarations.
 
+- **An abandoned review no longer stalls the conductor.** An abandonment withholds nothing
+  (#259), so the draw offers the same record and role again, under the same assignment id,
+  because the ordinal that names a review does not count abandonments. `claim` refused that id
+  as finished, and the conductor stops a cycle at its first refused dispatch. Once the eligible
+  pool thinned, every cycle drew the dead assignment first and launched nothing until the policy
+  version changed. On the integrated preview, launches fell from 44 to about 1 per ten minutes.
+  The draw now treats an abandoned receipt as free, and `claim` takes the abandoned epoch over
+  at the next fence, exactly as it takes over an expired lease: the dead epoch keeps its charge
+  on its own `~fence` row. A completed, skipped or failed claim is still finished.
+  `coordinator.test.ts` drives it: abandon, redraw, re-grant at fence 2, spend charged once per
+  epoch. It fails without the change.
+
 - **A Code-backed review runs the model its profile names, or does not run.** `CODE_REV` and
   `@atyrode/manifold-code` move to atyrode/code#219, whose omp closure carries
   atyrode/manifold-omp#81. A one-shot now starts with exactly its configured model in scope.

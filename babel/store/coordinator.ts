@@ -2195,10 +2195,13 @@ export function coordinator(
    */
   async function claimedNow(moment: number, pickedId: string): Promise<ReadonlySet<string>> {
     // Read open claims plus only the selected identity's terminal receipt: a finish landing
-    // during selection must still defeat the stale draw, without scanning finished history.
+    // during selection must still defeat the stale draw, without scanning finished history. An
+    // abandonment is not such a receipt: it withholds nothing (#259), and `claim` takes the
+    // abandoned epoch over at the next fence.
     const rows = await db.query(
       `SELECT c.id FROM claims c WHERE c.finished_at IS NULL AND (c.expires_at > ? OR ${RUNNING_CLAIM})
-       UNION SELECT c.id FROM claims c WHERE c.id = ? AND c.finished_at IS NOT NULL`,
+       UNION SELECT c.id FROM claims c WHERE c.id = ? AND c.finished_at IS NOT NULL
+         AND COALESCE(c.outcome, '') <> 'abandoned'`,
       [iso(moment), pickedId],
     );
     return new Set(rows.map((row) => text(row["id"])));
@@ -2491,6 +2494,13 @@ export function coordinator(
     handedOut.delete(assignment.id);
     const expires = moment + policy.leaseSeconds * 1000;
     const existing = await readClaim(assignment.id);
+    // An ABANDONED epoch is closed and charged, and it withholds nothing (#259): the draw offers
+    // the same record and role again, under the same assignment id, because the ordinal that
+    // names an assignment does not count abandonments. Refusing it as finished wedged the
+    // conductor — every cycle drew it first, was refused, and stopped — until the policy version
+    // changed. It is taken over at the next fence instead, exactly as an expired lease is.
+    const reopened =
+      existing !== null && existing.finishedAt !== null && existing.outcome === "abandoned";
 
     if (existing !== null) {
       if (existing.recordId !== assignment.recordId || existing.role !== assignment.role) {
@@ -2502,7 +2512,7 @@ export function coordinator(
           },
         };
       }
-      if (existing.finishedAt !== null) {
+      if (existing.finishedAt !== null && !reopened) {
         return {
           outcome: "refused",
           refusal: {
@@ -2511,7 +2521,7 @@ export function coordinator(
           },
         };
       }
-      if (existing.expiresAt > moment) {
+      if (!reopened && existing.expiresAt > moment) {
         if (existing.runId === request.runId) return { outcome: "granted", claim: existing };
         return {
           outcome: "refused",
@@ -2530,7 +2540,7 @@ export function coordinator(
           outcome: "refused",
           refusal: {
             reason: "conflict",
-            detail: "the expired authority still owns running work; it cannot be duplicated",
+            detail: "the superseded authority still owns running work; it cannot be duplicated",
           },
         };
       }
@@ -2682,6 +2692,26 @@ export function coordinator(
       return { outcome: "granted", claim: toClaim(row) };
     }
 
+    // The epoch being superseded, and how its row is kept. An expired lease is closed now, at
+    // what it reserved; an abandoned one was closed and charged when it was abandoned, and is
+    // archived exactly as it stands.
+    const superseded = reopened
+      ? {
+          closed: `c.actual_cost, c.granted_at, c.expires_at, c.finished_at, c.outcome`,
+          closedParams: [] as GuestSqlParam[],
+          guard: (row: string) => `${row}finished_at IS NOT NULL AND ${row}outcome = 'abandoned'`,
+          guardParams: [] as GuestSqlParam[],
+          archived: `archived.finished_at = claims.finished_at`,
+          archivedParams: [] as GuestSqlParam[],
+        }
+      : {
+          closed: `c.reserved_cost, c.granted_at, c.expires_at, ?, 'abandoned'`,
+          closedParams: [iso(moment)] as GuestSqlParam[],
+          guard: (row: string) => `${row}finished_at IS NULL AND ${row}expires_at <= ?`,
+          guardParams: [iso(moment)] as GuestSqlParam[],
+          archived: `archived.finished_at = ?`,
+          archivedParams: [iso(moment)] as GuestSqlParam[],
+        };
     const rows = await db.batch([
       {
         // The superseded epoch stays charged, as its own finished row: an expired lease says
@@ -2690,21 +2720,27 @@ export function coordinator(
         sql: `INSERT INTO claims(${CLAIM_COLUMNS})
               SELECT c.id || '~' || CAST(c.fence AS TEXT), c.record_id, c.role, c.lane,
                      c.policy_version, c.job_id, c.run_id, c.fence, c.reserved_cost,
-                     c.reserved_cost, c.granted_at, c.expires_at, ?, 'abandoned'
+                     ${superseded.closed}
                 FROM claims c
-               WHERE c.id = ? AND c.fence = ? AND c.finished_at IS NULL AND c.expires_at <= ?
+               WHERE c.id = ? AND c.fence = ? AND ${superseded.guard("c.")}
                  AND NOT (${RUNNING_CLAIM}) AND ${admissionSql}
               ON CONFLICT(id) DO NOTHING`,
-        params: [iso(moment), assignment.id, existing.fence, iso(moment), ...admissionParams],
+        params: [
+          ...superseded.closedParams,
+          assignment.id,
+          existing.fence,
+          ...superseded.guardParams,
+          ...admissionParams,
+        ],
       },
       {
         sql: `UPDATE claims SET run_id = ?, job_id = ?, lane = ?, policy_version = ?,
                  fence = fence + 1, reserved_cost = ?, actual_cost = NULL, granted_at = ?,
                  expires_at = ?, finished_at = NULL, outcome = NULL
-               WHERE id = ? AND fence = ? AND finished_at IS NULL AND expires_at <= ?
+               WHERE id = ? AND fence = ? AND ${superseded.guard("")}
                  AND EXISTS (SELECT 1 FROM claims archived
                    WHERE archived.id = claims.id || '~' || CAST(claims.fence AS TEXT)
-                     AND archived.finished_at = ?)
+                     AND ${superseded.archived})
                RETURNING ${CLAIM_COLUMNS}`,
         params: [
           request.runId,
@@ -2716,8 +2752,8 @@ export function coordinator(
           iso(expires),
           assignment.id,
           existing.fence,
-          iso(moment),
-          iso(moment),
+          ...superseded.guardParams,
+          ...superseded.archivedParams,
         ],
       },
     ]);
