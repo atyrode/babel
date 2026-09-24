@@ -942,6 +942,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A Code-backed review runs the model its profile names, or does not run.** `CODE_REV` and
+  `@atyrode/manifold-code` move to atyrode/code#219, whose omp closure carries
+  atyrode/manifold-omp#81. A one-shot now starts with exactly its configured model in scope.
+  Gateway discovery waits 60 s rather than 10 s, and a live-listed id with a thinking level keeps
+  its reasoning. Before this, a slow gateway let a review configured for
+  openrouter/stealth/space-bunny-alpha start on the machine default, and on the integrated
+  preview it answered as anthropic/claude-opus-4-8. Babel's own bundles are byte-identical, and
+  only the `atyrode.omp` and `atyrode.omp.gateway` bundles beneath them moved. The full frozen
+  gate passes 1,193 tests. A disposable engine installs all eleven bundles and dispatches their
+  doors.
+
 - **Babel can post its own jobs again.** `launch`, `drainStart`, `verify` and the three doors a
   cycle follows (`pulse`, `runs`, `drainStatus`) now delegate `machines:run`, the capability
   `engine.jobs.execute` and `schedule` discharge a posting against. Without it the integrated
