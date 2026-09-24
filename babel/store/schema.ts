@@ -15,6 +15,9 @@
     revisions.
   - nothing is sealed and nothing is synced. The hub is the one place (§9 is retired); a row is
     plaintext on the operator's own server, and "published" is a word this schema does not need.
+    One place is also one copy: until the hub's backup lands (#454), losing its volume loses
+    every row here. The backup puts an image of this database into the transcripts' restic
+    repository under the `babel-store` tag; it is never a second store this schema writes or reads.
   - every table that records an act is append-only by trigger: a ruling, a vote, a filing, a
     status, a fact are written once and superseded by a later row, never edited or deleted. The
     triggers below are the whole of that guarantee, and a purge is the engine deleting the file.

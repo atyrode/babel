@@ -857,6 +857,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The documents stop calling the store durable and `mkdir -p` a fix.** `AGENTS.md` and the
+  README said a settled run's records were durable the instant they were written. The hub's
+  store is a single copy: Manifold's `data.db.backup` is a same-volume migration rollback image
+  and Litestream excludes plugin databases, so losing the hub's volume loses every record.
+  `AGENTS.md`, the README, runbook §5 and the schema's header now keep it the one Babel-owned
+  store, with no sync and no second store, and name its backup as open work with a decided
+  destination: the session transcripts' restic repository under its own `babel-store` tag
+  (#454). The `home` anchor guidance said creating the three session directories was the whole
+  fix; on a native Manifold worker that anchor is the service account's workload home, so the
+  jobs start and read an empty tree. It now says so and points at preparing from the archive
+  (#453). And running Babel's ordinary work on any model, a free one included, is stated as
+  ordinary operation: the runbook's §11 ceremony applies when the operator asks to drain a paid
+  usage window.
+
 - **The tree is `babel/`, and the judgement part lives inside it.** Two layout facts had drifted
   apart from what they meant. `atyrode/babel` contained `atyrode.babel/` — the organisation named
   twice and the product named twice — because the id-named directory made sense inside the

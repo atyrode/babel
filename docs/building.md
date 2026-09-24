@@ -390,10 +390,18 @@ revision (`packages/protocol/src/capabilities.ts:92-103`).
 locations and the workspaces a session names are host paths outside them (#254 records the
 decision this needs).
 
-Two more things an enrolled machine's operator must arrange, because a manifest cannot: the
-`home` anchor needs `~/.omp/agent/sessions`, `~/.codex` and `~/.claude` to **exist** (a job whose
-read location is missing fails to start; `mkdir -p` is the whole fix), and the `runtime` anchor
-must be a dedicated bounded tmpfs, since the named-output lease is cut from it.
+Two more things an enrolled machine's operator must arrange, because a manifest cannot. The
+`runtime` anchor must be a dedicated bounded tmpfs, since the named-output lease is cut from it.
+And the `home` anchor must be where the sessions are: `scan`, `archive` and `prepare` read
+`~/.omp/agent/sessions`, `~/.codex` and `~/.claude` beneath it, and a job whose read location is
+missing fails to start. **Creating those directories makes the jobs start, not read anything.**
+On a native Manifold worker (the NixOS module) the `home` anchor is the service account's
+workload home, `/var/lib/manifold-workload/home`, hard-coded by the module (atyrode/manifold at
+`7b5fe301`, `infra/native/module.nix:10,23-31`), and an operator may protect `/home` from every
+workload with `execution.protectedDirectories`. `mkdir -p` there gives a scan that catalogues
+nothing and a preparation of an empty tree. Local roots are only for the machine that holds the
+sessions, with its `home` anchor at the home that holds them; preparing from the fleet archive
+instead is #453.
 
 ## Draining a usage window
 
