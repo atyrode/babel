@@ -11,6 +11,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The machine half can catalogue the archive, and every restic read runs without a lock.**
+  `babel/machine/catalog.ts` lists the snapshots tagged exactly `babel` (never the hub store's
+  `babel-store` backup) and writes one session row per capture, newest per label, with times
+  normalized to UTC. Chain heads are listed first, `maxSnapshots` bounds a run, and a memory in
+  the managed cache carries the rest to the next run. The receipt reports per-label counts and
+  the output lease's capacity. Recall and the catalog now share one listing rule
+  (`babel/machine/archive-listing.ts`). `cat`, `snapshots`, `check`, `ls`, `dump` and `restore`
+  run with `--no-lock`, while `init` and `backup` keep restic's lock. Nothing dispatches the
+  catalog yet. Tests against a synthetic repository cover chain order, the cap, the memory,
+  the tag exclusion, offset times, and a restic killed mid-listing leaving no lock (#453).
+
 - **Catalogued sessions record their archive capture, and `rehostSessions` maps restic host
   labels.** The store moves to data version 1.12. Each session gains `archive_label` and
   `archive_path` beside its snapshot, and a new `archive_labels` table holds the operator's

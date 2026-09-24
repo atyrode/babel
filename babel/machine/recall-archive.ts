@@ -24,7 +24,7 @@ import {
   type RecallRequest,
   type RecallResult,
 } from "../contract.ts";
-import { claim } from "./adapters/index.ts";
+import { babelSnapshot, capturesOf } from "./archive-listing.ts";
 import {
   readingCache,
   type ReadingCache,
@@ -35,7 +35,7 @@ import { type RecordSink } from "./output.ts";
 import { PREFLIGHT_DETECTORS, secretScan } from "./preflight.ts";
 import { PREPARATION_SCHEMA } from "./prepare.ts";
 import { clipUtf8, recallRecordReader } from "./recall-records.ts";
-import { BABEL_TAG, type ArchivedEntry, type Repo, type Snapshot } from "./restic.ts";
+import { type Repo, type Snapshot } from "./restic.ts";
 import { sessionDigester } from "./session-records.ts";
 import { sessionIndex, SessionIndexError, type IndexedSession } from "./session-index.ts";
 
@@ -358,11 +358,7 @@ export async function createRecallArchive(options: {
     const newest = new Map<string, Capture>();
     const snapshots = (await options.repo.snapshots()).filter(
       (snapshot) =>
-        snapshot.tags.includes(BABEL_TAG) &&
-        /^[0-9a-f]{64}$/.test(snapshot.id) &&
-        Number.isFinite(Date.parse(snapshot.time)) &&
-        snapshot.host.length > 0 &&
-        snapshot.host.length <= 128 &&
+        babelSnapshot(snapshot) &&
         (filter.host === undefined || filter.host === snapshot.host) &&
         // Unknown hosts cannot acquire authority or disclose freshness through archived metadata.
         policy.subjects.some((subject) => subject.host === snapshot.host),
@@ -372,62 +368,44 @@ export async function createRecallArchive(options: {
       snapshots[0] === undefined ? null : new Date(snapshots[0].time).toISOString();
     for (const snapshot of snapshots) {
       result.cost.listedSnapshots++;
-      const roots = new Set(snapshot.paths.map((path) => path.replace(/\/+$/, "") || "/"));
-      const directories = new Set<string>();
-      const deferred: ArchivedEntry[] = [];
-      const collect = (node: ArchivedEntry, exists: (path: string) => boolean): void => {
-        const session = claim(node.path, exists, roots);
-        if (
-          session === null ||
-          session.selector.length > 600 ||
-          (filter.harness !== undefined && filter.harness !== session.harness)
-        )
-          return;
-        const key = sourceKey(snapshot.host, session.selector);
-        const previous = newest.get(key);
-        if (
-          previous !== undefined &&
-          (previous.snapshot.id !== snapshot.id ||
-            previous.session.primaryPath.localeCompare(node.path) <= 0)
-        )
-          return;
-        const subjects = policy.subjects.filter((subject) =>
-          matchesSubject(subject, snapshot.host, session.harness, session.selector),
-        );
-        const modified = Date.parse(node.modifiedAt);
-        newest.set(key, {
-          host: snapshot.host,
-          snapshot,
-          session,
-          subjects,
-          cache: cacheFor(snapshot.host),
-          namespace: hash(JSON.stringify([options.repo.repository, snapshot.host])),
-          seen: {
-            size: node.size,
-            modifiedAt:
-              Number.isFinite(modified) && modified > 0 ? modified : Date.parse(snapshot.time),
-            capture: JSON.stringify([snapshot.id, node.path]),
-          },
-        });
-      };
-      await options.repo.lsTo(snapshot.id, (node) => {
-        result.cost.listedEntries++;
-        if (node.path.length > 4096) return;
-        if (node.type === "dir") {
-          directories.add(node.path);
-          return;
-        }
-        if (node.type !== "file") return;
-        let needsListing = false;
-        collect(node, () => {
-          needsListing = true;
-          return false;
-        });
-        if (needsListing) deferred.push(node);
+      await capturesOf(options.repo, snapshot, {
+        entry: () => {
+          result.cost.listedEntries++;
+        },
+        capture: (session, node) => {
+          if (
+            session.selector.length > 600 ||
+            (filter.harness !== undefined && filter.harness !== session.harness)
+          )
+            return;
+          const key = sourceKey(snapshot.host, session.selector);
+          const previous = newest.get(key);
+          if (
+            previous !== undefined &&
+            (previous.snapshot.id !== snapshot.id ||
+              previous.session.primaryPath.localeCompare(node.path) <= 0)
+          )
+            return;
+          const subjects = policy.subjects.filter((subject) =>
+            matchesSubject(subject, snapshot.host, session.harness, session.selector),
+          );
+          const modified = Date.parse(node.modifiedAt);
+          newest.set(key, {
+            host: snapshot.host,
+            snapshot,
+            session,
+            subjects,
+            cache: cacheFor(snapshot.host),
+            namespace: hash(JSON.stringify([options.repo.repository, snapshot.host])),
+            seen: {
+              size: node.size,
+              modifiedAt:
+                Number.isFinite(modified) && modified > 0 ? modified : Date.parse(snapshot.time),
+              capture: JSON.stringify([snapshot.id, node.path]),
+            },
+          });
+        },
       });
-      // A history file can precede its sibling directory in restic's listing. No adapter
-      // consults this service host's filesystem, and listing order cannot decide identity.
-      for (const node of deferred) collect(node, (path) => directories.has(path));
     }
     const eligible: Capture[] = [];
     for (const entry of newest.values()) {

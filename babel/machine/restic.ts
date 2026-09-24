@@ -30,6 +30,13 @@
     holds, `dump` streams one archived file without touching a disk, and `restore` writes the
     files back. An archive whose restore path has never been run is an archive nobody has
     tested.
+  - EVERY READ RUNS WITHOUT A LOCK. {@link resticArgv} gives each verb of
+    {@link RESTIC_READ_VERBS} restic's global `--no-lock`, so a reading job that is killed
+    leaves nothing behind in the repository — not even a stale lock for the operator to clear —
+    and a read-only object-store credential is enough for every analysis. `init` and `backup`
+    are the writes, and take restic's ordinary lock: `backup` is `archive`'s, the collector's,
+    and `init` is called only by disposable test fixtures, because a deployment's repository is
+    created once, by hand.
 
   Snapshots are crash-consistent per file, not transactional across files: a backup taken
   while a session log is being appended to may capture a torn final line. Readers tolerate
@@ -145,6 +152,20 @@ export const RESTIC_VERBS = [
   "restore",
 ] as const;
 
+/**
+ * The verbs that only read, each built with restic's global `--no-lock`. They are listed rather
+ * than the writes, so a verb added to {@link RESTIC_VERBS} without a decision here takes the
+ * lock: a write run without one is the unsafe default, a read run with one only the untidy one.
+ */
+const RESTIC_READ_VERBS: readonly (typeof RESTIC_VERBS)[number][] = [
+  "cat",
+  "snapshots",
+  "check",
+  "ls",
+  "dump",
+  "restore",
+];
+
 /** A snapshot as restic names one: a full or short id, or `latest`. It is checked because it
  *  travels into argv as a POSITIONAL, where a value beginning with `-` would be read as a flag
  *  — and the values reaching this module come from a door's caller. */
@@ -155,13 +176,16 @@ const SNAPSHOT_ID = /^(latest|[0-9a-f]{8,64})$/;
  *
  * Every child of this module is spawned from this, so a verb outside {@link RESTIC_VERBS}
  * cannot be reached by any path — including a future one whose author never read the policy.
- * The refusal happens before restic exists: nothing is contacted and nothing is written.
+ * The refusal happens before restic exists: nothing is contacted and nothing is written. A
+ * read verb's `--no-lock` is added here for the same reason: no caller can forget it.
  */
 export function resticArgv(verb: string, flags: readonly string[] = []): readonly string[] {
   if (!(RESTIC_VERBS as readonly string[]).includes(verb)) {
     throw new ResticError("refused", `restic ${verb} is not a verb Babel runs`);
   }
-  return [verb, ...flags];
+  return (RESTIC_READ_VERBS as readonly string[]).includes(verb)
+    ? [verb, "--no-lock", ...flags]
+    : [verb, ...flags];
 }
 
 /** A snapshot id fit to pass as a positional, or the refusal naming what was asked. */
@@ -373,10 +397,9 @@ export interface Repo {
    * Verifies the repository and reports what it found. Structure always; the stored bytes when
    * {@link CheckOptions.readData} asks for them.
    *
-   * restic takes an EXCLUSIVE lock for this, so a check and a backup of the same repository do
-   * not overlap — one of them waits and then fails. A lock left behind by a killed process is
-   * cleared with restic's `unlock`, which Babel does not run: removing another process's claim
-   * is the operator's act.
+   * It runs without a lock, as every read does, so it neither waits for a collector's backup
+   * nor leaves a lock behind when it is killed. A backup running concurrently may make it
+   * report that backup's packs as not yet referenced, which the next check no longer sees.
    */
   check(options?: CheckOptions): Promise<CheckOutcome>;
   /** What one snapshot holds, entirely or under the given absolute paths. */
