@@ -347,6 +347,25 @@ the hub owner's or the machine's declaration.
 > then an `archive` job settles with a snapshot per root. A successful `scan` with no roots is not
 > proof of anything but an empty machine.
 
+**Item 3's runtime scratch has one size.** Every operation that writes the `runtime` anchor —
+Babel's `scan`, `archive`, `prepare` and `verify`, and `atyrode.omp.session` — declares
+`outputBytes` 1 GiB. The runtime refuses a job whose `outputBytes` is below the scratch's
+capacity (`bounded-output-storage-required`) and gives stdout and stderr only what is above it
+(`docs/building.md`, the machine half). So the scratch is 768 MiB (`RUNTIME_SCRATCH_BYTES`),
+which leaves each of them 256 MiB of stdio, and never the full 1 GiB, which would leave none.
+
+> **OPERATOR STEP — size a native machine's runtime scratch (not executed).**
+> **Prerequisites:** the hub runs a Babel bundle whose four runtime-writing operations declare
+> 1 GiB; an older one's `scan`, `archive` and `verify` declared 64 MiB and are refused on any
+> larger scratch. Every other operation installed for that machine that writes the `runtime`
+> anchor declares more than 768 MiB.
+> **Procedure:** in the machine's NixOS configuration, set
+> `services.manifold.execution.outputBytes = 805306368;` and `outputInodes = 10000;`, then
+> activate. Merging the configuration is not activation.
+> **Success:** `findmnt -no OPTIONS /var/lib/manifold-output` shows `size=786432k` and
+> `nr_inodes=10000`, and a `scan` and a `prepare` on that machine settle rather than refusing
+> `bounded-output-storage-required`.
+
 **A machine id is not a host name.** Every column Babel keys on a machine — `sessions.host`,
 `runs.machine_id`, `drains.machine_id` and `run_calls.transcript_host` — holds the id
 `core.machines.list` publishes, and the hub resolves no names. The crossing refuses a chunk whose
@@ -894,3 +913,5 @@ None of the dated observations above establishes current fleet state. These rema
    with restic (§2), enroll the machine (§6), and confirm the restored bytes match the chosen
    snapshot. The 2026-08-31 cross-machine restore proves its own part and not this composition.
 6. The drain rehearsal and the four owed steps of §11.7.
+7. Each native machine's runtime scratch sized to 768 MiB (§6), after the bundle declaring 1 GiB
+   on every runtime-writing operation is installed.

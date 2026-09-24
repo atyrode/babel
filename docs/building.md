@@ -150,8 +150,8 @@ There is one decision per tool, and the four answers are different:
   There is nothing honest to pin. Requirements are per-operation, so a missing restic binding
   refuses those archive paths without disabling `scan` or `prepare`.
 
-For the operator's fleet the remaining bindings are one dotfiles module — no `bun` entry any
-more, and `git` inside the `development` alias rather than beside it:
+For the operator's fleet the remaining bindings and the runtime scratch's size are one dotfiles
+module — no `bun` entry any more, and `git` inside the `development` alias rather than beside it:
 
 ```nix
 services.manifold.execution = {
@@ -159,6 +159,8 @@ services.manifold.execution = {
   runtimeToolClosures.development = [ pkgs.git ];
   runtimeTools.restic = [{ source = "${pkgs.restic}/bin/restic"; target = "/runtime/bin/restic"; kind = "file"; }];
   runtimeToolClosures.restic = [ pkgs.restic ];
+  outputBytes = 805306368; # RUNTIME_SCRATCH_BYTES, 768 MiB; the module's default is 1 MiB
+  outputInodes = 10000;    # the runtime's per-job ceiling
 };
 ```
 
@@ -166,6 +168,24 @@ services.manifold.execution = {
 (atyrode/babel#279) took the engine with it, and a run that reaches a model is now a Code session
 whose engine is pinned by whoever posts it. `bun` is a different kind of pin: nothing else in the
 architecture can own the interpreter of Babel's own machine half.
+
+**THE RUNTIME SCRATCH HAS ONE SIZE, AND EVERY OPERATION THAT WRITES IT DECLARES MORE.** On a
+native worker the `runtime` anchor is the named-output tmpfs `execution.outputBytes` sizes: 1 MiB
+by default, at most 1 GiB, in whole 4 KiB pages (atyrode/manifold at `7b5fe301`,
+`infra/native/module.nix:263-264,276-277`). Every job that cuts a lease from it shares it: `scan`,
+`archive`, `prepare` and `verify` write `atyrode.babel.outputs` there, and `atyrode.omp.session`
+writes its own lease and extracts a bound material into it. The runtime refuses a job whose
+`limits.outputBytes` is below that capacity, `bounded-output-storage-required`, and charges the
+whole capacity before stdout and stderr (`packages/agent/src/job-linux.ts:440-453,804`). So the
+rule is that every operation writing the scratch declares `outputBytes` strictly above it, and
+the difference is that job's stdio. Babel's four declare 1 GiB, Manifold's per-job ceiling
+(`packages/protocol/src/jobs.ts:86`) and the omp session's own declaration; the scratch is
+`RUNTIME_SCRATCH_BYTES` (`contract.ts`), 768 MiB with `outputInodes` 10000, which leaves each of
+them 256 MiB of stdio, and `test/contract.test.ts` holds every runtime-writing operation above it.
+Until this, `scan`, `archive` and `verify` declared 64 MiB and `prepare` 512 MiB, so a scratch
+big enough for a material above 64 MiB refused the other three. The order is the bundle first,
+then the scratch: before raising it, confirm every operation installed on that machine that
+writes it declares more.
 
 ### What runs a model, and why it is not this bundle
 
@@ -254,12 +274,14 @@ preparing, whose `atyrode.babel.prepare` job is cancelled — and whose ROW IS C
 races the seal loses. A stop that left the row open would be the operator pressing stop and
 the account spending afterwards.
 
-**AND THE SELECTION'S BOUND IS UNDER THE JOB'S, WITH ROOM.** `outputBytes` is the AGGREGATE
-the owner seals against — stdout, stderr and both of `prepare`'s leases come out of one
-running budget, and each lease is a ustar archive carrying 512 bytes of header and padding
-per member. So `MAX_MATERIAL_BYTES` is 448 MiB under a 512 MiB job: a selection admitted at
-exactly the job's bound would pack to it and be refused `output_collection_refused` after the
-full read, which is the failure the pre-post check exists to move.
+**AND THE SELECTION'S BOUND IS UNDER THE MACHINE'S, WITH ROOM.** The machine has two bounds.
+The leases are written into the runtime scratch, 768 MiB. And `outputBytes` is the AGGREGATE the
+owner seals against — stdout, stderr and both of `prepare`'s leases come out of one running
+budget, and each lease is a ustar archive carrying 512 bytes of header and padding per member.
+`MAX_MATERIAL_BYTES` is 448 MiB, more than a tenth under both and 64 MiB under the 512 MiB
+`inputBytes` the omp session extracts the material into: a selection admitted at exactly a
+bound would fill it and fail after the full read, which is the failure the pre-post check
+exists to move.
 
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.
@@ -391,7 +413,8 @@ locations and the workspaces a session names are host paths outside them (#254 r
 decision this needs).
 
 Two more things an enrolled machine's operator must arrange, because a manifest cannot. The
-`runtime` anchor must be a dedicated bounded tmpfs, since the named-output lease is cut from it.
+`runtime` anchor must be a dedicated bounded tmpfs, since the named-output lease is cut from it,
+sized to `RUNTIME_SCRATCH_BYTES` as the machine half above says.
 And the `home` anchor must be where the sessions are: `scan`, `archive` and `prepare` read
 `~/.omp/agent/sessions`, `~/.codex` and `~/.claude` beneath it, and a job whose read location is
 missing fails to start. **Creating those directories makes the jobs start, not read anything.**

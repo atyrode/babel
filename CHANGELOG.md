@@ -956,6 +956,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **One runtime scratch size admits every Babel operation that writes it.** `scan`, `archive`
+  and `verify` declared 64 MiB of output and `prepare` 512 MiB, all cut from the one tmpfs the
+  `runtime` anchor mounts. Manifold refuses a job whose `outputBytes` is below that tmpfs's
+  capacity (`bounded-output-storage-required`), so a machine sized to hold a material above
+  64 MiB refused the other three. All four now declare 1 GiB, Manifold's per-job ceiling and
+  what `atyrode.omp.session` declares, and the scratch a machine is sized to is spelled once as
+  `RUNTIME_SCRATCH_BYTES`: 768 MiB with 10000 inodes, which leaves each job 256 MiB of stdio.
+  `MAX_MATERIAL_BYTES` stays 448 MiB, under both the scratch and the session's 512 MiB
+  `inputBytes`. The building guide and runbook §6 give the sizing rule and the operator step,
+  bundle first and then scratch. The contract test holds every runtime-writing operation above
+  the scratch and the material bound under it, and fails on the old declarations.
+
 - **A Code-backed review runs the model its profile names, or does not run.** `CODE_REV` and
   `@atyrode/manifold-code` move to atyrode/code#219, whose omp closure carries
   atyrode/manifold-omp#81. A one-shot now starts with exactly its configured model in scope.

@@ -51,7 +51,7 @@ export const DEFAULT_LIMITS: JobLimits = {
   timeoutMs: 3_600_000,
   memoryBytes: 2_147_483_648,
   processes: 64,
-  outputBytes: 67_108_864,
+  outputBytes: 1_073_741_824,
 };
 
 // ---------------------------------------------------------------------------- the machine block
