@@ -1064,6 +1064,84 @@ test("a batch is held by claims with a job, and abandoning four dead ones admits
   expect((await coord.spend(NOW)).total).toBeCloseTo(0.4, 10);
 });
 
+test("an abandoned review drawn again is granted at the next fence, its dead epoch charged once", async () => {
+  // Reviews only: an analysis assignment names itself by its retry, not by an ordinal.
+  const { db, coord } = await deployment({
+    enabled: true,
+    activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0 },
+  });
+  const id = await record(db, "hyp_00000001", "hypothesis", 40);
+  await filing(db, id, "ent_0000000a");
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+  const assignment = drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n }));
+  expect(assignment.activity).toBe("review");
+  const first = await coord.claim({ assignment, runId: "run_a", jobId: "job_a", now: NOW });
+  if (first.outcome !== "granted") throw new Error(first.refusal.detail);
+  const abandoned = await coord.abandon({
+    id: assignment.id,
+    fence: 1,
+    reason: "job_a died",
+    now: NOW,
+  });
+  expect(abandoned.outcome).toBe("abandoned");
+
+  // The abandonment withholds nothing, so a later draw offers the same record and role — under
+  // the same assignment id. Refusing that as finished stopped every cycle that drew it first.
+  let again: Assignment | undefined;
+  for (let seed = 0n; seed < 64n && again === undefined; seed += 1n) {
+    const offered = drawn(await coord.draw({ runId: "cycle_2", now: NOW + 1000, seed }));
+    if (offered.role === assignment.role) again = offered;
+  }
+  if (again === undefined) throw new Error(`no draw offered the ${assignment.role} role again`);
+  expect(again.id).toBe(assignment.id);
+  // Two workers reaching for the reopened epoch get one winner and one conflict.
+  const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
+  const raced = await Promise.all([
+    coord.claim({ assignment: again, runId: "run_b", jobId: "job_b", now: NOW + 1000 }),
+    other.claim({ assignment: again, runId: "run_x", jobId: "job_x", now: NOW + 1000 }),
+  ]);
+  expect(raced.map((result) => result.outcome).sort()).toEqual(["granted", "refused"]);
+  const loser = raced.find((result) => result.outcome === "refused");
+  expect(loser?.outcome === "refused" ? loser.refusal.reason : null).toBe("conflict");
+  const second = raced.find((result) => result.outcome === "granted");
+  if (second?.outcome !== "granted") throw new Error("no worker was granted the reopened epoch");
+  expect(second.claim.fence).toBe(2);
+  const winner = second.claim.runId;
+
+  // The dead epoch keeps its charge on its own row and cannot report into the new one.
+  const archived = await db.query<{ outcome: string; run_id: string }>(
+    `SELECT outcome, run_id FROM claims WHERE id = ?`,
+    [`${assignment.id}~1`],
+  );
+  expect(archived).toEqual([{ outcome: "abandoned", run_id: "run_a" }]);
+  const stale = await coord.finish({
+    id: assignment.id,
+    runId: "run_a",
+    fence: 1,
+    cost: 0.01,
+    outcome: "completed",
+    now: NOW + 2000,
+  });
+  expect(stale.outcome).toBe("refused");
+  const spend = await coord.spend(NOW + 2000);
+  expect(spend.byRun["run_a"]).toBeCloseTo(assignment.reservedCost, 10);
+  expect(spend.total).toBeCloseTo(2 * assignment.reservedCost, 10);
+
+  // A claim that finished any other way is still finished.
+  const done = await coord.finish({
+    id: assignment.id,
+    runId: winner,
+    fence: 2,
+    cost: 0.01,
+    outcome: "completed",
+    now: NOW + 3000,
+  });
+  expect(done.outcome).toBe("finished");
+  const third = await coord.claim({ assignment: again, runId: "run_c", now: NOW + 4000 });
+  if (third.outcome !== "refused") throw new Error("a completed assignment was granted again");
+  expect(third.refusal.reason).toBe("finished");
+});
+
 test("a grant whose job was never posted holds no batch slot", async () => {
   const { db, coord } = await deployment({ enabled: true, batchSize: 1, perCycleCost: 0.4 });
   const id = await record(db, "hyp_00000001", "hypothesis", 40);
