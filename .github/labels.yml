@@ -81,7 +81,7 @@
   description: "Lands in babel/server: the conductor, the prompt engine, review, drains"
 - name: "area:machine"
   color: "c5def5"
-  description: "Lands in babel/machine: scan, prepare, archive, restic, the adapters"
+  description: "Lands in babel/machine: catalog, prepare, archive, restic, the adapters"
 - name: "area:feed"
   color: "c5def5"
   description: "Lands in babel/feed: the reading surface"

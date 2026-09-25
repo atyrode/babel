@@ -1,7 +1,12 @@
 import type { SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
 
-import { MATERIAL_INDEX, MATERIAL_ROOT, MATERIAL_SESSIONS } from "../../contract.ts";
+import {
+  MATERIAL_INDEX,
+  MATERIAL_ROOT,
+  MATERIAL_SESSIONS,
+  type TitleProvenance,
+} from "../../contract.ts";
 import { MAX_TITLE_RUNES, boundedTitle } from "../../machine/adapters/codex-title.ts";
 import { REFUSALS } from "../../machine/results.ts";
 import { ANSWER_FENCE, answerOf } from "./prompts.ts";
@@ -52,13 +57,11 @@ export const MAX_TITLE_BATCH = 20;
 /**
  * THE WORD THIS LANE WRITES INTO `sessions.title_provenance`.
  *
- * The vocabulary is `machine/adapters/identity.ts`'s `TITLE_PROVENANCES` and the third of its
- * three words has never had a writer: "a model summary is a guess that cost money and a scan
- * never produces one". This is the writer. It is spelled here rather than imported because
- * that module reaches for `node:os` to find a harness's default roots, and the server half is
- * not a place that may.
+ * The vocabulary is the contract's `TITLE_PROVENANCES`, and the third of its three words is one
+ * no machine row carries: the contract's session row refuses it, because a model summary is a
+ * guess that cost money. This lane is its one writer.
  */
-export const TITLE_INFERRED: string = "inferred";
+export const TITLE_INFERRED: TitleProvenance = "inferred";
 
 /** One session a titling run was offered, as the prompt names it. */
 export interface TitleSubject {
@@ -89,8 +92,8 @@ export interface InferredTitle {
  * the ceremony the retired product spelled `babel sessions title clear`.
  *
  * THE CATALOG IS ONLY OVERLAID WHERE IT IS STILL BLANK. `WHERE title IS NULL` is the whole of
- * "a read title always wins": between this run's press and its answer a scan may have found a
- * title the harness itself recorded, and that one is the session's own word about itself
+ * "a read title always wins": between this run's press and its answer a preparation may have
+ * read a title the harness itself recorded, and that one is the session's own word about itself
  * where this is a guess that cost money. The `session_titles` row is written either way, so
  * what was paid for stays readable even when it is not what the listing shows.
  */

@@ -364,7 +364,7 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
       lookup.get(
         namespace ?? "",
         session.selector,
-        seen.capture ?? "",
+        seen.capture,
         session.harness,
         session.sourceId,
         session.primaryPath,
@@ -540,7 +540,7 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
           .run(
             frozen.namespace,
             session.selector,
-            seen.capture ?? "",
+            seen.capture,
             session.harness,
             session.sourceId,
             session.primaryPath,
@@ -577,7 +577,7 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
           !observed(after) ||
           after.size !== seen.size ||
           after.modifiedAt !== seen.modifiedAt ||
-          (after.capture ?? "") !== (seen.capture ?? "") ||
+          after.capture !== seen.capture ||
           reading.bytes !== seen.size ||
           (frozen.repair !== undefined &&
             (reading.captureDigest !== frozen.repair.captureDigest ||

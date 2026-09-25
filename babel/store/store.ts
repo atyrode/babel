@@ -1135,8 +1135,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * largest measured defect: no ranking, routing or retrieval change touches a record that
    * never said what it was about. The join existed the whole time and nothing walked it. A
    * record rests on observations, an observation cites a session, and the catalog holds the
-   * repository the machine half probed in that session's own workspace
-   * (`machine/repository.ts` → `sessions.repository_remote`).
+   * repository the hub asked of the machine that session's archive label maps to
+   * (the conductor's `machines.repository` → `sessions.repository_remote`).
    *
    * SO THE WALK IS THE WORK. `rests` is the record and everything under it: an observation
    * hangs off its hypothesis by `parent_id`, and `consolidates` and `addresses` run from the
@@ -1149,7 +1149,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * git answered in that directory and Babel wrote down what it said. A remote only a payload
    * carries is `named`: the run read it in a transcript, which is a claim about a conversation
    * and not a repository Babel ever stood in. A remote that is both is observed, and keeps the
-   * commit the evidence recorded — the catalog has no commit to offer, because the scan probes
+   * commit the evidence recorded — the catalog has no commit to offer, because the hub asks for
    * a repository's identity and never its position, and the current HEAD of a working tree is
    * not evidence about the past.
    *

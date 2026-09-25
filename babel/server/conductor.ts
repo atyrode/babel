@@ -357,7 +357,7 @@ export type RepositoryOutcome =
 
 /**
  * The one verb of `ctx.machines` this loop uses: `engine.machines.repository` (#535), asked of
- * the agent standing on the host rather than of the sandbox a scan ran in.
+ * the agent standing on the host rather than of the sandbox a job ran in.
  */
 export interface MachinesSlice {
   repository(machineId: string, path: string): Awaitable<RepositoryOutcome>;

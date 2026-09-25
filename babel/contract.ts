@@ -282,12 +282,13 @@ export const EntityIdSchema = z.string().regex(/^ent_[0-9a-f]{8,64}$/);
 /**
  * HOW A RECORD CAME TO NAME A REPOSITORY, which is two claims rather than one (#183).
  *
- * `observed` is Babel's own: the scan probed the workspace a cited session worked in and git
- * answered, so the repository is a fact this deployment established (`machine/repository.ts`,
- * `sessions.repository_remote`). `named` is the evidence's: a run read a repository in a
- * transcript and nothing of Babel's ever stood in that checkout. Folding the two together would
- * let a repository a conversation merely mentioned read as one Babel saw, which is the quiet
- * kind of error 42.7% of the corpus not naming its codebase at all is the loud kind of.
+ * `observed` is Babel's own: the hub asked the machine a cited session's archive label maps to
+ * what the session's workspace is, and git answered there, so the repository is a fact this
+ * deployment established (the conductor's `machines.repository`, `sessions.repository_remote`).
+ * `named` is the evidence's: a run read a repository in a transcript and nothing of Babel's ever
+ * stood in that checkout. Folding the two together would let a repository a conversation merely
+ * mentioned read as one Babel saw, which is the quiet kind of error 42.7% of the corpus not
+ * naming its codebase at all is the loud kind of.
  */
 export const REPOSITORY_PROVENANCES = ["observed", "named"] as const;
 export const RepositoryProvenanceSchema = z.enum(REPOSITORY_PROVENANCES);
@@ -438,10 +439,10 @@ export const ACTIONS = {
   /**
    * VERIFYING THE ARCHIVE, AND RESTORING OUT OF IT (#338).
    *
-   * It posts `atyrode.babel.verify` on the machine that holds the repository: `restic check`,
+   * It posts `atyrode.babel.verify` on a machine holding the archive binding: `restic check`,
    * structurally or over the stored bytes, and optionally ONE catalogued session restored from
-   * a named snapshot and proved byte-exact against the digest `scan` recorded. The verdict
-   * arrives as the run's receipt, which the `run` door already serves.
+   * its catalogued snapshot and proved byte-exact against the digest its preparation recorded.
+   * The verdict arrives as the run's receipt, which the `run` door already serves.
    *
    * There is no companion act for forgetting, pruning or unlocking, and there will not be one
    * by accident: the machine half admits a closed set of restic verbs and none of those three
@@ -1920,10 +1921,12 @@ export const CONDUCTOR_TALLY_KEY = "conductor:tally";
  *
  * THE IDS ARE NAMESPACED because the engine requires it: `engine.jobs.install` refuses a machine
  * half whose operation or location keys are not prefixed with the plugin's own id
- * (`unqualified_declaration`), so a bare `scan` is a declaration no hub would ever install.
+ * (`unqualified_declaration`), so a bare `catalog` is a declaration no hub would ever install.
  */
 export const MACHINE_OPERATIONS = {
-  scan: `${BABEL_PLUGIN_ID}.scan`,
+  /** What the fleet archive holds (#453): the `babel` snapshots and the primary logs in them,
+   *  one row per session naming its newest capture. The conductor's beat. */
+  catalog: `${BABEL_PLUGIN_ID}.catalog`,
   archive: `${BABEL_PLUGIN_ID}.archive`,
   prepare: `${BABEL_PLUGIN_ID}.prepare`,
   /** The archive's reading half (#338): `restic check`, and one session restored from a named
@@ -1966,8 +1969,8 @@ export type OperationName = (typeof OPERATIONS)[keyof typeof OPERATIONS];
 
 /**
  * The word the machine half's CLI takes and the receipt records — the KEY of the declared table.
- * A binary's verb is `scan`, not `atyrode.babel.scan`: the namespace exists so a hub can tell
- * two plugins' operations apart, and there is only ever one plugin inside that binary.
+ * A binary's verb is `catalog`, not `atyrode.babel.catalog`: the namespace exists so a hub can
+ * tell two plugins' operations apart, and there is only ever one plugin inside that binary.
  */
 export type OperationWord = Exclude<keyof typeof MACHINE_OPERATIONS, "recall">;
 
@@ -2483,7 +2486,7 @@ export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> 
   "explore-topic": OPERATIONS.explore,
   "review-backlog": OPERATIONS.evaluate,
   "file-and-tidy": OPERATIONS.evaluate,
-  "keep-going": OPERATIONS.scan,
+  "keep-going": OPERATIONS.catalog,
 };
 
 /**
@@ -2493,7 +2496,7 @@ export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> 
  *   `explore` — a Code session over sealed material. It reaches a model, so it needs a CODE
  *               PROFILE: the operator picks a saved one or parametrizes a workspace in Code's
  *               generator, and the launch carries its container and the revision he was shown.
- *   `beat`    — one `atyrode.babel.scan`, Babel's own job. It reaches no model and takes no
+ *   `beat`    — one `atyrode.babel.catalog`, Babel's own job. It reaches no model and takes no
  *               profile; a form that demanded one would be asking for a field nothing reads.
  *   `draw`    — a review the COORDINATOR picks, claims under a fence and dispatches through
  *               Code with a blinded projection of the record. The conductor owns that shared
@@ -2554,7 +2557,7 @@ export const LaunchInputSchema = z.strictObject({
    * THE CODE PROFILE THE RUN IS POSTED ON (#279), for a preset that reaches a model.
    *
    * Optional on the schema and required by the presets that need one, because `keep-going` is a
-   * `scan` of Babel's own and reaches no model at all: a field the schema demanded would make
+   * `catalog` of Babel's own and reaches no model at all: a field the schema demanded would make
    * the beat carry a profile nothing would read. `startExplore` refuses by name when a model
    * preset names none, so the requirement is stated where it is true.
    */
@@ -2982,8 +2985,9 @@ export const PolicyResultSchema = z.strictObject({
 
   THE REPORT NAMES CLASSES AND POSITIONS AND NEVER A VALUE. `sites` carries the locator of each
   redaction: the session, the record, and the range inside it. Resolving that locator back into
-  bytes needs the machine that holds the session (`resolveRedaction`), so the receipt travels to
-  the hub carrying no credential and no commitment to one.
+  bytes needs the capture's own bytes (`resolveRedaction`), which only a job holding the archive
+  binding can fetch, so the receipt travels to the hub carrying no credential and no commitment
+  to one.
 */
 
 /** The shape of a preflight report, recorded in it so a reader never guesses which layout it has. */
@@ -3284,7 +3288,7 @@ export const ReceiptSchema = z.strictObject({
    * launcher's words; these two fields are the flat pair every reader wants — the run row, the
    * drain's fold, the receipt page — and they are the ones a drain is measured by, because
    * "drain THIS account" is answered by summing the runs that named it and by nothing else.
-   * Absent for a run that reaches no model at all (`scan`, `archive`, `prepare`).
+   * Absent for a run that reaches no model at all (`catalog`, `archive`, `prepare`, `verify`).
    */
   account: z.strictObject({ provider: z.string(), identityKey: z.string() }).optional(),
   model: z.string().optional(),
@@ -3724,18 +3728,19 @@ export function diffRunTraces(a: RunTrace, b: RunTrace): RunDiff {
  *   `machine.tools` entry (url, digest and extracted-entry digest measured by
  *   `scripts/measure-runtime-tools.ts`). `jobResourceRequirements` drops a tool the
  *   installation's own declaration pins, which is what makes the operations satisfiable.
- * - `development` is the OWNER'S toolset, advertised by the fleet, and `git` lives inside its
- *   closure. So scan and prepare name the toolset rather than the binary; `machine/repository.ts`
- *   still resolves git at `RUNTIME_TOOL_BIN` first and on PATH second.
+ * - `development` is the OWNER'S toolset, advertised by the fleet, and no operation names it any
+ *   more: `git` lives inside its closure, and the one operation that ran it, `scan`, retired with
+ *   #453. Repository identity is the hub's question, asked of a machine through Manifold.
  * - `system` is the owner's reviewed, digest-promoted native closure. A pinned bun is
  *   dynamically linked (runtime-tools.json records the measured interpreter and DT_NEEDED list)
  *   and a job sandbox carries no libc, so every operation that runs it names this too.
- * - `restic` stays the owner's, by name, and only `archive` asks for it: upstream's whole Linux
- *   distribution is bare bzip2 and `MachineArtifactSchema` takes `raw`, `zip` or `tar.gz`, so
- *   there is nothing honest to pin. A machine that binds no restic disables that ONE operation
- *   (`jobResourceRequirements` is per-operation) and scan and prepare still reach `ready`.
+ * - `restic` stays the owner's, by name, and every operation asks for it, because every one reads
+ *   or writes the archive: upstream's whole Linux distribution is bare bzip2 and
+ *   `MachineArtifactSchema` takes `raw`, `zip` or `tar.gz`, so there is nothing honest to pin. A
+ *   machine that binds no restic can run none of them (`jobResourceRequirements` is
+ *   per-operation, and every operation names it).
  */
-export const RUNTIME_TOOLS = ["bun", "development", "restic", "system"] as const;
+export const RUNTIME_TOOLS = ["bun", "restic", "system"] as const;
 /** Where a runtime tool is bound inside the sandbox: `<RUNTIME_TOOL_BIN>/<alias>`. */
 export const RUNTIME_TOOL_BIN = "/runtime/bin";
 

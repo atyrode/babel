@@ -18,9 +18,9 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   the managed cache carries the rest to the next run. The receipt reports per-label counts and
   the output lease's capacity. Recall and the catalog now share one listing rule
   (`babel/machine/archive-listing.ts`). `cat`, `snapshots`, `check`, `ls`, `dump` and `restore`
-  run with `--no-lock`, while `init` and `backup` keep restic's lock. Nothing dispatches the
-  catalog yet. Tests against a synthetic repository cover chain order, the cap, the memory,
-  the tag exclusion, offset times, and a restic killed mid-listing leaving no lock (#453).
+  run with `--no-lock`, while `init` and `backup` keep restic's lock. Tests against a synthetic
+  repository cover chain order, the cap, the memory, the tag exclusion, offset times, and a
+  restic killed mid-listing leaving no lock (#453).
 
 - **The hub selects archived captures and ingests the catalog's rows.** A preparation is handed
   the exact captures it reads, grouped by snapshot with each path, size and modification time,
@@ -58,8 +58,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   hosted on that machine. A label may map to itself. The capture-aware upsert
   (`babel/store/sessions.ts`) keeps a session on its newest capture and keeps the digest of an
   unchanged observation. The contract now fixes the capture, `prepare`/`catalog` input, session
-  row and receipt shapes the archive slices implement. No operation is declared, rebound or
-  retired yet. Regressions cover the upsert rules, label mapping and the 1.12 migration (#453).
+  row and receipt shapes the archive slices implement. Regressions cover the upsert rules, label
+  mapping and the 1.12 migration (#453).
 
 - **Zero autonomous activity weights also stop auxiliary work.** The conductor withdraws its
   scan beat and posts no new title-generation preparation. Explicit explorations and drains keep
@@ -906,6 +906,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   resolvable through the proxy.
 
 ### Changed
+
+- **`catalog` is the beat, `prepare` binds the archive, and `scan` is retired.** Analysis reads
+  the fleet's restic archive and never a machine's own session files. The manifest declares
+  `atyrode.babel.catalog` — restic, the `atyrode.babel.restic` storage binding, host network, its
+  memory and restic's index in the managed cache, 1 GiB of output — and `keep-going` and the
+  conductor's beat post it. `atyrode.babel.prepare` binds the same service with host network and
+  mounts no `home` location. `atyrode.babel.scan`, `machine/scan.ts` and the git observer only
+  it used (`machine/repository.ts`) are deleted, with the adapters' file-based discovery and
+  description; `RETIRED_OPERATIONS` keeps its historic runs named, and Watch labels a catalog run
+  "Catalog". `archive` stays the collector, with its `home` locations until a Manifold anchor
+  replaces them, and writes an empty `sessions` document: the catalog lists its snapshots like
+  any other `babel` snapshot, so captures have one writer. Every operation asks the owner for
+  `restic` and none for `development`. `test/contract.test.ts` pins host network, the storage
+  binding and restic on every operation, and a `home` anchor on `archive` alone; the packed
+  bundle runs `catalog`, and the dispatcher runs `catalog` and `prepare`, against a synthetic
+  archive (#453).
 
 - **`prepare` reads the captures the hub selected out of the archive, and never a local file.**
   Its input is the contract's `PrepareInputSchema`: captures grouped by snapshot, each with its

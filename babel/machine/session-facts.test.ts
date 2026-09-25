@@ -15,7 +15,13 @@ import type { RecordSink } from "./output.ts";
 import { secretScan } from "./preflight.ts";
 import { captureFacts, type CaptureFacts } from "./session-facts.ts";
 import { sessionDigester } from "./session-records.ts";
-import { writeClaudeSession, writeCodexRollout, writeOmpSession } from "./test/fixtures.ts";
+import {
+  type CodexSpec,
+  writeClaudeSession,
+  writeCodexRollout,
+  writeCodexState,
+  writeOmpSession,
+} from "./test/fixtures.ts";
 
 let root = "";
 
@@ -100,6 +106,48 @@ test("an omp capture states its recorded title, its workspace and the harness's 
   expect(replayed).toEqual(sealed);
 });
 
+test("an omp log whose turns carry no usage block states no spend, not a free session", async () => {
+  const path = await writeOmpSession(join(root, "quiet"), {
+    project: "-home-alex-quiet",
+    stem: "2026-09-01T00-00-00-000Z_05e0",
+    title: "Written before OMP recorded usage",
+    turns: [{ toolCalls: 1 }, { toolCalls: 0 }],
+    toolErrors: 1,
+  });
+  const { sealed } = await read("omp", path);
+  // No totals at all, not zeros beside a turn count; and no workspace, as no record names one.
+  expect(sealed).toEqual({
+    title: "Written before OMP recorded usage",
+    title_provenance: "recorded",
+  });
+});
+
+test("a torn tail costs only itself: the records before it still state their facts", async () => {
+  const path = await writeOmpSession(join(root, "torn"), {
+    project: "-home-alex-torn",
+    stem: "2026-09-01T00-00-00-000Z_06f0",
+    title: "Half a log",
+    cwd: "/home/alex/torn",
+    turns: [{ usage: { totalTokens: 10, cost: 0.5 } }],
+  });
+  // A harness mid-append when the capture was taken: a record cut short, with no newline.
+  await Bun.write(
+    path,
+    (await Bun.file(path).text()) + '{"type":"message","message":{"role":"assist',
+  );
+  const { sealed, replayed } = await read("omp", path);
+  expect(sealed).toEqual({
+    title: "Half a log",
+    title_provenance: "recorded",
+    workspace: "/home/alex/torn",
+    cost_usd: 0.5,
+    total_tokens: 10,
+    turns: 1,
+    tool_errors: 0,
+  });
+  expect(replayed).toEqual(sealed);
+});
+
 test("a Claude Code capture states its recorded title; a Codex capture's is derived", async () => {
   const claude = await read(
     "claude",
@@ -132,6 +180,61 @@ test("a Claude Code capture states its recorded title; a Codex capture's is deri
     workspace: "/home/alex/manifold",
   });
   expect(codex.replayed).toEqual(codex.sealed);
+});
+
+test("a Codex title is the thread's own request, never a harness template or a parent's replay", async () => {
+  const title = async (spec: Omit<CodexSpec, "date">) =>
+    (
+      await read(
+        "codex",
+        await writeCodexRollout(join(root, "codex-rules"), { date: ["2026", "09", "05"], ...spec }),
+      )
+    ).sealed.title;
+  // A built-in subagent role opens with a fixed harness template, which names nothing.
+  expect(
+    await title({
+      name: "guardian",
+      source: { subagent: { other: "guardian" } },
+      delivered: "The following is the Codex agent history whose request action you are assessing",
+    }),
+  ).toBeUndefined();
+  // A spawned thread may replay its parent: it is titled from its own job, or not at all.
+  expect(
+    await title({
+      name: "spawn-named",
+      source: {
+        subagent: { thread_spawn: { agent_path: "/root/audit_dotfiles/pr49_safety_review" } },
+      },
+      delivered: "Here is the parent's whole conversation, replayed",
+    }),
+  ).toBe("Pr49 safety review");
+  expect(
+    await title({
+      name: "spawn-anonymous",
+      source: { subagent: { thread_spawn: {} } },
+      delivered: "Here is the parent's whole conversation, replayed",
+    }),
+  ).toBeUndefined();
+  // With no delivered turn, the model's input stream is read past injected context blocks.
+  expect(
+    await title({
+      name: "fallback",
+      responseItem: "Reconcile the two catalogs and report the difference",
+    }),
+  ).toBe("Reconcile the two catalogs and report the difference");
+  expect(
+    await title({
+      name: "injected-only",
+      responseItem:
+        "<recommended_plugins>\nHere is a list of plugins that are available\n</recommended_plugins>",
+    }),
+  ).toBeUndefined();
+  // The host state records every prompt on the host; it is no one thread's, and never titled.
+  const state = await read(
+    "codex",
+    await writeCodexState(join(root, "codex-state"), [1_756_000_000]),
+  );
+  expect(state.sealed).toEqual({});
 });
 
 test("a title that held a credential reaches the row redacted", async () => {

@@ -62,7 +62,10 @@ function metadataText(value: unknown, maxBytes: number): string | null {
   return typeof value === "string" && value !== "" ? clipUtf8(value, maxBytes).text || null : null;
 }
 
-/** Same Codex message fields as its adapter, without retaining or encoding oversized parts. */
+/**
+ * The text of a Codex `user_message` event or user `response_item`: a bare string, or the text
+ * parts of a list joined by newlines, bounded without retaining or encoding oversized parts.
+ */
 function requestText(body: Record<string, unknown>): string {
   const message = body["message"];
   if (typeof message === "string" && message !== "")
@@ -194,7 +197,7 @@ export function metadataFold(harness: Harness): MetadataFold {
     finish() {
       if (harness !== "codex")
         return { title, titleProvenance: title === null ? null : "recorded", workspace };
-      const derived = metadataText(deriveTitle(codex).title, titleBytes);
+      const derived = metadataText(deriveTitle(codex), titleBytes);
       return {
         title: derived,
         titleProvenance: derived === null ? null : "derived",

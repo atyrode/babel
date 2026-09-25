@@ -496,8 +496,8 @@ export async function prepare(
       throw new Refused(null, `${invalid.ref.selector} is not a session a preparation can name`);
     }
     // A capture NAMED for a scope and excluded from it is refused, never dropped: what was
-    // asked for is not what would be prepared. A content query only offers candidates, so there
-    // Babel's own transcripts are left out of what is eligible and counted.
+    // asked for is not what would be prepared. A content query only offers candidates, so in a
+    // query Babel's own transcripts are left out of what is eligible and counted instead.
     const own = (capture: Capture): boolean =>
       !input.agentSessions && babelOwnLog(capture.ref.primaryPath);
     const named = input.query === undefined ? offered.find(own) : undefined;

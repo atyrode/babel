@@ -140,9 +140,10 @@ There is one decision per tool, and the four answers are different:
   own Bun is not the pinned one is refused, because `bun test` proves the half by running it
   under the LOCAL bun while the manifest declares the machine runs the pinned one.
 - **`development` is the owner's toolset, and no Babel operation names it any more.** `git` lives
-  inside its closure, and `scan` named the toolset so `machine/repository.ts` could fingerprint a
-  scanned workspace. With `scan` retired the repository question is the hub's, asked of the
-  machine a session's archive label maps to, and nothing on a job machine runs git.
+  inside its closure, and `scan` named the toolset so the machine half could fingerprint a
+  scanned workspace with git. With `scan` retired, and its git observer deleted with it, the
+  repository question is the hub's, asked of the machine a session's archive label maps to, and
+  nothing on a job machine runs git.
 - **`system` is the owner's reviewed, digest-promoted native closure.** A pinned bun is
   dynamically linked — `runtime-tools.json` records the measured interpreter
   (`/lib64/ld-linux-x86-64.so.2`, `/lib/ld-linux-aarch64.so.1`) and DT_NEEDED list

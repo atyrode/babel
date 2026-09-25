@@ -367,8 +367,8 @@ test("the roster is profiles, launch, verify and stop, and none is governed at a
   expect(profiles?.action.caps).toEqual(["containers:read"]);
   expect(profiles?.action.requirements).toBeUndefined();
 
-  // A launch posts Babel's OWN `prepare` or `scan` job and asks Code to post the session, so it
-  // keeps the delegates that posting needs — reading the job back, the locations the sealed
+  // A launch posts Babel's OWN `prepare` or `catalog` job and asks Code to post the session, so
+  // it keeps the delegates that posting needs — reading the job back, the locations the sealed
   // leases are cut from, the machine read `ready` describes with before anything is posted, and
   // the `machines:run` the posting itself is discharged against (#448) — and names no governed
   // node, because the operations a requirement would name (`explore`, `evaluate`) are declared

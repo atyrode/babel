@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { sessionRef } from "./adapters/index.ts";
 import { readingCache, type Observation } from "./cache.ts";
 
-test("a session slot reuses only its exact immutable capture, never another capture or the live source", async () => {
+test("a session slot reuses only its exact immutable capture, never another capture", async () => {
   const dir = mkdtempSync(join(tmpdir(), "babel-reading-captures-"));
   // No source exists here: cache reuse must only replay the supplied normalized stream.
   const session = sessionRef("omp", "capture-boundary", join(dir, "unopened.jsonl"));
@@ -15,7 +15,6 @@ test("a session slot reuses only its exact immutable capture, never another capt
   const versions: { seen: Observation; text: string }[] = [
     { seen: { size: 17, modifiedAt: 1000, capture: "snapshot-a" }, text: "alpha" },
     { seen: { size: 17, modifiedAt: 1000, capture: "snapshot-b" }, text: "bravo" },
-    { seen: { size: 17, modifiedAt: 1000 }, text: "local" },
   ];
 
   try {

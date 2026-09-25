@@ -534,7 +534,7 @@ test("the roster is a start, a dry read and a stop, and none of them names a nod
   // version-bound consent required" and the operator never heard `engine_pending`. The governed
   // requirement returns with Code's node. What it does carry is what its own first fan needs:
   // `startExplore`/`startBeat` describe the machine through `ready` before posting, and then post
-  // Babel's own `prepare` or `scan` — a describe outside the door's ceiling is refused
+  // Babel's own `prepare` or `catalog` — a describe outside the door's ceiling is refused
   // `job_capability_absent:machines:read`, and a posting outside it `authority_or_consent_refused`
   // at `execute` (#448), before any slot is filled.
   expect(begin?.action.caps).toEqual(["containers:read"]);

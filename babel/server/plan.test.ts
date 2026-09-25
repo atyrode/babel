@@ -178,7 +178,7 @@ test("every verb the boundary serves passes straight through, arrays and all", a
       return await Promise.resolve({
         jobId: "j1",
         machineId: "m",
-        operationId: "scan",
+        operationId: "catalog",
         state: "queued",
         result: null,
       });

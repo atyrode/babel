@@ -359,6 +359,7 @@ export const FRESHNESS_NOTE: Record<string, string> = {
  * that fell back to a bare id would read as a kind this panel never heard of.
  */
 export const RUN_KIND_LABELS: Record<string, string> = {
+  [OPERATIONS.catalog]: "Catalog",
   [OPERATIONS.explore]: "Exploration",
   [OPERATIONS.evaluate]: "Review",
   [OPERATIONS.prepare]: "Preparation",

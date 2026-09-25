@@ -42,7 +42,7 @@ function candidate(id: string, size = 10): IndexedSession {
   // These paths intentionally do not exist: only the supplied callback may read a source.
   return {
     session: sessionRef("omp", id, `/unopened-session-index-fixture/${id}.jsonl`),
-    seen: { size, modifiedAt: 1000 },
+    seen: { size, modifiedAt: 1000, capture: "capture-a" },
   };
 }
 
@@ -248,7 +248,7 @@ test("source identity, observation and every reading context field participate i
     { ...original, session: { ...original.session, primaryPath: "/moved/log" } },
     { ...original, seen: { ...original.seen, size: 11 } },
     { ...original, seen: { ...original.seen, modifiedAt: 1001 } },
-    { ...original, seen: { ...original.seen, capture: "immutable-capture" } },
+    { ...original, seen: { ...original.seen, capture: "capture-b" } },
     { ...original, namespace: "archive-host" },
     { ...original, seen: { ...original.seen, modifiedAt: 0 } },
   ];
@@ -260,7 +260,7 @@ test("source identity, observation and every reading context field participate i
   }
   let reads = 0;
   expect(
-    await index.build({ ...original, seen: { size: 10, modifiedAt: 0 } }, async (sink) => {
+    await index.build({ ...original, seen: { ...original.seen, modifiedAt: 0 } }, async (sink) => {
       reads += 1;
       return content(original, "wrong")(sink);
     }),

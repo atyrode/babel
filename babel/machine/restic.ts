@@ -18,8 +18,8 @@
     needs (HOME, PATH, TMPDIR) when the parent has them. Behaviour therefore does not drift
     with whatever ambient RESTIC_* variables the machine's shell happens to carry.
   - restic itself is taken from where the owner bound it (`RUNTIME_TOOL_BIN/restic`) first and
-    from PATH second — the same rule as git in machine/repository.ts, because inside a job
-    sandbox there is no PATH and outside one nothing is bound.
+    from PATH second, because inside a job sandbox there is no PATH and outside one nothing is
+    bound.
   - THE VERBS ARE A CLOSED SET ({@link RESTIC_VERBS}) and every invocation is built by
     {@link resticArgv}, which admits a verb or throws. `forget`, `prune`, `repair` and
     `unlock` are absent from that set and from this file: never-delete is policy, and an
@@ -526,7 +526,7 @@ async function readStorage(endpoint: ServiceEndpoint): Promise<ResticStorage> {
 
 /** restic where the owner bound it, and on PATH otherwise: inside a job the sandbox has no
  *  PATH and the tool is at its bound path; outside one — a hand-run, the tests — nothing is
- *  bound and PATH is the answer. The same rule as git in machine/repository.ts. */
+ *  bound and PATH is the answer. */
 async function resticBinary(): Promise<string> {
   const bound = `${RUNTIME_TOOL_BIN}/restic`;
   if (await Bun.file(bound).exists()) return bound;

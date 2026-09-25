@@ -7,7 +7,7 @@ import { readNormalizedRecords } from "./session-index.ts";
 /*
   WHAT A CAPTURE SAYS ABOUT ITSELF, read in the pass that seals it (#453).
 
-  A preparation from the archive has no `scan` beside it to name its sessions, so the facts a
+  A preparation from the archive reads nothing but the captures it is handed, so the facts a
   catalog row carries beyond its capture — the title the harness recorded, the workspace, the
   harness's own usage totals — come out of the one pass `prepare` already makes over each
   capture. The fold reads the NORMALIZED, REDACTED stream the material is sealed from, never the

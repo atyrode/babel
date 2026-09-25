@@ -8,23 +8,15 @@ import { omp } from "./omp.ts";
 /*
   THE ADAPTERS, AND THE THINGS EVERY OPERATION ASKS OF ALL THREE AT ONCE.
 
-  One flat root list is offered to every adapter rather than a root list per harness: the
-  operator configures where his sessions are, and each adapter's layout rule is what keeps a
-  foreign tree out (see codex.ts for the one place that rule had to be sharpened for it).
-  A root that does not exist costs a readdir that fails and nothing else.
+  Every path is offered to every adapter rather than to the adapter of the root it came from:
+  the operator configures where his sessions are, and each adapter's layout rule is what keeps
+  a foreign tree out (see codex.ts for the one place that rule had to be sharpened for it).
+  A backup root that does not exist costs a stat and nothing else.
 */
 
-export type {
-  Adapter,
-  Harness,
-  SessionFacts,
-  SessionRef,
-  SessionUsage,
-  TitleProvenance,
-} from "./identity.ts";
+export type { Adapter, Harness, SessionRef, SessionUsage, TitleProvenance } from "./identity.ts";
 export {
   HARNESSES,
-  LIVE_GRACE_MS,
   TITLE_PROVENANCES,
   babelAnalysisRoot,
   babelOwnLog,

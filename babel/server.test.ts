@@ -178,8 +178,8 @@ function context(
     principal: { id: "operator" },
     database,
     jobs: slice as unknown as GuestHookJobs,
-    // Only a DISPATCH is served one (`serveCtxCall`), and this plugin asks it one question:
-    // what a folder a scan catalogued is. Nothing here catalogues one, so nothing asks.
+    // Only a DISPATCH is served one (`serveCtxCall`), and this plugin asks it one question: what
+    // a folder a catalogued session worked in is. Nothing here catalogues one, so nothing asks.
     machines: {
       repository: async () =>
         await Promise.resolve({ ok: false, reason: "this test enrolls no machine" }),
@@ -623,8 +623,8 @@ test("enabling a store made before the catalog's two columns adds them and keeps
   const { db } = harness;
   // A store exactly as the first shape (`2026-09-12-store-v1`) left it: the tables are there,
   // and `sessions` has neither column. `planDataMigration` runs no chain for a MINOR version,
-  // so if the enable did not add them here nothing ever would — and every session row a `scan`
-  // wrote would name a column the table has not got.
+  // so if the enable did not add them here nothing ever would — and every session row naming
+  // them would name a column the table has not got.
   await db.run(`ALTER TABLE sessions DROP COLUMN live`);
   await db.run(`ALTER TABLE sessions DROP COLUMN kind`);
   await insert(db, "sessions", {
@@ -645,7 +645,7 @@ test("enabling a store made before the catalog's two columns adds them and keeps
   expect(older[0]?.kind).toBe("operator");
   expect(Number(older[0]?.live)).toBe(0);
 
-  // And a row in the shape `scan` writes now lands, which is the whole point of the column.
+  // And a row that names both columns now lands, which is the whole point of the column.
   await insert(db, "sessions", {
     selector: "omp/run-7/explore",
     host: MACHINE,

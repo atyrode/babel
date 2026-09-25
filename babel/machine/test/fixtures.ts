@@ -4,10 +4,11 @@ import { dirname, join } from "node:path";
 /*
   SYNTHETIC SESSION TREES.
 
-  Each writer lays out exactly what one harness writes, in the records the adapters read, so a
-  test can state a layout and a transcript rather than a pile of fixture files. The record
-  shapes are the ones observed in the operator's live corpus (see the adapters' own notes);
-  nothing here is a mock of an adapter, only of a harness's disk.
+  Each writer lays out exactly what one harness writes, record for record, so a test can state a
+  layout and a transcript rather than a pile of fixture files — to back up into a synthetic
+  archive, to claim, or to read as a capture. The record shapes are the ones observed in the
+  operator's live corpus (see the adapters' own notes); nothing here is a mock of an adapter,
+  only of a harness's disk.
 */
 
 async function writeLines(path: string, records: readonly unknown[]): Promise<string> {

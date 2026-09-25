@@ -5811,9 +5811,9 @@ test("a read title that landed while the run was in flight is not overwritten by
   const store = openStore(db);
   const draws = new Draws(db);
   await titlingInFlight(db);
-  // Between the press and the answer a scan read a title out of the log itself. The session's
-  // own word outranks the guess the run is about to come back with — and the run is already
-  // paid for, so the answer is recorded rather than thrown away.
+  // Between the press and the answer a preparation read a title out of the capture itself. The
+  // session's own word outranks the guess the run is about to come back with — and the run is
+  // already paid for, so the answer is recorded rather than thrown away.
   await db.run(`UPDATE sessions SET title = ?, title_provenance = 'recorded' WHERE selector = ?`, [
     "What the harness called it",
     "codex/untitled-a",

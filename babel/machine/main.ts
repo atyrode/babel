@@ -1,5 +1,6 @@
 import { tmpdir } from "node:os";
 import {
+  CatalogInputSchema,
   MACHINE_OPERATIONS,
   PrepareInputSchema,
   RESTIC_CREDENTIAL_FILE,
@@ -30,8 +31,8 @@ import type { ResticConfig } from "./restic.ts";
   WHAT IS NOT HERE: `explore` and `evaluate` (#279). A run that reaches a model is a Code
   session — the operator picks a saved Code profile or parametrizes one in Code's generator,
   and Code's `runSession` door posts the omp job. Babel neither composes a session nor launches
-  omp, so the two lanes that did are not operations of this binary. What remains is the catalog:
-  what is on the machine, what a run may read, and what is kept.
+  omp, so the two lanes that did are not operations of this binary. What remains is the
+  archive: what it holds, what a run may read out of it, and what is kept in it.
 
   `--material` IS `prepare`'S SECOND LEASE, and only `prepare` is given one: the evidence a
   session reads, sealed as its own output so ANOTHER plugin's job can bind it read-only at
@@ -41,12 +42,12 @@ import type { ResticConfig } from "./restic.ts";
   A job supplies both paths through its bindings; the environment variables are the same two
   values for a hand-run on a machine, as `BABEL_RESTIC_BINDING` is for the operations that also
   read a materialized service binding. The operation name is argv's first non-flag word,
-  which is what makes the file work identically under `bun machine/main.ts scan …` (where
+  which is what makes the file work identically under `bun machine/main.ts catalog …` (where
   argv[1] is this script) and as a compiled binary (where argv[1] is already the operation).
 
-  Every operation module is imported on demand. That is not laziness: three operations mean
-  three dependency trees — restic, the digesters, the store's shapes — and a scan that ran on a
-  schedule should not pay for the two it is not.
+  Every operation module is imported on demand. That is not laziness: the operations have
+  dependency trees of their own — the listing, the digesters, the store's shapes — and a catalog
+  that runs on a schedule should not pay for the ones it is not.
 
   A crash still leaves a receipt. An operation that throws has its failure written as
   closure:"failed" with the reason, because the hub learns what a run did from the receipt and
@@ -77,9 +78,9 @@ function resticBinding(): string {
  * Each operation parses its own input with its own schema; only the module knows the shape.
  *
  * The modules are loaded dynamically because the operation is selected from argv at runtime
- * and each one pulls in a dependency tree of its own — restic for `archive`, `verify` and
- * `prepare`, the digesters for `prepare`. A static import graph would make every scheduled scan
- * load all of them.
+ * and each one pulls in a dependency tree of its own — the listing for `catalog`, restic's
+ * writes for `archive`, the digesters for `prepare`. A static import graph would make every
+ * scheduled catalog load all of them.
  */
 const DISPATCH: Record<
   OperationWord,
@@ -91,9 +92,17 @@ const DISPATCH: Record<
     invocation: Invocation,
   ) => Promise<Receipt>
 > = {
-  scan: async (raw, out) => {
-    const { ScanInputSchema, scan } = await import("./scan.ts");
-    return scan(ScanInputSchema.parse(raw), out);
+  catalog: async (raw, out, _progress, _material, invocation) => {
+    const { CATALOG_ENV, catalog } = await import("./catalog.ts");
+    const { openRepo, resticConfig } = await import("./restic.ts");
+    return catalog(CatalogInputSchema.parse(raw), out, {
+      archive: async () =>
+        openRepo(await resticConfig({ credentialFile: resticBinding(), env: process.env })),
+      // Inside a job this is a declared, managed, writable location; outside one — a hand-run,
+      // the tests — nothing is remembered and every snapshot is listed on every run.
+      cacheDir: process.env[CATALOG_ENV.cacheDir]?.trim() ?? "",
+      capacity: () => outputCapacity(invocation.outputDir),
+    });
   },
   archive: async (raw, out) => {
     const { ArchiveInputSchema, archive } = await import("./archive.ts");
