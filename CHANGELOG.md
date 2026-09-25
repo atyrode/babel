@@ -1056,6 +1056,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   machine stamp moves because `machine.js` bundles the changed SDK code. The full frozen gate
   passes 1,203 tests. A disposable engine installs all eleven bundles and dispatches their doors.
 
+- **A draw no longer stalls the hub for five seconds.** An unhardened install runs Babel's
+  server half in-realm, as the preview does, so each statement runs synchronously on the hub's
+  thread. Replayed on a copy of the 2026-09-25 preview store (6,146 records, 4,744 runs), the
+  draw's review tally ran `NOT EXISTS (… supersedes_id = r.id)` with no index behind it,
+  scanning `records` once per assessed record: 4.6 s per draw, and one draw follows every posted
+  session. That matches the 5.5 s the hub stayed silent after each post (atyrode/manifold#841).
+  Every cycle also scanned `runs` once per pending run, and it committed each run's silent-cycle
+  count separately, one fsync each. Store 1.13 adds six partial indexes through
+  `SCHEMA_ADDITIONS`: for `supersedes_id` on records, assessments and facts, `job_id` and
+  `prepare_job_id` on runs, and `job_id` on claims. The reconcile pass writes its counts in
+  batches of up to 250 and renews analysis reservations against the cycle's own policy. No
+  query changes its answer. On the store copy, a cycle that posts ten sessions went from 49.6 s
+  to 3.8 s, the longest event-loop stall from 5.2 s to 0.48 s, and a reconcile-only cycle from
+  4.0 s to 0.1 s. A conductor test runs one routed cycle at 500 and 4,000 records of history.
+  The time ratio is 60 without the change and 5.4 with it, and the test fails above 16.
+
 - **One runtime scratch size admits every Babel operation that writes it.** `scan`, `archive`
   and `verify` declared 64 MiB of output and `prepare` 512 MiB, all cut from the one tmpfs the
   `runtime` anchor mounts. Manifold refuses a job whose `outputBytes` is below that tmpfs's

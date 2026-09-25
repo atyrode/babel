@@ -1899,12 +1899,27 @@ export function conductor(deps: ConductorDeps): Conductor {
    * this one" was reset before it could ever be read a second time and the reaper's bound
    * could not fire. A run that answers is set back to zero, which is what makes the count
    * CONSECUTIVE rather than cumulative.
+   *
+   * THE COUNTS ARE WRITTEN TOGETHER, by {@link writeSilences} at the end of the pass that took
+   * them, in batches of {@link STATEMENTS_PER_BATCH}. One statement per run was one commit per
+   * run, and a commit is an fsync: on the 2026-09-25 preview store, 604 runs whose jobs the hub
+   * no longer knows cost 600 ms of every cycle on the hub's own thread, against about 20 ms as
+   * three batches. Nothing reads the column between the pass and its flush — the reaper that
+   * does runs after it.
    */
-  async function silence(runId: string, held: number, seen: boolean): Promise<number> {
+  let silences: SqlStatement[] = [];
+  function silence(runId: string, held: number, seen: boolean): number {
     const next = seen ? 0 : held + 1;
     if (next !== held)
-      await store.db.run(`UPDATE runs SET unreadable = ? WHERE id = ?`, [next, runId]);
+      silences.push({ sql: `UPDATE runs SET unreadable = ? WHERE id = ?`, params: [next, runId] });
     return next;
+  }
+  async function writeSilences(): Promise<void> {
+    const counted = silences;
+    silences = [];
+    for (let from = 0; from < counted.length; from += STATEMENTS_PER_BATCH) {
+      await store.db.batch(counted.slice(from, from + STATEMENTS_PER_BATCH));
+    }
   }
 
   /**
@@ -3216,7 +3231,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     const containerId = run.container_id ?? "";
     const answered = await engine.readSession({ containerId, jobId: run.job_id });
     if (!answered.ok) {
-      const silent = await silence(run.id, Number(run.unreadable), false);
+      const silent = silence(run.id, Number(run.unreadable), false);
       const note = `session ${run.job_id} in ${containerId} cannot be read: ${answered.refused}`;
       notes.push(note);
       const analysis = AnalysisWorkSchema.safeParse(preparationOf(run.preparation)?.["analysis"]);
@@ -3244,7 +3259,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
       return { inFlight: false };
     }
-    await silence(run.id, Number(run.unreadable), true);
+    silence(run.id, Number(run.unreadable), true);
     /*
       Code owns the replay ring. Babel consumes only the activity snapshot Code returns,
       never inferring model work from the presence of a running job.
@@ -3534,9 +3549,12 @@ export function conductor(deps: ConductorDeps): Conductor {
     );
   }
 
-  /** Keep the same reservation through native preparation and its Code continuation. */
-  async function renewAnalysis(jobId: string, at: number): Promise<void> {
-    const policy = (await coordinator.policy(at)).policy;
+  /**
+   * Keep the same reservation through native preparation and its Code continuation. The policy
+   * is the cycle's own, read once by `tick` at `at`: asking the coordinator again per pending
+   * run was two statements a run for the answer the cycle already held.
+   */
+  async function renewAnalysis(jobId: string, at: number, policy: Policy): Promise<void> {
     if (!policy.enabled) return;
     const parents = await store.db.query<{ preparation: string | null }>(
       `SELECT preparation FROM runs WHERE closure IS NULL AND (job_id = ? OR prepare_job_id = ?)`,
@@ -3570,6 +3588,7 @@ export function conductor(deps: ConductorDeps): Conductor {
    */
   async function reconcileRuns(
     at: number,
+    policy: Policy,
     machineIds: readonly string[],
     ingested: IngestedRun[],
     settled: SettledClaim[],
@@ -3588,76 +3607,81 @@ export function conductor(deps: ConductorDeps): Conductor {
     let stalled = 0;
     // The count of silent cycles is on the row now, so nothing is pruned here: a run that is
     // no longer waited on is not selected, and one that answers is set back to zero in place.
-    for (const run of pending) {
-      await renewAnalysis(run.job_id, at);
-      // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
-      // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it
-      // answers nothing useful at best; Code is asked instead, through the door that owns it.
-      if (run.container_id !== null && run.container_id !== "") {
-        const reconciled = await reconcileSession(at, run, ingested, settled, notes, refusals);
-        if (reconciled.inFlight) {
-          inFlight += 1;
-          if (reconciled.stage === RUN_STAGES.atModel) atModel += 1;
-          if (reconciled.stalled === true) stalled += 1;
+    // The pass's counts are written once it ends, however it ends ({@link silence}).
+    try {
+      for (const run of pending) {
+        await renewAnalysis(run.job_id, at, policy);
+        // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
+        // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it
+        // answers nothing useful at best; Code is asked instead, through the door that owns it.
+        if (run.container_id !== null && run.container_id !== "") {
+          const reconciled = await reconcileSession(at, run, ingested, settled, notes, refusals);
+          if (reconciled.inFlight) {
+            inFlight += 1;
+            if (reconciled.stage === RUN_STAGES.atModel) atModel += 1;
+            if (reconciled.stalled === true) stalled += 1;
+          }
+          continue;
         }
-        continue;
+        let state: JobRunState | null = null;
+        try {
+          state = await jobs.status({
+            kind: "job",
+            machineId: run.machine_id,
+            operationId: run.kind,
+            jobId: run.job_id,
+          });
+        } catch (error) {
+          notes.push(`job ${run.job_id} cannot be read: ${message(error)}`);
+        }
+        // A status the hub cannot answer — it threw, or it does not know this job — leaves the run
+        // in flight for this cycle and is remembered: a machine that vanished would otherwise keep
+        // its claims "running" for ever, and the reaper below counts the cycles.
+        if (state === null) {
+          silence(run.id, Number(run.unreadable), false);
+          inFlight += 1;
+          continue;
+        }
+        silence(run.id, Number(run.unreadable), true);
+        if (TERMINAL_STATES[state.state] !== true) {
+          inFlight += 1;
+          const folded = await foldRun(at, run, notes);
+          if (folded.stage === RUN_STAGES.atModel) atModel += 1;
+          if (folded.stalled) stalled += 1;
+          continue;
+        }
+        // THE LAST READ OF THE FOLD, taken before the settlement deletes it. Which models
+        // answered is not in `state.result` — the hub's `usage.inference` is five numbers and no
+        // name — so this row is the only place it was ever written, and the receipt is the only
+        // place it can survive (#169).
+        const heard = await store.db.query<{ models: string }>(
+          `SELECT models FROM run_progress WHERE run_id = ?`,
+          [run.id],
+        );
+        await settle(
+          at,
+          {
+            runId: run.id,
+            jobId: run.job_id,
+            machineId: run.machine_id,
+            operationId: run.kind,
+            outputs: state.result?.outputs ?? [],
+            closure: closureOf(state),
+            inference: state.result?.usage?.inference ?? null,
+            models: modelList(heard[0]?.models),
+          },
+          ingested,
+          settled,
+          notes,
+          refusals,
+        );
+        // The receipt is the record now. A settled run keeps no in-flight row: the panel reads a
+        // finished run's spend off the run itself, and a `run_progress` row left behind would be
+        // a second, staler answer to the same question.
+        await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
       }
-      let state: JobRunState | null = null;
-      try {
-        state = await jobs.status({
-          kind: "job",
-          machineId: run.machine_id,
-          operationId: run.kind,
-          jobId: run.job_id,
-        });
-      } catch (error) {
-        notes.push(`job ${run.job_id} cannot be read: ${message(error)}`);
-      }
-      // A status the hub cannot answer — it threw, or it does not know this job — leaves the run
-      // in flight for this cycle and is remembered: a machine that vanished would otherwise keep
-      // its claims "running" for ever, and the reaper below counts the cycles.
-      if (state === null) {
-        await silence(run.id, Number(run.unreadable), false);
-        inFlight += 1;
-        continue;
-      }
-      await silence(run.id, Number(run.unreadable), true);
-      if (TERMINAL_STATES[state.state] !== true) {
-        inFlight += 1;
-        const folded = await foldRun(at, run, notes);
-        if (folded.stage === RUN_STAGES.atModel) atModel += 1;
-        if (folded.stalled) stalled += 1;
-        continue;
-      }
-      // THE LAST READ OF THE FOLD, taken before the settlement deletes it. Which models
-      // answered is not in `state.result` — the hub's `usage.inference` is five numbers and no
-      // name — so this row is the only place it was ever written, and the receipt is the only
-      // place it can survive (#169).
-      const heard = await store.db.query<{ models: string }>(
-        `SELECT models FROM run_progress WHERE run_id = ?`,
-        [run.id],
-      );
-      await settle(
-        at,
-        {
-          runId: run.id,
-          jobId: run.job_id,
-          machineId: run.machine_id,
-          operationId: run.kind,
-          outputs: state.result?.outputs ?? [],
-          closure: closureOf(state),
-          inference: state.result?.usage?.inference ?? null,
-          models: modelList(heard[0]?.models),
-        },
-        ingested,
-        settled,
-        notes,
-        refusals,
-      );
-      // The receipt is the record now. A settled run keeps no in-flight row: the panel reads a
-      // finished run's spend off the run itself, and a `run_progress` row left behind would be
-      // a second, staler answer to the same question.
-      await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+    } finally {
+      await writeSilences();
     }
     // THE BEAT'S OWN RUNS, asked of the machines this cycle is entitled to ask about — ids, as
     // {@link beatMachines} explains. It used to be every distinct `sessions.host`, which on an
@@ -4424,7 +4448,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       const gapsByReason: Counter<TallyReason> = new Map();
       // Reconcile earned completion even after disablement, but never renew disabled authority.
       if (!policy.enabled)
-        await reconcileRuns(at, schedule.machines, ingested, settled, notes, refusals);
+        await reconcileRuns(at, policy, schedule.machines, ingested, settled, notes, refusals);
 
       if (!policy.enabled) {
         // A disabled policy is the coordinator's own first stop reason, and the cycle never gets
@@ -4455,6 +4479,7 @@ export function conductor(deps: ConductorDeps): Conductor {
 
       const reconciled = await reconcileRuns(
         at,
+        policy,
         schedule.machines,
         ingested,
         settled,

@@ -25,7 +25,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 12 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 13 } as const;
 
 /** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
 const RECALL_TRACE_SCHEMA: readonly string[] = [
@@ -387,6 +387,38 @@ const ARCHIVE_CATALOG_SCHEMA: readonly string[] = [
      mapped_at TEXT NOT NULL
    ) STRICT`,
   `CREATE INDEX sessions_by_modified ON sessions(modified_at DESC)`,
+];
+
+/**
+ * THE LOOKUPS A CYCLE MAKES INTO ITS OWN HISTORY (#841 on atyrode/manifold), spelled once and
+ * created twice, for the reason `budgets`, `drains`, `next_actions` and `run_calls` are.
+ *
+ * An in-realm half's statements run on the hub's own thread: `ctx.database` answers every call
+ * synchronously, so a statement that takes five seconds stalls the whole hub for five seconds,
+ * and the job services waiting on it give up. Each index below is under a question a cycle asks
+ * once per something that grows — per draw, per pending run, per open claim, per settlement —
+ * and without it SQLite answered by scanning the table once per question:
+ *
+ * - "is this revision superseded?" (`NOT EXISTS … supersedes_id = r.id`) over records,
+ *   assessments and facts. The draw's review tally asks it of every record behind every
+ *   assessment, which on the 2026-09-25 preview store was 4.6 seconds per draw, one draw per
+ *   posted session. The indexes are partial because almost nothing supersedes anything, and an
+ *   equality on the column is all a lookup ever asks, which implies the `IS NOT NULL`.
+ * - "which runs stand behind this job?" (`job_id = ?`, `prepare_job_id = ?`) over runs, asked
+ *   per pending run, per open claim and per settlement: 2.4 seconds of every cycle there.
+ * - "which claims does this job hold?" (`claims.job_id = ?`), asked per settlement.
+ *
+ * Every one is derived and none changes what a query answers; a store that lost them answers
+ * the same, slowly.
+ */
+const HISTORY_INDEX_SCHEMA: readonly string[] = [
+  `CREATE INDEX records_by_supersedes ON records(supersedes_id) WHERE supersedes_id IS NOT NULL`,
+  `CREATE INDEX assessments_by_supersedes ON assessments(supersedes_id)
+     WHERE supersedes_id IS NOT NULL`,
+  `CREATE INDEX facts_by_supersedes ON facts(supersedes_id) WHERE supersedes_id IS NOT NULL`,
+  `CREATE INDEX runs_by_job ON runs(job_id) WHERE job_id IS NOT NULL`,
+  `CREATE INDEX runs_by_prepare_job ON runs(prepare_job_id) WHERE prepare_job_id IS NOT NULL`,
+  `CREATE INDEX claims_by_job ON claims(job_id) WHERE job_id IS NOT NULL`,
 ];
 
 /**
@@ -930,6 +962,8 @@ export const SCHEMA_V1: readonly string[] = [
    ) STRICT`,
   `CREATE INDEX runs_by_started ON runs(started_at DESC)`,
   `CREATE INDEX runs_by_machine ON runs(machine_id, started_at DESC)`,
+  // After runs, the last of the five tables it indexes.
+  ...HISTORY_INDEX_SCHEMA,
 
   // ---------------------------------------------------------------- the budget overlay (#260)
   BUDGETS_TABLE,
@@ -1141,6 +1175,9 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     sql: `ALTER TABLE sessions ADD COLUMN archive_path TEXT`,
   },
   ...ARCHIVE_CATALOG_SCHEMA.map(objectAddition),
+  // atyrode/manifold#841: the lookups a cycle makes into its own history, which a store this
+  // large answered by scanning once per question. Indexes only, derived from the same list.
+  ...HISTORY_INDEX_SCHEMA.map(objectAddition),
 ];
 
 /**

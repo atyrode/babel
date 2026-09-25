@@ -6462,3 +6462,123 @@ test("retained analysis claims do not hide a real orphan behind the reaper work 
   ]);
   expect(report.notes.some((note) => note.includes("dead claims were released"))).toBe(false);
 });
+
+// ---------------------------------------------------------------------------- what a cycle costs
+
+/**
+ * A STORE WITH `size` RECORDS OF HISTORY, shaped like a deployment that has been reviewing for
+ * a while: every hypothesis reviewed once, claimed once, given a status and run once, one in
+ * eight revised, and one in twenty-five run by a job the hub has since forgotten — a run the
+ * loop still polls every cycle and counts as silent. Everything a cycle and a draw read grows
+ * with it, which is the point: the cost of one cycle must grow with it no faster than linearly.
+ */
+async function withHistory(db: PluginDatabase, fleet: Fleet, size: number): Promise<void> {
+  const at = new Date(clock - 2 * 24 * 60 * 60 * 1000).toISOString();
+  const rows: SqlStatement[] = [];
+  const hex = (value: number): string => value.toString(16).padStart(8, "0");
+  for (let index = 0; index < size; index += 1) {
+    const id = `hyp_${hex(index)}`;
+    const record = `INSERT INTO records(id, kind, root_id, seq, supersedes_id, run_id, actor_kind,
+                                        actor_id, title, created_at, payload)
+                    VALUES (?, 'hypothesis', ?, ?, ?, ?, 'run', ?, 'A hypothesis', ?, ?)`;
+    const payload = JSON.stringify({ statement: `hypothesis ${String(index)}` });
+    rows.push({ sql: record, params: [id, id, 0, null, `run_${id}`, `run_${id}`, at, payload] });
+    if (index % 8 === 0) {
+      const revision = `hyp_${hex(index + 0x40000000)}`;
+      rows.push({
+        sql: record,
+        params: [revision, id, 1, id, `run_${id}`, `run_${id}`, at, payload],
+      });
+    }
+    rows.push(
+      {
+        sql: `INSERT INTO assessments(id, record_id, revision_id, run_id, role, vote, payload, recorded_at)
+              VALUES (?, ?, ?, ?, 'reception', 'support', '{}', ?)`,
+        params: [`asm_${id}`, id, id, `run_${id}`, at],
+      },
+      {
+        sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                                 reserved_cost, actual_cost, granted_at, expires_at, finished_at, outcome)
+              VALUES (?, ?, 'reception', 'coverage', ?, ?, 'cyc_history', 1, 0.1, 0.1, ?, ?, ?, 'completed')`,
+        params: [`clm_${id}`, id, POLICY.version, `job_${id}`, at, at, at],
+      },
+      {
+        sql: `INSERT INTO status_events(id, record_id, seq, status, actor_kind, actor_id, recorded_at)
+              VALUES (?, ?, 0, 'active', 'run', ?, ?)`,
+        params: [`sts_${id}`, id, `run_${id}`, at],
+      },
+      {
+        sql: `INSERT INTO runs(id, kind, machine_id, job_id, container_id, started_at, finished_at,
+                               closure, records, payload)
+              VALUES (?, ?, ?, ?, 'ctr_union', ?, ?, 'completed', 1, '{}')`,
+        params: [`run_${id}`, OPERATIONS.evaluate, MACHINE, `job_${id}`, at, at],
+      },
+    );
+    if (index % 25 === 0) {
+      const lost = `job_lost_${id}`;
+      fleet.silent.add(lost);
+      rows.push({
+        sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, records, payload)
+              VALUES (?, ?, ?, ?, ?, 0, '{}')`,
+        params: [`run_lost_${id}`, OPERATIONS.explore, MACHINE, lost, at],
+      });
+    }
+  }
+  for (let from = 0; from < rows.length; from += 250) await db.batch(rows.slice(from, from + 250));
+  await db.run(
+    `INSERT INTO policies(version, seq, actor_id, reason, payload, recorded_at)
+     VALUES (?, 1, 'operator', 'reviewing', ?, ?)`,
+    [POLICY.version, JSON.stringify({ ...POLICY, batchSize: 1, review: ROUTE }), at],
+  );
+}
+
+/**
+ * The milliseconds one routed cycle takes — reconcile every pending run, reap, draw one review
+ * and post it through Code — over a store of `size` records, fastest of three fresh stores.
+ */
+async function cycleOver(size: number): Promise<number> {
+  let fastest = Number.POSITIVE_INFINITY;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const db = openDatabase();
+    const fleet = new Fleet();
+    await withHistory(db, fleet, size);
+    const store = openReadStore(db, () => clock);
+    const code = new ReviewCode();
+    const loop = conductor({
+      store,
+      coordinator: governed(store, () => clock, 16),
+      jobs: fleet,
+      engine: code,
+      machines: new Folders(),
+      keys: new Keys(),
+      plan: PLAN,
+      now: () => clock,
+    });
+    const started = performance.now();
+    const report = await loop.tick();
+    fastest = Math.min(fastest, performance.now() - started);
+    // The cycle did the work being timed: it drew, it posted, and it polled the lost runs.
+    expect(report.requested).toHaveLength(1);
+    expect(code.posted).toHaveLength(1);
+    expect(report.notes.filter((note) => note.includes("job_lost_")).length).toBe(
+      Math.ceil(size / 25),
+    );
+  }
+  return fastest;
+}
+
+/*
+  ONE CYCLE'S COST MUST NOT GROW FASTER THAN THE HISTORY BEHIND IT (atyrode/manifold#841).
+
+  In-realm, every statement of a cycle runs on the hub's own thread, so a cycle whose cost grew
+  with the square of the store stalled the whole hub: on the 2026-09-25 preview store the draw's
+  review tally scanned `records` once per assessed record — 4.6 s per draw, one draw per posted
+  session — and the reconcile pass scanned `runs` once per pending run. Eight times the history
+  may cost at most sixteen times the time here: a linear cycle comes in well under that, and
+  either of those quadratic scans alone put it past sixty.
+*/
+test("a cycle's cost grows no faster than the history it reads", async () => {
+  const small = await cycleOver(500);
+  const large = await cycleOver(4000);
+  expect(large / small).toBeLessThan(16);
+}, 120_000);

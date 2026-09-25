@@ -761,3 +761,32 @@ test("enabling a store made before archive captures adds their columns, the labe
     { host: MACHINE, archive_label: "dev-01", archive_path: row.archive_path },
   ]);
 });
+
+test("enabling a store made before the history indexes adds every one of them", async () => {
+  const { db } = harness;
+  // The preview's store is exactly this case: made by earlier enables, so `SCHEMA_V1`'s copy of
+  // these indexes never reached it, and only the addition can. An index missing from that path
+  // is invisible in a fresh install and is a cycle that scans its whole history per question
+  // on every store already in the field (atyrode/manifold#841).
+  const history = [
+    "assessments_by_supersedes",
+    "claims_by_job",
+    "facts_by_supersedes",
+    "records_by_supersedes",
+    "runs_by_job",
+    "runs_by_prepare_job",
+  ];
+  for (const name of history) await db.run(`DROP INDEX ${name}`);
+
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+  // A second enable is the ordinary case and must find nothing missing.
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+
+  expect(
+    await db.query(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (${history.map(() => "?").join(", ")})
+        ORDER BY name`,
+      history,
+    ),
+  ).toEqual(history.map((name) => ({ name })));
+});
