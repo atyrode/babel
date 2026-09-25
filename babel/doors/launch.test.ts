@@ -20,11 +20,14 @@ import { HostCallError } from "@manifold/plugin-kit/errors";
 import {
   ACTIONS,
   MACHINE_OPERATIONS,
+  MATERIAL_HEADROOM_BYTES,
   MATERIAL_OUTPUT,
   OPERATIONS,
   MAX_MATERIAL_BYTES,
   OUTPUT_BINDING,
+  PREPARE_INPUT_MAX_BYTES,
   PRESET_OPERATIONS,
+  PrepareInputSchema,
   type AnalysisWork,
   type ProfileRow,
   ENGINE_REFUSALS,
@@ -55,11 +58,13 @@ const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
 const MACHINE = "m-dev-01";
 const RECORD = "fnd_00000001";
+/** The beat: `keep-going`'s operation, whichever job the contract names for it. */
+const BEAT = PRESET_OPERATIONS["keep-going"];
 
 /** The machine, as the engine describes one that can run Babel. */
 const READY: MachineReadiness = {
   connected: true,
-  operations: { [OPERATIONS.scan]: { ready: true, reason: null } },
+  operations: { [BEAT]: { ready: true, reason: null } },
   installation: { revision: "rev-7", artifactSha256: "a".repeat(64), enabled: true, ready: true },
 };
 
@@ -271,6 +276,44 @@ async function halt(
   });
 }
 
+/** A 64-hex restic snapshot id, as the catalog records one. */
+const SNAPSHOT = "5".repeat(64);
+
+/**
+ * ONE CATALOGUED SESSION NAMING AN ARCHIVED CAPTURE (#453): the snapshot and path that hold it,
+ * the label it was taken under and the observation the catalog recorded, in
+ * `CaptureInstantSchema`'s one spelling. It is the only row a preparation can read; `over`
+ * shapes the rest, including a `host` the selection never reads.
+ */
+async function archived(selector: string, over: Record<string, unknown> = {}): Promise<void> {
+  const cut = selector.indexOf("/");
+  const sourceId = selector.slice(cut + 1);
+  await insert(harness.db, "sessions", {
+    selector,
+    host: MACHINE,
+    harness: selector.slice(0, cut),
+    source_id: sourceId,
+    kind: "operator",
+    live: 0,
+    archive_label: "dev-01",
+    archive_path: `/home/alex/.omp/agent/sessions/${sourceId}.jsonl`,
+    snapshot_id: SNAPSHOT,
+    archived_at: new Date(NOW - HOUR).toISOString(),
+    modified_at: new Date(NOW - 2 * HOUR).toISOString(),
+    size: 1000,
+    seen_at: stamp(NOW - HOUR),
+    ...over,
+  });
+}
+
+/** The sessions one posted preparation was handed, parsed as the machine parses its input. */
+function handed(job: JobLaunch | undefined): string[] {
+  const input = PrepareInputSchema.parse(JSON.parse(String(job?.input["input"] ?? "null")));
+  return input.captures.flatMap((group) =>
+    group.sessions.map((session) => `${session.harness}/${session.sourceId}`),
+  );
+}
+
 beforeEach(async () => {
   harness = await openTestStore(NOW);
   fleet = new Fleet();
@@ -284,16 +327,7 @@ beforeEach(async () => {
     payload: JSON.stringify({ enabled: true, perCycleCost: 0.25, batchSize: 4, dailyCost: 2 }),
     recorded_at: stamp(NOW - HOUR),
   });
-  await insert(db, "sessions", {
-    selector: "omp/s1",
-    host: MACHINE,
-    harness: "omp",
-    source_id: "s1",
-    title: "yesterday",
-    content_digest: "d1",
-    snapshot_id: "snap-1",
-    seen_at: stamp(NOW - 2 * HOUR),
-  });
+  await archived("omp/s1", { title: "yesterday", content_digest: `sha256:${"1".repeat(64)}` });
   code = new Code();
   cookbook = { ...RECIPES };
   deps = {
@@ -486,7 +520,23 @@ test("an explore seals its material and records the intent; the session waits fo
   const sealed = fleet.executed[0]!;
   expect(sealed.operationId).toBe(OPERATIONS.prepare);
   expect(sealed.outputs.map((output) => output.name)).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
-  expect(JSON.parse(String(sealed.input["input"]))["selectors"]).toEqual(["omp/s1"]);
+  // It is handed the capture, by snapshot and path, and nothing it would have to discover.
+  expect(handed(sealed)).toEqual(["omp/s1"]);
+  expect(JSON.parse(String(sealed.input["input"]))["captures"]).toEqual([
+    {
+      snapshotId: SNAPSHOT,
+      label: "dev-01",
+      sessions: [
+        {
+          harness: "omp",
+          sourceId: "s1",
+          path: "/home/alex/.omp/agent/sessions/s1.jsonl",
+          size: 1000,
+          modifiedAt: NOW - 2 * HOUR,
+        },
+      ],
+    },
+  ]);
 
   // TWO ROWS: the preparation's, and the explore's own — open, in the Code lane by its
   // container, holding no job yet, and carrying the intent the settle wake composes from.
@@ -646,15 +696,10 @@ test("a malformed persisted inference bound refuses before buying an unbounded s
 test("explore-topic prepares the sessions the topic's records cite, under the one lens asked for", async () => {
   const entityId = "ent_0000beef";
   const { db } = harness;
-  // A session on this machine that nothing filed cites: it is in the window and out of scope.
-  await insert(db, "sessions", {
-    selector: "omp/elsewhere",
-    host: MACHINE,
-    harness: "omp",
-    source_id: "elsewhere",
+  // An archived session that nothing filed cites: it is in the window and out of scope.
+  await archived("omp/elsewhere", {
     title: "another subject",
-    content_digest: "d2",
-    seen_at: stamp(NOW - HOUR),
+    modified_at: new Date(NOW - HOUR).toISOString(),
   });
   await insert(db, "entities", {
     id: entityId,
@@ -717,7 +762,7 @@ test("explore-topic prepares the sessions the topic's records cite, under the on
   expect(answer["kind"]).toBe("explore");
   // THE SCOPE IS THE TOPIC'S OWN EVIDENCE: the cited session and not the machine's window.
   const sealed = fleet.executed[0]!;
-  expect(JSON.parse(String(sealed.input["input"]))["selectors"]).toEqual(["omp/s1"]);
+  expect(handed(sealed)).toEqual(["omp/s1"]);
   // …and the method is the one lens the cell offered, not the enabled default set.
   const runs = await harness.db.query<{ preparation: string }>(
     `SELECT preparation FROM runs WHERE kind = ?`,
@@ -728,38 +773,208 @@ test("explore-topic prepares the sessions the topic's records cite, under the on
   expect(intent["entityId"]).toBe(entityId);
 });
 
-test("a topic whose cited sessions are not on the chosen machine is refused by name", async () => {
+test("a topic whose cited sessions name no archived capture is refused by name", async () => {
+  // Cited, catalogued, and not in the archive yet: an imported row the catalog has not listed.
+  await insert(harness.db, "sessions", {
+    selector: "omp/imported",
+    host: "dev-01",
+    harness: "omp",
+    source_id: "imported",
+    seen_at: stamp(NOW - HOUR),
+  });
+  await insert(harness.db, "records", {
+    id: RECORD,
+    kind: "finding",
+    root_id: RECORD,
+    seq: 1,
+    run_id: "run-old",
+    actor_kind: "run",
+    actor_id: "run-old",
+    title: "the tests were adjusted to the code",
+    created_at: stamp(NOW - 3 * HOUR),
+    payload: JSON.stringify({ schema: 1 }),
+  });
+  await insert(harness.db, "edges", {
+    id: "edg_imported",
+    kind: "cites",
+    from_kind: "finding",
+    from_id: RECORD,
+    to_kind: "session",
+    to_id: "omp/imported",
+    actor_kind: "run",
+    actor_id: "run-old",
+    created_at: stamp(NOW - 3 * HOUR),
+  });
+  await insert(harness.db, "filings", {
+    id: "fil_imported",
+    record_id: RECORD,
+    entity_id: "ent_0000beef",
+    rationale: "it is about this repository",
+    author_kind: "run",
+    author_id: "run-old",
+    created_at: stamp(NOW - 3 * HOUR),
+  });
   const answer = await start({
     preset: "explore-topic",
     entityId: "ent_0000beef",
     recipes: ["code-health"],
     profile: { containerId: "ctr_workbench", expectedRevision: 7 },
   });
-  // Nothing is filed under it at all here, which is the same shape as a topic whose evidence
-  // lives on another machine: the operator reads why rather than watching a run find nothing.
-  expect(String(answer["refused"])).toContain("is cited by anything filed under ent_0000beef");
+  // The operator reads why — the one cited session is not archived — rather than watching a
+  // run find nothing, or a preparation be handed a session it has no capture to read.
+  expect(String(answer["refused"])).toContain(
+    "no archived session is cited by anything filed under ent_0000beef (1 of 1 catalogued",
+  );
   expect(fleet.executed).toEqual([]);
+});
+
+test("the selection reads archived captures from every label, newest written first", async () => {
+  // Another machine's capture is selectable: any machine holding the archive binding reads it.
+  await archived("omp/other-host", {
+    host: "m-other-02",
+    archive_label: "workstation-linux",
+    snapshot_id: "6".repeat(64),
+    modified_at: new Date(NOW - HOUR).toISOString(),
+  });
+  // Catalogued a minute ago, written a week ago: `seen_at` is the catalog's clock, not the
+  // session's, so it is outside a one-day window.
+  await archived("omp/old", {
+    modified_at: new Date(NOW - 7 * 24 * HOUR).toISOString(),
+    seen_at: stamp(NOW - 60_000),
+  });
+  // Recent, and naming no capture: catalogued and not something a preparation can read.
+  await insert(harness.db, "sessions", {
+    selector: "omp/imported",
+    host: MACHINE,
+    harness: "omp",
+    source_id: "imported",
+    modified_at: new Date(NOW - 30 * 60_000).toISOString(),
+    seen_at: stamp(NOW - 60_000),
+  });
+
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  expect(answer["refused"]).toBeUndefined();
+  const sealed = fleet.executed[0]!;
+  expect(handed(sealed)).toEqual(["omp/other-host", "omp/s1"]);
+  // One group per snapshot, each with the label that took it.
+  expect(
+    PrepareInputSchema.parse(JSON.parse(String(sealed.input["input"]))).captures.map((group) => [
+      group.label,
+      group.snapshotId,
+    ]),
+  ).toEqual([
+    ["workstation-linux", "6".repeat(64)],
+    ["dev-01", SNAPSHOT],
+  ]);
+  const runs = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE kind = ?`,
+    [OPERATIONS.explore],
+  );
+  expect(JSON.parse(String(runs[0]?.preparation))).toMatchObject({
+    selected: 2,
+    available: 3,
+    excluded: 1,
+  });
+});
+
+test("a long window stops at the prepare input bound and counts the rest", async () => {
+  // Paths near the contract's own 4096-character ceiling: 120 of them cannot share one input.
+  for (let n = 0; n < 120; n++) {
+    const name = `long-${String(n).padStart(3, "0")}`;
+    await archived(`omp/${name}`, {
+      archive_path: `/home/alex/.omp/agent/sessions/${"x".repeat(3000)}/${name}.jsonl`,
+      modified_at: new Date(NOW - HOUR - n * 1000).toISOString(),
+    });
+  }
+
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  expect(answer["refused"]).toBeUndefined();
+  const sealed = fleet.executed[0]!;
+  // Under the bound as the engine counts it — the whole encoded input record — and still a
+  // document the machine parses.
+  expect(new TextEncoder().encode(JSON.stringify(sealed.input)).byteLength).toBeLessThanOrEqual(
+    PREPARE_INPUT_MAX_BYTES,
+  );
+  const taken = handed(sealed);
+  expect(taken.length).toBeGreaterThan(0);
+  expect(taken[0]).toBe("omp/long-000");
+  const runs = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE kind = ?`,
+    [OPERATIONS.prepare],
+  );
+  const preparation = JSON.parse(String(runs[0]?.preparation)) as Record<string, number>;
+  // The window's 120 rows are the newest 120 of 121; every one not taken is counted.
+  expect(preparation["selected"]).toBe(taken.length);
+  expect(preparation["selected"]! + preparation["overBound"]!).toBe(120);
+});
+
+test("the material bound is the machine's measured scratch, shared by the lane's fan", async () => {
+  // The newest receipt from this machine measured 64 MiB of headroom plus 10 MiB.
+  await insert(harness.db, "runs", {
+    id: "run_catalog_earlier",
+    kind: BEAT,
+    machine_id: MACHINE,
+    job_id: "job_catalog_earlier",
+    started_at: stamp(NOW - HOUR),
+    finished_at: stamp(NOW - HOUR),
+    closure: "completed",
+    records: 0,
+    payload: JSON.stringify({
+      closure: "completed",
+      outputCapacity: { bytes: MATERIAL_HEADROOM_BYTES + 10 * 1024 * 1024, free: 0 },
+    }),
+  });
+  await archived("omp/four", {
+    size: 4 * 1024 * 1024,
+    modified_at: new Date(NOW - HOUR).toISOString(),
+  });
+  const launch = async (runId: string, materials?: number) =>
+    await machinery.startExplore(
+      { runId, jobId: `job_${runId}`, authorityId: "operator" },
+      fleet,
+      code,
+      {
+        preset: "read-whats-new",
+        machineId: MACHINE,
+        sinceDays: 1,
+        profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+        recipes: [],
+      },
+      { ...ANALYSIS_PLAN, ...(materials === undefined ? {} : { materials }) },
+    );
+
+  // One material alone may hold the 10 MiB: the 4 MiB capture and the small one both fit.
+  expect(await launch("run_one")).toHaveProperty("jobId");
+  expect(handed(fleet.executed[0])).toEqual(["omp/four", "omp/s1"]);
+  // A fan of three shares it at ⌊10 MiB / 3⌋ each: the 4 MiB capture is left out and counted.
+  expect(await launch("run_fan", 3)).toHaveProperty("jobId");
+  expect(handed(fleet.executed[1])).toEqual(["omp/s1"]);
+  const fan = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE id = 'run_fan'`,
+  );
+  expect(JSON.parse(String(fan[0]?.preparation))).toMatchObject({ selected: 1, overBound: 1 });
 });
 
 test("the selection stops at the bytes one preparation may seal, and says how many it left", async () => {
   // Three quarters of the bound apiece: the newest fits, the next does not, and the third
-  // does not either. `scan`'s own `size` is the only figure the hub has before the job runs.
+  // does not either. The catalogued `size` is the only figure the hub has before the job runs.
   const big = Math.floor(MAX_MATERIAL_BYTES * 0.75);
   for (const [n, at] of [
     ["big1", NOW - 1000],
     ["big2", NOW - 2000],
     ["big3", NOW - 3000],
   ] as const) {
-    await insert(harness.db, "sessions", {
-      selector: `omp/${n}`,
-      host: MACHINE,
-      harness: "omp",
-      source_id: n,
-      title: n,
-      content_digest: `d-${n}`,
-      size: big,
-      seen_at: stamp(at),
-    });
+    await archived(`omp/${n}`, { title: n, size: big, modified_at: new Date(at).toISOString() });
   }
 
   const answer = await start({
@@ -772,8 +987,7 @@ test("the selection stops at the bytes one preparation may seal, and says how ma
   // session, not all four: the bound is on the bytes, not on the count.
   expect(answer["refused"]).toBeUndefined();
   const sealed = fleet.executed[0]!;
-  const selectors = JSON.parse(String(sealed.input["input"]))["selectors"] as string[];
-  expect(selectors).toEqual(["omp/big1", "omp/s1"]);
+  expect(handed(sealed)).toEqual(["omp/big1", "omp/s1"]);
   const runs = await harness.db.query<{ preparation: string }>(
     `SELECT preparation FROM runs WHERE kind = ?`,
     [OPERATIONS.prepare],
@@ -787,15 +1001,9 @@ test("a window offering nothing the lease can hold is refused by name, not as an
   // One session larger than the whole bound. The machine would discover this after reading
   // every byte of it; the door says it before a job exists.
   await harness.db.run(`DELETE FROM sessions`);
-  await insert(harness.db, "sessions", {
-    selector: "omp/huge",
-    host: MACHINE,
-    harness: "omp",
-    source_id: "huge",
-    title: "huge",
-    content_digest: "d-huge",
+  await archived("omp/huge", {
     size: MAX_MATERIAL_BYTES + 1,
-    seen_at: stamp(NOW - 1000),
+    modified_at: new Date(NOW - 1000).toISOString(),
   });
 
   const answer = await start({
@@ -807,7 +1015,7 @@ test("a window offering nothing the lease can hold is refused by name, not as an
   const refused = String(answer["refused"]);
   expect(refused).toStartWith("material_too_large:");
   expect(refused).toContain(`${String(MAX_MATERIAL_BYTES / (1024 * 1024))} MiB`);
-  expect(refused).not.toContain("has catalogued no session");
+  expect(refused).not.toContain("holds no session");
   expect(fleet.executed).toEqual([]);
 });
 
@@ -827,12 +1035,17 @@ test("keep-going posts Babel's own beat, which reaches no model and needs no pro
   expect(answer["kind"]).toBe("conductor");
   expect(fleet.executed).toHaveLength(1);
   const beat = fleet.executed[0]!;
-  expect(beat.operationId).toBe(OPERATIONS.scan);
+  expect(beat.operationId).toBe(BEAT);
+  // The beat is told the machine and its run, and nothing it would have to be told again.
+  expect(JSON.parse(String(beat.input["input"]))).toEqual({
+    runId: answer["runId"],
+    machineId: MACHINE,
+  });
   // The operator's own bound on the beat, under the operation's ceiling.
   expect(beat.limits?.timeoutMs).toBe(30 * 60_000);
   const runs = await harness.db.query<{ id: string; kind: string }>(`SELECT id, kind FROM runs`);
   expect(runs).toHaveLength(1);
-  expect(runs[0]?.kind).toBe(OPERATIONS.scan);
+  expect(runs[0]?.kind).toBe(BEAT);
 });
 
 test("a request authorized at one node and aimed at another is refused as itself", async () => {
@@ -916,7 +1129,7 @@ test("stop cancels the job, closes the run and releases what it reserved", async
 test("stop refuses a run that has already ended, and one nobody started", async () => {
   await insert(harness.db, "runs", {
     id: "run_done",
-    kind: OPERATIONS.scan,
+    kind: BEAT,
     machine_id: MACHINE,
     job_id: "job_done",
     started_at: stamp(NOW - HOUR),
@@ -926,11 +1139,11 @@ test("stop refuses a run that has already ended, and one nobody started", async 
     payload: JSON.stringify({ closure: "completed" }),
   });
 
+  expect((await halt("run_done", { operationId: BEAT, jobId: "job_done" }))["refused"]).toContain(
+    "already ended",
+  );
   expect(
-    (await halt("run_done", { operationId: OPERATIONS.scan, jobId: "job_done" }))["refused"],
-  ).toContain("already ended");
-  expect(
-    (await halt("run_nothing", { operationId: OPERATIONS.scan, jobId: "job_none" }))["refused"],
+    (await halt("run_nothing", { operationId: BEAT, jobId: "job_none" }))["refused"],
   ).toContain("no run run_nothing");
   expect(fleet.cancelled).toEqual([]);
 });
@@ -938,7 +1151,7 @@ test("stop refuses a run that has already ended, and one nobody started", async 
 test("a machine that refuses to stop leaves the run open rather than lying about it", async () => {
   await insert(harness.db, "runs", {
     id: "run_live",
-    kind: OPERATIONS.scan,
+    kind: BEAT,
     machine_id: MACHINE,
     job_id: "job_live",
     started_at: stamp(NOW - HOUR),
@@ -947,7 +1160,7 @@ test("a machine that refuses to stop leaves the run open rather than lying about
   });
   fleet.refusal = "job_not_cancellable";
 
-  const answer = await halt("run_live", { operationId: OPERATIONS.scan, jobId: "job_live" });
+  const answer = await halt("run_live", { operationId: BEAT, jobId: "job_live" });
 
   expect(answer["refused"]).toContain("job_not_cancellable");
   expect((await harness.store.run("run_live")).run).toMatchObject({ state: "running" });
@@ -956,7 +1169,7 @@ test("a machine that refuses to stop leaves the run open rather than lying about
 test("a stop authorized at one job and aimed at another reaches nothing", async () => {
   await insert(harness.db, "runs", {
     id: "run_live",
-    kind: OPERATIONS.scan,
+    kind: BEAT,
     machine_id: MACHINE,
     job_id: "job_live",
     started_at: stamp(NOW - HOUR),
@@ -965,7 +1178,7 @@ test("a stop authorized at one job and aimed at another reaches nothing", async 
   });
   const elsewhere = await halt("run_live", {
     machineId: "m-other",
-    operationId: OPERATIONS.scan,
+    operationId: BEAT,
     jobId: "job_live",
   });
   expect(elsewhere["refused"]).toContain("m-other");
@@ -1259,18 +1472,11 @@ test("a verification posts Babel's own job and asks for the depth the operator c
   });
 });
 
-test("a restore is built from the catalogued snapshot and digest, never from the request", async () => {
+test("a restore is built from the catalogued capture and digest, never from the request", async () => {
   const snapshot = "c".repeat(64);
   const digest = `sha256:${"a".repeat(64)}`;
-  await insert(harness.db, "sessions", {
-    selector: "omp/s2",
-    host: MACHINE,
-    harness: "omp",
-    source_id: "s2",
-    content_digest: digest,
-    snapshot_id: snapshot,
-    seen_at: stamp(NOW - HOUR),
-  });
+  // Catalogued under another machine's label: any machine holding the binding reads it (#453).
+  await archived("omp/s2", { host: "m-other-02", content_digest: digest, snapshot_id: snapshot });
 
   const answer = await check({ session: { selector: "omp/s2" } });
 
@@ -1280,47 +1486,60 @@ test("a restore is built from the catalogued snapshot and digest, never from the
     machineId: MACHINE,
     readData: false,
     // The machine is told what the HUB recorded: a digest the asker supplied would be a
-    // comparison against whatever he believed, which proves nothing about the archive.
-    restore: { snapshotId: snapshot, selector: "omp/s2", digest, target: "" },
+    // comparison against whatever he believed, which proves nothing about the archive. The
+    // catalogued path lets it list that path rather than the whole snapshot.
+    restore: {
+      snapshotId: snapshot,
+      selector: "omp/s2",
+      digest,
+      target: "",
+      path: "/home/alex/.omp/agent/sessions/s2.jsonl",
+    },
+  });
+
+  // A snapshot the operator names instead is listed whole: the catalogued path is another
+  // capture's.
+  await check({ session: { selector: "omp/s2", snapshotId: "latest" } });
+  expect(JSON.parse(String(fleet.executed[1]?.input?.["input"] ?? "null"))["restore"]).toEqual({
+    snapshotId: "latest",
+    selector: "omp/s2",
+    digest,
+    target: "",
   });
 });
 
 test("a session whose catalogued snapshot is not a restic id is refused, not posted", async () => {
-  // `omp/s1` is the seeded row of an imported corpus: `snap-1` is the Go deployment's own
-  // spelling, and a job carrying it would fail parsing its input on a machine nobody watches.
-  const answer = await check({ session: { selector: "omp/s1" } });
+  // An imported row: `snap-1` is the Go deployment's own spelling, and a job carrying it would
+  // fail parsing its input on a machine nobody watches.
+  await insert(harness.db, "sessions", {
+    selector: "omp/imported",
+    host: "dev-01",
+    harness: "omp",
+    source_id: "imported",
+    content_digest: "d1",
+    snapshot_id: "snap-1",
+    seen_at: stamp(NOW - HOUR),
+  });
+  const answer = await check({ session: { selector: "omp/imported" } });
 
   expect(answer["refused"]).toContain('"snap-1"');
   expect(answer["refused"]).toContain("not a restic snapshot id");
   expect(fleet.executed).toEqual([]);
 
   // Naming the snapshot to read is the remedy the refusal offers, and it works.
-  const named = await check({ session: { selector: "omp/s1", snapshotId: "latest" } });
+  const named = await check({ session: { selector: "omp/imported", snapshotId: "latest" } });
   expect(named).toMatchObject({ snapshotId: "latest" });
   // The digest column of that row is the Go spelling too, so the catalog is dropped from the
   // comparison rather than the restore being refused: the machine still compares the restored
   // bytes against the snapshot's own.
   expect(JSON.parse(String(fleet.executed[0]?.input?.["input"] ?? "null"))).toMatchObject({
-    restore: { snapshotId: "latest", selector: "omp/s1", digest: "" },
+    restore: { snapshotId: "latest", selector: "omp/imported", digest: "" },
   });
 });
 
-test("a verification refuses a session this machine does not hold, and one nobody catalogued", async () => {
-  await insert(harness.db, "sessions", {
-    selector: "omp/elsewhere",
-    host: "m-other-02",
-    harness: "omp",
-    source_id: "elsewhere",
-    snapshot_id: "d".repeat(64),
-    seen_at: stamp(NOW - HOUR),
-  });
-
-  const wrong = await check({ session: { selector: "omp/elsewhere" } });
-  expect(wrong["refused"]).toContain("m-other-02");
-
+test("a verification refuses a session nobody catalogued", async () => {
   const unknown = await check({ session: { selector: "omp/never-seen" } });
   expect(unknown["refused"]).toBe("no catalogued session omp/never-seen");
-
   expect(fleet.executed).toEqual([]);
 });
 
@@ -1377,19 +1596,12 @@ async function route(): Promise<void> {
   });
 }
 
-/** One catalogued session with no title of its own, on the machine the route names. */
+/** One archived session with no title of its own. */
 async function nameless(sourceId: string, over: Record<string, unknown> = {}): Promise<void> {
-  await insert(harness.db, "sessions", {
-    selector: `codex/${sourceId}`,
-    host: MACHINE,
-    harness: "codex",
-    source_id: sourceId,
+  await archived(`codex/${sourceId}`, {
     title: null,
-    live: 0,
-    kind: "operator",
     size: 4096,
-    modified_at: stamp(NOW - HOUR),
-    seen_at: stamp(NOW - HOUR),
+    modified_at: new Date(NOW - HOUR).toISOString(),
     ...over,
   });
 }
@@ -1440,19 +1652,19 @@ test("a refused titling profile leaves the batch unprepared and available after 
   await machinery.inferTitles(fleet, code, "cyc_2");
   expect(fleet.executed).toHaveLength(1);
   expect(fleet.executed[0]?.operationId).toBe(OPERATIONS.prepare);
-  expect(JSON.parse(String(fleet.executed[0]?.input?.["input"] ?? "null"))).toMatchObject({
-    selectors: ["codex/retry"],
-  });
+  expect(handed(fleet.executed[0])).toEqual(["codex/retry"]);
 });
 
 test("the untitled sessions are prepared once, as one bounded batch charged to the cycle", async () => {
   await route();
   await nameless("a");
   await nameless("b");
-  // Not candidates: a log still being appended, one of Babel's own runs' transcripts, and a
-  // session that already has a title. None of the three is work this lane may pay for.
-  await nameless("moving", { live: 1 });
+  // Not candidates: a session the catalog has not listed from the archive, one of Babel's own
+  // runs' transcripts, and a session that already has a title. None of the three is work this
+  // lane may pay for.
+  await nameless("unarchived", { archive_path: null, snapshot_id: null, archive_label: null });
   await nameless("babels-own", { kind: "agent" });
+  await nameless("titled", { title: "Its own", title_provenance: "recorded" });
 
   const posted = await machinery.inferTitles(fleet, code, "cyc_1");
 
@@ -1462,8 +1674,8 @@ test("the untitled sessions are prepared once, as one bounded batch charged to t
   expect(fleet.executed[0]?.operationId).toBe(OPERATIONS.prepare);
   expect(JSON.parse(String(fleet.executed[0]?.input?.["input"] ?? "null"))).toMatchObject({
     machineId: MACHINE,
-    selectors: ["codex/a", "codex/b"],
   });
+  expect(handed(fleet.executed[0])).toEqual(["codex/a", "codex/b"]);
 
   const run = (
     await harness.db.query<{ id: string; kind: string; preparation: string; container_id: string }>(
@@ -1676,6 +1888,72 @@ test("a settled titling preparation posts a session asking for a title per seale
   ]);
 });
 
+test("a titling run asks the model only about sessions whose own logs recorded no title", async () => {
+  await route();
+  await nameless("a");
+  await nameless("b");
+  await preparedTitles(["codex/a", "codex/b"]);
+  // The preparation read `a`'s recorded title, and the hub ingested it before this wake.
+  await harness.db.run(
+    `UPDATE sessions SET title = 'Its own', title_provenance = 'recorded' WHERE selector = 'codex/a'`,
+  );
+  const prompts: string[] = [];
+  code.posting = (request) => {
+    prompts.push(request.prompt);
+    return {
+      ok: true,
+      value: {
+        jobId: "job_code_title",
+        machineId: MACHINE,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "started",
+      },
+    };
+  };
+
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([
+    { runId: "run_title_1", jobId: "job_code_title" },
+  ]);
+  expect(prompts[0]).toContain("codex/b — `sessions/0002-codex-b.jsonl`");
+  expect(prompts[0]).not.toContain("codex/a");
+  // The settlement answers exactly the session the model was asked about.
+  const run = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE id = 'run_title_1'`,
+  );
+  expect(JSON.parse(String(run[0]?.preparation))).toMatchObject({
+    titles: { selectors: ["codex/b"], reserved: 0.0625 },
+  });
+});
+
+test("a titling run whose preparation found every title settles without a session, at no cost", async () => {
+  await route();
+  await nameless("a");
+  await nameless("b");
+  await preparedTitles(["codex/a", "codex/b"]);
+  await harness.db.run(
+    `UPDATE sessions SET title = 'Its own', title_provenance = 'recorded'
+      WHERE selector IN ('codex/a', 'codex/b')`,
+  );
+  code.posting = () => {
+    throw new Error("no session may be bought for titles the logs already recorded");
+  };
+
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([
+    {
+      runId: "run_title_1",
+      settled: "every session this run sealed recorded its own title (2), so no model was asked",
+    },
+  ]);
+  expect(
+    await harness.db.query(`SELECT closure, cost_usd, job_id FROM runs WHERE id = 'run_title_1'`),
+  ).toEqual([{ closure: "completed", cost_usd: 0, job_id: null }]);
+  // Nothing needed an answer: the titles are the catalog's, and none is offered again.
+  expect(await harness.db.query(`SELECT selector FROM session_titles`)).toEqual([]);
+  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
+  expect(fleet.executed).toEqual([]);
+});
+
 test("a titling preparation that failed answers its sessions rather than leaving them for the next cycle", async () => {
   await route();
   await nameless("a");
@@ -1832,13 +2110,13 @@ test.each(["challenge", "synthesize"] as const)(
   async (stage) => {
     const { start, analysis } = await stageLaunch(stage);
     await nameless("not-offered");
-    await harness.db.run(`UPDATE sessions SET seen_at = ? WHERE selector = 'omp/s1'`, [
-      stamp(NOW - 30 * 24 * HOUR),
+    await harness.db.run(`UPDATE sessions SET modified_at = ? WHERE selector = 'omp/s1'`, [
+      new Date(NOW - 30 * 24 * HOUR).toISOString(),
     ]);
     expect(await start()).toEqual({ runId: "run_stage", jobId: "job_stage_material" });
     const document = fleet.executed[0]?.input["input"];
     if (typeof document !== "string") throw new Error("the preparation has no input document");
-    expect(JSON.parse(document)["selectors"]).toEqual(["omp/s1"]);
+    expect(handed(fleet.executed[0])).toEqual(["omp/s1"]);
     expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
     await sealStage();
     const governor = coordinator(harness.store, () => NOW, 16);

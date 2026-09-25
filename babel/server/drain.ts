@@ -708,8 +708,12 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   }
 
   // The session is the drain's own, every time: the model and the account the operator named
-  // when they started it, not whatever a later default would be (#267, #279).
-  const plan = deps.plan(inForce.policy, pressOperation(row.preset), row.profile);
+  // when they started it, not whatever a later default would be (#267, #279). Its fan holds
+  // `concurrent` materials on the machine at once, so each is bounded to that share (#453).
+  const plan = {
+    ...deps.plan(inForce.policy, pressOperation(row.preset), row.profile),
+    materials: row.concurrent,
+  };
   const input = drainInput(row);
   const holding = [...seen.holding];
   // What this round could not do. It is journaled AFTER the round rather than folded with it,

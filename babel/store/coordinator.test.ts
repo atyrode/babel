@@ -1668,6 +1668,11 @@ function stagePolicy(stage: Stage, over: Partial<Policy> = {}): Policy {
   });
 }
 
+/**
+ * One catalogued session. By default it names an archived capture, which is what a preparation
+ * can read (#453); `captured: false` is a row the catalog has not listed from the archive yet —
+ * an imported one — and `machine` is the host its label maps to, which selection never reads.
+ */
 async function catalog(
   db: GuestDatabase,
   selector: string,
@@ -1676,11 +1681,14 @@ async function catalog(
     live?: number;
     kind?: string;
     bytes?: number;
+    captured?: boolean;
   } = {},
 ): Promise<void> {
+  const captured = over.captured ?? true;
   await db.run(
-    `INSERT INTO sessions(selector, host, harness, source_id, live, kind, size, content_digest, seen_at)
-     VALUES(?,?,'omp',?,?,?,?,?,?)`,
+    `INSERT INTO sessions(selector, host, harness, source_id, live, kind, size, content_digest,
+                          archive_label, archive_path, snapshot_id, archived_at, modified_at, seen_at)
+     VALUES(?,?,'omp',?,?,?,?,?,?,?,?,?,?,?)`,
     [
       selector,
       over.machine ?? "dev-01",
@@ -1689,6 +1697,11 @@ async function catalog(
       over.kind ?? "operator",
       over.bytes ?? 100,
       `digest-${selector}`,
+      captured ? "dev-01" : null,
+      captured ? `/home/alex/.omp/agent/sessions/${selector}.jsonl` : null,
+      captured ? "a".repeat(64) : null,
+      captured ? ago(1) : null,
+      captured ? ago(1) : null,
       ago(1),
     ],
   );
@@ -1778,9 +1791,11 @@ test("exploration consumes eligible material once, including across conductors a
   const { db, coord } = await deployment(stagePolicy("explore", { cooldownSeconds: 0 }));
   await catalog(db, "omp/live", { live: 1 });
   await catalog(db, "omp/agent", { kind: "agent" });
-  await catalog(db, "omp/elsewhere", { machine: "dev-02" });
+  // A preparation reads the archive only, so a row naming no capture is never material…
+  await catalog(db, "omp/unarchived", { captured: false });
   await catalog(db, "omp/huge", { bytes: MAX_MATERIAL_BYTES + 1 });
-  await catalog(db, "omp/real");
+  // …and a capture is material whichever machine its label maps to (#453).
+  await catalog(db, "omp/real", { machine: "dev-02" });
   const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
   const one = drawn(await coord.draw({ runId: "a", seed: 1n }));
   const two = drawn(await other.draw({ runId: "b", seed: 99n }));
@@ -2346,6 +2361,7 @@ test("a full offer stage stops independently while challenge and synthesis remai
   const offers = analysisOffers(
     db,
     "dev-01",
+    1,
     ["explore", "challenge", "synthesize"],
     new Set(ids),
     new Map(),

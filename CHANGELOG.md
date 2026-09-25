@@ -22,6 +22,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   catalog yet. Tests against a synthetic repository cover chain order, the cap, the memory,
   the tag exclusion, offset times, and a restic killed mid-listing leaving no lock (#453).
 
+- **The hub selects archived captures and ingests the catalog's rows.** A preparation is handed
+  the exact captures it reads, grouped by snapshot with each path, size and modification time,
+  instead of selectors. `launch`, the conductor's analysis draw and the title lane select only
+  sessions whose row names an archived capture, under every host label rather than the launch
+  machine's, and "recent" is when a session was last written rather than when it was catalogued.
+  The input stops before `PREPARE_INPUT_MAX_BYTES`, and the material is bounded by the machine's
+  newest `outputCapacity` less `MATERIAL_HEADROOM_BYTES`, divided by the lane's concurrency (one
+  launch, the per-machine bound, a drain's fan); both bounds count what they leave in
+  `overBound`. `sessions.json` rows are parsed against `SessionRowSchema` and written through
+  `upsertSessionRows`, and a row naming no capture is refused by name. The beat and the default
+  plan follow `keep-going`'s operation, `verify` runs on any machine and lists the catalogued
+  path, and a titling run whose preparation read every recorded title settles with no Code
+  session. Regressions cover selection, both bounds, the drain share, ingestion and the title
+  lane (#453).
+
 - **Catalogued sessions record their archive capture, and `rehostSessions` maps restic host
   labels.** The store moves to data version 1.12. Each session gains `archive_label` and
   `archive_path` beside its snapshot, and a new `archive_labels` table holds the operator's

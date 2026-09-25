@@ -2066,6 +2066,7 @@ export function coordinator(
     for await (const offer of analysisOffers(
       db,
       route.machineId,
+      perMachineBound(policy),
       stages,
       eligible,
       filed,
@@ -2077,7 +2078,7 @@ export function coordinator(
           recordId: offer.missing,
           role: "",
           reason: "unsupported",
-          detail: "no settled non-agent material on the routed machine fits this analysis",
+          detail: "no archived non-agent capture fits this analysis within the material bound",
         });
         continue;
       }
