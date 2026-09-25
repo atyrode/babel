@@ -6,7 +6,7 @@ description: Back up, browse, verify and restore OMP/Codex/Claude Code sessions 
 # Babel's session archive
 
 Babel archives a machine's agent sessions (OMP, Codex, Claude Code) into a restic repository,
-tagged `babel`, one snapshot per adapter root, attributed to the machine's own identity. Any
+tagged `babel`, one snapshot per adapter root, attributed to the machine's stable host label. Any
 historical capture restores byte-exactly.
 
 **There is no `babel` binary.** Babel is a Manifold plugin family; the standalone Go command was

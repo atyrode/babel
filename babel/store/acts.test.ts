@@ -2033,8 +2033,8 @@ test("a re-host maps the label, moves what it names by host and by label, and ho
     { label: "dev-01", machine_id: "m-2" },
   ]);
 
-  // A label that is itself a machine id — what `archive` backs up under — means nothing to the
-  // hub until it is recorded, so naming it twice is the mapping and not a mistake.
+  // A label that is itself a machine id — one an owner may choose for `archive` — means nothing
+  // to the hub until it is recorded, so naming it twice is the mapping and not a mistake.
   await upsertSessionRows(store, [capture("archived", "m-3")], seen);
   expect((await hosts())["omp/archived"]).toBe("");
   expect(await rehostSessions(store, { from: "m-3", to: "m-3" })).toMatchObject({

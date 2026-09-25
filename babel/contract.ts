@@ -2050,8 +2050,8 @@ export const ImportChunkSchema = z.strictObject({
  * The act moves every session hosted at `from` or captured under the label `from` onto `to`,
  * and records that the label means that machine, so every later capture under it is catalogued
  * there too. Both are required and neither is guessed. `from` may equal `to`: a label that IS a
- * machine id, which is what `archive` backs up under, still means nothing to the hub until the
- * operator records it.
+ * machine id, which an owner may choose as the label `archive` backs up under, still means nothing
+ * to the hub until the operator records it.
  */
 export const RehostSessionsInputSchema = z.strictObject({
   from: bounded(200),

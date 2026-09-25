@@ -1,9 +1,28 @@
 /*
   THE archive OPERATION (plan §4): `restic backup` of this machine's session roots, tagged
-  `babel` and attributed to the machine's own identity. It is the collector's half of the
+  `babel` and attributed to the machine's stable host label. It is the collector's half of the
   archive and writes no catalog row (#453): the `catalog` operation lists the snapshots this
   job takes like any other `babel` snapshot, so the hub learns every capture from one writer.
   The `sessions` document it owes as a declared output is therefore always empty.
+
+  THE ROOTS ARE THE OPERATOR'S, READ-ONLY. The manifest mounts each harness's session tree
+  through an operator anchor Manifold presents read-only (atyrode/manifold#839) at the guest
+  path the adapters build under `HOME=/home/job`, so the roots are found by the same
+  `backupRoots()` a hand-run on the machine uses, and a root the machine does not present is
+  simply not one of them.
+
+  THE LABEL IS THE JOB INPUT'S, NOT THE MACHINE ID AND NOT THE STORAGE DOCUMENT'S. A machine
+  keeps one label for every collector that has backed it up — the fleet collector's registry
+  name, `dev-01` on dev-01 — so Manifold-made snapshots are filed beside the captures already
+  under it, and the one `archive_labels` row that maps that label to the machine id covers
+  both. restic's parent is matched on host AND path set, and a job's guest paths are not the
+  collector's host paths, so the first snapshot of each root under a shared label reads that
+  root whole once (storing only what the repository does not already hold) and every later one
+  is parented. The hub's owner names the label where he posts or schedules the job; a typo shows
+  up as an unmapped label on Watch's Archive line rather than as a silent second name for the
+  machine. The storage document is custody, may be one document for the whole fleet, and is
+  read by operations that label nothing, so a label there would put a per-machine fact in a
+  place that is not per-machine.
 
   ONE SNAPSHOT PER ROOT, not one for all of them. restic picks a backup's parent by matching
   host and the snapshot's path set, so a machine that gains a harness would, with one combined
@@ -20,7 +39,7 @@
 */
 
 import { z } from "zod";
-import type { Receipt } from "../contract.ts";
+import { ArchiveLabelSchema, type Receipt } from "../contract.ts";
 import type { SessionRef } from "./adapters/index.ts";
 import type { OutputSink } from "./output.ts";
 import { BABEL_TAG, ResticError, openRepo, resticConfig } from "./restic.ts";
@@ -29,9 +48,15 @@ export const ArchiveInputSchema = z.strictObject({
   /** The run this job is. Empty mints one: a scheduled beat's input is fixed at registration,
    *  so the hub cannot name a run per occurrence and the machine half names it instead. */
   runId: z.string().trim().max(120).default(""),
-  /** The machine's identity, which is restic's `--host`: the label the catalog files this
-   *  machine's captures under. */
+  /** The machine's identity: where the job ran, as the receipt reports it. */
   machineId: z.string().trim().min(1).max(120),
+  /** restic's `--host`: the stable label this machine's captures are filed under, which the
+   *  owner maps to the machine id once with `rehostSessions`. The catalog reads any label
+   *  verbatim; one this job writes is a plain name, so a stray space or a leading dash cannot
+   *  become a second name for the machine or a flag. */
+  label: ArchiveLabelSchema.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, {
+    message: "a host label is letters, digits, '.', '_' and '-', starting with a letter or digit",
+  }),
   /** The roots to archive. Empty is every adapter's own root that exists on this host. */
   roots: z.array(z.string().trim().min(1).max(4096)).max(64).default([]),
 });
@@ -176,7 +201,7 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
   for (const root of roots) {
     let outcome;
     try {
-      outcome = await repo.backup([root], { host: input.machineId, tags: [BABEL_TAG] });
+      outcome = await repo.backup([root], { host: input.label, tags: [BABEL_TAG] });
     } catch (err) {
       if (err instanceof ResticError) {
         failures.push(`${root}: ${describe(err)}`);

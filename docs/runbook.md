@@ -35,20 +35,41 @@ and to nothing else, and the operator recorded its first push after activation a
 `ff302a6c` at 2026-09-24T22:13Z. It is the deployment's, placed by dotfiles, and not a Babel
 operation.
 
-**`atyrode.babel.archive` is Babel's own collector, and cannot reach the sessions yet.** It is one
-of the operations the machine half implements (`babel/machine/main.ts`; `MACHINE_OPERATIONS` in
-`babel/contract.ts`). It runs `restic backup` over this machine's session roots — OMP, Codex,
-Claude Code, and Babel's own — **one snapshot per root**, tagged `babel`, attributed to the
-machine's own id as restic's `--host` (`babel/machine/archive.ts`). Per-root snapshots keep each
-root's parent chain stable when a machine gains a harness, let one unreadable root fail alone,
-and make restoring one harness a restore of one snapshot. Its roots are the `home` anchor's, and
-on a native Manifold worker that anchor is the workload home rather than the operator's (§6), so
-it backs up an empty tree there. It collects for real once it reads the roots through a read-only
-anchor the operator declares to Manifold (atyrode/manifold#839), and a later change retargets it
-there. Its machine-id label and the timer's registry name would be two chains for one machine;
-the recommendation for that change is to back up under the label `archive_labels` maps to the
-machine. Until then an id-shaped label is mapped with `rehostSessions {from: <id>, to: <id>}`
-(§6).
+**`atyrode.babel.archive` is Babel's own collector.** It is one of the operations the machine half
+implements (`babel/machine/main.ts`; `MACHINE_OPERATIONS` in `babel/contract.ts`). It runs
+`restic backup` over this machine's session roots — OMP's sessions and the blobs they reference,
+Codex and Claude Code — **one snapshot per root**, tagged `babel`, under the host label its input
+names (`babel/machine/archive.ts`). Per-root snapshots keep each root's parent chain stable when
+a machine gains a harness, let one unreadable root fail alone, and make restoring one harness a
+restore of one snapshot. It reads those roots through four **read-only operator anchors** the
+machine's operator declares to Manifold (atyrode/manifold#839), mounted at the guest paths the
+adapters build under the job's `HOME=/home/job`:
+
+| Location                  | Anchor                  | Guest path                      | Host source on dev-01   |
+| ------------------------- | ----------------------- | ------------------------------- | ----------------------- |
+| `atyrode.babel.omp`       | `operator.omp-sessions` | `/home/job/.omp/agent/sessions` | `~/.omp/agent/sessions` |
+| `atyrode.babel.omp-blobs` | `operator.omp-blobs`    | `/home/job/.omp/agent/blobs`    | `~/.omp/agent/blobs`    |
+| `atyrode.babel.codex`     | `operator.codex-home`   | `/home/job/.codex`              | `~/.codex`              |
+| `atyrode.babel.claude`    | `operator.claude-home`  | `/home/job/.claude`             | `~/.claude`             |
+
+Manifold presents each as a root-made, read-only view; nothing in the operator's home is chmod'ed
+and nothing besides those four trees is reachable. A machine that declares none of them reports
+`anchors_unavailable` for `archive` and runs every other operation. OMP's `~/.omp/collab` is one
+of its backup roots too and is not mounted yet: a required location the machine lacks would make
+`archive` unavailable there.
+
+**The label is the input's, and it is the machine's one label.** The job's input is
+`{"machineId": "<machine id>", "label": "<label>"}`: `machineId` is where it ran, as its receipt
+reports it, and `label` is restic's `--host`. Name the label the machine has always been
+collected under — its registry name, `dev-01` on dev-01 — so the Manifold-made snapshots are
+filed beside the timer's and the one `archive_labels` row that maps `dev-01` to the machine's id
+(§6.1) covers both. It is not the storage document's: that document is custody, may be one
+document for the fleet (an instance service), and is read by operations that label nothing. A
+mistyped label is not lost: the next `catalog` lists it, and Watch's Archive line shows it as
+unmapped. A shared label is not a shared restic chain. restic picks a parent by host and path set,
+the job's paths are its guest paths, and the timer's are one combined snapshot of host paths, so
+the first `archive` reports `snapshotsParented` 0, reading each root whole once and storing only
+the chunks the repository does not already hold; every later run is parented.
 
 It writes no session rows. The `catalog` beat (§7.1) lists its snapshots like any other `babel`
 snapshot, so the catalog has one writer of captures whichever collector took them.
@@ -63,18 +84,30 @@ only write any Babel operation makes to the repository; every other operation on
 when the hub's owner posts the job for that operation on that machine, or registers a cadence for
 it with the hub's own schedule verbs.
 
-> **OPERATOR STEP — post an archive (prerequisites in §4 and §6).**
-> **Prerequisites:** the machine is enrolled; the `atyrode.babel.restic` service policy is
-> installed on it with a storage document that may write, and its binding fingerprint matches the
-> installed job (§4); the `restic` runtime tool is bound on that machine; the `home` anchor holds
-> the operator's session roots — which a native worker's does not (§6); consent is recorded for
-> `services:invoke` at
-> `manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage` and for
-> `network:host` at `manifold://machine/<machine>/operation/atyrode.babel.archive`.
-> **Success:** the job settles `completed` and its receipt carries `kind: "archive"`, a non-zero
-> `roots` count and one snapshot id per root; the next `catalog` receipt lists that machine's label
-> with the new snapshots. An `archive` that reports zero roots is not a backup — it is a machine
-> whose session directories do not exist (§6).
+> **OPERATOR STEP — post an archive (not executed; prerequisites in §4 and §6).**
+> **Prerequisites:** the machine is enrolled and meets §6, including item 6's four operator
+> anchors; its `atyrode.babel.restic` storage document may write; the job is installed with
+> resource bindings for `tools/restic`, `tools/system`, `anchors/runtime`, the four
+> `anchors/operator.*` and `services/atyrode.babel.restic`, from a deployment review that shows
+> each operator anchor's host path; the label is mapped to the machine (§6.1). Consents, against
+> the installed artifact revision: at `manifold://machine/<machine>/operation/atyrode.babel.archive`,
+> `machines:run`, `jobs:read`, `jobs:cancel`, `operations:invoke` and `network:host`;
+> `locations:write` at `manifold://machine/<machine>/location/atyrode.babel.outputs` and
+> `…/location/atyrode.babel.cache`; `locations:read` at `…/location/atyrode.babel.omp`,
+> `…/location/atyrode.babel.omp-blobs`, `…/location/atyrode.babel.codex` and
+> `…/location/atyrode.babel.claude`; and `services:invoke` at
+> `manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage`.
+> **Procedure:** post `atyrode.babel.archive` on the machine with the input
+> `{"machineId": "<machine id>", "label": "<label>"}`, or register a cadence for it with that
+> input through the hub's schedule verbs.
+> **Success:** the job settles `completed` and its receipt carries `kind: "archive"`, `roots` 4
+> on a machine holding all four trees, one snapshot per root, and `unclaimed` counting every
+> archived file that is no session log, the blobs among them;
+> `restic snapshots --no-lock --tag babel --host <label>` lists the new snapshots with guest
+> paths under `/home/job`; the next `catalog` receipt lists the label with them, and a second
+> `archive` reports `snapshotsParented` equal to its snapshots. An `archive` refused
+> `anchors_unavailable` names a machine whose anchors are not declared or not active; one that
+> reports zero roots is a machine whose views present nothing.
 
 A machine that binds no `restic` runs none of Babel's operations: since #453 every one of them
 reads or writes the archive (`docs/building.md`).
@@ -380,9 +413,8 @@ deleted. That proves the path, not the schedule.
 ## 6. Enrolling a machine
 
 A machine catalogues and prepares any archived session — whichever machine recorded it — once
-five things are true of it. None is a Babel command; all five are the hub owner's or the
-machine's declaration, and none concerns the sessions the machine itself holds, which are
-collected by §1.
+items 1–5 below are true of it, and it collects its own sessions with `archive` (§1) once item 6
+is too. None is a Babel command; each is the hub owner's or the machine's declaration.
 
 1. **It is enrolled in the hub** and online.
 2. **It binds the tools each operation names** (`docs/building.md`): `bun` is pinned by Babel's own
@@ -392,22 +424,40 @@ collected by §1.
 3. **Its runtime scratch is a dedicated bounded tmpfs**, sized below, since every named-output
    lease is cut from it.
 4. **The `atyrode.babel.restic` service is installed on it** for the existing repository, and the
-   job install carries that policy's fingerprint (§4).
-5. **Its consents are recorded:** `services:invoke` at
-   `manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage`, `network:host`
-   at `manifold://machine/<machine>/operation/atyrode.babel.catalog`, `…/atyrode.babel.prepare`
-   and `…/atyrode.babel.verify` — and `…/atyrode.babel.archive` on a machine that collects — plus
-   `machines:run` at the operation node for anything that launches.
+   job install carries that policy's fingerprint (§4). A machine that collects needs a storage
+   document that may write; one that only analyses may carry a read-only object-store key.
+5. **Its consents are recorded** against the installed artifact revision, as
+   `engine.jobs.reviewDeployment` lists them: `services:invoke` at
+   `manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage`; at each
+   operation node it runs — `manifold://machine/<machine>/operation/atyrode.babel.catalog`,
+   `…/atyrode.babel.prepare` and `…/atyrode.babel.verify`, and `…/atyrode.babel.archive` on a
+   machine that collects — `machines:run`, `jobs:read`, `jobs:cancel`, `operations:invoke` and
+   `network:host`; `locations:write` at `manifold://machine/<machine>/location/atyrode.babel.outputs`
+   and `…/location/atyrode.babel.cache`; and, on a machine that collects, `locations:read` at
+   `…/location/atyrode.babel.omp`, `…/location/atyrode.babel.omp-blobs`,
+   `…/location/atyrode.babel.codex` and `…/location/atyrode.babel.claude`.
+6. **A machine that collects declares four operator anchors** to Manifold, each read-only and
+   named by what it exposes: `omp-sessions` (`~/.omp/agent/sessions`), `omp-blobs`
+   (`~/.omp/agent/blobs`), `codex-home` (`~/.codex`) and `claude-home` (`~/.claude`), under
+   `services.manifold.execution.operatorAnchors` (atyrode/manifold at `2ee760dd`,
+   `docs/SELF-HOST.md:233-303`). Its owner speaks native owner RPC 40, its `archive`
+   installation binds `anchors/operator.omp-sessions`, `anchors/operator.omp-blobs`,
+   `anchors/operator.codex-home` and `anchors/operator.claude-home` beside `anchors/runtime`,
+   `tools/restic`, `tools/system` and `services/atyrode.babel.restic`, and its label is mapped
+   (§6.1).
 
-**No `home` anchor is needed to analyse.** `catalog` and `prepare` declare no `home` location and
-open no file of the machine they run on. The `home` anchor matters to `archive` alone, which reads
-`~/.omp/agent/sessions`, `~/.codex` and `~/.claude` beneath it, and a job whose read location is
-missing fails to start. **Creating them does not make the sessions readable on a native Manifold
-worker** (the NixOS module): there the `home` anchor is the service account's workload home,
-`/var/lib/manifold-workload/home`, hard-coded by the module (atyrode/manifold at `7b5fe301`,
-`infra/native/module.nix:10,23-31`), and an operator may also protect `/home` from workloads with
-`execution.protectedDirectories`. `mkdir -p` there makes `archive` start and back up an empty
-tree, until it reads the roots through the operator-declared anchor of atyrode/manifold#839.
+**Analysis needs no anchor; collection needs these four.** `catalog`, `prepare` and `verify`
+declare no location on the operator's files and open no file of the machine they run on. No Babel
+location names the `home` anchor, which on a native Manifold worker is the service account's own
+workload home rather than the operator's. Manifold's native module presents each operator anchor
+as a root-made, read-only, idmapped, non-recursive view at `/run/manifold-anchors/<name>`: 0600
+files and 0700 directories read through it, files the harness creates later included, and
+nothing in the operator's home is chmod'ed or made traversable. `protectedDirectories =
+[ "/home" ]` stays, because a view may present a subtree beneath a protected directory but never
+one that is or contains it. A machine that declares none of the four reports
+`anchors_unavailable` for `archive` alone; a deployment review names each anchor's host path and
+cannot be approved without it (`resource_evidence_unknown`); and changing what an anchor presents
+changes its pin, so admission refuses `anchors_revision_changed` until a new review.
 
 > **OPERATOR STEP — enroll a machine for analysis (not executed against the current fleet).**
 > **Prerequisites:** items 1–2 above, and a hub running the Babel bundle whose operations declare
@@ -430,6 +480,31 @@ tree, until it reads the roots through the operator-declared anchor of atyrode/m
 > above zero, later beats bringing `counts.pending` to zero; the first explore from Watch's Start
 > leaves a `prepare` receipt with `counts.fetched` above zero whose material entries carry their
 > `origin`, and a second identical explore shows `counts.fetched` 0, every session reused.
+
+> **OPERATOR STEP — enroll a machine to collect (not executed).**
+> **Prerequisites:** the machine is enrolled for analysis (above); the hub, and the Babel bundle
+> installed on it, carry operator anchors (Manifold `2ee760dd` or later), since an older hub or
+> kit refuses the manifest whole.
+> **Procedure:**
+>
+> 1. In the machine's dotfiles module, move its `manifold` input to a revision whose owner speaks
+>    RPC 40 and declare item 6's four anchors with `readOnly = true`, keeping
+>    `protectedDirectories`. The declared set is retained owner configuration, so it is activated
+>    inside a positive-drain/shutdown maintenance window (`docs/SELF-HOST.md:296-303` at
+>    `2ee760dd`): after the acknowledged shutdown and the retirement of the old owner
+>    configuration, `systemctl restart manifold-operator-anchors`, then start the owner. For dev-01
+>    the declaration is dotfiles #714 (merged, not yet activated), and that PR's activation
+>    runbook holds the window's exact commands.
+> 2. Review the deployment of `atyrode.babel.archive` on the machine. The review must show the
+>    four host paths, read-only; apply it, and record item 5's `archive` consents.
+> 3. Map the label the machine is collected under, if §6.1 has not already (`dev-01` on dev-01).
+> 4. Post the first `archive` (§1).
+>
+> **Success:** `findmnt -n -o TARGET,SOURCE,VFS-OPTIONS -R /run/manifold-anchors` lists four views,
+> each `ro,nosuid,nodev,noexec,nosymfollow,idmapped`; as the `manifold` user, `stat` of the
+> operator's home is still refused; root `engine.jobs.describe` lists the four `operator.*` anchors
+> in `anchors` and `anchorDefinitions`; the first `archive` receipt is `completed` with `roots` 4,
+> and the second reports `snapshotsParented` equal to its `snapshots`.
 
 **Item 3's runtime scratch has one size.** Every operation that writes the `runtime` anchor —
 Babel's `catalog`, `archive`, `prepare` and `verify`, and `atyrode.omp.session` — declares
@@ -464,21 +539,23 @@ out of the migration rather than out of a list of its own, so a column added und
 spelling is guarded from the day it exists.
 
 A capture's host label is a name: restic's `--host`, as the collector spelled it — the clan
-machine name (`dev-01`) for the dotfiles collector, historical hostnames such as
-`workstation-linux` and `alex-x86_64-linux-wsl` for machines that no longer exist, and the machine
-id for `archive`. The catalog keeps it verbatim in `sessions.archive_label`, and it becomes a
-machine id only through `archive_labels`, which the owner records. An unmapped label's sessions
-are still selected and prepared; what they lose is the hub's repository question, which is asked
-of a machine. Watch's **Archive** line lists each unmapped label with its session count. Map only
-the labels of enrolled machines: a retired machine's label stays unmapped on purpose.
+machine name (`dev-01`) for the dotfiles collector and for `archive`, whose input names the same
+label (§1), and historical hostnames such as `workstation-linux` and `alex-x86_64-linux-wsl` for
+machines that no longer exist. The catalog keeps it verbatim in `sessions.archive_label`, and it
+becomes a machine id only through `archive_labels`, which the owner records. One machine keeps
+one label whichever collector took the snapshot, so one mapping covers every capture of it. An
+unmapped label's sessions are still selected and prepared; what they lose is the hub's repository
+question, which is asked of a machine. Watch's **Archive** line lists each unmapped label with its
+session count. Map only the labels of enrolled machines: a retired machine's label stays unmapped
+on purpose.
 
 > **OPERATOR STEP — map an archive label to its machine (per enrolled machine, owner only).**
 > **Prerequisites:** the machine is enrolled and `engine.jobs.describe` answers for its id.
 > **Call:** `rehostSessions {from: "<label>", to: "<machine id>"}`. On the preview hub that is
 > `rehostSessions {from: "dev-01", to: "<dev-01's machine id>"}`: one call repairs the imported
-> Go-era rows, whose `host` is still the Go host name `dev-01`, and maps every capture the timer
-> takes under that label, now and later. An id-shaped label — what `archive` backs up under —
-> is mapped with `from` equal to `to`. The door describes `to` before it writes anything.
+> Go-era rows, whose `host` is still the Go host name `dev-01`, and maps every capture taken under
+> that label, now and later — the timer's and `archive`'s alike. A label that is itself a machine
+> id is mapped with `from` equal to `to`. The door describes `to` before it writes anything.
 > **Success:** the door answers `sessions` (rows moved) and `labelled` (rows under the label),
 > Watch's Archive line no longer lists the label, and the next `catalog` files that label's
 > captures under the machine id.
@@ -1036,9 +1113,11 @@ None of the dated observations above establishes current fleet state. These rema
    `origin`; and a repeated explore showing `counts.fetched` 0.
 3. The hub store's backup (§5, #454): dotfiles #712's nightly timer armed on dev-01 and one
    restore through §5's procedure.
-4. Babel's own collector: the operator-declared read-only anchor (atyrode/manifold#839), the
-   change that retargets `archive` onto it under the machine's mapped label (§1), and a cadence
-   for it. Babel schedules only the `catalog` beat, and until then the dotfiles timer collects.
+4. Babel's own collector on dev-01 (§6, "enroll a machine to collect"): activating dotfiles #714's
+   four read-only operator anchors in a drained-owner window, the `archive` deployment review
+   showing their host paths, its consents, the first `archive` under the label `dev-01`, and a
+   cadence for it. Babel schedules only the `catalog` beat. The dotfiles timer keeps collecting
+   until `archive` has proved parity there; retiring it is a separate operator decision.
 5. A full restore-to-service on a clean machine: recover custody, restore a historical source tree
    with restic (§2), enroll the machine (§6), and confirm the restored bytes match the chosen
    snapshot. The 2026-08-31 cross-machine restore proves its own part and not this composition.

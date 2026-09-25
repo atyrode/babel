@@ -458,17 +458,19 @@ any of it:
    from it: `execution.outputBytes` at `RUNTIME_SCRATCH_BYTES`, 768 MiB, with `outputInodes`
    10000, raised only after the bundle whose operations declare 1 GiB is installed.
 
-Nothing else is local. `catalog` and `prepare` declare no `home` location and open no file of the
-machine they run on, so any machine with these four can catalogue and prepare any archived
-session. The `home` anchor matters to `archive` alone, which still reads
-`~/.omp/agent/sessions`, `~/.codex` and `~/.claude` beneath it, and a job whose read location is
-missing fails to start. On a native Manifold worker (the NixOS module) that anchor is the service
-account's workload home, `/var/lib/manifold-workload/home`, hard-coded by the module
-(atyrode/manifold at `7b5fe301`, `infra/native/module.nix:10,23-31`), and an operator may protect
-`/home` from every workload with `execution.protectedDirectories`, so `archive` there backs up an
-empty tree. It collects for real once it reads the session roots through a read-only anchor the
-operator declares to Manifold (atyrode/manifold#839); until then the dotfiles collector backs
-each machine up under the same contract (`SPEC.md` §6.1).
+Nothing else is local. `catalog` and `prepare` declare no location on the operator's files and
+open no file of the machine they run on, so any machine with these four can catalogue and prepare
+any archived session. `archive` alone reads a machine's sessions, and only through four
+read-only **operator anchors** the machine's operator declares (atyrode/manifold at `2ee760dd`,
+`docs/PLUGINS.md:1806-1840`): `operator.omp-sessions`, `operator.omp-blobs`,
+`operator.codex-home` and `operator.claude-home`, each named whole (`components: []`) and mounted
+at the guest path the adapters build under `HOME=/home/job`. No Babel location names the `home`
+anchor, which on a native worker is the service account's workload home rather than the
+operator's. An operation reading an operator anchor always needs reviewed resource bindings, so a
+machine that collects adds a fifth prerequisite: those four anchors declared and active, bound in
+the installation beside `anchors/runtime`, and `locations:read` consented on each of the four
+locations. A machine that declares none reports `anchors_unavailable` for `archive` alone.
+`docs/runbook.md` §6 is the procedure.
 
 ## Draining a usage window
 

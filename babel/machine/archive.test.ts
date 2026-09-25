@@ -17,10 +17,11 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RESTIC_SERVICE, type Receipt } from "../contract.ts";
-import type { SessionRef } from "./adapters/index.ts";
+import { claim as claimSession, existingRoots, type SessionRef } from "./adapters/index.ts";
 import type { OutputFile, OutputSink } from "./output.ts";
 import { ArchiveInputSchema, archive, type ArchiveDeps } from "./archive.ts";
 import { BABEL_TAG, RESTIC_ENV, openRepo, resticConfig } from "./restic.ts";
+import { writeClaudeSession, writeCodexRollout, writeOmpSession } from "./test/fixtures.ts";
 
 /*
   The suite drives a real restic against a temporary repository, so it needs the binary - and
@@ -34,6 +35,8 @@ const test = RESTIC_ON_PATH ? run_ : run_.skip;
 const whenRestic = (body: () => Promise<void> | void) => (RESTIC_ON_PATH ? body : () => undefined);
 
 const MACHINE = "test-machine-01";
+/** The host label, deliberately not the machine id: a snapshot is filed under the label. */
+const LABEL = "test-host";
 const RESTIC_TIMEOUT = 120_000;
 const PASSWORD = "babel-archive-test";
 /** The shape the engine mints: 32 random bytes, base64url. */
@@ -89,12 +92,12 @@ function storage(overrides: Partial<Record<string, string>> = {}): string {
 }
 
 async function run(
-  input: Partial<{ machineId: string; roots: string[] }> = {},
+  input: Partial<{ machineId: string; label: string; roots: string[] }> = {},
   overrides: Partial<ArchiveDeps> = {},
 ): Promise<{ receipt: Receipt; sessions: readonly unknown[] }> {
   const recorder = new Recorder();
   const receipt = await archive(
-    ArchiveInputSchema.parse({ machineId: MACHINE, ...input }),
+    ArchiveInputSchema.parse({ machineId: MACHINE, label: LABEL, ...input }),
     recorder,
     { ...deps, ...overrides },
   );
@@ -189,7 +192,7 @@ test(
     const byRoot = new Map(snapshots.map((snapshot) => [snapshot.paths[0], snapshot]));
     expect([...byRoot.keys()].sort()).toEqual([codexRoot, ompRoot].sort());
     for (const snapshot of snapshots) {
-      expect(snapshot.host).toBe(MACHINE);
+      expect(snapshot.host).toBe(LABEL);
       expect(snapshot.tags).toEqual([BABEL_TAG]);
       expect(snapshot.parentId).toBeNull();
     }
@@ -388,10 +391,14 @@ test(
 
 test("a machine with no session root is skipped, and its service is never asked", async () => {
   const recorder = new Recorder();
-  const receipt = await archive(ArchiveInputSchema.parse({ machineId: MACHINE }), recorder, {
-    ...deps,
-    roots: async () => [],
-  });
+  const receipt = await archive(
+    ArchiveInputSchema.parse({ machineId: MACHINE, label: LABEL }),
+    recorder,
+    {
+      ...deps,
+      roots: async () => [],
+    },
+  );
 
   expect(receipt.closure).toBe("skipped");
   expect(receipt.reason).toBe("no session root exists on this host");
@@ -401,3 +408,61 @@ test("a machine with no session root is skipped, and its service is never asked"
   // The declared output is still written, as an empty document rather than a missing file.
   expect(recorder.files["sessions"]).toEqual([]);
 });
+
+test(
+  "a job-shaped home is archived from the adapters' own roots, OMP blobs included, under the label",
+  async () => {
+    // Inside the sandbox HOME is /home/job, and the manifest mounts each operator anchor at the
+    // guest path the adapters build under it (test/contract.test.ts pins that). The same tree
+    // under a synthetic HOME, discovered and claimed by the dispatcher's own functions rather
+    // than this file's, is what a job on an enrolled machine backs up.
+    const jobHome = join(home, "job");
+    const sessions = join(jobHome, ".omp", "agent", "sessions");
+    const blobs = join(jobHome, ".omp", "agent", "blobs");
+    const codexHome = join(jobHome, ".codex");
+    const claudeHome = join(jobHome, ".claude");
+    await writeOmpSession(sessions, { project: "-work-babel", stem: "2026-09-25_a1b2c3" });
+    mkdirSync(blobs, { recursive: true });
+    // A blob is what an OMP session references and a restore needs to be whole (SPEC §6.8).
+    writeFileSync(join(blobs, "sha256-synthetic-blob"), "synthetic referenced bytes\n");
+    await writeCodexRollout(codexHome, { date: ["2026", "09", "25"], name: "rollout-0192ab" });
+    await writeClaudeSession(claudeHome, { project: "-work-babel", session: "0192ab-cd" });
+
+    const savedHome = process.env["HOME"];
+    const savedCodexHome = process.env["CODEX_HOME"];
+    process.env["HOME"] = jobHome;
+    delete process.env["CODEX_HOME"];
+    const known = new Set((await (await inspect()).snapshots()).map((snapshot) => snapshot.id));
+    let receipt: Receipt;
+    try {
+      ({ receipt } = await run({}, { roots: existingRoots, claim: claimSession }));
+    } finally {
+      if (savedHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = savedHome;
+      if (savedCodexHome !== undefined) process.env["CODEX_HOME"] = savedCodexHome;
+    }
+
+    expect(receipt.closure).toBe("completed");
+    // `~/.omp/collab` is one of OMP's backup roots too; a machine that holds none is not asked
+    // for one, which is why the manifest defers mounting it.
+    expect(receipt.counts["roots"]).toBe(4);
+    expect(receipt.counts["sessions"]).toBe(3);
+    expect(receipt.counts["unclaimed"]).toBe(1);
+    const minted = (await (await inspect()).snapshots()).filter(
+      (snapshot) => !known.has(snapshot.id),
+    );
+    expect(minted.map((snapshot) => snapshot.paths).sort()).toEqual(
+      [[blobs], [claudeHome], [codexHome], [sessions]].sort(),
+    );
+    for (const snapshot of minted) {
+      expect(snapshot.host).toBe(LABEL);
+      expect(snapshot.tags).toEqual([BABEL_TAG]);
+    }
+    const blobSnapshot = minted.find((snapshot) => snapshot.paths[0] === blobs);
+    const listed = await (await inspect()).ls(blobSnapshot?.id ?? "");
+    expect(listed.entries.map((entry) => entry.path)).toContain(
+      join(blobs, "sha256-synthetic-blob"),
+    );
+  },
+  RESTIC_TIMEOUT,
+);

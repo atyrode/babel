@@ -907,6 +907,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **`archive` reads the operator's session trees through read-only operator anchors, under the
+  machine's own label.** Its locations move off the `home` anchor, which on a native worker is the
+  service account's workload home, onto `operator.omp-sessions`, `operator.codex-home` and
+  `operator.claude-home`, each named whole and read-only at unchanged guest paths, and
+  `operator.omp-blobs` joins them so an archived OMP session restores with the blobs it
+  references. No location in the manifest names `home` any more. The job's input gains a required
+  `label`, which is restic's `--host` in place of the machine id: a machine's Manifold-made
+  snapshots are filed under the label its collector already uses (`dev-01`), so one
+  `archive_labels` mapping covers both. The label is the input's rather than the storage
+  document's, which is custody and may serve the whole fleet. `test/contract.test.ts` pins the
+  four anchors, read-only access by `archive` alone, no `home` location, and a mount for every
+  backup root but the deferred `~/.omp/collab`; `babel/machine/archive.test.ts` backs up a
+  job-shaped home with the adapters' own discovery and finds four per-root snapshots, blobs
+  included, under the label. A machine that collects now needs the four anchors declared, bound
+  and consented (`docs/runbook.md` §6) (#453).
+
 - **`catalog` is the beat, `prepare` binds the archive, and `scan` is retired.** Analysis reads
   the fleet's restic archive and never a machine's own session files. The manifest declares
   `atyrode.babel.catalog` — restic, the `atyrode.babel.restic` storage binding, host network, its

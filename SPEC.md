@@ -87,11 +87,16 @@ the repository password and object-store credential reach it as one storage docu
 through Manifold's service binding for the job that needs it. Babel ships no substitute and
 prescribes no vault tool. Dotfiles does not author Babel's contract.
 
-Collection happens on the machine that holds the sessions. Babel's `archive` job is the
-collector once Manifold can hand it that machine's session roots through a read-only anchor the
-operator declares (atyrode/manifold#839); until then dotfiles schedules the collector, a restic
-backup of each machine's session roots under the contract of §6.1. Reading the archive back
-happens on any enrolled machine that holds the archive binding (§3).
+Collection happens on the machine that holds the sessions. Babel's `archive` job reads that
+machine's session roots through four read-only operator anchors — `operator.omp-sessions`,
+`operator.omp-blobs`, `operator.codex-home` and `operator.claude-home` — which dotfiles declares
+to Manifold in that machine's configuration (atyrode/manifold#839); a machine that declares none
+cannot run `archive`, and nothing in the operator's home besides those four trees is exposed. The
+host label its captures carry is the machine's registry name, which the hub's owner names in the
+job's input when he posts or schedules it. Until a machine's anchors are active and `archive` has
+proved parity there, the collector dotfiles schedules keeps backing that machine up under the
+same contract and the same label (§6.1). Reading the archive back happens on any enrolled machine
+that holds the archive binding (§3).
 
 ### 2.4 Primary interaction model
 
@@ -833,11 +838,21 @@ a harness would, with one combined snapshot, find no parent and re-read every by
 snapshots let one unreadable root fail without taking the others with it — and the catalog reads
 either shape.
 
-The collector runs on the machine that holds the sessions (§2.3). Babel's `archive` job backs
-that machine's session roots up one snapshot per root and never creates a repository; it reaches
-those roots once the operator can declare them to Manifold as a read-only anchor, and until then
-the collector dotfiles schedules does the same work under the same contract. The `archive` job's
-`backup` is the only write any Babel operation makes to the repository.
+The collector runs on the machine that holds the sessions (§2.3). Babel's `archive` job reads
+them through the machine's read-only operator anchors — OMP's sessions and the blobs they
+reference, and the Codex and Claude Code homes — mounted where the adapters look under the job's
+own home, backs each root up in a snapshot of its own and never creates a repository. OMP's
+collaboration directory is not mounted yet: a location a machine lacks makes the whole job
+unavailable there. The job files its snapshots under the host label its input names, which is
+the machine's one stable label — the one any other collector of that machine has used, `dev-01`
+for dev-01 — so one `archive_labels` row maps every capture of the machine (§6.2). The label is
+the input's rather than the storage document's: that document is custody, may serve the whole
+fleet, and is read by operations that label nothing. A shared label is not a shared restic
+chain, since restic matches a parent by host and path set and a job's paths are its own, so the
+first snapshot of each root reads it whole once and stores only what the repository lacks. Until
+a machine's anchors are active, the collector dotfiles schedules does the same work under the
+same contract. The `archive` job's `backup` is the only write any Babel operation makes to the
+repository.
 
 Captures are crash-consistent per file, not transactional across files. Session logs are
 append-mostly, so a capture taken mid-write yields a prefix plus at most a torn final line; readers

@@ -42,20 +42,20 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "92db7723451a239d68353244738abba68554759e3100f3ec64ea1915d7633a92",
+        "sha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "92db7723451a239d68353244738abba68554759e3100f3ec64ea1915d7633a92",
+        "entrySha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "92db7723451a239d68353244738abba68554759e3100f3ec64ea1915d7633a92",
+        "sha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "92db7723451a239d68353244738abba68554759e3100f3ec64ea1915d7633a92",
+        "entrySha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -101,24 +101,31 @@
         "guestPath": "/home/job/.cache"
       },
       "atyrode.babel.omp": {
-        "anchor": "home",
+        "anchor": "operator.omp-sessions",
         "kind": "directory",
-        "components": [".omp", "agent", "sessions"],
-        "revision": "1",
+        "components": [],
+        "revision": "2",
         "guestPath": "/home/job/.omp/agent/sessions"
       },
-      "atyrode.babel.codex": {
-        "anchor": "home",
+      "atyrode.babel.omp-blobs": {
+        "anchor": "operator.omp-blobs",
         "kind": "directory",
-        "components": [".codex"],
+        "components": [],
         "revision": "1",
+        "guestPath": "/home/job/.omp/agent/blobs"
+      },
+      "atyrode.babel.codex": {
+        "anchor": "operator.codex-home",
+        "kind": "directory",
+        "components": [],
+        "revision": "2",
         "guestPath": "/home/job/.codex"
       },
       "atyrode.babel.claude": {
-        "anchor": "home",
+        "anchor": "operator.claude-home",
         "kind": "directory",
-        "components": [".claude"],
-        "revision": "1",
+        "components": [],
+        "revision": "2",
         "guestPath": "/home/job/.claude"
       }
     },
@@ -196,6 +203,7 @@
           { "locationId": "atyrode.babel.outputs", "access": "write" },
           { "locationId": "atyrode.babel.cache", "access": "write" },
           { "locationId": "atyrode.babel.omp", "access": "read" },
+          { "locationId": "atyrode.babel.omp-blobs", "access": "read" },
           { "locationId": "atyrode.babel.codex", "access": "read" },
           { "locationId": "atyrode.babel.claude", "access": "read" }
         ],
