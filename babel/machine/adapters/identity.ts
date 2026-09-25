@@ -12,9 +12,11 @@ import {
 
   An adapter answers three questions about one harness's files and refuses the others':
   which sessions are here (discover), which session is this file the log of (claim), and what
-  does this session's own transcript say about itself (describe). Everything an adapter reports
+  does this session's own transcript say about itself (describe). Everything `describe` reports
   is read from the live files in place and nothing is copied: durability is restic's job, so a
-  description is a best-effort view of one instant, refreshed on every scan.
+  description is a best-effort view of one instant, refreshed on every scan. The harness's usage
+  rule is also a fold over parsed records (`usage`), so an archived capture's normalized stream
+  is summed by the same rule as a live log (`machine/session-facts.ts`).
 
   Two rules of the Go port carry over unchanged because the product depends on them:
 
@@ -50,6 +52,24 @@ export interface SessionUsage {
   turns: number | null;
   toolErrors: number | null;
 }
+
+/**
+ * THE HARNESS'S OWN USAGE, folded one parsed record at a time. It reads records rather than a
+ * file, so the same rule sums a live log (`describe`) and a capture's normalized, redacted stream
+ * (`machine/session-facts.ts`, #453): numbers survive redaction, and a total is the same total
+ * whichever reader asked.
+ */
+export interface UsageFold {
+  record(fields: Record<string, unknown>): void;
+  /** The totals, or null when the harness recorded no usage this fold reads. */
+  finish(): SessionUsage | null;
+}
+
+/** The fold of a harness that records no usage an adapter reads: every total is absent. */
+export const NO_USAGE: UsageFold = {
+  record() {},
+  finish: () => null,
+};
 
 /** One best-effort view of a session, read from its live files. */
 export interface SessionFacts {
@@ -92,6 +112,8 @@ export interface Adapter {
   ): SessionRef | null;
   discover(roots: readonly string[]): Promise<SessionRef[]>;
   describe(ref: SessionRef): Promise<SessionFacts>;
+  /** A fresh fold of this harness's own usage over parsed records. */
+  usage(): UsageFold;
 }
 
 /** The one place the selector is spelled. */

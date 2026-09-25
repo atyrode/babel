@@ -61,9 +61,12 @@ let scratchDir = "";
 let snapshotId = "";
 let digest = "";
 let service: Bun.Server<undefined> | null = null;
+/** Every path the adapters were offered, so a test can say which files a listing held. */
+const offered: string[] = [];
 
 /** `<root>/omp/<id>.jsonl` is one session, as the omp adapter catalogues it. */
 const claim = (path: string): SessionRef | null => {
+  offered.push(path);
   const match = /\/omp\/([^/]+)\.jsonl$/.exec(path);
   const sourceId = match?.[1];
   if (sourceId === undefined) return null;
@@ -109,6 +112,9 @@ beforeAll(
     logPath = join(root, "omp", "a1b2c3.jsonl");
     mkdirSync(join(root, "omp"), { recursive: true });
     writeFileSync(logPath, LOG);
+    // A second session in the same snapshot, listed before the first by name, which a directed
+    // proof never lists.
+    writeFileSync(join(root, "omp", "0000ff.jsonl"), '{"type":"user","text":"another"}\n');
     digest = `sha256:${new Bun.CryptoHasher("sha256").update(LOG).digest("hex")}`;
 
     credentialFile = join(home, "restic-binding.json");
@@ -239,6 +245,45 @@ withRepository(
     expect(receipt.closure).toBe("completed");
     expect(existsSync(join(target, logPath))).toBe(true);
     expect(readFileSync(join(target, logPath)).equals(LOG)).toBe(true);
+  },
+  RESTIC_TIMEOUT,
+);
+
+withRepository(
+  "verify with path lists only that path",
+  async () => {
+    offered.length = 0;
+    const { receipt } = await run({
+      restore: { snapshotId, selector: SELECTOR, digest, path: logPath },
+    });
+    expect(receipt.closure).toBe("completed");
+    expect(receipt.counts).toMatchObject({ restored: 1, digestCompared: 1 });
+    // THE LISTING HELD ONE FILE: the catalogued path, not the snapshot's other session.
+    expect(offered).toEqual([logPath]);
+
+    offered.length = 0;
+    await run({ restore: { snapshotId, selector: SELECTOR, digest } });
+    // Undirected, every file of the snapshot is offered to the adapters to find the selector.
+    expect(offered.length).toBeGreaterThan(1);
+  },
+  RESTIC_TIMEOUT,
+);
+
+withRepository(
+  "a directed proof refuses a path the snapshot does not hold, or that is another session",
+  async () => {
+    const absent = join(root, "omp", "never-archived.jsonl");
+    const missing = await run({ restore: { snapshotId, selector: SELECTOR, path: absent } });
+    expect(missing.receipt.closure).toBe("failed");
+    expect(missing.receipt.reason).toBe(
+      `snapshot ${snapshotId} holds no session ${SELECTOR} at ${absent}`,
+    );
+
+    const other = join(root, "omp", "0000ff.jsonl");
+    const mismatched = await run({ restore: { snapshotId, selector: SELECTOR, path: other } });
+    expect(mismatched.receipt.closure).toBe("failed");
+    expect(mismatched.receipt.counts["restored"]).toBe(0);
+    expect(mismatched.receipt.reason).toContain(`holds no session ${SELECTOR} at ${other}`);
   },
   RESTIC_TIMEOUT,
 );

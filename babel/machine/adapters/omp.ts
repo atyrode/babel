@@ -5,6 +5,7 @@ import {
   type Adapter,
   type SessionFacts,
   type SessionRef,
+  type SessionUsage,
   homeDir,
   idSegment,
   sessionRef,
@@ -62,6 +63,18 @@ interface UsageTotals {
   costUsd: number;
   totalTokens: number;
   toolErrors: number;
+}
+
+function emptyTotals(): UsageTotals {
+  return {
+    assistantTurns: 0,
+    turnsWithUsage: 0,
+    turnsWithCost: 0,
+    unreadable: 0,
+    costUsd: 0,
+    totalTokens: 0,
+    toolErrors: 0,
+  };
 }
 
 export const omp: Adapter = {
@@ -127,15 +140,7 @@ export const omp: Adapter = {
   async describe(ref) {
     const info = await stat(ref.primaryPath);
     const header: Header = { title: "", cwd: "", createdAt: "", runId: "", done: false };
-    const totals: UsageTotals = {
-      assistantTurns: 0,
-      turnsWithUsage: 0,
-      turnsWithCost: 0,
-      unreadable: 0,
-      costUsd: 0,
-      totalTokens: 0,
-      toolErrors: 0,
-    };
+    const totals = emptyTotals();
     let seen = 0;
 
     const stream = await readRecords(ref.primaryPath, (record) => {
@@ -145,7 +150,8 @@ export const omp: Adapter = {
       // carry any: a log is overwhelmingly reasoning and tool traffic, and decoding all of it
       // to find the two would make describing a session cost several times what it costs.
       if (record.includes('"assistant"') || record.includes('"toolResult"')) {
-        addUsage(record, totals);
+        const fields = parseRecord(record, totals);
+        if (fields !== null) addUsage(fields, totals);
       }
     });
 
@@ -174,6 +180,14 @@ export const omp: Adapter = {
       babelRunId: header.runId === "" ? null : header.runId,
       absent,
     } satisfies SessionFacts;
+  },
+
+  usage() {
+    const totals = emptyTotals();
+    return {
+      record: (fields) => addUsage(fields, totals),
+      finish: () => usageOf(totals),
+    };
   },
 };
 
@@ -218,17 +232,20 @@ function readHeader(record: string, header: Header, totals: UsageTotals): void {
   }
 }
 
-/** Folds one record into the totals; a record that is not JSON is counted and skipped. */
-function addUsage(record: string, totals: UsageTotals): void {
+/** One record's fields, or null when it is not a JSON object; an unparseable one is counted. */
+function parseRecord(record: string, totals: UsageTotals): Record<string, unknown> | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(record);
   } catch {
     totals.unreadable++;
-    return;
+    return null;
   }
-  if (typeof parsed !== "object" || parsed === null) return;
-  const fields = parsed as Record<string, unknown>;
+  return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : null;
+}
+
+/** Folds one record into the totals: an assistant turn's usage block, or a failed tool result. */
+function addUsage(fields: Record<string, unknown>, totals: UsageTotals): void {
   if (fields["type"] !== "message") return;
   const message = fields["message"];
   if (typeof message !== "object" || message === null) return;
@@ -255,6 +272,19 @@ function addUsage(record: string, totals: UsageTotals): void {
   }
 }
 
+/** The catalog's four numbers, or null when no assistant turn carried a usage block. */
+function usageOf(totals: UsageTotals): SessionUsage | null {
+  if (totals.turnsWithUsage === 0) return null;
+  return {
+    // A turn the harness never priced is not a turn priced at zero, so an unpriced log reports
+    // no cost rather than a free session.
+    costUsd: totals.turnsWithCost === 0 ? null : totals.costUsd,
+    totalTokens: totals.totalTokens,
+    turns: totals.assistantTurns,
+    toolErrors: totals.toolErrors,
+  };
+}
+
 /**
  * States the totals as the catalog's four numbers, or says why there are none. "OMP recorded
  * nothing" and "this reader summed nothing" are different claims, and only the adapter can
@@ -271,18 +301,9 @@ function finishUsage(
       unreadable > 0
         ? `no assistant record carried a readable usage block, and ${unreadable} record(s) of this log could not be parsed at all`
         : "the session log's assistant records carry no usage blocks, which is what a transcript written before OMP recorded per-turn usage looks like";
-    return null;
-  }
-  if (totals.turnsWithUsage < totals.assistantTurns) {
+  } else if (totals.turnsWithUsage < totals.assistantTurns) {
     absent["usage_complete"] =
       `${totals.turnsWithUsage} of ${totals.assistantTurns} assistant turns carried a usage block, so the totals are a floor`;
   }
-  return {
-    // A turn the harness never priced is not a turn priced at zero, so an unpriced log reports
-    // no cost rather than a free session.
-    costUsd: totals.turnsWithCost === 0 ? null : totals.costUsd,
-    totalTokens: totals.totalTokens,
-    turns: totals.assistantTurns,
-    toolErrors: totals.toolErrors,
-  };
+  return usageOf(totals);
 }

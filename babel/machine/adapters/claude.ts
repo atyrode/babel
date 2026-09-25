@@ -2,6 +2,7 @@ import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
+  NO_USAGE,
   type Adapter,
   type SessionFacts,
   type SessionRef,
@@ -162,6 +163,9 @@ export const claude: Adapter = {
       absent,
     } satisfies SessionFacts;
   },
+
+  // Claude Code's on-disk format records no per-turn usage this adapter reads.
+  usage: () => NO_USAGE,
 };
 
 /**
