@@ -61,17 +61,18 @@ tmpfs home and the artifacts the operation declares — so it carries no libc un
 names the machine's native closure, and what is not declared does not exist inside. The manifest
 is the whole of what each operation may touch, and it is committed, reviewed code.
 
-| Operation | Reads                                                                          | Writes                                                                                | Network  | Ceilings                                     |
-| --------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- | -------- | -------------------------------------------- |
-| `catalog` | the restic repository's snapshot and tree metadata, and no transcript content  | the sealed output lease, and its memory of listed snapshots in the managed cache      | **host** | 30 min, 1 GiB, 64 processes, 1 GiB of output |
-| `prepare` | the captures it is named, streamed out of the restic repository; no local file | the sealed output and material leases, and its redacted readings in the managed cache | **host** | 30 min, 1 GiB, 64 processes, 1 GiB of output |
-| `archive` | `~/.omp`, `~/.codex`, `~/.claude`, read-only                                   | the sealed output lease, and the restic repository                                    | **host** | 10 min, 1 GiB, 64 processes, 1 GiB of output |
-| `verify`  | the restic repository, and none of the corpus                                  | the sealed output lease, and a restore target inside a location it declares           | **host** | 60 min, 1 GiB, 64 processes, 1 GiB of output |
+| Operation | Reads                                                                                                                        | Writes                                                                                | Network  | Ceilings                                     |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------- | -------------------------------------------- |
+| `catalog` | the restic repository's snapshot and tree metadata, and no transcript content                                                | the sealed output lease, and its memory of listed snapshots in the managed cache      | **host** | 30 min, 1 GiB, 64 processes, 1 GiB of output |
+| `prepare` | the captures it is named, streamed out of the restic repository; no local file                                               | the sealed output and material leases, and its redacted readings in the managed cache | **host** | 30 min, 1 GiB, 64 processes, 1 GiB of output |
+| `archive` | `~/.omp/agent/sessions`, `~/.omp/agent/blobs`, `~/.codex`, `~/.claude`, through read-only operator anchors, and nothing else | the sealed output lease, and the restic repository                                    | **host** | 10 min, 1 GiB, 64 processes, 1 GiB of output |
+| `verify`  | the restic repository, and none of the corpus                                                                                | the sealed output lease, and a restore target inside a location it declares           | **host** | 60 min, 1 GiB, 64 processes, 1 GiB of output |
 
 Six properties of that table carry the weight:
 
 - **No operation writes into the corpus.** The session directories are bound read-only, by
-  `archive` alone; `catalog`, `prepare` and `verify` do not mount them: they read a repository,
+  `archive` alone, through operator anchors Manifold presents as read-only mounts and refuses to
+  bind any other way; `catalog`, `prepare` and `verify` do not mount them: they read a repository,
   not a harness. A job cannot edit the evidence it read.
 - **Every operation has host network, including the two that read the most hostile bytes**
   (#453). Reading and preparing the corpus used to have no route out; they now read it out of the

@@ -570,26 +570,81 @@ describe("the machine half is declared as the machine half is built", () => {
       const mounted = machine.operations[OPERATIONS.archive]!.locations.filter(
         (location) => location.access === "read",
       ).map((location) => machine.locations[location.locationId]?.guestPath ?? "");
-      // Each harness's own session root — the first of its backup roots — is mounted, and
-      // nothing is mounted that no adapter would back up.
-      for (const adapter of ADAPTERS) expect(mounted).toContain(adapter.backupRoots()[0] ?? "\0");
+      // Every backup root is mounted — OMP's blobs too, without which an archived session does
+      // not restore whole (SPEC §6.8) — except `~/.omp/collab`: a required read location that
+      // does not exist makes the whole operation unavailable, and no enrolled machine holds one.
       const backedUp = ADAPTERS.flatMap((adapter) => adapter.backupRoots());
-      for (const path of mounted) expect(backedUp).toContain(path);
+      expect([...mounted].sort()).toEqual(
+        backedUp.filter((path) => path !== "/home/job/.omp/collab").sort(),
+      );
     } finally {
       if (home === undefined) delete process.env["HOME"];
       else process.env["HOME"] = home;
       if (codexHome !== undefined) process.env["CODEX_HOME"] = codexHome;
     }
     // ANALYSIS READS THE ARCHIVE, NEVER A MACHINE'S OWN FILES (#453). `archive` is the
-    // collector and the one operation that reads a machine's home; the catalog, a preparation,
-    // a verification and Recall read captures out of the repository, and a `home` anchor bound
-    // to one of them would be a local read the specification says never happens.
+    // collector and the one operation that reads a machine's sessions; the catalog, a
+    // preparation, a verification and Recall read captures out of the repository, and an
+    // operator anchor bound to one of them would be a local read the specification says never
+    // happens.
     for (const platform of Object.keys(machine.artifacts) as (keyof typeof machine.artifacts)[]) {
       for (const operation of declared) {
         const anchors = jobResourceRequirements(machine, operation, platform).anchors;
-        expect({ operation, home: anchors.includes("home") }).toEqual({
+        expect({
           operation,
-          home: operation === OPERATIONS.archive,
+          operatorAnchors: anchors.filter((anchor) => anchor.startsWith("operator.")).sort(),
+        }).toEqual({
+          operation,
+          operatorAnchors:
+            operation === OPERATIONS.archive
+              ? [
+                  "operator.claude-home",
+                  "operator.codex-home",
+                  "operator.omp-blobs",
+                  "operator.omp-sessions",
+                ]
+              : [],
+        });
+      }
+    }
+  });
+
+  test("archive reads the operator's session trees through read-only operator anchors, never `home`", () => {
+    // THE WORKLOAD HOME IS NOT THE OPERATOR'S (atyrode/manifold#839). On a native worker the
+    // `home` anchor is the service account's own directory, so a location on it backs up an
+    // empty tree. Each session tree is instead an anchor the machine's operator declares and
+    // Manifold presents read-only; these names are what the machine declares (dotfiles, dev-01),
+    // so a rename here is an `anchors_unavailable` there.
+    const locations = machine.locations ?? {};
+    expect(Object.values(locations).filter((location) => location.anchor === "home")).toEqual([]);
+    const read = machine.operations[OPERATIONS.archive]!.locations.filter(
+      (location) => location.access === "read",
+    );
+    expect(
+      Object.fromEntries(
+        read.map(({ locationId }) => {
+          const { anchor, components, kind } = locations[locationId]!;
+          return [locationId, { anchor, components, kind }];
+        }),
+      ),
+    ).toEqual({
+      "atyrode.babel.omp": { anchor: "operator.omp-sessions", components: [], kind: "directory" },
+      "atyrode.babel.omp-blobs": {
+        anchor: "operator.omp-blobs",
+        components: [],
+        kind: "directory",
+      },
+      "atyrode.babel.codex": { anchor: "operator.codex-home", components: [], kind: "directory" },
+      "atyrode.babel.claude": { anchor: "operator.claude-home", components: [], kind: "directory" },
+    });
+    // Read, and read only, wherever an operation names one: the protocol refuses anything
+    // else, and a writable binding of the operator's sessions is not one Babel may even ask for.
+    for (const operation of declared) {
+      for (const bind of machine.operations[operation]!.locations) {
+        if (!locations[bind.locationId]!.anchor.startsWith("operator.")) continue;
+        expect({ operation, access: bind.access }).toEqual({
+          operation: OPERATIONS.archive,
+          access: "read",
         });
       }
     }

@@ -2798,9 +2798,9 @@ export async function importLedger(store: ActsStore, chunk: ImportChunk): Promis
  * THE MAPPING IS WHAT MAKES IT STICK. The Go-era rows only needed their `host` rewritten once; a
  * label is written again by every capture the collector makes, and `store/sessions.ts` hosts each
  * one where `archive_labels` maps its label. `from` may therefore equal `to`: a label that is
- * itself a machine id — what `archive` backs up under — still has to be recorded before a capture
- * under it is hosted anywhere. Mapping a label again replaces the mapping, and moves the rows
- * captured under it with it.
+ * itself a machine id — one an owner may choose for `archive` — still has to be recorded before a
+ * capture under it is hosted anywhere. Mapping a label again replaces the mapping, and moves the
+ * rows captured under it with it.
  *
  * One transaction: the mapping, the count, the move and what the label holds commit together. A
  * no-op is reported rather than refused. `sessions: 0` is the truthful answer when nothing was
