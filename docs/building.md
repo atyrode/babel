@@ -533,7 +533,7 @@ bun install --cwd ../manifold --frozen-lockfile   # the kit resolves zod and the
 ```
 
 `MANIFOLD_REV` follows Manifold `main` and currently names
-`7b5fe3015c3308532de634c2b2d8068ec2f0e451`. At that revision the kit stamps
+`2ee760dda83ad023150c5d206e8cfcbdf9d99e4e`. At that revision the kit stamps
 `hardenedContract: 5` into repacked bundles (`packages/plugin-kit/src/pack.ts:298-304`),
 while the host retains contracts 1–5 (`packages/protocol/src/isolate.ts:744-758`).
 The reviewed bounded-result channel includes exact digest-reviewed `textFields`: string-or-null

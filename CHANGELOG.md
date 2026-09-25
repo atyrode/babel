@@ -1040,6 +1040,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The dependency closure follows Manifold `2ee760dd`.** `MANIFOLD_REV` and both workflow
+  `uses:` refs move to atyrode/manifold `2ee760dd`. `CODE_REV` and `@atyrode/manifold-code` move
+  to atyrode/code#220, whose omp closure is atyrode/manifold-omp#84, so all three name that
+  one revision. That revision contains atyrode/manifold#843. Before it, a machine owner gave the
+  hub 5 s to decide a native service call's authorization and then answered 403
+  `service_unauthorized`, even when the hub allowed the call. Now the wait is bounded by the
+  call's own deadline, and only a denial is a 403. That fix is owner-side: it reaches a machine
+  with its Manifold agent, not with these bundles. The revision also validates exported bundle
+  bytes in one linear pass (atyrode/manifold#845) and adds operator-declared read-only anchors
+  (atyrode/manifold#842). The omp closure also brings atyrode/manifold-omp#82 and
+  atyrode/manifold-omp#83: a one-shot's unset model roles stay on its configured model, and only
+  its configured providers are registered and credentialed. There are no Babel source changes.
+  All four Babel bundles, all four Code bundles and all three omp bundles have new digests. The
+  machine stamp moves because `machine.js` bundles the changed SDK code. The full frozen gate
+  passes 1,203 tests. A disposable engine installs all eleven bundles and dispatches their doors.
+
 - **One runtime scratch size admits every Babel operation that writes it.** `scan`, `archive`
   and `verify` declared 64 MiB of output and `prepare` 512 MiB, all cut from the one tmpfs the
   `runtime` anchor mounts. Manifold refuses a job whose `outputBytes` is below that tmpfs's
