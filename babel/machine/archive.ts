@@ -18,9 +18,11 @@
   both. restic's parent is matched on host AND path set, and a job's guest paths are not the
   collector's host paths, so the first snapshot of each root under a shared label reads that
   root whole once (storing only what the repository does not already hold) and every later one
-  is parented. The hub's owner names the label where he posts or schedules the job; a typo shows
-  up as an unmapped label on Watch's Archive line rather than as a silent second name for the
-  machine. The storage document is custody, may be one document for the whole fleet, and is
+  is parented. The hub's owner names the label where he posts or schedules the job, and nothing
+  here can check that it is this machine's: a typo that names no known label shows up as an
+  unmapped label on Watch's Archive line, but one that names another machine's label files these
+  captures under that machine, so the label is reviewed like the rest of the input. The storage
+  document is custody, may be one document for the whole fleet, and is
   read by operations that label nothing, so a label there would put a per-machine fact in a
   place that is not per-machine.
 

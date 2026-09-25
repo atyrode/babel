@@ -64,9 +64,11 @@ reports it, and `label` is restic's `--host`. Name the label the machine has alw
 collected under — its registry name, `dev-01` on dev-01 — so the Manifold-made snapshots are
 filed beside the timer's and the one `archive_labels` row that maps `dev-01` to the machine's id
 (§6.1) covers both. It is not the storage document's: that document is custody, may be one
-document for the fleet (an instance service), and is read by operations that label nothing. A
-mistyped label is not lost: the next `catalog` lists it, and Watch's Archive line shows it as
-unmapped. A shared label is not a shared restic chain. restic picks a parent by host and path set,
+document for the fleet (an instance service), and is read by operations that label nothing.
+Nothing checks that a label is the posting machine's own: a mistyped label that names no known
+one is listed by the next `catalog` and shown unmapped on Watch's Archive line, but one that names
+another machine's label files these captures under that machine, so check it before registering a
+cadence. A shared label is not a shared restic chain. restic picks a parent by host and path set,
 the job's paths are its guest paths, and the timer's are one combined snapshot of host paths, so
 the first `archive` reports `snapshotsParented` 0, reading each root whole once and storing only
 the chunks the repository does not already hold; every later run is parented.
