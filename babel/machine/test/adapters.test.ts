@@ -3,15 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import {
-  claude,
-  claim,
-  codex,
-  contentDigest,
-  discover,
-  existingRoots,
-  omp,
-} from "../adapters/index.ts";
+import { claude, claim, codex, contentDigest, existingRoots, omp } from "../adapters/index.ts";
 import { readRecords } from "../adapters/records.ts";
 import {
   digestOf,
@@ -143,7 +135,7 @@ describe("each adapter recognizes its own layout and refuses the others'", () =>
       "-home-alex-babel/2026-09-01T00-00-00-000Z_01a0/__advisor.jsonl",
     );
     expect(omp.claim(artifact)).toBeNull();
-    const selectors = (await discover([ompRoot])).map((ref) => ref.selector);
+    const selectors = (await omp.discover([ompRoot])).map((ref) => ref.selector);
     expect(selectors).not.toContain("omp/2026-09-01T00-00-00-000Z_01a0/__advisor");
     expect(selectors).toHaveLength(1);
   });

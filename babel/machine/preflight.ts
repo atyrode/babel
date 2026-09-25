@@ -616,8 +616,8 @@ function overlapsAny(regions: readonly Region[], start: number, end: number): bo
  * 1-based ordinal in the session's normalized stream — the same line number the material's own
  * file has, so a reader comparing the two is comparing one record — and `offset` and `length`
  * address the value inside that record BEFORE redaction. `machine/prepare.ts`'s
- * `resolveRedaction` is what turns that back into bytes, and it can only do so on the machine
- * holding the session: nothing recoverable crosses to the hub.
+ * `resolveRedaction` is what turns that back into bytes, and only over the capture's own bytes,
+ * which a job holding the archive binding fetches: nothing recoverable crosses to the hub.
  */
 export function redactionMarker(
   secretClass: SecretClass,

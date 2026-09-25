@@ -12,8 +12,9 @@
                   archive's integrity exactly where it was.
 
     THE PROOF     one CATALOGUED SESSION, restored from a named snapshot and proved BYTE-EXACT.
-                  It is asked for by selector and never by path, and the path is resolved out of
-                  the SNAPSHOT: the snapshot is listed, every file in it is offered to the same
+                  It is asked for by selector, and the path is the SNAPSHOT's: the catalog's own
+                  `archive_path` when the hub names the capture it catalogued, in which case only
+                  that path is listed; otherwise every file in the snapshot is offered to the same
                   adapters that catalogued it, and the entry whose selector matches is the one
                   restored. So a session whose log was deleted from the machine — the case an
                   archive exists for — is still restorable, which a path derived from the live
@@ -41,7 +42,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import type { Receipt } from "../contract.ts";
+import { ArchivePathSchema, type Receipt } from "../contract.ts";
 import { contentDigest, type SessionRef } from "./adapters/index.ts";
 import type { OutputSink } from "./output.ts";
 import { ResticError, openRepo, resticConfig, type ArchivedEntry, type Repo } from "./restic.ts";
@@ -74,6 +75,12 @@ const RestoreRequestSchema = z.strictObject({
   /** Where the restored files are KEPT. Empty restores into a scratch directory this job
    *  removes again, which is what a verification wants: the comparison, not the copy. */
   target: z.string().trim().max(4096).default(""),
+  /**
+   * `sessions.archive_path`, when the snapshot is the one the catalog recorded it in (#453).
+   * Only that path is listed — `ls <snapshot> <path>` reads one node of tree metadata rather
+   * than the whole snapshot's — and it must still be the session the selector names.
+   */
+  path: ArchivePathSchema.optional(),
 });
 
 export const VerifyInputSchema = z.strictObject({
@@ -96,8 +103,9 @@ export type VerifyInput = z.infer<typeof VerifyInputSchema>;
 export interface VerifyDeps {
   /** The session one archived path is the primary log of, or null when no adapter claims it —
    *  the same function `archive` catalogues with, so a selector means the same thing on the
-   *  way out of the repository as it did on the way in. */
-  claim(path: string): SessionRef | null;
+   *  way out of the repository as it did on the way in. `exists` answers for a sibling the
+   *  adapter asks about; omitted, it is this machine's filesystem. */
+  claim(path: string, exists?: (path: string) => boolean): SessionRef | null;
   /** Where the engine materialized the storage service binding for this job. */
   credentialFile: string;
   /** The directory an unnamed restore is written under and then removed from. A job's own
@@ -236,11 +244,21 @@ async function prove(
   asked: z.infer<typeof RestoreRequestSchema>,
 ): Promise<Proof> {
   const empty = { archivedBytes: 0, restoredBytes: 0 };
-  const listed = await repo.ls(asked.snapshotId);
+  const listed = await repo.ls(asked.snapshotId, asked.path === undefined ? [] : [asked.path]);
   let file: ArchivedEntry | null = null;
   for (const entry of listed.entries) {
     if (entry.type !== "file") continue;
-    if (deps.claim(entry.path)?.selector === asked.selector) {
+    if (asked.path !== undefined) {
+      // The catalog already decided which session this path is, from the snapshot's whole
+      // listing; what is checked here is only that the hub named the two together.
+      if (
+        entry.path === asked.path &&
+        deps.claim(entry.path, () => true)?.selector === asked.selector
+      ) {
+        file = entry;
+        break;
+      }
+    } else if (deps.claim(entry.path)?.selector === asked.selector) {
       file = entry;
       break;
     }
@@ -250,6 +268,7 @@ async function prove(
       ...empty,
       reason:
         `snapshot ${asked.snapshotId} holds no session ${asked.selector}` +
+        (asked.path === undefined ? "" : ` at ${asked.path}`) +
         (listed.truncated ? ", and its listing was longer than one job reads" : ""),
     };
   }

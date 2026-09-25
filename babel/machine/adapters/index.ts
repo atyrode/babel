@@ -51,19 +51,6 @@ export function claim(
   return null;
 }
 
-/**
- * Every session on this machine, selector-ordered. Roots default to each adapter's own; an
- * explicit list is offered to all of them, because a path is a path and the layout decides.
- */
-export async function discover(roots?: readonly string[]): Promise<SessionRef[]> {
-  const found: SessionRef[] = [];
-  for (const adapter of ADAPTERS) {
-    found.push(...(await adapter.discover(roots ?? adapter.defaultRoots())));
-  }
-  found.sort((a, b) => (a.selector < b.selector ? -1 : a.selector > b.selector ? 1 : 0));
-  return found;
-}
-
 /** The backup roots that exist here: what a snapshot of this machine can actually cover. */
 export async function existingRoots(): Promise<string[]> {
   const roots = new Set<string>();

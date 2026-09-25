@@ -391,8 +391,9 @@ export interface Repo {
     paths: readonly string[],
     attribution: { host: string; tags: readonly string[] },
   ): Promise<BackupOutcome>;
-  /** Every snapshot the repository holds, restic's own order (newest last). */
-  snapshots(): Promise<readonly Snapshot[]>;
+  /** Every snapshot the repository holds, restic's own order (newest last) — or, given ids,
+   *  only those of them it holds: an id it does not hold is left out, not refused. */
+  snapshots(ids?: readonly string[]): Promise<readonly Snapshot[]>;
   /**
    * Verifies the repository and reports what it found. Structure always; the stored bytes when
    * {@link CheckOptions.readData} asks for them.
@@ -608,8 +609,9 @@ class ResticRepo implements Repo {
     };
   }
 
-  async snapshots(): Promise<readonly Snapshot[]> {
-    const stdout = await this.#run("list snapshots", resticArgv("snapshots", ["--json"]));
+  async snapshots(ids: readonly string[] = []): Promise<readonly Snapshot[]> {
+    const named = ids.length === 0 ? [] : ["--", ...ids.map(snapshotArgument)];
+    const stdout = await this.#run("list snapshots", resticArgv("snapshots", ["--json", ...named]));
     const parsed: unknown = JSON.parse(stdout.trim() === "" ? "[]" : stdout);
     if (!Array.isArray(parsed)) return [];
     const snapshots: Snapshot[] = [];

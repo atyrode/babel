@@ -879,6 +879,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **`prepare` reads the captures the hub selected out of the archive, and never a local file.**
+  Its input is the contract's `PrepareInputSchema`: captures grouped by snapshot, each with its
+  path, size and modification time. Each capture is streamed with `restic dump` into the single
+  pass that normalizes, scans, digests and seals, and the redacted reading is kept per
+  repository and label in the managed cache, so a second preparation over the same captures
+  spawns no restic at all. A preparation refuses whole with a `PREPARE_REFUSALS` code:
+  `material_bound` and `material_storage_insufficient` before anything is fetched,
+  `capture_missing`, `capture_changed` and `archive_unavailable`. Each material entry names its
+  `origin`, the selection's host is the capture's label, and the receipt reports `fetched`,
+  `fetchedBytes` and `outputCapacity`. `sessions.json` rows name the capture read, with the
+  snapshot's own time as `archived_at`, and carry the title, workspace and usage the pass read
+  from the redacted stream (`babel/machine/session-facts.ts`, through Recall's metadata rule and the
+  adapters' usage fold). `verify` lists only a catalogued `restore.path`, and `resolveRedaction`
+  takes the capture's byte stream. Tests against a synthetic repository cover two labels in one
+  material, a cache hit with no restic call, each refusal, redaction, the rows and own-run
+  transcripts (#453).
+
 - **The documents stop calling the store durable and `mkdir -p` a fix.** `AGENTS.md` and the
   README said a settled run's records were durable the instant they were written. The hub's
   store is a single copy: Manifold's `data.db.backup` is a same-volume migration rollback image

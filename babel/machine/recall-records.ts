@@ -4,6 +4,7 @@ import {
   RECALL_UNTRUSTED_BEGIN,
   RECALL_UNTRUSTED_END,
   RecallMetadataSchema,
+  type Harness,
   type RecallExcerpt,
   type RecallMetadata,
   type RecallShowRequest,
@@ -88,7 +89,120 @@ function requestText(body: Record<string, unknown>): string {
 }
 
 type Selection = RecallShowRequest["selection"];
-type Harness = "omp" | "codex" | "claude";
+
+/**
+ * The user request one Codex record carries — a `response_item` user message — or null for any
+ * other record and any other harness. It is computed once per record because two readers want
+ * it: the metadata fold (a title's fallback evidence) and the turn counter.
+ */
+export function userRequest(harness: Harness, fields: Record<string, unknown>): string | null {
+  if (harness !== "codex" || fields["type"] !== "response_item") return null;
+  const body = object(fields["payload"]);
+  return body?.["type"] === "message" && body["role"] === "user" ? requestText(body) : null;
+}
+
+/** What a session's own records say about it, as a reading of its normalized stream found. */
+export interface SessionMetadata {
+  readonly title: string | null;
+  /** `recorded` when the harness wrote the title into its log, `derived` when Babel's rule over
+   *  the log produced it; null exactly when there is no title. */
+  readonly titleProvenance: "recorded" | "derived" | null;
+  readonly workspace: string | null;
+}
+
+export interface MetadataFold {
+  /** Folds one parsed record; `request` is {@link userRequest} of the same record. */
+  observe(fields: Record<string, unknown>, request: string | null): void;
+  finish(): SessionMetadata;
+}
+
+/**
+ * THE ARCHIVE-SAFE METADATA RULE, spelled once for every reader of a normalized stream: Recall
+ * over an archived capture and a preparation over the capture it seals (#453). It reads records
+ * only, never a file, so what it finds is what the stream it was handed says — after redaction,
+ * when that stream was redacted. Every value is clipped to Recall's published bounds.
+ *
+ * OMP and Claude Code write their title into the log, so theirs is `recorded`; Codex keeps none,
+ * and the title is derived from the thread's own request by `codex-title.ts`'s rule.
+ */
+export function metadataFold(harness: Harness): MetadataFold {
+  let title: string | null = null;
+  let workspace: string | null = null;
+  const codex: TitleEvidence = { source: NO_THREAD_SOURCE, request: "", requestFallback: "" };
+  let fallbackTried = 0;
+  let codexWorkspace: string | null = null;
+  let workspaceDigest: string | null = null;
+  let workspaceConflict = false;
+  let ompTitle = false;
+  return {
+    observe(fields, request) {
+      if (harness === "omp") {
+        if (fields["type"] === "title") {
+          const recorded = metadataText(fields["title"], titleBytes);
+          if (!ompTitle && recorded !== null) {
+            title = recorded;
+            ompTitle = true;
+          }
+        } else if (fields["type"] === "session") {
+          if (title === null) title = metadataText(fields["title"], titleBytes);
+          if (workspace === null) workspace = metadataText(fields["cwd"], workspaceBytes);
+        }
+      } else if (harness === "claude") {
+        const recorded = metadataText(fields["aiTitle"], titleBytes);
+        if (recorded !== null) title = recorded;
+        const cwd = fields["cwd"];
+        if (!workspaceConflict && typeof cwd === "string" && cwd !== "") {
+          const digest = new Bun.CryptoHasher("sha256").update(cwd).digest("hex");
+          if (workspaceDigest === null) {
+            workspaceDigest = digest;
+            workspace = metadataText(cwd, workspaceBytes);
+          } else if (workspaceDigest !== digest) {
+            workspaceConflict = true;
+            workspace = null;
+          }
+        }
+      } else {
+        const body = object(fields["payload"]);
+        if (body === null) return;
+        if (fields["type"] === "session_meta") {
+          if (codexWorkspace === null) codexWorkspace = metadataText(body["cwd"], workspaceBytes);
+          if (codex.source === NO_THREAD_SOURCE) {
+            const source = decodeThreadSource(body["source"]);
+            if (source !== NO_THREAD_SOURCE)
+              codex.source = {
+                role: clipUtf8(source.role, MAX_REQUEST_BYTES).text,
+                spawn: source.spawn,
+                agentPath: clipUtf8(source.agentPath, MAX_REQUEST_BYTES).text,
+                agentRole: clipUtf8(source.agentRole, MAX_REQUEST_BYTES).text,
+              };
+          }
+        } else if (fields["type"] === "turn_context") {
+          const cwd = metadataText(body["cwd"], workspaceBytes);
+          if (cwd !== null) workspace = cwd;
+        } else if (fields["type"] === "event_msg" && body["type"] === "user_message") {
+          if (codex.request === "") codex.request = requestText(body);
+        } else if (
+          request !== null &&
+          codex.requestFallback === "" &&
+          fallbackTried < MAX_REQUEST_CANDIDATES
+        ) {
+          fallbackTried++;
+          if (request.trim() !== "" && !injectedBlock(request)) codex.requestFallback = request;
+        }
+      }
+    },
+    finish() {
+      if (harness !== "codex")
+        return { title, titleProvenance: title === null ? null : "recorded", workspace };
+      const derived = metadataText(deriveTitle(codex).title, titleBytes);
+      return {
+        title: derived,
+        titleProvenance: derived === null ? null : "derived",
+        workspace: codexWorkspace ?? workspace,
+      };
+    },
+  };
+}
 
 /** Whether this record begins an actual user exchange, rather than tool traffic. */
 function startsTurn(
@@ -144,12 +258,7 @@ export function recallRecordReader(options: {
     repository: null,
     metadataOrigin: "archive",
   };
-  const codex: TitleEvidence = { source: NO_THREAD_SOURCE, request: "", requestFallback: "" };
-  let fallbackTried = 0;
-  let codexWorkspace: string | null = null;
-  let workspaceDigest: string | null = null;
-  let workspaceConflict = false;
-  let ompTitle = false;
+  const fold = metadataFold(options.harness);
   let records = 0;
   let bytes = 0;
   let anchor: SessionRecordPosition | null = null;
@@ -167,65 +276,6 @@ export function recallRecordReader(options: {
     lastRecord: 0,
   };
 
-  const observeMetadata = (fields: Record<string, unknown>, codexRequest: string | null): void => {
-    if (options.harness === "omp") {
-      if (fields["type"] === "title") {
-        const title = metadataText(fields["title"], titleBytes);
-        if (!ompTitle && title !== null) {
-          metadata.title = title;
-          ompTitle = true;
-        }
-      } else if (fields["type"] === "session") {
-        if (metadata.title === null) metadata.title = metadataText(fields["title"], titleBytes);
-        if (metadata.workspace === null)
-          metadata.workspace = metadataText(fields["cwd"], workspaceBytes);
-      }
-    } else if (options.harness === "claude") {
-      const title = metadataText(fields["aiTitle"], titleBytes);
-      if (title !== null) metadata.title = title;
-      const cwd = fields["cwd"];
-      if (!workspaceConflict && typeof cwd === "string" && cwd !== "") {
-        const digest = new Bun.CryptoHasher("sha256").update(cwd).digest("hex");
-        if (workspaceDigest === null) {
-          workspaceDigest = digest;
-          metadata.workspace = metadataText(cwd, workspaceBytes);
-        } else if (workspaceDigest !== digest) {
-          workspaceConflict = true;
-          metadata.workspace = null;
-        }
-      }
-    } else {
-      const body = object(fields["payload"]);
-      if (body === null) return;
-      if (fields["type"] === "session_meta") {
-        if (codexWorkspace === null) codexWorkspace = metadataText(body["cwd"], workspaceBytes);
-        if (codex.source === NO_THREAD_SOURCE) {
-          const source = decodeThreadSource(body["source"]);
-          if (source !== NO_THREAD_SOURCE)
-            codex.source = {
-              role: clipUtf8(source.role, MAX_REQUEST_BYTES).text,
-              spawn: source.spawn,
-              agentPath: clipUtf8(source.agentPath, MAX_REQUEST_BYTES).text,
-              agentRole: clipUtf8(source.agentRole, MAX_REQUEST_BYTES).text,
-            };
-        }
-      } else if (fields["type"] === "turn_context") {
-        const cwd = metadataText(body["cwd"], workspaceBytes);
-        if (cwd !== null) metadata.workspace = cwd;
-      } else if (fields["type"] === "event_msg" && body["type"] === "user_message") {
-        if (codex.request === "") codex.request = requestText(body);
-      } else if (
-        codexRequest !== null &&
-        codex.requestFallback === "" &&
-        fallbackTried < MAX_REQUEST_CANDIDATES
-      ) {
-        fallbackTried++;
-        if (codexRequest.trim() !== "" && !injectedBlock(codexRequest))
-          codex.requestFallback = codexRequest;
-      }
-    }
-  };
-
   const sink = readNormalizedRecords((text, position, parsed) => {
     records++;
     bytes += position.byteLength;
@@ -239,14 +289,8 @@ export function recallRecordReader(options: {
     }
     const fields = object(parsed);
     if (fields !== null) {
-      const body = options.harness === "codex" ? object(fields["payload"]) : null;
-      const codexRequest =
-        fields["type"] === "response_item" &&
-        body?.["type"] === "message" &&
-        body["role"] === "user"
-          ? requestText(body)
-          : null;
-      observeMetadata(fields, codexRequest);
+      const codexRequest = userRequest(options.harness, fields);
+      fold.observe(fields, codexRequest);
       if (startsTurn(options.harness, fields, codexRequest)) turns++;
     }
     const selection = options.selection;
@@ -285,10 +329,9 @@ export function recallRecordReader(options: {
     finish() {
       return (finished ??= (async () => {
         await sink.close();
-        if (options.harness === "codex") {
-          metadata.title = metadataText(deriveTitle(codex).title, titleBytes);
-          metadata.workspace = codexWorkspace ?? metadata.workspace;
-        }
+        const found = fold.finish();
+        metadata.title = found.title;
+        metadata.workspace = found.workspace;
         return {
           excerpt,
           metadata,

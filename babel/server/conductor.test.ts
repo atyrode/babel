@@ -5221,10 +5221,16 @@ test("the locator on a call row resolves to the transcript that holds the answer
   const ref = omp.claim(String(call["transcript_path"]));
   expect(ref?.selector).toBe("omp/babel/01K_ses_replay");
 
-  // AND THE BYTES COME BACK, through the resolver the secret preflight already uses, on the
-  // machine that holds the log. The row did none of this: the row only said where.
+  // AND THE BYTES COME BACK, through the resolver the secret preflight already uses, over the
+  // transcript's own bytes. The row did none of this: the row only said where.
   const resolved =
-    ref === null ? null : await resolveRedaction(ref, { line: 3, offset: 0, length: turn.length });
+    ref === null
+      ? null
+      : await resolveRedaction(Bun.file(ref.primaryPath).stream(), {
+          line: 3,
+          offset: 0,
+          length: turn.length,
+        });
   expect(resolved?.value).toBe(turn);
   expect(String(call["response_digest"])).toBe(
     createHash("sha256").update(finalMessage).digest("hex"),

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  NO_USAGE,
   type Adapter,
   type SessionFacts,
   type SessionRef,
@@ -210,6 +211,9 @@ export const codex: Adapter = {
       absent,
     } satisfies SessionFacts;
   },
+
+  // Codex writes no usage aggregate this adapter can sum (see `describe`).
+  usage: () => NO_USAGE,
 };
 
 /** The root-relative identity of a rollout path, or null when it is not one. */
