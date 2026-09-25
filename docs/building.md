@@ -412,6 +412,11 @@ with no configuration yet):
 }
 ```
 
+An `https:` origin composes with `allowLoopbackHttp: false`, as above. A store served in plain
+`http:` on the machine's own loopback, `http://127.0.0.1:<port>` or `http://[::1]:<port>`,
+composes with `allowLoopbackHttp: true`, which is the only plain-http origin the hub admits.
+Any other origin, `http://localhost` included, is refused by name at the preview.
+
 The `credential.ref` is the store's own token, held by the owner and attached to the upstream
 request by it; the job never sees it, and it is a machine-side declaration like any other:
 
@@ -437,8 +442,13 @@ needs are `services:invoke` at
 `network:host` every host-network operation needs at
 `manifold://machine/<machine>/operation/<operation>`, once each for `atyrode.babel.catalog`,
 `atyrode.babel.prepare` and `atyrode.babel.verify`, and for `atyrode.babel.archive` on a machine
-that collects. Neither is a manifest capability: both are governed, so they are consented per
-node against the exact artifact revision (`packages/protocol/src/capabilities.ts:92-103`).
+that collects. Both are governed, so they are consented per node against the exact artifact
+revision (atyrode/manifold at `2ee760dd`, `packages/protocol/src/capabilities.ts:95-114`). The
+manifest's `capabilities` still names both, because it is the ceiling the doors that post these
+jobs delegate under: assembly refuses a door delegating a capability its manifest does not declare
+(`packages/plugin/src/assemble.ts:761-775`), and the hub refuses a posting whose door's delegates
+lack any requirement the operation declares (`packages/server/src/job-service.ts:3895-3925`), which
+is why every door that posts carries `POSTING_DELEGATES` (`babel/doors/launch.ts`, #453).
 
 `git` no longer runs in any job. It was `scan`'s, to fingerprint a workspace a job could not see
 anyway (#254); repository identity is the hub's own question, asked of the machine a session's

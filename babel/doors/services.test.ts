@@ -362,6 +362,49 @@ test("an install swaps on the revision it previewed and leaves every other polic
   ]);
 });
 
+test("an endpoint on the machine's own loopback previews and installs as plain http, and nowhere else does", async () => {
+  // The owner's `atyrode.babel.restic` listens on the machine's loopback, and the hub admits
+  // plain http there only when the policy says so. A composer that never did refused every
+  // loopback origin with the schema's bare "Invalid input" before the preview was drawn.
+  const LOOPBACK = "http://127.0.0.1:7811";
+  const fleet = hub({ read: { configuration: { revision: REVISION, policies: [FOREIGN] } } });
+  const args = {
+    machineId: MACHINE,
+    origins: [{ serviceId: RESTIC_SERVICE.serviceId, origin: LOOPBACK }],
+  };
+  const preview = (await answer(ACTIONS.previewServices, fleet.ctx, args)) as unknown as {
+    previewDigest: string;
+    services: { origin: string; standing: string }[];
+  };
+  expect(preview.services[0]).toMatchObject({ origin: LOOPBACK, standing: "absent" });
+  await answer(ACTIONS.installServices, fleet.ctx, {
+    ...args,
+    expectedRevision: REVISION,
+    previewDigest: preview.previewDigest,
+  });
+  expect(fleet.configures).toEqual([
+    {
+      machineId: MACHINE,
+      expectedRevision: REVISION,
+      policies: [FOREIGN, { ...resticPolicy(), origin: LOOPBACK, allowLoopbackHttp: true }],
+    },
+  ]);
+
+  // The other loopback the hub admits, and https exactly as it was composed before.
+  expect(resticPolicy("http://[::1]:7811").allowLoopbackHttp).toBe(true);
+  expect(resticPolicy(ORIGIN).allowLoopbackHttp).toBe(false);
+  // Plain http anywhere else, a resolver's name included, is refused by name.
+  const declared = DECLARED.find((service) => service.serviceId === RESTIC_SERVICE.serviceId)!;
+  for (const origin of ["http://localhost:7811", "http://store.example"]) {
+    const composed = composePolicy(declared, origin);
+    expect(composed.policy).toBeNull();
+    expect(composed.reason).toBe(
+      `${origin} is not an origin ${RESTIC_SERVICE.serviceId} can be installed at: the hub ` +
+        `admits https, or http on 127.0.0.1 or [::1], with no path, query, fragment or credentials`,
+    );
+  }
+});
+
 test("a preview composed against a configuration that has since moved is refused, naming both", async () => {
   const fleet = hub({ read: { configuration: { revision: MOVED, policies: [FOREIGN] } } });
   const refused = await refusal(ACTIONS.installServices, fleet.ctx, {

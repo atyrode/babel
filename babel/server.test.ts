@@ -21,6 +21,7 @@ import type { SettledJob } from "@manifold/protocol";
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
+  MACHINE_OPERATIONS,
   OPERATIONS,
   PRESET_OPERATIONS,
   RUN_STAGES,
@@ -116,7 +117,7 @@ class Jobs {
     return { runs: [], nextCursor: null };
   }
 
-  execute(): unknown {
+  execute(_launch: { jobId: string; operationId: string; machineId: string }): unknown {
     throw new Error("this test starts no job");
   }
 
@@ -200,26 +201,46 @@ function context(
 
 /**
  * What the bridge asks of one job verb before it is served, as `job-service.ts` asks it: the
- * reads a cycle ingests with, the machine read a cadence is registered from, and the run a
- * posting or a schedule is discharged against (#448).
+ * reads a cycle ingests with and the machine read a cadence is registered from. A POSTING —
+ * `execute` or `schedule` — is asked more, and {@link postingRequires} says what.
  */
 const VERB_CAPS: Record<string, string> = {
   status: "jobs:read",
   follow: "jobs:read",
   listRuns: "jobs:read",
   describe: "machines:read",
-  execute: "machines:run",
-  schedule: "machines:run",
 };
+const POSTING_VERBS: Record<string, true> = { execute: true, schedule: true };
+
+/**
+ * EVERY CAPABILITY THE HUB DISCHARGES A POSTING OF ONE OF THIS PLUGIN'S OPERATIONS AGAINST, read
+ * off the manifest the way `job-service.ts`'s `operationRequirements` reads it (manifold at
+ * `2ee760dd`, `packages/server/src/job-service.ts:3895-3925`): `machines:run` at the operation,
+ * `locations:<access>` at each location it names, `services:invoke` at each service operation it
+ * binds and `network:host` when it asks for the host network (#448, #453).
+ */
+function postingRequires(operationId: string): readonly string[] {
+  const operation = plugin.manifest.machine?.operations[operationId];
+  if (operation === undefined) throw new Error(`the manifest declares no ${operationId}`);
+  return [
+    "machines:run",
+    ...operation.locations.map((location) => `locations:${location.access}`),
+    ...(operation.services ?? []).flatMap((binding) =>
+      binding.operationIds.map(() => "services:invoke"),
+    ),
+    ...(operation.network === "host" ? ["network:host"] : []),
+  ];
+}
 
 /**
  * `ctx.jobs` AS THE HOST SERVES IT TO ONE DOOR'S DISPATCH: attenuated to what that action
  * declared (`plugin-host.ts` intersects the door's caps and delegates with the native set, and
- * `job-service.ts` refuses every verb whose capability is outside it by name). It is derived
- * from the plugin's OWN declaration, so a door added to `WAKES` without the delegates is served
- * a slice that cannot read a job or describe a machine — which is a cycle that settles nothing,
- * folds nothing and keeps no cadence, and is the whole reason the delegates are on the door
- * rather than assumed.
+ * `job-service.ts` refuses every verb whose capability is outside it by name, and every posting
+ * by the first requirement of its operation that is). It is derived from the plugin's OWN
+ * declarations, so a door added to `WAKES` without the delegates is served a slice that cannot
+ * read a job, describe a machine or post one — which is a cycle that settles nothing, folds
+ * nothing and keeps no cadence, and is the whole reason the delegates are on the door rather
+ * than assumed.
  */
 function served(slice: Jobs, name: string): Jobs {
   const action = plugin.actions.find((entry) => entry.name === name);
@@ -227,6 +248,14 @@ function served(slice: Jobs, name: string): Jobs {
   const reach: readonly string[] = [...(action.caps ?? []), ...(action.delegates ?? [])];
   return new Proxy(slice, {
     get(target, key, receiver) {
+      if (typeof key === "string" && Object.hasOwn(POSTING_VERBS, key)) {
+        const verb = Reflect.get(target, key, receiver) as (args: unknown) => unknown;
+        return (args: { operationId: string }): unknown => {
+          const absent = postingRequires(args.operationId).find((cap) => !reach.includes(cap));
+          if (absent !== undefined) throw new Error(`job_capability_absent:${absent}`);
+          return verb.call(target, args);
+        };
+      }
       const cap = typeof key === "string" ? VERB_CAPS[key] : undefined;
       if (cap !== undefined && !reach.includes(cap)) {
         return (): never => {
@@ -463,9 +492,12 @@ test("the cycle behind a read describes a machine, so the loop keeps its own cad
     behind a read was refused `job_capability_absent:machines:read` however privileged the
     caller: `reconcileSchedule` noted that the beat could not be registered and registered
     nothing, and Babel beat for exactly as long as somebody kept pressing something. The
-    schedule itself is then discharged against `machines:run`, which no wake carried either
-    (#448): on the integrated preview every cycle logged `the beat cannot be registered:
-    job_capability_absent:machines:run`.
+    schedule itself is then discharged against every requirement the beat's operation declares:
+    `machines:run`, which no wake carried either (#448) — on the integrated preview every cycle
+    logged `the beat cannot be registered: job_capability_absent:machines:run` — and, once the
+    beat became the archive `catalog` (#453), the outputs and cache it writes, the storage
+    service it reads and the host network it reads it over, where the next cycle logged
+    `job_capability_absent:locations:write`.
   */
   await pending();
   const ctx = context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.pulse));
@@ -516,26 +548,37 @@ test("the doors that ask a machine what it can run are lent that read, and no ot
   }
 });
 
-test("the doors whose wake or press starts Babel's own jobs are lent machines:run, and no others are", () => {
+test("the doors whose wake or press posts Babel's own jobs are lent what the hub discharges them against", () => {
   /*
-    WHO POSTS, AND THEREFORE WHO IS LENT IT (#448). `engine.jobs.execute` and `schedule` discharge
-    `machines:run` against the dispatch's attenuated bridge, so a door that starts work without it
-    is refused `authority_or_consent_refused` however privileged its caller — on the integrated
-    preview the beat never registered and no explicit explore, drain slot or analysis stage was
-    ever admitted. The cycle behind every wake registers the beat, posts analysis preparations and
-    relaunches a drain's settled slot; `launch`, `drainStart` and `verify` post on their own
-    account. Nothing else starts anything, and it is a delegate everywhere, never a cap the
-    caller is asked to hold.
+    WHO POSTS, AND THEREFORE WHO IS LENT IT (#448, #453). `engine.jobs.execute` and `schedule`
+    discharge every requirement the posted operation declares against the dispatch's attenuated
+    bridge, so a door that posts without one of them is refused by that name however privileged
+    its caller — on the integrated preview the beat never registered, first for `machines:run`
+    and then, once it became the archive `catalog`, for `locations:write`. The cycle behind every
+    wake registers the beat, posts analysis preparations and relaunches a drain's settled slot;
+    `launch` and `drainStart` post a beat or a preparation on their own account, and `verify`
+    posts a verification. What each must hold is read off the manifest, so an operation that
+    grows a location, a service or the host network moves the requirement with it.
+
+    Nothing else starts anything, so nothing else is lent `machines:run`, and it is a delegate
+    everywhere, never a cap the caller is asked to hold.
   */
-  const posts: Record<string, true> = {
-    ...WAKES,
-    [ACTIONS.drainStart]: true,
-    [ACTIONS.verify]: true,
+  const posted = [PRESET_OPERATIONS["keep-going"], OPERATIONS.prepare];
+  const posts: Record<string, readonly string[]> = {
+    ...Object.fromEntries(Object.keys(WAKES).map((name) => [name, posted])),
+    [ACTIONS.drainStart]: posted,
+    [ACTIONS.verify]: [MACHINE_OPERATIONS.verify],
   };
   for (const action of plugin.actions) {
-    expect({ door: action.name, runs: (action.delegates ?? []).includes("machines:run") }).toEqual({
+    const lent: readonly string[] = action.delegates ?? [];
+    const operations = Object.hasOwn(posts, action.name) ? (posts[action.name] ?? []) : [];
+    const absent = [...new Set(operations.flatMap(postingRequires))].filter(
+      (cap) => !lent.includes(cap),
+    );
+    expect({ door: action.name, absent }).toEqual({ door: action.name, absent: [] });
+    expect({ door: action.name, runs: lent.includes("machines:run") }).toEqual({
       door: action.name,
-      runs: Object.hasOwn(posts, action.name),
+      runs: operations.length > 0,
     });
     expect(action.caps).not.toContain("machines:run");
   }
@@ -760,4 +803,135 @@ test("enabling a store made before archive captures adds their columns, the labe
   expect(await db.query(`SELECT host, archive_label, archive_path FROM sessions`)).toEqual([
     { host: MACHINE, archive_label: "dev-01", archive_path: row.archive_path },
   ]);
+});
+
+/**
+ * `drains` EXACTLY AS #285 CREATED IT, and as the integrated preview's store still held it on
+ * 2026-09-25: `session TEXT NOT NULL` with no default, and no `profile` yet.
+ */
+const DRAINS_AS_285 = `CREATE TABLE drains(
+     id TEXT PRIMARY KEY,
+     machine_id TEXT NOT NULL,
+     preset TEXT NOT NULL,
+     session TEXT NOT NULL,
+     knobs TEXT NOT NULL DEFAULT '{}',
+     concurrent INTEGER NOT NULL CHECK (concurrent >= 1),
+     target TEXT NOT NULL,
+     started_at TEXT NOT NULL,
+     started_by TEXT NOT NULL,
+     finished_at TEXT,
+     state TEXT NOT NULL DEFAULT 'running'
+       CHECK (state IN ('running','closing','stopped','target','deadline','failed')),
+     ending TEXT NOT NULL DEFAULT ''
+       CHECK (ending IN ('','stopped','target','deadline','failed')),
+     reason TEXT NOT NULL DEFAULT '',
+     spent TEXT NOT NULL DEFAULT '{}',
+     live TEXT NOT NULL DEFAULT '[]',
+     samples TEXT NOT NULL DEFAULT '[]',
+     closures TEXT NOT NULL DEFAULT '{}',
+     refusals TEXT NOT NULL DEFAULT '{}',
+     jobs_launched INTEGER NOT NULL DEFAULT 0,
+     jobs_settled INTEGER NOT NULL DEFAULT 0,
+     CHECK ((state IN ('running','closing')) = (finished_at IS NULL)),
+     CHECK (state != 'closing' OR ending != '')
+   ) STRICT`;
+
+test("a store made under the first drain shape starts a drain through its door once enabled", async () => {
+  const { db } = harness;
+  /*
+    THE START THE INTEGRATED PREVIEW REFUSED WITH `NOT NULL constraint failed: drains.session`.
+    #279 replaced `session` with `profile` and added `profile` to a store that already had the
+    table, but nothing took `session` away, and no insert has named it since — so a store created
+    in that window refused every drain it was ever asked for. That store held no drain at all.
+  */
+  await db.run(`DROP TABLE drains`);
+  await db.run(DRAINS_AS_285);
+
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+  // A second enable is the ordinary case — it runs on every one — and must find nothing to do.
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+
+  const posted: { operationId: string; machineId: string }[] = [];
+  jobs.execute = (args: { jobId: string; operationId: string; machineId: string }): unknown => {
+    posted.push({ operationId: args.operationId, machineId: args.machineId });
+    return { ...args, state: "queued", result: null };
+  };
+  // Code, as far as a start reaches it: the one saved profile the drain names.
+  const actions = {
+    call: async ({ action }: { action: string }) => {
+      if (action !== "listProfiles") throw new Error(`a drain start never calls ${action}`);
+      return await Promise.resolve({
+        profiles: [
+          {
+            containerId: "ctr_workbench",
+            revision: 1,
+            selected: { model: "m", thinking: "high", capability: 4, advisor: "review" },
+            machineId: MACHINE,
+            accounts: [{ provider: "anthropic", identityKey: "the-drain-account" }],
+            resolved: true,
+          },
+        ],
+      });
+    },
+  };
+  // The door's own ceiling, so the beat it posts is held to what posting it requires too.
+  const ctx = {
+    ...context(db as unknown as GuestDatabase, served(jobs, ACTIONS.drainStart)),
+    auth: { isRoot: true },
+    actions,
+    emit: () => {},
+  } as unknown as GuestCtx;
+  const door = plugin.actions.find((action) => action.name === ACTIONS.drainStart);
+  const input = door?.input.parse({
+    machineId: MACHINE,
+    preset: "keep-going",
+    profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+    concurrent: 1,
+    maxJobs: 1,
+    minutes: 5,
+    target: {},
+    reason: "the preview's first drain",
+    operation: {
+      kind: "operation",
+      machineId: MACHINE,
+      operationId: PRESET_OPERATIONS["keep-going"],
+    },
+  });
+
+  const answer = await plugin.handlers[ACTIONS.drainStart]?.(ctx, input as never);
+
+  expect(answer).toMatchObject({ machineId: MACHINE, preset: "keep-going", launched: 1 });
+  expect(posted).toEqual([{ operationId: PRESET_OPERATIONS["keep-going"], machineId: MACHINE }]);
+  expect(await db.query(`SELECT state, jobs_launched FROM drains`)).toEqual([
+    { state: "running", jobs_launched: 1n },
+  ]);
+});
+
+test("retiring the first drain shape's session keeps what a drain written under it named", async () => {
+  const { db } = harness;
+  await db.run(`DROP TABLE drains`);
+  await db.run(DRAINS_AS_285);
+  const session = { model: "anthropic/claude-sonnet-4-5", account: { identityKey: "the-account" } };
+  await insert(db, "drains", {
+    id: "drn_first",
+    machine_id: MACHINE,
+    preset: "read-whats-new",
+    session: JSON.stringify(session),
+    knobs: JSON.stringify({ recipes: ["triage"] }),
+    concurrent: 2,
+    target: "{}",
+    started_at: stamp(NOW - HOUR),
+    started_by: "operator",
+    finished_at: stamp(NOW),
+    state: "stopped",
+  });
+
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+
+  // The column is gone and its value is not: it is the row's own record of what it spent.
+  expect(
+    await db.query(`SELECT count(*) AS n FROM pragma_table_info('drains') WHERE name = 'session'`),
+  ).toEqual([{ n: 0n }]);
+  const rows = await db.query<{ knobs: string }>(`SELECT knobs FROM drains WHERE id = 'drn_first'`);
+  expect(JSON.parse(rows[0]?.knobs ?? "null")).toEqual({ recipes: ["triage"], session });
 });

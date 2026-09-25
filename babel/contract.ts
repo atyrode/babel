@@ -2476,10 +2476,10 @@ export const RunStateSchema = z.enum(RUN_STATES);
 
 /**
  * WHICH OPERATION A PRESET BECOMES. It is here rather than beside the door's plan table because
- * the panel needs it too: `launch` declares `machines:run` at the operation node its arguments
- * name, so the caller has to build that node — the machine it picked and the operation its
- * preset runs — before it can knock. Two tables would be two answers to the same question, and
- * the one the panel held would be the one nobody checked.
+ * the panel needs it too: `drain.start` takes the operation node its arguments name, and a
+ * `launch` that names one is held to it, so the caller has to build that node — the machine it
+ * picked and the operation its preset runs — before it can knock. Two tables would be two answers
+ * to the same question, and the one the panel held would be the one nobody checked.
  */
 export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> = {
   "read-whats-new": OPERATIONS.explore,
@@ -2568,19 +2568,22 @@ export const LaunchInputSchema = z.strictObject({
 export type LaunchInput = z.infer<typeof LaunchInputSchema>;
 
 /**
- * What the `launch` door takes: the request above, plus the OPERATION NODE it is asked at.
+ * What the `launch` door takes: the request above, plus the OPERATION NODE it asks at, which may
+ * be omitted.
  *
- * `launch` declares `machines:run`, which is governed: the engine grants it at a node and never
- * at a workspace, and the door's `requirements` name `operation` as the argument path the node
- * is read from — the host walks it through the RAW arguments and refuses `invalid authority
- * target` before the handler is entered. So the node is a field of the request rather than
- * something the door assembles: a reference the handler built would be a reference nobody
- * authorized the caller to name.
+ * The node was required while `launch` declared `machines:run` at it as a governed requirement,
+ * which the host walks through the RAW arguments before the handler is entered. That requirement
+ * went with #279 (`doors/launch.ts`, "WHY `launch` DEMANDS NO NODE"), so nothing is discharged at
+ * the node any more and a request without one, such as a keep-going press typed by hand, is the
+ * preset's own. A request that names one is still held to it: a node for another machine or
+ * another operation than the preset's is refused by the door, by name.
  *
  * There is no dry preview beside it: what a run would cost is a composition's, and a
  * composition is Code's to make.
  */
-export const LaunchRequestSchema = LaunchInputSchema.extend({ operation: OperationRefSchema });
+export const LaunchRequestSchema = LaunchInputSchema.extend({
+  operation: OperationRefSchema.optional(),
+});
 export type LaunchRequest = z.infer<typeof LaunchRequestSchema>;
 
 /**
@@ -2593,9 +2596,9 @@ export type LaunchRequest = z.infer<typeof LaunchRequestSchema>;
  * revision the operator was shown.
  *
  * THE NODE IS DERIVED AND NEVER SUPPLIED. It is made of the two fields above it, and a caller
- * that assembled it itself and named the wrong operation for its preset would be refused
- * `invalid authority target` before the handler ran — a refusal that reads like a missing
- * grant. Deriving it here is the same reason {@link PRESET_OPERATIONS} is in this file at all.
+ * that assembled it itself and named the wrong operation for its preset would be refused by the
+ * door for asking at a node the request is not about. Deriving it here is the same reason
+ * {@link PRESET_OPERATIONS} is in this file at all.
  */
 export function asLaunchRequest(input: z.input<typeof LaunchInputSchema>): LaunchRequest {
   return LaunchRequestSchema.parse({

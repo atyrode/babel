@@ -42,7 +42,7 @@ import {
   type BabelJobs,
 } from "./server/plan.ts";
 import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
-import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
+import { SCHEMA_ADDITIONS, SCHEMA_RETIREMENTS, SCHEMA_V1 } from "./store/schema.ts";
 import { ensureTerms } from "./store/corpus.ts";
 import { openStore } from "./store/store.ts";
 import manifestJson from "./manifest.json";
@@ -537,6 +537,15 @@ export const plugin: ServerPluginDef = {
                   [addition.object, addition.column],
                 );
           if (Number(held[0]?.n ?? 0) === 0) pending.push({ sql: addition.sql });
+        }
+        // And what an earlier shape left behind that no build writes any more, retired where it
+        // is still a column — in the same batch, so a store is never left half-way between.
+        for (const retirement of SCHEMA_RETIREMENTS) {
+          const held = await database.query<{ n: number }>(
+            "SELECT count(*) AS n FROM pragma_table_info(?) WHERE name = ?",
+            [retirement.object, retirement.column],
+          );
+          if (Number(held[0]?.n ?? 0) > 0) pending.push(...retirement.sql.map((sql) => ({ sql })));
         }
         if (pending.length > 0) await database.batch(pending);
       }

@@ -1171,6 +1171,45 @@ function objectAddition(sql: string): SchemaAddition {
 }
 
 /**
+ * A COLUMN AN EARLIER SHAPE LEFT BEHIND THAT NOTHING WRITES ANY MORE, retired where it is still
+ * there — the one move this file makes that is not an addition, and it is only ever the undoing
+ * of an old shape that was never undone. `SCHEMA_V1` never had the column, so a store this
+ * enable creates is already the shape a retirement leaves, and the name of that shape does not
+ * move.
+ *
+ * It exists because a column the current shape does not know can still refuse every insert: an
+ * addition can add a column but never relax one, and an old `NOT NULL` with no default outlives
+ * the build that wrote it for as long as the store does. `sql` runs, in order, in the enable's
+ * one batch, only where `column` is still a column of `object`.
+ */
+export interface SchemaRetirement {
+  readonly object: string;
+  readonly column: string;
+  readonly sql: readonly string[];
+}
+
+export const SCHEMA_RETIREMENTS: readonly SchemaRetirement[] = [
+  /*
+    #258 (#285) created `drains` with `session TEXT NOT NULL` and no default: the `SessionChoice`
+    the operator typed. #279 (#291) replaced it with `profile` in `DRAINS_TABLE` and added
+    `profile` to a store that already had the table, but left `session` where it was, and no
+    insert has named it since. So every `drain.start` on a store created in that window was
+    refused `NOT NULL constraint failed: drains.session` — the integrated preview's store among
+    them. What such a row held is kept, as `session` inside its own `knobs`, which no reader
+    parses; the column goes.
+  */
+  {
+    object: "drains",
+    column: "session",
+    sql: [
+      `UPDATE drains SET knobs = json_set(knobs, '$.session', json(session))
+        WHERE json_valid(knobs) AND json_valid(session)`,
+      `ALTER TABLE drains DROP COLUMN session`,
+    ],
+  },
+];
+
+/**
  * A RECORD'S OWN TEXT, AS SQL, SPELLED ONCE — the trigger above and the rebuild pass in
  * `store/corpus.ts` both read it through this, so "what a record says" cannot come to mean two
  * things depending on which path indexed the row.

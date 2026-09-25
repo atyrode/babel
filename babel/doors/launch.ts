@@ -134,8 +134,34 @@ import { defineDoor, type Door } from "./door.ts";
 /** A dry act on this plugin's own rows plus one call onto Code, which reads containers. */
 const LAUNCH_CAPS = ["containers:read"] as const;
 /**
- * The native ceiling the jobs this door posts inherit: reading them back, the locations the
- * `prepare` it posts declares, and the read that says whether the machine can run any of it.
+ * WHAT POSTING ONE OF BABEL'S OWN JOBS IS DISCHARGED AGAINST, whichever door or wake posts it.
+ *
+ * The hub admits `engine.jobs.execute` or `schedule` only when the bridge's ceiling holds every
+ * requirement the operation declares (manifold `packages/server/src/job-service.ts`,
+ * `operationRequirements`): `machines:run` at the operation, `locations:<access>` at each location
+ * it names, `services:invoke` at each service operation it binds and `network:host` when it asks
+ * for the host network. The three Babel posts, `catalog` (the beat), `prepare` and `verify`, each
+ * write the outputs and cache locations and read `atyrode.babel.restic` over the host network, so
+ * each needs all four, and none reads a location. Without one of them every posting was refused by
+ * that name however privileged the caller: `machines:run` until #448, and after the archive
+ * cutover (#453) every cycle on the integrated preview logged `the beat cannot be registered:
+ * job_capability_absent:locations:write`.
+ *
+ * They are DELEGATES, the ceiling this door's job authority may reach, never the caller's grant:
+ * the host intersects them with the caller's own capabilities and still requires the operator's
+ * version-bound consent at each node, so they lend nothing the caller does not hold.
+ * `server.test.ts` holds every door that posts to the requirements the manifest declares.
+ */
+export const POSTING_DELEGATES = [
+  "locations:write",
+  "machines:run",
+  "network:host",
+  "services:invoke",
+] as const;
+
+/**
+ * The native ceiling the jobs this door posts inherit: reading them back, what posting them is
+ * discharged against, and the read that says whether the machine can run any of it.
  *
  * `jobs:read` is also the one DELEGATE every door a cycle follows carries — `launch` is in
  * `server.ts`'s `WAKES`, and the dispatcher attenuates `ctx.jobs` to what the door declared, so
@@ -151,19 +177,8 @@ const LAUNCH_CAPS = ["containers:read"] as const;
  * job_capability_absent:machines:read`, and the operator's press is refused before the machine
  * is ever asked — whatever authority his own key holds, because a delegate is the door's
  * ceiling and not the caller's grant. `doors/read.ts` carries the whole reasoning.
- *
- * `machines:run` IS WHAT THE POSTING ITSELF IS DISCHARGED AGAINST (#448). `engine.jobs.execute`
- * admits Babel's own `prepare` or its beat only when this bridge carries it; the host still
- * intersects it with the caller's own capabilities and still requires the operator's
- * version-bound consent at the operation node, so it lends nothing the caller does not hold.
  */
-const LAUNCH_DELEGATES = [
-  "jobs:read",
-  "locations:read",
-  "locations:write",
-  "machines:read",
-  "machines:run",
-] as const;
+const LAUNCH_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
 
 /** Reading Code's saved profiles is a read of containers and nothing else. */
 const PROFILES_CAPS = ["containers:read"] as const;
@@ -2116,19 +2131,20 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
     }),
     async (ctx, input) => {
       const preset = PRESET_PLANS[input.preset];
-      // The `operation` field is what a governed requirement WOULD be discharged at, and this is
-      // the only place that can say the node is the one this request is actually about. A request
-      // whose two halves disagree is answered as itself rather than folded into a later refusal:
-      // the operator fixes a mismatched node, and hears nothing about it if a broader sentence
-      // covers it.
+      // The `operation` node is optional: no requirement is discharged at it (see the top of this
+      // file), so a request that omits it asks at the preset's own node. One that names a node is
+      // still held to it, and a request whose two halves disagree is answered as itself rather
+      // than folded into a later refusal: the operator fixes a mismatched node, and hears nothing
+      // about it if a broader sentence covers it.
+      const node = input.operation;
       if (
-        input.operation.machineId !== input.machineId ||
-        input.operation.operationId !== preset.operationId
+        node !== undefined &&
+        (node.machineId !== input.machineId || node.operationId !== preset.operationId)
       ) {
         return {
           refused:
             `this launch names ${input.machineId}/${preset.operationId} and asks for authority ` +
-            `at ${input.operation.machineId}/${input.operation.operationId}`,
+            `at ${node.machineId}/${node.operationId}`,
         };
       }
       const inForce = await deps.coordinator.policy();

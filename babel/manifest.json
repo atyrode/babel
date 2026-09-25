@@ -14,7 +14,8 @@
     "locations:read",
     "locations:write",
     "services:configure",
-    "services:invoke"
+    "services:invoke",
+    "network:host"
   ],
   "dependencies": {
     "atyrode.code": {

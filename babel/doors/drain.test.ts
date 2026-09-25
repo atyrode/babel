@@ -534,23 +534,16 @@ test("the roster is a start, a dry read and a stop, and none of them names a nod
   // version-bound consent required" and the operator never heard `engine_pending`. The governed
   // requirement returns with Code's node. What it does carry is what its own first fan needs:
   // `startExplore`/`startBeat` describe the machine through `ready` before posting, and then post
-  // Babel's own `prepare` or `catalog` — a describe outside the door's ceiling is refused
-  // `job_capability_absent:machines:read`, and a posting outside it `authority_or_consent_refused`
-  // at `execute` (#448), before any slot is filled.
+  // Babel's own `prepare` or `catalog`, so it carries the delegates that describe and that posting
+  // need; `server.test.ts` holds them to the requirements the manifest declares (#448, #453).
   expect(begin?.action.caps).toEqual(["containers:read"]);
   expect(begin?.action.requirements).toBeUndefined();
-  expect(begin?.action.delegates).toEqual(["machines:read", "machines:run"]);
 
   // The dry read asks no machine anything ITSELF, so it carries no governed capability and no
-  // target — the panel polls it every five seconds while the operator watches. It DOES delegate
-  // `jobs:read`, `machines:read` and `machines:run`, because a cycle follows it (`server.ts`'s
-  // `WAKES`) and the dispatcher attenuates `ctx.jobs` to what the door declared: without the first
-  // that cycle can read back no job, nothing settles and the `run_progress` fold this wake exists
-  // for never happens; without the second it can describe no machine and the loop's beat is never
-  // registered on one; without the third it relaunches no settled slot (#448).
+  // target — the panel polls it every five seconds while the operator watches. Its delegates are
+  // the cycle's, because a cycle follows it (`server.ts`'s `WAKES`); `server.test.ts` holds them.
   expect(read?.action.caps).toEqual(["containers:read"]);
   expect(read?.action.requirements).toBeUndefined();
-  expect(read?.action.delegates).toEqual(["jobs:read", "machines:read", "machines:run"]);
 
   // A stop closes this plugin's own row and reaches its jobs through its OWN ceiling. It
   // asked `jobs:cancel` at the operation they share, and that operation is one no

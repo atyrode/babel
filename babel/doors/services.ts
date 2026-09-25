@@ -195,18 +195,37 @@ export function composePolicy(declared: DeclaredService, origin: string): Compos
   if (origin === "") {
     return { policy: null, reason: `name the endpoint ${declared.serviceId} may reach` };
   }
-  return {
-    policy: ServicePolicySchema.parse({
-      serviceId: declared.serviceId,
-      revision: declared.revision,
-      origin,
-      allowLoopbackHttp: false,
-      credential: { ref: known.credential.ref, header: known.header, prefix: known.prefix },
-      maxConcurrent: known.maxConcurrent,
-      operations,
-    }),
-    reason: "",
-  };
+  const composed = ServicePolicySchema.safeParse({
+    serviceId: declared.serviceId,
+    revision: declared.revision,
+    origin,
+    allowLoopbackHttp: isLoopbackHttp(origin),
+    credential: { ref: known.credential.ref, header: known.header, prefix: known.prefix },
+    maxConcurrent: known.maxConcurrent,
+    operations,
+  });
+  if (!composed.success) {
+    return {
+      policy: null,
+      reason:
+        `${origin} is not an origin ${declared.serviceId} can be installed at: the hub admits ` +
+        `https, or http on 127.0.0.1 or [::1], with no path, query, fragment or credentials`,
+    };
+  }
+  return { policy: composed.data, reason: "" };
+}
+
+/**
+ * WHETHER AN ORIGIN IS PLAIN HTTP ON THE MACHINE'S OWN LOOPBACK, as `ServicePolicySchema` reads
+ * one: `http:` on `127.0.0.1` or `[::1]` and nothing else. A name such as `localhost` resolves
+ * wherever the machine's resolver says, so the hub does not admit it as loopback and neither does
+ * this. Plain http anywhere else is refused whatever the flag says, and `https:` keeps `false`,
+ * which is what an https policy installed before this was composed with and so still digests to.
+ */
+function isLoopbackHttp(origin: string): boolean {
+  if (!URL.canParse(origin)) return false;
+  const url = new URL(origin);
+  return url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]");
 }
 
 // ---------------------------------------------------------------------------- the preview
