@@ -8,6 +8,7 @@
 */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { ARCHIVE_LABELS_REPORTED } from "../contract.ts";
 import { insert, openTestStore, type TestStore } from "./testdb.ts";
 import { stamp } from "./feedindex.ts";
 
@@ -1274,6 +1275,54 @@ describe("the pulse", () => {
       topicProposals: 0,
       ruled: 0,
     });
+  });
+
+  /** Files `n` sessions under one archive label, as the catalog would. */
+  async function filed(label: string, n: number): Promise<void> {
+    for (let i = 0; i < n; i += 1) {
+      await insert(harness.db, "sessions", {
+        selector: `omp/${label}-${String(i)}`,
+        host: "",
+        harness: "omp",
+        source_id: `${label}-${String(i)}`,
+        seen_at: stamp(NOW),
+        archive_label: label,
+      });
+    }
+  }
+
+  test("names the archive labels no mapping answers for, most sessions first", async () => {
+    // The seeded session is an import with no capture: it is under no label at all.
+    expect((await harness.store.pulse()).archive).toEqual({ unmapped: [], omitted: 0 });
+
+    await filed("dev-01", 3);
+    await filed("workstation-linux", 2);
+    await filed("alex-x86_64-linux-wsl", 2);
+    await filed("laptop", 1);
+    await insert(harness.db, "archive_labels", {
+      label: "dev-01",
+      machine_id: "m-dev-01",
+      mapped_at: stamp(NOW),
+    });
+
+    // The mapped label is gone however many sessions it holds; equal counts order by label.
+    expect((await harness.store.pulse()).archive).toEqual({
+      unmapped: [
+        { label: "alex-x86_64-linux-wsl", sessions: 2 },
+        { label: "workstation-linux", sessions: 2 },
+        { label: "laptop", sessions: 1 },
+      ],
+      omitted: 0,
+    });
+  });
+
+  test("lists at most the reported number of labels and counts the rest", async () => {
+    for (let i = 0; i < ARCHIVE_LABELS_REPORTED + 2; i += 1) {
+      await filed(`host-${String(i).padStart(3, "0")}`, 1);
+    }
+    const { archive } = await harness.store.pulse();
+    expect(archive.unmapped).toHaveLength(ARCHIVE_LABELS_REPORTED);
+    expect(archive.omitted).toBe(2);
   });
 });
 

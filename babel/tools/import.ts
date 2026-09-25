@@ -300,11 +300,12 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     notes.push(
       "sessions.repository_identity/remote/reason are NULL: the local catalog (schema_version 4) has " +
         "no repository columns — v0.4.0:internal/adapter observes repository identity at scan time and only " +
-        "the retired PostgreSQL catalog stored it. A `scan` job (P4) fills them.",
+        "the retired PostgreSQL catalog stored it. The conductor asks the machine a row's host names, " +
+        "once that host is a machine id (`rehostSessions`).",
     );
     notes.push(
       "sessions.snapshot_id/archived_at are NULL: restic snapshot ids lived in the shared catalog, " +
-        "which the crossing retires. An `archive` job (P4) fills them.",
+        "which the crossing retires. The `catalog` fills them from the archive (#453).",
     );
     notes.push(
       "sessions.seen_at is the import's own timestamp: the local catalog stores no scan time, only " +

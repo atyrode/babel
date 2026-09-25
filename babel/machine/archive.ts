@@ -1,7 +1,9 @@
 /*
   THE archive OPERATION (plan §4): `restic backup` of this machine's session roots, tagged
-  `babel` and attributed to the machine's own identity, writing back the one fact the hub's
-  catalog cannot learn any other way — which snapshot holds each session, and when.
+  `babel` and attributed to the machine's own identity. It is the collector's half of the
+  archive and writes no catalog row (#453): the `catalog` operation lists the snapshots this
+  job takes like any other `babel` snapshot, so the hub learns every capture from one writer.
+  The `sessions` document it owes as a declared output is therefore always empty.
 
   ONE SNAPSHOT PER ROOT, not one for all of them. restic picks a backup's parent by matching
   host and the snapshot's path set, so a machine that gains a harness would, with one combined
@@ -27,7 +29,8 @@ export const ArchiveInputSchema = z.strictObject({
   /** The run this job is. Empty mints one: a scheduled beat's input is fixed at registration,
    *  so the hub cannot name a run per occurrence and the machine half names it instead. */
   runId: z.string().trim().max(120).default(""),
-  /** The machine's identity, which is restic's `--host` and the catalog row's `host`. */
+  /** The machine's identity, which is restic's `--host`: the label the catalog files this
+   *  machine's captures under. */
   machineId: z.string().trim().min(1).max(120),
   /** The roots to archive. Empty is every adapter's own root that exists on this host. */
   roots: z.array(z.string().trim().min(1).max(4096)).max(64).default([]),
@@ -43,23 +46,6 @@ export interface ArchiveDeps {
   claim(path: string): SessionRef | null;
   /** Where the engine materialized the storage service binding for this job. */
   credentialFile: string;
-}
-
-/**
- * One `sessions` row as the archive observed it.
- *
- * The columns are exactly what a backup learns and no more: an ingest that updates the named
- * columns only can therefore write this row for a selector `scan` also wrote, without either
- * clobbering the other's facts. Column names are the store's own (store/schema.ts).
- */
-interface ArchivedSessionRow {
-  readonly selector: string;
-  readonly host: string;
-  readonly harness: string;
-  readonly source_id: string;
-  readonly snapshot_id: string;
-  readonly archived_at: string;
-  readonly seen_at: string;
 }
 
 /** What a backup pass tallied. Every key is present, so a reader of the receipt's counts can
@@ -79,7 +65,6 @@ type ArchiveTallies = {
 };
 
 interface ArchiveWork {
-  readonly rows: readonly ArchivedSessionRow[];
   readonly tallies: ArchiveTallies;
   /** How many of the new snapshots linked to a parent, or null when the listing that answers
    *  it could not be read: an unknown fact is not the fact "none of them linked". */
@@ -99,9 +84,9 @@ export async function archive(
   const startedAt = new Date().toISOString();
   const runId = input.runId === "" ? `run_${crypto.randomUUID()}` : input.runId;
   const work = await backUp(input, deps);
-  // The rows go out before the receipt, always — including the empty document, which is what
-  // an operation that declares an output owes its job even when it archived nothing.
-  await out.write("sessions", work.rows);
+  // The declared output goes out before the receipt, always, and it is empty: the catalog is
+  // what files this backup's captures, and a second writer of rows would be a second answer.
+  await out.write("sessions", []);
   const receipt: Receipt = {
     runId,
     kind: "archive",
@@ -139,7 +124,6 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
     // successful backup either. Nothing is asked of the storage service for it: a machine with
     // nothing to archive must not be able to fail on the operator's policy.
     return {
-      rows: [],
       tallies: counts,
       parented: null,
       closure: "skipped",
@@ -154,7 +138,6 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
   } catch (err) {
     if (err instanceof ResticError) {
       return {
-        rows: [],
         tallies: counts,
         parented: null,
         closure: "failed",
@@ -168,7 +151,6 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
   try {
     if (!(await repo.exists())) {
       return {
-        rows: [],
         tallies: counts,
         parented: null,
         closure: "failed",
@@ -178,7 +160,6 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
   } catch (err) {
     if (err instanceof ResticError) {
       return {
-        rows: [],
         tallies: counts,
         parented: null,
         closure: "failed",
@@ -188,8 +169,7 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
     throw err;
   }
 
-  const seenAt = new Date().toISOString();
-  const rows = new Map<string, ArchivedSessionRow>();
+  const sessions = new Set<string>();
   const minted: string[] = [];
   const failures: string[] = [];
   const incomplete: string[] = [];
@@ -221,20 +201,10 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
         counts.unclaimed += 1;
         continue;
       }
-      rows.set(session.selector, {
-        selector: session.selector,
-        host: input.machineId,
-        harness: session.harness,
-        source_id: session.sourceId,
-        snapshot_id: outcome.snapshotId,
-        // restic's own recorded time for the snapshot, to the nanosecond, so a catalog row and
-        // `restic snapshots` never disagree about when this capture was taken.
-        archived_at: outcome.startedAt,
-        seen_at: seenAt,
-      });
+      sessions.add(session.selector);
     }
   }
-  counts.sessions = rows.size;
+  counts.sessions = sessions.size;
 
   // Whether each new snapshot linked to a parent, which is the difference between an
   // incremental backup and restic having re-read the whole root. A listing that fails leaves
@@ -251,7 +221,6 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
 
   if (failures.length > 0) {
     return {
-      rows: [...rows.values()],
       tallies: counts,
       parented,
       closure: "failed",
@@ -263,14 +232,13 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
     // The snapshots are real and already recorded, but a source file Babel could not read is a
     // failure the operator has to see rather than a quieter, smaller archive.
     return {
-      rows: [...rows.values()],
       tallies: counts,
       parented,
       closure: "failed",
       reason: `${counts.unreadable} unreadable ${counts.unreadable === 1 ? "path" : "paths"} under ${incomplete.join(", ")}`,
     };
   }
-  return { rows: [...rows.values()], tallies: counts, parented, closure: "completed", reason: "" };
+  return { tallies: counts, parented, closure: "completed", reason: "" };
 }
 
 /** One restic failure as a receipt's reason: what failed and restic's own diagnosis, which is

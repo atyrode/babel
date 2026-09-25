@@ -18,13 +18,17 @@ import {
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
+  PRESET_OPERATIONS,
   RUN_STAGES,
   ReceiptSchema,
+  SessionRowSchema,
   TallyReasonSchema,
   modelList,
   type GapReason,
   type MaterialIndex,
+  type OperationName,
   type ParkReason,
+  type SessionRow,
   type Receipt,
   type RunCall,
   type RunTrace,
@@ -44,6 +48,7 @@ import { materialJobId, type LaunchIdentity, type Started } from "../doors/launc
 import { refuseRow, type RowRefusal } from "../store/acts.ts";
 import { REFUSALS, refusalCode, type RefusalCode, type RefusedItem } from "../machine/results.ts";
 import type { BabelStore } from "../store/store.ts";
+import { upsertSessionRows } from "../store/sessions.ts";
 import {
   PROMPT_LIMIT,
   promptBytes,
@@ -96,17 +101,18 @@ import {
        spends nothing. Turning Babel off is one operator record, not a migration.
     2. the schedule is reconciled. `engine.jobs.schedule` is the only cadence primitive a plugin
        has, and it schedules a JOB on a machine — so the loop's beat is the cheapest useful job
-       Babel owns, `scan`: no model spend, a fresh catalog every cadence, and a settlement that
-       wakes the hub. Drawing stays here, where the coordinator's lanes and ceilings govern
-       every model dollar; a fixed `explore` registered at schedule time would spend outside them.
+       Babel owns, the archive `catalog`: no model spend, the captures the archive holds listed
+       every cadence, and a settlement that wakes the hub. Drawing stays here, where the
+       coordinator's lanes and ceilings govern every model dollar; a fixed `explore` registered
+       at schedule time would spend outside them.
     3. finished jobs are ingested — the ones the loop requested and the beat's own, which nobody
        requested. A run's records, edges, statuses, assessments, filings, plans, questions,
        steering replies and sessions arrive as ONE sealed output holding the files
        `JOB_OUTPUT_FILES` names, each a list of rows in the store's own shapes; ingestion is a
-       `batch` of `INSERT OR IGNORE` (append-only tables are never rewritten) and an upsert for
-       the two tables that are a projection rather than an act — `sessions` and `runs`. Every
-       insert is keyed by the row's own identifier, so ingesting the same output twice writes
-       the same rows and changes nothing.
+       `batch` of `INSERT OR IGNORE` (append-only tables are never rewritten), an upsert of the
+       run, and the capture-aware upsert of `store/sessions.ts` for `sessions`, the projection
+       of the archive (#453). Every insert is keyed by the row's own identifier, so ingesting the
+       same output twice writes the same rows and changes nothing.
     4. the receipt settles the claim. What a review cost is what the machine recorded, not what
        the draw reserved; a job that failed, was cancelled or wrote no receipt settles `failed`
        at the cost it did incur, so a lane's allowance is never held by a dead worker.
@@ -351,7 +357,7 @@ export type RepositoryOutcome =
 
 /**
  * The one verb of `ctx.machines` this loop uses: `engine.machines.repository` (#535), asked of
- * the agent standing on the host rather than of the sandbox a scan ran in.
+ * the agent standing on the host rather than of the sandbox a job ran in.
  */
 export interface MachinesSlice {
   repository(machineId: string, path: string): Awaitable<RepositoryOutcome>;
@@ -402,6 +408,13 @@ export interface RunPlan {
    */
   readonly metered: Readonly<Record<string, boolean>>;
   readonly limits: JobLimits;
+  /**
+   * HOW MANY MATERIALS THE LANE POSTING THIS RUN MAY HOLD ON ITS MACHINE AT ONCE (#453): `share`
+   * in the material bound (`store/analysis.ts`, `materialBound`). The conductor's lanes post
+   * with the policy's per-machine bound and a drain with its fan; absent is one, an operator's
+   * single launch. Only a run that prepares material reads it.
+   */
+  readonly materials?: number;
 }
 
 export interface ConductorDeps {
@@ -578,8 +591,13 @@ export interface Conductor {
 
 /** The loop's one schedule. Its revision is the policy version, so a policy change re-registers. */
 export const CONDUCTOR_SCHEDULE_ID = `${BABEL_PLUGIN_ID}.conductor`;
-/** The beat: cheap, model-free, useful, and its settlement is what wakes the hub. */
-export const BEAT_OPERATION: string = OPERATIONS.scan;
+/**
+ * The beat: cheap, model-free, useful, and its settlement is what wakes the hub. It is the
+ * `keep-going` preset's operation, spelled once in `contract.ts`, so the operator's own "keep
+ * going" and the cadence the loop registers are one job: the archive catalog (#453), whose
+ * input is `{ machineId }` and whose `sessions.json` names captures.
+ */
+export const BEAT_OPERATION: OperationName = PRESET_OPERATIONS["keep-going"];
 /** A schedule is registered for a bounded life and renewed by the loop that still wants it. */
 export const SCHEDULE_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 /** How far back a tick looks for beat jobs nobody has ingested yet. */
@@ -716,6 +734,15 @@ const HUB_REASON_HOLES = MACHINE_REPOSITORY_REASONS.map(() => "?").join(", ");
 
 // ---------------------------------------------------------------------------- ingestion tables
 
+/**
+ * One output file of acts, one table. Every table here records an act: a row is written once
+ * under its own id, and a second delivery of it is the same row (`INSERT OR IGNORE`).
+ *
+ * `sessions.json` is not one of them (#453). A session row is a projection of the archive — the
+ * capture that holds a session, and what reading it found — and it is written only by
+ * `store/sessions.ts`, which applies a row while it names the session's current capture or a
+ * newer one ({@link ingestSessions}).
+ */
 interface TableIngest {
   /**
    * The table these rows land in, from `contract.ts`'s closed `INGESTIBLE_TABLES`. The type is
@@ -724,55 +751,7 @@ interface TableIngest {
    */
   readonly table: IngestibleTable;
   readonly columns: readonly string[];
-  /**
-   * `ignore` is every table that records an act: a row is written once under its own id and a
-   * second delivery of it is the same row. `upsert` is the two projections — a session's
-   * catalog entry and a run — where a later observation completes an earlier one.
-   */
-  readonly conflict: "ignore" | "upsert";
-  readonly key?: string;
-  /**
-   * COLUMNS AN OBSERVATION THAT SAW NOTHING MAY NOT ERASE, on an `upsert`.
-   *
-   * It is the same rule as "never mention the column", reached the other way. A scan that
-   * observed no snapshot leaves `snapshot_id` out of its row entirely and the archive's answer
-   * survives; a scan that observed no TITLE cannot do that, because the row it writes is the
-   * whole catalog shape and a title is one of its columns — so NULL arrives meaning "this
-   * reader found none", and the upsert reads it as "there is none".
-   *
-   * That was harmless while every title had a free source. It is not now: a model-inferred
-   * title (#342) is the one value here a rescan cannot recover, and wiping it would both lose
-   * what was paid for and put the session back in the queue to be paid for again on the next
-   * wake. `COALESCE(excluded.x, x)` is the whole fix — a scan that READ a title still wins,
-   * because its value is not null.
-   */
-  readonly observed?: readonly string[];
 }
-
-const SESSION_COLUMNS = [
-  "selector",
-  "host",
-  "harness",
-  "source_id",
-  "title",
-  "title_provenance",
-  "workspace",
-  "repository_identity",
-  "repository_remote",
-  "repository_reason",
-  "modified_at",
-  "live",
-  "kind",
-  "size",
-  "cost_usd",
-  "total_tokens",
-  "turns",
-  "tool_errors",
-  "content_digest",
-  "snapshot_id",
-  "archived_at",
-  "seen_at",
-] as const;
 
 const RUN_COLUMNS = [
   "id",
@@ -795,13 +774,6 @@ const RUN_COLUMNS = [
 
 /** One output file, one table. */
 const INGEST: Record<string, TableIngest> = {
-  [JOB_OUTPUT_FILES.sessions]: {
-    table: "sessions",
-    columns: SESSION_COLUMNS,
-    conflict: "upsert",
-    key: "selector",
-    observed: ["title", "title_provenance"],
-  },
   [JOB_OUTPUT_FILES.records]: {
     table: "records",
     columns: [
@@ -820,7 +792,6 @@ const INGEST: Record<string, TableIngest> = {
       "created_at",
       "payload",
     ],
-    conflict: "ignore",
   },
   [JOB_OUTPUT_FILES.edges]: {
     table: "edges",
@@ -837,7 +808,6 @@ const INGEST: Record<string, TableIngest> = {
       "actor_id",
       "created_at",
     ],
-    conflict: "ignore",
   },
   [JOB_OUTPUT_FILES.statusEvents]: {
     table: "status_events",
@@ -852,7 +822,6 @@ const INGEST: Record<string, TableIngest> = {
       "reason",
       "recorded_at",
     ],
-    conflict: "ignore",
   },
   [JOB_OUTPUT_FILES.assessments]: {
     table: "assessments",
@@ -869,7 +838,6 @@ const INGEST: Record<string, TableIngest> = {
       "payload",
       "recorded_at",
     ],
-    conflict: "ignore",
   },
   [JOB_OUTPUT_FILES.filings]: {
     table: "filings",
@@ -885,7 +853,6 @@ const INGEST: Record<string, TableIngest> = {
       "supersedes_id",
       "created_at",
     ],
-    conflict: "ignore",
   },
   [JOB_OUTPUT_FILES.questions]: {
     table: "questions",
@@ -901,7 +868,6 @@ const INGEST: Record<string, TableIngest> = {
       "payload",
       "created_at",
     ],
-    conflict: "ignore",
   },
   [JOB_OUTPUT_FILES.plans]: {
     table: "plans",
@@ -922,7 +888,6 @@ const INGEST: Record<string, TableIngest> = {
       "result",
       "created_at",
     ],
-    conflict: "ignore",
   },
   [JOB_OUTPUT_FILES.steeringReplies]: {
     table: "steering",
@@ -938,7 +903,6 @@ const INGEST: Record<string, TableIngest> = {
       "text",
       "recorded_at",
     ],
-    conflict: "ignore",
   },
   [JOB_OUTPUT_FILES.nextActions]: {
     table: "next_actions",
@@ -952,13 +916,14 @@ const INGEST: Record<string, TableIngest> = {
       "created_at",
       "payload",
     ],
-    conflict: "ignore",
   },
 };
 
-/** Subjects before the rows that reference them; the receipt is read last, as it is written last. */
+/**
+ * Subjects before the rows that reference them. `sessions.json` is ingested before all of these,
+ * and the receipt is read last, as it is written last.
+ */
 const INGEST_ORDER: readonly string[] = [
-  JOB_OUTPUT_FILES.sessions,
   JOB_OUTPUT_FILES.records,
   JOB_OUTPUT_FILES.edges,
   JOB_OUTPUT_FILES.statusEvents,
@@ -1045,11 +1010,9 @@ async function readOutput(jobs: JobsSlice, node: OutputRef, bytes: number): Prom
 // ---------------------------------------------------------------------------- row statements
 
 /**
- * One row into one statement, naming only the columns the row actually carries — a scan that
- * observed no snapshot must not clobber the snapshot an archive recorded, and the way to
- * promise that is never to mention the column. A row carrying a column this table does not
- * have, or a value SQLite cannot hold, is not written at all: a machine half that changed shape
- * is a fault to see in the report, not a half-written row.
+ * One row into one statement, naming only the columns the row actually carries. A row carrying
+ * a column this table does not have, or a value SQLite cannot hold, is not written at all: a
+ * machine half that changed shape is a fault to see in the report, not a half-written row.
  */
 interface SqlCondition {
   readonly sql: string;
@@ -1082,25 +1045,7 @@ function rowStatement(
   const values =
     condition === undefined ? `VALUES (${holes})` : `SELECT ${holes} WHERE ${condition.sql}`;
   const bound = condition === undefined ? params : [...params, ...condition.params];
-  if (ingest.conflict === "ignore") {
-    return { sql: `INSERT OR IGNORE INTO ${ingest.table}(${names}) ${values}`, params: bound };
-  }
-  const key = ingest.key ?? "id";
-  const observed = new Set(ingest.observed ?? []);
-  const updates = columns
-    .filter((column) => column !== key)
-    .map((column) =>
-      observed.has(column)
-        ? `${column} = COALESCE(excluded.${column}, ${column})`
-        : `${column} = excluded.${column}`,
-    )
-    .join(", ");
-  return {
-    sql:
-      `INSERT INTO ${ingest.table}(${names}) ${values} ON CONFLICT(${key}) ` +
-      (updates === "" ? "DO NOTHING" : `DO UPDATE SET ${updates}`),
-    params: bound,
-  };
+  return { sql: `INSERT OR IGNORE INTO ${ingest.table}(${names}) ${values}`, params: bound };
 }
 
 /** The run row a finished job leaves behind: the receipt as the machine wrote it, or its absence. */
@@ -1494,10 +1439,55 @@ export interface IngestTarget {
 }
 
 /**
+ * THE CAPTURES A RUN'S `sessions.json` NAMES, written through the one function that writes
+ * sessions (#453).
+ *
+ * Each row is parsed against `SessionRowSchema` first, because `upsertSessionRows` trusts its
+ * input: a row naming no capture, a selector that is not its harness and source id, a title
+ * without its provenance, or a column the contract does not have (`host`, `live`, `seen_at`) is
+ * refused whole and noted with the reason, and every other row still lands. A row names the
+ * capture it describes, so a preparation's facts apply only while that capture is current, and a
+ * catalog of an older snapshot changes nothing (`store/sessions.ts`). `seenAt` is this hub's
+ * clock at ingestion, the only time `seen_at` means now.
+ */
+async function ingestSessions(
+  store: BabelStore,
+  document: unknown,
+  notes: string[],
+): Promise<{ readonly written: number; readonly skipped: number }> {
+  const file = JOB_OUTPUT_FILES.sessions;
+  if (!Array.isArray(document)) {
+    notes.push(`${file} is not a list of rows`);
+    return { written: 0, skipped: 0 };
+  }
+  const listed: readonly unknown[] = document;
+  const rows: SessionRow[] = [];
+  let skipped = 0;
+  for (const [index, row] of listed.entries()) {
+    const parsed = SessionRowSchema.safeParse(row);
+    if (parsed.success) {
+      rows.push(parsed.data);
+      continue;
+    }
+    skipped += 1;
+    const issue = parsed.error.issues[0];
+    const where = issue?.path.map(String).join(".") ?? "";
+    notes.push(
+      `${file}: row ${String(index)} is not a catalogued capture and was refused: ` +
+        `${where === "" ? "" : `${where}: `}${issue?.message ?? "invalid"}`,
+    );
+  }
+  if (rows.length === 0) return { written: 0, skipped };
+  const upserted = await upsertSessionRows(store, rows, new Date(store.now()).toISOString());
+  return { written: upserted.inserted + upserted.moved + upserted.kept, skipped };
+}
+
+/**
  * Reads a finished job's sealed outputs and writes them into the store. Idempotent by
  * construction: every act is inserted under its own identifier and ignored when it is already
- * there, the catalog and the run are upserted to the same values, so a second ingestion of the
- * same outputs is a no-op the store cannot tell from the first.
+ * there, a session row replayed is the same observation, and the run is upserted to the same
+ * values, so a second ingestion of the same outputs is a no-op the store cannot tell from the
+ * first. The sessions land first, so every row that references one finds it.
  */
 export async function ingestOutputs(
   store: BabelStore,
@@ -1517,7 +1507,11 @@ export async function ingestOutputs(
     };
     const bytes = await readOutput(jobs, node, output.bytes);
     for (const member of tarMembers(bytes)) {
-      if (INGEST[member.name] === undefined && member.name !== JOB_OUTPUT_FILES.receipt) {
+      if (
+        INGEST[member.name] === undefined &&
+        member.name !== JOB_OUTPUT_FILES.sessions &&
+        member.name !== JOB_OUTPUT_FILES.receipt
+      ) {
         notes.push(`${output.name}/${member.name} is not a file this hub ingests`);
         continue;
       }
@@ -1531,6 +1525,12 @@ export async function ingestOutputs(
 
   const rows: Record<string, number> = {};
   let skipped = 0;
+  const sessions = files.get(JOB_OUTPUT_FILES.sessions);
+  if (sessions !== undefined) {
+    const ingested = await ingestSessions(store, sessions, notes);
+    rows[JOB_OUTPUT_FILES.sessions] = ingested.written;
+    skipped += ingested.skipped;
+  }
   const statements: SqlStatement[] = [];
   for (const file of INGEST_ORDER) {
     const ingest = INGEST[file];
@@ -1848,7 +1848,7 @@ export async function describeHost(
  * THE MACHINES A CYCLE MAY NAME TO THE HUB, and every one of them is an ID.
  *
  * `SELECT DISTINCT host FROM sessions` used to be this list, and it is the whole of why the
- * cadence never registered. `sessions.host` is written by `scan` as the machine it ran on, but
+ * cadence never registered. `sessions.host` was written by `scan` as the machine it ran on, but
  * an IMPORTED corpus carries the operator's own host name there instead (`tools/import.ts
  * --host`, the Go deployment's `storage.json` `host_id`), so all 588 rows of that store read
  * `dev-01`. A name is not an id: `describe` answered `connected: false` for it, nothing was
@@ -1990,15 +1990,9 @@ export function conductor(deps: ConductorDeps): Conductor {
         machineId: routed,
         operationId: BEAT_OPERATION,
         // The beat's input is fixed at registration, so it carries no run id: the machine half
-        // mints one per occurrence and the receipt is what names it.
-        input: {
-          [INPUT_FIELD]: JSON.stringify({
-            runId: "",
-            machineId: routed,
-            roots: [],
-            harnesses: [],
-          }),
-        },
+        // mints one per occurrence and the receipt is what names it. Which snapshots are new is
+        // the catalog's own memory, so the machine is all it is told.
+        input: { [INPUT_FIELD]: JSON.stringify({ machineId: routed }) },
         outputs: [
           { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [BEAT_OPERATION] },
         ],
@@ -3846,9 +3840,9 @@ export function conductor(deps: ConductorDeps): Conductor {
   }
 
   /**
-   * WHAT THE FOLDERS A SCAN CATALOGUED ARE, asked of the host rather than of the sandbox.
+   * WHAT THE FOLDERS A READING CATALOGUED ARE, asked of the host rather than of the sandbox.
    *
-   * A scan observes its sessions' workspaces from INSIDE the job, where the operator's
+   * A job observes its sessions' workspaces from INSIDE the sandbox, where the operator's
    * checkouts are not mounted: the rows it ships carry its own prose reason ("workspace absent
    * on this host") for folders that are ordinary repositories on the machine itself.
    * `engine.machines.repository` asks the agent standing on that host instead (#535), and its
@@ -3867,7 +3861,8 @@ export function conductor(deps: ConductorDeps): Conductor {
    * not about the path — so the second question would buy the same refusal and another note.
    * Its rows are left exactly as they were, which is what makes the next tick ask again.
    *
-   * AND ONLY A MACHINE ID IS EVER ASKED. `sessions.host` is the machine a `scan` ran on, but an
+   * AND ONLY A MACHINE ID IS EVER ASKED. `sessions.host` is the machine a capture's label maps to
+   * (`archive_labels`), or the one a `scan` ran on, but an
    * imported corpus holds the operator's host NAME there ({@link beatMachines}), and the hub
    * resolves no names: asking about one buys a refusal about a machine that does not exist,
    * every cycle, for every folder of every row the importer wrote. Those rows are left alone
@@ -4470,7 +4465,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       // coordinator what may be drawn, so a batch held by dead workers is a batch of free slots
       // by the time it answers rather than one cycle later.
       await reapClaims(at, policy.leaseSeconds, settled, notes);
-      // What a scan just catalogued is folders; what they ARE is the host's to say, and it is
+      // What a reading just catalogued is folders; what they ARE is the host's to say, and it is
       // asked here, after the rows exist and before this cycle spends anything.
       await identifyFolders(schedule.machines, notes);
 

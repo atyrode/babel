@@ -412,7 +412,7 @@ describe("the machine half is declared as the machine half is built", () => {
     //
     // The VERB is the operation's short word, never its declared id: the hub needs a namespaced
     // id to tell two plugins' operations apart, and the binary behind the id belongs to one
-    // plugin and takes `scan`.
+    // plugin and takes `catalog`.
     //
     // `prepare` alone takes a SECOND lease (#279). The material a Code session reads is a
     // separate sealed output, because a session binds one named output of one job and Babel's
@@ -503,8 +503,9 @@ describe("the machine half is declared as the machine half is built", () => {
     // The material's lease is cut from the same managed location the ordinary one is: a second
     // anchor would be a second thing an operator has to arrange per machine.
     expect(prepare.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
-    // …and no other operation exports anything: `scan` and `archive` write for this hub alone.
-    for (const operation of [OPERATIONS.scan, OPERATIONS.archive]) {
+    // …and no other operation exports anything: `catalog`, `archive` and `verify` write for
+    // this hub alone.
+    for (const operation of [OPERATIONS.catalog, OPERATIONS.archive, OPERATIONS.verify]) {
       expect(machine.operations[operation]!.exports ?? []).toEqual([]);
     }
   });
@@ -557,37 +558,54 @@ describe("the machine half is declared as the machine half is built", () => {
     expect(dependency).toBe(`github:atyrode/code#${pinned}`);
   });
 
-  test("the roots the adapters read are the roots the job mounts", () => {
+  test("the roots archive backs up are the roots its job mounts, and no reader mounts one", () => {
     // Inside the sandbox HOME is /home/job, so a read location is only the right one if its
     // guest path is what the adapter will build there. A root that moved on one side and not
-    // the other is a scan that finds nothing and reports success.
+    // the other is a backup that finds nothing and reports success.
     const home = process.env["HOME"];
     const codexHome = process.env["CODEX_HOME"];
     process.env["HOME"] = "/home/job";
     delete process.env["CODEX_HOME"];
     try {
-      for (const operation of [OPERATIONS.scan, OPERATIONS.archive]) {
-        const mounted = machine.operations[operation]!.locations.filter(
-          (location) => location.access === "read",
-        ).map((location) => machine.locations[location.locationId]?.guestPath);
-        expect(mounted.toSorted()).toEqual(
-          ADAPTERS.flatMap((adapter) => adapter.defaultRoots()).toSorted(),
-        );
-      }
+      const mounted = machine.operations[OPERATIONS.archive]!.locations.filter(
+        (location) => location.access === "read",
+      ).map((location) => machine.locations[location.locationId]?.guestPath ?? "");
+      // Each harness's own session root — the first of its backup roots — is mounted, and
+      // nothing is mounted that no adapter would back up.
+      for (const adapter of ADAPTERS) expect(mounted).toContain(adapter.backupRoots()[0] ?? "\0");
+      const backedUp = ADAPTERS.flatMap((adapter) => adapter.backupRoots());
+      for (const path of mounted) expect(backedUp).toContain(path);
     } finally {
       if (home === undefined) delete process.env["HOME"];
       else process.env["HOME"] = home;
       if (codexHome !== undefined) process.env["CODEX_HOME"] = codexHome;
     }
+    // ANALYSIS READS THE ARCHIVE, NEVER A MACHINE'S OWN FILES (#453). `archive` is the
+    // collector and the one operation that reads a machine's home; the catalog, a preparation,
+    // a verification and Recall read captures out of the repository, and a `home` anchor bound
+    // to one of them would be a local read the specification says never happens.
+    for (const platform of Object.keys(machine.artifacts) as (keyof typeof machine.artifacts)[]) {
+      for (const operation of declared) {
+        const anchors = jobResourceRequirements(machine, operation, platform).anchors;
+        expect({ operation, home: anchors.includes("home") }).toEqual({
+          operation,
+          home: operation === OPERATIONS.archive,
+        });
+      }
+    }
   });
 
-  test("only the operations that reach off the machine are given the network", () => {
-    expect(machine.operations[OPERATIONS.scan]?.network).toBe("none");
-    expect(machine.operations[OPERATIONS.prepare]?.network).toBe("none");
-    // archive and verify reach the repository, and their storage service proxy is loopback
-    // HTTP the engine refuses to open without it (`service_proxy_requires_host_network`).
-    expect(machine.operations[OPERATIONS.archive]?.network).toBe("host");
-    expect(machine.operations[MACHINE_OPERATIONS.verify]?.network).toBe("host");
+  test("every operation reaches the repository, so every operation is given the network", () => {
+    // Each one reads or writes the archive, and its storage service proxy is loopback HTTP the
+    // engine refuses to open without it (`service_proxy_requires_host_network`). The catalog and
+    // a preparation joined `archive`, `verify` and Recall with #453: the protocol offers `none`
+    // or `host` and nothing between, and restic must reach the object store.
+    for (const operation of declared) {
+      expect({ operation, network: machine.operations[operation]?.network }).toEqual({
+        operation,
+        network: "host",
+      });
+    }
   });
 
   test("the repository is handed to an operation by a service binding, never by an environment value", () => {
@@ -597,14 +615,9 @@ describe("the machine half is declared as the machine half is built", () => {
     // input file, and the operation asks that service for the storage document that carries
     // the locator and its secrets together (machine/restic.ts).
     //
-    // Archive, verification and Recall share one storage-binding contract; no operation
+    // Every operation reads or writes the archive, so every one binds the same service; none
     // may invent an alternative path to its repository coordinates or credentials.
-    const touching: readonly string[] = [
-      OPERATIONS.archive,
-      MACHINE_OPERATIONS.verify,
-      MACHINE_OPERATIONS.recall,
-    ];
-    for (const operation of touching) {
+    for (const operation of declared) {
       const op = machine.operations[operation]!;
       expect(op.services).toEqual([
         {
@@ -638,23 +651,21 @@ describe("the machine half is declared as the machine half is built", () => {
         });
       }
     }
-    // No other operation acquires storage or model authority through a service binding.
-    for (const other of declared.filter((operation) => !touching.includes(operation))) {
-      expect(machine.operations[other]!.services).toBeUndefined();
-    }
   });
 
   test("the ceiling on a run is the ceiling the operator was promised", () => {
     // The loop launches with the operation's own limits; the hub refuses anything above them.
-    // These three numbers are therefore the whole answer to "how long can this run".
+    // These numbers are therefore the whole answer to "how long can this run".
     //
-    // `prepare` is thirty minutes because it SEALS THE MATERIAL now (#279): it reads every
-    // selected log and writes the normalized record stream into a second lease. Its bytes are
-    // not a figure of its own: every operation writing the runtime scratch declares more than
-    // the scratch holds, and the material bound fits under both (above).
+    // A catalog and a preparation are thirty minutes. A catalog lists up to `maxSnapshots`
+    // snapshots a run, and a fresh hub's first runs list every chain head; a preparation streams
+    // every selected capture out of the archive and seals the material into a second lease
+    // (#279, #453). Its bytes are not a figure of its own: every operation writing the runtime
+    // scratch declares more than the scratch holds, and the material bound fits under both
+    // (above).
     const minutes = (operation: string): number =>
       machine.operations[operation]!.limits.timeoutMs / 60_000;
-    expect(minutes(OPERATIONS.scan)).toBe(10);
+    expect(minutes(OPERATIONS.catalog)).toBe(30);
     expect(minutes(OPERATIONS.prepare)).toBe(30);
     expect(minutes(OPERATIONS.archive)).toBe(10);
     // `verify` is an hour because `--read-data` reads every stored byte of the repository,
@@ -664,31 +675,25 @@ describe("the machine half is declared as the machine half is built", () => {
   });
 
   test("every operation asks the machine only for resources the fleet advertises", () => {
-    // WHAT #303 WAS: a machine answers for tool resources BY NAME, dev-01 advertises two
+    // WHAT #303 WAS: a machine answers for tool resources BY NAME, dev-01 advertised two
     // (`development` and `system`), and this half asked for `bun`, `git` and `restic` — so
     // `engine.jobs.reviewDeployment` answered `resource_evidence_unknown` and Babel had no
     // native installation at all. `jobResourceRequirements` is the engine's own answer to what
     // an operation needs from the host, and it drops every alias the installation's immutable
     // declaration pins itself, which is why pinning bun is what makes these satisfiable.
     //
-    // `git` is not gone: it is inside the `development` closure the owner already binds, and
-    // machine/repository.ts resolves it at RUNTIME_TOOL_BIN first and on PATH second.
+    // restic is the one alias asked for by name, and every operation asks for it now that each
+    // one reads or writes the archive (#453): upstream's whole Linux distribution is bare bzip2
+    // while `MachineArtifactSchema` takes `raw`, `zip` or `tar.gz`, so there is nothing honest
+    // to pin. `development` is asked for by nothing: `scan` was the one operation that ran git.
     for (const platform of Object.keys(machine.artifacts) as (keyof typeof machine.artifacts)[]) {
-      for (const operation of [OPERATIONS.scan, OPERATIONS.prepare]) {
+      for (const operation of declared) {
         const required = jobResourceRequirements(machine, operation, platform);
-        expect(required.tools).toEqual(["development", "system"]);
-        expect(required.services).toEqual([]);
-      }
-      // restic is the one alias still asked for by name, and only the two operations that
-      // touch the repository ask: upstream's whole Linux distribution is bare bzip2 while
-      // `MachineArtifactSchema` takes `raw`, `zip` or `tar.gz`, so there is nothing honest to
-      // pin. Per-operation is the point — a machine that binds no restic disables those two
-      // and leaves scan and prepare installable.
-      for (const operation of [OPERATIONS.archive, MACHINE_OPERATIONS.verify]) {
-        expect(jobResourceRequirements(machine, operation, platform).tools).toEqual([
-          "restic",
-          "system",
-        ]);
+        expect({ operation, tools: required.tools, services: required.services }).toEqual({
+          operation,
+          tools: ["restic", "system"],
+          services: [RESTIC_SERVICE.serviceId],
+        });
       }
     }
     for (const operation of declared) {

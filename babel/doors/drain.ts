@@ -60,7 +60,7 @@ import { pressOperation } from "./launch.ts";
   dispatcher attenuates `ctx.jobs` to the door's own caps plus delegates — so a start that did
   not name it would be refused `job_capability_absent:machines:read` at the first slot and report
   "launched nothing" about a machine nobody ever asked. The posting that follows is Babel's own
-  `prepare` or `scan`, discharged at `engine.jobs.execute` against the same bridge, so the start
+  `prepare` or its beat, discharged at `engine.jobs.execute` against the same bridge, so the start
   carries `machines:run` too (#448). `doors/read.ts` carries the reasoning.
 
   WHY `drain.stop` IS GOVERNED AT THE OPERATION NODE AND NOT AT A JOB. A drain holds several jobs
@@ -207,7 +207,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         };
       }
       // A PRESET THAT SPENDS NOTHING CANNOT MEET A SPEND TARGET, so one is refused rather than
-      // started as a fan nothing will ever stop: `keep-going` is a `scan`, it reaches no model,
+      // started as a fan nothing will ever stop: `keep-going` is the beat, it reaches no model,
       // and its metered spend is zero for as long as it runs.
       if (!SPENDING.includes(input.preset) && requested === null && input.maxJobs === undefined) {
         return {
@@ -338,7 +338,12 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       const row = await readDrain(store, drainId);
       if (row === null) return { refused: `the drain row for ${drainId} was not written` };
       const deps = doorDepsAtStart;
-      const plan = deps.plan(inForce.policy, pressOperation(input.preset), ledger);
+      // The fan holds `concurrent` materials on the machine at once: each is bounded to that
+      // share of its scratch, as every later tick's are (#453).
+      const plan = {
+        ...deps.plan(inForce.policy, pressOperation(input.preset), ledger),
+        materials: input.concurrent,
+      };
       const request = drainInput(row);
       const live: { runId: string; jobId: string; launchedAt: number }[] = [];
       let refused = "";

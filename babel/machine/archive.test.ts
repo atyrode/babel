@@ -51,8 +51,8 @@ let document = "";
 let status = 200;
 let asked = 0;
 
-/** `<root>/<harness>/<id>.jsonl` is one session; anything else in a root is archived but names
- *  no catalog row, exactly as a blob store or an index inside a real root does. */
+/** `<root>/<harness>/<id>.jsonl` is one session; anything else in a root is archived but is no
+ *  session, exactly as a blob store or an index inside a real root is. */
 const claim = (path: string): SessionRef | null => {
   const match = /\/(omp|codex)\/([^/]+)\.jsonl$/.exec(path);
   if (match === null) return null;
@@ -83,20 +83,6 @@ class Recorder implements OutputSink {
   }
 }
 
-interface SessionRow {
-  readonly selector: string;
-  readonly host: string;
-  readonly harness: string;
-  readonly source_id: string;
-  readonly snapshot_id: string;
-  readonly archived_at: string;
-  readonly seen_at: string;
-}
-
-function rows(recorder: Recorder): readonly SessionRow[] {
-  return (recorder.files["sessions"] ?? []) as readonly SessionRow[];
-}
-
 /** The storage document the service is to answer with, as JSON. */
 function storage(overrides: Partial<Record<string, string>> = {}): string {
   return JSON.stringify({ repository, password: PASSWORD, ...overrides });
@@ -105,7 +91,7 @@ function storage(overrides: Partial<Record<string, string>> = {}): string {
 async function run(
   input: Partial<{ machineId: string; roots: string[] }> = {},
   overrides: Partial<ArchiveDeps> = {},
-): Promise<{ receipt: Receipt; sessions: readonly SessionRow[] }> {
+): Promise<{ receipt: Receipt; sessions: readonly unknown[] }> {
   const recorder = new Recorder();
   const receipt = await archive(
     ArchiveInputSchema.parse({ machineId: MACHINE, ...input }),
@@ -113,7 +99,7 @@ async function run(
     { ...deps, ...overrides },
   );
   expect(recorder.written).toEqual(receipt);
-  return { receipt, sessions: rows(recorder) };
+  return { receipt, sessions: recorder.files["sessions"] ?? [] };
 }
 
 /** A handle on the repository through the same delivery the operation uses. */
@@ -181,7 +167,7 @@ beforeEach(() => {
 });
 
 test(
-  "a backup snapshots each root on its own and catalogues every session it archived",
+  "a backup snapshots each root on its own and leaves the cataloguing to the catalog",
   async () => {
     const { receipt, sessions } = await run();
 
@@ -192,7 +178,7 @@ test(
     expect(receipt.counts["roots"]).toBe(2);
     expect(receipt.counts["snapshots"]).toBe(2);
     expect(receipt.counts["sessions"]).toBe(3);
-    // The file no adapter claims is archived and simply names no row.
+    // The file no adapter claims is archived all the same, and counted apart.
     expect(receipt.counts["unclaimed"]).toBe(1);
     expect(receipt.counts["filesNew"]).toBe(4);
     // One storage document per run, asked for once.
@@ -208,26 +194,13 @@ test(
       expect(snapshot.parentId).toBeNull();
     }
 
-    // One snapshot id per root, and each session carries its own root's.
+    // One snapshot id per root, and no row written: the catalog lists these snapshots like
+    // any other `babel` snapshot, so the hub has one writer of captures (#453).
     const omp = byRoot.get(ompRoot);
     const codex = byRoot.get(codexRoot);
     expect(omp === undefined || codex === undefined).toBe(false);
     expect(omp?.id).not.toBe(codex?.id);
-    const snapshotBySelector = Object.fromEntries(
-      sessions.map((row) => [row.selector, row.snapshot_id]),
-    );
-    expect(snapshotBySelector).toEqual({
-      "omp/a1b2c3": omp?.id ?? "",
-      "omp/d4e5f6": omp?.id ?? "",
-      "codex/0192ab": codex?.id ?? "",
-    });
-    for (const row of sessions) {
-      expect(row.host).toBe(MACHINE);
-      expect(`${row.harness}/${row.source_id}`).toBe(row.selector);
-      // restic's own recorded time for that snapshot, so a catalog row and `restic snapshots`
-      // never disagree about when the capture was taken.
-      expect(row.archived_at).toBe((row.harness === "omp" ? omp?.time : codex?.time) ?? "");
-    }
+    expect(sessions).toEqual([]);
   },
   RESTIC_TIMEOUT,
 );
@@ -236,7 +209,7 @@ test(
   "a second backup of unchanged roots is a parent-linked snapshot that adds no file",
   async () => {
     const before = await (await inspect()).snapshots();
-    const { receipt, sessions } = await run();
+    const { receipt } = await run();
 
     expect(receipt.closure).toBe("completed");
     expect(receipt.counts["snapshots"]).toBe(2);
@@ -249,10 +222,11 @@ test(
 
     const after = await (await inspect()).snapshots();
     expect(after.length).toBe(before.length + 2);
-    const minted = new Set(sessions.map((row) => row.snapshot_id));
-    expect(minted.size).toBe(2);
+    const known = new Set(before.map((snapshot) => snapshot.id));
+    const minted = after.filter((snapshot) => !known.has(snapshot.id));
+    expect(minted.length).toBe(2);
     const parents = new Map(before.map((snapshot) => [snapshot.paths[0], snapshot.id]));
-    for (const snapshot of after.filter((candidate) => minted.has(candidate.id))) {
+    for (const snapshot of minted) {
       expect(snapshot.parentId).toBe(parents.get(snapshot.paths[0]) ?? "");
     }
   },
@@ -260,7 +234,7 @@ test(
 );
 
 test(
-  "a changed session is archived again and recatalogued under the new snapshot",
+  "a changed session is archived again in a new snapshot",
   async () => {
     writeFileSync(
       join(ompRoot, "a1b2c3.jsonl"),
@@ -272,7 +246,8 @@ test(
     expect(receipt.counts["roots"]).toBe(1);
     expect(receipt.counts["filesChanged"]).toBe(1);
     expect(receipt.counts["filesUnmodified"]).toBe(2);
-    expect(sessions.map((row) => row.selector).sort()).toEqual(["omp/a1b2c3", "omp/d4e5f6"]);
+    expect(receipt.counts["sessions"]).toBe(2);
+    expect(sessions).toEqual([]);
   },
   RESTIC_TIMEOUT,
 );
@@ -368,8 +343,9 @@ test(
 
     expect(receipt.counts["roots"]).toBe(2);
     expect(receipt.counts["snapshots"]).toBe(1);
-    // The healthy root is archived and catalogued all the same.
-    expect(sessions.map((row) => row.selector).sort()).toEqual(["omp/a1b2c3", "omp/d4e5f6"]);
+    // The healthy root is archived all the same.
+    expect(receipt.counts["sessions"]).toBe(2);
+    expect(sessions).toEqual([]);
     expect(receipt.closure).toBe("failed");
     expect(receipt.reason).toContain(missing);
     // restic's own diagnosis reaches the operator, unwrapped from its --json error envelope.

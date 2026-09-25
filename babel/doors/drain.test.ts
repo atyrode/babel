@@ -19,9 +19,11 @@ import type { GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
   DrainReportSchema,
+  MATERIAL_HEADROOM_BYTES,
   MATERIAL_SCHEMA,
   OPERATIONS,
   PRESET_OPERATIONS,
+  PrepareInputSchema,
   type ProfileRow,
 } from "../contract.ts";
 import { actionSchemas, type ActionInput } from "@atyrode/manifold-code";
@@ -149,7 +151,7 @@ const PLAN: RunPlan = { metered: { [OPERATIONS.explore]: true }, limits: LIMITS 
 const READY: MachineReadiness = {
   connected: true,
   operations: {
-    [OPERATIONS.scan]: { ready: true, reason: null },
+    [PRESET_OPERATIONS["keep-going"]]: { ready: true, reason: null },
     [OPERATIONS.explore]: { ready: true, reason: null },
     [OPERATIONS.evaluate]: { ready: true, reason: null },
   },
@@ -479,6 +481,7 @@ beforeEach(async () => {
     }),
     recorded_at: stamp(NOW - HOUR),
   });
+  // Archived captures, which is all a preparation reads (#453).
   for (const n of [1, 2, 3, 4, 5]) {
     await insert(db, "sessions", {
       selector: `omp/s${String(n)}`,
@@ -486,7 +489,12 @@ beforeEach(async () => {
       harness: "omp",
       source_id: `s${String(n)}`,
       title: `session ${String(n)}`,
-      content_digest: `d${String(n)}`,
+      archive_label: "dev-01",
+      archive_path: `/home/alex/.omp/agent/sessions/s${String(n)}.jsonl`,
+      snapshot_id: "5".repeat(64),
+      archived_at: new Date(NOW - HOUR).toISOString(),
+      size: 1000,
+      modified_at: new Date(NOW - 2 * HOUR).toISOString(),
       seen_at: stamp(NOW - 2 * HOUR),
     });
   }
@@ -526,7 +534,7 @@ test("the roster is a start, a dry read and a stop, and none of them names a nod
   // version-bound consent required" and the operator never heard `engine_pending`. The governed
   // requirement returns with Code's node. What it does carry is what its own first fan needs:
   // `startExplore`/`startBeat` describe the machine through `ready` before posting, and then post
-  // Babel's own `prepare` or `scan` — a describe outside the door's ceiling is refused
+  // Babel's own `prepare` or `catalog` — a describe outside the door's ceiling is refused
   // `job_capability_absent:machines:read`, and a posting outside it `authority_or_consent_refused`
   // at `execute` (#448), before any slot is filled.
   expect(begin?.action.caps).toEqual(["containers:read"]);
@@ -1248,6 +1256,38 @@ async function sealDrainJob(drainId: string, ordinal: number): Promise<void> {
     [stamp(NOW), sealedMaterial(), `job_${drainId}_${String(ordinal)}_material`],
   );
 }
+
+test("a drain bounds each material to its fan's share of the machine's measured scratch", async () => {
+  // The machine's newest receipt measured room for 5000 catalogued bytes past the headroom: one
+  // material alone would hold all five 1000-byte captures, and a fan of two holds two apiece.
+  await insert(harness.db, "runs", {
+    id: "run_catalog_earlier",
+    kind: PRESET_OPERATIONS["keep-going"],
+    machine_id: MACHINE,
+    job_id: "job_catalog_earlier",
+    started_at: stamp(NOW - HOUR),
+    finished_at: stamp(NOW - HOUR),
+    closure: "completed",
+    records: 0,
+    payload: JSON.stringify({
+      closure: "completed",
+      outputCapacity: { bytes: MATERIAL_HEADROOM_BYTES + 5000, free: 0 },
+    }),
+  });
+  realLaunch();
+  const handed = (job: JobLaunch | undefined): number =>
+    PrepareInputSchema.parse(JSON.parse(String(job?.input["input"]))).captures.flatMap(
+      (group) => group.sessions,
+    ).length;
+
+  // The door's own first fan…
+  const drainId = String((await start({ concurrent: 2 }))["drainId"]);
+  expect(fleet.executed.map(handed)).toEqual([2, 2]);
+  // …and the fan a later tick refills.
+  await harness.db.run(`UPDATE drains SET live = '[]' WHERE id = ?`, [drainId]);
+  await drainTick(deps);
+  expect(fleet.executed.map(handed)).toEqual([2, 2, 2, 2]);
+});
 
 test("a bounded fan recovers a lost admission write without buying a third Code job", async () => {
   const machinery = realLaunch();

@@ -18,8 +18,8 @@
     needs (HOME, PATH, TMPDIR) when the parent has them. Behaviour therefore does not drift
     with whatever ambient RESTIC_* variables the machine's shell happens to carry.
   - restic itself is taken from where the owner bound it (`RUNTIME_TOOL_BIN/restic`) first and
-    from PATH second — the same rule as git in machine/repository.ts, because inside a job
-    sandbox there is no PATH and outside one nothing is bound.
+    from PATH second, because inside a job sandbox there is no PATH and outside one nothing is
+    bound.
   - THE VERBS ARE A CLOSED SET ({@link RESTIC_VERBS}) and every invocation is built by
     {@link resticArgv}, which admits a verb or throws. `forget`, `prune`, `repair` and
     `unlock` are absent from that set and from this file: never-delete is policy, and an
@@ -391,8 +391,9 @@ export interface Repo {
     paths: readonly string[],
     attribution: { host: string; tags: readonly string[] },
   ): Promise<BackupOutcome>;
-  /** Every snapshot the repository holds, restic's own order (newest last). */
-  snapshots(): Promise<readonly Snapshot[]>;
+  /** Every snapshot the repository holds, restic's own order (newest last) — or, given ids,
+   *  only those of them it holds: an id it does not hold is left out, not refused. */
+  snapshots(ids?: readonly string[]): Promise<readonly Snapshot[]>;
   /**
    * Verifies the repository and reports what it found. Structure always; the stored bytes when
    * {@link CheckOptions.readData} asks for them.
@@ -525,7 +526,7 @@ async function readStorage(endpoint: ServiceEndpoint): Promise<ResticStorage> {
 
 /** restic where the owner bound it, and on PATH otherwise: inside a job the sandbox has no
  *  PATH and the tool is at its bound path; outside one — a hand-run, the tests — nothing is
- *  bound and PATH is the answer. The same rule as git in machine/repository.ts. */
+ *  bound and PATH is the answer. */
 async function resticBinary(): Promise<string> {
   const bound = `${RUNTIME_TOOL_BIN}/restic`;
   if (await Bun.file(bound).exists()) return bound;
@@ -608,8 +609,9 @@ class ResticRepo implements Repo {
     };
   }
 
-  async snapshots(): Promise<readonly Snapshot[]> {
-    const stdout = await this.#run("list snapshots", resticArgv("snapshots", ["--json"]));
+  async snapshots(ids: readonly string[] = []): Promise<readonly Snapshot[]> {
+    const named = ids.length === 0 ? [] : ["--", ...ids.map(snapshotArgument)];
+    const stdout = await this.#run("list snapshots", resticArgv("snapshots", ["--json", ...named]));
     const parsed: unknown = JSON.parse(stdout.trim() === "" ? "[]" : stdout);
     if (!Array.isArray(parsed)) return [];
     const snapshots: Snapshot[] = [];

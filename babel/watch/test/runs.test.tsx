@@ -1,7 +1,7 @@
 import "./dom.ts";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { afterEach, expect, test } from "bun:test";
-import { ACTIONS, OPERATIONS } from "../../contract.ts";
+import { ACTIONS, OPERATIONS, RETIRED_OPERATIONS } from "../../contract.ts";
 import { Watch } from "../web.tsx";
 import { MACHINES, fakeHost, runProgress, runRow, runsResult, watchDoors } from "./host.ts";
 import { click, mount, settle, unmountAll } from "./render.tsx";
@@ -334,6 +334,34 @@ test("an ended run is a receipt: what it took, wrote, spent and how it closed", 
     "finished",
   ]);
   expect(root.textContent).toContain("8 older runs in the store.");
+});
+
+test("a receipt of a retired operation keeps its name and says it is retired", async () => {
+  // `scan` no longer runs (#453), and the store keeps every run it made: a historic row must
+  // read as what it was rather than as a bare id this panel never heard of.
+  const fake = fakeHost(
+    watchDoors({
+      runs: () =>
+        runsResult([
+          runRow({
+            id: "run_scan",
+            kind: RETIRED_OPERATIONS.scan,
+            state: "finished",
+            freshness: "ended",
+            startedAt: "2026-09-12T08:00:00.000Z",
+            finishedAt: "2026-09-12T08:00:04.000Z",
+            lastWord: "2026-09-12T08:00:04.000Z",
+          }),
+        ]),
+    }),
+    MACHINES,
+  );
+  const root = await mount(<Watch host={fake.host} />);
+  await settle();
+
+  const row = root.querySelector("tbody tr")?.textContent ?? "";
+  expect(row).toContain("Scan (retired)");
+  expect(row).not.toContain(RETIRED_OPERATIONS.scan);
 });
 
 test("reading more asks the door for a longer page, not for a second one", async () => {

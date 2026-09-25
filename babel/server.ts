@@ -23,6 +23,7 @@ import { codeEngine, type ActionsSlice } from "./server/engine/session.ts";
 import { drainTick, type DrainDeps } from "./server/drain.ts";
 import { embedder, type EmbeddingServices } from "./server/embed.ts";
 import {
+  BEAT_OPERATION,
   conductor,
   type Conductor,
   type KeysSlice,
@@ -40,7 +41,7 @@ import {
   unauthorized,
   type BabelJobs,
 } from "./server/plan.ts";
-import { coordinator, type Policy } from "./store/coordinator.ts";
+import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { ensureTerms } from "./store/corpus.ts";
 import { openStore } from "./store/store.ts";
@@ -196,7 +197,9 @@ function loop(
           profile: route.profile,
           recipes: [recipe],
         },
-        planFor(policy, MACHINE_OPERATIONS.prepare),
+        // The conductor's lanes share the routed machine's scratch at the per-machine bound, so
+        // each material is bounded to its share of it (#453).
+        { ...planFor(policy, MACHINE_OPERATIONS.prepare), materials: perMachineBound(policy) },
         {
           stage: assignment.activity,
           selectors: [...assignment.selectors],
@@ -326,7 +329,7 @@ async function cycle(
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
   // limits are read for; a run that reaches a model is Code's to post (#279).
-  const plan = planFor(policy, MACHINE_OPERATIONS.scan);
+  const plan = planFor(policy, BEAT_OPERATION);
   const report = await loop(jobs, machines, actions, plan).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
@@ -370,7 +373,7 @@ async function cycle(
   }
   /*
     …AND ONE TITLING RUN, IF THIS CYCLE MAY AFFORD ONE (#342). A session whose own log records
-    no title never gets one from a scan, so the only way it gets one at all is a model — which
+    no title never gets one from its capture, so the only way it gets one at all is a model — which
     in Babel is a Code session like every other model call. It is posted here, after the
     conductor has drawn and dispatched, so the ceilings it is admitted against already include
     everything this cycle committed to reviewing.

@@ -5,12 +5,54 @@ import {
   ANALYSIS_SOURCE_LIMIT,
   AnalysisBriefRecordSchema,
   CHALLENGE_RELATION,
+  MATERIAL_HEADROOM_BYTES,
   MaterialIndexSchema,
   MAX_MATERIAL_BYTES,
   OPERATIONS,
   type AnalysisBriefRecord,
   type Stage,
 } from "../contract.ts";
+
+/**
+ * A SESSION A PREPARATION CAN READ (#453), as a predicate over `sessions s`: one whose row names
+ * an archived capture — the snapshot, the path inside it and the label it was taken under, with
+ * the size and modification time the catalog recorded — and that is neither live nor excluded by
+ * the caller. A preparation reads the archive and nothing else, so a row with no capture (an
+ * imported one the catalog has not listed yet) is catalogued and not selectable. There is no
+ * host condition: any machine holding the archive binding prepares any capture.
+ */
+export const ARCHIVED_CAPTURE =
+  "s.live = 0 AND s.snapshot_id IS NOT NULL AND s.archive_path IS NOT NULL " +
+  "AND s.archive_label IS NOT NULL AND s.size IS NOT NULL AND s.modified_at IS NOT NULL";
+
+/**
+ * THE MOST CATALOGUED BYTES ONE PREPARATION ON `machineId` MAY SEAL (#453):
+ * `min(MAX_MATERIAL_BYTES, ⌊(capacity − MATERIAL_HEADROOM_BYTES) / share⌋)`.
+ *
+ * `capacity` is the named-output scratch the machine's newest `catalog` or `prepare` receipt
+ * measured (`outputCapacity.bytes`; no other kind reports one), so the bound follows the machine
+ * rather than a constant. `share` is how many materials the lane asking may hold on that machine
+ * at once — one for an operator's launch, the per-machine bound for the conductor's lanes, the
+ * fan for a drain — because concurrent preparations and the sessions that bind them share the
+ * one scratch. A machine that never reported a capacity is bounded by `MAX_MATERIAL_BYTES`, and
+ * `prepare` still refuses a lease its own measurement says will not fit, before fetching.
+ */
+export async function materialBound(
+  db: GuestDatabase,
+  machineId: string,
+  share: number,
+): Promise<number> {
+  const reported = await db.query(
+    `SELECT json_extract(payload, '$.outputCapacity.bytes') AS bytes FROM runs
+      WHERE machine_id = ? AND json_type(payload, '$.outputCapacity.bytes') = 'integer'
+      ORDER BY started_at DESC LIMIT 1`,
+    [machineId],
+  );
+  const capacity = reported[0]?.["bytes"];
+  if (capacity === undefined || capacity === null) return MAX_MATERIAL_BYTES;
+  const shared = Math.floor((Number(capacity) - MATERIAL_HEADROOM_BYTES) / Math.max(1, share));
+  return Math.max(0, Math.min(MAX_MATERIAL_BYTES, shared));
+}
 
 /** A bounded offer of immutable claims and real, independently selectable material. */
 export interface AnalysisOffer {
@@ -53,25 +95,32 @@ interface Head {
 /** Page through the entire frontier, retaining only identifiers between pages. Offers are
  * streamed so the caller can apply settlement, cooldown and caps before retaining payloads.
  * The consumer may stop each stage independently through wants, before its next offer is built.
- * Whole records are admitted, never clipped; synthesis reserves two original runs first. */
+ * Whole records are admitted, never clipped; synthesis reserves two original runs first.
+ *
+ * Material is offered from archived captures only, wherever they were recorded (#453): the
+ * routed machine prepares them from the archive, so `machineId` bounds the material by that
+ * machine's measured scratch at `share` concurrent materials ({@link materialBound}) and says
+ * nothing about where a session came from. */
 export async function* analysisOffers(
   db: GuestDatabase,
   machineId: string,
+  share: number,
   stages: readonly Stage[],
   eligible: ReadonlySet<string>,
   filings: ReadonlyMap<string, { topics: readonly string[] }>,
   activeTopics: ReadonlySet<string>,
   wants: (stage: Stage) => boolean = () => true,
 ): AsyncGenerator<AnalysisOffer | { missing: string }> {
+  const bound = await materialBound(db, machineId, share);
   const sources = new Map<string, Promise<GuestSqlRow | undefined>>();
   const source = (selector: string): Promise<GuestSqlRow | undefined> => {
     const cached = sources.get(selector);
     if (cached !== undefined) return cached;
     const pending = db
       .query(
-        `SELECT selector, content_digest, snapshot_id, modified_at, size FROM sessions
-          WHERE selector = ? AND host = ? AND live = 0 AND kind = 'operator'`,
-        [selector, machineId],
+        `SELECT s.selector, s.content_digest, s.snapshot_id, s.modified_at, s.size FROM sessions s
+          WHERE s.selector = ? AND ${ARCHIVED_CAPTURE} AND s.kind = 'operator'`,
+        [selector],
       )
       .then((rows) => rows[0]);
     sources.set(selector, pending);
@@ -91,7 +140,7 @@ export async function* analysisOffers(
       const row = await source(selector);
       if (row === undefined) continue;
       const size = Number(row["size"] ?? 0);
-      if (!Number.isFinite(size) || size < 0 || bytes + size > MAX_MATERIAL_BYTES) continue;
+      if (!Number.isFinite(size) || size < 0 || bytes + size > bound) continue;
       selected.push(row);
       bytes += size;
       if (selected.length === ANALYSIS_SOURCE_LIMIT) break;
@@ -125,9 +174,9 @@ export async function* analysisOffers(
     explore: for (;;) {
       if (!wants("explore")) break;
       const page = await db.query(
-        `SELECT selector FROM sessions WHERE host = ? AND live = 0 AND kind = 'operator'
-          AND selector > ? ORDER BY selector LIMIT ?`,
-        [machineId, cursor, FRONTIER_LIMIT],
+        `SELECT s.selector FROM sessions s WHERE ${ARCHIVED_CAPTURE} AND s.kind = 'operator'
+          AND s.selector > ? ORDER BY s.selector LIMIT ?`,
+        [cursor, FRONTIER_LIMIT],
       );
       for (const row of page) {
         if (!wants("explore")) break explore;
@@ -255,8 +304,8 @@ export async function* analysisOffers(
       );
       const receipt = object(receipts[0]?.["payload"]);
       const parsed = MaterialIndexSchema.safeParse(receipt?.["material"]);
-      if (parsed.success && parsed.data.machineId === machineId)
-        for (const entry of parsed.data.sessions) selectors.add(entry.selector);
+      // Whichever machine sealed it: a capture reads the same from any of them.
+      if (parsed.success) for (const entry of parsed.data.sessions) selectors.add(entry.selector);
     }
     return [...selectors];
   };

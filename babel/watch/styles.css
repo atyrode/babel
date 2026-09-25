@@ -475,6 +475,14 @@
   margin: 0;
 }
 
+/* --------------------------------------------- labels no machine answers for (#453) */
+
+/* No rule down the side: an unmapped label is a standing fact, not this cycle's complaint. */
+.plugin-atyrode_babel_watch__archive > p {
+  margin: 0;
+  max-width: 68ch;
+}
+
 /* ------------------------------------------------------------------ recipes */
 
 .plugin-atyrode_babel_watch__recipes {

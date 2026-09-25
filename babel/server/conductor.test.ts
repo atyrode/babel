@@ -311,7 +311,7 @@ class Fleet implements JobsSlice {
       connected: this.connected,
       operations: {
         [OPERATIONS.evaluate]: { ready: true, reason: null },
-        [OPERATIONS.scan]: { ready: true, reason: null },
+        [BEAT_OPERATION]: { ready: true, reason: null },
       },
       installation: {
         revision: "rev-7",
@@ -951,6 +951,31 @@ const UNMETERED_PLAN: RunPlan = { ...PLAN, metered: {} };
 
 // ---------------------------------------------------------------------------- the corpus
 
+/** A 64-hex restic snapshot id, as the catalog records one. */
+const CAPTURE_SNAPSHOT = "e".repeat(64);
+
+/**
+ * ONE ROW OF `sessions.json` AS `catalog` AND `prepare` WRITE IT (#453): the capture that holds
+ * the session — taken under the operator's clan label — and whatever `over` says a reading of it
+ * found.
+ */
+function captured(selector: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+  const cut = selector.indexOf("/");
+  return {
+    selector,
+    harness: selector.slice(0, cut),
+    source_id: selector.slice(cut + 1),
+    kind: "operator",
+    archive_label: HOST_NAME,
+    archive_path: `/home/alex/.omp/agent/sessions/${selector.slice(cut + 1)}.jsonl`,
+    snapshot_id: CAPTURE_SNAPSHOT,
+    archived_at: "2026-09-12T08:00:00.000Z",
+    size: 2048,
+    modified_at: "2026-09-12T07:59:00.000Z",
+    ...over,
+  };
+}
+
 async function seed(db: PluginDatabase): Promise<void> {
   await db.batch([
     {
@@ -1139,16 +1164,10 @@ function outputs(runId: string): Record<string, unknown> {
         recorded_at: at,
       },
     ],
-    // A rescan observes no snapshot, so it names no snapshot column: the archive's value stands.
+    // A reading of the session's capture: the imported row gets its first capture, and the
+    // title that reading found.
     [JOB_OUTPUT_FILES.sessions]: [
-      {
-        selector: "omp/s1",
-        host: "dev-01",
-        harness: "omp",
-        source_id: "s1",
-        title: "a better title",
-        seen_at: "2026-09-12T09:00:00Z",
-      },
+      captured("omp/s1", { title: "a better title", title_provenance: "recorded" }),
     ],
     [JOB_OUTPUT_FILES.receipt]: {
       runId,
@@ -1743,11 +1762,12 @@ test("a settled job's every output file lands in the store, and its run and clai
     expect(`${table}=${String(rows[0]?.n)}`).toBe(`${table}=${String(count)}`);
   }
 
-  // A rescan that names no snapshot column leaves the archive's snapshot alone.
+  // The imported row now names the capture that reading came from, in place of its Go-era
+  // snapshot column, and carries the title it found.
   const session = await db.query<{ title: string; snapshot_id: string | null }>(
     `SELECT title, snapshot_id FROM sessions WHERE selector = 'omp/s1'`,
   );
-  expect(session[0]).toEqual({ title: "a better title", snapshot_id: "snap-1" });
+  expect(session[0]).toEqual({ title: "a better title", snapshot_id: CAPTURE_SNAPSHOT });
 
   const run = await db.query(
     `SELECT closure, cost_usd, tokens, records, finished_at, job_id FROM runs WHERE id = 'run_asg_a1b2'`,
@@ -1917,14 +1937,10 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
     offlinePolicy: "coalesce-one",
   });
   expect(registered?.firstNominalAt).toBe(clock + 900_000);
-  // The beat's input is fixed at registration, so it carries no run id to collide on.
-  expect(JSON.parse(String(registered?.input[INPUT_FIELD]))).toEqual({
-    runId: "",
-    machineId: MACHINE,
-    roots: [],
-    harnesses: [],
-  });
-  // THE ONE POSTING BABEL STILL MAKES binds its own output location, so what a scan seals lands
+  // The beat's input is fixed at registration, so it carries no run id to collide on: the
+  // machine is all it is told, and which snapshots are new is the catalog's own memory.
+  expect(JSON.parse(String(registered?.input[INPUT_FIELD]))).toEqual({ machineId: MACHINE });
+  // THE ONE POSTING BABEL STILL MAKES binds its own output location, so what the beat seals lands
   // where this hub ingests it from. The review job that used to carry the same binding is
   // Code's now (#279); the beat's is the loop's own.
   expect(registered?.outputs).toEqual([
@@ -2136,12 +2152,58 @@ test("ingesting the same outputs twice changes nothing", async () => {
   expect(first.skipped).toBe(0);
   expect(first.notes).toEqual([]);
   const after = await snapshot(db);
+  const told = store.touched;
+  expect(told).toBeGreaterThan(0);
 
   const second = await ingestOutputs(store, fleet, target);
   expect(second.rows).toEqual(first.rows);
   expect(await snapshot(db)).toBe(after);
   // Rows arrived, so the feed index is told each time: the store rebuilds it, not the loop.
-  expect(store.touched).toBe(2);
+  expect(store.touched).toBeGreaterThan(told);
+});
+
+test("a sessions.json row that names no capture is refused by name, and the captures beside it land", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  fleet.execute({
+    jobId: "job_mixed",
+    machineId: MACHINE,
+    operationId: BEAT_OPERATION,
+    input: {},
+    outputs: [],
+  });
+  fleet.finish("job_mixed", 0, {
+    [JOB_OUTPUT_FILES.sessions]: [
+      captured("omp/s2"),
+      // A `scan` row: it names a host and no capture, so it is no statement about the archive.
+      { selector: "omp/s3", host: MACHINE, harness: "omp", source_id: "s3", seen_at: "x" },
+    ],
+  });
+
+  const result = await ingestOutputs(store, fleet, {
+    runId: "run_mixed",
+    jobId: "job_mixed",
+    machineId: MACHINE,
+    operationId: BEAT_OPERATION,
+    outputs: fleet.status({ jobId: "job_mixed" }).result?.outputs ?? [],
+    closure: "completed",
+  });
+
+  expect(result.rows[JOB_OUTPUT_FILES.sessions]).toBe(1);
+  expect(result.skipped).toBe(1);
+  expect(result.notes).toHaveLength(1);
+  expect(result.notes[0]).toStartWith(
+    `${JOB_OUTPUT_FILES.sessions}: row 1 is not a catalogued capture and was refused: `,
+  );
+  // The capture landed where no label is mapped yet, so the hub writes no machine for it.
+  expect(
+    await db.query(`SELECT selector, host, snapshot_id FROM sessions ORDER BY selector`),
+  ).toEqual([
+    { selector: "omp/s1", host: HOST_NAME, snapshot_id: "snap-1" },
+    { selector: "omp/s2", host: "", snapshot_id: CAPTURE_SNAPSHOT },
+  ]);
 });
 
 test("an assessment the review contract refuses is not written, and the run still settles with its cost", async () => {
@@ -2204,25 +2266,18 @@ test("the beat's own job is ingested although the hub never requested it", async
     plan: PLAN,
     now: () => clock,
   });
-  // A scan the schedule started: no run row, and a run id the machine minted for itself.
+  // A catalog the schedule started: no run row, and a run id the machine minted for itself.
   fleet.beat("schedule-abc", MACHINE, {
-    [JOB_OUTPUT_FILES.sessions]: [
-      {
-        selector: "omp/s2",
-        host: MACHINE,
-        harness: "omp",
-        source_id: "s2",
-        seen_at: "2026-09-12T09:00:00Z",
-      },
-    ],
+    [JOB_OUTPUT_FILES.sessions]: [captured("omp/s2")],
     [JOB_OUTPUT_FILES.receipt]: {
       runId: "run_minted_by_the_machine",
-      kind: "scan",
+      kind: "catalog",
       machineId: MACHINE,
       startedAt: "2026-09-12T08:59:00Z",
       finishedAt: "2026-09-12T09:00:00Z",
       closure: "completed",
-      counts: { sessions: 1 },
+      counts: { snapshots: 1, listed: 1, pending: 0, entries: 3, captures: 1 },
+      outputCapacity: { bytes: 805306368, free: 805306368 },
     },
   });
 
@@ -2239,7 +2294,7 @@ test("the beat's own job is ingested although the hub never requested it", async
     {
       id: "run_minted_by_the_machine",
       job_id: "schedule-abc",
-      kind: OPERATIONS.scan,
+      kind: BEAT_OPERATION,
       closure: "completed",
     },
   ]);
@@ -2396,7 +2451,7 @@ test("an output the hub cannot read closes its run instead of being retried for 
   expect(next.notes).toEqual([]);
 });
 
-test("what a scan catalogued as folders is asked of the host, once per folder", async () => {
+test("what a reading catalogued as folders is asked of the host, once per folder", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
@@ -2415,29 +2470,23 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
     now: () => clock,
   });
 
-  // A beat's catalogue of the machine the policy routes to: two sessions of one checkout, one
-  // of a folder that is not a repository, and one whose "workspace" is Claude's lossy
-  // project-directory name rather than a path. The scan ran inside a job where none of the
-  // three were mounted, so every row it shipped carries the sandbox's own prose instead of an
-  // identity. The rows are keyed by the machine's ID, which is what `scan` records and what
-  // makes the folder question askable at all.
-  const catalogued = (selector: string, workspace: string): Record<string, unknown> => ({
-    selector,
-    host: MACHINE,
-    harness: "omp",
-    source_id: selector,
-    workspace,
-    repository_identity: null,
-    repository_remote: null,
-    repository_reason: "workspace absent on this host",
-    seen_at: "2026-09-12T09:00:00Z",
-  });
-  fleet.beat("scan-1", MACHINE, {
+  // Readings of four captures taken under the label the operator mapped to the machine the
+  // policy routes to: two sessions of one checkout, one of a folder that is not a repository,
+  // and one whose "workspace" is Claude's lossy project-directory name rather than a path. The
+  // reading ran inside a job where none of the three were mounted, so no row carries an
+  // identity. The mapping is what hosts the rows at the machine's ID, which is what makes the
+  // folder question askable at all.
+  await db.run(`INSERT INTO archive_labels(label, machine_id, mapped_at) VALUES (?, ?, ?)`, [
+    HOST_NAME,
+    MACHINE,
+    "2026-09-12T08:00:00.000Z",
+  ]);
+  fleet.beat("catalog-1", MACHINE, {
     [JOB_OUTPUT_FILES.sessions]: [
-      catalogued("omp/a", "/home/alex/babel"),
-      catalogued("omp/b", "/home/alex/babel"),
-      catalogued("omp/c", "/home/alex/notes"),
-      catalogued("claude/d", "-home-alex-babel"),
+      captured("omp/a", { workspace: "/home/alex/babel" }),
+      captured("omp/b", { workspace: "/home/alex/babel" }),
+      captured("omp/c", { workspace: "/home/alex/notes" }),
+      captured("claude/d", { workspace: "-home-alex-babel" }),
     ],
   });
   folders.facts["/home/alex/babel"] = {
@@ -2455,18 +2504,18 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
          FROM sessions WHERE workspace IS NOT NULL ORDER BY selector`,
     );
   const asWritten = [
-    { selector: "claude/d", identity: null, remote: null, reason: "workspace absent on this host" },
-    { selector: "omp/a", identity: null, remote: null, reason: "workspace absent on this host" },
-    { selector: "omp/b", identity: null, remote: null, reason: "workspace absent on this host" },
-    { selector: "omp/c", identity: null, remote: null, reason: "workspace absent on this host" },
+    { selector: "claude/d", identity: null, remote: null, reason: null },
+    { selector: "omp/a", identity: null, remote: null, reason: null },
+    { selector: "omp/b", identity: null, remote: null, reason: null },
+    { selector: "omp/c", identity: null, remote: null, reason: null },
   ];
 
   // A HOST THAT CANNOT BE ASKED is asked ONCE, not once per folder — offline is a fact about
-  // the machine — and the rows it would have answered for are left exactly as the scan wrote
-  // them rather than stamped with a refusal.
+  // the machine — and the rows it would have answered for are left exactly as the reading
+  // wrote them rather than stamped with a refusal.
   folders.refusal = "machine is not connected";
   const refused = await loop.tick();
-  expect(refused.ingested).toMatchObject([{ jobId: "scan-1" }]);
+  expect(refused.ingested).toMatchObject([{ jobId: "catalog-1" }]);
   expect(folders.asked).toEqual([`${MACHINE}:/home/alex/babel`]);
   expect(refused.notes).toEqual([
     `${MACHINE} could not say what /home/alex/babel is: machine is not connected`,
@@ -2484,7 +2533,7 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
   expect(identified.notes).toEqual([]);
   expect(folders.asked).toEqual([`${MACHINE}:/home/alex/babel`, `${MACHINE}:/home/alex/notes`]);
   expect(await catalogue()).toEqual([
-    { selector: "claude/d", identity: null, remote: null, reason: "workspace absent on this host" },
+    { selector: "claude/d", identity: null, remote: null, reason: null },
     {
       selector: "omp/a",
       identity: "/home/alex/babel/.git",
@@ -5221,10 +5270,16 @@ test("the locator on a call row resolves to the transcript that holds the answer
   const ref = omp.claim(String(call["transcript_path"]));
   expect(ref?.selector).toBe("omp/babel/01K_ses_replay");
 
-  // AND THE BYTES COME BACK, through the resolver the secret preflight already uses, on the
-  // machine that holds the log. The row did none of this: the row only said where.
+  // AND THE BYTES COME BACK, through the resolver the secret preflight already uses, over the
+  // transcript's own bytes. The row did none of this: the row only said where.
   const resolved =
-    ref === null ? null : await resolveRedaction(ref, { line: 3, offset: 0, length: turn.length });
+    ref === null
+      ? null
+      : await resolveRedaction(Bun.file(ref.primaryPath).stream(), {
+          line: 3,
+          offset: 0,
+          length: turn.length,
+        });
   expect(resolved?.value).toBe(turn);
   expect(String(call["response_digest"])).toBe(
     createHash("sha256").update(finalMessage).digest("hex"),
@@ -5665,7 +5720,7 @@ test("an answer naming a session the run was never served is refused, and every 
   ).toEqual([{ n: 2n }]);
 });
 
-test("a title the harness itself records displaces an inferred one, and a scan that reads none leaves it", async () => {
+test("a title the harness itself records displaces an inferred one, and a reading that finds none leaves it", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
@@ -5688,51 +5743,43 @@ test("a title the harness itself records displaces an inferred one, and a scan t
     })),
   ).tick();
 
-  // A LATER SCAN CATALOGUES BOTH AGAIN. One log now carries a title its harness wrote; the
-  // other still carries none, and the adapter reports that as NULL rather than as a value.
+  // A LATER READING OF BOTH CAPTURES. One log carries a title its harness wrote; the other
+  // carries none, and the reading says nothing about it rather than saying NULL.
   clock += 60_000;
   const fleet = new Fleet();
-  fleet.beat("scan-titles", MACHINE, {
+  fleet.execute({
+    jobId: "job_prepare_titles",
+    machineId: MACHINE,
+    operationId: OPERATIONS.prepare,
+    input: {},
+    outputs: [],
+  });
+  fleet.finish("job_prepare_titles", 0, {
     [JOB_OUTPUT_FILES.sessions]: [
-      {
-        selector: "codex/untitled-a",
-        host: MACHINE,
-        harness: "codex",
-        source_id: "untitled-a",
+      captured("codex/untitled-a", {
         title: "Retention, as the operator wrote it",
         title_provenance: "recorded",
-        seen_at: new Date(clock).toISOString(),
-      },
-      {
-        selector: "codex/untitled-b",
-        host: MACHINE,
-        harness: "codex",
-        source_id: "untitled-b",
-        title: null,
-        title_provenance: null,
-        seen_at: new Date(clock).toISOString(),
-      },
+      }),
+      captured("codex/untitled-b", { title: null }),
     ],
     [JOB_OUTPUT_FILES.receipt]: {
-      runId: "run_scan_titles",
-      kind: "scan",
+      runId: "run_prepare_titles",
+      kind: "prepare",
       machineId: MACHINE,
       startedAt: new Date(clock - 60_000).toISOString(),
       finishedAt: new Date(clock).toISOString(),
       closure: "completed",
-      counts: { sessions: 2 },
+      counts: { fetched: 2 },
     },
   });
-  await conductor({
-    engine: NO_CODE,
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: fleet,
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  }).tick();
+  await ingestOutputs(store, fleet, {
+    runId: "run_prepare_titles",
+    jobId: "job_prepare_titles",
+    machineId: MACHINE,
+    operationId: OPERATIONS.prepare,
+    outputs: fleet.status({ jobId: "job_prepare_titles" }).result?.outputs ?? [],
+    closure: "completed",
+  });
 
   expect(
     await db.query(
@@ -5747,8 +5794,8 @@ test("a title the harness itself records displaces an inferred one, and a scan t
       title: "Retention, as the operator wrote it",
       title_provenance: "recorded",
     },
-    // AND A SCAN THAT READ NO TITLE ERASES NOTHING. "this reader found none" is not "there is
-    // none": wiping it would lose what was paid for and queue the session to be paid for again.
+    // AND A READING THAT FOUND NO TITLE ERASES NOTHING. "this reader found none" is not "there
+    // is none": wiping it would lose what was paid for and queue the session to be paid for again.
     {
       selector: "codex/untitled-b",
       title: "Reading the drain postmortem",
@@ -5764,9 +5811,9 @@ test("a read title that landed while the run was in flight is not overwritten by
   const store = openStore(db);
   const draws = new Draws(db);
   await titlingInFlight(db);
-  // Between the press and the answer a scan read a title out of the log itself. The session's
-  // own word outranks the guess the run is about to come back with — and the run is already
-  // paid for, so the answer is recorded rather than thrown away.
+  // Between the press and the answer a preparation read a title out of the capture itself. The
+  // session's own word outranks the guess the run is about to come back with — and the run is
+  // already paid for, so the answer is recorded rather than thrown away.
   await db.run(`UPDATE sessions SET title = ?, title_provenance = 'recorded' WHERE selector = ?`, [
     "What the harness called it",
     "codex/untitled-a",
@@ -5814,9 +5861,19 @@ test("a read title that landed while the run was in flight is not overwritten by
 async function weightedCycle(stage: "challenge" | "synthesize") {
   const db = openDatabase();
   await seed(db);
+  // The session the analysis reads is an archived capture: a preparation reads nothing else.
   await db.run(
-    `UPDATE sessions SET host = ?, live = 0, kind = 'operator', size = 4096 WHERE selector = 'omp/s1'`,
-    [MACHINE],
+    `UPDATE sessions SET host = ?, live = 0, kind = 'operator', size = 4096, archive_label = ?,
+            archive_path = ?, snapshot_id = ?, archived_at = ?, modified_at = ?
+      WHERE selector = 'omp/s1'`,
+    [
+      MACHINE,
+      HOST_NAME,
+      "/home/alex/.omp/agent/sessions/s1.jsonl",
+      CAPTURE_SNAPSHOT,
+      "2026-09-12T08:00:00.000Z",
+      "2026-09-12T07:59:00.000Z",
+    ],
   );
   for (const [id, runId] of [
     ["obs_00000001", "run_source_a"],

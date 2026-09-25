@@ -1,4 +1,5 @@
 import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RESTIC_SERVICE, type Harness } from "../../contract.ts";
@@ -81,7 +82,7 @@ export async function syntheticArchive(): Promise<SyntheticArchive> {
     throw new Error("archive tests require restic 0.19.1 on PATH (bun run deps:tests)");
   }
   const home = await mkdtemp(join(tmpdir(), "babel-archive-fixture-"));
-  let service: Bun.Server<undefined> | null = null;
+  let service: Server | null = null;
   try {
     await chmod(home, 0o700);
     const repository = join(home, "repository");
@@ -125,29 +126,49 @@ export async function syntheticArchive(): Promise<SyntheticArchive> {
     const repo = openRepo(config);
     await repo.init();
 
-    // The engine mints the capability as 32 random bytes, base64url.
+    // The engine mints the capability as 32 random bytes, base64url. The service is node's own
+    // HTTP server rather than `Bun.serve`, because a panel test in the same process registers a
+    // DOM whose `Response` replaces the global one, and `Bun.serve` answers nothing else: which
+    // test file ran first must not decide whether the archive opens.
     const bearer = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
-    service = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      async fetch(request) {
-        if (request.headers.get("authorization") !== `Bearer ${bearer}`) {
-          return new Response("unauthorized", { status: 401 });
-        }
-        if (new URL(request.url).pathname !== RESTIC_SERVICE.path) {
-          return new Response("unknown", { status: 404 });
-        }
-        return Response.json({ repository, password: await Bun.file(passwordFile).text() });
-      },
+    const listening = createServer((request, response) => {
+      const answer = (status: number, body: string): void => {
+        response.writeHead(status, {
+          "content-type": status === 200 ? "application/json" : "text/plain",
+        });
+        response.end(body);
+      };
+      if (request.headers.authorization !== `Bearer ${bearer}`) {
+        answer(401, "unauthorized");
+        return;
+      }
+      if (new URL(request.url ?? "/", "http://127.0.0.1").pathname !== RESTIC_SERVICE.path) {
+        answer(404, "unknown");
+        return;
+      }
+      Bun.file(passwordFile)
+        .text()
+        .then(
+          (password) => answer(200, JSON.stringify({ repository, password })),
+          () => answer(500, "unreadable"),
+        );
     });
+    service = listening;
+    const bound = Promise.withResolvers<void>();
+    listening.once("error", bound.reject);
+    listening.listen(0, "127.0.0.1", bound.resolve);
+    await bound.promise;
+    const address = listening.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("the storage service has no port");
+    }
     const credentialFile = join(home, "restic-binding.json");
     await writeFile(
       credentialFile,
-      JSON.stringify({ url: `http://127.0.0.1:${service.port}`, bearer }),
+      JSON.stringify({ url: `http://127.0.0.1:${String(address.port)}`, bearer }),
       { mode: 0o600 },
     );
 
-    const listening = service;
     return {
       home,
       repository,
@@ -166,12 +187,12 @@ export async function syntheticArchive(): Promise<SyntheticArchive> {
         return (await readdir(join(repository, "locks")).catch(() => [])).length;
       },
       async close() {
-        await listening.stop(true);
+        await stopped(listening);
         await rm(home, { recursive: true, force: true });
       },
     };
   } catch (err) {
-    await service?.stop(true);
+    if (service !== null) await stopped(service);
     await rm(home, { recursive: true, force: true });
     throw err;
   }
@@ -180,4 +201,12 @@ export async function syntheticArchive(): Promise<SyntheticArchive> {
 /** A path as one single-quoted shell word. */
 function shellQuoted(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/** Closes the service and every connection a client left open, and waits for both. */
+function stopped(server: Server): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  server.closeAllConnections();
+  server.close(() => resolve());
+  return promise;
 }

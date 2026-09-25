@@ -27,6 +27,7 @@ import {
   PRESETS,
   PRESET_OPERATIONS,
   PRESET_START,
+  RETIRED_OPERATIONS,
   RUN_STAGES,
   StopInputSchema,
   asLaunchRequest,
@@ -241,8 +242,8 @@ export function generatorUri(containerId: string): string {
  *
  * A preset carries no flag it cannot use — `LaunchInputSchema` is strict, so `minutes` on a
  * `read-whats-new` would be refused whole — and the PROFILE travels only for a preset that
- * reaches a model: `keep-going` is a scan of Babel's own, and a profile on it would be a field
- * nothing reads.
+ * reaches a model: `keep-going` is a catalog of the archive, Babel's own, and a profile on it
+ * would be a field nothing reads.
  */
 export function launchRequest(draft: LaunchDraft, profile: ProfileRow | null): LaunchRequest {
   const card = LAUNCH_CARDS[draft.preset];
@@ -353,15 +354,18 @@ export const FRESHNESS_NOTE: Record<string, string> = {
 /**
  * The kinds a run row carries, in the two words a receipt records. A row's `kind` is the
  * OPERATION ID the job ran as, and those are namespaced on the machine half, so the table is
- * keyed off the contract's own names rather than the short words it used to carry.
+ * keyed off the contract's own names rather than the short words it used to carry. A retired
+ * operation keeps its label and says it is retired: the store keeps its runs, and a receipt
+ * that fell back to a bare id would read as a kind this panel never heard of.
  */
 export const RUN_KIND_LABELS: Record<string, string> = {
+  [OPERATIONS.catalog]: "Catalog",
   [OPERATIONS.explore]: "Exploration",
   [OPERATIONS.evaluate]: "Review",
   [OPERATIONS.prepare]: "Preparation",
-  [OPERATIONS.scan]: "Scan",
   [OPERATIONS.archive]: "Archive",
   [OPERATIONS.title]: "Naming",
+  [RETIRED_OPERATIONS.scan]: "Scan (retired)",
   conductor: "Loop",
 };
 
@@ -561,7 +565,7 @@ export const DRAIN_CARDS: Record<DrainPreset, DrainCard> = {
   },
   "keep-going": {
     title: "Keep going",
-    does: "One scan per job. It reaches no model, so it spends nothing: this is the rehearsal.",
+    does: "One archive catalog per job. It reaches no model, so it spends nothing: this is the rehearsal.",
     knob: "minutes",
     spends: false,
   },
@@ -800,6 +804,30 @@ export const GAP_NOTE: Record<GapReason, string> = {
   empty: "the lane had nothing to draw",
   unsupported: "not the kind of record that lane works",
 };
+
+// ------------------------------------------------ labels no machine answers for (#453)
+
+/** What this panel keeps of the pulse: the last cycle's verdict and the archive's labels. */
+export type WatchPulse = Pick<PulseResult, "cycle" | "archive">;
+
+/** The archive labels no mapping names, as the pulse door answers them. */
+export type ArchiveLabels = PulseResult["archive"];
+
+/**
+ * WHAT AN UNMAPPED LABEL MEANS, spelled where it is shown. Its sessions are selected and
+ * prepared like any other; what the hub cannot do for them is ask the machine they came from
+ * about their repositories. A retired machine's label stays unmapped on purpose, so the line
+ * says so rather than reading as a fault.
+ */
+export const ARCHIVE_NOTE =
+  "Archived under a host label no machine is mapped to. These sessions are still selected and " +
+  "prepared; mapping a label to an enrolled machine (rehostSessions) lets the hub read their " +
+  "repositories. A retired machine's label stays unmapped.";
+
+/** How many sessions an unmapped label holds, as the Archive line says it beside the label. */
+export function sessionsClause(sessions: number): string {
+  return `${figure(sessions)} ${sessions === 1 ? "session" : "sessions"}`;
+}
 
 // -------------------------------------------------- the services this bundle binds (#400)
 

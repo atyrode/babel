@@ -22,18 +22,14 @@ import { SECRET_CLASSES, type ScanReport, type SecretClass } from "./preflight.t
   because "the pending set is the gap itself", and a stored position is a second authority that
   can disagree with the rows. The same discipline is what makes a cache admissible here: an entry
   is not a claim about the corpus NOW. It is a claim about one observation — this path, this many
-  bytes, this mtime, this immutable archive capture (if any), under this normalization, this
-  detector set and this preflight mode. Live preparation re-observes the filesystem with `stat`;
-  archive callers supply the immutable capture identity and its recorded file metadata instead.
-  The cache does not re-stat either source. A changed observation fails to match, which is a
-  miss and needs no invalidation step to get right.
+  bytes, this mtime, this immutable archive capture, under this normalization, this detector set
+  and this preflight mode. The caller supplies the capture identity and the file metadata the
+  archive recorded for it, and the cache opens no source to check them. A changed observation
+  fails to match, which is a miss and needs no invalidation step to get right.
 
-  WHY THE OBSERVATION IS ENOUGH. For live preparation, #262 excludes logs whose bytes could
-  still be moving (`prepare.ts`'s `excluded`, `LIVE_GRACE_MS`). Size and mtime alone cannot
-  distinguish different contents of the same length written at the same instant, but a settled
-  live log rewritten to exactly its old length and mtime is not a harness failure mode. Archives
-  have a different boundary: distinct immutable captures may share a path, size and mtime.
-  Their capture identities must therefore match too; an archive reading is never a live one.
+  WHY THE OBSERVATION IS ENOUGH. A capture never moves, but distinct immutable captures may share
+  a path, size and mtime, so the capture identity is part of the match: a reading of one snapshot
+  is never served for another.
 
   AND THE STREAM IS VERIFIED, NOT TRUSTED. The kept stream is replayed into the material and
   hashed as it goes, and the digest it actually produces is what the preparation records. A
@@ -47,14 +43,14 @@ import { SECRET_CLASSES, type ScanReport, type SecretClass } from "./preflight.t
   is best effort: a failed cache write only means reading the source again next time.
 */
 
-/** The source's size and recorded modification time, optionally bound to an immutable archive
- *  capture. `modifiedAt` is 0 when nothing could be observed, which is never a match. */
+/** The capture's size and recorded modification time, bound to its immutable archive identity.
+ *  `modifiedAt` is 0 when nothing could be observed, which is never a match. */
 export interface Observation {
   readonly size: number;
-  /** Epoch milliseconds, from the live filesystem or immutable archive metadata. */
+  /** Epoch milliseconds, from the archive's metadata for the capture. */
   readonly modifiedAt: number;
-  /** Immutable archive capture identity; omitted for a live filesystem observation. */
-  readonly capture?: string;
+  /** The immutable archive capture this observation is of. */
+  readonly capture: string;
 }
 
 /** What one pass produced, as a later pass may reuse it. */
@@ -182,7 +178,7 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
   return {
     reuse: async (session, seen) => {
       if (seen.modifiedAt <= 0) return null;
-      const capture = seen.capture ?? "";
+      const capture = seen.capture;
       const slot = slotOf(session);
       const text = await Bun.file(`${slot}.json`)
         .text()
@@ -239,7 +235,7 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
 
     keep: async (session, seen) => {
       if (seen.modifiedAt <= 0) return null;
-      const capture = seen.capture ?? "";
+      const capture = seen.capture;
       const slot = slotOf(session);
       const temporary = `${slot}.${crypto.randomUUID()}.records`;
       let writer: Bun.FileSink;

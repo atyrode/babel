@@ -15,8 +15,8 @@ retired with the rest of the product. What replaced each half:
 | was                       | is                                                                   |
 | ------------------------- | -------------------------------------------------------------------- |
 | `babel archive push`      | the `atyrode.babel.archive` machine operation, run as a Manifold job |
-| `babel archive status`    | the same operation's receipt, and `runs`/`sessions` in the store     |
-| `babel sessions list`     | the `atyrode.babel.scan` machine operation, and Babel's own surfaces |
+| `babel archive status`    | the same operation's receipt, and `runs` in the store                |
+| `babel sessions list`     | the `atyrode.babel.catalog` machine operation, and Babel's surfaces  |
 | `babel web`               | the Feed and Watch panels in Manifold                                |
 | `babel archive verify`    | the `atyrode.babel.verify` operation, or `restic check` — see below  |
 | `babel sessions fetch`    | `atyrode.babel.verify` naming a session, or `restic restore` — below |
@@ -39,8 +39,9 @@ plugin, and snapshots are append-only.
 Two paths. Prefer the first; the second is what still works when there is no hub.
 
 **The `verify` operation.** `atyrode.babel.verify` runs `restic check` — structurally, or over
-every stored byte when asked — and restores one catalogued session from a named snapshot,
-comparing the restored bytes against the snapshot's own and against the digest `scan` recorded.
+every stored byte when asked — and restores one catalogued session from its catalogued snapshot,
+comparing the restored bytes against the snapshot's own and against the digest its preparation
+recorded.
 The `atyrode.babel.verify` door posts it with the machine, how deep to read, and the session's
 selector; the run's receipt carries the verdict (`counts.checkErrors`, `counts.restored`,
 `counts.digestCompared`). Its verbs are a closed set that holds no `forget`, `prune`, `repair` or
@@ -65,7 +66,8 @@ restic restore <snapshot-id> --target DIR --include PATH   # byte-exact restore
 ```
 
 Read a session's selector off Babel's own surfaces or the `sessions` table; `sessions.snapshot_id`
-is the snapshot that holds it, which is the one fact the archive writes back into the store.
+and `sessions.archive_path` are the snapshot and path that hold its newest capture, which the
+`catalog` operation lists out of the archive.
 
 ## Safety rules
 
