@@ -912,9 +912,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `atyrode.babel.catalog` — restic, the `atyrode.babel.restic` storage binding, host network, its
   memory and restic's index in the managed cache, 1 GiB of output — and `keep-going` and the
   conductor's beat post it. `atyrode.babel.prepare` binds the same service with host network and
-  mounts no `home` location. `atyrode.babel.scan`, `machine/scan.ts` and the git observer only
-  it used (`machine/repository.ts`) are deleted, with the adapters' file-based discovery and
-  description; `RETIRED_OPERATIONS` keeps its historic runs named, and Watch labels a catalog run
+  mounts no `home` location. `atyrode.babel.scan` and `machine/scan.ts` are deleted, with the
+  adapters' file-based discovery and description; the git observer only `scan` used
+  (`machine/repository.ts`) is kept, by the operator's decision, with nothing but its own test
+  importing it. `RETIRED_OPERATIONS` keeps its historic runs named, and Watch labels a catalog run
   "Catalog". `archive` stays the collector, with its `home` locations until a Manifold anchor
   replaces them, and writes an empty `sessions` document: the catalog lists its snapshots like
   any other `babel` snapshot, so captures have one writer. Every operation asks the owner for
