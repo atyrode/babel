@@ -37,6 +37,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   session. Regressions cover selection, both bounds, the drain share, ingestion and the title
   lane (#453).
 
+- **Watch names the archive labels no machine answers for, and a retired `scan` run keeps its
+  name.** The `pulse` door's answer gains `archive`: each host label the catalog filed sessions
+  under that no `archive_labels` row maps, with its session count, most first, at most 64 with
+  the rest counted. Watch renders it as one Archive line under the last cycle, from the same read,
+  and nothing when every label is mapped; those sessions are still selected and prepared, and
+  `rehostSessions` is what maps a label. `RETIRED_OPERATIONS` names `atyrode.babel.scan`, so a
+  historic scan receipt reads as "Scan (retired)" rather than a bare id. The specification and
+  the building, runbook, parity and threat-model documents state the archive-first contract:
+  collection on the machine that holds the sessions, the `catalog` beat, preparation from
+  archived captures on any machine holding the archive binding with host network, lock-free
+  reads, label mapping and the store's `babel-store` backup. Regressions cover the pulse's
+  mapping, ordering and bound, and the rendered line (#453).
+
 - **Catalogued sessions record their archive capture, and `rehostSessions` maps restic host
   labels.** The store moves to data version 1.12. Each session gains `archive_label` and
   `archive_path` beside its snapshot, and a new `archive_labels` table holds the operator's

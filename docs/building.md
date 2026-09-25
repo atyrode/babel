@@ -79,7 +79,7 @@ manifest and served as `ctx.database`. Three consequences worth knowing before r
   purge deletes `data.db` with its `-wal` and `-shm`. `bun run verify` asserts both halves of
   that: the file exists once the doors have answered, and is gone after the purge.
 
-## The machine half: one bundled file, no pinned engine, three tools the machine provides
+## The machine half: one bundled file, no pinned engine, two tools the machine provides
 
 A run is a **job on an enrolled machine** (manifold `docs/PLUGINS.md` §8), and the baseline's
 manifest carries the `machine` block that says what may run there. `babel/machine/` is
@@ -100,7 +100,7 @@ because the inner loop re-packs on every save. The committed manifest carries th
 so a change to the machine half shows up as a moved hash in the diff; `test/bundle.test.ts` runs
 the packed member through the argv the manifest declares and checks the receipt it leaves.
 
-The one-shot operations are `scan`, `archive`, `prepare` and `verify`; Recall adds a persistent
+The one-shot operations are `catalog`, `archive`, `prepare` and `verify`; Recall adds a persistent
 native instance service. Each takes ONE input document — a JSON string materialized at
 `/inputs/input`, so `--input` is a path and never 64 KiB of argv. One-shot jobs write their
 results into sealed output leases read through `ctx.jobs.outputs`; Recall publishes no output
@@ -110,9 +110,13 @@ atyrode/manifold at `3e8510c473d84175568ac81012763635112ed7d3`,
 `packages/agent/src/job-inputs.ts:34-50`. The service parses it once, acknowledges readiness over
 the owner's IPC and shuts down on owner disconnect. It uses private tmpfs for widening bytes
 and the managed cache only for rebuildable local indexes and metadata.
-`scan` and `prepare` run with `network: "none"`; the archive-reading/writing operations reach
-the host network for their bound repository and storage service. The owner configures Recall's
-instance service and exact disclosure-class grant targets, not an outside caller's native job.
+Every Babel operation reads or writes the fleet archive, so each runs with `network: "host"` to
+reach its bound repository and storage service: `catalog`, `prepare`, `verify` and Recall only
+read it, every read verb with `--no-lock`, and `archive` is the one that writes. `scan`, which
+catalogued a machine's local session files with no network, is retired (#453); the store keeps
+its runs, and `RETIRED_OPERATIONS` in `contract.ts` is what still names them. The owner
+configures Recall's instance service and exact disclosure-class grant targets, not an outside
+caller's native job.
 
 **A MACHINE ANSWERS FOR TOOLS BY NAME, AND THE FLEET ADVERTISES TWO** (`development` and
 `system`, plus anchors). Until #303 this half asked for `bun`, `git` and `restic` by name, so
@@ -135,28 +139,25 @@ There is one decision per tool, and the four answers are different:
   file and downloads nothing, so packing stays offline and deterministic — and a packer whose
   own Bun is not the pinned one is refused, because `bun test` proves the half by running it
   under the LOCAL bun while the manifest declares the machine runs the pinned one.
-- **`development` is the owner's toolset**, advertised by the fleet, and `git` lives inside its
-  closure. `scan` and `prepare` name the toolset instead of the binary; `machine/repository.ts`
-  still resolves git at `/runtime/bin/git` first and on PATH second, and a machine whose
-  `development` alias binds git somewhere else degrades to `git-unavailable` on a scanned
-  workspace rather than failing the job.
+- **`development` is the owner's toolset, and no Babel operation names it any more.** `git` lives
+  inside its closure, and `scan` named the toolset so `machine/repository.ts` could fingerprint a
+  scanned workspace. With `scan` retired the repository question is the hub's, asked of the
+  machine a session's archive label maps to, and nothing on a job machine runs git.
 - **`system` is the owner's reviewed, digest-promoted native closure.** A pinned bun is
   dynamically linked — `runtime-tools.json` records the measured interpreter
   (`/lib64/ld-linux-x86-64.so.2`, `/lib/ld-linux-aarch64.so.1`) and DT_NEEDED list
   (`libc.so.6`, `libdl.so.2`, `libm.so.6`, `libpthread.so.0`) — so every operation that runs it
   names this closure too. Those are direct requirements, not a transitive closure: the owner
   supplies and reviews that.
-- **`restic` stays the owner's, by name; `archive`, `verify` and `recall` ask for it.**
-  There is nothing honest to pin. Requirements are per-operation, so a missing restic binding
-  refuses those archive paths without disabling `scan` or `prepare`.
+- **`restic` stays the owner's, by name, and every operation asks for it.** There is nothing
+  honest to pin. Requirements are per-operation, and since #453 every Babel operation reads or
+  writes the archive, so a machine whose module does not bind restic runs none of them.
 
 For the operator's fleet the remaining bindings and the runtime scratch's size are one dotfiles
-module — no `bun` entry any more, and `git` inside the `development` alias rather than beside it:
+module — no `bun` entry, and no `development` entry for Babel's sake since `scan` retired:
 
 ```nix
 services.manifold.execution = {
-  runtimeTools.development = [{ source = "${pkgs.git}/bin/git"; target = "/runtime/bin/git"; kind = "file"; }];
-  runtimeToolClosures.development = [ pkgs.git ];
   runtimeTools.restic = [{ source = "${pkgs.restic}/bin/restic"; target = "/runtime/bin/restic"; kind = "file"; }];
   runtimeToolClosures.restic = [ pkgs.restic ];
   outputBytes = 805306368; # RUNTIME_SCRATCH_BYTES, 768 MiB; the module's default is 1 MiB
@@ -169,23 +170,23 @@ services.manifold.execution = {
 whose engine is pinned by whoever posts it. `bun` is a different kind of pin: nothing else in the
 architecture can own the interpreter of Babel's own machine half.
 
-**THE RUNTIME SCRATCH HAS ONE SIZE, AND EVERY OPERATION THAT WRITES IT DECLARES MORE.** On a
-native worker the `runtime` anchor is the named-output tmpfs `execution.outputBytes` sizes: 1 MiB
-by default, at most 1 GiB, in whole 4 KiB pages (atyrode/manifold at `7b5fe301`,
-`infra/native/module.nix:263-264,276-277`). Every job that cuts a lease from it shares it: `scan`,
-`archive`, `prepare` and `verify` write `atyrode.babel.outputs` there, and `atyrode.omp.session`
-writes its own lease and extracts a bound material into it. The runtime refuses a job whose
-`limits.outputBytes` is below that capacity, `bounded-output-storage-required`, and charges the
-whole capacity before stdout and stderr (`packages/agent/src/job-linux.ts:440-453,804`). So the
-rule is that every operation writing the scratch declares `outputBytes` strictly above it, and
-the difference is that job's stdio. Babel's four declare 1 GiB, Manifold's per-job ceiling
-(`packages/protocol/src/jobs.ts:86`) and the omp session's own declaration; the scratch is
-`RUNTIME_SCRATCH_BYTES` (`contract.ts`), 768 MiB with `outputInodes` 10000, which leaves each of
-them 256 MiB of stdio, and `test/contract.test.ts` holds every runtime-writing operation above it.
-Until this, `scan`, `archive` and `verify` declared 64 MiB and `prepare` 512 MiB, so a scratch
-big enough for a material above 64 MiB refused the other three. The order is the bundle first,
-then the scratch: before raising it, confirm every operation installed on that machine that
-writes it declares more.
+**THE RUNTIME SCRATCH HAS ONE SIZE, AND EVERY OPERATION THAT WRITES IT DECLARES MORE.** On a native
+worker the `runtime` anchor is the named-output tmpfs `execution.outputBytes` sizes: 1 MiB by
+default, at most 1 GiB, in whole 4 KiB pages (atyrode/manifold at `7b5fe301`,
+`infra/native/module.nix:263-264,276-277`). Every job that cuts a lease from it shares it:
+`catalog`, `archive`, `prepare` and `verify` write `atyrode.babel.outputs` there, and
+`atyrode.omp.session` writes its own lease and extracts a bound material into it. The runtime
+refuses a job whose `limits.outputBytes` is below that capacity, `bounded-output-storage-required`,
+and charges the whole capacity before stdout and stderr
+(`packages/agent/src/job-linux.ts:440-453,804`). So the rule is that every operation writing the
+scratch declares `outputBytes` strictly above it, and the difference is that job's stdio. Babel's
+four declare 1 GiB, Manifold's per-job ceiling (`packages/protocol/src/jobs.ts:86`) and the omp
+session's own declaration; the scratch is `RUNTIME_SCRATCH_BYTES` (`contract.ts`), 768 MiB with
+`outputInodes` 10000, which leaves each of them 256 MiB of stdio, and `test/contract.test.ts` holds
+every runtime-writing operation above it. Until this, `scan`, `archive` and `verify` declared 64 MiB
+and `prepare` 512 MiB, so a scratch big enough for a material above 64 MiB refused the other three.
+The order is the bundle first, then the scratch: before raising it, confirm every operation
+installed on that machine that writes it declares more.
 
 ### What runs a model, and why it is not this bundle
 
@@ -203,15 +204,19 @@ declares no `explore` or `evaluate` operation and installs no price table.
 **A BABEL RUN IS A CODE SESSION, IN FIVE STEPS.** `doors/launch.ts` does them in this order and
 the order is the point:
 
-1. the **selection** — this machine's catalogued sessions, never a live log and never one of
-   Babel's own runs' transcripts (#262);
+1. the **selection** — archived captures the catalog filed, under any machine's label and never
+   a machine's local files, never one of Babel's own runs' transcripts (#262). Only a row that
+   names a capture is selectable; the input is grouped by snapshot and stops adding captures
+   before it would pass `PREPARE_INPUT_MAX_BYTES`, counting the rest as over the bound;
 2. the **recipes** — the methods this hub holds, read off the policy document's own `recipes`
    block, which is the same list Watch's Recipes section shows. A hub whose policy names none
    refuses the explore by name rather than posting one with no method to run;
-3. the **material** — one `atyrode.babel.prepare` job, posted here, whose SECOND sealed output
-   is the evidence the run reads. `prepare` was already digesting every selected session; the
-   same single pass now writes the normalized record stream into that lease, so the material
-   costs no second read of a 240 MB log;
+3. the **material** — one `atyrode.babel.prepare` job, posted here on the launch's machine, whose
+   SECOND sealed output is the evidence the run reads. It streams each selected capture out of
+   the archive with `restic dump` into the single pass that digests, scans and normalizes it, so
+   the raw bytes touch no disk and the material costs no second read of a 240 MB log. A capture
+   the machine has already read is replayed from its managed cache without contacting the
+   archive;
 4. the **prompt**, composed around `/inputs/material` — no tool block at all, because Babel
    runs no session and holds no tools in one. The answering protocol is a fenced ` ```json `
    block in the session's final message, with the stage's JSON Schema printed above it;
@@ -275,13 +280,21 @@ races the seal loses. A stop that left the row open would be the operator pressi
 the account spending afterwards.
 
 **AND THE SELECTION'S BOUND IS UNDER THE MACHINE'S, WITH ROOM.** The machine has two bounds.
-The leases are written into the runtime scratch, 768 MiB. And `outputBytes` is the AGGREGATE the
-owner seals against — stdout, stderr and both of `prepare`'s leases come out of one running
-budget, and each lease is a ustar archive carrying 512 bytes of header and padding per member.
-`MAX_MATERIAL_BYTES` is 448 MiB, more than a tenth under both and 64 MiB under the 512 MiB
-`inputBytes` the omp session extracts the material into: a selection admitted at exactly a
-bound would fill it and fail after the full read, which is the failure the pre-post check
-exists to move.
+The leases are written into the runtime scratch. And `outputBytes` is the AGGREGATE the owner
+seals against — stdout, stderr and both of `prepare`'s leases come out of one running budget,
+and each lease is a ustar archive carrying 512 bytes of header and padding per member.
+`MAX_MATERIAL_BYTES` is 448 MiB, 64 MiB under the 512 MiB `inputBytes` the omp session extracts
+the material into, and it is the ceiling rather than the bound: the scratch is shared by every
+job on the machine, so the hub bounds a material at
+`min(MAX_MATERIAL_BYTES, ⌊(C − MATERIAL_HEADROOM_BYTES) / k⌋)`. `C` is the scratch capacity the
+machine last measured, the `outputCapacity` on its newest `catalog` or `prepare` receipt (the
+ceiling alone until one reports); `MATERIAL_HEADROOM_BYTES` is 64 MiB; `k` is how many materials
+the lane may hold at once — 1 for an operator's launch, `concurrentPerMachine` for the
+conductor's lanes, and the drain's own `concurrent` for a drain fan. On dev-01's 768 MiB scratch
+a two-wide lane bounds each material at 352 MiB. `prepare` measures its own lease as well and
+refuses `material_storage_insufficient`, naming both figures, before it fetches anything: a
+selection admitted at exactly a bound would fill it and fail after the full read, which is the
+failure the pre-post check exists to move.
 
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.
@@ -301,10 +314,11 @@ operation waited: upstream's whole Linux distribution is bare bzip2 —
 (9,044,264 bytes), with no tar or zip of either — while `MachineArtifactSchema` takes `raw`,
 `zip` or `tar.gz` and nothing else. A tool the owner binds needs no artifact format at all,
 which is the whole point of the mechanism above: the manifest names the alias `restic` and pins
-nothing, and a machine whose module does not bind it simply cannot run the operation. That is
-`archive` alone: `jobResourceRequirements` filters each operation's own `runtimeTools`, so
-`tools/restic` and `services/atyrode.babel.restic` are the two resources an operator still
-provisions for the archive, and `scan` and `prepare` are admitted on a machine that has neither.
+nothing, and a machine whose module does not bind it simply cannot run the operation. Since #453
+that is every Babel operation: `jobResourceRequirements` filters each operation's own
+`runtimeTools`, and `catalog`, `archive`, `prepare` and `verify` all name `restic` and bind
+`atyrode.babel.restic`, so `tools/restic` and `services/atyrode.babel.restic` are the two
+resources an operator provisions before any of them is admitted on a machine.
 
 The other half was the repository and the secrets that open it, and neither belongs in the
 manifest: `environment` is fixed reviewed values in committed code, which is not where a
@@ -325,9 +339,24 @@ operationIds: ["storage"] }]` and a second input file whose literal is `{"url":"
   `RESTIC_PASSWORD` in the CHILD's
   environment and nowhere else: never argv, never this process's environment, never a receipt.
 
-The one value the manifest does fix is `BABEL_RESTIC_CACHE_DIR=/home/job/.cache/restic`, inside
-the managed cache location the operation may write — without an index cache every backup
-re-reads every byte it already archived, and a confined job has nowhere else to put one.
+The values the manifest does fix are cache directories inside the managed cache location the
+operations may write, all of them rebuildable: `BABEL_RESTIC_CACHE_DIR=/home/job/.cache/restic`
+— without an index cache every backup re-reads every byte it already archived and every catalog
+re-downloads every tree, and a confined job has nowhere else to put one —
+`BABEL_CATALOG_CACHE_DIR=/home/job/.cache/catalog`, the catalog's memory of the snapshots it has
+already listed, and `BABEL_PREPARE_CACHE_DIR=/home/job/.cache/prepare`, where a preparation keeps
+its redacted reading of each capture so a second one over the same captures spawns no restic
+child at all.
+
+**Reading takes no lock, so analysis needs no write access.** `machine/restic.ts` builds every
+read verb — `cat`, `snapshots`, `ls`, `dump`, `restore`, `check` — with restic's global
+`--no-lock`; `backup` alone takes the ordinary lock, and `init` is called only by disposable test
+fixtures. A killed catalog or preparation therefore strands no lock in the production
+repository, and `catalog`, `prepare`, `verify` and Recall work with a read-only object-store key
+where the storage document serves one; only a machine that runs `archive` needs write access.
+That is also why `prepare` and `catalog` run with `network: "host"`: the protocol offers `none`
+or `host` and nothing between, and restic must reach the object store
+(`docs/sandbox-threat-model.md` §3 records what that costs).
 
 **The bearer is not the password.** `inputFiles[*].jsonValues[*].value` takes `url` or `bearer`,
 and the bearer is 32 random bytes the owner mints per job for its own proxy
@@ -400,31 +429,44 @@ Two things then have to name the service by hand, both at install rather than at
 `engine.jobs.install` carries `resourceBindings.services["atyrode.babel.restic"]`, the
 fingerprint `engine.jobs.describe` reports for the installed policy (a binding whose digest no
 longer matches is `service_binding_mismatch`, which is the point: a policy the operator changed
-is a new installation, not a silent upgrade); and the governed consent `archive` needs is
-`services:invoke` at
+is a new installation, not a silent upgrade); and the governed consents every archive operation
+needs are `services:invoke` at
 `manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage` beside the
 `network:host` every host-network operation needs at
-`manifold://machine/<machine>/operation/atyrode.babel.archive`. Neither is a manifest
-capability: both are governed, so they are consented per node against the exact artifact
-revision (`packages/protocol/src/capabilities.ts:92-103`).
+`manifold://machine/<machine>/operation/<operation>`, once each for `atyrode.babel.catalog`,
+`atyrode.babel.prepare` and `atyrode.babel.verify`, and for `atyrode.babel.archive` on a machine
+that collects. Neither is a manifest capability: both are governed, so they are consented per
+node against the exact artifact revision (`packages/protocol/src/capabilities.ts:92-103`).
 
-`git` runs the same way and today still answers nothing, because a job sees only its declared
-locations and the workspaces a session names are host paths outside them (#254 records the
-decision this needs).
+`git` no longer runs in any job. It was `scan`'s, to fingerprint a workspace a job could not see
+anyway (#254); repository identity is the hub's own question, asked of the machine a session's
+archive label maps to.
 
-Two more things an enrolled machine's operator must arrange, because a manifest cannot. The
-`runtime` anchor must be a dedicated bounded tmpfs, since the named-output lease is cut from it,
-sized to `RUNTIME_SCRATCH_BYTES` as the machine half above says.
-And the `home` anchor must be where the sessions are: `scan`, `archive` and `prepare` read
+**WHAT AN ENROLLED MACHINE NEEDS BEFORE BABEL RUNS ON IT**, because a manifest cannot arrange
+any of it:
+
+1. **the `restic` runtime tool** bound by the machine's module, beside `system` (the Nix block
+   above);
+2. **the `atyrode.babel.restic` service** installed for the existing repository and named by
+   fingerprint in the job install's `resourceBindings`, as above — the storage document is the
+   operator's and nothing here mints one;
+3. **the consents** above: `services:invoke` on the storage operation and `network:host` for
+   `catalog`, `prepare` and `verify`, which must reach the object store;
+4. **the runtime scratch** as a dedicated bounded tmpfs, since every named-output lease is cut
+   from it: `execution.outputBytes` at `RUNTIME_SCRATCH_BYTES`, 768 MiB, with `outputInodes`
+   10000, raised only after the bundle whose operations declare 1 GiB is installed.
+
+Nothing else is local. `catalog` and `prepare` declare no `home` location and open no file of the
+machine they run on, so any machine with these four can catalogue and prepare any archived
+session. The `home` anchor matters to `archive` alone, which still reads
 `~/.omp/agent/sessions`, `~/.codex` and `~/.claude` beneath it, and a job whose read location is
-missing fails to start. **Creating those directories makes the jobs start, not read anything.**
-On a native Manifold worker (the NixOS module) the `home` anchor is the service account's
-workload home, `/var/lib/manifold-workload/home`, hard-coded by the module (atyrode/manifold at
-`7b5fe301`, `infra/native/module.nix:10,23-31`), and an operator may protect `/home` from every
-workload with `execution.protectedDirectories`. `mkdir -p` there gives a scan that catalogues
-nothing and a preparation of an empty tree. Local roots are only for the machine that holds the
-sessions, with its `home` anchor at the home that holds them; preparing from the fleet archive
-instead is #453.
+missing fails to start. On a native Manifold worker (the NixOS module) that anchor is the service
+account's workload home, `/var/lib/manifold-workload/home`, hard-coded by the module
+(atyrode/manifold at `7b5fe301`, `infra/native/module.nix:10,23-31`), and an operator may protect
+`/home` from every workload with `execution.protectedDirectories`, so `archive` there backs up an
+empty tree. It collects for real once it reads the session roots through a read-only anchor the
+operator declares to Manifold (atyrode/manifold#839); until then the dotfiles collector backs
+each machine up under the same contract (`SPEC.md` §6.1).
 
 ## Draining a usage window
 
