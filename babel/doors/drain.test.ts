@@ -540,6 +540,7 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
     "operations:invoke",
     "services:invoke",
     "network:host",
+    "containers:read",
     "containers:write",
   ]);
   expect(mapBegin?.action.requirements).toEqual([
@@ -547,6 +548,7 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
     { cap: "operations:invoke", target: ["operation"] },
     { cap: "network:host", target: ["operation"] },
     { cap: "services:invoke", target: ["source"] },
+    { cap: "containers:read", target: ["profile"] },
     { cap: "containers:write", target: ["profile"] },
   ]);
   expect(mapBegin?.action.delegates).toEqual([

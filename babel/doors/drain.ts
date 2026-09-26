@@ -454,6 +454,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         "operations:invoke",
         "services:invoke",
         "network:host",
+        "containers:read",
         "containers:write",
       ],
       // `services:read` is spent by the drain's own wakes: Code's session reads the account
@@ -466,6 +467,9 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         { cap: "services:invoke", target: ["source"] },
         // The one Code workspace this drain's sessions are posted in, discharged at the press
         // and carried by every job and wake of the drain (#469, manifold#883).
+        // Both words: a cap never implies another, and Code's session reads the workspace
+        // (OMP's defaults, its review) before it writes the one-shot there.
+        { cap: "containers:read", target: ["profile"] },
         { cap: "containers:write", target: ["profile"] },
       ],
       input: StartMapDrainRequestSchema,
