@@ -288,6 +288,25 @@ function called(
 /** `MAX_JOB_FOLLOW_EVENTS`: how many frames of any kind one job's ring holds. */
 const FOLLOW_RING = 128;
 
+/**
+ * THE OWNER'S LEASE RULE. A lease is a directory created at its LAST component inside
+ * directories that already exist: the owner opens every leading component and exclusively
+ * creates only the leaf (manifold `packages/agent/src/job-outputs.ts`, `create`). So a leading
+ * component exists only where an EARLIER output of the same request created it, and a post
+ * that nests two leases under a parent neither creates is admitted by the hub and then refused
+ * at start - which a fake that ran it anyway would never show.
+ */
+function leasesCreatable(outputs: JobLaunch["outputs"]): boolean {
+  const created = new Set<string>();
+  for (const { locationId, components } of outputs) {
+    for (let depth = 1; depth < components.length; depth += 1) {
+      if (!created.has(JSON.stringify([locationId, ...components.slice(0, depth)]))) return false;
+    }
+    created.add(JSON.stringify([locationId, ...components]));
+  }
+  return true;
+}
+
 class Fleet implements JobsSlice {
   readonly launched: JobLaunch[] = [];
   readonly scheduled: (JobLaunch & ScheduleTiming)[] = [];
@@ -346,6 +365,9 @@ class Fleet implements JobsSlice {
   execute(args: JobLaunch): JobRunState {
     this.launched.push(args);
     this.running(args.jobId, args.machineId, args.operationId);
+    // What the owner does after the hub has admitted the post: a lease it cannot create is a
+    // start it refuses, and the job ends `refused` without running.
+    if (!leasesCreatable(args.outputs)) this.kill(args.jobId, "refused");
     return this.status({ jobId: args.jobId });
   }
 
@@ -505,6 +527,7 @@ class Fleet implements JobsSlice {
   finish(jobId: string, exitCode: number, files: Readonly<Record<string, unknown>> | null): void {
     const job = this.jobs.get(jobId);
     if (job === undefined) throw new Error(`unknown job ${jobId}`);
+    if (job.state === "refused") throw new Error(`${jobId} was refused at start and never ran`);
     job.state = "exited";
     job.exitCode = exitCode;
     job.archive = files === null ? null : tar(files);
@@ -523,6 +546,7 @@ class Fleet implements JobsSlice {
   seal(jobId: string, archive: Buffer): void {
     const job = this.jobs.get(jobId);
     if (job === undefined) throw new Error(`unknown job ${jobId}`);
+    if (job.state === "refused") throw new Error(`${jobId} was refused at start and never ran`);
     job.state = "exited";
     job.exitCode = 0;
     job.archive = archive;
