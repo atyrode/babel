@@ -2697,8 +2697,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           },
         });
         if (!answered.ok) {
-          if (answered.code === ENGINE_REFUSALS.unconfirmed)
-            throw new Error("unconfirmed Code post");
+          if (answered.code === ENGINE_REFUSALS.unconfirmed) throw new Error(answered.refused);
           await closeMappingPreparation(
             run.id,
             run.prepare_job_id,
@@ -2740,10 +2739,16 @@ export function conductor(deps: ConductorDeps): Conductor {
           });
         }
         await store.db.run(`DELETE FROM run_progress WHERE run_id=?`, [run.id]);
-      } catch {
-        notes.push(
-          `mapping ${run.id}: Code posting or retention unresolved; reservation remains held`,
+      } catch (error) {
+        // No returned job id is an interrupted transport, not a confirmed rejection: the marker
+        // and the reservation stay, and the row says why, as an analysis session's does.
+        const reason = `mapping session posting remains unconfirmed: ${message(error)}`;
+        await store.db.run(
+          `UPDATE runs SET payload=json_set(payload,'$.reason',?) WHERE id=? AND closure IS NULL AND job_id IS NULL`,
+          [reason, run.id],
         );
+        await store.db.run(`UPDATE run_progress SET message=? WHERE run_id=?`, [reason, run.id]);
+        notes.push(`mapping ${run.id}: ${reason}; reservation remains held`);
       }
       store.touch();
     }

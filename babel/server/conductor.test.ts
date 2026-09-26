@@ -7929,8 +7929,13 @@ test("unconfirmed Code post remains visible and reserved across restart, disable
     { actual_cost: null, finished_at: null },
   ]);
   expect((await f.coordinator.spend(clock)).mapping).toBe(0.5);
-  expect(await f.db.query(`SELECT stage FROM run_progress`)).toEqual([
-    { stage: "posting unconfirmed" },
+  // Why it is unresolved is on the row, as it is for an analysis session: an operator watching
+  // a reservation held for ever must be able to read Code's own sentence.
+  expect(await f.db.query(`SELECT stage, message FROM run_progress`)).toEqual([
+    {
+      stage: "posting unconfirmed",
+      message: expect.stringContaining("synthetic lost acknowledgement"),
+    },
   ]);
 });
 
