@@ -1024,14 +1024,23 @@ recipes. The profile is the operator's choice, including its price; Babel neithe
 provider nor holds its credentials. Redaction applies before material reaches the model and before
 generated prose is retained or served.
 
-A mapping drain's start is admitted at the executor's `map-prepare` node and the source owner's
-private mapping target, and posts the first fan itself. Its jobs are ordinary coordinator claims,
-so the mapping subcap, shared ceilings and uncertain-post accounting still apply, and they are
-posted only from wakes that carry native job authority: the start, a Babel job's own settlement,
-and the free catalog's cadence, which is why a mapping drain requires an admitted catalog for its
-route. Reads never post one. Each new preparation or Code posting requires a mapping drain still
-running on the executor; work already posted settles whatever the drain did since. Stopping the
-drain cancels a preparation at `map-prepare` and a posted session through Code.
+A mapping drain's start is admitted at the executor's `map-prepare` node, the source owner's
+private mapping target and the route's Code workspace, and posts the first fan itself. A session
+is posted later, by a wake the press did not make, and that wake is graded against the credential
+of the job whose settlement caused it. So the start discharges `containers:write` in the Code
+profile's container and lends `services:read` for the account broker, and every job of the drain
+carries exactly that (#469). The drain registers its own native cadence at the same `map-prepare`
+node, under the same credential, because a Code session settling wakes Code rather than Babel.
+Only a wake of the drain's own jobs draws mapping work, posts a preparation or posts a session.
+Any other wake still reconciles and closes mapping runs, but it never spends a work's attempt or
+strands a posting on authority it does not hold. The free catalog's cadence carries no paid
+authority and never refills a drain. The start still requires an admitted catalog for its route,
+because the drain maps what the catalog planned. Jobs are ordinary coordinator claims, so the
+mapping subcap, shared ceilings and uncertain-post accounting still apply. Reads never post one.
+Each new preparation or Code posting requires a mapping drain still running on the executor, and
+work already posted settles whatever the drain did since. A drain's cadence is disabled on the
+first wake after the drain ends. Stopping the drain cancels a preparation at `map-prepare` and a
+posted session through Code.
 
 The mapping configuration explicitly names `sourceMachineId` (the Recall owner) and
 `executorMachineId` (native catalog/preparation and eventual Code execution). Both same-machine

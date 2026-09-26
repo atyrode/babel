@@ -5050,6 +5050,12 @@ export const StartMapDrainRequestSchema = z.strictObject({
   source: RecallTargetSchema.extend({
     operationId: z.literal(TRANSCRIPT_MAP_SERVICE_OPERATION),
   }),
+  /**
+   * The Code profile's container, where the drain's sessions are posted. The press discharges
+   * `containers:write` there, and every job and wake of the drain carries exactly that (#469):
+   * a session posted later, from the drain's own wake, is graded against what this press held.
+   */
+  profile: z.strictObject({ kind: z.literal("container"), containerId: refId }),
   concurrent: z.number().int().min(1).max(DRAIN_CONCURRENT_MAX),
   /** Cumulative admission bound; admitted jobs keep running until they settle. */
   maxJobs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
@@ -5482,6 +5488,21 @@ export const TranscriptMapPrepareInputSchema = z.strictObject({
   feedback: transcriptMapText.optional(),
 });
 export type TranscriptMapPrepareInput = z.infer<typeof TranscriptMapPrepareInputSchema>;
+/**
+ * A paid mapping drain's own wake (#469): native scheduler liveness at the `map-prepare` node the
+ * drain was admitted at, posted under the drain's credential so its settlement wakes Babel with
+ * the authority the operator's press discharged. It reads no archive and seals nothing.
+ */
+export const TranscriptMapDrainWakeInputSchema = z.strictObject({
+  kind: z.literal("drain-wake"),
+  drainId: z.string().min(1).max(200),
+  executorMachineId: refId,
+});
+export type TranscriptMapDrainWakeInput = z.infer<typeof TranscriptMapDrainWakeInputSchema>;
+export const TranscriptMapPrepareJobInputSchema = z.union([
+  TranscriptMapPrepareInputSchema,
+  TranscriptMapDrainWakeInputSchema,
+]);
 export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("catalog"),

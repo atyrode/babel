@@ -848,11 +848,15 @@ second arbitration. `map-transcripts` is started with `mapDrainStart`, admitted 
 transcript mapping runs: installing a mapping route and admitting its free catalog spend nothing.
 Its fan holds coordinator claims that the conductor draws and posts — so, unlike the other
 presets, its jobs DO take claims, count against the policy's mapping daily cap and follow the
-uncertain-post accounting. Posting happens only on wakes with native job authority (the start,
-a Babel job settling, and the route's catalog cadence), which is why the start refuses until the
-route's catalog is admitted with `startMapCatalog`. It ends by itself at its target, deadline or
-`maxJobs`, or when no eligible mapping work remains; `drainStop` at the same `map-prepare` node
-cancels a preparation there and a posted session through Code.
+uncertain-post accounting. The start also names the route's Code workspace and discharges
+writing there. Every job of the drain, including the drain's own native cadence at
+`map-prepare`, carries that authority, because the drain's sessions are posted later by its own
+wakes (#469). Nothing else posts paid mapping: not the standing loop, not reads and not the
+catalog cadence. The start still refuses until the route's catalog is admitted with
+`startMapCatalog`, because the drain maps what the catalog planned. It ends by itself at its
+target, deadline or `maxJobs`, or when no eligible mapping work remains, and its cadence is then
+disabled. `drainStop` at the same `map-prepare` node cancels a preparation there and a posted
+session through Code.
 
 ### 11.2 Pre-flight (T-24h, rehearsal)
 

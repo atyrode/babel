@@ -54,6 +54,7 @@ import {
 import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { ensureTerms } from "./store/corpus.ts";
+import { activeDrains, deadlineOf, readDrain } from "./store/drains.ts";
 import { openStore } from "./store/store.ts";
 import manifestJson from "./manifest.json";
 
@@ -182,6 +183,7 @@ function loop(
   catalogPlan: RunPlan,
   mapPreparePlan: RunPlan,
   nativeDispatch: boolean,
+  mappingAuthority = false,
 ): Conductor {
   const engine = codeEngine(actions);
   return conductor({
@@ -226,6 +228,7 @@ function loop(
     catalogPlan,
     mapPreparePlan,
     nativeDispatch,
+    mappingAuthority,
     now: () => store.now(),
   });
 }
@@ -462,12 +465,121 @@ async function catalogAdmitted(policy: Policy): Promise<string | null> {
 }
 
 /** Whether a mapping drain is running on this executor, so its catalog settlement may refill it. */
-async function mappingDrainOn(machineId: string): Promise<boolean> {
-  const rows = await store.db.query<{ id: string }>(
-    `SELECT id FROM drains WHERE preset = ? AND machine_id = ? AND state = 'running' LIMIT 1`,
-    [MAP_DRAIN_PRESET, machineId],
-  );
-  return rows.length > 0;
+/** The scheduler id of one paid mapping drain's own cadence. */
+function mapDrainWakeId(drainId: string): string {
+  return `${BABEL_PLUGIN_ID}.map-drain.${createHash("sha256").update(drainId).digest("hex").slice(0, 32)}`;
+}
+
+/**
+ * A PAID MAPPING DRAIN'S OWN WAKE (#469). A Code session settling wakes Code, not Babel, so a
+ * drain needs a native cadence to settle its sessions and refill its fan — and that cadence is
+ * posted under the drain's own credential, at the `map-prepare` node the press was admitted at,
+ * so every settlement it wakes carries exactly what the press discharged: the Code workspace
+ * and the broker read a session needs. The free catalog's cadence never does this; it carries
+ * no paid authority and must not borrow any.
+ *
+ * `jobs` must be a slice holding the drain's authority (the press, or a wake of the drain's own
+ * jobs). A registration already current is left alone; a new revision replaces it before its
+ * lifetime or the drain's deadline runs out.
+ */
+async function mapDrainWake(
+  jobs: BabelJobs,
+  drainId: string,
+  policy: Policy,
+  deadline: number | null,
+): Promise<string[]> {
+  const route = policy.mapping;
+  if (!policy.enabled || route === undefined) return [];
+  const scheduleId = mapDrainWakeId(drainId);
+  try {
+    const described = await describeMapHost(jobs, route, MACHINE_OPERATIONS.mapPrepare);
+    if ("refused" in described) return [`mapping drain ${drainId} cadence: ${described.refused}`];
+    const installation = described.readiness.installation;
+    const intervalMs = policy.cadenceSeconds * 1000;
+    const limits = planFor(policy, MACHINE_OPERATIONS.mapPrepare).limits;
+    const configuration = createHash("sha256")
+      .update(
+        JSON.stringify({
+          drainId,
+          route,
+          serviceBinding: described.serviceBinding,
+          resourceBindingDigest: described.resourceBindingDigest,
+          intervalMs,
+          limits,
+          installationRevision: installation?.revision,
+          artifactSha256: installation?.artifactSha256,
+        }),
+      )
+      .digest("hex");
+    const at = store.now();
+    const registered = (await jobs.schedules()).filter((row) => row.scheduleId === scheduleId);
+    if (
+      registered.some(
+        (row) => row.revision.startsWith(`${configuration}.`) && row.expiresAt - at > intervalMs,
+      )
+    )
+      return [];
+    const revision = `${configuration}.${String(at)}`;
+    await jobs.schedule({
+      jobId: `mapwake_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
+      machineId: route.executorMachineId,
+      operationId: MACHINE_OPERATIONS.mapPrepare,
+      input: {
+        [INPUT_FIELD]: JSON.stringify({
+          kind: "drain-wake",
+          drainId,
+          executorMachineId: route.executorMachineId,
+        }),
+      },
+      outputs: [],
+      limits,
+      resourceBindingDigest: described.resourceBindingDigest,
+      expectedServiceBindings: { [RECALL_SERVICE_ID]: described.serviceBinding },
+      ...(installation === null
+        ? {}
+        : {
+            installationRevision: installation.revision,
+            artifactSha256: installation.artifactSha256,
+          }),
+      scheduleId,
+      revision,
+      firstNominalAt: at + intervalMs,
+      intervalMs,
+      deadlineMs: intervalMs,
+      expiresAt: Math.min(at + SCHEDULE_LIFETIME_MS, deadline ?? Number.MAX_SAFE_INTEGER),
+      offlinePolicy: "coalesce-one",
+    });
+    return [];
+  } catch (error) {
+    return [`mapping drain ${drainId} cadence: ${message(error)}`];
+  }
+}
+
+/**
+ * Every paid mapping drain's cadence, reconciled on a wake: a cadence whose drain has ended is
+ * disabled on any wake, because stopping one spends nothing; one whose drain still runs is
+ * renewed only where `renew` says this wake carries the drain's authority.
+ */
+async function mapDrainWakes(jobs: BabelJobs, policy: Policy, renew: boolean): Promise<string[]> {
+  const notes: string[] = [];
+  try {
+    const live = new Map(
+      (await activeDrains(store))
+        .filter((drain) => drain.preset === MAP_DRAIN_PRESET)
+        .map((drain) => [mapDrainWakeId(drain.id), drain] as const),
+    );
+    for (const row of await jobs.schedules()) {
+      if (!row.scheduleId.startsWith(`${BABEL_PLUGIN_ID}.map-drain.`) || live.has(row.scheduleId))
+        continue;
+      await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+    }
+    if (renew)
+      for (const drain of live.values())
+        notes.push(...(await mapDrainWake(jobs, drain.id, policy, deadlineOf(drain.target))));
+  } catch (error) {
+    notes.push(`mapping drain cadence: ${message(error)}`);
+  }
+  return notes;
 }
 
 /**
@@ -517,6 +629,8 @@ async function cycle(
   // Only a hook's slice — the settled job's own authority, or the installer's at enable — can
   // post native work; a door's bridge is attenuated to that door's delegates.
   nativeDispatch = false,
+  // Only a wake of a paid mapping drain's own job carries that drain's authority (#469).
+  mappingAuthority = false,
 ): Promise<void> {
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
@@ -531,6 +645,7 @@ async function cycle(
     planFor(policy, MACHINE_OPERATIONS.mapCatalog),
     planFor(policy, MACHINE_OPERATIONS.mapPrepare),
     nativeDispatch,
+    mappingAuthority,
   ).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
@@ -588,6 +703,9 @@ async function cycle(
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
     }
   }
+  // After the controller, so a drain it just ended loses its cadence on this same wake.
+  for (const note of await mapDrainWakes(jobs, policy, mappingAuthority))
+    console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
 }
 
 /**
@@ -648,19 +766,26 @@ const doors = babelDoors(
         ctx.services,
       ),
     concurrentJobs: DRAIN_FAN,
-    startMapping: async (ctx) => {
+    startMapping: async (ctx, drainId) => {
       const { policy } = await coordinated.policy();
       const refusal = await catalogAdmitted(policy);
       if (refusal !== null) return { refused: refusal };
-      return await loop(
-        jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+      const jobs = jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive));
+      const started = await loop(
+        jobs,
         machinesSlice(ctx.machines),
         ctx.actions,
         planFor(policy, BEAT_OPERATION),
         planFor(policy, MACHINE_OPERATIONS.mapCatalog),
         planFor(policy, MACHINE_OPERATIONS.mapPrepare),
         true,
+        true,
       ).tickMapDrains();
+      // The drain's own wake, registered by this press so it carries this press's authority.
+      const row = await readDrain(store, drainId);
+      const cadence =
+        row === null ? [] : await mapDrainWake(jobs, drainId, policy, deadlineOf(row.target));
+      return { launched: started.launched, notes: [...started.notes, ...cadence] };
     },
     now: () => store.now(),
   },
@@ -835,25 +960,19 @@ export const plugin: ServerPluginDef = {
       }
       await dispatched.run({ database, storage: ctx.storage }, async () => {
         if (job.operationId === MACHINE_OPERATIONS.mapCatalog) {
+          // The free lane: it carries no paid authority, so it never refills a paid drain.
           for (const note of await catalogCycle(jobsSlice(ctx.jobs), job.machineId))
             console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);
-          // A Code session settling wakes Code, not Babel: the catalog's cadence is the native
-          // wake that settles a mapping drain's sessions and refills its free slots.
-          if (await mappingDrainOn(job.machineId))
-            await cycle(
-              jobsSlice(ctx.jobs),
-              unaskable(HOOK_WITHOUT_MACHINES),
-              ctx.actions,
-              undefined,
-              true,
-            );
         } else {
+          // A `map-prepare` job — a drain's preparation or its own cadence — was posted under
+          // a paid mapping drain's credential, and this wake carries it (#469).
           await cycle(
             jobsSlice(ctx.jobs),
             unaskable(HOOK_WITHOUT_MACHINES),
             ctx.actions,
             undefined,
             true,
+            job.operationId === MACHINE_OPERATIONS.mapPrepare,
           );
         }
       });

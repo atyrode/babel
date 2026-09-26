@@ -515,6 +515,15 @@ export interface ConductorDeps {
    * drawn there: the claim would spend the work's bounded attempt on an admission refusal.
    */
   readonly nativeDispatch?: boolean;
+  /**
+   * WHETHER THIS WAKE CARRIES A PAID MAPPING DRAIN'S AUTHORITY (#469): the `mapDrainStart` press
+   * itself, or the settlement of a job that press started (a preparation, or the drain's own
+   * cadence at its `map-prepare` node). Only such a credential holds the Code workspace and the
+   * broker read a session needs, so only such a wake draws paid mapping work, posts a
+   * preparation or posts a session. Every other wake still reconciles and closes mapping runs;
+   * it never spends a work's attempt or strands a posting on an authority it does not have.
+   */
+  readonly mappingAuthority?: boolean;
   readonly now: () => number;
 }
 
@@ -2427,7 +2436,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     refused: RefusedDraw[],
     notes: string[],
   ): Promise<number> {
-    if (deps.nativeDispatch !== true || !policy.enabled) return 0;
+    if (deps.nativeDispatch !== true || deps.mappingAuthority !== true || !policy.enabled) return 0;
     const route = mappingPolicy(policy);
     if (route === null) return 0;
     let launched = 0;
@@ -2581,6 +2590,9 @@ export function conductor(deps: ConductorDeps): Conductor {
         await closeMappingPreparation(run.id, run.prepare_job_id, intent, refusal, settled);
         continue;
       }
+      // Posting a preparation or a session spends the drain's authority, which only a wake
+      // carrying it holds; any other wake leaves the prepared run for the drain's next one.
+      if (deps.mappingAuthority !== true) continue;
       if (
         !(await maps.startWork(
           intent.details.work.id,

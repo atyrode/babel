@@ -7612,7 +7612,8 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       return { ok: true, value: job };
     },
   };
-  const tick = (nativeDispatch = true) => {
+  // A native wake in this fixture is the drain's own unless a test says otherwise (#469).
+  const tick = (nativeDispatch = true, mappingAuthority = nativeDispatch) => {
     clock += 1_000;
     return conductor({
       store: f.store,
@@ -7624,6 +7625,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       plan: PLAN,
       mapPreparePlan: UNMETERED_PLAN,
       nativeDispatch,
+      mappingAuthority,
       now: () => clock,
     }).tick();
   };
@@ -7724,6 +7726,28 @@ test("a door's read wake draws no mapping work; the next hook wake posts it with
   await f.tick(true);
   expect(f.fleet.launched.map((launch) => launch.operationId)).toEqual([OPERATIONS.mapPrepare]);
   expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 1n }]);
+});
+
+test("only a wake carrying the drain's authority draws, prepares or posts paid mapping", async () => {
+  // #469: a session is graded against the credential of the job whose settlement woke Babel,
+  // and only a paid drain's own jobs carry the Code workspace and the broker read. A native wake
+  // of anything else — the standing beat, the free catalog — must neither spend a work's attempt
+  // nor strand a posting on an authority it does not hold; it leaves both for the drain's wake.
+  const f = await paidMapDeployment();
+  await f.maps.refreshWork(f.route, new Date(clock).toISOString(), 64);
+  await f.tick(true, false);
+  expect(f.fleet.launched).toEqual([]);
+  expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 0n }]);
+  await f.tick(true, true);
+  expect(f.fleet.launched.map((launch) => launch.operationId)).toEqual([OPERATIONS.mapPrepare]);
+  f.seal();
+  await f.tick(true, false);
+  expect(f.posted).toEqual([]);
+  expect(
+    await f.db.query(`SELECT count(*) n FROM run_progress WHERE stage='posting unconfirmed'`),
+  ).toEqual([{ n: 0n }]);
+  await f.tick(true, true);
+  expect(f.posted).toHaveLength(1);
 });
 
 /** The drain controller over the same fixture: a mapping drain launches nothing itself. */

@@ -696,6 +696,8 @@ export function mapDrainStartRequest(
       serviceId: RECALL_SERVICE_ID,
       operationId: TRANSCRIPT_MAP_SERVICE_OPERATION,
     },
+    // The route's own Code workspace: the press discharges writing there for the drain (#469).
+    profile: { kind: "container", containerId: route.profile.containerId },
     concurrent: draft.concurrent,
     target: {
       deadline: new Date(now + draft.minutesToDeadline * 60_000).toISOString(),

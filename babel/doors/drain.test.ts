@@ -532,17 +532,28 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
   // THE MAPPING START IS ADMITTED WHERE ITS FIRST FAN IS POSTED: the executor's `map-prepare`
   // node and the source owner's private mapping target, as `startMapCatalog` is. A read wake is
   // attenuated below native posting, so this press is the one place paid mapping can begin.
+  // It ALSO discharges writing in the route's Code workspace and lends the broker read, because
+  // the drain's sessions are posted later by its own wakes, graded against what this press held
+  // (#469): without them Code and OMP refuse every session the drain paid to prepare.
   expect(mapBegin?.action.caps).toEqual([
     "machines:run",
     "operations:invoke",
     "services:invoke",
     "network:host",
+    "containers:write",
   ]);
   expect(mapBegin?.action.requirements).toEqual([
     { cap: "machines:run", target: ["operation"] },
     { cap: "operations:invoke", target: ["operation"] },
     { cap: "network:host", target: ["operation"] },
     { cap: "services:invoke", target: ["source"] },
+    { cap: "containers:write", target: ["profile"] },
+  ]);
+  expect(mapBegin?.action.delegates).toEqual([
+    "machines:read",
+    "jobs:read",
+    "locations:write",
+    "services:read",
   ]);
 
   // A start names no node (#279), so it asks what a reading door asks. It CANNOT keep

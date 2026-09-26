@@ -135,12 +135,15 @@ export interface DrainDoorDeps {
   /** The manifest's `concurrentJobs`: the most jobs of one operation a machine runs at once. */
   readonly concurrentJobs: number;
   /**
-   * THE MAPPING DRAIN'S FIRST FAN, under the start's own authority: only the running mapping
-   * drains' dispatch (`Conductor.tickMapDrains`), refused while the route's free catalog is not
-   * admitted — its cadence is the native wake that refills the fan after Code sessions settle.
+   * THE MAPPING DRAIN'S FIRST FAN AND ITS OWN WAKE, under the start's own authority: the running
+   * mapping drains' dispatch (`Conductor.tickMapDrains`) and the drain's native cadence at its
+   * `map-prepare` node, refused while the route's free catalog is not admitted. The cadence is
+   * posted here, so every settlement it wakes carries what this press discharged (#469); the
+   * free catalog's cadence never refills a paid drain.
    */
   startMapping?(
     ctx: Parameters<Door["handler"]>[0],
+    drainId: string,
   ): Promise<
     { readonly launched: number; readonly notes: readonly string[] } | { readonly refused: string }
   >;
@@ -446,13 +449,24 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
     defineServerAction({
       name: ACTIONS.mapDrainStart,
       title: "Drain a usage window on transcript maps",
-      caps: ["machines:run", "operations:invoke", "services:invoke", "network:host"],
-      delegates: ["machines:read", "jobs:read", "locations:write"],
+      caps: [
+        "machines:run",
+        "operations:invoke",
+        "services:invoke",
+        "network:host",
+        "containers:write",
+      ],
+      // `services:read` is spent by the drain's own wakes: Code's session reads the account
+      // broker under the settled job's credential (#469).
+      delegates: ["machines:read", "jobs:read", "locations:write", "services:read"],
       requirements: [
         { cap: "machines:run", target: ["operation"] },
         { cap: "operations:invoke", target: ["operation"] },
         { cap: "network:host", target: ["operation"] },
         { cap: "services:invoke", target: ["source"] },
+        // The one Code workspace this drain's sessions are posted in, discharged at the press
+        // and carried by every job and wake of the drain (#469, manifold#883).
+        { cap: "containers:write", target: ["profile"] },
       ],
       input: StartMapDrainRequestSchema,
       result: DrainStartResultSchema,
@@ -474,6 +488,15 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
           refused:
             `the mapping route runs ${route.executorMachineId} over ${route.sourceMachineId}; ` +
             `this start names ${input.operation.machineId} over ${input.source.machineId}`,
+        };
+      }
+      // The workspace the press discharged is the one the route's sessions run in, or the
+      // drain would carry authority over a container its sessions never touch.
+      if (route.profile.containerId !== input.profile.containerId) {
+        return {
+          refused:
+            `the mapping route's Code profile is in ${route.profile.containerId}; ` +
+            `this start names ${input.profile.containerId}`,
         };
       }
       if (route.dailyCost <= 0) {
@@ -505,7 +528,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       if (row === null) return { refused: `the drain row for ${drainId} was not written` };
       // THE FIRST FAN IS POSTED BY THIS PRESS, for the go/no-go rule's reason (runbook §11.3):
       // nothing is in flight yet, so no settlement could ever start it.
-      const started = await doorDeps.startMapping(ctx);
+      const started = await doorDeps.startMapping(ctx, drainId);
       const launched = "refused" in started ? 0 : started.launched;
       if (launched === 0) {
         const why =

@@ -19,6 +19,7 @@ import {
   type TranscriptMapCatalogInput,
   type TranscriptMapPrepareInput,
   type TranscriptMapCatalogWakeInput,
+  type TranscriptMapDrainWakeInput,
   type Receipt,
 } from "../contract.ts";
 import type { MaterialSink, OutputSink } from "./output.ts";
@@ -109,6 +110,23 @@ export function mapCatalogWake(input: TranscriptMapCatalogWakeInput): Receipt {
     runId: "run_" + crypto.randomUUID().replaceAll("-", ""),
     machineId: input.executorMachineId,
     kind: "mapCatalog",
+    startedAt: at,
+    finishedAt: at,
+    closure: "completed",
+    counts: { wakes: 1 },
+  });
+}
+
+/**
+ * A paid mapping drain's cadence (#469): liveness on stdout at the drain's own `map-prepare`
+ * node, so the settlement wakes Babel under the drain's credential. No archive, no lease.
+ */
+export function mapDrainWake(input: TranscriptMapDrainWakeInput): Receipt {
+  const at = new Date().toISOString();
+  return ReceiptSchema.parse({
+    runId: "run_" + crypto.randomUUID().replaceAll("-", ""),
+    machineId: input.executorMachineId,
+    kind: "mapPrepare",
     startedAt: at,
     finishedAt: at,
     closure: "completed",

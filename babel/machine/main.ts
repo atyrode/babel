@@ -5,7 +5,7 @@ import {
   PrepareInputSchema,
   RESTIC_CREDENTIAL_FILE,
   TranscriptMapCatalogJobInputSchema,
-  TranscriptMapPrepareInputSchema,
+  TranscriptMapPrepareJobInputSchema,
   type OperationWord,
   type Receipt,
 } from "../contract.ts";
@@ -22,6 +22,7 @@ import type { ResticConfig } from "./restic.ts";
 import {
   mapCatalog,
   mapCatalogWake,
+  mapDrainWake,
   mapPrepare,
   openTranscriptMapClient,
 } from "./transcript-map-jobs.ts";
@@ -111,13 +112,10 @@ const DISPATCH: Record<
   },
   mapPrepare: async (raw, out, _progress, material) => {
     try {
+      const input = TranscriptMapPrepareJobInputSchema.parse(raw);
+      if ("kind" in input) return mapDrainWake(input);
       if (!material) throw new Error("Missing material lease.");
-      return await mapPrepare(
-        TranscriptMapPrepareInputSchema.parse(raw),
-        out,
-        material,
-        await openTranscriptMapClient(),
-      );
+      return await mapPrepare(input, out, material, await openTranscriptMapClient());
     } catch {
       throw new Error("Mapping material could not be sealed.");
     }

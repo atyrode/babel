@@ -529,42 +529,53 @@ test("finite material sealing uses exact leaves but only ordered summaries/gaps 
   }
 });
 
-test("catalog cadences complete without a filesystem lease or Recall binding", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "babel-map-wake-"));
-  try {
-    const outputDir = join(directory, "unbound-output");
-    await Bun.write(outputDir, "not a native output lease");
-    const inputPath = join(directory, "wake.json");
-    await Bun.write(
-      inputPath,
-      JSON.stringify({
+test("mapping cadences complete without a filesystem lease or Recall binding", async () => {
+  // The free catalog's cadence and a paid drain's own wake (#469) are liveness at their node:
+  // neither reads the archive nor seals material, so neither may demand a lease.
+  const cadences = [
+    {
+      operation: "mapCatalog" as const,
+      input: {
         kind: "catalog-wake",
         sourceMachineId: "source-synthetic",
         executorMachineId: "synthetic",
-      }),
-    );
-    const first = await run({
-      operation: "mapCatalog",
-      inputPath,
-      outputDir,
-      materialDir: "",
-    });
-    const second = await run({
-      operation: "mapCatalog",
-      inputPath,
-      outputDir,
-      materialDir: "",
-    });
-    if (!first || !second) throw new Error("A finite cadence must return its native receipt.");
-    expect(first).toMatchObject({
-      kind: "mapCatalog",
-      closure: "completed",
-      counts: { wakes: 1 },
-    });
-    expect(first.mapping).toBeUndefined();
-    expect(second.mapping).toBeUndefined();
-    expect(second.runId).not.toBe(first.runId);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
+      },
+    },
+    {
+      operation: "mapPrepare" as const,
+      input: { kind: "drain-wake", drainId: "drn_synthetic", executorMachineId: "synthetic" },
+    },
+  ];
+  for (const cadence of cadences) {
+    const directory = await mkdtemp(join(tmpdir(), "babel-map-wake-"));
+    try {
+      const outputDir = join(directory, "unbound-output");
+      await Bun.write(outputDir, "not a native output lease");
+      const inputPath = join(directory, "wake.json");
+      await Bun.write(inputPath, JSON.stringify(cadence.input));
+      const first = await run({
+        operation: cadence.operation,
+        inputPath,
+        outputDir,
+        materialDir: "",
+      });
+      const second = await run({
+        operation: cadence.operation,
+        inputPath,
+        outputDir,
+        materialDir: "",
+      });
+      if (!first || !second) throw new Error("A finite cadence must return its native receipt.");
+      expect(first).toMatchObject({
+        kind: cadence.operation,
+        closure: "completed",
+        counts: { wakes: 1 },
+      });
+      expect(first.mapping).toBeUndefined();
+      expect(second.mapping).toBeUndefined();
+      expect(second.runId).not.toBe(first.runId);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 });
