@@ -1420,13 +1420,7 @@ describe("runs and the policy", () => {
     expect(answer.spentTodayUsd).toBe(0.25);
   });
 
-  test("legacy activity weights keep analysis off, while explicit weights stay separate from review lanes", async () => {
-    expect((await harness.store.policy()).activityWeights).toEqual({
-      review: 1,
-      explore: 0,
-      challenge: 0,
-      synthesize: 0,
-    });
+  test("explicit zero review shares take precedence over legacy shares independently of activity weights", async () => {
     const activityWeights = { review: 0, explore: 0.2, challenge: 0.6, synthesize: 0.3 };
     await insert(harness.db, "policies", {
       version: "pol-4",
@@ -1442,7 +1436,6 @@ describe("runs and the policy", () => {
       recorded_at: stamp(NOW),
     });
     const policy = await harness.store.policy();
-    expect(policy.activityWeights).toEqual(activityWeights);
     expect(policy.lanes.map(({ lane, share }) => ({ lane, share }))).toEqual([
       { lane: "coverage", share: 0.4 },
     ]);

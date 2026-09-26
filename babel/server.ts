@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import {
   defineServerPlugin,
   type GuestDatabase,
@@ -12,8 +13,15 @@ import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   DRAIN_CONCURRENT_MAX,
+  INPUT_FIELD,
   MACHINE_OPERATIONS,
+  MAP_DRAIN_PRESET,
+  RECALL_SERVICE_ID,
   type OperationName,
+  TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY,
+  TranscriptMapCatalogAdmissionSchema,
+  TranscriptMapConfigSchema,
+  type TranscriptMapCatalogAdmission,
 } from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
 import { declaredServices } from "./doors/services.ts";
@@ -25,6 +33,8 @@ import { embedder, type EmbeddingServices } from "./server/embed.ts";
 import {
   BEAT_OPERATION,
   conductor,
+  describeMapHost,
+  SCHEDULE_LIFETIME_MS,
   type Conductor,
   type KeysSlice,
   type MachinesSlice,
@@ -81,10 +91,10 @@ import manifestJson from "./manifest.json";
 /**
  * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column, table, index and
  * trigger `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
- * `2026-09-21-store-v1-recall-traces` — recorded under the same key by the enable before
+ * `2026-09-24-store-v1-archive-captures` — recorded under the same key by the enable before
  * it — is its predecessor.
  */
-const STORE_MIGRATION = "2026-09-24-store-v1-archive-captures";
+const STORE_MIGRATION = "2026-09-25-store-v1-transcript-maps";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -169,6 +179,9 @@ function loop(
   machines: MachinesSlice,
   actions: ActionsSlice | undefined,
   plan: RunPlan,
+  catalogPlan: RunPlan,
+  mapPreparePlan: RunPlan,
+  nativeDispatch: boolean,
 ): Conductor {
   const engine = codeEngine(actions);
   return conductor({
@@ -210,6 +223,9 @@ function loop(
     },
     keys,
     plan,
+    catalogPlan,
+    mapPreparePlan,
+    nativeDispatch,
     now: () => store.now(),
   });
 }
@@ -230,6 +246,7 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
   const payload = rows[0]?.payload;
   if (payload === undefined) return {};
   let held: unknown;
+  let mapping: Record<string, unknown> | undefined;
   try {
     const parsed = JSON.parse(payload) as Record<string, unknown>;
     const review = parsed["review"];
@@ -238,6 +255,13 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
         ? (review as Record<string, unknown>)["recipes"]
         : undefined;
     held = Array.isArray(routed) ? routed : parsed["recipes"];
+    const configuredMapping = parsed["mapping"];
+    if (
+      typeof configuredMapping === "object" &&
+      configuredMapping !== null &&
+      !Array.isArray(configuredMapping)
+    )
+      mapping = configuredMapping as Record<string, unknown>;
   } catch {
     return {};
   }
@@ -253,6 +277,8 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
     if (typeof id !== "string" || id === "") continue;
     if (typeof body !== "string" || body.trim() === "") continue;
     if (recipe["enabled"] === false) continue;
+    // Mapping methods never become exploration methods, including the implicit all-recipes case.
+    if (id === mapping?.["generateRecipe"] || id === mapping?.["reviewRecipe"]) continue;
     cookbook[id] = {
       id,
       version: typeof version === "number" && Number.isFinite(version) ? version : 0,
@@ -280,6 +306,169 @@ const LAUNCH_DEPS: LaunchDeps = {
 
 /** The launch path every start goes through, doors and drain controller alike (#258). */
 const machinery = launchMachinery(store, LAUNCH_DEPS);
+
+/**
+ * One native cadence per admitted machine. Keep its immutable template until configuration or
+ * pins change or renewal is due; replacement is the SDK's, never a plugin timer or a scan.
+ */
+async function catalogSchedule(
+  jobs: BabelJobs,
+  machineId: string,
+  policy: Policy,
+  admission: TranscriptMapCatalogAdmission | null,
+): Promise<string[]> {
+  const notes: string[] = [];
+  const machineKey = createHash("sha256").update(machineId).digest("hex").slice(0, 32);
+  const scheduleId = `${BABEL_PLUGIN_ID}.map-catalog.${machineKey}`;
+  try {
+    const registered = (await jobs.schedules()).filter(
+      (row) =>
+        row.scheduleId === scheduleId &&
+        row.machineId === machineId &&
+        row.operationId === MACHINE_OPERATIONS.mapCatalog,
+    );
+    if (!policy.enabled || policy.mapping?.executorMachineId !== machineId || admission === null) {
+      for (const row of registered)
+        await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+      return notes;
+    }
+    const intervalMs = policy.cadenceSeconds * 1000;
+    const described = await describeMapHost(jobs, policy.mapping, MACHINE_OPERATIONS.mapCatalog);
+    if ("refused" in described) return [`catalog cadence: ${described.refused}`];
+    if (
+      JSON.stringify(admission.route) !==
+        JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping)) ||
+      admission.resourceBindingDigest !== described.resourceBindingDigest ||
+      JSON.stringify(admission.serviceBinding) !== JSON.stringify(described.serviceBinding)
+    ) {
+      for (const row of registered)
+        await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+      return ["catalog admission changed; startMapCatalog is required again"];
+    }
+    const installation = described.readiness.installation;
+    const limits = planFor(policy, MACHINE_OPERATIONS.mapCatalog).limits;
+    const configuration = createHash("sha256")
+      .update(
+        JSON.stringify({
+          machineId,
+          sourceMachineId: policy.mapping.sourceMachineId,
+          route: policy.mapping,
+          serviceBinding: described.serviceBinding,
+          resourceBindingDigest: described.resourceBindingDigest,
+          intervalMs,
+          limits,
+          installationRevision: installation?.revision,
+          artifactSha256: installation?.artifactSha256,
+        }),
+      )
+      .digest("hex");
+    const at = store.now();
+    if (
+      registered.some(
+        (row) => row.revision.startsWith(`${configuration}.`) && row.expiresAt - at > intervalMs,
+      )
+    )
+      return notes;
+    const revision = `${configuration}.${String(at)}`;
+    await jobs.schedule({
+      jobId: `catalog_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
+      machineId,
+      operationId: MACHINE_OPERATIONS.mapCatalog,
+      input: {
+        [INPUT_FIELD]: JSON.stringify({
+          kind: "catalog-wake",
+          sourceMachineId: policy.mapping.sourceMachineId,
+          executorMachineId: machineId,
+        }),
+      },
+      outputs: [],
+      limits,
+      resourceBindingDigest: described.resourceBindingDigest,
+      expectedServiceBindings: { [RECALL_SERVICE_ID]: admission.serviceBinding },
+      ...(installation === null
+        ? {}
+        : {
+            installationRevision: installation.revision,
+            artifactSha256: installation.artifactSha256,
+          }),
+      scheduleId,
+      revision,
+      firstNominalAt: at + intervalMs,
+      intervalMs,
+      deadlineMs: intervalMs,
+      expiresAt: at + SCHEDULE_LIFETIME_MS,
+      offlinePolicy: "coalesce-one",
+    });
+  } catch (error) {
+    notes.push(`catalog cadence: ${message(error)}`);
+  }
+  return notes;
+}
+
+/** Only the explicitly admitted machine may continue this free lane, including after settlement. */
+async function catalogCycle(
+  jobs: BabelJobs,
+  machineId: string,
+  explicitAdmission?: TranscriptMapCatalogAdmission,
+): Promise<readonly string[]> {
+  const { policy, standing } = await coordinated.policy();
+  const parsed = TranscriptMapCatalogAdmissionSchema.safeParse(
+    explicitAdmission ??
+      JSON.parse((await keys.get(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY)) ?? "null"),
+  );
+  const admission =
+    parsed.success &&
+    policy.enabled &&
+    policy.mapping !== undefined &&
+    parsed.data.route.executorMachineId === machineId &&
+    JSON.stringify(parsed.data.route) ===
+      JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping))
+      ? parsed.data
+      : null;
+  if (explicitAdmission !== undefined && admission !== null)
+    await keys.set(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY, JSON.stringify(admission));
+  const notes = await catalogSchedule(jobs, machineId, standing, admission);
+  return [
+    ...notes,
+    ...(await loop(
+      jobs,
+      unaskable(HOOK_WITHOUT_MACHINES),
+      undefined,
+      planFor(policy, BEAT_OPERATION),
+      planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+      planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+      // The free catalog lane never enters paid dispatch, whatever authority settled it.
+      false,
+    ).tickCatalog(machineId, admission ?? undefined)),
+  ];
+}
+
+/**
+ * WHY A MAPPING DRAIN CANNOT START, or null. The free catalog's cadence is the native wake that
+ * refills a mapping drain's fan once its Code sessions settle — a Code session settling wakes
+ * Code, never Babel — so a drain is refused while that cadence is not admitted for the route.
+ */
+async function catalogAdmitted(policy: Policy): Promise<string | null> {
+  if (!policy.enabled || policy.mapping === undefined)
+    return "the policy in force installs no transcript-mapping route";
+  const parsed = TranscriptMapCatalogAdmissionSchema.safeParse(
+    JSON.parse((await keys.get(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY)) ?? "null"),
+  );
+  return parsed.success &&
+    JSON.stringify(parsed.data.route) ===
+      JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping))
+    ? null
+    : `start the free catalog for this route (${ACTIONS.startMapCatalog}) first: its cadence is what refills a mapping drain`;
+}
+
+/** Whether a mapping drain is running on this executor, so its catalog settlement may refill it. */
+async function mappingDrainOn(machineId: string): Promise<boolean> {
+  const rows = await store.db.query<{ id: string }>(
+    `SELECT id FROM drains WHERE preset = ? AND machine_id = ? AND state = 'running' LIMIT 1`,
+    [MAP_DRAIN_PRESET, machineId],
+  );
+  return rows.length > 0;
+}
 
 /**
  * The controller's dependencies over one wake's own authority (#258, #279).
@@ -325,12 +514,24 @@ async function cycle(
   machines: MachinesSlice,
   actions: ActionsSlice | undefined,
   services?: EmbeddingServices | undefined,
+  // Only a hook's slice — the settled job's own authority, or the installer's at enable — can
+  // post native work; a door's bridge is attenuated to that door's delegates.
+  nativeDispatch = false,
 ): Promise<void> {
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
-  // limits are read for; a run that reaches a model is Code's to post (#279).
+  // limits are read for; a run that reaches a model is Code's to post (#279). Mapping's native
+  // work uses each of its operations' own declared limits.
   const plan = planFor(policy, BEAT_OPERATION);
-  const report = await loop(jobs, machines, actions, plan).tick();
+  const report = await loop(
+    jobs,
+    machines,
+    actions,
+    plan,
+    planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+    planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+    nativeDispatch,
+  ).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
     drew nothing, or stopped on a gap, or refused a dispatch, left no trace outside the tick
@@ -447,6 +648,20 @@ const doors = babelDoors(
         ctx.services,
       ),
     concurrentJobs: DRAIN_FAN,
+    startMapping: async (ctx) => {
+      const { policy } = await coordinated.policy();
+      const refusal = await catalogAdmitted(policy);
+      if (refusal !== null) return { refused: refusal };
+      return await loop(
+        jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+        machinesSlice(ctx.machines),
+        ctx.actions,
+        planFor(policy, BEAT_OPERATION),
+        planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+        planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+        true,
+      ).tickMapDrains();
+    },
     now: () => store.now(),
   },
   CONCURRENT_JOBS,
@@ -454,6 +669,12 @@ const doors = babelDoors(
   // `services` block on `archive` and `verify` is the declaration; the composer behind the two
   // owner doors turns it into the policy, so the binding and the policy cannot be edited apart.
   declaredServices(manifest),
+  async (ctx, admission) =>
+    await catalogCycle(
+      jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+      admission.route.executorMachineId,
+      admission,
+    ),
 );
 
 /**
@@ -476,7 +697,9 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
     return await dispatched.run({ database: served, storage: ctx.storage }, async () => {
       const produced = await handler(ctx, args);
       const at = ctx.now();
-      if (wakes && at - woke >= WAKE_FLOOR_MS) {
+      const refused =
+        produced !== null && typeof produced === "object" && Object.hasOwn(produced, "refused");
+      if (wakes && !refused && at - woke >= WAKE_FLOOR_MS) {
         woke = at;
         try {
           await cycle(
@@ -581,6 +804,8 @@ export const plugin: ServerPluginDef = {
             installer === undefined ? unauthorized(ENABLE_WITHOUT_JOBS) : jobsSlice(installer),
             unaskable(HOOK_WITHOUT_MACHINES),
             ctx.actions,
+            undefined,
+            installer !== undefined,
           );
         });
       } catch (error) {
@@ -609,7 +834,28 @@ export const plugin: ServerPluginDef = {
         throw new Error(`${BABEL_PLUGIN_ID}: a settled job was served without the plugin's tables`);
       }
       await dispatched.run({ database, storage: ctx.storage }, async () => {
-        await cycle(jobsSlice(ctx.jobs), unaskable(HOOK_WITHOUT_MACHINES), ctx.actions);
+        if (job.operationId === MACHINE_OPERATIONS.mapCatalog) {
+          for (const note of await catalogCycle(jobsSlice(ctx.jobs), job.machineId))
+            console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);
+          // A Code session settling wakes Code, not Babel: the catalog's cadence is the native
+          // wake that settles a mapping drain's sessions and refills its free slots.
+          if (await mappingDrainOn(job.machineId))
+            await cycle(
+              jobsSlice(ctx.jobs),
+              unaskable(HOOK_WITHOUT_MACHINES),
+              ctx.actions,
+              undefined,
+              true,
+            );
+        } else {
+          await cycle(
+            jobsSlice(ctx.jobs),
+            unaskable(HOOK_WITHOUT_MACHINES),
+            ctx.actions,
+            undefined,
+            true,
+          );
+        }
       });
     },
   },

@@ -164,6 +164,7 @@ export interface SessionRequest {
   /** The `prepare` job whose sealed `material` output this run reads, when one is needed. */
   readonly prepareJobId?: string | undefined;
   readonly inferenceLimits?: ActionInput<"runSession">["inferenceLimits"];
+  readonly isolation?: ActionInput<"runSession">["isolation"];
 }
 
 export interface CodeEngine {
@@ -397,6 +398,7 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
         ...(request.inferenceLimits === undefined
           ? {}
           : { inferenceLimits: request.inferenceLimits }),
+        ...(request.isolation === undefined ? {} : { isolation: request.isolation }),
       });
     },
 

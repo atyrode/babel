@@ -7,30 +7,32 @@ import {
   RECALL_MAX_RESULT_BYTES,
   RECALL_REQUEST_TTL_MS,
   RESTIC_CREDENTIAL_FILE,
-  RecallReplySchema,
+  ArchiveServiceReplySchema,
+  ArchiveServiceRequestSchema,
+  TranscriptMapNativeRequestSchema,
   RecallRuntimeInputSchema,
   RecallServiceBodySchema,
-  RecallServiceRequestSchema,
+  type ArchiveServiceReply,
+  type ArchiveServiceRequest,
   type RecallPolicy,
   type RecallReply,
   type RecallRequest,
-  type RecallServiceRequest,
 } from "../contract.ts";
-import { createRecallArchive } from "./recall-archive.ts";
+import { createRecallArchive, type RecallArchive } from "./recall-archive.ts";
 import { openRepo, resticConfig } from "./restic.ts";
 
-type Archive = Awaited<ReturnType<typeof createRecallArchive>>;
 interface Pending {
   readonly classId: string;
-  readonly request: RecallRequest;
+  readonly request: Exclude<ArchiveServiceRequest["request"], { kind: "poll" }>;
+  readonly privileged: boolean;
   readonly digest: string;
-  reply: RecallReply;
+  reply: ArchiveServiceReply;
   expiresAt: number;
 }
 
 /** The native owner supplies the bearer and fixes each class's route. Request JSON has neither. */
 export function openRecallService(options: {
-  archive: Archive;
+  archive: RecallArchive;
   policy: RecallPolicy;
   bearer: string;
   now?: () => number;
@@ -38,11 +40,28 @@ export function openRecallService(options: {
   if (!/^[A-Za-z0-9_-]{32,128}$/.test(options.bearer))
     throw new Error("Recall service binding is unavailable.");
   const authorization = Buffer.from(`Bearer ${options.bearer}`);
-  const routes = new Map(options.policy.classes.map((entry) => [`/recall/${entry.id}`, entry.id]));
-  const classQueueLimit = Math.max(1, Math.floor(RECALL_MAX_REQUESTS / routes.size));
+  const routes = new Map<string, { classId: string; privileged: boolean; maps: boolean }>(
+    options.policy.classes.flatMap(
+      ({ id }) =>
+        [
+          [`/recall/${id}`, { classId: id, privileged: false, maps: false }],
+          [`/maps/${id}`, { classId: id, privileged: false, maps: true }],
+        ] as const,
+    ),
+  );
+  if (options.policy.mappingClassId)
+    routes.set("/mapping", {
+      classId: options.policy.mappingClassId,
+      privileged: true,
+      maps: true,
+    });
+  const classQueueLimit = Math.max(
+    1,
+    Math.floor(RECALL_MAX_REQUESTS / options.policy.classes.length),
+  );
   const now = options.now ?? Date.now;
   const pending = new Map<string, Pending>();
-  const queues = new Map<string, Pending[]>([...routes.values()].map((classId) => [classId, []]));
+  const queues = new Map<string, Pending[]>(options.policy.classes.map(({ id }) => [id, []]));
   const classQueues = [...queues.values()];
   let nextClass = 0;
   let stopped = false;
@@ -62,8 +81,15 @@ export function openRecallService(options: {
         }
         if (entry === undefined) break;
         try {
-          const result = await options.archive.execute(entry.classId, entry.request);
-          const reply = RecallReplySchema.parse({ ...entry.reply, state: "complete", result });
+          const mapped = TranscriptMapNativeRequestSchema.safeParse(entry.request);
+          const result = mapped.success
+            ? await options.archive.executeMap(entry.classId, mapped.data, entry.privileged)
+            : await options.archive.execute(entry.classId, entry.request as RecallRequest);
+          const reply = ArchiveServiceReplySchema.parse({
+            ...entry.reply,
+            state: "complete",
+            result,
+          });
           if (Buffer.byteLength(JSON.stringify(reply)) > RECALL_MAX_RESULT_BYTES)
             throw new Error("Recall response exceeds its bound.");
           entry.reply = reply;
@@ -89,10 +115,11 @@ export function openRecallService(options: {
       const supplied = Buffer.from(request.headers.get("authorization") ?? "");
       if (supplied.length !== authorization.length || !timingSafeEqual(supplied, authorization))
         return new Response(null, { status: 401 });
-      const classId = routes.get(new URL(request.url).pathname);
-      if (classId === undefined || request.method !== "POST")
+      const route = routes.get(new URL(request.url).pathname);
+      if (route === undefined || request.method !== "POST")
         return new Response(null, { status: 404 });
-      let frame: RecallServiceRequest;
+      const { classId, privileged, maps } = route;
+      let frame: ArchiveServiceRequest;
       try {
         const bytes = await request.arrayBuffer();
         if (bytes.byteLength > RECALL_MAX_REQUEST_BODY_BYTES)
@@ -100,16 +127,26 @@ export function openRecallService(options: {
         const body = RecallServiceBodySchema.parse(
           JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
         );
-        frame = RecallServiceRequestSchema.parse(JSON.parse(body.request));
+        frame = ArchiveServiceRequestSchema.parse(JSON.parse(body.request));
       } catch {
         return new Response(null, { status: 400 });
+      }
+      if (frame.request.kind !== "poll") {
+        const mapping = TranscriptMapNativeRequestSchema.safeParse(frame.request);
+        if (maps !== mapping.success) return new Response(null, { status: 403 });
+        if (
+          mapping.success &&
+          !privileged &&
+          !["map-context", "map-inventory", "map-authorize", "map-span"].includes(mapping.data.kind)
+        )
+          return new Response(null, { status: 403 });
       }
       if (stopped) return new Response(null, { status: 503 });
       const at = now();
       for (const [key, entry] of pending) {
         if (entry.reply.state !== "pending" && entry.expiresAt <= at) pending.delete(key);
       }
-      const key = `${classId}/${frame.requestId}`;
+      const key = `${privileged ? "mapping" : maps ? "maps" : "recall"}/${classId}/${frame.requestId}`;
       const held = pending.get(key);
       if (frame.request.kind === "poll")
         return Response.json(
@@ -143,6 +180,7 @@ export function openRecallService(options: {
         pending.delete(oldestTerminal);
       const entry: Pending = {
         classId,
+        privileged,
         request: frame.request,
         digest,
         reply: { requestId: frame.requestId, state: "pending" },
@@ -177,7 +215,7 @@ export async function runRecallService(raw: unknown): Promise<void> {
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
   let context: ReturnType<typeof openWorkerContext> | undefined;
-  let archive: Archive | undefined;
+  let archive: RecallArchive | undefined;
   let service: ReturnType<typeof openRecallService> | undefined;
   try {
     const { policy } = RecallRuntimeInputSchema.parse(raw);

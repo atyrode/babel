@@ -520,13 +520,30 @@ afterEach(() => {
   harness.close();
 });
 
-test("the roster is a start, a dry read and a stop, and none of them names a node", () => {
+test("the roster is two starts, a dry read and a stop; only the mapping start names nodes", () => {
   expect(doors.map((entry) => entry.action.name)).toEqual([
     ACTIONS.drainStart,
+    ACTIONS.mapDrainStart,
     ACTIONS.drainStatus,
     ACTIONS.drainStop,
   ]);
-  const [begin, read, stop] = doors as readonly Door[];
+  const [begin, mapBegin, read, stop] = doors as readonly Door[];
+
+  // THE MAPPING START IS ADMITTED WHERE ITS FIRST FAN IS POSTED: the executor's `map-prepare`
+  // node and the source owner's private mapping target, as `startMapCatalog` is. A read wake is
+  // attenuated below native posting, so this press is the one place paid mapping can begin.
+  expect(mapBegin?.action.caps).toEqual([
+    "machines:run",
+    "operations:invoke",
+    "services:invoke",
+    "network:host",
+  ]);
+  expect(mapBegin?.action.requirements).toEqual([
+    { cap: "machines:run", target: ["operation"] },
+    { cap: "operations:invoke", target: ["operation"] },
+    { cap: "network:host", target: ["operation"] },
+    { cap: "services:invoke", target: ["source"] },
+  ]);
 
   // A start names no node (#279), so it asks what a reading door asks. It CANNOT keep
   // `machines:run` at the explore operation: the host discharges that before the handler runs

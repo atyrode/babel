@@ -11,6 +11,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Transcript maps are navigation artifacts, never evidence.** The capture, store and read layer
+  keeps immutable source coordinates, bounded hierarchy and versioned prose outside the frontier.
+  Summary and source traces stay distinct, current disclosure is checked even after cache warming,
+  and only actually served summaries become review candidates. A scoped start and stdout-only
+  native cadence continue free catalog work without ordinary scans or Code calls. Requests retain
+  their intent before posting and recover without losing a cursor or buying a duplicate effect;
+  only the named result lease is ingested, so native logs cannot stall receipt replay. Real-store
+  regressions cover interrupted writes and ambiguous admission; synthetic archived-source
+  exercises verify exact spans, class boundaries and citation refusal. Paid generation, served
+  review and bounded correction run only inside an operator-started `map-transcripts` drain
+  (`mapDrainStart`): installing a route or admitting its free catalog spends nothing, reads never
+  draw mapping work, and the drain stops at its target, deadline or `maxJobs`, or when no eligible
+  work remains. Its jobs are ordinary claims under the mapping daily cap; conductor regressions
+  cover read-wake exclusion, drain-only dispatch, target stop, self-ending and stop cancellation
+  at `map-prepare` (#223).
+
 - **The machine half can catalogue the archive, and every restic read runs without a lock.**
   `babel/machine/catalog.ts` lists the snapshots tagged exactly `babel` (never the hub store's
   `babel-store` backup) and writes one session row per capture, newest per label, with times

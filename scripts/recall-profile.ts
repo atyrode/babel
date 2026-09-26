@@ -5,6 +5,9 @@ import {
   BABEL_PLUGIN_ID,
   RECALL_RESULT_PROJECTION,
   RECALL_SKILL_PROJECTION,
+  TRANSCRIPT_MAP_LOCATE_RESULT_PROJECTION,
+  TRANSCRIPT_MAP_READ_RESULT_PROJECTION,
+  TRANSCRIPT_MAP_RESULT_PROJECTION,
 } from "../babel/contract.ts";
 
 // This is a source contract, never approval of a declaration discovered from a live hub.
@@ -26,6 +29,19 @@ const profile = [
     contractDigest: await actionResultProjectionDigest(RECALL_SKILL_PROJECTION),
     maxResultBytes: RECALL_SKILL_PROJECTION.maxResultBytes,
   },
+  ...(await Promise.all(
+    (
+      [
+        [ACTIONS.mapRead, TRANSCRIPT_MAP_READ_RESULT_PROJECTION],
+        [ACTIONS.mapSource, TRANSCRIPT_MAP_RESULT_PROJECTION],
+        [ACTIONS.mapLocate, TRANSCRIPT_MAP_LOCATE_RESULT_PROJECTION],
+      ] as const
+    ).map(async ([action, projection]) => ({
+      door: `${BABEL_PLUGIN_ID}.${action}`,
+      contractDigest: await actionResultProjectionDigest(projection),
+      maxResultBytes: projection.maxResultBytes,
+    })),
+  )),
 ];
 const expected = `${JSON.stringify(profile, null, 2)}\n`;
 const destination = new URL("../babel/recall-profile.json", import.meta.url);

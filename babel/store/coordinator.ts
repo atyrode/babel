@@ -48,17 +48,24 @@ import type {
   INTEREST_STATES,
   Stage,
   StopReason,
+  TranscriptMapPolicy,
+  TranscriptMapRole,
+  TranscriptMapWork,
 } from "../contract.ts";
 import {
   ACTIVITIES,
   ActivityWeightsSchema,
   ANALYSIS_ROLES,
   CodeProfileSchema,
+  PolicyRecipeSchema,
+  TranscriptMapConfigSchema,
+  TRANSCRIPT_MAP_ROLES,
   ROLES,
   STAGES,
   SuggesterSchema,
 } from "../contract.ts";
 import { analysisOffers, type AnalysisOffer } from "./analysis.ts";
+import { transcriptMaps } from "./transcript-maps.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
 export interface CoordinatorStore {
@@ -161,30 +168,6 @@ export function leaseFloor(batchSize: number): number {
 }
 
 /**
- * The policy as the `policies` row carries it. Every field defaults to the measured constant, so
- * a payload that predates a setting is completed rather than refused — and `enabled` defaults
- * to false, which is §14's activation gate expressed as a value: turning evaluation on is one
- * recorded operator decision and never a migration.
- *
- * `concurrentPerMachine` is the one field with no constant of its own, and deliberately: it is
- * the batch READ PER MACHINE (#260), and the number every stored policy was written with is its
- * `batchSize`. A policy that predates the split therefore means "this many at once, wherever
- * they run", which on a one-machine deployment is exactly what it has always meant.
- */
-const PolicyRecipeSchema = z.strictObject({
-  id: z.string().trim().min(1).max(200),
-  version: z.number().int().min(0),
-  title: z.string().max(400).optional(),
-  looksFor: z.string().max(2_000).optional(),
-  enabled: z.boolean().optional(),
-  body: z
-    .string()
-    .trim()
-    .min(1)
-    .max(64 * 1024),
-});
-
-/**
  * Where an autonomous draw goes and which reviewed method each role uses. The route belongs to
  * the policy because enabling evaluation without naming the Code profile that will spend it is
  * not a complete authorization. Recipe bodies are carried with the versioned policy so a later
@@ -221,6 +204,7 @@ export const PolicySchema = z.strictObject({
   batchSize: z.number().int().default(MEASURED.batchSize),
   concurrentPerMachine: z.number().int().optional(),
   review: ReviewDispatchSchema.optional(),
+  mapping: TranscriptMapConfigSchema.optional(),
   /**
    * WHICH PLUGINS MAY SUGGEST, AND UNDER WHICH PRINCIPAL (#410).
    *
@@ -244,6 +228,12 @@ export const PolicySchema = z.strictObject({
   recipes: z.array(z.record(z.string(), z.unknown())).max(32).optional(),
 });
 export type Policy = z.infer<typeof PolicySchema>;
+
+/** Resolve mapping's selected methods from the policy's single versioned recipe library. */
+export function mappingPolicy(policy: Policy): TranscriptMapPolicy | null {
+  if (policy.mapping === undefined || policy.review === undefined) return null;
+  return { ...policy.mapping, recipes: policy.review.recipes };
+}
 
 /**
  * How many assignments one MACHINE may hold at once under this policy: what it says, or the
@@ -362,6 +352,16 @@ export function validatePolicy(policy: Policy, concurrentJobs: number | null): s
       if (!ids.has(recipeId)) {
         return `review role ${role} names missing recipe ${JSON.stringify(recipeId)}`;
       }
+    }
+  }
+  if (policy.mapping !== undefined) {
+    const parsed = TranscriptMapConfigSchema.safeParse(policy.mapping);
+    if (!parsed.success) return `invalid mapping configuration: ${parsed.error.message}`;
+    for (const recipeId of [policy.mapping.generateRecipe, policy.mapping.reviewRecipe]) {
+      if (
+        !policy.review?.recipes.some((recipe) => recipe.id === recipeId && recipe.enabled !== false)
+      )
+        return `mapping names missing recipe ${JSON.stringify(recipeId)} in review.recipes`;
     }
   }
   // A PRINCIPAL NAMES ONE SUGGESTER. The door resolves a caller by its principal, so the same
@@ -560,7 +560,7 @@ interface AssignmentBase {
   readonly recordId: string;
   readonly rootId: string;
   readonly kind: string;
-  readonly lane: Lane;
+  readonly lane: Lane | "mapping";
   readonly policyVersion: string;
   readonly ordinal: number;
   /** The seed this draw ran under, as a decimal string; half of what makes it replayable. */
@@ -576,16 +576,26 @@ interface AssignmentBase {
 export interface ReviewAssignment extends AssignmentBase {
   readonly activity: "review";
   readonly role: Role;
+  readonly lane: Lane;
 }
 
 export interface AnalysisAssignment extends AssignmentBase {
   readonly activity: Stage;
   readonly role: AnalysisRole;
+  readonly lane: Lane;
   readonly selectors: readonly string[];
   readonly brief: readonly AnalysisBriefRecord[];
 }
 
-export type Assignment = ReviewAssignment | AnalysisAssignment;
+export interface MappingAssignment extends AssignmentBase {
+  readonly activity: "mapping";
+  readonly role: TranscriptMapRole;
+  readonly work: TranscriptMapWork;
+  readonly kind: "transcript-map";
+  readonly lane: "mapping";
+}
+
+export type Assignment = ReviewAssignment | AnalysisAssignment | MappingAssignment;
 
 export type DrawResult =
   | {
@@ -606,6 +616,12 @@ export interface DrawRequest {
    * fleet would allow.
    */
   readonly machines?: readonly string[];
+  /**
+   * `"mapping"` draws ONLY transcript-mapping work, for an operator-started mapping drain whose
+   * wake can post the native preparation. Mapping is never a standing activity: an ordinary draw
+   * never hands it out, whatever the policy's weights say.
+   */
+  readonly only?: "mapping";
   readonly now?: number;
   readonly seed?: bigint;
 }
@@ -707,7 +723,7 @@ export interface FinishRequest {
     readonly jobId: string;
     readonly previousJobId: string;
   };
-  /** Release only an expired analysis claim with no durable native or parent posting intent. */
+  /** Release only an expired source-work claim with no durable native or parent posting intent. */
   readonly unpostedJobId?: string;
 }
 
@@ -747,6 +763,8 @@ export type AbandonResult =
 export interface Spend {
   readonly day: string;
   readonly total: number;
+  /** Mapping's subtotal of the same actual-or-reserved claims, not a separate allowance. */
+  readonly mapping: number;
   readonly byRun: Readonly<Record<string, number>>;
 }
 
@@ -913,7 +931,17 @@ interface AnalysisCandidate extends AnalysisOffer {
   readonly lane: Lane;
 }
 
-type WorkCandidate = Candidate | AnalysisCandidate;
+interface MappingCandidate {
+  readonly work: TranscriptMapWork;
+  readonly role: TranscriptMapRole;
+  readonly head: Head;
+  readonly topics: readonly string[];
+  readonly weight: number;
+  readonly ordinal: number;
+  readonly lane: "mapping";
+}
+
+type WorkCandidate = Candidate | AnalysisCandidate | MappingCandidate;
 
 /**
  * A closed native preparation is not a closed parent; expiry is not job termination.
@@ -924,7 +952,7 @@ const RUNNING_CLAIM = `(EXISTS (
   SELECT 1 FROM runs live
    WHERE (live.job_id = c.job_id OR live.prepare_job_id = c.job_id)
      AND live.closure IS NULL
-) OR (c.role LIKE 'analysis:%' AND c.job_id IS NOT NULL AND NOT EXISTS (
+) OR ((c.role LIKE 'analysis:%' OR c.role LIKE 'mapping:%') AND c.job_id IS NOT NULL AND NOT EXISTS (
   SELECT 1 FROM runs known WHERE known.job_id = c.job_id OR known.prepare_job_id = c.job_id
 )))`;
 const OCCUPIED_CLAIM = `c.finished_at IS NULL AND c.job_id IS NOT NULL AND (
@@ -1126,19 +1154,22 @@ export function coordinator(
   async function spendOn(moment: number): Promise<Spend> {
     const [day, from, until] = dayWindow(moment);
     const rows = await db.query(
-      `SELECT run_id AS run, COALESCE(SUM(COALESCE(actual_cost, reserved_cost)), 0) AS charged
+      `SELECT run_id AS run, COALESCE(SUM(COALESCE(actual_cost, reserved_cost)), 0) AS charged,
+              COALESCE(SUM(CASE WHEN role LIKE 'mapping:%' THEN COALESCE(actual_cost, reserved_cost) ELSE 0 END), 0) AS mapping
          FROM claims WHERE granted_at >= ? AND granted_at < ? GROUP BY run_id`,
       [from, until],
     );
     const byRun: Record<string, number> = {};
     let total = 0;
+    let mapping = 0;
     for (const row of rows) {
       const charged = count(row["charged"]);
       total += charged;
+      mapping += count(row["mapping"]);
       const run = text(row["run"]);
       byRun[run] = (byRun[run] ?? 0) + charged;
     }
-    return { day, total, byRun };
+    return { day, total, mapping, byRun };
   }
 
   /**
@@ -2175,9 +2206,32 @@ export function coordinator(
     return { candidates, gaps };
   }
 
+  async function buildMapping(policy: Policy, moment: number): Promise<MappingCandidate[]> {
+    const route = mappingPolicy(policy);
+    if (route === null || route.dailyCost <= 0) return [];
+    const maps = transcriptMaps(store);
+    await maps.refreshWork(route, iso(moment), 64);
+    return (await maps.offers(route, iso(moment), 64)).map((work) => ({
+      work,
+      role: TRANSCRIPT_MAP_ROLES[work.mode],
+      head: {
+        id: work.id,
+        rootId: work.nodeId,
+        kind: "transcript-map",
+        createdAt: at(work.createdAt),
+      },
+      topics: [],
+      weight: 1,
+      ordinal: work.attempt,
+      lane: "mapping",
+    }));
+  }
+
   /** The assignment id a candidate would be handed out as, named once so the contention check
    *  and the assignment it hands back cannot disagree about which claim is which. */
   function assignmentIdOf(candidate: WorkCandidate, version: string): string {
+    if ("work" in candidate)
+      return `asg_${digest([candidate.work.id, String(candidate.work.attempt)])}`;
     if ("stage" in candidate)
       return `asg_${digest([
         candidate.role,
@@ -2241,24 +2295,45 @@ export function coordinator(
     }
 
     const [active, spent] = await Promise.all([openClaims(moment), spendOn(moment)]);
+    const mappingOnly = request.only === "mapping";
+    const machines = mappingOnly
+      ? policy.mapping === undefined
+        ? []
+        : [policy.mapping.executorMachineId]
+      : policy.review === undefined
+        ? [...(request.machines ?? [])]
+        : [policy.review.machineId];
     const overspent = admitSpend(
       policy,
       active,
       spent.byRun[request.runId] ?? 0,
       spent.total,
-      policy.review === undefined ? (request.machines ?? []) : [policy.review.machineId],
+      machines,
     );
     if (overspent !== null) return { outcome: "gap", gap: overspent, gaps: [] };
 
-    const [review, analysis] = await Promise.all([
-      policy.activityWeights.review > 0
+    const mappingBudget =
+      policy.mapping !== undefined &&
+      spent.mapping + reservedCost(policy) <= policy.mapping.dailyCost;
+    const [review, analysis, mapping] = await Promise.all([
+      !mappingOnly && policy.activityWeights.review > 0
         ? buildCandidates(policy, moment)
         : Promise.resolve({ candidates: [] as Candidate[], gaps: [] as Gap[] }),
-      buildAnalysis(policy, moment),
+      !mappingOnly
+        ? buildAnalysis(policy, moment)
+        : Promise.resolve({ candidates: [] as AnalysisCandidate[], gaps: [] as Gap[] }),
+      mappingOnly && mappingBudget ? buildMapping(policy, moment) : Promise.resolve([]),
     ]);
     const candidates = review.candidates;
     const gaps = [...review.gaps, ...analysis.gaps];
-    if (candidates.length === 0 && analysis.candidates.length === 0) {
+    if (mappingOnly && !mappingBudget)
+      gaps.push({
+        recordId: "",
+        role: "",
+        reason: "capped",
+        detail: "mapping's daily subtotal cannot reserve another assignment",
+      });
+    if (candidates.length === 0 && analysis.candidates.length === 0 && mapping.length === 0) {
       return {
         outcome: "gap",
         gap: {
@@ -2274,6 +2349,7 @@ export function coordinator(
       ...candidates.map(
         (candidate) => `${candidate.head.id}:${candidate.role}:${String(candidate.ordinal)}`,
       ),
+      ...mapping.map((candidate) => `${candidate.work.id}:${String(candidate.work.attempt)}`),
       ...analysis.candidates.map((candidate) => `${candidate.role}:${candidate.fingerprint}`),
     ]);
     const seed =
@@ -2308,7 +2384,18 @@ export function coordinator(
           handout.at + HANDOUT_GRACE_MS > moment)
       );
     };
-    const chooseActivity = (stream: Stream): { lane: Lane; chosen: WorkCandidate } | null => {
+    const chooseActivity = (
+      stream: Stream,
+    ): { lane: Lane | "mapping"; chosen: WorkCandidate } | null => {
+      if (mappingOnly) {
+        const offered = mapping.filter((candidate) => !contended(candidate));
+        let target = stream.float() * offered.reduce((sum, candidate) => sum + candidate.weight, 0);
+        for (const chosen of offered) {
+          target -= chosen.weight;
+          if (target <= 0) return { lane: chosen.lane, chosen };
+        }
+        return null;
+      }
       const eligible = ACTIVITIES.filter(
         (activity) =>
           policy.activityWeights[activity] > 0 &&
@@ -2344,8 +2431,8 @@ export function coordinator(
       }
       return null;
     };
-    let top: { lane: Lane; chosen: WorkCandidate } | null = null;
-    let sampled: { lane: Lane; chosen: WorkCandidate } | null = null;
+    let top: { lane: Lane | "mapping"; chosen: WorkCandidate } | null = null;
+    let sampled: { lane: Lane | "mapping"; chosen: WorkCandidate } | null = null;
     for (let attempt = 1; attempt <= DRAW_ATTEMPTS; attempt += 1) {
       const picked = chooseActivity(new Stream(seed));
       if (picked === null) break;
@@ -2389,36 +2476,50 @@ export function coordinator(
     // reservation drew them, so a cycle can say how much went to arguing about disagreement, to
     // deciding what a record is about, and to working through what was deferred.
     const chosen = sampled.chosen;
-    const lane: Lane = chosen.lane ?? (chosen.role === "challenge" ? "challenge" : sampled.lane);
     const id = identify(chosen);
     handedOut.set(id, { runId: request.runId, at: moment });
 
-    return {
-      outcome: "assignment",
-      assignment: {
-        id,
-        recordId: chosen.head.id,
-        rootId: chosen.head.rootId,
-        kind: chosen.head.kind,
-        ...("stage" in chosen
+    const base = {
+      id,
+      recordId: chosen.head.id,
+      rootId: chosen.head.rootId,
+      policyVersion: standing.version,
+      ordinal: chosen.ordinal,
+      seed: seed.toString(),
+      inputDigest,
+      reservedCost: reservedCost(policy),
+      drawnAt: moment,
+      topics: chosen.topics,
+    };
+    const assignment: Assignment =
+      "work" in chosen
+        ? {
+            ...base,
+            activity: "mapping",
+            role: chosen.role,
+            work: chosen.work,
+            kind: "transcript-map",
+            lane: "mapping",
+          }
+        : "stage" in chosen
           ? {
+              ...base,
               activity: chosen.stage,
               role: chosen.role,
+              kind: chosen.head.kind,
+              lane: chosen.lane,
               selectors: chosen.selectors,
               brief: chosen.brief,
             }
-          : { activity: "review" as const, role: chosen.role }),
-        lane,
-        policyVersion: standing.version,
-        ordinal: chosen.ordinal,
-        seed: seed.toString(),
-        inputDigest,
-        reservedCost: reservedCost(policy),
-        drawnAt: moment,
-        topics: chosen.topics,
-      },
-      gaps,
-    };
+          : {
+              ...base,
+              activity: "review",
+              role: chosen.role,
+              kind: chosen.head.kind,
+              lane:
+                chosen.lane ?? (chosen.role === "challenge" ? "challenge" : (sampled.lane as Lane)),
+            };
+    return { outcome: "assignment", assignment, gaps };
   }
 
   // -------------------------------------------------------------------------- claims
@@ -2469,6 +2570,9 @@ export function coordinator(
       return { outcome: "refused", refusal: { reason: "invalid", detail: "a claim names no run" } };
     }
     const policy = (await policyInForce(moment)).policy;
+    const invalid = validatePolicy(policy, concurrentJobs);
+    if (invalid !== null)
+      return { outcome: "refused", refusal: { reason: "invalid", detail: invalid } };
     if (policy.leaseSeconds <= 0) {
       return {
         outcome: "refused",
@@ -2480,7 +2584,9 @@ export function coordinator(
     }
     if (
       !policy.enabled ||
-      policy.activityWeights[assignment.activity] <= 0 ||
+      (assignment.activity === "mapping"
+        ? policy.mapping === undefined
+        : policy.activityWeights[assignment.activity] <= 0) ||
       !Number.isFinite(assignment.reservedCost) ||
       assignment.reservedCost <= 0
     ) {
@@ -2557,10 +2663,33 @@ export function coordinator(
           outcome: "refused",
           refusal: {
             reason: "invalid",
-            detail: "analysis must reserve its known preparation job before posting",
+            detail: "source work must reserve its known preparation job before posting",
           },
         };
       }
+    }
+    if (assignment.activity === "mapping") {
+      const route = mappingPolicy(policy);
+      const maps = transcriptMaps(store);
+      const details = await maps.work(assignment.work.id);
+      const offered = route === null ? [] : await maps.offers(route, iso(moment), 128);
+      if (
+        details === null ||
+        !offered.some(
+          (work) => work.id === assignment.work.id && work.attempt === assignment.work.attempt,
+        ) ||
+        assignment.id !== `asg_${digest([details.work.id, String(details.work.attempt)])}` ||
+        assignment.recordId !== details.work.id ||
+        assignment.rootId !== details.work.nodeId ||
+        assignment.role !== TRANSCRIPT_MAP_ROLES[details.work.mode] ||
+        JSON.stringify(assignment.work) !== JSON.stringify(details.work)
+      ) {
+        return {
+          outcome: "refused",
+          refusal: { reason: "conflict", detail: "the offered mapping work is no longer eligible" },
+        };
+      }
+    } else if (assignment.activity !== "review") {
       const refreshed = await buildAnalysis(policy, moment, {
         id: assignment.id,
         stage: assignment.activity,
@@ -2592,6 +2721,20 @@ export function coordinator(
         },
       };
     }
+    if (
+      assignment.activity === "mapping" &&
+      (policy.mapping === undefined ||
+        policy.mapping.dailyCost <= 0 ||
+        spent.mapping + assignment.reservedCost > policy.mapping.dailyCost)
+    ) {
+      return {
+        outcome: "refused",
+        refusal: {
+          reason: "budget",
+          detail: `${spent.mapping.toFixed(4)} is already committed to mapping today; its daily subcap refuses this reservation`,
+        },
+      };
+    }
     const cycle = spent.byRun[request.runId] ?? 0;
     if (cycle + assignment.reservedCost > policy.perCycleCost) {
       return {
@@ -2602,13 +2745,17 @@ export function coordinator(
         },
       };
     }
+    const machine =
+      (assignment.activity === "mapping"
+        ? policy.mapping?.executorMachineId
+        : policy.review?.machineId) ?? "";
 
     const admission = admitSpend(
       policy,
       await openClaims(moment),
       cycle,
       spent.total,
-      policy.review === undefined ? [] : [policy.review.machineId],
+      machine === "" ? [] : [machine],
     );
     if (admission !== null)
       return { outcome: "refused", refusal: { reason: "budget", detail: admission.detail } };
@@ -2616,7 +2763,6 @@ export function coordinator(
     // The read above explains refusals; these predicates enforce them in the same transaction
     // as the grant. Independent coordinators cannot both spend the last dollar or machine slot.
     const [, from, until] = dayWindow(moment);
-    const machine = policy.review?.machineId ?? "";
     const machineOf = `COALESCE((SELECT r.machine_id FROM runs r
       WHERE (r.job_id = c.job_id OR r.prepare_job_id = c.job_id) AND r.machine_id IS NOT NULL
       ORDER BY r.started_at DESC LIMIT 1), '')`;
@@ -2642,7 +2788,28 @@ export function coordinator(
       machine,
       perMachineBound(policy),
     ];
-    if (assignment.activity !== "review") {
+    if (assignment.activity === "mapping") {
+      admissionSql += `
+        AND (SELECT COALESCE(SUM(COALESCE(actual_cost, reserved_cost)), 0) FROM claims
+          WHERE granted_at >= ? AND granted_at < ? AND role LIKE 'mapping:%') + ? <= ?
+        AND EXISTS (SELECT 1 FROM transcript_map_work w
+          WHERE w.id = ? AND w.attempt = ? AND w.state = 'queued' AND w.ready_at <= ?)
+        AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.record_id = ? AND c.id <> ?
+          AND c.role LIKE 'mapping:%' AND c.finished_at IS NULL
+          AND (c.expires_at > ? OR ${RUNNING_CLAIM}))`;
+      admissionParams.push(
+        from,
+        until,
+        assignment.reservedCost,
+        policy.mapping!.dailyCost,
+        assignment.work.id,
+        assignment.work.attempt,
+        iso(moment),
+        assignment.work.id,
+        assignment.id,
+        iso(moment),
+      );
+    } else if (assignment.activity !== "review") {
       admissionSql += `
         AND NOT EXISTS (SELECT 1 FROM claims c LEFT JOIN records r ON r.id = c.record_id
           WHERE COALESCE(r.root_id, c.record_id) = ? AND c.role LIKE 'analysis:%' AND c.id <> ?
@@ -3020,32 +3187,33 @@ export function coordinator(
     // finish, but only a durable terminal parent can identify the Code job that replaces its
     // preparation. Rebinding and charging are one write so spendOn cannot count both.
     const document = "CASE WHEN json_valid(r.preparation) THEN r.preparation ELSE '{}' END";
+    const claimPath = held.role.startsWith("mapping:") ? "$.mapping.claim" : "$.analysis.claim";
     const terminalGuard =
       terminal === undefined
         ? ""
         : `
-                 AND claims.role LIKE 'analysis:%'
+                 AND (claims.role LIKE 'analysis:%' OR claims.role LIKE 'mapping:%')
                  AND job_id IN (?, ?)
                  AND EXISTS (
                    SELECT 1 FROM runs r
                     WHERE r.job_id = ? AND r.prepare_job_id = ?
                       AND r.closure IS NOT NULL
                       AND r.authority_kind = 'conductor' AND r.authority_id = claims.run_id
-                      AND json_extract(${document}, '$.analysis.claim.id') = claims.id
-                      AND json_extract(${document}, '$.analysis.claim.runId') = claims.run_id
-                      AND json_extract(${document}, '$.analysis.claim.fence') = claims.fence
+                      AND json_extract(${document}, '${claimPath}.id') = claims.id
+                      AND json_extract(${document}, '${claimPath}.runId') = claims.run_id
+                      AND json_extract(${document}, '${claimPath}.fence') = claims.fence
                  )`;
     const unpostedGuard =
       unposted === undefined
         ? ""
         : `
-                 AND claims.role LIKE 'analysis:%' AND job_id = ? AND expires_at <= ?
+                 AND (claims.role LIKE 'analysis:%' OR claims.role LIKE 'mapping:%') AND job_id = ? AND expires_at <= ?
                  AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.job_id = ? OR r.prepare_job_id = ?)
                  AND NOT EXISTS (
                    SELECT 1 FROM runs r
-                    WHERE json_extract(${document}, '$.analysis.claim.id') = claims.id
-                      AND json_extract(${document}, '$.analysis.claim.runId') = claims.run_id
-                      AND json_extract(${document}, '$.analysis.claim.fence') = claims.fence
+                    WHERE json_extract(${document}, '${claimPath}.id') = claims.id
+                      AND json_extract(${document}, '${claimPath}.runId') = claims.run_id
+                      AND json_extract(${document}, '${claimPath}.fence') = claims.fence
                  )`;
     const rows = await db.batch([
       {
@@ -3075,7 +3243,7 @@ export function coordinator(
           reason: terminal === undefined && unposted === undefined ? "taken-over" : "conflict",
           detail:
             unposted !== undefined
-              ? `assignment ${request.id} moved, is not expired analysis, or has a durable posting intent`
+              ? `assignment ${request.id} moved, is not expired source work, or has a durable posting intent`
               : terminal === undefined
                 ? `assignment ${request.id} moved before the finish landed`
                 : `assignment ${request.id} moved or its terminal Code job is not attributed to this preparation`,

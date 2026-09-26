@@ -28,5 +28,20 @@
     "door": "atyrode.babel.recallSkill",
     "contractDigest": "da36825f4c3e153621c42007360bebab56b91a16916d6b87430fe954b8e59d34",
     "maxResultBytes": 81920
+  },
+  {
+    "door": "atyrode.babel.mapRead",
+    "contractDigest": "127466ef19393fc02d84b33378c0176b599d7da8201574b8ef179bfa5f7b3c9a",
+    "maxResultBytes": 81920
+  },
+  {
+    "door": "atyrode.babel.mapSource",
+    "contractDigest": "882b967b49d1250b7282c0dd358dafe9c6310027630b954b68334854810896f3",
+    "maxResultBytes": 81920
+  },
+  {
+    "door": "atyrode.babel.mapLocate",
+    "contractDigest": "2af696412b8ef7afb35bfb9c3e0eee585fe63148172c65a1468455cc0a5d6abe",
+    "maxResultBytes": 1024
   }
 ]

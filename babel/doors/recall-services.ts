@@ -16,12 +16,15 @@ import {
   RECALL_RESULT_FIELDS,
   RECALL_SERVICE_ID,
   RECALL_SERVICE_REVISION,
+  TRANSCRIPT_MAP_RESULT_FIELDS,
+  TRANSCRIPT_MAP_SERVICE_OPERATION,
   RecallInstallInputSchema,
   RecallInstalledSchema,
   RecallPolicySchema,
   RecallSetupInputSchema,
   RecallSetupPreviewSchema,
   RecallRuntimeInputSchema,
+  transcriptMapReadTarget,
   type RecallPolicy,
 } from "../contract.ts";
 import { defineDoor, type Door } from "./door.ts";
@@ -55,8 +58,8 @@ export function composeRecallServicePolicy(
         input: { [INPUT_FIELD]: { literal: input[INPUT_FIELD] } },
       },
       maxConcurrent: 4,
-      operations: Object.fromEntries(
-        parsed.classes.map(({ id }) => [
+      operations: Object.fromEntries([
+        ...parsed.classes.map(({ id }) => [
           id,
           {
             method: "POST",
@@ -78,7 +81,51 @@ export function composeRecallServicePolicy(
             },
           },
         ]),
-      ),
+        ...parsed.classes.map(({ id }) => [
+          `map.${id}`,
+          {
+            method: "POST",
+            invocable: true,
+            path: `/maps/${id}`,
+            input: {
+              request: { type: "string", required: true, maxBytes: RECALL_MAX_REQUEST_BYTES },
+            },
+            query: {},
+            body: [{ path: ["request"], value: { input: "request" } }],
+            timeoutMs: 30_000,
+            maxRequestBytes: RECALL_MAX_REQUEST_BODY_BYTES,
+            maxResponseBytes: RECALL_MAX_RESULT_BYTES,
+            maxResultBytes: RECALL_MAX_RESULT_BYTES,
+            response: {
+              kind: "projected-json",
+              fields: TRANSCRIPT_MAP_RESULT_FIELDS,
+              maxArrayItems: 256,
+            },
+          },
+        ]),
+        ...(parsed.mappingClassId === undefined
+          ? []
+          : [
+              [
+                TRANSCRIPT_MAP_SERVICE_OPERATION,
+                {
+                  kind: "http-proxy",
+                  method: "POST",
+                  path: "/mapping",
+                  request: { kind: "json", disclosure: "full" },
+                  response: {
+                    kind: "stream",
+                    disclosure: "full",
+                    contentTypes: ["application/json"],
+                    headers: [],
+                  },
+                  timeoutMs: 30_000,
+                  maxRequestBytes: RECALL_MAX_REQUEST_BODY_BYTES,
+                  maxResponseBytes: RECALL_MAX_RESULT_BYTES,
+                },
+              ],
+            ]),
+      ]),
     });
   } catch {
     // Zod errors may quote owner metadata or static literals. Never expose their details.
@@ -168,6 +215,7 @@ async function composePreview(ctx: GuestCtx, args: { machineId: string; policy: 
           serviceId: RECALL_SERVICE_ID,
           operationId: id,
         },
+        mapTarget: transcriptMapReadTarget(args.machineId, id),
       })),
     },
   };

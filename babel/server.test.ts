@@ -20,16 +20,21 @@ import type { GuestCtx, GuestDatabase, GuestHookJobs } from "@manifold/plugin-ki
 import type { SettledJob } from "@manifold/protocol";
 import {
   ACTIONS,
+  asLaunchRequest,
   BABEL_PLUGIN_ID,
   OPERATIONS,
   PRESET_OPERATIONS,
+  RECALL_SERVICE_ID,
   RUN_STAGES,
   SessionRowSchema,
+  TRANSCRIPT_MAP_SERVICE_OPERATION,
 } from "./contract.ts";
 import { WAKES, plugin } from "./server.ts";
 import { stamp } from "./store/feedindex.ts";
 import { upsertSessionRows } from "./store/sessions.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
+import { PolicySchema } from "./store/coordinator.ts";
+import type { JobLaunch, ScheduleTiming } from "./server/conductor.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -489,9 +494,10 @@ test("the doors that ask a machine what it can run are lent that read, and no ot
     different reason: `importLedger` and `rehostSessions` write a session's machine column, and a
     column carrying a name the hub does not know is provenance nothing can read back, so each
     checks the id against the hub before writing it (#312). Recall's owner setup describes
-    the native service candidate and rechecks it on installation. Nothing else asks a machine
-    anything: reading a feed, ruling on a record and stopping a run stay inside this plugin's
-    own tables and job nodes.
+    the native service candidate and rechecks it on installation, and the two mapping starts
+    describe the route's hosts before admitting it. Nothing else asks a machine anything: reading
+    a feed, ruling on a record and stopping a run stay inside this plugin's own tables and job
+    nodes.
   */
   const asks: Record<string, true> = {
     ...WAKES,
@@ -501,6 +507,8 @@ test("the doors that ask a machine what it can run are lent that read, and no ot
     [ACTIONS.rehostSessions]: true,
     [ACTIONS.previewRecall]: true,
     [ACTIONS.installRecall]: true,
+    [ACTIONS.startMapCatalog]: true,
+    [ACTIONS.mapDrainStart]: true,
   };
   for (const action of plugin.actions) {
     const reach = [...(action.caps ?? []), ...(action.delegates ?? [])];
@@ -525,22 +533,30 @@ test("the doors whose wake or press starts Babel's own jobs are lent machines:ru
     ever admitted. The cycle behind every wake registers the beat, posts analysis preparations and
     relaunches a drain's settled slot; `launch`, `drainStart` and `verify` post on their own
     account. Nothing else starts anything, and it is a delegate everywhere, never a cap the
-    caller is asked to hold.
+    caller is asked to hold — except the two mapping starts (#223), which are governed at the
+    exact nodes they post to: the executor's operation and the source owner's private mapping
+    target, which a delegate alone would never discharge.
   */
   const posts: Record<string, true> = {
     ...WAKES,
     [ACTIONS.drainStart]: true,
     [ACTIONS.verify]: true,
   };
+  const governed: Record<string, true> = {
+    [ACTIONS.startMapCatalog]: true,
+    [ACTIONS.mapDrainStart]: true,
+  };
   for (const action of plugin.actions) {
     expect({ door: action.name, runs: (action.delegates ?? []).includes("machines:run") }).toEqual({
       door: action.name,
       runs: Object.hasOwn(posts, action.name),
     });
-    expect(action.caps).not.toContain("machines:run");
+    if (Object.hasOwn(governed, action.name)) {
+      expect(action.caps).toContain("machines:run");
+      expect(action.requirements).toContainEqual({ cap: "machines:run", target: ["operation"] });
+    } else expect(action.caps).not.toContain("machines:run");
   }
 });
-
 test("a second dispatch inside the floor is the same wake, not another cycle", async () => {
   await pending();
   const at = (clock += HOUR);
@@ -708,6 +724,313 @@ test("enabling a store made before the trace adds run_calls, triggers and all", 
   expect(await db.query(`SELECT seq FROM run_calls WHERE run_id = 'run_traced'`)).toEqual([
     { seq: 1n },
   ]);
+});
+
+test("mapping-only methods are unavailable to ordinary exploration", async () => {
+  const stored = await harness.db.query<{ payload: string }>(
+    `SELECT payload FROM policies ORDER BY seq DESC LIMIT 1`,
+  );
+  const policy = PolicySchema.parse(JSON.parse(stored[0]!.payload));
+  if (policy.review === undefined) throw new Error("the fixture has no review route");
+  const mapping = {
+    sourceMachineId: MACHINE,
+    executorMachineId: MACHINE,
+    profile: policy.review.profile,
+    dailyCost: 1,
+    generateRecipe: "map-generation-only",
+    reviewRecipe: "map-review-only",
+  };
+  const methods = [mapping.generateRecipe, mapping.reviewRecipe];
+  await insert(harness.db, "policies", {
+    version: "p2",
+    seq: 2,
+    actor_id: "operator",
+    reason: "separate navigation methods",
+    recorded_at: stamp(NOW),
+    payload: JSON.stringify({
+      ...policy,
+      mapping,
+      review: {
+        ...policy.review,
+        recipes: [
+          ...policy.review.recipes,
+          ...methods.map((id) => ({ id, version: 1, enabled: true, body: "Map this input." })),
+        ],
+      },
+    }),
+  });
+  const ctx = context(harness.db as unknown as GuestDatabase, jobs);
+  for (const id of methods) {
+    const result = await plugin.handlers[ACTIONS.launch]?.(
+      ctx,
+      asLaunchRequest({
+        machineId: MACHINE,
+        preset: "read-whats-new",
+        profile: policy.review.profile,
+        recipes: [id],
+      }) as never,
+    );
+    // The unavailable method is named, rather than proceeding to transcript selection.
+    expect(result).toMatchObject({ refused: expect.stringContaining(id) });
+  }
+  const ordinary = await plugin.handlers[ACTIONS.launch]?.(
+    ctx,
+    asLaunchRequest({
+      machineId: MACHINE,
+      preset: "read-whats-new",
+      profile: policy.review.profile,
+      recipes: ["triage"],
+    }) as never,
+  );
+  // An ordinary method is not refused for its method: it reaches transcript selection, which
+  // this fixture's empty archive refuses by its own sentence.
+  expect(ordinary).toMatchObject({ refused: expect.any(String) });
+  expect(String((ordinary as { refused: string }).refused)).not.toContain("triage");
+});
+
+test("catalog admission refuses mismatched targets without waking ordinary or paid work", async () => {
+  const action = plugin.actions.find((entry) => entry.name === ACTIONS.startMapCatalog)!;
+  const handler = plugin.handlers[ACTIONS.startMapCatalog]!;
+  const request = {
+    operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.mapCatalog },
+    target: {
+      kind: "service",
+      machineId: MACHINE,
+      serviceId: RECALL_SERVICE_ID,
+      operationId: TRANSCRIPT_MAP_SERVICE_OPERATION,
+    },
+  };
+  const ctx = context(harness.db as unknown as GuestDatabase, jobs);
+  await pending();
+  const wrongMachine = await handler(
+    ctx,
+    action.input.parse({
+      ...request,
+      target: { ...request.target, machineId: "another-machine" },
+    }) as never,
+  );
+  expect(wrongMachine).toHaveProperty("refused");
+  // This machine has no mapping route. An admitted node is not permission to choose one.
+  expect(await handler(ctx, action.input.parse(request) as never)).toHaveProperty("refused");
+  expect(jobs.statuses).toBe(0);
+  expect(jobs.scheduled).toEqual([]);
+  expect(await closure()).toBeNull();
+  expect(
+    action.input.safeParse({
+      ...request,
+      operation: { ...request.operation, operationId: OPERATIONS.mapPrepare },
+    }).success,
+  ).toBe(false);
+  expect(
+    action.input.safeParse({ ...request, target: { ...request.target, operationId: "private" } })
+      .success,
+  ).toBe(false);
+});
+
+test("a refused launch does not become a conductor wake", async () => {
+  await pending();
+  const request = asLaunchRequest({ machineId: MACHINE, preset: "keep-going" });
+  const refused = await plugin.handlers[ACTIONS.launch]!(
+    context(harness.db as unknown as GuestDatabase, jobs),
+    { ...request, operation: { ...request.operation, machineId: "another-machine" } } as never,
+  );
+  expect(refused).toHaveProperty("refused");
+  expect(jobs.statuses).toBe(0);
+  expect(jobs.scheduled).toEqual([]);
+  expect(await closure()).toBeNull();
+});
+
+test("explicit catalog admission posts free work without settling or launching paid work", async () => {
+  const rows = await harness.db.query<{ payload: string }>(
+    `SELECT payload FROM policies ORDER BY seq DESC LIMIT 1`,
+  );
+  const policy = PolicySchema.parse(JSON.parse(rows[0]!.payload));
+  await insert(harness.db, "policies", {
+    version: "p2",
+    seq: 2,
+    actor_id: "operator",
+    reason: "free catalog",
+    recorded_at: stamp(NOW),
+    payload: JSON.stringify({
+      ...policy,
+      mapping: {
+        sourceMachineId: "source-machine",
+        executorMachineId: MACHINE,
+        profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+        dailyCost: 0,
+        generateRecipe: "triage",
+        reviewRecipe: "triage",
+      },
+    }),
+  });
+  await pending();
+  const executed: JobLaunch[] = [];
+  const scheduled: (JobLaunch & ScheduleTiming)[] = [];
+  const disabled: string[] = [];
+  const native = {
+    describe: () => ({
+      connected: true,
+      operations: {
+        [OPERATIONS.mapCatalog]: {
+          ready: true,
+          reason: null,
+          resourceBindingDigest: "b".repeat(64),
+          serviceBindings: {
+            [RECALL_SERVICE_ID]: {
+              machineId: "source-machine",
+              serviceId: RECALL_SERVICE_ID,
+              revision: "source-revision-1",
+              policySha256: "c".repeat(64),
+            },
+          },
+        },
+      },
+      installation: {
+        revision: "rev-7",
+        artifactSha256: "a".repeat(64),
+        enabled: true,
+        ready: true,
+      },
+    }),
+    execute: (request: JobLaunch) => {
+      executed.push(request);
+      return { ...request, state: "queued", result: null };
+    },
+    status: ({ jobId }: { jobId: string }) => {
+      const request = executed.find((job) => job.jobId === jobId);
+      if (!request) throw new Error("Unexpected job outside the catalog lane.");
+      return { ...request, state: "queued", result: null };
+    },
+    schedules: () => scheduled.filter((row) => !disabled.includes(row.revision)),
+    schedule: (request: JobLaunch & ScheduleTiming) => {
+      scheduled.push(request);
+      return {};
+    },
+    disableSchedule: ({ revision }: { revision: string }) => {
+      disabled.push(revision);
+      return {};
+    },
+  };
+  const ctx = context(harness.db as unknown as GuestDatabase, jobs);
+  const action = plugin.actions.find((entry) => entry.name === ACTIONS.startMapCatalog)!;
+  for (const [executor, source] of [
+    [MACHINE, MACHINE],
+    ["wrong-executor", "source-machine"],
+  ]) {
+    expect(
+      await plugin.handlers[ACTIONS.startMapCatalog]!(
+        { ...ctx, jobs: native as unknown as GuestCtx["jobs"] },
+        action.input.parse({
+          operation: { kind: "operation", machineId: executor, operationId: OPERATIONS.mapCatalog },
+          target: {
+            kind: "service",
+            machineId: source,
+            serviceId: RECALL_SERVICE_ID,
+            operationId: TRANSCRIPT_MAP_SERVICE_OPERATION,
+          },
+        }) as never,
+      ),
+    ).toHaveProperty("refused");
+  }
+  expect(executed).toEqual([]);
+  let paidCalls = 0;
+  const result = await plugin.handlers[ACTIONS.startMapCatalog]!(
+    {
+      ...ctx,
+      jobs: native as unknown as GuestCtx["jobs"],
+      actions: {
+        call: () => {
+          paidCalls += 1;
+          throw new Error("A free catalog admission must not call Code.");
+        },
+      } as unknown as GuestCtx["actions"],
+    },
+    action.input.parse({
+      operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.mapCatalog },
+      target: {
+        kind: "service",
+        machineId: "source-machine",
+        serviceId: RECALL_SERVICE_ID,
+        operationId: TRANSCRIPT_MAP_SERVICE_OPERATION,
+      },
+    }) as never,
+  );
+  expect(result).not.toHaveProperty("refused");
+  expect(executed.map((job) => job.operationId)).toEqual([OPERATIONS.mapCatalog]);
+  expect(await closure()).toBeNull();
+  expect(paidCalls).toBe(0);
+  const intent = await harness.db.query<{ request: string; closure: string | null }>(
+    `SELECT json_extract(preparation,'$.input.request.kind') AS request, closure
+       FROM runs WHERE kind = ?`,
+    [OPERATIONS.mapCatalog],
+  );
+  expect(intent).toEqual([{ request: "map-inventory", closure: null }]);
+  expect(scheduled.map((job) => JSON.parse(String(job.input["input"])))).toEqual([
+    { kind: "catalog-wake", sourceMachineId: "source-machine", executorMachineId: MACHINE },
+  ]);
+  expect(scheduled[0]!.offlinePolicy).toBe("coalesce-one");
+
+  // A native wake neither registers a duplicate template nor posts duplicate work in flight.
+  await plugin.lifecycle?.onJobSettled?.(
+    { ...ctx, jobs: native } as never,
+    settled({ machineId: MACHINE, operationId: OPERATIONS.mapCatalog }),
+  );
+  expect(scheduled).toHaveLength(1);
+  expect(executed).toHaveLength(1);
+
+  // A replacement source on the same executor also needs its own explicit admission.
+  await insert(harness.db, "policies", {
+    version: "p3",
+    seq: 3,
+    actor_id: "operator",
+    reason: "replace source owner",
+    recorded_at: stamp(NOW),
+    payload: JSON.stringify({
+      ...policy,
+      mapping: {
+        sourceMachineId: "replacement-source",
+        executorMachineId: MACHINE,
+        profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+        dailyCost: 0,
+        generateRecipe: "triage",
+        reviewRecipe: "triage",
+      },
+    }),
+  });
+  await plugin.lifecycle?.onJobSettled?.(
+    { ...ctx, jobs: native } as never,
+    settled({ machineId: MACHINE, operationId: OPERATIONS.mapCatalog }),
+  );
+  expect(disabled).toEqual([scheduled[0]!.revision]);
+  expect(executed).toHaveLength(1);
+  expect(scheduled).toHaveLength(1);
+
+  // Moving the policy cannot spend the old machine's continuation on the new machine.
+  await insert(harness.db, "policies", {
+    version: "p4",
+    seq: 4,
+    actor_id: "operator",
+    reason: "move the mapping route",
+    recorded_at: stamp(NOW),
+    payload: JSON.stringify({
+      ...policy,
+      mapping: {
+        sourceMachineId: "source-machine",
+        executorMachineId: "another-machine",
+        profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+        dailyCost: 0,
+        generateRecipe: "triage",
+        reviewRecipe: "triage",
+      },
+    }),
+  });
+  await plugin.lifecycle?.onJobSettled?.(
+    { ...ctx, jobs: native } as never,
+    settled({ machineId: MACHINE, operationId: OPERATIONS.mapCatalog }),
+  );
+  expect(disabled).toEqual([scheduled[0]!.revision]);
+  expect(executed.map((job) => job.machineId)).toEqual([MACHINE]);
+  expect(scheduled.map((job) => job.machineId)).toEqual([MACHINE]);
 });
 
 test("enabling a store made before archive captures adds their columns, the label map and the recency index", async () => {

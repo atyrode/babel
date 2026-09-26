@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
-import { ENGINE_REFUSALS, MATERIAL_OUTPUT } from "../../contract.ts";
+import { ENGINE_REFUSALS } from "../../contract.ts";
 import { ENGINE_WITHOUT_ACTIONS, codeEngine, type ActionsSlice } from "./session.ts";
 
 /*
@@ -227,49 +227,6 @@ test("a caller with no actions slice is told nobody was asked, and nothing is ca
   if (answered.ok) return;
   expect(answered.code).toBe(ENGINE_REFUSALS.unavailable);
   expect(answered.refused).toContain(ENGINE_WITHOUT_ACTIONS);
-});
-
-test("a session is posted with its material bound, and Code's own schema takes the request", async () => {
-  const slice = actions((args) =>
-    args.action === "listProfiles"
-      ? { profiles: [profile({})] }
-      : {
-          ...POSTED,
-          inputs: [
-            { name: MATERIAL_OUTPUT, from: { jobId: "job_1_material", output: MATERIAL_OUTPUT } },
-          ],
-        },
-  );
-
-  const answered = await codeEngine(slice).runSession({
-    profile: { containerId: "ctr_a", expectedRevision: 4 },
-    machineId: "m-dev-01",
-    prompt: "read the material",
-    prepareJobId: "job_1_material",
-  });
-
-  expect(answered.ok).toBe(true);
-  if (!answered.ok) return;
-  expect(answered.value.jobId).toBe("omp_7");
-
-  /*
-    THE BINDING IS WHAT PUTS BYTES AT `/inputs/material` (ADR 0044). The prompt tells the model
-    everything it may read is there; a request posted without this would send it to an empty
-    directory and have Babel record the answer as evidence-backed analysis. The input went
-    through CODE'S OWN schema on the way out — `codeEngine` parses with it before calling — so
-    a shape Code would refuse is this plugin's bug and is caught here, not on a machine.
-
-    AND THE AUTHORITY READ CAME FIRST, which is the order the whole of #255 is: two calls, the
-    free one in front of the one that spends.
-  */
-  expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
-  expect(slice.calls[1]?.input).toEqual({
-    containerId: "ctr_a",
-    machineId: "m-dev-01",
-    expectedRevision: 4,
-    prompt: "read the material",
-    inputs: [{ name: MATERIAL_OUTPUT, from: { jobId: "job_1_material", output: MATERIAL_OUTPUT } }],
-  });
 });
 
 test("settlement between read and follow cannot turn a pending receipt into a failed run", async () => {

@@ -1,16 +1,19 @@
-import type { ServerActionDef, ServerHandler } from "@manifold/plugin-kit/server";
+import type { GuestCtx, ServerActionDef, ServerHandler } from "@manifold/plugin-kit/server";
+import type { TranscriptMapCatalogAdmission } from "../contract.ts";
+
 import type { BabelStore } from "../store/store.ts";
 import { actDoors } from "./acts.ts";
 import type { Door } from "./door.ts";
 import { drainDoors, type DrainDoorDeps } from "./drain.ts";
 import { exportDoors } from "./export.ts";
-import { launchDoors, type LaunchDeps } from "./launch.ts";
+import { launchDoors, mapCatalogDoor, type LaunchDeps } from "./launch.ts";
 import { readDoors } from "./read.ts";
 import { recallDoors } from "./recall.ts";
 import { recallServiceDoors } from "./recall-services.ts";
 import { searchDoors } from "./search.ts";
 import { serviceDoors, type DeclaredService } from "./services.ts";
 import { suggestDoors } from "./suggest.ts";
+import { transcriptMapDoors } from "./transcript-maps.ts";
 
 /*
   EVERY DOOR OF THE BASELINE, in one list. The kit takes a plugin's actions and its handlers as
@@ -52,6 +55,10 @@ export function babelDoors(
   drain: DrainDoorDeps,
   concurrentJobs: number | null,
   services: readonly DeclaredService[],
+  advanceCatalog: (
+    ctx: GuestCtx,
+    admission: TranscriptMapCatalogAdmission,
+  ) => Promise<readonly string[]>,
 ): BabelDoors {
   const actions: ServerActionDef[] = [];
   const handlers: Record<string, ServerHandler> = {};
@@ -59,10 +66,12 @@ export function babelDoors(
     ...readDoors(store),
     ...searchDoors(store),
     ...recallDoors(store),
+    ...transcriptMapDoors(store),
     ...actDoors(store, concurrentJobs, deps.jobs),
     ...suggestDoors(store),
     ...exportDoors(store),
     ...launchDoors(store, deps),
+    mapCatalogDoor(deps.coordinator, advanceCatalog),
     ...drainDoors(store, drain),
     ...serviceDoors(services),
     ...recallServiceDoors(),

@@ -62,6 +62,33 @@ const RECALL_TRACE_SCHEMA: readonly string[] = [
   ]),
 ];
 
+/** Map navigation attempts contain digests and derived outcomes, never queries or prose. */
+const TRANSCRIPT_MAP_READ_SCHEMA: readonly string[] = [
+  `CREATE TABLE transcript_map_requests(
+     id TEXT PRIMARY KEY, principal_id TEXT NOT NULL, trace_id INTEGER NOT NULL CHECK(trace_id>0),
+     operation TEXT NOT NULL CHECK(operation IN ('read','source','regenerate')),
+     target TEXT NOT NULL, service_revision TEXT NOT NULL, request_digest TEXT NOT NULL,
+     created_at TEXT NOT NULL, UNIQUE(principal_id,trace_id)
+   ) STRICT`,
+  `CREATE TABLE transcript_map_native_requests(
+     request_id TEXT NOT NULL REFERENCES transcript_map_requests(id), round INTEGER NOT NULL,
+     stage TEXT NOT NULL, native_id TEXT NOT NULL UNIQUE, request TEXT NOT NULL,
+     created_at TEXT NOT NULL, PRIMARY KEY(request_id,round,stage)
+   ) STRICT`,
+  `CREATE TABLE transcript_map_read_outcomes(
+     seq INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL REFERENCES transcript_map_requests(id),
+     round INTEGER NOT NULL, outcome TEXT NOT NULL, created_at TEXT NOT NULL,
+     UNIQUE(request_id,round,outcome)
+   ) STRICT`,
+  `CREATE INDEX transcript_map_read_outcomes_request ON transcript_map_read_outcomes(request_id,seq DESC)`,
+  ...["requests", "native_requests", "read_outcomes"].flatMap((name) => [
+    `CREATE TRIGGER transcript_map_${name}_no_update BEFORE UPDATE ON transcript_map_${name}
+       BEGIN SELECT RAISE(ABORT,'immutable transcript map trace'); END`,
+    `CREATE TRIGGER transcript_map_${name}_no_delete BEFORE DELETE ON transcript_map_${name}
+       BEGIN SELECT RAISE(ABORT,'immutable transcript map trace'); END`,
+  ]),
+];
+
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
  * enable makes, and by `SCHEMA_ADDITIONS` for one an earlier enable already made.
@@ -508,6 +535,119 @@ export const SESSION_INDEX_SCHEMA: readonly string[] = [
      contentless_delete = 1,
      tokenize = 'unicode61 remove_diacritics 2'
    )`,
+];
+
+// Applied after table creation in both paths, including upgrades that create map tables now.
+const TRANSCRIPT_MAP_OWNER_COLUMN = `ALTER TABLE transcript_map_captures ADD COLUMN source_machine_id TEXT NOT NULL DEFAULT ''`;
+
+/**
+ * Per-capture navigation artifacts (#223). None of these identifiers name frontier records.
+ * Prose and its producing inputs are immutable; bindings and heads are disposable selections.
+ * Publication is a separate bit, set only after the complete ordered manifest is verified.
+ */
+const TRANSCRIPT_MAP_SCHEMA: readonly string[] = [
+  `CREATE TABLE transcript_map_captures(
+     id TEXT PRIMARY KEY, host TEXT NOT NULL, harness TEXT NOT NULL, session TEXT NOT NULL,
+     captured_at TEXT NOT NULL, payload TEXT NOT NULL
+   ) STRICT`,
+  `CREATE TABLE transcript_map_contexts(
+     machine_id TEXT NOT NULL, class_id TEXT NOT NULL, digest TEXT NOT NULL,
+     ceiling INTEGER NOT NULL, observed_at TEXT NOT NULL, payload TEXT NOT NULL,
+     next_cursor TEXT, cataloged_at TEXT, completed_at TEXT, mapping_payload TEXT,
+     mapping INTEGER NOT NULL DEFAULT 0 CHECK(mapping IN (0,1)), PRIMARY KEY(machine_id,class_id)
+   ) STRICT`,
+  `CREATE TABLE transcript_map_access(
+     machine_id TEXT NOT NULL, capture_id TEXT NOT NULL REFERENCES transcript_map_captures(id),
+     context_digest TEXT NOT NULL, sensitivity INTEGER NOT NULL CHECK(sensitivity BETWEEN 0 AND 3),
+     PRIMARY KEY(machine_id,capture_id,context_digest)
+   ) STRICT`,
+  `CREATE TABLE transcript_map_plans(
+     id TEXT PRIMARY KEY, capture_id TEXT NOT NULL REFERENCES transcript_map_captures(id),
+     payload TEXT NOT NULL, complete INTEGER NOT NULL DEFAULT 0 CHECK(complete IN (0,1)),
+     created_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE INDEX transcript_map_plans_capture ON transcript_map_plans(capture_id)`,
+  `CREATE TABLE transcript_map_nodes(
+     id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES transcript_map_plans(id),
+     position INTEGER NOT NULL, parent_node_id TEXT, level INTEGER NOT NULL, ordinal INTEGER NOT NULL,
+     byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL, gap TEXT, payload TEXT NOT NULL,
+     UNIQUE(plan_id,position), UNIQUE(plan_id,level,ordinal)
+   ) STRICT`,
+  `CREATE INDEX transcript_map_nodes_parent ON transcript_map_nodes(plan_id,parent_node_id,ordinal)`,
+  `CREATE TABLE transcript_map_versions(
+     id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES transcript_map_plans(id),
+     machine_id TEXT NOT NULL, contract_digest TEXT NOT NULL, generation INTEGER NOT NULL,
+     payload TEXT NOT NULL, policy TEXT NOT NULL, created_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE TABLE transcript_map_heads(
+     machine_id TEXT NOT NULL, plan_id TEXT NOT NULL REFERENCES transcript_map_plans(id),
+     version_id TEXT NOT NULL REFERENCES transcript_map_versions(id),
+     PRIMARY KEY(machine_id,plan_id)
+   ) STRICT`,
+  `CREATE TABLE transcript_map_summaries(
+     id TEXT PRIMARY KEY, version_id TEXT NOT NULL REFERENCES transcript_map_versions(id),
+     node_id TEXT NOT NULL REFERENCES transcript_map_nodes(id), reuse_key TEXT NOT NULL,
+     payload TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE INDEX transcript_map_summaries_reuse ON transcript_map_summaries(reuse_key,created_at,id)`,
+  `CREATE VIRTUAL TABLE transcript_map_terms USING fts5(summary_id UNINDEXED,text,tokenize='unicode61')`,
+  `CREATE TRIGGER transcript_map_summary_terms AFTER INSERT ON transcript_map_summaries BEGIN
+     INSERT INTO transcript_map_terms(summary_id,text) VALUES(new.id,new.text);
+   END`,
+  `CREATE TABLE transcript_map_bindings(
+     version_id TEXT NOT NULL REFERENCES transcript_map_versions(id),
+     node_id TEXT NOT NULL REFERENCES transcript_map_nodes(id),
+     summary_id TEXT NOT NULL REFERENCES transcript_map_summaries(id), input_key TEXT NOT NULL,
+     PRIMARY KEY(version_id,node_id)
+   ) STRICT`,
+  `CREATE INDEX transcript_map_bindings_summary ON transcript_map_bindings(summary_id)`,
+  `CREATE TABLE transcript_map_work(
+     id TEXT PRIMARY KEY, version_id TEXT NOT NULL REFERENCES transcript_map_versions(id),
+     node_id TEXT NOT NULL REFERENCES transcript_map_nodes(id), mode TEXT NOT NULL,
+     base_summary_id TEXT, attempt INTEGER NOT NULL, state TEXT NOT NULL,
+     ready_at TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL,
+     run_id TEXT, fence INTEGER, claim_id TEXT, input_key TEXT NOT NULL,
+     served_seq INTEGER NOT NULL DEFAULT 0, reason TEXT
+   ) STRICT`,
+  `CREATE INDEX transcript_map_work_ready ON transcript_map_work(state,ready_at,created_at,id)`,
+  `CREATE INDEX transcript_map_work_input ON transcript_map_work(input_key,mode,state)`,
+  `CREATE INDEX transcript_map_work_base ON transcript_map_work(base_summary_id,mode,served_seq)`,
+  `CREATE TABLE transcript_map_reviews(
+     work_id TEXT PRIMARY KEY REFERENCES transcript_map_work(id),
+     summary_id TEXT NOT NULL REFERENCES transcript_map_summaries(id),
+     verdict TEXT NOT NULL, reason TEXT NOT NULL, run_id TEXT NOT NULL,
+     served_seq INTEGER NOT NULL, created_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE INDEX transcript_map_reviews_summary ON transcript_map_reviews(summary_id,created_at)`,
+  `CREATE TABLE transcript_map_served(
+     read_id TEXT NOT NULL, summary_id TEXT NOT NULL REFERENCES transcript_map_summaries(id),
+     created_at TEXT NOT NULL, PRIMARY KEY(read_id,summary_id)
+   ) STRICT`,
+  `CREATE INDEX transcript_map_served_summary ON transcript_map_served(summary_id)`,
+  `CREATE TABLE transcript_map_regenerations(
+     capture_id TEXT NOT NULL REFERENCES transcript_map_captures(id),
+     request_id TEXT NOT NULL, generation INTEGER NOT NULL, reason TEXT NOT NULL,
+     created_at TEXT NOT NULL, PRIMARY KEY(capture_id,request_id), UNIQUE(capture_id,generation)
+   ) STRICT`,
+  `CREATE TABLE transcript_map_scan(
+     machine_id TEXT NOT NULL, contract_digest TEXT NOT NULL,
+     version_cursor INTEGER NOT NULL, node_cursor INTEGER NOT NULL,
+     PRIMARY KEY(machine_id,contract_digest)
+   ) STRICT`,
+  ...["captures", "nodes", "versions", "summaries", "reviews", "served", "regenerations"].flatMap(
+    (name) => [
+      `CREATE TRIGGER transcript_map_${name}_immutable_update BEFORE UPDATE ON transcript_map_${name}
+         BEGIN SELECT RAISE(ABORT,'immutable transcript map artifact'); END`,
+      `CREATE TRIGGER transcript_map_${name}_immutable_delete BEFORE DELETE ON transcript_map_${name}
+         BEGIN SELECT RAISE(ABORT,'immutable transcript map artifact'); END`,
+    ],
+  ),
+  `CREATE TRIGGER transcript_map_plan_immutable BEFORE UPDATE ON transcript_map_plans
+     WHEN new.id != old.id OR new.capture_id != old.capture_id OR new.payload != old.payload
+       OR new.created_at != old.created_at OR new.complete < old.complete
+     BEGIN SELECT RAISE(ABORT,'immutable transcript map plan'); END`,
+  `CREATE TRIGGER transcript_map_plan_no_delete BEFORE DELETE ON transcript_map_plans
+     BEGIN SELECT RAISE(ABORT,'immutable transcript map plan'); END`,
 ];
 
 /** Statements of the first migration, in order; each is one `run`. */
@@ -978,6 +1118,9 @@ export const SCHEMA_V1: readonly string[] = [
   // importer's own inserts are what the trigger first fires for.
   ...CORPUS_INDEX_SCHEMA,
   ...RECALL_TRACE_SCHEMA,
+  ...TRANSCRIPT_MAP_SCHEMA,
+  TRANSCRIPT_MAP_OWNER_COLUMN,
+  ...TRANSCRIPT_MAP_READ_SCHEMA,
 
   // ---------------------------------------------------------------- a drain (#258)
   // No index, and now for one reason rather than two: a deployment accumulates drains at the
@@ -1115,6 +1258,14 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // answers for by name exactly as it does for an ordinary one.
   ...CORPUS_INDEX_SCHEMA.map(objectAddition),
   ...RECALL_TRACE_SCHEMA.map(objectAddition),
+  ...TRANSCRIPT_MAP_SCHEMA.map(objectAddition),
+  // Earlier draft captures have no provable owner. Keep them unowned, never infer a new one.
+  {
+    object: "transcript_map_captures",
+    column: "source_machine_id",
+    sql: TRANSCRIPT_MAP_OWNER_COLUMN,
+  },
+  ...TRANSCRIPT_MAP_READ_SCHEMA.map(objectAddition),
   // #169: the models that have answered a running job, JSON, in the order it first heard from
   // each. A column and not a table, because the table above already arrives by addition for a
   // store created before #261 — and an addition keyed only on the table's name would have left

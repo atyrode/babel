@@ -1790,6 +1790,15 @@ test("every machine column of the migration is one the crossing guard covers", (
     // column is `sessions.archive_label` and not `archive_host`; what the operator says it means
     // is a machine id, and is guarded like every other (#453).
     archive_labels: ["machine_id"],
+    // Transcript maps (#223) are keyed by the source owner that answered for them. The capture's
+    // `host` is its archived label, so it is over-guarded by shape: the crossing refuses such a
+    // row rather than admitting one, and no imported Go-era store carries a transcript map.
+    transcript_map_access: ["machine_id"],
+    transcript_map_captures: ["host"],
+    transcript_map_contexts: ["machine_id"],
+    transcript_map_heads: ["machine_id"],
+    transcript_map_scan: ["machine_id"],
+    transcript_map_versions: ["machine_id"],
   });
   // A count of jobs per machine is not a machine, and the crossing must still be able to carry
   // an overlay row: `concurrent_per_machine` is in `budgets` and `budgets` is not in the map.
@@ -1824,7 +1833,6 @@ test("every record-identifier column of the migration is one the crossing guard 
   // import path checks and the test below proves.
   expect(recordColumns()["edges"]).toBeUndefined();
 });
-
 test("the crossing refuses a record id no door could read back, and imports none of the chunk", async () => {
   const store = openStore();
   await migrate(store);

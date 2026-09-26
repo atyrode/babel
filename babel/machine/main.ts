@@ -4,6 +4,8 @@ import {
   MACHINE_OPERATIONS,
   PrepareInputSchema,
   RESTIC_CREDENTIAL_FILE,
+  TranscriptMapCatalogJobInputSchema,
+  TranscriptMapPrepareInputSchema,
   type OperationWord,
   type Receipt,
 } from "../contract.ts";
@@ -17,6 +19,12 @@ import {
 import { openProgress, type ProgressChannel } from "./progress.ts";
 import { claim, existingRoots } from "./adapters/index.ts";
 import type { ResticConfig } from "./restic.ts";
+import {
+  mapCatalog,
+  mapCatalogWake,
+  mapPrepare,
+  openTranscriptMapClient,
+} from "./transcript-map-jobs.ts";
 
 /*
   THE MACHINE HALF'S ENTRY POINT (plan §2, §4).
@@ -92,6 +100,28 @@ const DISPATCH: Record<
     invocation: Invocation,
   ) => Promise<Receipt>
 > = {
+  mapCatalog: async (raw, out) => {
+    try {
+      const input = TranscriptMapCatalogJobInputSchema.parse(raw);
+      if ("kind" in input) return mapCatalogWake(input);
+      return await mapCatalog(input, out, await openTranscriptMapClient());
+    } catch {
+      throw new Error("Mapping catalog could not be collected.");
+    }
+  },
+  mapPrepare: async (raw, out, _progress, material) => {
+    try {
+      if (!material) throw new Error("Missing material lease.");
+      return await mapPrepare(
+        TranscriptMapPrepareInputSchema.parse(raw),
+        out,
+        material,
+        await openTranscriptMapClient(),
+      );
+    } catch {
+      throw new Error("Mapping material could not be sealed.");
+    }
+  },
   catalog: async (raw, out, _progress, _material, invocation) => {
     const { CATALOG_ENV, catalog } = await import("./catalog.ts");
     const { openRepo, resticConfig } = await import("./restic.ts");

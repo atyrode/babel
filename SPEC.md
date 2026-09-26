@@ -812,11 +812,12 @@ Stop cannot safely release that slot while an unidentified Code job may still be
 Code API cannot recover its job id from Babel's request, so a permanently lost response can hold
 the slot indefinitely; neither timeout nor lease expiry proves the session ended.
 
-The run's budget is the hard stopping condition. Policy supplies bounded per-item spending,
-cooldowns, and a response to repeated skips, so unreachable items and persistent disagreement
-cannot consume the whole allowance. Allocation across concurrent runs uses shared claims and
-reservations with a fence, not a per-process copy of the budget. A claimed-but-interrupted
-assignment does not count as a review and its reservation is reconciled.
+Admission is bounded by recorded spend plus outstanding reservations, across concurrent runs,
+through shared claims with a fence rather than a per-process budget copy. These are admission
+ceilings, not a monetary maximum enforced inside an already-running Code session: a settled
+overrun is recorded in full and prevents further admission. Policy also supplies item cooldowns
+and a response to repeated skips, so unreachable items and persistent disagreement cannot create
+an unbounded retry obligation. An interrupted assignment does not count as a review.
 
 Periodic coverage checks complement random selection: reserve initial-review attention for the
 oldest due, eligible unreviewed artifacts, independently of their popularity. Exact weights,
@@ -978,6 +979,106 @@ no native work. A subsequent request-id poll resumes the ordinary path.
 The versioned `recallSkill` door and managed skill share one body. The supported SDK exposes
 data only for exact reviewed source-profile approvals; its text leaves preserve evidence bytes
 without bypassing input or held-credential checks. Installation grants no live corpus access.
+
+#### 6.3.2 Transcript maps: navigation at several levels of detail
+
+**Design contract — implementation in progress (#223).** A map belongs to an immutable capture
+of one transcript. Its root summarizes the session, progressively finer children summarize
+contiguous sections and steps, and the leaves lead to exact transcript spans. Cross-transcript
+search can find sessions or nodes; it does not replace this within-transcript hierarchy.
+
+Maps are derived navigation artifacts in the existing hub database, not frontier records or a
+second storage service. A summary is model-produced inference, never evidence. It is labelled as
+such wherever served, and its identifier cannot satisfy a claim's evidence contract. Exact source
+locators and independently available raw lexical search remain the paths to evidence. A summary
+omission never makes the underlying transcript unreachable.
+
+Segmentation is deterministic and versioned. It uses the capture's canonical mandatory-redacted
+records, contiguous spans, structural boundaries and a bounded input size; only the prose comes
+from a model. Fanout and depth are policy-versioned and bounded, with at most four summary levels
+and fewer for smaller inputs. A transcript small enough to read directly needs no model summary.
+An oversized or unsupported span is an explicit gap, not silently dropped material.
+
+Every node retains its source snapshot, path, capture and source digests, exact record and byte
+range, and span digest. Map and summary provenance retain the segmentation contract, producing
+Code profile and revision, source owner, executor, recipe and version, input identity, and run receipt. Source growth,
+recipe changes and corrections create explicit versions rather than overwriting prior summaries.
+Levels from different producing contracts are not silently blended. A historical map remains
+historical: newer captures and any unknown or unmapped tail are stated, not filled from a live
+session.
+
+Search returns bounded summary hits. A reader can expand their children, inspect an ancestor as
+orientation beside a source span, and drill down to the actual bytes. Coverage distinguishes
+directly readable, summarized, partially mapped, unmapped and stale captures. Retrieval traces
+distinguish summaries served from source material served; reading an inference is never recorded
+as reading its evidence. Summary storage, search and expansion preserve the source disclosure
+boundary, including after another class warms a cache.
+
+Mapping is separate from analysis and from read-only Recall. Every eligible captured session
+enters an idempotent mapping queue; unavailable authority or exhausted budgets leave a visible
+backlog. Mapping is not a standing conductor activity: paid generation, review and correction run
+only inside an operator-started mapping drain (`mapDrainStart`), which keeps its fan of jobs in
+flight until its own target, deadline, `maxJobs` or stop, and ends itself when no eligible work
+remains. The work runs through the route's explicitly configured Code profile and versioned
+recipes. The profile is the operator's choice, including its price; Babel neither chooses a
+provider nor holds its credentials. Redaction applies before material reaches the model and before
+generated prose is retained or served.
+
+A mapping drain's start is admitted at the executor's `map-prepare` node and the source owner's
+private mapping target, and posts the first fan itself. Its jobs are ordinary coordinator claims,
+so the mapping subcap, shared ceilings and uncertain-post accounting still apply, and they are
+posted only from wakes that carry native job authority: the start, a Babel job's own settlement,
+and the free catalog's cadence, which is why a mapping drain requires an admitted catalog for its
+route. Reads never post one. Each new preparation or Code posting requires a mapping drain still
+running on the executor; work already posted settles whatever the drain did since. Stopping the
+drain cancels a preparation at `map-prepare` and a posted session through Code.
+
+The mapping configuration explicitly names `sourceMachineId` (the Recall owner) and
+`executorMachineId` (native catalog/preparation and eventual Code execution). Both same-machine
+and separate-executor layouts require an atomic native instance-revision admission pin;
+echoing an owner in a worker receipt is not that proof.
+Map reads and source grants remain at the source owner; an executor grant never discloses the
+source's maps. Changing executor selects new producing versions without relabelling historical
+artifacts or buying unchanged summaries again. Capture IDs cannot be claimed by a replacement
+owner: a collision is refused, including an older draft capture whose owner was not recorded.
+
+Catalog and plan pages are free, bounded native work, not model admissions or side effects of a
+read. `startMapCatalog` requires authority for the executor's catalog operation and the source
+owner's private mapping target; its continuation never enters the ordinary scan or paid Code paths.
+The native cadence emits a liveness receipt on stdout without acquiring a filesystem lease.
+Disabling policy or replacing either route identity invalidates the saved admission and disables
+the old cadence on its next owned settlement; another route requires a new explicit start.
+Admission binds the native operation's resolved instance reference (source owner, configuration
+revision and policy digest) and resource-binding digest, rather than trusting requested IDs
+echoed by a worker. The conductor pins both that digest and the exact expected instance reference
+at native execution and scheduling, including same-owner revision changes whose policy bytes are
+unchanged. It revalidates the retained binding before posting, continuing pages or projecting a
+receipt. Owners without the atomic expected-reference contract refuse admission. A replacement binding
+cannot resume an old cursor or apply an old receipt under a new source owner.
+
+The conductor retains each request before posting, recovers an uncertain post under the same
+identity, and replays a sealed receipt after an interrupted projection. Only the named result
+lease is ingested as an archive, never native streams or separately bound material. Confirmed
+refusals leave gaps and a later bounded retry; unrelated recipe edits do not restart inventory
+progress. The native proxy carrier requires `network:host` and explicit native consent
+([Manifold job-owner.ts:1042–1049 at 3e8510c](https://github.com/atyrode/manifold/blob/3e8510c473d84175568ac81012763635112ed7d3/packages/agent/src/job-owner.ts#L1042-L1049)).
+That is a trusted worker grant, not network isolation or a grant to the producing Code profile.
+
+Generation, quality review and bounded corrections share one mapping subcap inside the
+conductor's overall daily allowance. Both are atomic admission ceilings over recorded spend and
+reservations, with the in-flight overrun boundary of §5.8. Mapping grants no additive allowance.
+An uncertain posting retains its reservation and cannot be bought again under a fresh identity.
+
+Only a summary actually served to a consumer becomes eligible for automated quality review.
+Serving records eligibility; it does not start paid work. Review and correction attempts have
+explicit finite bounds, target exact versions, and preserve earlier receipts and summaries.
+Reviewing a node cannot itself mark more nodes as served or create a recursive review obligation.
+A correction that needs another model run returns to the same queue, claim and budget machinery.
+
+Installation enables no paid mapping, installs no source classification and grants no corpus
+access. Installing a mapping route and admitting its free catalog spend nothing either: only a
+mapping drain the operator starts does. Activation, the source disclosure route and the producing
+Code profile remain separately authorized configuration.
 
 ### 6.4 Deterministic preflight
 

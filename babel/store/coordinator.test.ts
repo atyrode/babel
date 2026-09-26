@@ -11,6 +11,7 @@
 */
 
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "bun:test";
 import type {
   GuestDatabase,
@@ -20,6 +21,13 @@ import type {
 } from "@manifold/plugin-kit";
 import { SCHEMA_V1 } from "./schema.ts";
 import { analysisOffers } from "./analysis.ts";
+import { transcriptMaps } from "./transcript-maps.ts";
+import {
+  transcriptMapCaptureId,
+  transcriptMapManifestDigest,
+  transcriptMapNodeId,
+  transcriptMapPlanId,
+} from "../transcript-map-identity.ts";
 import {
   ANALYSIS_BRIEF_BYTE_LIMIT,
   ANALYSIS_BRIEF_LIMIT,
@@ -29,6 +37,10 @@ import {
   MAX_MATERIAL_BYTES,
   OPERATIONS,
   ROLES,
+  SESSION_RECORD_COORDINATES,
+  TranscriptMapNodeSchema,
+  TranscriptMapPlanSchema,
+  TranscriptMapSourceSchema,
   type Stage,
 } from "../contract.ts";
 import {
@@ -39,6 +51,7 @@ import {
   PolicySchema,
   leaseFloor,
   validateBudget,
+  mappingPolicy,
   validateNewPolicy,
   validatePolicy,
   type Assignment,
@@ -1799,7 +1812,7 @@ test("exploration consumes eligible material once, including across conductors a
   const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
   const one = drawn(await coord.draw({ runId: "a", seed: 1n }));
   const two = drawn(await other.draw({ runId: "b", seed: 99n }));
-  if (one.activity === "review") throw new Error("review escaped zero weight");
+  if (one.activity !== "explore") throw new Error("wrong activity");
   expect(one.selectors).toEqual(["omp/real"]);
   expect(two.id).toBe(one.id);
   const claims = await Promise.all([
@@ -2711,4 +2724,371 @@ test("synthesis reaches a later bounded brief after the earlier window is comple
   expect(
     new Set(next.brief.filter((row) => row.kind === "observation").map((row) => row.runId)),
   ).toEqual(new Set(["source-a", "source-b"]));
+});
+
+// ---------------------------------------------------------------------------- transcript mapping
+
+function mapPolicy(over: Partial<Policy> = {}): Policy {
+  return PolicySchema.parse({
+    enabled: true,
+    activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0 },
+    batchSize: 4,
+    perCycleCost: 4,
+    dailyCost: 4,
+    review: {
+      machineId: "review-host",
+      profile: { containerId: "review-profile", expectedRevision: 1 },
+      roleRecipes: Object.fromEntries(ROLES.map((role) => [role, "generate"])),
+      recipes: [
+        { id: "generate", version: 1, body: "Describe the supplied navigation span." },
+        { id: "map-review", version: 1, body: "Review the supplied navigation summary." },
+      ],
+    },
+    mapping: {
+      sourceMachineId: "mapping-source",
+      executorMachineId: "mapping-host",
+      profile: { containerId: "mapping-profile", expectedRevision: 2 },
+      dailyCost: 4,
+      generateRecipe: "generate",
+      reviewRecipe: "map-review",
+      segmentation: { leafBytes: 1024, directBytes: 0, fanout: 64, maxDepth: 4 },
+    },
+    ...over,
+  });
+}
+
+async function mapCapture(db: GuestDatabase, policy: Policy, session: string): Promise<void> {
+  const route = mappingPolicy(policy);
+  if (route === null) throw new Error("missing mapping policy");
+  const now = new Date(NOW).toISOString();
+  const hash = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+  const capture = {
+    host: "archive-host",
+    harness: "omp" as const,
+    session,
+    snapshot: "a".repeat(64),
+    path: `sessions/${session}.jsonl`,
+    capturedAt: now,
+  };
+  const source = TranscriptMapSourceSchema.parse({
+    ...capture,
+    id: transcriptMapCaptureId(capture),
+    coordinates: SESSION_RECORD_COORDINATES,
+    captureDigest: hash(session),
+    sourceDigest: hash(session),
+    bytes: 1024,
+    records: 1,
+  });
+  const planId = transcriptMapPlanId(source, route.segmentation);
+  const span = {
+    firstRecord: 1,
+    lastRecord: 1,
+    byteOffset: 0,
+    byteLength: 1024,
+    digest: hash(session),
+    anchor: { line: 1, byteOffset: 0, byteLength: 1024, digest: hash(session), time: null },
+  };
+  const node = TranscriptMapNodeSchema.parse({
+    id: transcriptMapNodeId(planId, 0, 0, span, [], null),
+    planId,
+    parentId: null,
+    level: 0,
+    ordinal: 0,
+    span,
+    children: [],
+    gap: null,
+  });
+  const plan = TranscriptMapPlanSchema.parse({
+    id: planId,
+    source,
+    segmentation: route.segmentation,
+    rootId: node.id,
+    nodeCount: 1,
+    digest: transcriptMapManifestDigest([node]),
+    direct: false,
+    gapBytes: 0,
+  });
+  const context = {
+    digest: hash("inventory"),
+    policyDigest: hash("classification"),
+    classId: "private",
+    ceiling: 2,
+    eligibleCaptures: 2,
+    observedAt: now,
+  };
+  await transcriptMaps({ db }).recordPlan({
+    machineId: route.sourceMachineId,
+    context,
+    plan,
+    nodes: [node],
+    access: { captureId: source.id, contextDigest: context.digest, sensitivity: 2 },
+    offset: 0,
+    nextOffset: null,
+    now,
+  });
+}
+
+test("mapping requires selected enabled recipes from the shared library and a valid profile", () => {
+  const policy = mapPolicy();
+  expect(validatePolicy(policy, CONCURRENT_JOBS)).toBeNull();
+  expect(validatePolicy({ ...policy, review: undefined }, CONCURRENT_JOBS)).not.toBeNull();
+  expect(
+    validatePolicy(
+      { ...policy, mapping: { ...policy.mapping!, generateRecipe: "absent" } },
+      CONCURRENT_JOBS,
+    ),
+  ).not.toBeNull();
+  expect(
+    PolicySchema.safeParse({
+      ...policy,
+      mapping: {
+        ...policy.mapping!,
+        profile: { containerId: "mapping-profile", expectedRevision: -1 },
+      },
+    }).success,
+  ).toBe(false);
+});
+
+test("a standing draw never offers mapping, even with review enabled", async () => {
+  const policy = mapPolicy({
+    activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0 },
+  });
+  const { db, coord } = await deployment(policy);
+  await mapCapture(db, policy, "standing");
+  const standing = await coord.draw({ runId: "standing", seed: 1n });
+  expect(standing.outcome === "assignment" && standing.assignment.activity === "mapping").toBe(
+    false,
+  );
+  expect(drawn(await coord.draw({ only: "mapping", runId: "drain", seed: 1n })).activity).toBe(
+    "mapping",
+  );
+});
+
+test("disabled mapping and a zero subcap cannot draw or newly claim queued work", async () => {
+  for (const mode of ["disabled", "subcap"] as const) {
+    const policy = mapPolicy();
+    const { db, coord } = await deployment(policy);
+    await mapCapture(db, policy, mode);
+    const assignment = drawn(await coord.draw({ only: "mapping", runId: "before", seed: 1n }));
+    const stopped =
+      mode === "disabled"
+        ? { ...policy, enabled: false }
+        : { ...policy, mapping: { ...policy.mapping!, dailyCost: 0 } };
+    await db.run(
+      `INSERT INTO policies(version,seq,actor_id,reason,payload,recorded_at)
+      VALUES('stopped',2,'operator','stop mapping',?,?)`,
+      [JSON.stringify(stopped), ago(0)],
+    );
+    expect((await coord.draw({ only: "mapping", runId: "after", seed: 1n })).outcome).toBe("gap");
+    expect((await coord.claim({ assignment, runId: "after", jobId: "prepare" })).outcome).toBe(
+      "refused",
+    );
+    expect((await coord.spend()).total).toBe(0);
+  }
+});
+
+test("mapping and review obey their own machine routes without treating maps as frontier records", async () => {
+  const policy = mapPolicy({ concurrentPerMachine: 1 });
+  const { db, coord } = await deployment(policy);
+  await claimRow(db, "asg_review", "review-run", 1, null, 0, "review-job");
+  await runOn(db, "review-job", policy.review!.machineId);
+  await mapCapture(db, policy, "route");
+  const assignment = drawn(await coord.draw({ only: "mapping", runId: "mapping-run", seed: 1n }));
+  expect(assignment.activity).toBe("mapping");
+  expect(
+    (await coord.claim({ assignment, runId: "mapping-run", jobId: "map-prepare" })).outcome,
+  ).toBe("granted");
+  expect(await db.query(`SELECT id FROM records`)).toEqual([]);
+});
+
+test("racing mapping claims share the global ledger, mapping subcap and occupied machine slots", async () => {
+  for (const bound of ["global", "mapping", "machine"] as const) {
+    const base = mapPolicy();
+    const policy = mapPolicy(
+      bound === "mapping"
+        ? { mapping: { ...base.mapping!, dailyCost: 1 } }
+        : bound === "machine"
+          ? { concurrentPerMachine: 1 }
+          : {},
+    );
+    const { db, coord } = await deployment(policy);
+    await mapCapture(db, policy, "one");
+    await mapCapture(db, policy, "two");
+    if (bound === "global") await claimRow(db, "asg_other_activity", "other", 3, 3);
+    const one = drawn(await coord.draw({ only: "mapping", runId: "one", seed: 1n }));
+    const two = drawn(await coord.draw({ only: "mapping", runId: "two", seed: 1n }));
+    expect(two.id).not.toBe(one.id);
+    const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
+    const results = await Promise.all([
+      coord.claim({ assignment: one, runId: "one", jobId: "prepare-one" }),
+      other.claim({ assignment: two, runId: "two", jobId: "prepare-two" }),
+    ]);
+    expect(results.filter((result) => result.outcome === "granted")).toHaveLength(1);
+    expect((await coord.spend()).mapping).toBe(1);
+    expect((await coord.spend()).total).toBe(bound === "global" ? 4 : 1);
+    expect((await coord.open()).total).toBe(1);
+  }
+});
+
+test("mapping grant atomically rejects a queue attempt that changes after eligibility was read", async () => {
+  const policy = mapPolicy();
+  const { db, coord } = await deployment(policy);
+  await mapCapture(db, policy, "stale-attempt");
+  const assignment = drawn(await coord.draw({ only: "mapping", runId: "draw", seed: 1n }));
+  if (assignment.activity !== "mapping") throw new Error("not mapping");
+  let moved = false;
+  const raced: GuestDatabase = {
+    ...db,
+    batch: async (statements) => {
+      if (!moved && statements.some((statement) => statement.sql.includes("INSERT INTO claims"))) {
+        moved = true;
+        await db.run(
+          `UPDATE transcript_map_work SET attempt=attempt+1,payload=json_set(payload,'$.attempt',attempt+1) WHERE id=?`,
+          [assignment.work.id],
+        );
+      }
+      return db.batch(statements);
+    },
+  };
+  const other = coordinator({ db: raced }, () => NOW, CONCURRENT_JOBS);
+  expect((await other.claim({ assignment, runId: "claim", jobId: "prepare" })).outcome).toBe(
+    "refused",
+  );
+  expect(moved).toBe(true);
+  expect((await coord.spend()).total).toBe(0);
+});
+
+test("mapping identities survive policy edits while a backed-off retry gets a new paid identity", async () => {
+  const policy = mapPolicy();
+  const { db, coord } = await deployment(policy);
+  await mapCapture(db, policy, "retry");
+  const first = drawn(await coord.draw({ only: "mapping", runId: "first", seed: 1n }));
+  if (first.activity !== "mapping") throw new Error("not mapping");
+  await db.run(
+    `INSERT INTO policies(version,seq,actor_id,reason,payload,recorded_at)
+    VALUES('edited',2,'operator','cadence edit',?,?)`,
+    [JSON.stringify({ ...policy, version: "edited", cadenceSeconds: 90 }), ago(0)],
+  );
+  const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
+  expect(drawn(await other.draw({ only: "mapping", runId: "other", seed: 1n })).id).toBe(first.id);
+  const grant = await coord.claim({ assignment: first, runId: "first", jobId: "prepare-first" });
+  if (grant.outcome !== "granted") throw new Error("claim refused");
+  const maps = transcriptMaps({ db });
+  expect(await maps.startWork(first.work.id, grant.claim, ago(0))).toBe(true);
+  await db.batch(
+    await maps.failureStatements({
+      workId: first.work.id,
+      now: ago(0),
+      guard: { sql: "1", params: [] },
+      reason: "refused output",
+    }),
+  );
+  await coord.finish({
+    id: first.id,
+    runId: "first",
+    fence: grant.claim.fence,
+    cost: 0,
+    outcome: "failed",
+  });
+  expect(
+    (await other.draw({ only: "mapping", runId: "too-soon", now: NOW + 59_000 })).outcome,
+  ).toBe("gap");
+  const retry = drawn(
+    await other.draw({ only: "mapping", runId: "retry", now: NOW + 60_000, seed: 1n }),
+  );
+  if (retry.activity !== "mapping") throw new Error("not mapping");
+  expect(retry.work.id).toBe(first.work.id);
+  expect(retry.id).not.toBe(first.id);
+  expect(
+    (
+      await other.claim({
+        assignment: retry,
+        runId: "retry",
+        jobId: "prepare-retry",
+        now: NOW + 60_000,
+      })
+    ).outcome,
+  ).toBe("granted");
+});
+
+test("mapping records refused overruns in full and stops admission until the claim day rolls over", async () => {
+  const base = mapPolicy();
+  const policy = mapPolicy({ mapping: { ...base.mapping!, dailyCost: 2 } });
+  const { db, coord } = await deployment(policy);
+  await mapCapture(db, policy, "overrun-one");
+  await mapCapture(db, policy, "overrun-two");
+  const assignment = drawn(await coord.draw({ only: "mapping", runId: "spent", seed: 1n }));
+  const waiting = drawn(await coord.draw({ only: "mapping", runId: "waiting", seed: 1n }));
+  const grant = await coord.claim({ assignment, runId: "spent", jobId: "prepare-spent" });
+  if (grant.outcome !== "granted") throw new Error("claim refused");
+  expect(
+    await coord.finish({
+      id: assignment.id,
+      runId: "spent",
+      fence: grant.claim.fence,
+      cost: 2.5,
+      outcome: "failed",
+    }),
+  ).toMatchObject({ outcome: "finished", cost: 2.5, overrun: true });
+  expect((await coord.spend()).mapping).toBe(2.5);
+  expect((await coord.spend()).total).toBe(2.5);
+  expect(
+    (await coord.claim({ assignment: waiting, runId: "waiting", jobId: "prepare-waiting" }))
+      .outcome,
+  ).toBe("refused");
+  expect((await coord.draw({ only: "mapping", runId: "blocked" })).outcome).toBe("gap");
+  expect((await coord.spend(NOW + DAY)).mapping).toBe(0);
+  expect(
+    (
+      await coord.claim({
+        assignment: waiting,
+        runId: "tomorrow",
+        jobId: "prepare-tomorrow",
+        now: NOW + DAY,
+      })
+    ).outcome,
+  ).toBe("granted");
+});
+
+test("an unknown mapping posting stays occupied after expiry and retained mapping authority forbids a free release", async () => {
+  const policy = mapPolicy();
+  const { db, coord } = await deployment(policy);
+  await mapCapture(db, policy, "unknown-post");
+  const assignment = drawn(await coord.draw({ only: "mapping", runId: "held", seed: 1n }));
+  const granted = await coord.claim({ assignment, runId: "held", jobId: "prepare-unknown" });
+  if (granted.outcome !== "granted") throw new Error("claim refused");
+  const expired = granted.claim.expiresAt + 1;
+  expect((await coord.open(expired)).total).toBe(1);
+  expect(
+    (
+      await coord.claim({
+        assignment,
+        runId: "replacement",
+        jobId: "prepare-replacement",
+        now: expired,
+      })
+    ).outcome,
+  ).toBe("refused");
+  await runOn(db, "retained-code", policy.mapping!.executorMachineId);
+  await db.run(`UPDATE runs SET preparation=?,closure='failed' WHERE job_id='retained-code'`, [
+    JSON.stringify({
+      mapping: {
+        claim: { id: granted.claim.id, runId: granted.claim.runId, fence: granted.claim.fence },
+      },
+    }),
+  ]);
+  expect(
+    (
+      await coord.finish({
+        id: assignment.id,
+        runId: "held",
+        fence: granted.claim.fence,
+        now: expired,
+        cost: 0,
+        outcome: "failed",
+        unpostedJobId: "prepare-unknown",
+      })
+    ).outcome,
+  ).toBe("refused");
+  expect((await coord.spend(expired)).mapping).toBe(assignment.reservedCost);
 });
