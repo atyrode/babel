@@ -14,7 +14,8 @@
     "locations:read",
     "locations:write",
     "services:configure",
-    "services:invoke"
+    "services:invoke",
+    "network:host"
   ],
   "dependencies": {
     "atyrode.code": {
@@ -42,20 +43,20 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
+        "sha256": "9fe979fdd617dff14a926a867c506885d1e35b488221249d2e37a2fbf8be15a8",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
+        "entrySha256": "9fe979fdd617dff14a926a867c506885d1e35b488221249d2e37a2fbf8be15a8",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
+        "sha256": "9fe979fdd617dff14a926a867c506885d1e35b488221249d2e37a2fbf8be15a8",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
+        "entrySha256": "9fe979fdd617dff14a926a867c506885d1e35b488221249d2e37a2fbf8be15a8",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1

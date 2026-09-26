@@ -41,7 +41,7 @@ import {
 import type { BabelStore } from "../store/store.ts";
 import type { Coordinator } from "../store/coordinator.ts";
 import { defineDoor, type Door } from "./door.ts";
-import { pressOperation } from "./launch.ts";
+import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
 
 /*
   THE THREE DOORS A DRAIN IS RUN THROUGH: start one, read one, end one (#258).
@@ -61,7 +61,9 @@ import { pressOperation } from "./launch.ts";
   not name it would be refused `job_capability_absent:machines:read` at the first slot and report
   "launched nothing" about a machine nobody ever asked. The posting that follows is Babel's own
   `prepare` or its beat, discharged at `engine.jobs.execute` against the same bridge, so the start
-  carries `machines:run` too (#448). `doors/read.ts` carries the reasoning.
+  carries everything that posting requires, `machines:run` (#448) and the locations, service and
+  host network the archive operations declare (#453, `POSTING_DELEGATES` in `doors/launch.ts`).
+  `doors/read.ts` carries the reasoning.
 
   WHY `drain.stop` IS GOVERNED AT THE OPERATION NODE AND NOT AT A JOB. A drain holds several jobs
   and a declared requirement resolves to exactly ONE node (`plugin-host.ts` parses one
@@ -85,9 +87,9 @@ import { pressOperation } from "./launch.ts";
   never happens. `pulse` and `runs` carry the same delegate for the same reason
   (`doors/read.ts`), and the same cycle's `machines:read`: it is the cycle, not this door, that
   describes a machine to keep the loop's beat registered, and the cycle that relaunches a
-  drain's settled slot, so it carries `machines:run` as well (#448). It widens nothing: a
-  delegate is the native ceiling the door's own job authority may reach, intersected with the
-  caller's capabilities and the plugin's install grant, and the caller still needs only
+  drain's settled slot, so it carries what posting requires as well (#448, #453). It widens
+  nothing: a delegate is the native ceiling the door's own job authority may reach, intersected
+  with the caller's capabilities and the plugin's install grant, and the caller still needs only
   `containers:read`.
 */
 
@@ -100,16 +102,16 @@ import { pressOperation } from "./launch.ts";
  * consent required" and the operator never hears `engine_pending` — nor, on a drain v0.3.0
  * left running, can he stop it at all. `doors/launch.ts` says the whole of it.
  *
- * So a start asks `containers:read` and carries `machines:read` and `machines:run` as
- * DELEGATES — the read the launch path makes before it posts, and the posting — and a stop asks `containers:write`
- * — closing the row is a write of this plugin's own rows — and carries `jobs:cancel` as a
- * DELEGATE, the native ceiling its own job authority may reach. The hub still checks consent
- * at the effect: a cancel it will not admit is reported by name rather than assumed. The
- * governed requirements return with the node they are discharged at, which is Code's
- * operation, once its door posts the job.
+ * So a start asks `containers:read` and carries `machines:read` and what posting requires as
+ * DELEGATES — the read the launch path makes before it posts, and the posting — and a stop asks
+ * `containers:write` — closing the row is a write of this plugin's own rows — and carries
+ * `jobs:cancel` as a DELEGATE, the native ceiling its own job authority may reach. The hub still
+ * checks consent at the effect: a cancel it will not admit is reported by name rather than
+ * assumed. The governed requirements return with the node they are discharged at, which is
+ * Code's operation, once its door posts the job.
  */
 const START_CAPS = ["containers:read"] as const;
-const START_DELEGATES = ["machines:read", "machines:run"] as const;
+const START_DELEGATES = ["machines:read", ...POSTING_DELEGATES] as const;
 
 const STOP_CAPS = ["containers:write"] as const;
 const STOP_DELEGATES = ["jobs:cancel"] as const;
@@ -118,7 +120,7 @@ const STOP_DELEGATES = ["jobs:cancel"] as const;
 const STATUS_CAPS = ["containers:read"] as const;
 /** …but a cycle follows it, and a cycle that cannot read a job, describe a machine or post a
  *  drain's next slot folds nothing, keeps no cadence and relaunches nothing; see above. */
-const STATUS_DELEGATES = ["jobs:read", "machines:read", "machines:run"] as const;
+const STATUS_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
 
 /** Every act of a drain is news on this plugin's own node, as `doors/acts.ts` explains. */
 const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;

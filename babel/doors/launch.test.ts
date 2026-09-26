@@ -242,10 +242,8 @@ async function dispatch(name: string, args: unknown): Promise<Record<string, unk
 }
 
 /**
- * A launch as the panel would post one: the request, plus the OPERATION NODE the door is
- * authorized at. Every test goes through this rather than hand-writing the node, because a
- * launch without one is not a request the hub would ever deliver — the host refuses `invalid
- * authority target` before the handler is entered.
+ * A launch as the panel posts one: the request, plus the OPERATION NODE `asLaunchRequest`
+ * derives for it. A launch without the node is its own test below.
  */
 async function start(
   args: { readonly preset: keyof typeof PRESET_OPERATIONS } & Record<string, unknown>,
@@ -368,33 +366,16 @@ test("the roster is profiles, launch, verify and stop, and none is governed at a
   expect(profiles?.action.requirements).toBeUndefined();
 
   // A launch posts Babel's OWN `prepare` or `catalog` job and asks Code to post the session, so
-  // it keeps the delegates that posting needs — reading the job back, the locations the sealed
-  // leases are cut from, the machine read `ready` describes with before anything is posted, and
-  // the `machines:run` the posting itself is discharged against (#448) — and names no governed
-  // node, because the operations a requirement would name (`explore`, `evaluate`) are declared
-  // by nobody.
+  // it carries the delegates that posting needs (held to the manifest's own requirements in
+  // `server.test.ts`) and names no governed node, because the operations a requirement would
+  // name (`explore`, `evaluate`) are declared by nobody.
   expect(launch?.action.caps).toEqual(["containers:read"]);
   expect(launch?.action.requirements).toBeUndefined();
-  expect(launch?.action.delegates).toEqual([
-    "jobs:read",
-    "locations:read",
-    "locations:write",
-    "machines:read",
-    "machines:run",
-  ]);
 
   // Verifying the archive posts one of Babel's OWN jobs and writes its run row, so it carries
-  // a write of this plugin's rows and the delegates a posting needs — the same ones, because
-  // it is the same posting path.
+  // a write of this plugin's rows and, like a launch, the delegates of the posting.
   expect(verify?.action.caps).toEqual(["containers:write"]);
   expect(verify?.action.requirements).toBeUndefined();
-  expect(verify?.action.delegates).toEqual([
-    "jobs:read",
-    "locations:read",
-    "locations:write",
-    "machines:read",
-    "machines:run",
-  ]);
 
   // A stop closes this plugin's own rows and reaches a job through its OWN ceiling: a delegate
   // rather than a cap the caller must hold at a node no installation declares any more.
@@ -1048,10 +1029,25 @@ test("keep-going posts Babel's own beat, which reaches no model and needs no pro
   expect(runs[0]?.kind).toBe(BEAT);
 });
 
-test("a request authorized at one node and aimed at another is refused as itself", async () => {
-  // The host discharged the caller's authority at the node in the ARGUMENTS, and a request whose
-  // two halves disagree is a mistake the operator fixes — so it is answered as itself rather
-  // than folded into the engine's absence, which he can do nothing about.
+test("a keep-going press that names no operation node is asked at the preset's own", async () => {
+  // THE PRESS THE INTEGRATED PREVIEW REFUSED. Typed by hand it is the machine, the preset and
+  // its minutes, and the door's input demanded an `operation` node nothing is discharged at any
+  // more, so the host refused it `invalid_args` before the handler was entered.
+  const answer = await dispatch(ACTIONS.launch, {
+    machineId: MACHINE,
+    preset: "keep-going",
+    minutes: 5,
+  });
+
+  expect(answer).toMatchObject({ kind: "conductor", machineId: MACHINE });
+  expect(fleet.executed.map((job) => job.operationId)).toEqual([BEAT]);
+  expect(fleet.executed[0]?.limits?.timeoutMs).toBe(5 * 60_000);
+});
+
+test("a request that names one node and is aimed at another is refused as itself", async () => {
+  // The node is optional, and one that is named is held to: a request whose two halves disagree
+  // is a mistake the operator fixes — so it is answered as itself rather than folded into the
+  // engine's absence, which he can do nothing about.
   const crossed = await dispatch(ACTIONS.launch, {
     machineId: MACHINE,
     preset: "keep-going",

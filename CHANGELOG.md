@@ -1056,6 +1056,47 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Every door that posts Babel's own jobs is lent what the hub discharges them against.** Since
+  the archive cutover, the beat, a preparation and a verification each write the outputs and
+  cache locations and read `atyrode.babel.restic` over the host network. The hub admits a posting
+  only when the door's delegates hold every requirement the operation declares, so on the
+  integrated preview every cycle logged `the beat cannot be registered:
+  job_capability_absent:locations:write`. A launch, a drain start and a verification would have
+  been refused for `services:invoke` or `network:host` next. `pulse`, `runs`, `launch`,
+  `drainStart`, `drainStatus` and `verify` now carry `POSTING_DELEGATES`: `locations:write`,
+  `machines:run`, `network:host` and `services:invoke`. `launch` and `verify` no longer carry
+  `locations:read`, because no operation Babel posts reads a location. The manifest's
+  `capabilities` declares `network:host`, since a door may delegate only what its manifest
+  declares. `server.test.ts` serves each door the slice the host would and derives each posting's
+  requirements from the manifest. The beat registered behind `pulse` and the start of a drain
+  both fail on the old delegates (#453).
+
+- **A store created under the first drain shape can start a drain again.** #285 created
+  `drains.session` as `TEXT NOT NULL` with no default. #291 replaced it with `profile`, but it
+  left the column in stores that already had the table, and no insert has named it since. So
+  every `drainStart` on such a store failed with `NOT NULL constraint failed: drains.session`.
+  The integrated preview's store is one of them, and it holds no drain rows. The enable now
+  applies `SCHEMA_RETIREMENTS`: where `drains.session` is still a column, a row's value moves into
+  that row's `knobs` and the column is dropped, in the enable's one batch. A new store never had
+  the column, so the data version does not move. A test builds the #285 table, enables the
+  plugin and starts a drain through the real door. A second test shows a legacy row keeps its
+  session.
+
+- **The services composer admits the owner's loopback store.** A policy whose origin is plain
+  `http:` on `127.0.0.1` or `[::1]` now composes with `allowLoopbackHttp: true`, the only
+  plain-http origin Manifold's `ServicePolicySchema` admits, so
+  `previewServices` with `http://127.0.0.1:7811` for `atyrode.babel.restic` previews and installs.
+  Before, the flag was always `false`, and the preview was refused with the schema's bare
+  "Invalid input". An `https:` origin composes exactly as before. Any other origin the hub would
+  refuse, `http://localhost` included, is now refused by name. A test previews and installs a
+  loopback origin.
+
+- **A launch no longer requires the operation node it discharges nothing at.** `launch` has
+  declared no governed requirement since #279, but its input still required `operation`, so a
+  keep-going press typed as `{machineId, preset, minutes}` was refused `invalid_args` before the
+  handler ran. The node is now optional and taken as the preset's own. A node that names another
+  machine or operation is still refused by name. A door test launches keep-going without it.
+
 - **The dependency closure follows Manifold `2ee760dd`.** `MANIFOLD_REV` and both workflow
   `uses:` refs move to atyrode/manifold `2ee760dd`. `CODE_REV` and `@atyrode/manifold-code` move
   to atyrode/code#220, whose omp closure is atyrode/manifold-omp#84, so all three name that
