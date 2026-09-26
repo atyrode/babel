@@ -108,14 +108,14 @@ test("an overlay whose expiry has passed is shown as expired rather than as time
 test("activity weights remain read-only, retain zeros and are distinct from review-lane percentages", async () => {
   const root = await open({
     ...POLICY,
-    activityWeights: { review: 0, explore: 0.2, challenge: 0.6, synthesize: 0.3, mapping: 0 },
+    activityWeights: { review: 0, explore: 0.2, challenge: 0.6, synthesize: 0.3 },
   });
   const activities = root.querySelector('[aria-label="Activity weights"]');
   expect(
     [...(activities?.querySelectorAll(".plugin-atyrode_babel_watch__lane") ?? [])].map(
       (row) => row.textContent,
     ),
-  ).toEqual(["review 0", "explore 0.2", "challenge 0.6", "synthesize 0.3", "mapping 0"]);
+  ).toEqual(["review 0", "explore 0.2", "challenge 0.6", "synthesize 0.3"]);
   expect(activities?.querySelector("input, select, button")).toBeNull();
   const reviews = root.querySelector('[aria-label="Review lane shares"]');
   expect(reviews?.textContent).toContain("40%");

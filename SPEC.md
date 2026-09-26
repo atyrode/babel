@@ -961,10 +961,22 @@ boundary, including after another class warms a cache.
 
 Mapping is separate from analysis and from read-only Recall. Every eligible captured session
 enters an idempotent mapping queue; unavailable authority or exhausted budgets leave a visible
-backlog. A separately enabled conductor allocation runs the work through an explicitly configured
-Code profile and versioned recipes. The profile is the operator's choice, including its price;
-Babel neither chooses a provider nor holds its credentials. Redaction applies before material
-reaches the model and before generated prose is retained or served.
+backlog. Mapping is not a standing conductor activity: paid generation, review and correction run
+only inside an operator-started mapping drain (`mapDrainStart`), which keeps its fan of jobs in
+flight until its own target, deadline, `maxJobs` or stop, and ends itself when no eligible work
+remains. The work runs through the route's explicitly configured Code profile and versioned
+recipes. The profile is the operator's choice, including its price; Babel neither chooses a
+provider nor holds its credentials. Redaction applies before material reaches the model and before
+generated prose is retained or served.
+
+A mapping drain's start is admitted at the executor's `map-prepare` node and the source owner's
+private mapping target, and posts the first fan itself. Its jobs are ordinary coordinator claims,
+so the mapping subcap, shared ceilings and uncertain-post accounting still apply, and they are
+posted only from wakes that carry native job authority: the start, a Babel job's own settlement,
+and the free catalog's cadence, which is why a mapping drain requires an admitted catalog for its
+route. Reads never post one. Each new preparation or Code posting requires a mapping drain still
+running on the executor; work already posted settles whatever the drain did since. Stopping the
+drain cancels a preparation at `map-prepare` and a posted session through Code.
 
 The mapping configuration explicitly names `sourceMachineId` (the Recall owner) and
 `executorMachineId` (native catalog/preparation and eventual Code execution). Both same-machine
@@ -1009,8 +1021,9 @@ Reviewing a node cannot itself mark more nodes as served or create a recursive r
 A correction that needs another model run returns to the same queue, claim and budget machinery.
 
 Installation enables no paid mapping, installs no source classification and grants no corpus
-access. Activation, the source disclosure route and the producing Code profile remain separately
-authorized configuration.
+access. Installing a mapping route and admitting its free catalog spend nothing either: only a
+mapping drain the operator starts does. Activation, the source disclosure route and the producing
+Code profile remain separately authorized configuration.
 
 ### 6.4 Deterministic preflight
 

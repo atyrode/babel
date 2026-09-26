@@ -15,6 +15,7 @@ import {
   DRAIN_CONCURRENT_MAX,
   INPUT_FIELD,
   MACHINE_OPERATIONS,
+  MAP_DRAIN_PRESET,
   RECALL_SERVICE_ID,
   type OperationName,
   TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY,
@@ -179,6 +180,7 @@ function loop(
   plan: RunPlan,
   catalogPlan: RunPlan,
   mapPreparePlan: RunPlan,
+  nativeDispatch: boolean,
 ): Conductor {
   const engine = codeEngine(actions);
   return conductor({
@@ -220,6 +222,7 @@ function loop(
     plan,
     catalogPlan,
     mapPreparePlan,
+    nativeDispatch,
     now: () => store.now(),
   });
 }
@@ -431,8 +434,37 @@ async function catalogCycle(
       planFor(policy, MACHINE_OPERATIONS.scan),
       planFor(policy, MACHINE_OPERATIONS.mapCatalog),
       planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+      // The free catalog lane never enters paid dispatch, whatever authority settled it.
+      false,
     ).tickCatalog(machineId, admission ?? undefined)),
   ];
+}
+
+/**
+ * WHY A MAPPING DRAIN CANNOT START, or null. The free catalog's cadence is the native wake that
+ * refills a mapping drain's fan once its Code sessions settle — a Code session settling wakes
+ * Code, never Babel — so a drain is refused while that cadence is not admitted for the route.
+ */
+async function catalogAdmitted(policy: Policy): Promise<string | null> {
+  if (!policy.enabled || policy.mapping === undefined)
+    return "the policy in force installs no transcript-mapping route";
+  const parsed = TranscriptMapCatalogAdmissionSchema.safeParse(
+    JSON.parse((await keys.get(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY)) ?? "null"),
+  );
+  return parsed.success &&
+    JSON.stringify(parsed.data.route) ===
+      JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping))
+    ? null
+    : `start the free catalog for this route (${ACTIONS.startMapCatalog}) first: its cadence is what refills a mapping drain`;
+}
+
+/** Whether a mapping drain is running on this executor, so its catalog settlement may refill it. */
+async function mappingDrainOn(machineId: string): Promise<boolean> {
+  const rows = await store.db.query<{ id: string }>(
+    `SELECT id FROM drains WHERE preset = ? AND machine_id = ? AND state = 'running' LIMIT 1`,
+    [MAP_DRAIN_PRESET, machineId],
+  );
+  return rows.length > 0;
 }
 
 /**
@@ -479,6 +511,9 @@ async function cycle(
   machines: MachinesSlice,
   actions: ActionsSlice | undefined,
   services?: EmbeddingServices | undefined,
+  // Only a hook's slice — the settled job's own authority, or the installer's at enable — can
+  // post native work; a door's bridge is attenuated to that door's delegates.
+  nativeDispatch = false,
 ): Promise<void> {
   const policy = (await coordinated.policy()).policy;
   // Native work uses each operation's own declared limits; model work remains Code's to post.
@@ -490,6 +525,7 @@ async function cycle(
     plan,
     planFor(policy, MACHINE_OPERATIONS.mapCatalog),
     planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+    nativeDispatch,
   ).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
@@ -607,6 +643,20 @@ const doors = babelDoors(
         ctx.services,
       ),
     concurrentJobs: DRAIN_FAN,
+    startMapping: async (ctx) => {
+      const { policy } = await coordinated.policy();
+      const refusal = await catalogAdmitted(policy);
+      if (refusal !== null) return { refused: refusal };
+      return await loop(
+        jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+        machinesSlice(ctx.machines),
+        ctx.actions,
+        planFor(policy, MACHINE_OPERATIONS.scan),
+        planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+        planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+        true,
+      ).tickMapDrains();
+    },
     now: () => store.now(),
   },
   CONCURRENT_JOBS,
@@ -749,6 +799,8 @@ export const plugin: ServerPluginDef = {
             installer === undefined ? unauthorized(ENABLE_WITHOUT_JOBS) : jobsSlice(installer),
             unaskable(HOOK_WITHOUT_MACHINES),
             ctx.actions,
+            undefined,
+            installer !== undefined,
           );
         });
       } catch (error) {
@@ -780,8 +832,24 @@ export const plugin: ServerPluginDef = {
         if (job.operationId === MACHINE_OPERATIONS.mapCatalog) {
           for (const note of await catalogCycle(jobsSlice(ctx.jobs), job.machineId))
             console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);
+          // A Code session settling wakes Code, not Babel: the catalog's cadence is the native
+          // wake that settles a mapping drain's sessions and refills its free slots.
+          if (await mappingDrainOn(job.machineId))
+            await cycle(
+              jobsSlice(ctx.jobs),
+              unaskable(HOOK_WITHOUT_MACHINES),
+              ctx.actions,
+              undefined,
+              true,
+            );
         } else {
-          await cycle(jobsSlice(ctx.jobs), unaskable(HOOK_WITHOUT_MACHINES), ctx.actions);
+          await cycle(
+            jobsSlice(ctx.jobs),
+            unaskable(HOOK_WITHOUT_MACHINES),
+            ctx.actions,
+            undefined,
+            true,
+          );
         }
       });
     },

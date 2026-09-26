@@ -14,6 +14,7 @@ import {
   MATERIAL_OUTPUT,
   MODELS_KEPT,
   MaterialIndexSchema,
+  MAP_DRAIN_PRESET,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
@@ -61,6 +62,15 @@ import type {
 } from "../store/coordinator.ts";
 import { mappingPolicy, perMachineBound } from "../store/coordinator.ts";
 import { transcriptMaps, TranscriptMapProjectionRefusal } from "../store/transcript-maps.ts";
+import {
+  activeDrains,
+  addSpend,
+  deadlineOf,
+  noteDrain,
+  reconcileLive,
+  recordLaunch,
+  targetMet,
+} from "../store/drains.ts";
 import {
   materialJobId,
   nativeAdmissionRefusal,
@@ -483,6 +493,14 @@ export interface ConductorDeps {
   /** Native catalog limits come from its own operation, never the scan or a Code profile. */
   readonly catalogPlan?: RunPlan;
   readonly mapPreparePlan?: RunPlan;
+  /**
+   * WHETHER THIS WAKE CAN POST NATIVE WORK. True only for a slice carrying a credential a native
+   * post can be admitted under: a settled job's own authority, or the installer's at enable. A
+   * door's bridge is attenuated to that door's caps and delegates, and the doors a cycle follows
+   * delegate no `machines:run`, so mapping — whose first step is a native preparation — is not
+   * drawn there: the claim would spend the work's bounded attempt on an admission refusal.
+   */
+  readonly nativeDispatch?: boolean;
   readonly now: () => number;
 }
 
@@ -631,6 +649,11 @@ export interface Conductor {
     machineId: string,
     admission?: TranscriptMapCatalogAdmission,
   ): Promise<readonly string[]>;
+  /**
+   * Only the running mapping drains' dispatch, for the drain's own start door: no review, title
+   * or catalog work rides the press that started a mapping drain.
+   */
+  tickMapDrains(): Promise<{ readonly launched: number; readonly notes: readonly string[] }>;
 }
 
 // ---------------------------------------------------------------------------- constants
@@ -2067,11 +2090,19 @@ export function conductor(deps: ConductorDeps): Conductor {
     const route = configured === null ? null : TranscriptMapPolicySchema.parse(configured);
     if (
       !policy.enabled ||
-      policy.activityWeights.mapping <= 0 ||
       policy.version !== intent.policyVersion ||
       JSON.stringify(route) !== JSON.stringify(intent.route)
     )
       return "mapping policy or reviewed configuration changed";
+    // Each new spend — the native preparation, then the Code session — needs a mapping drain
+    // still running on this executor. Work already posted settles whatever the drain did since.
+    if (phase === "admission") {
+      const draining = await store.db.query<{ id: string }>(
+        `SELECT id FROM drains WHERE preset=? AND machine_id=? AND state='running' LIMIT 1`,
+        [MAP_DRAIN_PRESET, intent.route.executorMachineId],
+      );
+      if (draining.length === 0) return "no mapping drain is running on this executor";
+    }
     const fence = mappingFence(intent, jobId, phase);
     const held = await store.db.query<{ held: number }>(`SELECT (${fence.sql}) held`, fence.params);
     if (Number(held[0]?.held) !== 1) return "mapping lease or claim is no longer held";
@@ -2376,6 +2407,100 @@ export function conductor(deps: ConductorDeps): Conductor {
       lane: assignment.lane,
     });
     return null;
+  }
+
+  /**
+   * THE ONLY PLACE PAID MAPPING IS DRAWN (#223): into the free slots of each running mapping
+   * drain, and only on a wake that can post native work (`nativeDispatch`). A mapping
+   * assignment's first act is a native `map-prepare`, and a read wake's bridge is attenuated
+   * below posting; drawing there would spend the work's bounded attempt on an admission
+   * refusal. Each draw is an ordinary coordinator claim, so the mapping daily cap, the shared
+   * ceilings and the uncertain-post accounting all still hold; the drain adds its own fan,
+   * `maxJobs`, target and deadline on top, and folds what its runs spend (`server/drain.ts`).
+   */
+  async function dispatchMapDrains(
+    policy: Policy,
+    at: number,
+    cycleRunId: string,
+    requested: RequestedJob[],
+    settled: SettledClaim[],
+    refused: RefusedDraw[],
+    notes: string[],
+  ): Promise<number> {
+    if (deps.nativeDispatch !== true || !policy.enabled) return 0;
+    const route = mappingPolicy(policy);
+    if (route === null) return 0;
+    let launched = 0;
+    for (const drain of await activeDrains(store)) {
+      if (
+        drain.preset !== MAP_DRAIN_PRESET ||
+        drain.state !== "running" ||
+        drain.machineId !== route.executorMachineId
+      )
+        continue;
+      const seen = await reconcileLive(store, drain.live);
+      const spent = addSpend(
+        seen.settled.reduce((total, run) => addSpend(total, run.spend), drain.spent),
+        seen.inFlight,
+      );
+      const deadline = deadlineOf(drain.target);
+      if (targetMet(drain.target, spent) !== "" || (deadline !== null && at >= deadline)) continue;
+      let ordinal = drain.jobsLaunched;
+      let free = drain.concurrent - seen.holding.length;
+      while (free > 0 && (drain.knobs.maxJobs === undefined || ordinal < drain.knobs.maxJobs)) {
+        const drawn = await coordinator.draw({
+          runId: cycleRunId,
+          machines: [route.executorMachineId],
+          now: at,
+          only: "mapping",
+        });
+        if (drawn.outcome === "gap") {
+          if (drawn.gap.reason !== "no-candidates")
+            notes.push(`mapping drain ${drain.id}: ${drawn.gap.detail}`);
+          break;
+        }
+        const assignment = drawn.assignment;
+        if (assignment.activity !== "mapping") break;
+        const before = requested.length;
+        const detail = await dispatchMapping(
+          assignment,
+          policy,
+          cycleRunId,
+          at,
+          requested,
+          settled,
+        );
+        if (detail !== null || requested.length === before) {
+          const why = detail ?? "mapping dispatch posted nothing";
+          refused.push({
+            assignmentId: assignment.id,
+            recordId: assignment.recordId,
+            reason: "mapping",
+            detail: why,
+          });
+          await noteDrain(store, drain.id, [{ at, kind: "admission", detail: why }]);
+          break;
+        }
+        const job = requested[requested.length - 1]!;
+        const recorded = await recordLaunch(
+          store,
+          drain.id,
+          { runId: job.runId, jobId: job.jobId, launchedAt: at },
+          ordinal,
+        );
+        if (!recorded) {
+          // Another wake advanced this drain's ordinal first. The run stays a claimed, cap-
+          // counted mapping run; only its fold into this drain's total is lost, so say so.
+          notes.push(`mapping drain ${drain.id}: ${job.runId} was posted but not recorded`);
+          break;
+        }
+        ordinal += 1;
+        free -= 1;
+        launched += 1;
+      }
+    }
+    if (launched > 0) store.touch();
+    return launched;
   }
 
   async function reconcileMappingPreparations(
@@ -5433,7 +5558,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     const bound = policy.concurrentPerMachine ?? policy.batchSize;
     while (requested.length < policy.batchSize) {
       const open = await coordinator.open(at);
-      if (policy.activityWeights.mapping <= 0 && (open.byMachine[machineId] ?? 0) >= bound) {
+      if ((open.byMachine[machineId] ?? 0) >= bound) {
         return {
           stop: {
             reason: "batch",
@@ -5447,24 +5572,15 @@ export function conductor(deps: ConductorDeps): Conductor {
       if (drawn.outcome === "gap") return { stop: drawn.gap, gaps };
       const assignment: Assignment = drawn.assignment;
       if (assignment.activity === "mapping") {
-        const detail = await dispatchMapping(
-          assignment,
-          policy,
-          cycleRunId,
-          at,
-          requested,
-          settled,
-        );
-        if (detail !== null) {
-          refused.push({
-            assignmentId: assignment.id,
-            recordId: assignment.recordId,
-            reason: "mapping",
-            detail,
-          });
-          return { stop: { reason: "dispatch-refused", detail }, gaps };
-        }
-        continue;
+        // A standing draw never offers mapping; only a mapping drain's own draw does.
+        const detail = "mapping work is drawn only for a running mapping drain";
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: "mapping",
+          detail,
+        });
+        return { stop: { reason: "dispatch-refused", detail }, gaps };
       }
       const recipeId =
         assignment.activity === "review"
@@ -5836,6 +5952,17 @@ export function conductor(deps: ConductorDeps): Conductor {
         await advanceCatalog(policy, at, notes);
       return notes;
     },
+    async tickMapDrains() {
+      const at = deps.now();
+      cycle += 1;
+      const cycleRunId = `cyc_${String(at)}_${String(cycle)}`;
+      const policy = (await coordinator.policy(at)).policy;
+      const notes: string[] = [];
+      const settled: SettledClaim[] = [];
+      await reconcileMappingPreparations(settled, notes);
+      const launched = await dispatchMapDrains(policy, at, cycleRunId, [], settled, [], notes);
+      return { launched, notes };
+    },
     async tick(): Promise<TickReport> {
       const at = deps.now();
       cycle += 1;
@@ -5916,6 +6043,8 @@ export function conductor(deps: ConductorDeps): Conductor {
         parked === null
           ? await dispatchReviews(policy, at, cycleRunId, requested, settled, refused)
           : { stop: null, gaps: [] as readonly Gap[] };
+      // Mapping is its own fan, independent of the review batch and its park.
+      await dispatchMapDrains(policy, at, cycleRunId, requested, settled, refused, notes);
       const stop = dispatched.stop;
       const gaps = dispatched.gaps;
       for (const gap of gaps) count(gapsByReason, gap.reason);

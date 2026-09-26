@@ -354,9 +354,6 @@ export function validatePolicy(policy: Policy, concurrentJobs: number | null): s
       }
     }
   }
-  if (policy.activityWeights.mapping > 0 && policy.mapping === undefined) {
-    return "mapping requires an installed mapping route";
-  }
   if (policy.mapping !== undefined) {
     const parsed = TranscriptMapConfigSchema.safeParse(policy.mapping);
     if (!parsed.success) return `invalid mapping configuration: ${parsed.error.message}`;
@@ -619,6 +616,12 @@ export interface DrawRequest {
    * fleet would allow.
    */
   readonly machines?: readonly string[];
+  /**
+   * `"mapping"` draws ONLY transcript-mapping work, for an operator-started mapping drain whose
+   * wake can post the native preparation. Mapping is never a standing activity: an ordinary draw
+   * never hands it out, whatever the policy's weights say.
+   */
+  readonly only?: "mapping";
   readonly now?: number;
   readonly seed?: bigint;
 }
@@ -2204,7 +2207,7 @@ export function coordinator(
 
   async function buildMapping(policy: Policy, moment: number): Promise<MappingCandidate[]> {
     const route = mappingPolicy(policy);
-    if (route === null || policy.activityWeights.mapping <= 0 || route.dailyCost <= 0) return [];
+    if (route === null || route.dailyCost <= 0) return [];
     const maps = transcriptMaps(store);
     await maps.refreshWork(route, iso(moment), 64);
     return (await maps.offers(route, iso(moment), 64)).map((work) => ({
@@ -2288,14 +2291,14 @@ export function coordinator(
     }
 
     const [active, spent] = await Promise.all([openClaims(moment), spendOn(moment)]);
-    const machines = [
-      ...new Set([
-        ...(policy.review === undefined ? (request.machines ?? []) : [policy.review.machineId]),
-        ...(policy.activityWeights.mapping > 0 && policy.mapping !== undefined
-          ? [policy.mapping.executorMachineId]
-          : []),
-      ]),
-    ];
+    const mappingOnly = request.only === "mapping";
+    const machines = mappingOnly
+      ? policy.mapping === undefined
+        ? []
+        : [policy.mapping.executorMachineId]
+      : policy.review === undefined
+        ? [...(request.machines ?? [])]
+        : [policy.review.machineId];
     const overspent = admitSpend(
       policy,
       active,
@@ -2305,36 +2308,21 @@ export function coordinator(
     );
     if (overspent !== null) return { outcome: "gap", gap: overspent, gaps: [] };
 
-    const reviewAdmission = admitSpend(
-      policy,
-      active,
-      spent.byRun[request.runId] ?? 0,
-      spent.total,
-      policy.review === undefined ? (request.machines ?? []) : [policy.review.machineId],
-    );
-    const mappingAdmission =
-      policy.mapping === undefined
-        ? null
-        : admitSpend(policy, active, spent.byRun[request.runId] ?? 0, spent.total, [
-            policy.mapping.executorMachineId,
-          ]);
     const mappingBudget =
       policy.mapping !== undefined &&
       spent.mapping + reservedCost(policy) <= policy.mapping.dailyCost;
     const [review, analysis, mapping] = await Promise.all([
-      policy.activityWeights.review > 0 && reviewAdmission === null
+      !mappingOnly && policy.activityWeights.review > 0
         ? buildCandidates(policy, moment)
         : Promise.resolve({ candidates: [] as Candidate[], gaps: [] as Gap[] }),
-      reviewAdmission === null
+      !mappingOnly
         ? buildAnalysis(policy, moment)
         : Promise.resolve({ candidates: [] as AnalysisCandidate[], gaps: [] as Gap[] }),
-      mappingBudget && mappingAdmission === null
-        ? buildMapping(policy, moment)
-        : Promise.resolve([]),
+      mappingOnly && mappingBudget ? buildMapping(policy, moment) : Promise.resolve([]),
     ]);
     const candidates = review.candidates;
     const gaps = [...review.gaps, ...analysis.gaps];
-    if (policy.activityWeights.mapping > 0 && !mappingBudget)
+    if (mappingOnly && !mappingBudget)
       gaps.push({
         recordId: "",
         role: "",
@@ -2395,16 +2383,23 @@ export function coordinator(
     const chooseActivity = (
       stream: Stream,
     ): { lane: Lane | "mapping"; chosen: WorkCandidate } | null => {
+      if (mappingOnly) {
+        const offered = mapping.filter((candidate) => !contended(candidate));
+        let target = stream.float() * offered.reduce((sum, candidate) => sum + candidate.weight, 0);
+        for (const chosen of offered) {
+          target -= chosen.weight;
+          if (target <= 0) return { lane: chosen.lane, chosen };
+        }
+        return null;
+      }
       const eligible = ACTIVITIES.filter(
         (activity) =>
           policy.activityWeights[activity] > 0 &&
           (activity === "review"
             ? candidates.some((candidate) => !contended(candidate))
-            : activity === "mapping"
-              ? mapping.some((candidate) => !contended(candidate))
-              : analysis.candidates.some(
-                  (candidate) => candidate.stage === activity && !contended(candidate),
-                )),
+            : analysis.candidates.some(
+                (candidate) => candidate.stage === activity && !contended(candidate),
+              )),
       );
       if (eligible.length === 0) return null;
       // Preserve the old stream exactly when review is the only enabled/eligible activity.
@@ -2422,12 +2417,9 @@ export function coordinator(
         }
       }
       if (activity === "review") return sample(candidates, policy, stream, contended);
-      const offered =
-        activity === "mapping"
-          ? mapping.filter((candidate) => !contended(candidate))
-          : analysis.candidates.filter(
-              (candidate) => candidate.stage === activity && !contended(candidate),
-            );
+      const offered = analysis.candidates.filter(
+        (candidate) => candidate.stage === activity && !contended(candidate),
+      );
       let target = stream.float() * offered.reduce((sum, candidate) => sum + candidate.weight, 0);
       for (const chosen of offered) {
         target -= chosen.weight;
@@ -2588,7 +2580,9 @@ export function coordinator(
     }
     if (
       !policy.enabled ||
-      policy.activityWeights[assignment.activity] <= 0 ||
+      (assignment.activity === "mapping"
+        ? policy.mapping === undefined
+        : policy.activityWeights[assignment.activity] <= 0) ||
       !Number.isFinite(assignment.reservedCost) ||
       assignment.reservedCost <= 0
     ) {

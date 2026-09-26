@@ -21,12 +21,17 @@ import type {
 } from "../contract.ts";
 import {
   DRAIN_CONCURRENT_MAX,
+  DRAIN_OPERATIONS,
   DrainStartRequestSchema,
   DrainStopInputSchema,
+  MACHINE_OPERATIONS,
   OPERATIONS,
+  RECALL_SERVICE_ID,
+  StartMapDrainRequestSchema,
+  TRANSCRIPT_MAP_SERVICE_OPERATION,
   TRANSCRIPT_MAP_SESSION_OPERATION,
+  TranscriptMapConfigSchema,
   PRESETS,
-  PRESET_OPERATIONS,
   PRESET_START,
   RUN_STAGES,
   StopInputSchema,
@@ -38,6 +43,7 @@ import {
   type LaunchRequest,
   type ProfileAccount,
   type StopReason,
+  type TranscriptMapConfig,
 } from "../contract.ts";
 
 /** One of the five requests, as the contract spells them. */
@@ -544,7 +550,8 @@ export type DrainStatus = z.infer<typeof DrainStatusSchema>;
 export interface DrainCard {
   readonly title: string;
   readonly does: string;
-  readonly knob: Knob;
+  /** `route`: the installed mapping route decides where it runs and on which profile. */
+  readonly knob: Knob | "route";
   /** Whether jobs of this preset reach a model at all; `keep-going` does not. */
   readonly spends: boolean;
 }
@@ -568,7 +575,19 @@ export const DRAIN_CARDS: Record<DrainPreset, DrainCard> = {
     knob: "minutes",
     spends: false,
   },
+  "map-transcripts": {
+    title: "Map transcripts",
+    does: "One transcript-map summary, review or correction per job, on the installed mapping route and within its daily cap.",
+    knob: "route",
+    spends: true,
+  },
 };
+
+/** The installed policy's transcript-mapping route, or null when it installs none. */
+export function mappingRouteOf(policy: PolicyResult | null): TranscriptMapConfig | null {
+  const parsed = TranscriptMapConfigSchema.safeParse(policy?.payload["mapping"]);
+  return parsed.success ? parsed.data : null;
+}
 
 /** The bounds of the two knobs a drain owns, read off the contract's own schema. */
 export const DRAIN_BOUNDS = {
@@ -646,8 +665,39 @@ export function drainStartRequest(
     operation: {
       kind: "operation",
       machineId: draft.machineId,
-      operationId: PRESET_OPERATIONS[draft.preset],
+      operationId: DRAIN_OPERATIONS[draft.preset],
     },
+  });
+}
+
+/**
+ * The draft as `mapDrainStart` takes it. Where it runs and on which profile are the installed
+ * route's, never the form's: the executor's `map-prepare` node and the source owner's mapping
+ * target are the two governed nodes the start is admitted at.
+ */
+export function mapDrainStartRequest(
+  draft: DrainDraft,
+  route: TranscriptMapConfig,
+  now: number,
+): z.infer<typeof StartMapDrainRequestSchema> {
+  return StartMapDrainRequestSchema.parse({
+    operation: {
+      kind: "operation",
+      machineId: route.executorMachineId,
+      operationId: MACHINE_OPERATIONS.mapPrepare,
+    },
+    source: {
+      kind: "service",
+      machineId: route.sourceMachineId,
+      serviceId: RECALL_SERVICE_ID,
+      operationId: TRANSCRIPT_MAP_SERVICE_OPERATION,
+    },
+    concurrent: draft.concurrent,
+    target: {
+      deadline: new Date(now + draft.minutesToDeadline * 60_000).toISOString(),
+      ...(draft.targetUsd > 0 ? { costMicros: Math.round(draft.targetUsd * 1_000_000) } : {}),
+    },
+    reason: draft.reason,
   });
 }
 
@@ -661,7 +711,7 @@ export function drainStopInput(
     operation: {
       kind: "operation",
       machineId: drain.machineId,
-      operationId: PRESET_OPERATIONS[drain.preset],
+      operationId: DRAIN_OPERATIONS[drain.preset],
     },
     reason,
   });
@@ -677,7 +727,16 @@ export function drainStopInput(
  * remove. The clause is {@link sessionChoice}'s own — one picker, one refusal — and the drain
  * adds only what a launch has no equivalent of: the reason the overlay records.
  */
-export function drainUnready(draft: DrainDraft, profile: ProfileRow | null): string {
+export function drainUnready(
+  draft: DrainDraft,
+  profile: ProfileRow | null,
+  route: TranscriptMapConfig | null = null,
+): string {
+  if (DRAIN_CARDS[draft.preset].knob === "route") {
+    if (route === null) return "Install a policy with a transcript-mapping route first.";
+    if (draft.reason.trim() === "") return "Say why: the reason is recorded on the drain.";
+    return "";
+  }
   if (draft.machineId === "") return "Pick a machine to drain on.";
   if (DRAIN_CARDS[draft.preset].knob === "topic" && draft.entityId === "") {
     return "Pick a topic to explore.";

@@ -150,7 +150,8 @@ export function isRecordId(id: string): boolean {
 export const STAGES = ["explore", "challenge", "synthesize"] as const;
 export const StageSchema = z.enum(STAGES);
 export type Stage = z.infer<typeof StageSchema>;
-export const ACTIVITIES = ["review", ...STAGES, "mapping"] as const;
+/** Standing conductor activities. Transcript mapping is not one: it runs only in a mapping drain. */
+export const ACTIVITIES = ["review", ...STAGES] as const;
 export const ActivitySchema = z.enum(ACTIVITIES);
 export type Activity = z.infer<typeof ActivitySchema>;
 export const ANALYSIS_ROLES = {
@@ -166,7 +167,6 @@ export const DEFAULT_ACTIVITY_WEIGHTS = {
   explore: 0,
   challenge: 0,
   synthesize: 0,
-  mapping: 0,
 } as const;
 const activityWeight = z.number().min(0).max(1);
 export const ActivityWeightsSchema = z
@@ -175,7 +175,6 @@ export const ActivityWeightsSchema = z
     explore: activityWeight,
     challenge: activityWeight,
     synthesize: activityWeight,
-    mapping: activityWeight.default(0),
   })
   .default(DEFAULT_ACTIVITY_WEIGHTS);
 export type ActivityWeights = z.infer<typeof ActivityWeightsSchema>;
@@ -423,6 +422,8 @@ export const ACTIONS = {
   drainStart: "drainStart",
   drainStatus: "drainStatus",
   drainStop: "drainStop",
+  /** Start a transcript-mapping drain: the only way paid mapping work is ever drawn (#223). */
+  mapDrainStart: "mapDrainStart",
   /**
    * THE HOST SERVICES THIS BUNDLE'S OPERATIONS BIND, composed and installed (#400). Owner only,
    * for the same reason the crossing is: `engine.services` admits a configuration read or write
@@ -3685,12 +3686,39 @@ export const ServicesInstalledSchema = z.strictObject({
  * which makes it the honest rehearsal of the controller — the fan, the relaunch on settle and
  * the self-stop, proven without spending a cent of the window the drain exists to protect.
  */
-export const DRAIN_PRESETS = ["read-whats-new", "explore-topic", "keep-going"] as const;
+export const DRAIN_PRESETS = [
+  "read-whats-new",
+  "explore-topic",
+  "keep-going",
+  "map-transcripts",
+] as const;
 export const DrainPresetSchema = z.enum(DRAIN_PRESETS);
 export type DrainPreset = (typeof DRAIN_PRESETS)[number];
 
 /** The presets a drain fans out that reach a model; the rest spend nothing (see above). */
-export const DRAIN_SPENDING_PRESETS: readonly DrainPreset[] = ["read-whats-new", "explore-topic"];
+export const DRAIN_SPENDING_PRESETS: readonly DrainPreset[] = [
+  "read-whats-new",
+  "explore-topic",
+  "map-transcripts",
+];
+
+/**
+ * THE MAPPING DRAIN (#223). Transcript mapping is not a standing conductor activity: paid map
+ * generation, served-summary review and bounded correction run only while an operator-started
+ * drain of this preset holds free slots, within its target and the policy's mapping daily cap.
+ * Its jobs are claims the coordinator draws and the conductor posts — a native
+ * `map-prepare` on the executor, then a material-only Code session — so its start is its own
+ * door with the executor and source-owner nodes as governed targets ({@link StartMapDrainRequestSchema}).
+ */
+export const MAP_DRAIN_PRESET = "map-transcripts" satisfies DrainPreset;
+
+/** The operation each drain preset's jobs run at: where its jobs are posted and cancelled. */
+export const DRAIN_OPERATIONS: Readonly<Record<DrainPreset, OperationName>> = {
+  "read-whats-new": PRESET_OPERATIONS["read-whats-new"],
+  "explore-topic": PRESET_OPERATIONS["explore-topic"],
+  "keep-going": PRESET_OPERATIONS["keep-going"],
+  "map-transcripts": MACHINE_OPERATIONS.mapPrepare,
+};
 
 /**
  * The most jobs one machine may hold for a drain. It is the manifest's own
@@ -4704,6 +4732,26 @@ export const StartMapCatalogResultSchema = z.strictObject({
   /** The conductor's account of this wake, including a refusal or work already in flight. */
   notes: z.array(z.string()),
 });
+
+/**
+ * What the mapping drain's start takes. `operation` is the executor's `map-prepare` node and
+ * `source` the source owner's private mapping target: both are governed targets the host
+ * discharges before the handler, exactly as `startMapCatalog`'s are, and both must name the
+ * installed policy's mapping route. The Code profile is the route's own; a drain never picks one.
+ * The stop is the ordinary `drainStop` at the same `map-prepare` node.
+ */
+export const StartMapDrainRequestSchema = z.strictObject({
+  operation: OperationRefSchema.extend({ operationId: z.literal(MACHINE_OPERATIONS.mapPrepare) }),
+  source: RecallTargetSchema.extend({
+    operationId: z.literal(TRANSCRIPT_MAP_SERVICE_OPERATION),
+  }),
+  concurrent: z.number().int().min(1).max(DRAIN_CONCURRENT_MAX),
+  /** Cumulative admission bound; admitted jobs keep running until they settle. */
+  maxJobs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+  target: DrainTargetSchema,
+  reason: z.string().trim().min(1).max(2000),
+});
+export type StartMapDrainRequest = z.infer<typeof StartMapDrainRequestSchema>;
 export const TRANSCRIPT_MAP_ROLES = {
   generate: "mapping:generate",
   review: "mapping:review",

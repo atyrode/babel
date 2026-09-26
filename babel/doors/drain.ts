@@ -3,6 +3,7 @@ import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   DRAIN_DEFAULT_TTL_MS,
+  DRAIN_OPERATIONS,
   DRAIN_SPENDING_PRESETS,
   DrainQuerySchema,
   DrainStartRequestSchema,
@@ -11,7 +12,9 @@ import {
   DrainStopInputSchema,
   DrainStopResultSchema,
   EVENTS,
-  PRESET_OPERATIONS,
+  MAP_DRAIN_PRESET,
+  StartMapDrainRequestSchema,
+  type CodeProfile,
   type DrainProfile,
   type DrainReportPayload,
   type DrainTarget,
@@ -39,7 +42,7 @@ import {
   type DrainDeps,
 } from "../server/drain.ts";
 import type { BabelStore } from "../store/store.ts";
-import type { Coordinator } from "../store/coordinator.ts";
+import { mappingPolicy, type Coordinator } from "../store/coordinator.ts";
 import { defineDoor, type Door } from "./door.ts";
 
 /*
@@ -126,6 +129,16 @@ export interface DrainDoorDeps {
   deps(ctx: Parameters<Door["handler"]>[0]): DrainDeps;
   /** The manifest's `concurrentJobs`: the most jobs of one operation a machine runs at once. */
   readonly concurrentJobs: number;
+  /**
+   * THE MAPPING DRAIN'S FIRST FAN, under the start's own authority: only the running mapping
+   * drains' dispatch (`Conductor.tickMapDrains`), refused while the route's free catalog is not
+   * admitted — its cadence is the native wake that refills the fan after Code sessions settle.
+   */
+  startMapping?(
+    ctx: Parameters<Door["handler"]>[0],
+  ): Promise<
+    { readonly launched: number; readonly notes: readonly string[] } | { readonly refused: string }
+  >;
   now(): number;
 }
 
@@ -135,6 +148,115 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
     row.state === "running" || row.state === "closing"
       ? null
       : await readDrainReport(store, row.id);
+
+  /** Where a drain stops: a target it names, and the deadline every drain carries. */
+  const stopsAt = (
+    requested: DrainTarget,
+    maxJobs: number | undefined,
+    at: number,
+  ):
+    | { readonly refused: string }
+    | { readonly target: DrainTarget; readonly deadlineAt: string; readonly note: string } => {
+    if (
+      requested.costMicros === undefined &&
+      requested.outputTokens === undefined &&
+      requested.deadline === undefined &&
+      maxJobs === undefined
+    ) {
+      return {
+        refused:
+          "a drain needs a target: a cost in micro-dollars, a number of output tokens, a " +
+          "deadline, or maxJobs. A drain without one is not a drain, it is a loop (runbook §11.1)",
+      };
+    }
+    const named = requested.deadline === undefined ? null : Date.parse(requested.deadline);
+    if (named !== null && !Number.isFinite(named)) {
+      return { refused: `${JSON.stringify(requested.deadline)} is not an instant` };
+    }
+    if (named !== null && named <= at) {
+      return { refused: `the deadline ${requested.deadline ?? ""} has already passed` };
+    }
+    // EVERY DRAIN CARRIES A DEADLINE, whether the operator named one or not: two hours is the
+    // 2026-09-13 drain's own length, and a drain that outlives the window it exists to spend is
+    // what the operation was written against. The instant is on the row, so what stops it is one
+    // of its own targets rather than somebody remembering to.
+    const deadlineAt = new Date(named ?? at + DRAIN_DEFAULT_TTL_MS).toISOString();
+    return {
+      target: { ...requested, deadline: deadlineAt },
+      deadlineAt,
+      note:
+        named === null
+          ? `this drain names no deadline, so it stops at ${deadlineAt} whatever it has spent`
+          : "",
+    };
+  };
+
+  /** The fan's manifest bound and the one-drain-per-machine rule, shared by both starts. */
+  const admissible = async (
+    machineId: string,
+    concurrent: number,
+  ): Promise<{ readonly refused: string } | null> => {
+    /*
+      THE FAN IS BOUNDED AGAINST THE MANIFEST, HERE, AND BY THE DRAIN'S OWN JOBS IN THE
+      CONTROLLER. `concurrentJobs` is `limits.concurrentJobs`: the hub refuses every posting past
+      it at `execute` (atyrode/manifold#551), so a fan above it would spend the drain's first
+      round on refusals. It is refused by name instead.
+    */
+    if (concurrent > doorDeps.concurrentJobs) {
+      return {
+        refused:
+          `this drain's fan of ${String(concurrent)} cannot be admitted: it is above the ` +
+          `${String(doorDeps.concurrentJobs)} jobs a machine runs at once under this plugin's ` +
+          `manifest, and the hub refuses every posting past that at execute`,
+      };
+    }
+    const held = await drainOnMachine(store, machineId);
+    // ONE DRAIN PER MACHINE. Two controllers fanning one host is the 2026-09-13 failure with
+    // better manners: each would count only its own jobs against its own bound, and the sum is
+    // what the machine actually runs.
+    return held === null
+      ? null
+      : {
+          refused:
+            `${machineId} is already draining under ${held.id}, started ${held.startedAt}: ` +
+            `stop that one before starting another`,
+        };
+  };
+
+  /*
+    WHAT CODE SAYS THIS PROFILE WILL SPEND, COPIED ONCE, AT THE START (#267, #279).
+
+    Babel chooses no model and no account, so the only honest record of what a fan is burning is
+    Code's own, read at the moment the operator presses and written on the row as a LEDGER ENTRY —
+    not re-read per job, because a controller that asked again between the first job and the
+    ninetieth would report whatever the profile had become rather than what was started. A
+    profile Code does not list is refused: a container that has since gone is a press against
+    something that no longer exists. Code answering nothing at all is a different refusal.
+  */
+  const ledgerOf = async (
+    deps: DrainDeps,
+    profile: CodeProfile,
+  ): Promise<{ readonly refused: string } | { readonly ledger: DrainProfile }> => {
+    const listed = await deps.engine.profiles();
+    if (!listed.ok) return { refused: listed.refused };
+    const named = listed.value.find((candidate) => candidate.containerId === profile.containerId);
+    if (named === undefined) {
+      return {
+        refused:
+          `no_such_profile: Code lists no workspace ${profile.containerId}. Pick a ` +
+          `profile from the list this panel read, or parametrize one in Code's generator.`,
+      };
+    }
+    return {
+      ledger: {
+        profile,
+        model: named.model,
+        thinking: named.thinking,
+        accounts: [...named.accounts],
+        resolved: named.resolved,
+      },
+    };
+  };
 
   const start = defineDoor(
     defineServerAction({
@@ -146,7 +268,12 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       result: DrainStartResultSchema,
     }),
     async (ctx, input) => {
-      const operationId = PRESET_OPERATIONS[input.preset];
+      if (input.preset === MAP_DRAIN_PRESET) {
+        return {
+          refused: `a ${MAP_DRAIN_PRESET} drain is started with ${ACTIONS.mapDrainStart}, which names the executor's map-prepare node and the source owner's mapping target`,
+        };
+      }
+      const operationId = DRAIN_OPERATIONS[input.preset];
       // The host discharged `machines:run` at the node in the ARGUMENTS, so this is the only
       // place that can say the node is the one the request is about; a request whose two halves
       // disagree is refused rather than reconciled (`doors/launch.ts` says the whole of it).
@@ -160,68 +287,25 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
             `${input.operation.machineId}/${input.operation.operationId}`,
         };
       }
-      if (
-        input.target.costMicros === undefined &&
-        input.target.outputTokens === undefined &&
-        input.target.deadline === undefined &&
-        input.maxJobs === undefined
-      ) {
-        return {
-          refused:
-            "a drain needs a target: a cost in micro-dollars, a number of output tokens, a " +
-            "deadline, or maxJobs. A drain without one is not a drain, it is a loop (runbook §11.1)",
-        };
-      }
-      const requested =
-        input.target.deadline === undefined ? null : Date.parse(input.target.deadline);
-      if (requested !== null && !Number.isFinite(requested)) {
-        return { refused: `${JSON.stringify(input.target.deadline)} is not an instant` };
-      }
       const at = doorDeps.now();
-      if (requested !== null && requested <= at) {
-        return { refused: `the deadline ${input.target.deadline ?? ""} has already passed` };
-      }
-      /*
-        THE FAN IS BOUNDED AGAINST THE MANIFEST, HERE, AND BY THE DRAIN'S OWN JOBS IN THE
-        CONTROLLER — never by the coordinator, which cannot see a drain's jobs at all.
-
-        `concurrentJobs` is `limits.concurrentJobs` on the operation this preset posts: the hub
-        refuses every posting past it at `execute` (atyrode/manifold#551), so a fan above it would
-        spend the drain's first round on refusals. It is refused by name instead. What keeps the
-        fan AT the number the operator asked for is `tickDrain`, which launches only into the
-        slots its own `live` jobs leave free — a drain's jobs take no claim (the direct presets go
-        `ready` → `post` → `jobs.execute`), so no admission bound in `coordinator.ts` has ever
-        counted one.
-      */
-      if (input.concurrent > doorDeps.concurrentJobs) {
-        return {
-          refused:
-            `this drain's fan of ${String(input.concurrent)} cannot be admitted: it is above the ` +
-            `${String(doorDeps.concurrentJobs)} jobs a machine runs at once under this plugin's ` +
-            `manifest, and the hub refuses every posting past that at execute`,
-        };
-      }
+      const stops = stopsAt(input.target, input.maxJobs, at);
+      if ("refused" in stops) return stops;
       // A PRESET THAT SPENDS NOTHING CANNOT MEET A SPEND TARGET, so one is refused rather than
       // started as a fan nothing will ever stop: `keep-going` is a `scan`, it reaches no model,
       // and its metered spend is zero for as long as it runs.
-      if (!SPENDING.includes(input.preset) && requested === null && input.maxJobs === undefined) {
+      if (
+        !SPENDING.includes(input.preset) &&
+        input.target.deadline === undefined &&
+        input.maxJobs === undefined
+      ) {
         return {
           refused:
             `the ${input.preset} preset reaches no model, so its metered spend stays at zero ` +
             `and a cost or token target is never met: give this drain a deadline or maxJobs`,
         };
       }
-      const held = await drainOnMachine(store, input.machineId);
-      if (held !== null) {
-        // ONE DRAIN PER MACHINE. Two controllers fanning one host is the 2026-09-13 failure with
-        // better manners: each would count only its own jobs against its own bound, and the sum
-        // is what the machine actually runs.
-        return {
-          refused:
-            `${input.machineId} is already draining under ${held.id}, started ${held.startedAt}: ` +
-            `stop that one before starting another`,
-        };
-      }
+      const blocked = await admissible(input.machineId, input.concurrent);
+      if (blocked !== null) return blocked;
       const inForce = await doorDeps.coordinator.policy(at);
       if (!inForce.policy.enabled) {
         return {
@@ -251,17 +335,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         deadline. The standing `policies` row and the `budgets` table are both untouched, and the
         row records no overlay because there is none to unwind.
       */
-      // EVERY DRAIN CARRIES A DEADLINE, whether the operator named one or not: two hours is the
-      // 2026-09-13 drain's own length, and a drain that outlives the window it exists to spend is
-      // what the operation was written against. The instant is on the row, so what stops it is one
-      // of its own targets rather than somebody remembering to.
-      const deadline = requested ?? at + DRAIN_DEFAULT_TTL_MS;
-      const deadlineAt = new Date(deadline).toISOString();
-      const target: DrainTarget = { ...input.target, deadline: deadlineAt };
-      const note =
-        requested === null
-          ? `this drain names no deadline, so it stops at ${deadlineAt} whatever it has spent`
-          : "";
+      const { target, deadlineAt, note } = stops;
 
       const knobs: DrainKnobs = {
         recipes: input.recipes,
@@ -273,39 +347,10 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         ...(input.inferenceLimits === undefined ? {} : { inferenceLimits: input.inferenceLimits }),
       };
 
-      /*
-        WHAT CODE SAYS THIS PROFILE WILL SPEND, COPIED ONCE, HERE (#267, #279).
-
-        Babel chooses no model and no account, so the only honest record of what a fan is
-        burning is Code's own, read at the moment the operator presses and written on the row
-        as a LEDGER ENTRY — not re-read per job, because a controller that asked again between
-        the first job and the ninetieth would report whatever the profile had become rather
-        than what was started, which is the class of drift the whole operation exists against.
-
-        A profile Code does not list is refused here: the operator picked from a list, and a
-        container that has since gone is a press against something that no longer exists.
-        Code answering nothing at all is a different refusal and says so.
-      */
       const doorDepsAtStart = doorDeps.deps(ctx);
-      const listed = await doorDepsAtStart.engine.profiles();
-      if (!listed.ok) return { refused: listed.refused };
-      const named = listed.value.find(
-        (candidate) => candidate.containerId === input.profile.containerId,
-      );
-      if (named === undefined) {
-        return {
-          refused:
-            `no_such_profile: Code lists no workspace ${input.profile.containerId}. Pick a ` +
-            `profile from the list this panel read, or parametrize one in Code's generator.`,
-        };
-      }
-      const ledger: DrainProfile = {
-        profile: input.profile,
-        model: named.model,
-        thinking: named.thinking,
-        accounts: [...named.accounts],
-        resolved: named.resolved,
-      };
+      const profiled = await ledgerOf(doorDepsAtStart, input.profile);
+      if ("refused" in profiled) return profiled;
+      const ledger = profiled.ledger;
 
       const drainId = newId("drn");
       await insertDrain(store, {
@@ -373,6 +418,109 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
           refused === ""
             ? note
             : `${note === "" ? "" : `${note}; `}only ${String(live.length)} of ${String(input.concurrent)} started: ${refused}`,
+      };
+    },
+  );
+
+  /*
+    THE MAPPING DRAIN'S START (#223): the one act that lets paid transcript mapping run.
+
+    Its governed targets are exactly `startMapCatalog`'s pair: `machines:run`, `operations:invoke`
+    and `network:host` at the executor's `map-prepare` node, and `services:invoke` at the source
+    owner's private mapping target. The host discharges both before this handler runs, so the
+    first fan is posted under authority the operator was actually admitted at; a read wake could
+    never post it (`server/drain.ts`, `tickMapDrain`). Both nodes must be the installed policy's
+    mapping route — a start never chooses a route, a profile or a model.
+  */
+  const mapStart = defineDoor(
+    defineServerAction({
+      name: ACTIONS.mapDrainStart,
+      title: "Drain a usage window on transcript maps",
+      caps: ["machines:run", "operations:invoke", "services:invoke", "network:host"],
+      delegates: ["machines:read", "jobs:read", "locations:write"],
+      requirements: [
+        { cap: "machines:run", target: ["operation"] },
+        { cap: "operations:invoke", target: ["operation"] },
+        { cap: "network:host", target: ["operation"] },
+        { cap: "services:invoke", target: ["source"] },
+      ],
+      input: StartMapDrainRequestSchema,
+      result: DrainStartResultSchema,
+    }),
+    async (ctx, input) => {
+      const at = doorDeps.now();
+      const inForce = await doorDeps.coordinator.policy(at);
+      const route = inForce.policy.enabled ? mappingPolicy(inForce.policy) : null;
+      if (route === null) {
+        return {
+          refused: `the policy in force (${inForce.version}) is disabled or installs no transcript-mapping route`,
+        };
+      }
+      if (
+        route.executorMachineId !== input.operation.machineId ||
+        route.sourceMachineId !== input.source.machineId
+      ) {
+        return {
+          refused:
+            `the mapping route runs ${route.executorMachineId} over ${route.sourceMachineId}; ` +
+            `this start names ${input.operation.machineId} over ${input.source.machineId}`,
+        };
+      }
+      if (route.dailyCost <= 0) {
+        return { refused: "the mapping daily cap is zero, so no mapping work can be admitted" };
+      }
+      const stops = stopsAt(input.target, input.maxJobs, at);
+      if ("refused" in stops) return stops;
+      const blocked = await admissible(route.executorMachineId, input.concurrent);
+      if (blocked !== null) return blocked;
+      if (doorDeps.startMapping === undefined) {
+        return { refused: "this deployment wires no mapping dispatch" };
+      }
+      const deps = doorDeps.deps(ctx);
+      const profiled = await ledgerOf(deps, route.profile);
+      if ("refused" in profiled) return profiled;
+      const ledger = profiled.ledger;
+      const drainId = newId("drn");
+      await insertDrain(store, {
+        id: drainId,
+        machineId: route.executorMachineId,
+        preset: MAP_DRAIN_PRESET,
+        profile: ledger,
+        knobs: { recipes: [], ...(input.maxJobs === undefined ? {} : { maxJobs: input.maxJobs }) },
+        concurrent: input.concurrent,
+        target: stops.target,
+        startedBy: ctx.principal.id,
+      });
+      const row = await readDrain(store, drainId);
+      if (row === null) return { refused: `the drain row for ${drainId} was not written` };
+      // THE FIRST FAN IS POSTED BY THIS PRESS, for the go/no-go rule's reason (runbook §11.3):
+      // nothing is in flight yet, so no settlement could ever start it.
+      const started = await doorDeps.startMapping(ctx);
+      const launched = "refused" in started ? 0 : started.launched;
+      if (launched === 0) {
+        const why =
+          "refused" in started
+            ? started.refused
+            : started.notes.join("; ") || "no eligible transcript-mapping work could be admitted";
+        await endDrain(deps, row, "failed", `nothing could be launched: ${why}`, []);
+        return { refused: `this drain launched nothing: ${why}` };
+      }
+      store.touch();
+      ctx.emit(OWN_NODE, EVENTS.runChanged, {
+        drainId,
+        machineId: route.executorMachineId,
+        launched,
+      });
+      return {
+        drainId,
+        machineId: route.executorMachineId,
+        preset: MAP_DRAIN_PRESET,
+        concurrent: input.concurrent,
+        launched,
+        deadline: stops.deadlineAt,
+        account: accountName(ledger),
+        model: ledger.model,
+        note: stops.note,
       };
     },
   );
@@ -482,5 +630,5 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
     },
   );
 
-  return [start, status, stop];
+  return [start, mapStart, status, stop];
 }

@@ -597,6 +597,18 @@ are untouched, and its jobs take no claim. Native token/cost thresholds are chec
 call, so an accepted response can overshoot. Provider-internal retries and charged failures
 still require a conservative exposure reservation in the shared ledger before admission.
 
+**The mapping drain is the one exception to "a drawn preset is not fannable"**, and it is not a
+second arbitration. `map-transcripts` is started with `mapDrainStart`, admitted at the executor's
+`map-prepare` node and the source owner's private mapping target, and it is the only way paid
+transcript mapping runs: installing a mapping route and admitting its free catalog spend nothing.
+Its fan holds coordinator claims that the conductor draws and posts — so, unlike the other
+presets, its jobs DO take claims, count against the policy's mapping daily cap and follow the
+uncertain-post accounting. Posting happens only on wakes with native job authority (the start,
+a Babel job settling, and the route's catalog cadence), which is why the start refuses until the
+route's catalog is admitted with `startMapCatalog`. It ends by itself at its target, deadline or
+`maxJobs`, or when no eligible mapping work remains; `drainStop` at the same `map-prepare` node
+cancels a preparation there and a posted session through Code.
+
 ### 11.2 Pre-flight (T-24h, rehearsal)
 
 > **OPERATOR STEP — pre-flight (not executed).**

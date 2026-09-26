@@ -26,12 +26,15 @@ import {
   type TranscriptMapServiceBinding,
   TranscriptMapPrepareInputSchema,
   TRANSCRIPT_MAP_SESSION_OPERATION,
+  MAP_DRAIN_PRESET,
   type TranscriptMapModelResult,
   diffRunTraces,
   type MaterialIndex,
   type RunTrace,
 } from "../contract.ts";
-import { launchMachinery } from "../doors/launch.ts";
+import { insertDrain, readDrain } from "../store/drains.ts";
+import { launchMachinery, type Started } from "../doors/launch.ts";
+import { drainTick, endDrain, type DrainDeps } from "./drain.ts";
 import { coordinator as governed } from "../store/coordinator.ts";
 import type {
   CodeEngine,
@@ -655,7 +658,7 @@ const POLICY = {
   explorationShare: 0.2,
   discoveryShare: 0.2,
   filingShare: 0.1,
-  activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0, mapping: 0 },
+  activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0 },
   backlogShare: 0.1,
   maxItemReviews: 6,
   perCycleCost: 0.5,
@@ -7436,13 +7439,30 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
     batchSize: 1,
     review: ROUTE,
     mapping,
-    activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0, mapping: 1 },
+    activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0 },
   };
   await f.db.run(
     `INSERT INTO policies(version,seq,actor_id,reason,payload,recorded_at)
     VALUES(?,1,'operator','synthetic mapping',?,?)`,
     [policy.version, JSON.stringify(policy), new Date(clock).toISOString()],
   );
+  // Paid mapping is drawn only for a running mapping drain on the route's executor.
+  await insertDrain(f.store, {
+    id: "drn_map",
+    machineId: route.executorMachineId,
+    preset: MAP_DRAIN_PRESET,
+    profile: {
+      profile: route.profile,
+      model: "synthetic",
+      thinking: "low",
+      accounts: [],
+      resolved: true,
+    },
+    knobs: { recipes: [] },
+    concurrent: 1,
+    target: { deadline: new Date(clock + 30 * 24 * 60 * 60 * 1000).toISOString() },
+    startedBy: "operator",
+  });
   const maps = transcriptMaps(f.store);
   await maps.recordCatalog({
     machineId: route.sourceMachineId,
@@ -7507,7 +7527,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       return { ok: true, value: job };
     },
   };
-  const tick = () => {
+  const tick = (nativeDispatch = true) => {
     clock += 1_000;
     return conductor({
       store: f.store,
@@ -7518,6 +7538,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       keys: new Keys(),
       plan: PLAN,
       mapPreparePlan: UNMETERED_PLAN,
+      nativeDispatch,
       now: () => clock,
     }).tick();
   };
@@ -7603,6 +7624,116 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
     answer,
   };
 }
+
+test("a door's read wake draws no mapping work; the next hook wake posts it with its attempt intact", async () => {
+  const f = await paidMapDeployment();
+  const queued = async () =>
+    await f.db.query(`SELECT state,attempt,claim_id FROM transcript_map_work ORDER BY id`);
+  await f.maps.refreshWork(f.route, new Date(clock).toISOString(), 64);
+  const before = await queued();
+  expect(before.length).toBeGreaterThan(0);
+  await f.tick(false);
+  expect(f.fleet.launched).toEqual([]);
+  expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 0n }]);
+  expect(await queued()).toEqual(before);
+  await f.tick(true);
+  expect(f.fleet.launched.map((launch) => launch.operationId)).toEqual([OPERATIONS.mapPrepare]);
+  expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 1n }]);
+});
+
+/** The drain controller over the same fixture: a mapping drain launches nothing itself. */
+function mapDrainDeps(f: Awaited<ReturnType<typeof paidMapDeployment>>): DrainDeps {
+  const refuse = async (): Promise<Started> => ({ refused: "a mapping drain launches no preset" });
+  return {
+    store: f.store,
+    coordinator: f.coordinator,
+    launch: { startExplore: refuse, startBeat: refuse },
+    jobs: f.fleet,
+    engine: f.engine,
+    plan: () => PLAN,
+    now: () => clock,
+  };
+}
+
+test("without a running mapping drain, even a native-capable wake draws no mapping work", async () => {
+  const f = await paidMapDeployment();
+  await f.db.run(`UPDATE drains SET state='stopped', finished_at=? WHERE id='drn_map'`, [
+    new Date(clock).toISOString(),
+  ]);
+  await f.tick(true);
+  expect(f.fleet.launched).toEqual([]);
+  expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 0n }]);
+});
+
+test("a mapping drain folds its runs, stops drawing at its target and ends when it is met", async () => {
+  const f = await paidMapDeployment();
+  await f.db.run(
+    `UPDATE drains SET target=json_set(target,'$.costMicros',30000) WHERE id='drn_map'`,
+  );
+  await f.tick();
+  let row = (await readDrain(f.store, "drn_map"))!;
+  expect(row.jobsLaunched).toBe(1);
+  expect(row.live.map((job) => job.jobId)).toEqual([f.fleet.launched[0]!.jobId]);
+  // The drain's fan is one: nothing more is drawn while its run is held.
+  await f.tick();
+  expect(f.fleet.launched).toHaveLength(1);
+  for (let round = 0; round < 2; round++) {
+    f.seal();
+    await f.tick();
+    f.answer({ kind: "summary", text: `Navigation ${String(round)}` }, 0.02);
+    await f.tick();
+  }
+  // Two runs of 0.02 passed the 0.03 target: the second was drawn at 0.02, the third never is.
+  expect(f.fleet.launched.map((launch) => launch.operationId)).toEqual([
+    OPERATIONS.mapPrepare,
+    OPERATIONS.mapPrepare,
+  ]);
+  const [report] = await drainTick(mapDrainDeps(f));
+  expect(report?.state).toBe("target");
+  row = (await readDrain(f.store, "drn_map"))!;
+  expect(row.spent.costMicros).toBe(40000);
+  expect(row.closures).toEqual({ completed: 2 });
+  await f.tick();
+  expect(f.fleet.launched).toHaveLength(2);
+});
+
+test("a mapping drain ends on its own when every eligible transcript is mapped", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  for (let index = 0; index < 3; index++) {
+    f.seal();
+    await f.tick();
+    f.answer({ kind: "summary", text: `Navigation ${String(index)}` });
+    await f.tick();
+  }
+  const [report] = await drainTick(mapDrainDeps(f));
+  expect(report?.state).toBe("target");
+  expect(report?.reason).toBe("no eligible transcript-mapping work remains");
+});
+
+test("stopping a mapping drain cancels its preparation at map-prepare and releases the claim", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  const posted = f.fleet.launched[0]!;
+  const row = (await readDrain(f.store, "drn_map"))!;
+  const cancelled: string[] = [];
+  const cancel = f.fleet.cancel.bind(f.fleet);
+  f.fleet.cancel = (node: { jobId: string; operationId?: string }) => {
+    cancelled.push(node.operationId ?? "");
+    cancel(node);
+  };
+  await endDrain(mapDrainDeps(f), row, "stopped", "operator stop", row.live);
+  expect(cancelled).toEqual([OPERATIONS.mapPrepare]);
+  expect(f.fleet.status({ jobId: posted.jobId })).toMatchObject({ state: "cancelled" });
+  await f.tick();
+  expect(f.posted).toEqual([]);
+  expect(await f.db.query(`SELECT finished_at IS NOT NULL done FROM claims`)).toEqual([
+    { done: 1n },
+  ]);
+  expect(await f.db.query(`SELECT state FROM transcript_map_work WHERE state='running'`)).toEqual(
+    [],
+  );
+});
 
 test.each([MACHINE, "map-source"])(
   "paid map leaf/parent generation, served review and bounded correction survive fresh wakes (%s)",

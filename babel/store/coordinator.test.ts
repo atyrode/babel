@@ -2096,7 +2096,7 @@ test("prepare-to-Code binding requires live exact ownership and the expected pre
 test("activity weights, not the number of review lanes, determine the stage share", async () => {
   const { db, coord } = await deployment(
     stagePolicy("challenge", {
-      activityWeights: { review: 0.1, explore: 0, challenge: 1, synthesize: 0, mapping: 0 },
+      activityWeights: { review: 0.1, explore: 0, challenge: 1, synthesize: 0 },
     }),
   );
   await catalog(db, "omp/a");
@@ -2637,7 +2637,7 @@ test("synthesis reaches a later bounded brief after the earlier window is comple
 function mapPolicy(over: Partial<Policy> = {}): Policy {
   return PolicySchema.parse({
     enabled: true,
-    activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0, mapping: 1 },
+    activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0 },
     batchSize: 4,
     perCycleCost: 4,
     dailyCost: 4,
@@ -2755,24 +2755,37 @@ test("mapping requires selected enabled recipes from the shared library and a va
   ).toBe(false);
 });
 
-test("disabled mapping, zero weight and a zero subcap cannot draw or newly claim queued work", async () => {
-  for (const mode of ["disabled", "weight", "subcap"] as const) {
+test("a standing draw never offers mapping, even with review enabled", async () => {
+  const policy = mapPolicy({
+    activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0 },
+  });
+  const { db, coord } = await deployment(policy);
+  await mapCapture(db, policy, "standing");
+  const standing = await coord.draw({ runId: "standing", seed: 1n });
+  expect(standing.outcome === "assignment" && standing.assignment.activity === "mapping").toBe(
+    false,
+  );
+  expect(drawn(await coord.draw({ only: "mapping", runId: "drain", seed: 1n })).activity).toBe(
+    "mapping",
+  );
+});
+
+test("disabled mapping and a zero subcap cannot draw or newly claim queued work", async () => {
+  for (const mode of ["disabled", "subcap"] as const) {
     const policy = mapPolicy();
     const { db, coord } = await deployment(policy);
     await mapCapture(db, policy, mode);
-    const assignment = drawn(await coord.draw({ runId: "before", seed: 1n }));
+    const assignment = drawn(await coord.draw({ only: "mapping", runId: "before", seed: 1n }));
     const stopped =
       mode === "disabled"
         ? { ...policy, enabled: false }
-        : mode === "weight"
-          ? { ...policy, activityWeights: { ...policy.activityWeights, mapping: 0 } }
-          : { ...policy, mapping: { ...policy.mapping!, dailyCost: 0 } };
+        : { ...policy, mapping: { ...policy.mapping!, dailyCost: 0 } };
     await db.run(
       `INSERT INTO policies(version,seq,actor_id,reason,payload,recorded_at)
       VALUES('stopped',2,'operator','stop mapping',?,?)`,
       [JSON.stringify(stopped), ago(0)],
     );
-    expect((await coord.draw({ runId: "after", seed: 1n })).outcome).toBe("gap");
+    expect((await coord.draw({ only: "mapping", runId: "after", seed: 1n })).outcome).toBe("gap");
     expect((await coord.claim({ assignment, runId: "after", jobId: "prepare" })).outcome).toBe(
       "refused",
     );
@@ -2786,7 +2799,7 @@ test("mapping and review obey their own machine routes without treating maps as 
   await claimRow(db, "asg_review", "review-run", 1, null, 0, "review-job");
   await runOn(db, "review-job", policy.review!.machineId);
   await mapCapture(db, policy, "route");
-  const assignment = drawn(await coord.draw({ runId: "mapping-run", seed: 1n }));
+  const assignment = drawn(await coord.draw({ only: "mapping", runId: "mapping-run", seed: 1n }));
   expect(assignment.activity).toBe("mapping");
   expect(
     (await coord.claim({ assignment, runId: "mapping-run", jobId: "map-prepare" })).outcome,
@@ -2808,8 +2821,8 @@ test("racing mapping claims share the global ledger, mapping subcap and occupied
     await mapCapture(db, policy, "one");
     await mapCapture(db, policy, "two");
     if (bound === "global") await claimRow(db, "asg_other_activity", "other", 3, 3);
-    const one = drawn(await coord.draw({ runId: "one", seed: 1n }));
-    const two = drawn(await coord.draw({ runId: "two", seed: 1n }));
+    const one = drawn(await coord.draw({ only: "mapping", runId: "one", seed: 1n }));
+    const two = drawn(await coord.draw({ only: "mapping", runId: "two", seed: 1n }));
     expect(two.id).not.toBe(one.id);
     const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
     const results = await Promise.all([
@@ -2827,7 +2840,7 @@ test("mapping grant atomically rejects a queue attempt that changes after eligib
   const policy = mapPolicy();
   const { db, coord } = await deployment(policy);
   await mapCapture(db, policy, "stale-attempt");
-  const assignment = drawn(await coord.draw({ runId: "draw", seed: 1n }));
+  const assignment = drawn(await coord.draw({ only: "mapping", runId: "draw", seed: 1n }));
   if (assignment.activity !== "mapping") throw new Error("not mapping");
   let moved = false;
   const raced: GuestDatabase = {
@@ -2855,7 +2868,7 @@ test("mapping identities survive policy edits while a backed-off retry gets a ne
   const policy = mapPolicy();
   const { db, coord } = await deployment(policy);
   await mapCapture(db, policy, "retry");
-  const first = drawn(await coord.draw({ runId: "first", seed: 1n }));
+  const first = drawn(await coord.draw({ only: "mapping", runId: "first", seed: 1n }));
   if (first.activity !== "mapping") throw new Error("not mapping");
   await db.run(
     `INSERT INTO policies(version,seq,actor_id,reason,payload,recorded_at)
@@ -2863,7 +2876,7 @@ test("mapping identities survive policy edits while a backed-off retry gets a ne
     [JSON.stringify({ ...policy, version: "edited", cadenceSeconds: 90 }), ago(0)],
   );
   const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
-  expect(drawn(await other.draw({ runId: "other", seed: 1n })).id).toBe(first.id);
+  expect(drawn(await other.draw({ only: "mapping", runId: "other", seed: 1n })).id).toBe(first.id);
   const grant = await coord.claim({ assignment: first, runId: "first", jobId: "prepare-first" });
   if (grant.outcome !== "granted") throw new Error("claim refused");
   const maps = transcriptMaps({ db });
@@ -2883,8 +2896,12 @@ test("mapping identities survive policy edits while a backed-off retry gets a ne
     cost: 0,
     outcome: "failed",
   });
-  expect((await other.draw({ runId: "too-soon", now: NOW + 59_000 })).outcome).toBe("gap");
-  const retry = drawn(await other.draw({ runId: "retry", now: NOW + 60_000, seed: 1n }));
+  expect(
+    (await other.draw({ only: "mapping", runId: "too-soon", now: NOW + 59_000 })).outcome,
+  ).toBe("gap");
+  const retry = drawn(
+    await other.draw({ only: "mapping", runId: "retry", now: NOW + 60_000, seed: 1n }),
+  );
   if (retry.activity !== "mapping") throw new Error("not mapping");
   expect(retry.work.id).toBe(first.work.id);
   expect(retry.id).not.toBe(first.id);
@@ -2906,8 +2923,8 @@ test("mapping records refused overruns in full and stops admission until the cla
   const { db, coord } = await deployment(policy);
   await mapCapture(db, policy, "overrun-one");
   await mapCapture(db, policy, "overrun-two");
-  const assignment = drawn(await coord.draw({ runId: "spent", seed: 1n }));
-  const waiting = drawn(await coord.draw({ runId: "waiting", seed: 1n }));
+  const assignment = drawn(await coord.draw({ only: "mapping", runId: "spent", seed: 1n }));
+  const waiting = drawn(await coord.draw({ only: "mapping", runId: "waiting", seed: 1n }));
   const grant = await coord.claim({ assignment, runId: "spent", jobId: "prepare-spent" });
   if (grant.outcome !== "granted") throw new Error("claim refused");
   expect(
@@ -2925,7 +2942,7 @@ test("mapping records refused overruns in full and stops admission until the cla
     (await coord.claim({ assignment: waiting, runId: "waiting", jobId: "prepare-waiting" }))
       .outcome,
   ).toBe("refused");
-  expect((await coord.draw({ runId: "blocked" })).outcome).toBe("gap");
+  expect((await coord.draw({ only: "mapping", runId: "blocked" })).outcome).toBe("gap");
   expect((await coord.spend(NOW + DAY)).mapping).toBe(0);
   expect(
     (
@@ -2943,7 +2960,7 @@ test("an unknown mapping posting stays occupied after expiry and retained mappin
   const policy = mapPolicy();
   const { db, coord } = await deployment(policy);
   await mapCapture(db, policy, "unknown-post");
-  const assignment = drawn(await coord.draw({ runId: "held", seed: 1n }));
+  const assignment = drawn(await coord.draw({ only: "mapping", runId: "held", seed: 1n }));
   const granted = await coord.claim({ assignment, runId: "held", jobId: "prepare-unknown" });
   if (granted.outcome !== "granted") throw new Error("claim refused");
   const expired = granted.claim.expiresAt + 1;

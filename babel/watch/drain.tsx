@@ -6,6 +6,7 @@ import {
   door,
   type DrainPreset,
   type DrainReportPayload,
+  type TranscriptMapConfig,
 } from "../contract.ts";
 import {
   DRAIN_BOUNDS,
@@ -59,6 +60,8 @@ export interface DrainProps {
   readonly topics: readonly TopicRow[];
   /** Code's saved profiles, or the sentence saying why Code could not be asked. */
   readonly profiles: ProfilesResult;
+  /** The installed transcript-mapping route: where a mapping drain runs, and on which profile. */
+  readonly mappingRoute: TranscriptMapConfig | null;
   /** The panel's clock, ticked once a second while a drain is running. */
   readonly now: number;
   readonly starting: boolean;
@@ -510,6 +513,7 @@ export function Drain({
   machines,
   topics,
   profiles,
+  mappingRoute,
   now,
   starting,
   stopping,
@@ -519,8 +523,9 @@ export function Drain({
   onStop,
 }: DrainProps) {
   const card = DRAIN_CARDS[draft.preset];
+  const mapping = card.knob === "route";
   const profile = chosenProfile(draft, profiles.profiles);
-  const blocked = drainUnready(draft, profile);
+  const blocked = drainUnready(draft, profile, mappingRoute);
   return (
     // The section carries a class of its own because two sections on this screen offer a
     // "Machine" picker: `watch/test/drain.test.ts` scopes its reads to this one, and a test that
@@ -579,28 +584,36 @@ export function Drain({
           ))}
         </Cluster>
         <Cluster gap="var(--babel-space-4)" className="plugin-atyrode_babel_watch__knobs">
-          <label className="plugin-atyrode_babel_watch__knob">
-            <span className="plugin-atyrode_babel_watch__knob-label">Machine</span>
-            <select
-              className="plugin-atyrode_babel_watch__picker"
-              value={draft.machineId}
-              onChange={(event) =>
-                // A machine change KEEPS the profile: a Code workspace is not a machine's and
-                // the destination is the caller's choice on every post (`TargetSchema`). What
-                // this used to clear — a credential id belonging to one machine's broker — is
-                // not a field of this form any more.
-                onDraft({ ...draft, machineId: event.target.value })
-              }
-            >
-              <option value="">Pick a machine…</option>
-              {machines.map((machine) => (
-                <option key={machine.id} value={machine.id} disabled={!machine.online}>
-                  {machine.name}
-                  {machine.online ? "" : " · offline"}
-                </option>
-              ))}
-            </select>
-          </label>
+          {mapping ? (
+            <p className="plugin-atyrode_babel_watch__muted" data-field="drain-mapping-route">
+              {mappingRoute === null
+                ? "No transcript-mapping route is installed."
+                : `Runs on ${mappingRoute.executorMachineId} over ${mappingRoute.sourceMachineId}'s archive, on profile ${mappingRoute.profile.containerId}.`}
+            </p>
+          ) : (
+            <label className="plugin-atyrode_babel_watch__knob">
+              <span className="plugin-atyrode_babel_watch__knob-label">Machine</span>
+              <select
+                className="plugin-atyrode_babel_watch__picker"
+                value={draft.machineId}
+                onChange={(event) =>
+                  // A machine change KEEPS the profile: a Code workspace is not a machine's and
+                  // the destination is the caller's choice on every post (`TargetSchema`). What
+                  // this used to clear — a credential id belonging to one machine's broker — is
+                  // not a field of this form any more.
+                  onDraft({ ...draft, machineId: event.target.value })
+                }
+              >
+                <option value="">Pick a machine…</option>
+                {machines.map((machine) => (
+                  <option key={machine.id} value={machine.id} disabled={!machine.online}>
+                    {machine.name}
+                    {machine.online ? "" : " · offline"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {card.knob === "topic" ? (
             <label className="plugin-atyrode_babel_watch__knob">
               <span className="plugin-atyrode_babel_watch__knob-label">Topic</span>
@@ -625,7 +638,7 @@ export function Drain({
               bounds={{ min: 1, max: 365, step: 1 }}
               onValue={(sinceDays) => onDraft({ ...draft, sinceDays })}
             />
-          ) : (
+          ) : card.knob === "minutes" ? (
             <Spinner
               label="Each scan runs"
               unit="minutes"
@@ -633,7 +646,7 @@ export function Drain({
               bounds={{ min: 5, max: 24 * 60, step: 5 }}
               onValue={(minutes) => onDraft({ ...draft, minutes })}
             />
-          )}
+          ) : null}
           <Spinner
             label="Jobs at once"
             unit="in flight"
@@ -668,7 +681,7 @@ export function Drain({
           rehearsal of one that does, and rehearsing without naming the profile would rehearse
           a different operation.
         */}
-        <ProfileFields draft={draft} profiles={profiles} onDraft={onDraft} />
+        {mapping ? null : <ProfileFields draft={draft} profiles={profiles} onDraft={onDraft} />}
         <Cluster gap="var(--babel-space-4)" className="plugin-atyrode_babel_watch__knobs">
           <Field
             label="Why"
@@ -681,7 +694,7 @@ export function Drain({
           <button
             type="button"
             className="plugin-atyrode_babel_watch__primary"
-            data-action={door(ACTIONS.drainStart)}
+            data-action={door(mapping ? ACTIONS.mapDrainStart : ACTIONS.drainStart)}
             disabled={starting || blocked !== ""}
             onClick={onStart}
           >

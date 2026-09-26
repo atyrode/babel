@@ -1,7 +1,9 @@
 import {
+  DRAIN_OPERATIONS,
   DRAIN_SPENDING_PRESETS,
+  MAP_DRAIN_PRESET,
   OPERATIONS,
-  PRESET_OPERATIONS,
+  TRANSCRIPT_MAP_SESSION_OPERATION,
   type DrainEnding,
   type DrainPreset,
   type DrainSpend,
@@ -9,7 +11,8 @@ import {
   type OperationName,
   type DrainProfile,
 } from "../contract.ts";
-import type { Coordinator, Policy } from "../store/coordinator.ts";
+import { mappingPolicy, type Coordinator, type Policy } from "../store/coordinator.ts";
+import { transcriptMaps } from "../store/transcript-maps.ts";
 import {
   activeDrains,
   addSpend,
@@ -172,9 +175,12 @@ const SPENDING: readonly string[] = DRAIN_SPENDING_PRESETS;
  * the profile still points where it did at the start.
  */
 export function drainInput(row: DrainRow): LaunchInput {
+  const preset = row.preset;
+  // A mapping drain launches no preset: its jobs are drawn claims (`tickMapDrain`).
+  if (preset === MAP_DRAIN_PRESET) throw new Error(`drain ${row.id} launches no preset`);
   return {
     machineId: row.machineId,
-    preset: row.preset,
+    preset,
     recipes: [...row.knobs.recipes],
     profile: row.profile.profile,
     ...(row.knobs.sinceDays === undefined ? {} : { sinceDays: row.knobs.sinceDays }),
@@ -189,7 +195,7 @@ export function drainInput(row: DrainRow): LaunchInput {
 
 /** The operation a drain's preset posts, which is also the node its jobs are cancelled at. */
 export function drainOperation(preset: DrainPreset): OperationName {
-  return PRESET_OPERATIONS[preset];
+  return DRAIN_OPERATIONS[preset];
 }
 
 /**
@@ -339,6 +345,7 @@ export interface Ended {
  *   That one is Babel's own job at `atyrode.babel.prepare`.
  */
 interface RunLane {
+  readonly kind: string;
   readonly container: string;
   readonly jobId: string;
   readonly prepareJobId: string;
@@ -347,17 +354,19 @@ interface RunLane {
 
 async function laneOf(store: DrainDeps["store"], runId: string): Promise<RunLane> {
   const rows = await store.db.query<{
+    kind: string | null;
     container_id: string | null;
     job_id: string | null;
     prepare_job_id: string | null;
     posting: number | bigint | null;
   }>(
-    `SELECT container_id, job_id, prepare_job_id, json_extract(payload, '$.posting') AS posting
+    `SELECT kind, container_id, job_id, prepare_job_id, json_extract(payload, '$.posting') AS posting
        FROM runs WHERE id = ?`,
     [runId],
   );
   const row = rows[0];
   return {
+    kind: row?.kind ?? "",
     container: row?.container_id ?? "",
     jobId: row?.job_id ?? "",
     prepareJobId: row?.prepare_job_id ?? "",
@@ -425,10 +434,15 @@ export async function endDrain(
           that the wake's own `WHERE r.closure IS NULL` reads.
         */
         if (lane.prepareJobId !== "") {
+          // A mapping run's preparation is `map-prepare`; the conductor releases its claim and
+          // work once this closed row is read (`reconcileMappingPreparations`).
           await deps.jobs.cancel({
             kind: "job",
             machineId: row.machineId,
-            operationId: OPERATIONS.prepare,
+            operationId:
+              lane.kind === TRANSCRIPT_MAP_SESSION_OPERATION
+                ? OPERATIONS.mapPrepare
+                : OPERATIONS.prepare,
             jobId: lane.prepareJobId,
           });
         }
@@ -702,6 +716,9 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
     };
   }
 
+  if (row.preset === MAP_DRAIN_PRESET)
+    return await tickMapDrain(deps, row, inForce.policy, seen, notes, at);
+
   const operationId = drainOperation(row.preset);
   // The session is the drain's own, every time: the model and the account the operator named
   // when they started it, not whatever a later default would be (#267, #279).
@@ -830,6 +847,50 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
     reason: "",
     notes,
   };
+}
+
+/**
+ * A MAPPING DRAIN LAUNCHES NOTHING HERE. Its jobs are coordinator claims — drawn under the
+ * policy's mapping daily cap and posted as a native `map-prepare` then a material-only Code
+ * session — which the conductor posts into the slots this row leaves free, in the same wake and
+ * only on a wake that can post native work (`dispatchMapDrains` in `conductor.ts`). A read
+ * wake's bridge is attenuated below posting, so launching from here would spend each work
+ * item's bounded attempt on an admission refusal. What this tick owns is the end: a route that
+ * no longer names this drain's executor, and a backlog with nothing left to map.
+ */
+async function tickMapDrain(
+  deps: DrainDeps,
+  row: DrainRow,
+  policy: Policy,
+  seen: Reconciled,
+  notes: readonly string[],
+  at: number,
+): Promise<DrainReport> {
+  const held: DrainReport = {
+    drainId: row.id,
+    launched: 0,
+    settled: seen.settled.length,
+    live: seen.holding.length,
+    state: "running",
+    reason: "",
+    notes,
+  };
+  const end = async (ending: DrainEnding, why: string): Promise<DrainReport> => {
+    const ended = await endDrain(deps, row, ending, why, seen.holding);
+    return { ...held, state: ended.state, reason: why, notes: [...notes, ...ended.notes] };
+  };
+  const route = mappingPolicy(policy);
+  if (route === null || route.executorMachineId !== row.machineId || route.dailyCost <= 0)
+    return await end(
+      "stopped",
+      "the policy in force no longer routes transcript mapping to this drain's executor",
+    );
+  if (seen.holding.length > 0) return held;
+  const maps = transcriptMaps(deps.store);
+  const now = new Date(at).toISOString();
+  await maps.refreshWork(route, now, 64);
+  if ((await maps.offers(route, now, 1)).length > 0) return held;
+  return await end("target", "no eligible transcript-mapping work remains");
 }
 
 /**
