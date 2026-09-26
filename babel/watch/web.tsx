@@ -36,7 +36,6 @@ import {
   read,
   serviceOrigins,
   stopInput,
-  type CycleReport,
   type DrainDraft,
   type DrainStatus,
   type LaunchDraft,
@@ -46,7 +45,9 @@ import {
   type RunsResult,
   type ServicesPreview,
   type TopicsResult,
+  type WatchPulse,
 } from "./api.ts";
+import { Archive } from "./archive.tsx";
 import { Ceilings } from "./ceilings.tsx";
 import { Cycle } from "./cycle.tsx";
 import { Drain } from "./drain.tsx";
@@ -169,12 +170,16 @@ export function Watch({ host }: PanelProps) {
   );
 
   /*
-    THE LAST CYCLE'S OWN VERDICT (#328). The pulse door carries it beside today's counts, and
-    only the verdict is kept here: Home renders the counts, and a control room asking the same
-    door twice for two halves of one answer would be two wakes of the loop for one question.
+    THE LAST CYCLE'S OWN VERDICT (#328) AND THE ARCHIVE'S UNMAPPED LABELS (#453). The pulse door
+    carries both beside today's counts, and only those two are kept here: Home renders the
+    counts, and a control room asking the same door twice for two halves of one answer would be
+    two wakes of the loop for one question.
   */
-  const cycle = usePolledResource<CycleReport | null>(
-    async () => (await read(host, ACTIONS.pulse, {}, PulseResultSchema)).cycle,
+  const pulse = usePolledResource<WatchPulse | null>(
+    async () => {
+      const { cycle, archive } = await read(host, ACTIONS.pulse, {}, PulseResultSchema);
+      return { cycle, archive };
+    },
     CYCLE_POLL_MS,
     {
       key: "atyrode.babel.cycle",
@@ -470,7 +475,12 @@ export function Watch({ host }: PanelProps) {
         the next thing on the page is why it is empty. It renders nothing at all when the last
         cycle spent normally.
       */}
-        <Cycle cycle={cycle.value} now={now} note={cycleNote} />
+        <Cycle cycle={pulse.value?.cycle ?? null} now={now} note={cycleNote} />
+        {/*
+        UNDER THE CYCLE, from the same read: which of the archive's host labels no machine is
+        mapped to. It renders nothing when every label is mapped.
+      */}
+        <Archive archive={pulse.value?.archive ?? null} />
         <Drain
           draft={drainDraft}
           drains={drains.value}

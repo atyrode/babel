@@ -1,50 +1,57 @@
 /*
-  THE prepare OPERATION (plan §4): selectors in, a preparation out — an immutable statement of
-  one exploration's corpus scope, whose identity is DERIVED from the content of the selection
-  rather than assigned.
+  THE prepare OPERATION (plan §4, #453): the captures the hub selected in, a preparation out —
+  an immutable statement of one exploration's corpus scope, whose identity is DERIVED from the
+  content of the selection rather than assigned.
 
   That is what makes `explore --preparation <id>` mean something: naming a preparation states
-  which corpus a run read, instead of leaving it to whatever the machine happened to hold at
-  the time. Two preparations over the same sessions at the same captures are the same id, so
-  two runs over one scope look like two runs over one scope; one session's bytes changing is a
-  different id, because it is a different corpus.
+  which corpus a run read. Two preparations over the same captures are the same id, whichever
+  machine prepared them, so two runs over one scope look like two runs over one scope; a session
+  captured again with other bytes is a different id, because it is a different corpus.
 
   DELIBERATE DIFFERENCE FROM THE GO PRODUCT (v0.4.0:internal/run/preparation.go): `preparedAt` is
   recorded but NOT hashed. Go's derivation included the instant, so re-preparing an unchanged
   corpus minted a second identity for the same scope — which contradicts the idempotence that
   same-scope-same-id is for. Here the id is a function of the selection alone.
 
-  WHAT A DEFAULT SCOPE LEAVES OUT, and why the id above depends on it (#262). A session whose
-  log was written in the last two minutes is still being appended: its bytes move under the run
-  reading them, so a scope holding one has no stable identity at all — on 2026-09-13 every
-  explore of the day reported "changed since the preparation was fixed", and the file doing it
-  was Babel's own operator transcript. And Babel's own run transcripts are left out because an
-  exploration's subject is the operator's work; a preset that studies Babel asks for them with
-  `agentSessions`. Both rules apply to "scope this machine"; a selector that NAMES an excluded
-  session is refused instead, because a scope that quietly shrank is worse than a refusal.
+  WHAT IS READ, AND WHAT IS NOT (#453). A preparation reads the ARCHIVE and nothing else: the hub
+  names each capture — the snapshot, the path inside it, the host label it was taken under, and
+  the size and modification time the catalog recorded — and each is streamed out of restic with
+  `dump`, straight into the single pass below. Nothing is discovered and no local session file is
+  opened, so the machine a preparation runs on changes nothing about what it reads; there is no
+  fallback to a local file when the archive does not answer. Raw bytes exist only in this
+  process: what is kept is the redacted normalized stream.
+
+  A preparation refuses WHOLE, with a code from PREPARE_REFUSALS leading its reason: a material
+  that would not fit (`material_bound`, `material_storage_insufficient`, both decided before
+  anything is fetched), a snapshot or path the archive does not hold (`capture_missing`), a fetch
+  that is not the catalogued size (`capture_changed`), or an archive that cannot be opened or
+  does not answer (`archive_unavailable`). A scope that quietly shrank would be worse than a
+  refusal: it would be an immutable record of a corpus nobody chose. Babel's own run transcripts
+  are refused for the same reason unless `agentSessions` asks for them, because an exploration's
+  subject is the operator's work.
 
   Each entry carries both digests SPEC §7 requires of a selection: the CAPTURE digest over the
-  primary log's bytes as they lie on disk, which is what a restore is checked against, and the
-  SOURCE digest over the normalized record stream, which is what analysis reads. A harness that
-  rewrites its log with different spacing moves the first and not the second, and that
-  difference is what a later reviewer needs in order to tell "the corpus changed" from "our
-  reading of it changed".
+  archived bytes, which is what a restore is checked against, and the SOURCE digest over the
+  normalized record stream, which is what analysis reads. A harness that rewrites its log with
+  different spacing moves the first and not the second, and that difference is what a later
+  reviewer needs in order to tell "the corpus changed" from "our reading of it changed". The
+  entry's host is the capture's LABEL — the machine that recorded it — and never the machine
+  that prepared it.
 
-  WHAT A SECOND PREPARATION OVER AN UNCHANGED SCOPE DOES NOT DO AGAIN (#236). Reading a log is
-  this operation's whole cost, and the answer does not depend on which run asked: twenty
-  explorations over overlapping scopes on 2026-09-12 read and hashed the same files twenty
-  times, at load 41 with no model call in flight. So the reading is KEPT on the machine, keyed
-  on the observation it was derived from — path, size, mtime, normalization, detector set,
-  preflight mode — and a later pass that observes the same triple replays it instead of reading
-  the log (`machine/cache.ts` holds the whole of the reasoning, and why an entry is a claim
-  about an observation rather than a position). The two rules above are what make that safe: a
-  file that could still be moving is never in a scope, so an entry is only ever about a log that
-  settled minutes ago.
+  WHAT A SECOND PREPARATION OVER THE SAME CAPTURES DOES NOT DO AGAIN (#236). Reading a capture is
+  this operation's whole cost, and the answer does not depend on which run asked. So the reading
+  is KEPT in the managed cache, one directory per repository and label, keyed on the capture it
+  was derived from — snapshot, path, size, modification time, normalization, detector set,
+  preflight mode — and a later pass over the same capture replays it and contacts no archive
+  (`machine/cache.ts`). A capture never moves, so every reading is keepable. When each snapshot
+  was taken is kept beside the readings, because it never changes either and every row states it.
 
   Normalization remains one canonical JSON record per line — object keys ordered, insignificant
   whitespace gone — with an explicit opaque marker for a line that is not a record, so nothing
-  is dropped. The lexical session index reads this same redacted stream; it does not introduce
-  v0.4.0:internal/event's evidence-kind classification or change the source digest schema.
+  is dropped. The same pass folds what the capture says about itself — the title the harness
+  recorded, the workspace, the harness's own usage — out of the redacted stream
+  (`machine/session-facts.ts`), and the `sessions.json` rows carry it with the capture it
+  describes.
 
   THE MATERIAL IS SCANNED BEFORE IT IS SEALED (#339, SPEC §6.4). `machine/preflight.ts` replaces
   every likely-credential span with a marker naming its class and the locator of the original,
@@ -52,24 +59,27 @@
   sink receives, so a scan cannot disagree with the bytes a session was given. A preparation may
   also refuse the whole scope over what was found, by class and never by value, and the receipt
   carries the result either way — an absent report says nothing was scanned, never that a corpus
-  was clean. The only way back to a redacted value is `resolveRedaction`, which needs the log
-  this machine holds, so what crosses to the hub is a locator and a class.
+  was clean. The only way back to a redacted value is `resolveRedaction` over the capture's own
+  bytes, which only a job holding the archive binding can fetch, so what crosses to the hub is a
+  locator and a class.
 */
 
-import { stat } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { z } from "zod";
 import {
+  ArchiveLabelSchema,
+  CaptureInstantSchema,
   MATERIAL_SCHEMA,
   MATERIAL_RETRIEVAL,
   MaterialRetrievalSchema,
   MAX_MATERIAL_BYTES,
   PREFLIGHT_SCHEMA,
+  PREPARE_REFUSALS,
   RECALL_MAX_HITS,
   RECALL_MAX_RESULT_BYTES,
-  PreflightModeSchema,
   RUN_STAGES,
-  SessionContentQuerySchema,
   materialFile,
   termsQuery,
   type MaterialEntry,
@@ -77,12 +87,16 @@ import {
   type MaterialRetrieval,
   type PreflightMode,
   type PreflightReport,
+  type PrepareInput,
+  type PrepareRefusal,
   type Receipt,
   type SessionContentQuery,
   type SessionRetrieval,
+  type SessionRow,
 } from "../contract.ts";
-import { LIVE_GRACE_MS, babelOwnLog, type SessionRef } from "./adapters/index.ts";
-import { readingCache, type Observation, type ReadingContext } from "./cache.ts";
+import { babelOwnLog, sessionRef, validSourceId, type SessionRef } from "./adapters/index.ts";
+import { captureInstant } from "./archive-listing.ts";
+import { readingCache, type Observation, type ReadingCache, type ReadingContext } from "./cache.ts";
 import { teeRecords, type MaterialSink, type OutputSink, type RecordSink } from "./output.ts";
 import {
   PREFLIGHT_DETECTORS,
@@ -93,14 +107,16 @@ import {
 } from "./preflight.ts";
 import { SILENT, type ProgressChannel } from "./progress.ts";
 import { recallRecordReader } from "./recall-records.ts";
-import { recordReader, sessionDigester, type SessionDigests } from "./session-records.ts";
+import { ResticError, type Repo } from "./restic.ts";
+import { captureFacts } from "./session-facts.ts";
 import {
   sessionIndex,
   SessionIndexError,
-  type IndexedSession,
   type IndexedRecord,
+  type IndexedSession,
   type SessionIndex,
 } from "./session-index.ts";
+import { recordReader, sessionDigester, type SessionDigests } from "./session-records.ts";
 
 /**
  * The one binding this operation reads from the environment, for the reason `VERIFY_ENV`'s is a
@@ -115,70 +131,24 @@ export const PREPARE_ENV = {
   cacheDir: "BABEL_PREPARE_CACHE_DIR",
 } as const;
 
-export const PrepareInputSchema = z.strictObject({
-  /** The run this job is; empty mints one (see archive.ts). */
-  runId: z.string().trim().max(120).default(""),
-  /** The machine's identity, recorded as the host of every session it holds itself. */
-  machineId: z.string().trim().min(1).max(120),
-  /** `HARNESS/SOURCE-ID`, or any unambiguous suffix of one. Empty scopes every session this
-   *  machine can see, which is what a scheduled preparation wants. */
-  selectors: z.array(z.string().trim().min(1).max(400)).max(500).default([]),
-  /** Literal lexical selection over settled, redacted session content, instead of selectors. */
-  query: SessionContentQuerySchema.optional(),
-  /**
-   * Whether sessions of BABEL'S OWN runs may be in the scope (`kind` `agent`, scan.ts).
-   *
-   * False is the default because an exploration's subject is the operator's work, and a corpus
-   * that quietly included Babel's own transcripts would have Babel reading itself by accident —
-   * on 2026-09-13 that was a 35 MB harness log, still being appended, which invalidated every
-   * preparation of the day. A preset that studies Babel on purpose (#270) asks for them, and
-   * then this is what it asks with.
-   *
-   * There is no flag for a LIVE session, and there must not be: a preparation's identity is its
-   * selection's content, so a file whose bytes are still moving is not a scope at all.
-   */
-  agentSessions: z.boolean().default(false),
-  /**
-   * WHAT THIS PREPARATION DOES ABOUT A LIKELY SECRET IN THE MATERIAL (#339).
-   *
-   * `redact`, and nothing asks for anything else: no door sets this field, so the default is
-   * what every posted preparation gets, and the default is a decision rather than a fallback.
-   * Refusing a whole scope over one credential would lose the transcript in order to protect the
-   * operator from his own paste — the session that carries a stale key is usually the session
-   * worth reading — so the span is replaced with a marker naming its class, the rest of the
-   * record stays evidence, and the locator back to the original stays on this machine.
-   *
-   * `refuse` is for a scope that must not risk a disclosure at all, and `off` seals the raw
-   * stream. Both are reachable only from a job input written by hand, and both are recorded on
-   * the receipt, so an unscanned preparation is never mistaken for a clean one.
-   */
-  preflight: PreflightModeSchema.default("redact"),
-});
-export type PrepareInput = z.infer<typeof PrepareInputSchema>;
+/** What a preparation asks of the archive: the snapshots it names, and one capture's bytes —
+ *  with the listing of one path to tell a capture that is missing from an archive that failed. */
+export type PrepareRepo = Pick<Repo, "snapshots" | "dumpTo" | "ls">;
 
-/** The machine facts this operation needs, which the adapters own (machine/adapters). */
+/** The job bindings this operation needs; the dispatcher owns them (machine/main.ts). */
 export interface PrepareDeps {
-  /** Every session this machine can see, under the adapters' own roots. */
-  discover(): Promise<readonly SessionRef[]>;
   /**
-   * Both digests of one session's log, its size and its record count, from ONE pass — and, when
-   * a sink is handed, that same pass writes the normalized stream into the material (#279); when
-   * a scan is handed, it is what the stream is written THROUGH (#339). Both are PARAMETERS
-   * rather than second verbs because reading a 240 MB log twice per preparation is the only cost
-   * this operation has ever had, and a scan that read the log a second time would have paid it.
+   * The repository this job's service binding opens. It is asked for on the first capture no
+   * kept reading holds, or the first snapshot whose time the machine does not remember: a
+   * preparation served whole from kept readings contacts no archive at all. A failure to open
+   * it refuses the preparation as `archive_unavailable`, and nothing local is read instead.
    */
-  digests(
-    ref: SessionRef,
-    seal?: RecordSink | undefined,
-    scan?: SecretScan | undefined,
-  ): Promise<SessionDigests>;
-  /**
-   * How large this session's log is and when it was last written; `modifiedAt` 0 when nothing
-   * could be observed. It is asked BEFORE the digests on purpose — one `stat` against a whole
-   * read — because skipping a moving 240 MB log is the point, and because the same `stat` is
-   * what says whether a kept reading of that log is still a reading OF IT (#236).
-   */
-  observe(ref: SessionRef): Promise<Observation>;
+  archive(): Promise<PrepareRepo>;
+  /** The locator of the repository the binding names, which kept readings are filed under.
+   *  Asked only when there is a cache to file them in. */
+  repository(): Promise<string>;
+  /** The material lease's capacity, or null where it cannot be measured. */
+  capacity(): Promise<NonNullable<Receipt["outputCapacity"]> | null>;
   /**
    * Where the material is sealed: the second output lease (`machine/output.ts`). Null for a
    * hand-run that bound none, which prepares a selection and seals no evidence — the receipt
@@ -188,9 +158,9 @@ export interface PrepareDeps {
   /** Where this run says it is; a caller that hands none is not watched (`progress.ts`). */
   progress?: ProgressChannel | undefined;
   /**
-   * Where a reading is kept between preparations (`machine/cache.ts`, #236). Empty for an
+   * Where readings are kept between preparations (`machine/cache.ts`, #236). Empty for an
    * invocation that was given no such directory — a hand-run, the tests that pass none — which
-   * reads every log it selects, every time, and says so as `counts.reused` 0.
+   * fetches every capture it selects, every time, and says so as `counts.reused` 0.
    */
   cacheDir?: string | undefined;
 }
@@ -209,8 +179,8 @@ const PREPARATION_DOMAIN = "babel/preparation/v3";
  *  rather than as a missing row. */
 const PREPARATION_PREFIX = "prep-";
 
-/** One session inside a preparation, identified the way every session is: the machine
- *  that holds it, the harness, and the adapter-defined source identity. */
+/** One session inside a preparation, identified the way every session is: the machine that
+ *  recorded it — the capture's host label — the harness, and the adapter-defined source id. */
 export type PreparationEntry = {
   readonly host: string;
   readonly harness: string;
@@ -224,22 +194,10 @@ export type Preparation = {
   readonly schema: number;
   /** When the scope was fixed. Recorded, never hashed — see the header. */
   readonly preparedAt: string;
-  /** Canonically ordered, so neither discovery order nor a caller's later mutation can change
-   *  what the record means. */
+  /** Canonically ordered, so neither the input's order nor a caller's later mutation can
+   *  change what the record means. */
   readonly selection: readonly PreparationEntry[];
 };
-
-/** One `sessions` row as a preparation observed it: the identity, the capture it fixed, and
- *  the size that capture was. Nothing else — `scan` owns the rest of the row. */
-interface PreparedSessionRow {
-  readonly selector: string;
-  readonly host: string;
-  readonly harness: string;
-  readonly source_id: string;
-  readonly content_digest: string;
-  readonly size: number;
-  readonly seen_at: string;
-}
 
 /**
  * Fixes a corpus scope and derives its identity.
@@ -326,64 +284,34 @@ function writeLP(hasher: Bun.CryptoHasher, value: string): void {
   hasher.update(bytes);
 }
 
-/**
- * Both digests of one session's primary log, the bytes they covered, its record count — and,
- * when a sink is handed, the material's own copy of the normalized stream — from ONE pass.
- *
- * One pass because the corpus is dominated by a handful of very large logs, and reading them
- * twice per preparation would double the only cost that matters. The capture digest covers
- * every byte, including whatever the record splitter did not find a record in: it identifies
- * the file, not the part of it that parsed.
- *
- * THE SINK IS WRITTEN THE SAME BYTES THE SOURCE DIGEST COVERS, in the same order, which is the
- * whole reason a claim may cite a line of the material's file: the digest in the index is a
- * digest of exactly that file's contents, so a later reader recovers the bytes the model read
- * rather than the bytes the harness happened to hold when it was asked.
- *
- * WHICH IS WHY THE SCAN IS HERE AND NOT AFTER (#339). A redaction changes the record, so it has
- * to happen before the source digest covers it and before the sink receives it; a scan bolted on
- * afterwards would have produced a material whose index describes different bytes. The redacted
- * stream is therefore what the source digest is OF, and a corpus holding a credential digests
- * differently from the same corpus prepared raw — which is correct, and is the difference
- * between "the corpus changed" and "our reading of it changed" the two digests exist to state.
- */
-export async function digests(
-  ref: SessionRef,
-  seal?: RecordSink | undefined,
-  scan?: SecretScan | undefined,
-): Promise<SessionDigests> {
-  const reader = sessionDigester(seal, scan);
-  for await (const chunk of Bun.file(ref.primaryPath).stream()) reader.write(chunk);
-  return reader.finish();
-}
-
 /** What a redaction's locator recovers, and the digest saying it was recovered from the same
  *  bytes the preparation read. */
 export interface ResolvedRedaction {
-  /** The value that was redacted. It exists only in this process, on this machine. */
+  /** The value that was redacted. It exists only in the process that resolved it. */
   readonly value: string;
-  /** The log's capture digest as it stands now. A reader compares it against the material
-   *  index's entry for this session: equal means the offsets still address what they addressed,
-   *  different means the log moved and this is a different corpus. */
+  /** The capture digest of the bytes it was resolved against. A reader compares it against the
+   *  material index's entry for this session: equal means the offsets address what they
+   *  addressed, different means these are not the bytes the preparation read. */
   readonly captureDigest: string;
 }
 
 /**
- * WHAT A REDACTION'S LOCATOR RESOLVES AGAINST, and why it can only be resolved here (#339).
+ * WHAT A REDACTION'S LOCATOR RESOLVES AGAINST (#339, #453).
  *
  * A marker in the material names a class, a record and a range and carries no value; this is the
- * only way back to the bytes, and it needs the session's own log — which lives on the machine
- * that prepared it and nowhere else. So a receipt, a run row and a refusal can all say exactly
- * what was found and where without any of them carrying a credential: the hub holds locators and
- * this function holds the door, and the door is on the machine.
+ * only way back to the bytes, and it needs the capture's own bytes — which only a job holding
+ * the archive binding can fetch, by streaming the capture out of restic with `dump` into this
+ * function. So a receipt, a run row and a refusal can all say exactly what was found and where
+ * without any of them carrying a credential: the hub holds locators, and the door back to a
+ * value is the archive's.
  *
  * The record is re-normalized rather than read out of the material, because the material holds
- * the redacted stream: the value is gone from it by design. Null when this log holds no such
- * record, or when the range is not inside it — both of which mean the log is no longer the one
- * the preparation read, and the capture digest above is how a caller confirms that.
+ * the redacted stream: the value is gone from it by design. Null when the stream holds no such
+ * record, or when the range is not inside it — both of which mean it is not the stream the
+ * preparation read, and the capture digest is how a caller confirms that.
  */
 export async function resolveRedaction(
-  ref: SessionRef,
+  stream: AsyncIterable<Uint8Array>,
   site: { readonly line: number; readonly offset: number; readonly length: number },
 ): Promise<ResolvedRedaction | null> {
   const capture = new Bun.CryptoHasher("sha256");
@@ -392,7 +320,7 @@ export async function resolveRedaction(
     if (line !== site.line) return;
     found = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
   });
-  for await (const chunk of Bun.file(ref.primaryPath).stream()) {
+  for await (const chunk of stream) {
     capture.update(chunk);
     reader.write(chunk);
   }
@@ -403,20 +331,55 @@ export async function resolveRedaction(
   return { value: found.slice(site.offset, end), captureDigest };
 }
 
-/**
- * How large a session's primary log is and when it was last written, in epoch ms; zeroes when
- * the file is gone or the filesystem answered nothing.
- *
- * A log that cannot be stat-ed is not treated as live: it is the digest pass that will fail over
- * it, with the path in the refusal, and "unreadable" is a better answer than "still being
- * written". Nor is it a log a reading may be kept of, for the same reason — an observation of
- * nothing matches nothing.
- */
-export async function observe(ref: SessionRef): Promise<Observation> {
-  const info = await stat(ref.primaryPath).catch(() => null);
-  if (info === null) return { size: 0, modifiedAt: 0 };
-  return { size: info.size, modifiedAt: Math.trunc(info.mtimeMs) };
+/** One capture, as this preparation reads it. */
+interface Capture {
+  readonly label: string;
+  readonly snapshotId: string;
+  readonly ref: SessionRef;
+  readonly size: number;
+  /** Epoch milliseconds, as the catalog recorded the archived file's own modification time. */
+  readonly modifiedAt: number;
+  /** The observation a kept reading of it is filed under (`machine/cache.ts`): immutable
+   *  capture metadata, never a `stat` of anything on this machine. */
+  readonly seen: Observation;
 }
+
+/** A preparation refused whole. Its message is the receipt's reason: the refusal's code first
+ *  when it is one of PREPARE_REFUSALS, then the sentence. */
+class Refused extends Error {
+  constructor(code: PrepareRefusal | null, sentence: string) {
+    super(code === null ? sentence : `${code}: ${sentence}`);
+    this.name = "Refused";
+  }
+}
+
+/** What restic said, as a refusal of the archive. A failure that is not restic's is not the
+ *  archive's either, and is returned as it is. */
+function unavailable(error: unknown): unknown {
+  if (!(error instanceof ResticError)) return error;
+  return new Refused(
+    PREPARE_REFUSALS.archive,
+    error.stderr === "" ? error.message : `${error.message}: ${error.stderr}`,
+  );
+}
+
+/**
+ * WHAT ONE MATERIAL NEEDS OF THE LEASE, before anything is fetched: the catalogued bytes, one
+ * 512-byte member per session and for the index, the retrieval sidecar and the receipt, and a
+ * MiB of room for the documents themselves.
+ */
+function materialNeed(bytes: number, sessions: number): number {
+  return bytes + 512 * (sessions + 3) + (1 << 20);
+}
+
+/** A kept snapshot time, as it lies on disk. */
+const SnapshotMemorySchema = z.strictObject({
+  label: ArchiveLabelSchema,
+  archivedAt: CaptureInstantSchema,
+});
+
+const sha256 = (value: string): string =>
+  new Bun.CryptoHasher("sha256").update(value).digest("hex");
 
 export async function prepare(
   input: PrepareInput,
@@ -426,11 +389,12 @@ export async function prepare(
   const startedAt = new Date().toISOString();
   const runId = input.runId === "" ? `run_${crypto.randomUUID()}` : input.runId;
   const counts = {
-    discovered: 0,
+    /** Sessions the input named. */
+    offered: 0,
     selected: 0,
     bytes: 0,
     records: 0,
-    live: 0,
+    /** Babel's own run transcripts a content query left out of its eligible set. */
     agent: 0,
     /** Spans the secret preflight replaced, over every session in the scope (#339). */
     redacted: 0,
@@ -438,17 +402,21 @@ export async function prepare(
      * Sessions served from a reading this machine already had (#236). It is on the receipt
      * because it is the only place the saving is visible: two preparations over one scope cost
      * the same wall-clock to an operator watching them, and this is what says the second one
-     * did not read the corpus again.
+     * did not fetch the corpus again.
      */
     reused: 0,
+    /** Captures streamed out of the archive by this run, and their bytes. */
+    fetched: 0,
+    fetchedBytes: 0,
   };
-  const rows: PreparedSessionRow[] = [];
   /** What each session's scan found, folded into the receipt's report at the end. */
   const scans: { readonly selector: string; readonly report: ScanReport }[] = [];
   /** The material's own index, built as the loop seals each session's stream. */
   const sealed: MaterialEntry[] = [];
+  const rows: SessionRow[] = [];
   const retrievalHits: MaterialRetrieval["hits"] = [];
   let preparation: Preparation | null = null;
+  let queried: ContentSelection | null = null;
   let closure: Receipt["closure"] = "completed";
   let reason = "";
   const retrieval: SessionRetrieval | undefined =
@@ -470,274 +438,362 @@ export async function prepare(
   const progress = deps.progress ?? SILENT;
   progress.report({
     stage: RUN_STAGES.preparing,
-    message: "discovering the sessions this machine holds",
+    message: "checking the captures the hub selected",
   });
-  /**
-   * The readings this machine keeps. Constructed here rather than handed in because the context
-   * an entry is valid under is this input's — the preflight mode is part of it — and a cache
-   * keyed on someone else's mode would serve an unscanned stream to a preparation that redacts.
-   */
-  const cache =
-    (deps.cacheDir ?? "") === ""
-      ? null
-      : readingCache(deps.cacheDir ?? "", {
-          schema: PREPARATION_SCHEMA,
-          detectors: PREFLIGHT_DETECTORS,
-          mode: input.preflight,
-        });
+  const capacity = await deps.capacity();
 
-  const discovered = await deps.discover();
-  counts.discovered = discovered.length;
-  const queried =
-    input.query === undefined || retrieval === undefined
-      ? null
-      : await contentSelection(discovered, input, input.query, deps, retrieval, counts);
-  const chosen = queried ?? choose(discovered, input.selectors);
-  if (chosen.failure !== "") {
-    // A selector that matches nothing, or matches two sessions, is a rejected invocation
-    // rather than a silently smaller scope: a preparation records what was meant to be
-    // explored, and a scope that quietly shrank would make the next run's coverage a mystery.
-    closure = "failed";
-    reason = chosen.failure;
-  } else if (chosen.chosen.length === 0) {
-    closure = "skipped";
-    reason =
-      retrieval === undefined
-        ? "no session on this machine to prepare"
-        : "no eligible session matches the content query within the material bounds";
-  } else {
-    const seenAt = new Date().toISOString();
-    const selection: PreparationEntry[] = [];
-    const named = input.selectors.length > 0 || queried !== null;
-    const at = Date.now();
-    // The loop already counts, so the fraction costs nothing and is the honest one: a digest
-    // over a large log is where the minutes go, and "3/927" is what the operator wanted to see
-    // on 2026-09-13 instead of silence.
-    let examined = 0;
+  /** The archive, opened once and only when something must be read out of it. */
+  let opened: Promise<PrepareRepo> | null = null;
+  const archive = async (): Promise<PrepareRepo> => {
+    opened ??= deps.archive();
     try {
-      for (const session of chosen.chosen) {
-        examined += 1;
-        progress.report({
-          stage: RUN_STAGES.preparing,
-          message: `${session.selector} (${String(examined)}/${String(chosen.chosen.length)})`,
-          fraction: examined / chosen.chosen.length,
-        });
-        const seen = await deps.observe(session);
-        if (
-          queried !== null &&
-          !sameObservation(queried.observations.get(session.primaryPath), seen)
-        ) {
-          closure = "failed";
-          reason =
-            "content selection refused: a selected session changed or disappeared before sealing";
-          if (retrieval !== undefined) {
-            retrieval.status = "unavailable";
-            retrieval.unavailable++;
-          }
-          break;
-        }
-        const left = excluded(session, input, seen, at);
-        if (left !== null) {
-          if (named) {
-            // A selector that names an excluded session is refused for the reason an unmatched
-            // one is: what was asked for is not what would be prepared, and a scope that quietly
-            // shrank makes the next run's coverage a mystery. Nothing is excluded silently here;
-            // it is only when NO selector was given — "scope this machine" — that the two kinds
-            // below are skipped and counted.
-            closure = "failed";
-            reason = left.reason;
-            break;
-          }
-          if (left.kind === "live") counts.live++;
-          else counts.agent++;
-          continue;
-        }
-        // THE MATERIAL IS SEALED IN THE SAME PASS THE DIGESTS ARE TAKEN IN (#279). The file is
-        // opened before the read and closed after it whatever the read did, so a scope refused
-        // half way leaves no half-written stream a later reader could mistake for a session.
-        const file = materialFile(sealed.length, session.selector);
-        const reused = cache === null ? null : await cache.reuse(session, seen);
-        const record = queried?.hits.get(session.selector);
-        const excerpt =
-          record === undefined
-            ? null
-            : recallRecordReader({
-                harness: session.harness,
-                anchor: record.position,
-              });
-        let measured: SessionDigests;
-        let found: ScanReport | null;
-        if (cache !== null && reused !== null) {
-          /*
-          A READING THIS MACHINE ALREADY HAD (#236). The log is not opened at all: the kept
-          stream is replayed into the material and HASHED as it goes, and what it hashes to is
-          what the selection records. So the digest a citation carries is always a digest of the
-          bytes that were actually sealed, and the cache's only remembered claim is the capture
-          digest of a file whose size and mtime it just re-observed.
+      return await opened;
+    } catch (error) {
+      throw unavailable(error);
+    }
+  };
+  /** Streams one capture into a digester of `into`, and counts what crossed. */
+  const fetch = async (
+    capture: Capture,
+    into: RecordSink | undefined,
+    scan: SecretScan | undefined,
+  ): Promise<SessionDigests> => {
+    const repo = await archive();
+    const digester = sessionDigester(into, scan);
+    counts.fetched++;
+    let fetched: { bytes: number };
+    try {
+      fetched = await repo.dumpTo(
+        capture.snapshotId,
+        capture.ref.primaryPath,
+        (chunk) => {
+          counts.fetchedBytes += chunk.byteLength;
+          digester.write(chunk);
+        },
+        { maxBytes: capture.size },
+      );
+    } catch (error) {
+      throw await fetchFailure(repo, capture, error);
+    }
+    const measured = digester.finish();
+    if (fetched.bytes !== capture.size) {
+      throw new Refused(
+        PREPARE_REFUSALS.changed,
+        `${capture.ref.selector} is ${String(fetched.bytes)} bytes in snapshot ` +
+          `${capture.snapshotId} and was catalogued at ${String(capture.size)}`,
+      );
+    }
+    return measured;
+  };
 
-          A stream that does not hash to what it was kept as refuses the scope rather than
-          falling back to a read. The entry is dropped, so the next preparation reads the log and
-          succeeds — and the alternative, sealing bytes nothing verified into a material a model
-          reads, is the one outcome worth failing a run over.
-        */
-          const seal = teeRecords(
-            (await deps.material?.session(file)) ?? null,
-            excerpt?.sink ?? null,
+  try {
+    const offered = captures(input);
+    counts.offered = offered.length;
+    const invalid = offered.find(
+      (capture) => !validSourceId(capture.ref.sourceId) || capture.ref.primaryPath.includes("\0"),
+    );
+    if (invalid !== undefined) {
+      throw new Refused(null, `${invalid.ref.selector} is not a session a preparation can name`);
+    }
+    // A capture NAMED for a scope and excluded from it is refused, never dropped: what was
+    // asked for is not what would be prepared. A content query only offers candidates, so in a
+    // query Babel's own transcripts are left out of what is eligible and counted instead.
+    const own = (capture: Capture): boolean =>
+      !input.agentSessions && babelOwnLog(capture.ref.primaryPath);
+    const named = input.query === undefined ? offered.find(own) : undefined;
+    if (named !== undefined) {
+      throw new Refused(
+        null,
+        `${named.ref.selector} is one of Babel's own runs' transcripts, which a preparation of ` +
+          `the operator's work does not read`,
+      );
+    }
+    const eligible = offered.filter((capture) => !own(capture));
+    counts.agent = offered.length - eligible.length;
+    if (offered.length === 0) {
+      closure = "skipped";
+      reason = "no capture was offered to prepare";
+    } else {
+      // NOTHING IS FETCHED BEFORE THE MATERIAL IS KNOWN TO FIT. A named scope is sized from the
+      // catalogued bytes; a content query does not know its selection yet, so the same figures
+      // bound what its search may select.
+      if (input.query === undefined) {
+        const need = materialNeed(
+          offered.reduce((sum, capture) => sum + capture.size, 0),
+          offered.length,
+        );
+        if (need > MAX_MATERIAL_BYTES) {
+          throw new Refused(
+            PREPARE_REFUSALS.bound,
+            `${String(offered.length)} captures need ${String(need)} bytes of material, past ` +
+              `the ${String(MAX_MATERIAL_BYTES)} one material holds`,
           );
-          let digested = reused.sourceDigest;
+        }
+        if (capacity !== null && need > capacity.free) {
+          throw new Refused(
+            PREPARE_REFUSALS.storage,
+            `${String(offered.length)} captures need ${String(need)} bytes of material and ` +
+              `the material lease has ${String(capacity.free)} free`,
+          );
+        }
+      }
+
+      const cacheDir = deps.cacheDir ?? "";
+      let repository: string | null = null;
+      if (cacheDir !== "") {
+        try {
+          repository = await deps.repository();
+        } catch (error) {
+          throw unavailable(error);
+        }
+      }
+      const repositoryDir =
+        repository === null ? null : join(cacheDir, "archive", sha256(repository));
+      if (retrieval !== undefined && repositoryDir === null) {
+        // A query's coverage is an index over kept readings; without a cache there is neither.
+        retrieval.status = "unavailable";
+        throw new Refused(
+          null,
+          "content selection refused: a managed preparation cache is required",
+        );
+      }
+      /*
+        The readings this machine keeps, one directory per label, each under the context of the
+        mode it was read in: a cache keyed on someone else's mode would serve an unscanned stream
+        to a preparation that redacts.
+      */
+      const caches = new Map<string, ReadingCache>();
+      const cacheFor = (label: string, mode: PreflightMode): ReadingCache | null => {
+        if (repositoryDir === null) return null;
+        const key = JSON.stringify([label, mode]);
+        let cache = caches.get(key);
+        if (cache === undefined) {
+          cache = readingCache(join(repositoryDir, "labels", sha256(label)), {
+            schema: PREPARATION_SCHEMA,
+            detectors: PREFLIGHT_DETECTORS,
+            mode,
+          });
+          caches.set(key, cache);
+        }
+        return cache;
+      };
+
+      const archivedAt = await snapshotTimes(input, repositoryDir, archive);
+
+      let chosen: readonly Capture[] = offered;
+      if (input.query !== undefined && retrieval !== undefined && repositoryDir !== null) {
+        const room = Math.min(MAX_MATERIAL_BYTES, capacity?.free ?? MAX_MATERIAL_BYTES);
+        queried = await contentSelection(
+          eligible,
+          input.query,
+          input.preflight,
+          Math.max(0, room - materialNeed(0, eligible.length)),
+          retrieval,
+          repositoryDir,
+          (label) => cacheFor(label, "redact"),
+          fetch,
+        );
+        chosen = queried.chosen;
+      }
+      if (chosen.length === 0) {
+        closure = "skipped";
+        reason = "no eligible session matches the content query within the material bounds";
+      } else {
+        const selection: PreparationEntry[] = [];
+        // The loop already counts, so the fraction costs nothing and is the honest one: a fetch
+        // of a large capture is where the minutes go, and "3/927" is what an operator wants to
+        // see instead of silence.
+        let examined = 0;
+        for (const capture of chosen) {
+          examined += 1;
+          const selector = capture.ref.selector;
+          progress.report({
+            stage: RUN_STAGES.preparing,
+            message: `${selector} (${String(examined)}/${String(chosen.length)})`,
+            fraction: examined / chosen.length,
+          });
+          // THE MATERIAL IS SEALED IN THE SAME PASS THE DIGESTS ARE TAKEN IN (#279). The file is
+          // opened before the read and closed after it whatever the read did, so a scope refused
+          // half way leaves no half-written stream a later reader could mistake for a session.
+          const file = materialFile(sealed.length, selector);
+          const record = queried?.hits.get(selector);
+          const excerpt =
+            record === undefined
+              ? null
+              : recallRecordReader({ harness: capture.ref.harness, anchor: record.position });
+          const facts = captureFacts(capture.ref.harness);
+          const cache = cacheFor(capture.label, input.preflight);
+          let measured: SessionDigests;
+          let found: ScanReport | null;
           try {
-            if (seal !== null) digested = await cache.replay(reused, seal);
-          } finally {
-            await seal?.close();
-          }
-          if (digested !== reused.sourceDigest) {
-            await cache.forget(session);
-            closure = "failed";
-            reason =
-              `the reading kept for ${session.selector} does not digest to what it was kept ` +
-              `as; it has been dropped, and the next preparation reads the log`;
-            if (retrieval !== undefined) {
-              retrieval.status = "unavailable";
-              retrieval.unavailable++;
+            let reused = cache === null ? null : await cache.reuse(capture.ref, capture.seen);
+            if (cache !== null && reused !== null && reused.bytes !== capture.size) {
+              await cache.forget(capture.ref);
+              reused = null;
             }
-            break;
-          }
-          measured = {
-            captureDigest: reused.captureDigest,
-            sourceDigest: reused.sourceDigest,
-            bytes: reused.bytes,
-            records: reused.records,
-          };
-          found = reused.report;
-          counts.reused++;
-        } else {
-          const seal = teeRecords(
-            (await deps.material?.session(file)) ?? null,
-            excerpt?.sink ?? null,
-          );
-          // The reading is kept in the SAME pass, off the same bytes, for the reason the scan is
-          // in it: a second pass to fill a cache would have paid the cost the cache exists to
-          // avoid.
-          const kept = cache === null ? null : await cache.keep(session, seen);
-          // NOTHING IS SEALED UNSCANNED (#339). The scan is what the stream is written THROUGH, so
-          // the redaction happens before the sink and before the source digest — see `digests`.
-          const scan = input.preflight === "off" ? null : secretScan();
-          // BOTH SINKS ARE CLOSED BEFORE EITHER IS MEASURED. `digests` writes and never closes,
-          // and a kept stream whose writer had not flushed would be committed at whatever length
-          // happened to have reached the disk — a reading of a truncation.
-          const into = teeRecords(seal, kept?.sink ?? null);
-          try {
-            measured = await deps.digests(session, into ?? undefined, scan ?? undefined);
-          } catch (err) {
-            // The scope is refused whole. A preparation missing one of the sessions it was asked
-            // for would be an immutable record of a corpus nobody chose.
-            await into?.close();
-            await kept?.abandon();
-            closure = "failed";
-            reason =
+            // The facts fold rides every pass, so there is always somewhere the stream goes.
+            const seal: RecordSink =
+              teeRecords(
+                teeRecords((await deps.material?.session(file)) ?? null, excerpt?.sink ?? null),
+                facts.sink,
+              ) ?? facts.sink;
+            if (cache !== null && reused !== null) {
+              /*
+                A READING THIS MACHINE ALREADY HAD (#236). The archive is not contacted: the kept
+                stream is replayed into the material and HASHED as it goes, and what it hashes to
+                is what the selection records. So the digest a citation carries is always a
+                digest of the bytes that were actually sealed.
+
+                A stream that does not hash to what it was kept as refuses the scope rather than
+                falling back to a fetch. The entry is dropped, so the next preparation fetches the
+                capture and succeeds — and the alternative, sealing bytes nothing verified into a
+                material a model reads, is the one outcome worth failing a run over.
+              */
+              let digested: string;
+              try {
+                digested = await cache.replay(reused, seal);
+              } finally {
+                await seal.close();
+              }
+              if (digested !== reused.sourceDigest) {
+                await cache.forget(capture.ref);
+                throw new Refused(
+                  null,
+                  `the reading kept for ${selector} does not digest to what it was kept as; ` +
+                    `it has been dropped, and the next preparation fetches the capture`,
+                );
+              }
+              measured = {
+                captureDigest: reused.captureDigest,
+                sourceDigest: reused.sourceDigest,
+                bytes: reused.bytes,
+                records: reused.records,
+              };
+              found = reused.report;
+              counts.reused++;
+            } else {
+              // The reading is kept in the SAME pass, off the same bytes, for the reason the
+              // scan is in it: a second pass to fill a cache would pay the cost it exists to
+              // avoid. NOTHING IS SEALED UNSCANNED (#339): the scan is what the stream is
+              // written THROUGH, so the redaction happens before the sink and the source digest.
+              const kept = cache === null ? null : await cache.keep(capture.ref, capture.seen);
+              const scan = input.preflight === "off" ? null : secretScan();
+              const into: RecordSink = teeRecords(seal, kept?.sink ?? null) ?? seal;
+              try {
+                measured = await fetch(capture, into, scan ?? undefined);
+              } catch (error) {
+                // BOTH SINKS ARE CLOSED BEFORE EITHER IS JUDGED, and a kept stream of a fetch
+                // that did not complete is never committed.
+                await into.close();
+                await kept?.abandon();
+                throw error;
+              }
+              await into.close();
+              found = scan === null ? null : scan.report();
+              await kept?.commit({ ...measured, report: found });
+            }
+          } catch (error) {
+            if (error instanceof Refused) throw error;
+            throw new Refused(
+              null,
               retrieval === undefined
-                ? `read ${session.selector}: ${err instanceof Error ? err.message : String(err)}`
-                : "content selection refused: a selected session could not be read";
-            if (retrieval !== undefined) {
-              retrieval.status = "unavailable";
-              retrieval.unavailable++;
+                ? `read ${selector}: ${error instanceof Error ? error.message : String(error)}`
+                : "content selection refused: a selected session or its reading is unavailable",
+            );
+          }
+          if (found !== null) {
+            scans.push({ selector, report: found });
+            counts.redacted += found.redactions;
+            if (input.preflight === "refuse" && found.redactions > 0) {
+              // The scope is refused whole, by classes and never by value. What this session
+              // already wrote into the lease is the REDACTED stream, and no index is written
+              // for a failed preparation, so the material binds nothing and holds no secret.
+              closure = "failed";
+              reason = refusalMessage(selector, found);
+              break;
             }
-            break;
           }
-          await into?.close();
-          found = scan === null ? null : scan.report();
-          await kept?.commit({ ...measured, report: found });
-        }
-        if (queried !== null && !sameObservation(seen, await deps.observe(session))) {
-          closure = "failed";
-          reason = "content selection refused: a selected session changed while sealing";
-          if (retrieval !== undefined) {
-            retrieval.status = "unavailable";
-            retrieval.unavailable++;
+          if (excerpt !== null && record !== undefined) {
+            const read = await excerpt.finish();
+            if (
+              !read.anchorMatches ||
+              measured.sourceDigest !== record.sourceDigest ||
+              measured.captureDigest !== record.captureDigest
+            ) {
+              throw new Refused(
+                null,
+                "content selection refused: a selected session or its reading is unavailable",
+              );
+            }
+            retrievalHits.push({
+              selector,
+              harness: capture.ref.harness,
+              file,
+              captureDigest: measured.captureDigest,
+              sourceDigest: measured.sourceDigest,
+              record: record.position,
+              excerpt: read.excerpt,
+            });
           }
-          break;
-        }
-        if (found !== null) {
-          scans.push({ selector: session.selector, report: found });
-          counts.redacted += found.redactions;
-          if (input.preflight === "refuse" && found.redactions > 0) {
-            // The scope is refused whole, by classes and never by value. What this session already
-            // wrote into the lease is the REDACTED stream, and no index is written for a failed
-            // preparation, so the material binds nothing and holds no secret either way.
-            closure = "failed";
-            reason = refusalMessage(session.selector, found);
-            break;
-          }
-        }
-        if (excerpt !== null && record !== undefined) {
-          const read = await excerpt.finish();
-          if (
-            !read.anchorMatches ||
-            measured.sourceDigest !== record.sourceDigest ||
-            measured.captureDigest !== record.captureDigest
-          )
-            throw new Error("content selection evidence changed before sealing");
-          retrievalHits.push({
-            selector: session.selector,
-            harness: session.harness,
-            file,
+          counts.bytes += measured.bytes;
+          counts.records += measured.records;
+          const origin = {
+            label: capture.label,
+            snapshotId: capture.snapshotId,
+            path: capture.ref.primaryPath,
+          };
+          selection.push({
+            host: capture.label,
+            harness: capture.ref.harness,
+            sourceId: capture.ref.sourceId,
             captureDigest: measured.captureDigest,
             sourceDigest: measured.sourceDigest,
-            record: record.position,
-            excerpt: read.excerpt,
+          });
+          sealed.push({
+            selector,
+            harness: capture.ref.harness,
+            sourceId: capture.ref.sourceId,
+            captureDigest: measured.captureDigest,
+            sourceDigest: measured.sourceDigest,
+            file,
+            records: measured.records,
+            bytes: measured.bytes,
+            origin,
+          });
+          rows.push({
+            selector,
+            harness: capture.ref.harness,
+            source_id: capture.ref.sourceId,
+            kind: babelOwnLog(capture.ref.primaryPath) ? "agent" : "operator",
+            archive_label: capture.label,
+            archive_path: capture.ref.primaryPath,
+            snapshot_id: capture.snapshotId,
+            archived_at: archivedAt.get(capture.snapshotId) ?? "",
+            size: capture.size,
+            modified_at: new Date(capture.modifiedAt).toISOString(),
+            content_digest: measured.captureDigest,
+            ...(await facts.finish()),
           });
         }
-        counts.bytes += measured.bytes;
-        counts.records += measured.records;
-        selection.push({
-          host: input.machineId,
-          harness: session.harness,
-          sourceId: session.sourceId,
-          captureDigest: measured.captureDigest,
-          sourceDigest: measured.sourceDigest,
-        });
-        sealed.push({
-          selector: session.selector,
-          harness: session.harness,
-          sourceId: session.sourceId,
-          captureDigest: measured.captureDigest,
-          sourceDigest: measured.sourceDigest,
-          file,
-          records: measured.records,
-          bytes: measured.bytes,
-        });
-        rows.push({
-          selector: session.selector,
-          host: input.machineId,
-          harness: session.harness,
-          source_id: session.sourceId,
-          content_digest: measured.captureDigest,
-          size: measured.bytes,
-          seen_at: seenAt,
-        });
+        if (closure === "completed") {
+          preparation = newPreparation(new Date().toISOString(), selection);
+          counts.selected = selection.length;
+        }
       }
-    } catch (error) {
-      if (retrieval === undefined) throw error;
-      closure = "failed";
-      reason = "content selection refused: a selected session or its reading is unavailable";
+    }
+  } catch (error) {
+    if (!(error instanceof Refused)) throw error;
+    closure = "failed";
+    reason = error.message;
+    if (retrieval !== undefined && retrieval.status === "complete") {
       retrieval.status = "unavailable";
       retrieval.unavailable++;
     }
-    if (closure === "completed" && selection.length === 0) {
-      // Every session there was, excluded. It is `skipped` rather than failed for the same
-      // reason a machine holding none is: there is nothing wrong here, there is nothing to do.
-      closure = "skipped";
-      reason =
-        `no settled session of the operator's own on this machine to prepare: ` +
-        `${String(counts.live)} still being written, ${String(counts.agent)} Babel's own runs'`;
-    } else if (closure === "completed") {
-      preparation = newPreparation(new Date().toISOString(), selection);
-      counts.selected = selection.length;
-    }
   }
 
-  // Every scoped session is registered in the hub's catalog, because a preparation that named
-  // sessions the hub holds no row for would be an identity nothing could later resolve.
+  // Every scoped session is registered in the hub's catalog with the capture it was read from,
+  // because a preparation that named sessions the hub holds no row for would be an identity
+  // nothing could later resolve.
   progress.report({ stage: RUN_STAGES.submitting, message: `${String(counts.selected)} sessions` });
   await out.write("sessions", closure === "completed" ? rows : []);
   /*
@@ -808,183 +864,297 @@ export async function prepare(
     ...(index === null ? {} : { material: index }),
     preflight,
     ...(retrieval === undefined ? {} : { retrieval }),
+    ...(capacity === null ? {} : { outputCapacity: capacity }),
     ...(reason === "" ? {} : { reason }),
   };
   await out.receipt(receipt);
   return receipt;
 }
 
-/** Observation equality is deliberately stricter than size: an unknown mtime proves nothing. */
-function sameObservation(before: Observation | undefined, after: Observation): boolean {
-  return (
-    before !== undefined &&
-    before.modifiedAt > 0 &&
-    before.modifiedAt === after.modifiedAt &&
-    before.size === after.size
-  );
+/** The input's sessions as captures, in the order the hub named them. */
+function captures(input: PrepareInput): Capture[] {
+  const all: Capture[] = [];
+  for (const group of input.captures) {
+    for (const session of group.sessions) {
+      all.push({
+        label: group.label,
+        snapshotId: group.snapshotId,
+        ref: sessionRef(session.harness, session.sourceId, session.path),
+        size: session.size,
+        modifiedAt: session.modifiedAt,
+        seen: {
+          size: session.size,
+          modifiedAt: session.modifiedAt,
+          capture: JSON.stringify([group.snapshotId, session.path]),
+        },
+      });
+    }
+  }
+  return all;
 }
 
 /**
- * Pays for lexical coverage before choosing material. Only the ordinary redacted reading is
- * indexed; the final selection still passes through prepare's existing sealing and preflight.
- * Failure is whole-scope, never a partial search presented as complete coverage.
+ * WHEN EACH NAMED SNAPSHOT WAS TAKEN, as every row states it (`archived_at`).
+ *
+ * The hub names a snapshot by id and label; the time is the snapshot's own, read from restic
+ * once — one `snapshots` call for every id the machine does not already remember — and kept
+ * beside the readings, because a snapshot never changes. This is also where a snapshot the
+ * archive does not hold, or holds under another label, is refused, before any capture of it is
+ * fetched.
  */
-async function contentSelection(
-  discovered: readonly SessionRef[],
+async function snapshotTimes(
   input: PrepareInput,
-  query: SessionContentQuery,
-  deps: PrepareDeps,
-  retrieval: SessionRetrieval,
-  counts: { live: number; agent: number },
-): Promise<{
-  readonly chosen: readonly SessionRef[];
-  readonly failure: string;
-  readonly observations: ReadonlyMap<string, Observation>;
+  repositoryDir: string | null,
+  archive: () => Promise<PrepareRepo>,
+): Promise<ReadonlyMap<string, string>> {
+  /** Each snapshot's own label and time, remembered or read. */
+  const known = new Map<string, z.infer<typeof SnapshotMemorySchema>>();
+  const unknown = new Set<string>();
+  const memory = repositoryDir === null ? null : join(repositoryDir, "snapshots");
+  for (const { snapshotId } of input.captures) {
+    if (known.has(snapshotId) || unknown.has(snapshotId)) continue;
+    const kept = memory === null ? null : await recallSnapshot(join(memory, `${snapshotId}.json`));
+    if (kept === null) unknown.add(snapshotId);
+    else known.set(snapshotId, kept);
+  }
+  if (unknown.size > 0) {
+    const repo = await archive();
+    let listed: readonly { id: string; host: string; time: string }[];
+    try {
+      listed = await repo.snapshots([...unknown]);
+    } catch (error) {
+      throw unavailable(error);
+    }
+    for (const snapshotId of unknown) {
+      const snapshot = listed.find((candidate) => candidate.id === snapshotId);
+      if (snapshot === undefined) {
+        throw new Refused(PREPARE_REFUSALS.missing, `snapshot ${snapshotId} is not in the archive`);
+      }
+      const at = captureInstant(snapshot.time);
+      const read = ArchiveLabelSchema.safeParse(snapshot.host);
+      if (at === null || !read.success) {
+        throw new Refused(
+          PREPARE_REFUSALS.missing,
+          `snapshot ${snapshotId} carries no label and time a catalog row can state`,
+        );
+      }
+      const held = { label: read.data, archivedAt: at };
+      known.set(snapshotId, held);
+      if (memory !== null) await rememberSnapshot(memory, `${snapshotId}.json`, held);
+    }
+  }
+  const times = new Map<string, string>();
+  for (const { snapshotId, label } of input.captures) {
+    const held = known.get(snapshotId)!;
+    if (held.label !== label) {
+      throw new Refused(
+        PREPARE_REFUSALS.missing,
+        `snapshot ${snapshotId} was taken under the label ${held.label}, not ${label}`,
+      );
+    }
+    times.set(snapshotId, held.archivedAt);
+  }
+  return times;
+}
+
+/** A kept snapshot time, or null when none is kept or it is unreadable: it is rebuildable. */
+async function recallSnapshot(path: string): Promise<z.infer<typeof SnapshotMemorySchema> | null> {
+  try {
+    const parsed = SnapshotMemorySchema.safeParse(JSON.parse(await readFile(path, "utf8")));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps one snapshot's time, whole or not at all; a failure only costs the next run a lookup. */
+async function rememberSnapshot(
+  dir: string,
+  name: string,
+  kept: z.infer<typeof SnapshotMemorySchema>,
+): Promise<void> {
+  const staged = join(dir, `${name}.${crypto.randomUUID()}.tmp`);
+  try {
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await writeFile(staged, JSON.stringify(kept) + "\n", { mode: 0o600 });
+    await rename(staged, join(dir, name));
+  } catch {
+    await rm(staged, { force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * WHY A FETCH FAILED, as the preparation's refusal.
+ *
+ * A fetch past the catalogued size is `capture_changed`. When restic itself failed, the one
+ * question that separates "this snapshot does not hold that path" from "the archive failed" is
+ * a listing of that path, which reads tree metadata and no data: absent is `capture_missing`,
+ * and anything else — the listing failing too, or the file being there after all — is the
+ * archive's. A failure that is not restic's (a sink that could not write) is returned as it is.
+ */
+async function fetchFailure(repo: PrepareRepo, capture: Capture, error: unknown): Promise<unknown> {
+  if (!(error instanceof ResticError)) return error;
+  if (error.kind === "refused") {
+    return new Refused(
+      PREPARE_REFUSALS.changed,
+      `${capture.ref.selector} is larger in snapshot ${capture.snapshotId} than the ` +
+        `${String(capture.size)} bytes it was catalogued at`,
+    );
+  }
+  if (error.kind === "exit") {
+    const path = capture.ref.primaryPath;
+    const held = await repo
+      .ls(capture.snapshotId, [path])
+      .then((listing) =>
+        listing.entries.some((entry) => entry.path === path && entry.type === "file"),
+      )
+      .catch(() => null);
+    if (held === false) {
+      return new Refused(
+        PREPARE_REFUSALS.missing,
+        `snapshot ${capture.snapshotId} holds no file at ${path}`,
+      );
+    }
+  }
+  return unavailable(error);
+}
+
+/** What a content query chose, and the record evidence it found in what it chose. */
+interface ContentSelection {
+  readonly chosen: readonly Capture[];
   readonly hits: ReadonlyMap<string, IndexedRecord>;
   readonly recordMatches: number;
-}> {
-  const observations = new Map<string, Observation>();
-  const hits = new Map<string, IndexedRecord>();
-  const refuse = (reason: string) => ({
-    chosen: [],
-    failure: reason,
-    observations,
-    hits,
-    recordMatches: 0,
-  });
-  if (input.selectors.length > 0) {
-    retrieval.status = "unavailable";
-    return refuse("content selection refused: a query cannot be combined with explicit selectors");
-  }
-  if ((deps.cacheDir ?? "") === "") {
-    retrieval.status = "unavailable";
-    return refuse("content selection refused: a managed preparation cache is required");
-  }
+}
+
+/**
+ * Pays for lexical coverage before choosing material. The captures offered are the candidates:
+ * each one's redacted reading is indexed — replayed from the cache, or fetched once and kept —
+ * and the query ranks them; the final selection still passes through the sealing loop and its
+ * preflight. The index lives beside the readings, one per repository, and a label is the
+ * namespace a selector is unique in. Failure is whole-scope, never a partial search presented as
+ * complete coverage.
+ */
+async function contentSelection(
+  eligible: readonly Capture[],
+  query: SessionContentQuery,
+  preflight: PreflightMode,
+  bound: number,
+  retrieval: SessionRetrieval,
+  repositoryDir: string,
+  cacheFor: (label: string) => ReadingCache | null,
+  fetch: (
+    capture: Capture,
+    into: RecordSink | undefined,
+    scan: SecretScan | undefined,
+  ) => Promise<SessionDigests>,
+): Promise<ContentSelection> {
   const context: ReadingContext = {
     schema: PREPARATION_SCHEMA,
     detectors: PREFLIGHT_DETECTORS,
     mode: "redact",
   };
-  const cache = readingCache(deps.cacheDir ?? "", context);
-  const eligible: IndexedSession[] = [];
+  const candidates: IndexedSession[] = eligible.map((capture) => ({
+    namespace: capture.label,
+    session: capture.ref,
+    seen: capture.seen,
+  }));
+  retrieval.eligible = candidates.length;
   let index: SessionIndex | null = null;
+  /** A refusal a reading raised inside the index's builder, which reports only that it failed. */
+  let refused: Refused | null = null;
   try {
-    const at = Date.now();
-    for (const session of discovered) {
-      const seen = await deps.observe(session);
-      const left = excluded(session, input, seen, at);
-      if (left !== null) {
-        if (left.kind === "live") counts.live++;
-        else counts.agent++;
-        continue;
-      }
-      eligible.push({ session, seen });
-      observations.set(session.primaryPath, seen);
-    }
-    retrieval.eligible = eligible.length;
-    index = await sessionIndex(deps.cacheDir ?? "", context);
-    for (const candidate of eligible) {
+    index = await sessionIndex(repositoryDir, context);
+    for (const [at, candidate] of candidates.entries()) {
       if (index.holds(candidate)) {
         retrieval.reused++;
         continue;
       }
-      const { session, seen } = candidate;
+      const capture = eligible[at]!;
+      const cache = cacheFor(capture.label);
+      if (cache === null) throw new SessionIndexError("unavailable");
       const result = await index.build(candidate, async (sink) => {
-        // The SQLite builder may have waited for a lock since discovery. Exclude before even
-        // replaying a kept reading, not merely after the expensive read has already happened.
-        const before = await deps.observe(session);
-        if (
-          !sameObservation(seen, before) ||
-          excluded(session, input, before, Date.now()) !== null
-        ) {
-          throw new Error("eligible session changed before indexing");
-        }
-        const reused = await cache.reuse(session, seen);
-        if (reused !== null) {
-          // Finish hashing even if corrupt bytes fail the index parser early. Otherwise the
-          // invalid reading survives every refused query; an index failure alone must not
-          // discard a verified reading.
-          let indexFailure: SessionIndexError | null = null;
-          const digest = await cache.replay(reused, {
-            ...sink,
-            write(record) {
-              if (indexFailure !== null) return;
-              try {
-                sink.write(record);
-              } catch (error) {
-                indexFailure =
-                  error instanceof SessionIndexError ? error : new SessionIndexError("unavailable");
-              }
-            },
-          });
-          if (digest !== reused.sourceDigest) {
-            await cache.forget(session);
-            throw new Error("redacted reading failed verification");
-          }
-          if (indexFailure !== null) throw indexFailure;
-          await sink.close();
-          return { reading: reused, after: await deps.observe(session) };
-        }
-        const kept = await cache.keep(session, seen);
-        if (kept === null) throw new Error("redacted reading cannot be kept");
-        const scan = secretScan();
-        const into = teeRecords(sink, kept.sink);
-        let closed = false;
         try {
-          const measured = await deps.digests(session, into ?? undefined, scan);
-          await into?.close();
-          closed = true;
-          const reading = { ...measured, report: scan.report() };
-          const after = await deps.observe(session);
-          if (sameObservation(seen, after) && measured.bytes === seen.size) {
+          const reused = await cache.reuse(capture.ref, capture.seen);
+          if (reused !== null && reused.bytes === capture.size) {
+            // Finish hashing even if corrupt bytes fail the index parser early. Otherwise the
+            // invalid reading survives every refused query; an index failure alone must not
+            // discard a verified reading.
+            let indexFailure: SessionIndexError | null = null;
+            const digest = await cache.replay(reused, {
+              ...sink,
+              write(record) {
+                if (indexFailure !== null) return;
+                try {
+                  sink.write(record);
+                } catch (error) {
+                  indexFailure =
+                    error instanceof SessionIndexError
+                      ? error
+                      : new SessionIndexError("unavailable");
+                }
+              },
+            });
+            if (digest !== reused.sourceDigest) {
+              await cache.forget(capture.ref);
+              throw new Error("redacted reading failed verification");
+            }
+            if (indexFailure !== null) throw indexFailure;
+            await sink.close();
+            return { reading: reused, after: capture.seen };
+          }
+          const kept = await cache.keep(capture.ref, capture.seen);
+          if (kept === null) throw new Error("redacted reading cannot be kept");
+          const scan = secretScan();
+          const into = teeRecords(sink, kept.sink);
+          let closed = false;
+          try {
+            const measured = await fetch(capture, into ?? undefined, scan);
+            await into?.close();
+            closed = true;
+            const reading = { ...measured, report: scan.report() };
             await kept.commit(reading);
-            if ((await cache.reuse(session, seen)) === null) {
+            if ((await cache.reuse(capture.ref, capture.seen)) === null) {
               throw new Error("redacted reading could not be kept");
             }
-          } else {
-            await kept.abandon();
+            return { reading, after: capture.seen };
+          } catch (error) {
+            try {
+              if (!closed) await into?.close();
+            } finally {
+              await kept.abandon();
+            }
+            throw error;
           }
-          return { reading, after };
         } catch (error) {
-          try {
-            if (!closed) await into?.close();
-          } finally {
-            await kept.abandon();
-          }
+          if (error instanceof Refused) refused = error;
           throw error;
         }
       });
       if (result === "busy" || result === "changed") {
         retrieval.status = result === "busy" ? "busy" : "unavailable";
-        retrieval.unavailable = eligible.length - retrieval.indexed - retrieval.reused;
-        return refuse(
+        retrieval.unavailable = candidates.length - retrieval.indexed - retrieval.reused;
+        throw new Refused(
+          null,
           result === "busy"
             ? "content selection refused: the session index is busy"
-            : "content selection refused: an eligible session changed while indexing",
+            : "content selection refused: an eligible capture's reading does not match it",
         );
       }
       if (result === "indexed") retrieval.indexed++;
       else retrieval.reused++;
     }
-    // A covered session can change while another is read. Do not run a knowingly partial or
-    // stale query; checking every eligible observation is cheap beside opening every log.
-    for (const { session, seen } of eligible) {
-      const after = await deps.observe(session);
-      if (!sameObservation(seen, after) || excluded(session, input, after, Date.now()) !== null) {
-        retrieval.status = "unavailable";
-        retrieval.unavailable++;
-        return refuse("content selection refused: an eligible session changed before selection");
-      }
-    }
-    const found = index.search(query.text, eligible, query.limit, MAX_MATERIAL_BYTES);
+    const found = index.search(query.text, candidates, query.limit, bound);
     retrieval.matches = found.matches;
     retrieval.overBound = found.overBound;
+    const bySelector = new Map(eligible.map((capture) => [capture.ref.selector, capture]));
+    const chosen = found.selection.map((session) => bySelector.get(session.selector)!);
+    const hits = new Map<string, IndexedRecord>();
     let recordMatches = 0;
-    if (input.preflight !== "off") {
-      const selected = new Set(found.selection.map((session) => session.primaryPath));
+    if (preflight !== "off") {
+      const selected = new Set(found.selection.map((session) => session.selector));
       const records = index.searchRecords(
         query.text,
-        eligible.filter((candidate) => selected.has(candidate.session.primaryPath)),
+        candidates.filter((candidate) => selected.has(candidate.session.selector)),
         RECALL_MAX_HITS,
       );
       recordMatches = records.matches;
@@ -992,11 +1162,14 @@ async function contentSelection(
         if (!hits.has(record.candidate.session.selector))
           hits.set(record.candidate.session.selector, record);
     }
-    return { chosen: found.selection, failure: "", observations, hits, recordMatches };
+    return { chosen, hits, recordMatches };
   } catch (error) {
+    if (error instanceof Refused) throw error;
     retrieval.status = error instanceof SessionIndexError ? error.kind : "unavailable";
-    retrieval.unavailable = Math.max(1, eligible.length - retrieval.indexed - retrieval.reused);
-    return refuse(
+    retrieval.unavailable = Math.max(1, candidates.length - retrieval.indexed - retrieval.reused);
+    if (refused !== null) throw refused;
+    throw new Refused(
+      null,
       retrieval.status === "busy"
         ? "content selection refused: the session index is busy"
         : "content selection refused: eligible session content or its index is unavailable",
@@ -1052,88 +1225,4 @@ function preflightReport(
     sites,
     sitesOmitted,
   };
-}
-
-/** Why a session is not in a default scope; null when it belongs in one. */
-type Exclusion = { readonly kind: "live" | "agent"; readonly reason: string } | null;
-
-/**
- * Whether this session may be in a scope, and the sentence saying why not.
- *
- * The two rules are the ones #262 names, in the order that costs least: Babel's own transcripts
- * are recognized from the path alone, and liveness is read off the one `stat` the loop already
- * took — so a 240 MB log that is still being appended is excluded without being read, which is
- * the whole point of asking here rather than after the digests.
- *
- * A log written in the FUTURE is live. Clocks on one machine disagree by seconds, and a file
- * whose mtime is ahead of this process is the last thing to treat as settled.
- */
-function excluded(
-  session: SessionRef,
-  input: PrepareInput,
-  seen: Observation,
-  at: number,
-): Exclusion {
-  if (!input.agentSessions && babelOwnLog(session.primaryPath)) {
-    return {
-      kind: "agent",
-      reason:
-        `${session.selector} is one of Babel's own runs' transcripts, which a preparation of ` +
-        `the operator's work does not read`,
-    };
-  }
-  if (seen.modifiedAt > 0 && at - seen.modifiedAt < LIVE_GRACE_MS) {
-    const seconds = Math.max(0, Math.round((at - seen.modifiedAt) / 1000));
-    return {
-      kind: "live",
-      reason:
-        `${session.selector} was written ${String(seconds)}s ago and is still being appended; ` +
-        `a preparation is its selection's content, so a moving file is not a scope`,
-    };
-  }
-  return null;
-}
-
-/**
- * The sessions the selectors name, or the first refusal.
- *
- * Matching is tiered — the exact canonical selector first, then a segment-aligned suffix, then
- * any suffix — so a fully qualified selector can never be shadowed by a longer source id that
- * happens to end the same way. Ambiguity is a rejected invocation, not a guess, and the
- * candidates are listed so the operator can qualify what they meant.
- */
-function choose(
-  sessions: readonly SessionRef[],
-  selectors: readonly string[],
-): { readonly chosen: readonly SessionRef[]; readonly failure: string } {
-  if (selectors.length === 0) return { chosen: sessions, failure: "" };
-  const chosen: SessionRef[] = [];
-  const taken = new Set<string>();
-  for (const selector of selectors) {
-    const exact: SessionRef[] = [];
-    const aligned: SessionRef[] = [];
-    const loose: SessionRef[] = [];
-    for (const session of sessions) {
-      if (session.selector === selector) exact.push(session);
-      else if (session.selector.endsWith(`/${selector}`)) aligned.push(session);
-      else if (session.selector.endsWith(selector)) loose.push(session);
-    }
-    const tier = exact.length > 0 ? exact : aligned.length > 0 ? aligned : loose;
-    const [session] = tier;
-    if (session === undefined) {
-      return { chosen: [], failure: `no session on this machine matches the selector ${selector}` };
-    }
-    if (tier.length > 1) {
-      return {
-        chosen: [],
-        failure: `the selector ${selector} is ambiguous, it matches ${tier.length} sessions: ${tier
-          .map((candidate) => candidate.selector)
-          .join(" ")}`,
-      };
-    }
-    if (taken.has(session.selector)) continue;
-    taken.add(session.selector);
-    chosen.push(session);
-  }
-  return { chosen, failure: "" };
 }

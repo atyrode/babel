@@ -17,9 +17,10 @@ Babel executes in three places and holds a process in none of them.
   transaction. It holds no credential, and it reaches exactly one origin — the embedding service
   the operator installed, and only if he installed one. That call is the paragraph below.
 - **The machine half** is a Bun bundle the hub installs and runs as a **job** on an enrolled
-  machine: `scan`, `archive`, `prepare`, `verify`, and nothing else
-  (`babel/manifest.json`; `babel/machine/main.ts`). It reads
-  session logs, runs restic, and writes sealed outputs. It never reaches a model.
+  machine: `catalog`, `archive`, `prepare`, `verify`, and nothing else
+  (`babel/manifest.json`; `babel/machine/main.ts`). It reads archived captures out of restic —
+  `archive` alone reads session logs on the machine that holds them — and writes sealed outputs.
+  It never reaches a model.
 - **A run that reaches a model is a Code session.** Babel composes a prompt and posts it through
   `atyrode.code.runSession`. It chooses no model, no thinking level and no account, holds no
   provider credential, and owns no process to reap. The session's containment is Code's, and §4
@@ -60,29 +61,37 @@ tmpfs home and the artifacts the operation declares — so it carries no libc un
 names the machine's native closure, and what is not declared does not exist inside. The manifest
 is the whole of what each operation may touch, and it is committed, reviewed code.
 
-| Operation | Reads                                         | Writes                                                                      | Network  | Ceilings                                       |
-| --------- | --------------------------------------------- | --------------------------------------------------------------------------- | -------- | ---------------------------------------------- |
-| `scan`    | `~/.omp`, `~/.codex`, `~/.claude`, read-only  | the sealed output lease                                                     | **none** | 10 min, 1 GiB, 64 processes, 64 MiB of output  |
-| `prepare` | the same three, read-only                     | the sealed output lease                                                     | **none** | 30 min, 1 GiB, 64 processes, 512 MiB of output |
-| `archive` | the same three, read-only                     | the sealed output lease, and the restic repository                          | **host** | 10 min, 1 GiB, 64 processes                    |
-| `verify`  | the restic repository, and none of the corpus | the sealed output lease, and a restore target inside a location it declares | **host** | 60 min, 1 GiB, 64 processes                    |
+| Operation | Reads                                                                                                                        | Writes                                                                                | Network  | Ceilings                                     |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------- | -------------------------------------------- |
+| `catalog` | the restic repository's snapshot and tree metadata, and no transcript content                                                | the sealed output lease, and its memory of listed snapshots in the managed cache      | **host** | 30 min, 1 GiB, 64 processes, 1 GiB of output |
+| `prepare` | the captures it is named, streamed out of the restic repository; no local file                                               | the sealed output and material leases, and its redacted readings in the managed cache | **host** | 30 min, 1 GiB, 64 processes, 1 GiB of output |
+| `archive` | `~/.omp/agent/sessions`, `~/.omp/agent/blobs`, `~/.codex`, `~/.claude`, through read-only operator anchors, and nothing else | the sealed output lease, and the restic repository                                    | **host** | 10 min, 1 GiB, 64 processes, 1 GiB of output |
+| `verify`  | the restic repository, and none of the corpus                                                                                | the sealed output lease, and a restore target inside a location it declares           | **host** | 60 min, 1 GiB, 64 processes, 1 GiB of output |
 
-Five properties of that table carry the weight:
+Six properties of that table carry the weight:
 
-- **No operation writes into the corpus.** The session directories are bound read-only where they
-  are bound at all, and `verify` does not mount them: it reads a repository, not a harness. A job
-  cannot edit the evidence it read.
-- **Two of the four have no network at all, and they are the two that read the most hostile
-  bytes.** Reading and preparing the corpus have no route out, so a log that persuades something
-  to exfiltrate has nothing to exfiltrate through. What the other two reach is one restic
-  repository.
-- **`archive` and `verify` have host network because restic must reach the repository**, and their
-  one secret arrives through a loopback service proxy the engine opens for that job alone: a
-  capability minted per job, not the operator's upstream credential. The repository password
-  reaches restic as `RESTIC_PASSWORD` in the **child's** environment only — never argv, never the
-  parent's environment, never a receipt — and each child gets a minimal environment, so no ambient
-  `RESTIC_*` variable can redirect an archive or aim a verification at another repository
+- **No operation writes into the corpus.** The session directories are bound read-only, by
+  `archive` alone, through operator anchors Manifold presents as read-only mounts and refuses to
+  bind any other way; `catalog`, `prepare` and `verify` do not mount them: they read a repository,
+  not a harness. A job cannot edit the evidence it read.
+- **Every operation has host network, including the two that read the most hostile bytes**
+  (#453). Reading and preparing the corpus used to have no route out; they now read it out of the
+  archive, and restic must reach the object store, while the protocol offers `none` or `host` and
+  nothing between (manifold `packages/protocol/src/jobs.ts:292`). What runs there is deterministic
+  Babel code — a listing, a parser, a digest and a scan — with no model, no tool and nothing that
+  interprets transcript text, so a log that persuades something to exfiltrate has nothing in
+  `prepare` to persuade. What it would take instead is a defect in that code, and residual 8 is
+  what such a defect would reach.
+- **The one secret arrives through a loopback service proxy the engine opens for that job
+  alone**: a capability minted per job, not the operator's upstream credential. The repository
+  password reaches restic as `RESTIC_PASSWORD` in the **child's** environment only — never argv,
+  never the parent's environment, never a receipt — and each child gets a minimal environment, so
+  no ambient `RESTIC_*` variable can redirect an archive or aim a reading at another repository
   (`babel/machine/restic.ts`).
+- **A preparation's raw bytes exist only in process memory.** `prepare` streams each capture out
+  of restic's stdout straight into the pass that digests, scans and normalizes it. What reaches a
+  disk is the redacted normalized stream: the material lease, and the reading kept in the managed
+  cache so a second preparation fetches nothing.
 - **A restore writes corpus bytes onto the machine, and the sandbox is what bounds where.**
   `verify` restores a catalogued session to prove it comes back byte for byte, so those bytes
   land outside the repository: under the job's own managed cache location, or in the target the
@@ -90,15 +99,16 @@ Five properties of that table carry the weight:
   sandbox refuses the write — what stops a restore landing somewhere else is the manifest and the
   hub's enforcement of it, not the operation's good behaviour. The scratch directory is removed
   once the comparison is made, and that is cleanup rather than a boundary: an operation killed
-  between the restore and the removal leaves the bytes where they fell (residual 4).
-- **Nothing deletes, and the absence is enforced rather than incidental.** The verbs restic may be
+  between the restore and the removal leaves the bytes where they fell (residual 5).
+- **Nothing deletes, reading takes no lock, and only `archive` writes.** The verbs restic may be
   asked for are a closed set of eight — `cat`, `init`, `backup`, `snapshots`, `check`, `ls`,
   `dump`, `restore` — and every invocation is built by the one function that admits a verb or
-  throws (`RESTIC_VERBS` and `resticArgv`, `babel/machine/restic.ts`), with a test that
-  pins the refusal of `forget`, `prune`, `repair` and `unlock`. A compromised `archive` could
-  write a snapshot and a compromised `verify` could read one; neither has a verb that removes one,
-  and a fifth destructive verb costs a deliberate edit to a named list and a failing test rather
-  than a moment's inattention.
+  throws (`RESTIC_VERBS` and `resticArgv`, `babel/machine/restic.ts`), with a test that pins the
+  refusal of `forget`, `prune`, `repair` and `unlock`. Every read verb is built with `--no-lock`,
+  `backup` is `archive`'s alone and `init` is called only by disposable test fixtures. A
+  compromised `archive` could write a snapshot and a compromised reader could read one; none has
+  a verb that removes one, and a destructive verb costs a deliberate edit to a named list and a
+  failing test rather than a moment's inattention.
 
 The residual here is the hub's own sandbox: Babel declares what it needs and the hub constructs the
 confinement. A defect in that construction is outside this document and inside Manifold's.
@@ -118,16 +128,17 @@ What Babel does own about that session is the **material**, and it is the one re
 side of the line (`SPEC.md` §2.6; `babel/machine/prepare.ts`):
 
 - A run reads `/inputs/material`, an immutable sealed selection bound read-only. It is not a live
-  view of the corpus: the bytes were fixed when the preparation was sealed, and a session still
-  being written is excluded outright, because a scope whose bytes move has no stable identity.
+  view of the corpus: its bytes are archived captures, each fixed by snapshot and path, so a scope
+  has a stable identity and a machine's local files are never read at all.
 - Babel's own run transcripts are excluded unless a preset asks for them, so Babel does not read
   itself by accident.
 - The selection is scanned for likely credentials before it is sealed, and a matched span is
   replaced by a marker naming its class and the locator of the original
   (`babel/machine/preflight.ts`). The scan is deterministic — patterns and an entropy
   heuristic, no model and no network — so the same bytes redact the same way on any machine, and
-  the locator resolves only against the log this machine holds. A preparation may refuse the
-  scope instead, and either way the receipt carries what was found by class and never by value.
+  the locator resolves only against the archived capture, by a job holding the archive binding. A
+  preparation may refuse the scope instead, and either way the receipt carries what was found by
+  class and never by value.
 - The index records, per session, the selector, the file and the digest it was served at. Every
   citation is checked against it, and a path the material does not name or a digest that does not
   match refuses the whole answer as `unknown-reference`. The check is a whitelist of the exact
@@ -139,7 +150,7 @@ side of the line (`SPEC.md` §2.6; `babel/machine/prepare.ts`):
   is recorded on the record's own evidence: at that line, elsewhere in that session, or nowhere
   in it. This one MARKS and does not refuse — it is an accuracy finding about real bytes rather
   than a claim about bytes nobody served — and the hub reads the cited member of the sealed
-  material back to make it, which is residual 9.
+  material back to make it, which is residual 10.
 
 The first of those two is the one worth stating as security rather than as correctness: a model
 cannot cite its way to a file it was not given, and it cannot quietly substitute different bytes
@@ -194,14 +205,16 @@ Most reachable first. A residual discovered in the system belongs in this list i
    so a credential a run copied into a claim would travel here as prose. What bounds it is the
    8 KiB cap and the expression that selects the text, both of which name fields rather than
    forwarding a payload.
-5. **The material is a second copy of sensitive bytes, and a restore is a third.** A preparation
-   seals real session logs into a job output lease, which is then bound into a session's sandbox.
-   The corpus's sensitivity travels with it, and a machine that may run `prepare` is a machine
-   that may read every session the selection names. A `verify` that restores a session writes
-   those bytes into the job's own cache location, and removes them when the comparison is made —
-   an operation killed in between leaves them until the job's state is reclaimed. A restore that
-   named a target meant to be kept is a copy the operator now owns, in the open, with none of the
-   repository's encryption around it.
+5. **The material is a second copy of sensitive bytes, a kept reading a third, and a restore a
+   fourth.** A preparation seals the redacted normalized stream of real session logs into a job
+   output lease, which is then bound into a session's sandbox, and keeps the same stream in the
+   machine's managed cache so a second preparation fetches nothing. The corpus's sensitivity
+   travels with both — redaction removes the credentials its rules recognize and nothing else —
+   and any job that holds the archive binding may read every archived session of every machine. A
+   `verify` that restores a session writes the raw bytes into the job's own cache location, and
+   removes them when the comparison is made — an operation killed in between leaves them until
+   the job's state is reclaimed. A restore that named a target meant to be kept is a copy the
+   operator now owns, in the open, with none of the repository's encryption around it.
 6. **A credential the scan does not recognize still travels.** The preflight is deterministic, so
    it catches what its rules describe and nothing else: a credential in a format no rule names, or
    one the entropy heuristic reads as prose, reaches the provider like any other bytes. The rule
@@ -211,16 +224,26 @@ Most reachable first. A residual discovered in the system belongs in this list i
 7. **The trust base is the hub, the machine and Code.** The hub constructs the job sandbox, holds
    the store and mints the service capability; the machine's owner binds `restic` and the native
    closure; Code confines the session. Babel audits none of the three and depends on all of them.
-8. **A shared kernel shares microarchitecture.** No claim is made against timing or
+8. **A defect in the code that parses the corpus would run with a route out.** `catalog` and
+   `prepare` hold host network because restic must reach the object store (§3), and `prepare` is
+   where the most hostile bytes are parsed. No model and nothing that interprets transcript text
+   runs there, so the path is a defect in Babel's parser or in restic, not persuasion; but such a
+   defect would hold the network, the corpus bytes in memory and the storage document — the
+   repository password, and the object-store key the deployment serves. What bounds it is the
+   job sandbox, a per-job capability rather than the upstream credential, and the key the
+   operator chooses to serve: a read-only one on a machine that only analyses limits it to
+   reading. A per-operation egress allowlist is the upstream hardening this asks for, and the
+   protocol does not offer one today.
+9. **A shared kernel shares microarchitecture.** No claim is made against timing or
    speculative-execution side channels, and none is implied.
-9. **Checking a quote puts corpus bytes in the hub's own memory.** Verifying that a citation's
-   quoted text is where it says it is cannot be done from an index — a digest covers a whole
-   file and says nothing about a span inside it — so the settlement reads the cited member of
-   the sealed material back through the hub. It is transient, bounded by the ceiling the hub
-   already reads every sealed output under, decoded only for the sessions a quote actually
-   names, and it happens only where an answer carried a quote. It is still one more place the
-   corpus exists, in a process that also holds the store, so it belongs here: residual 5 counts
-   the copies, and this is the fourth.
+10. **Checking a quote puts corpus bytes in the hub's own memory.** Verifying that a citation's
+    quoted text is where it says it is cannot be done from an index — a digest covers a whole
+    file and says nothing about a span inside it — so the settlement reads the cited member of
+    the sealed material back through the hub. It is transient, bounded by the ceiling the hub
+    already reads every sealed output under, decoded only for the sessions a quote actually
+    names, and it happens only where an answer carried a quote. It is still one more place the
+    corpus exists, in a process that also holds the store, so it belongs here: residual 5 counts
+    the copies, and this is the fifth.
 
 ## 6. What the operator is asked to accept, in one sentence each
 
@@ -229,7 +252,9 @@ Most reachable first. A residual discovered in the system belongs in this list i
   it.
 - Running `verify` means a job on that machine can read the whole repository, and can write a
   session restored out of it back onto that machine.
-- Enabling a machine for `prepare` means that machine can read every session the selection names.
+- Giving a machine the archive binding means a job on it can read every archived session of
+  every machine, and running `catalog` or `prepare` there means code that parses those
+  transcripts runs with host network and the storage document in memory.
 - Installing an embedding policy means every record's own prose reaches that provider once, and
   installing none means the corpus index answers by keyword and reaches nothing.
 - Running an analysis means accepting that a credential in a format the preflight's rules do not
@@ -242,8 +267,12 @@ Most reachable first. A residual discovered in the system belongs in this list i
 - **Babel launching a process that reaches a model.** The declaration boundary in §4 exists because
   it does not. A launcher of Babel's own puts the containment question back on this side of the
   line and requires a declared backend with measured properties.
-- **A machine operation gaining network, or write access to the corpus.** Both are manifest facts
-  today, and §3's table is the claim; either change rewrites it.
+- **A machine operation gaining write access to the corpus, a repository write other than
+  `archive`'s `backup`, or a read that takes a lock.** These are manifest and code facts today,
+  and §3's table and its properties are the claim; any of them rewrites it. So is the reason every
+  operation holds network — restic reaching the object store: an operation that used the network
+  for anything else is a different boundary, and a per-operation egress allowlist, once Manifold
+  offers one, narrows §3 and residual 8 rather than invalidating them.
 - **The server half reaching a second origin, or reaching one without a policy the operator
   installed.** §1's paragraph is the claim, and it is narrow on purpose: one service id, one
   operation, one module able to call it, one field on the wire, and no call at all where nothing
@@ -258,7 +287,7 @@ Most reachable first. A residual discovered in the system belongs in this list i
 - **A machine operation this table does not name**, or one whose secret arrives by any path other
   than the job's own service binding. The table is the claim operation by operation, so an
   operation added without a row here is one running with no stated boundary at all.
-- **Restored bytes reaching a path the sandbox does not bound.** The fourth property above rests
+- **Restored bytes reaching a path the sandbox does not bound.** §3's fifth property rests
   on every write going to a location the operation declares; a restore that escaped that — an
   absolute target the hub does not check, a write outside the job's own filesystem — is a
   different document.

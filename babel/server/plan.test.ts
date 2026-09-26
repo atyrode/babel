@@ -15,7 +15,7 @@
 import { expect, test } from "bun:test";
 import { JobLimitsSchema, PluginManifestSchema, type PluginManifest } from "@manifold/protocol";
 import type { GuestCtx, GuestHookJobs, GuestJobs } from "@manifold/plugin-kit/server";
-import { OPERATIONS, RECALL_SERVICE_ID, RESTIC_SERVICE } from "../contract.ts";
+import { OPERATIONS, PRESET_OPERATIONS, RECALL_SERVICE_ID, RESTIC_SERVICE } from "../contract.ts";
 import { PolicySchema } from "../store/coordinator.ts";
 import type { JobLaunch } from "./conductor.ts";
 import {
@@ -90,7 +90,7 @@ function manifestWith(operations: Record<string, unknown>): PluginManifest {
 }
 
 const MANIFEST = manifestWith({
-  [OPERATIONS.scan]: operation(["bun"], 600_000),
+  [PRESET_OPERATIONS["keep-going"]]: operation(["bun"], 600_000),
   [OPERATIONS.prepare]: operation(["bun"], 3_600_000),
 });
 
@@ -106,7 +106,9 @@ test("a plan carries the operation's own declared limits, and nothing a launcher
 
   expect(plan.limits.timeoutMs).toBe(3_600_000);
   // The beat is a cheaper operation and its own declaration is what bounds it.
-  expect(operationLimits(MANIFEST.machine ?? null, OPERATIONS.scan).timeoutMs).toBe(600_000);
+  expect(operationLimits(MANIFEST.machine ?? null, PRESET_OPERATIONS["keep-going"]).timeoutMs).toBe(
+    600_000,
+  );
   // A job's limits are compared key by key against the operation's, so an operation this
   // manifest does not declare falls back to what a refused request would have been judged by.
   expect(operationLimits(MANIFEST.machine ?? null, OPERATIONS.archive)).toEqual(DEFAULT_LIMITS);
@@ -132,7 +134,7 @@ test("the ceiling a bound is judged against is the manifest's, and it never ride
   // One number governs every lane, so it is the LOWEST declared: a bound honoured by one
   // operation and refused by another is not a bound.
   const mixed = manifestWith({
-    [OPERATIONS.scan]: operation(["bun"], 600_000, 16),
+    [PRESET_OPERATIONS["keep-going"]]: operation(["bun"], 600_000, 16),
     [OPERATIONS.prepare]: operation(["bun"], 3_600_000, 4),
   });
   expect(jobCeiling(mixed)).toBe(4);
@@ -176,7 +178,7 @@ test("every verb the boundary serves passes straight through, arrays and all", a
       return await Promise.resolve({
         jobId: "j1",
         machineId: "m",
-        operationId: "scan",
+        operationId: "catalog",
         state: "queued",
         result: null,
       });
@@ -197,7 +199,7 @@ test("every verb the boundary serves passes straight through, arrays and all", a
           revision: "pol_1",
           machineId: "m",
           pluginId: "atyrode.babel",
-          operationId: OPERATIONS.scan,
+          operationId: PRESET_OPERATIONS["keep-going"],
           installationRevision: "rev-7",
           artifactSha256: "a".repeat(64),
           firstNominalAt: 10,
@@ -217,7 +219,7 @@ test("every verb the boundary serves passes straight through, arrays and all", a
   const launch: JobLaunch = {
     jobId: "j1",
     machineId: "m",
-    operationId: OPERATIONS.scan,
+    operationId: PRESET_OPERATIONS["keep-going"],
     input: { input: "{}" },
     outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }],
   };
@@ -231,7 +233,12 @@ test("every verb the boundary serves passes straight through, arrays and all", a
     offlinePolicy: "coalesce-one",
   } as const;
   await jobs.execute(launch);
-  await jobs.cancel({ kind: "job", machineId: "m", operationId: OPERATIONS.scan, jobId: "j1" });
+  await jobs.cancel({
+    kind: "job",
+    machineId: "m",
+    operationId: PRESET_OPERATIONS["keep-going"],
+    jobId: "j1",
+  });
   await jobs.schedule({ ...launch, ...timing });
   await jobs.disableSchedule({ scheduleId: timing.scheduleId, revision: "pol_1" });
 
@@ -243,7 +250,7 @@ test("every verb the boundary serves passes straight through, arrays and all", a
   expect(calls[1]).toEqual({
     kind: "job",
     machineId: "m",
-    operationId: OPERATIONS.scan,
+    operationId: PRESET_OPERATIONS["keep-going"],
     jobId: "j1",
   });
   // A cadence is one request plus its timing, and the copy is made for it too: a beat this

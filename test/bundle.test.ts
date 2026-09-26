@@ -1,5 +1,4 @@
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { beforeAll, expect, test } from "bun:test";
 import { PluginBundleSchema, type PluginBundle } from "@manifold/protocol";
@@ -9,8 +8,12 @@ import {
   JEV_PLUGIN_ID,
   JOB_OUTPUT_FILES,
   OPERATIONS,
+  SessionRowSchema,
   WATCH_PLUGIN_ID,
+  type Receipt,
 } from "../babel/contract.ts";
+import { writeOmpSession } from "../babel/machine/test/fixtures.ts";
+import { syntheticArchive } from "../babel/machine/test/restic-fixture.ts";
 
 /*
   ONE BUNDLE PER MANIFEST, cut by `pack` — the artifact the release ships and
@@ -90,43 +93,68 @@ test("the machine half travels inside the baseline's bundle, under the hash its 
 });
 
 test("the packed machine half runs the argv its manifest declares", async () => {
-  // The member is only the machine half if it behaves as one. This is the guest invocation with
-  // the three guest paths swapped for temporary ones — the artifact bound at /job/artifact, the
-  // input document materialized at /inputs/input, the sealed lease at /outputs/outputs — so a
-  // bundle that carried another build, an argv naming an operation the dispatcher does not
-  // know, or a `--input` the half reads differently fails here rather than on a machine.
+  // The member is only the machine half if it behaves as one. This is the beat's own guest
+  // invocation, `catalog`, with the three guest paths swapped for temporary ones — the artifact
+  // bound at /job/artifact, the input document materialized at /inputs/input, the sealed lease
+  // at /outputs/outputs — against a synthetic archive reached through the storage service
+  // binding a job is handed. A bundle that carried another build, an argv naming an operation
+  // the dispatcher does not know, or a `--input` the half reads differently fails here rather
+  // than on a machine.
   const machine = bundles[BABEL_PLUGIN_ID]?.manifest.machine;
-  const work = mkdtempSync(join(tmpdir(), "babel-bundle-"));
-  const artifact = join(work, "artifact");
-  const input = join(work, "input");
-  const outputs = join(work, "outputs");
-  const roots = join(work, "roots");
-  await Bun.write(
-    artifact,
-    Buffer.from(bundles[BABEL_PLUGIN_ID]?.files["machine.js"] ?? "", "base64"),
-  );
-  await Bun.write(input, JSON.stringify({ machineId: "bundle-test", roots: [roots] }));
-  const argv = (machine?.operations[OPERATIONS.scan]?.argv ?? []).map((slot) => {
-    const literal = "literal" in slot ? slot.literal : "";
-    return literal === "/job/artifact"
-      ? artifact
-      : literal === "/inputs/input"
-        ? input
-        : literal === "/outputs/outputs"
-          ? outputs
-          : literal;
-  });
-  const run = Bun.spawnSync(["bun", ...argv], { cwd: work, stdout: "pipe", stderr: "pipe" });
-  expect(`${String(run.exitCode)} ${run.stderr.toString()}`).toBe("0 ");
-  const receipt = (await Bun.file(join(outputs, JOB_OUTPUT_FILES.receipt)).json()) as {
-    kind: string;
-    machineId: string;
-    closure: string;
-  };
-  // The receipt records the WORD the binary was invoked with, not the namespaced id the hub
-  // addressed the operation by: the receipt is the machine half's own account of what it ran.
-  expect(receipt).toMatchObject({ kind: "scan", machineId: "bundle-test", closure: "completed" });
-});
+  const fx = await syntheticArchive();
+  try {
+    const session = await writeOmpSession(fx.sessionRoot("omp"), {
+      project: "-home-alex-babel",
+      stem: "2026-09-25T00-00-00-000Z_bund",
+    });
+    const snapshot = await fx.snapshot("bundle-label", [fx.sessionRoot("omp")]);
+    const work = join(fx.home, "job");
+    await mkdir(work);
+    const artifact = join(work, "artifact");
+    const input = join(work, "input");
+    const outputs = join(work, "outputs");
+    await Bun.write(
+      artifact,
+      Buffer.from(bundles[BABEL_PLUGIN_ID]?.files["machine.js"] ?? "", "base64"),
+    );
+    await Bun.write(input, JSON.stringify({ machineId: "bundle-test" }));
+    const argv = (machine?.operations[OPERATIONS.catalog]?.argv ?? []).map((slot) => {
+      const literal = "literal" in slot ? slot.literal : "";
+      return literal === "/job/artifact"
+        ? artifact
+        : literal === "/inputs/input"
+          ? input
+          : literal === "/outputs/outputs"
+            ? outputs
+            : literal;
+    });
+    // Asynchronous, because the storage service answers from this very process.
+    const child = Bun.spawn(["bun", ...argv], {
+      cwd: work,
+      env: { ...fx.env, PATH: process.env["PATH"] ?? "", BABEL_RESTIC_BINDING: fx.credentialFile },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect(`${String(code)} ${stderr}`).toBe("0 ");
+    const receipt = (await Bun.file(join(outputs, JOB_OUTPUT_FILES.receipt)).json()) as Receipt;
+    // The receipt records the WORD the binary was invoked with, not the namespaced id the hub
+    // addressed the operation by: the receipt is the machine half's own account of what it ran.
+    expect(receipt).toMatchObject({
+      kind: "catalog",
+      machineId: "bundle-test",
+      closure: "completed",
+    });
+    const rows = (
+      (await Bun.file(join(outputs, JOB_OUTPUT_FILES.sessions)).json()) as unknown[]
+    ).map((row) => SessionRowSchema.parse(row));
+    expect(
+      rows.map((row) => [row.archive_label, row.snapshot_id, row.archive_path, row.size]),
+    ).toEqual([["bundle-label", snapshot.id, session, Bun.file(session).size]]);
+  } finally {
+    await fx.close();
+  }
+}, 120_000);
 
 test("a web half is built against the shell's own floor, not its own copy", () => {
   // Only a bundle that HAS a browser half records what it was built against: `pack` rewrites

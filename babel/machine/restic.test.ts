@@ -148,8 +148,17 @@ test("the verbs restic may be asked for are a closed set, and no destructive one
     expect((refused as ResticError).kind).toBe("refused");
     expect((refused as ResticError).message).toContain(verb);
   }
+});
 
-  expect(resticArgv("check", ["--read-data"])).toEqual(["check", "--read-data"]);
+test("every read runs without a lock, and only the two writes take one", () => {
+  // A killed read must leave nothing behind in the repository, and an analysis must work with a
+  // read-only credential; `backup` is the collector's write and keeps restic's ordinary lock.
+  for (const verb of ["cat", "snapshots", "check", "ls", "dump", "restore"]) {
+    expect(resticArgv(verb, ["--json"])).toEqual([verb, "--no-lock", "--json"]);
+  }
+  for (const verb of ["init", "backup"]) {
+    expect(resticArgv(verb, ["--json"])).toEqual([verb, "--json"]);
+  }
 });
 
 test("a snapshot or a path that could be read as a flag is refused before restic is reached", async () => {

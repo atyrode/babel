@@ -54,10 +54,12 @@ incomplete interpretations for human review.
 
 ### 2.1 Babel owns
 
-- archival orchestration: source roots, snapshot cadence, stable host identity, tags, and the
-  never-delete retention policy;
-- read-only ingestion of session logs, in place, in the format the harness wrote them;
-- the session catalog: what exists, where, how large, what it cost, and which snapshot holds it;
+- the archive contract — which session roots a capture covers, the `babel` tag, one stable host
+  label per machine and the never-delete retention policy — and the `archive` job that collects
+  under it (§2.3, §6.1);
+- read-only ingestion of archived captures, in the format the harness wrote them;
+- the session catalog: what the archive holds, which snapshot and path hold each session, and
+  what a reading of it found;
 - the analysis cookbook: the methods a run performs, versioned, with a claim citing the method it
   used;
 - the prompt a run is given, and the contract its answer must satisfy;
@@ -85,6 +87,17 @@ the repository password and object-store credential reach it as one storage docu
 through Manifold's service binding for the job that needs it. Babel ships no substitute and
 prescribes no vault tool. Dotfiles does not author Babel's contract.
 
+Collection happens on the machine that holds the sessions. Babel's `archive` job reads that
+machine's session roots through four read-only operator anchors — `operator.omp-sessions`,
+`operator.omp-blobs`, `operator.codex-home` and `operator.claude-home` — which dotfiles declares
+to Manifold in that machine's configuration (atyrode/manifold#839); a machine that declares none
+cannot run `archive`, and nothing in the operator's home besides those four trees is exposed. The
+host label its captures carry is the machine's registry name, which the hub's owner names in the
+job's input when he posts or schedules it. Until a machine's anchors are active and `archive` has
+proved parity there, the collector dotfiles schedules keeps backing that machine up under the
+same contract and the same label (§6.1). Reading the archive back happens on any enrolled machine
+that holds the archive binding (§3).
+
 ### 2.4 Primary interaction model
 
 Babel is used through two Manifold panels: **Feed**, the front page and every record, and
@@ -100,10 +113,11 @@ agent: it produces the material and the operator continues the conversation.
 ### 2.6 Analysis execution boundary
 
 A run reads a **material**: an immutable, sealed selection of session logs, prepared by the
-`prepare` job and bound into the session's sandbox read-only. The material's index records, per
-session, the selector Babel filed it under, the file it occupies and the digest it was served at.
-Every citation a run makes is checked against that index: a path the material does not name, or a
-digest that does not match, refuses the whole answer as `unknown-reference`.
+`prepare` job from archived captures and bound into the session's sandbox read-only. The
+material's index records, per session, the selector Babel filed it under, the file it occupies
+and the digest it was served at. Every citation a run makes is checked against that index: a
+path the material does not name, or a digest that does not match, refuses the whole answer as
+`unknown-reference`.
 
 A run holds no credential, reaches no network of Babel's, and mutates nothing. It reads the
 material, answers in one fenced block, and the session ends.
@@ -151,7 +165,10 @@ posts treat transcript text only as quoted evidence, never as instructions.
 
 The archive can contain secrets, private source code, personal data and attachments. Therefore:
 
-1. ingestion happens locally, on the machine that holds the sessions;
+1. collection happens on the machine that holds the sessions, while preparation and analysis
+   read the fleet archive — exactly the captures selected, by snapshot and path — from any
+   enrolled machine that holds the archive binding, never a machine's local session files; and
+   the model sees only the redacted material a preparation sealed;
 2. the material a run reads is a bounded selection recorded on the run row, not the corpus;
 3. a run's model and account are the Code profile the operator chose, and the choice is his;
 4. logs never contain raw transcript bodies or credentials; and
@@ -164,8 +181,10 @@ transcripts, titles, paths, catalogs, credentials and analysis outputs are never
 runs inside the pass that digests and seals, so what the source digest covers is what a model
 reads. A likely-secret span is replaced by a marker naming its class and its position, never a
 digest of the value — a commitment to a secret is a thing about the secret, and it would travel to
-the provider along with everything else. The bytes stay on the machine that prepared them, and the
-marker's locator resolves there and nowhere else. A refusal names what was found by class and
+the provider along with everything else. The unredacted bytes stay in the archive: a preparation
+streams a capture from restic straight into the scan and never writes the captured bytes to
+disk, and the marker's locator resolves only against that capture, by a job holding the archive
+binding — never on the hub and never in a session. A refusal names what was found by class and
 never by value, and the receipt carries the report on every preparation including an unscanned
 one, because an absent field must not read as clean. What the rule table does not recognize still
 travels: the boundary is a named list of formats, and `docs/sandbox-threat-model.md` §5 states the
@@ -328,7 +347,8 @@ Babel's field is a data lake it points at rather than copies. A **subject** is a
 locator that Babel can observe at a pinned state; the archive is one subject kind rather than the
 field. Four acquisition kinds:
 
-- **held** — the archive: immutable copies Babel made (§6.1), addressed by snapshot;
+- **held** — the archive: immutable captures of each machine's session roots, made under Babel's
+  archive contract (§6.1) and addressed by snapshot and path;
 - **pointed** — a locator observed at a pinned fingerprint at run time: the operator's
   repositories first, and anything else with a locator once its observer, fingerprint and
   disclosure story are defined;
@@ -361,19 +381,20 @@ delimited and labelled as archived data rather than instruction.
 **Recall is not built. Its two underlying corpora now have distinct retrieval paths.** Babel's
 own records are indexed and retrievable — keyword and meaning, fused, behind the `search` door.
 The existing `prepare` machine operation also accepts an optional lexical
-`query: { text, limit }` over this machine's eligible session content. It searches a local,
-contentless FTS5 index of the normalized redacted stream, then seals the selected sessions through
-the ordinary preparation path. It records their exact selectors and digests in the material
-index; it does not return Recall locators or excerpts.
+`query: { text, limit }` over the eligible archived captures the hub offered it. It searches a
+contentless FTS5 index of the normalized redacted stream, kept in the preparing machine's
+managed cache, then seals the selected sessions through the ordinary preparation path. It
+records their exact selectors and digests in the material index; it does not return Recall
+locators or excerpts.
 
-The query cannot accompany explicit selectors. Its text is at most 512 characters, interpreted
-as literal terms with OR semantics, not as FTS syntax; its session limit defaults to 24 and cannot
-exceed 120. Matching sessions are ordered by their best matching passage, with selector ties,
-within the existing 448 MiB observed-source-byte bound. Zero matches skip rather than broaden the
-scope. The receipt's `retrieval` reports coverage, reuse, matches and byte-bound exclusions; busy
-or unavailable coverage refuses the query rather than substituting recency. `matches: null`
-means the query was not run. The receipt identifies the normalized literal-term query by its
-SHA-256 digest and limit, never by copying the search text.
+The query ranks only the captures it was offered and never adds one. Its text is at most 512
+characters, interpreted as literal terms with OR semantics, not as FTS syntax; its session limit
+defaults to 24 and cannot exceed 120. Matching sessions are ordered by their best matching
+passage, with selector ties, within the existing 448 MiB observed-source-byte bound. Zero matches
+skip rather than broaden the scope. The receipt's `retrieval` reports coverage, reuse, matches
+and byte-bound exclusions; busy or unavailable coverage refuses the query rather than
+substituting recency. `matches: null` means the query was not run. The receipt identifies the
+normalized literal-term query by its SHA-256 digest and limit, never by copying the search text.
 
 Preparation normalization is schema 3: a newline or 4,194,304 UTF-16 code units, whichever comes
 first, ends a source record; a Unicode surrogate pair crossing that bound starts the next piece
@@ -805,78 +826,112 @@ recorded with each assignment so a selection can be replayed against its capture
 
 ## 6. Processing pipeline
 
-### 6.1 Archive publication
+### 6.1 Archive publication and reading
 
-The `archive` job backs this machine's session roots up with restic into one repository under the
-machine's stable host identity, tagged `babel`, and writes back the one fact the catalog cannot
-learn otherwise: which snapshot holds each session, and when.
+Each machine's session roots are backed up with restic into one repository. Babel owns the
+contract a capture is made under: every snapshot is tagged `babel` and attributed to the
+machine's stable host label; a snapshot covers whole session roots, closure included (§6.8);
+nothing is ever forgotten or pruned; and the repository is created once, by hand, for the
+deployment, because silent creation turns a mistyped locator into a second empty archive that
+grows while the real one appears to stop, and two concurrent creations corrupt. One snapshot per
+root is preferred — restic picks a parent by matching host and path set, so a machine that gains
+a harness would, with one combined snapshot, find no parent and re-read every byte, and per-root
+snapshots let one unreadable root fail without taking the others with it — and the catalog reads
+either shape.
 
-One snapshot per root, not one for all of them: restic picks a parent by matching host and path
-set, so a machine that gains a harness would, with one combined snapshot, find no parent and
-re-read every byte. Per-root snapshots keep each root's parent chain stable, let one unreadable
-root fail without taking the others with it, and make restoring one harness's sessions a restore of
-one snapshot.
-
-The repository and the secrets that open it come from the job's own service binding and nowhere
-else. The job never creates a repository: a repository is created once, by hand, for the
-deployment, because silent creation turns a mistyped locator into a second empty archive that grows
-while the real one appears to stop, and two concurrent creations corrupt.
+The collector runs on the machine that holds the sessions (§2.3). Babel's `archive` job reads
+them through the machine's read-only operator anchors — OMP's sessions and the blobs they
+reference, and the Codex and Claude Code homes — mounted where the adapters look under the job's
+own home, backs each root up in a snapshot of its own and never creates a repository. OMP's
+collaboration directory is not mounted yet: a location a machine lacks makes the whole job
+unavailable there. The job files its snapshots under the host label its input names, which is
+the machine's one stable label — the one any other collector of that machine has used, `dev-01`
+for dev-01 — so one `archive_labels` row maps every capture of the machine (§6.2). The label is
+the input's rather than the storage document's: that document is custody, may serve the whole
+fleet, and is read by operations that label nothing. A shared label is not a shared restic
+chain, since restic matches a parent by host and path set and a job's paths are its own, so the
+first snapshot of each root reads it whole once and stores only what the repository lacks. Until
+a machine's anchors are active, the collector dotfiles schedules does the same work under the
+same contract. The `archive` job's `backup` is the only write any Babel operation makes to the
+repository.
 
 Captures are crash-consistent per file, not transactional across files. Session logs are
 append-mostly, so a capture taken mid-write yields a prefix plus at most a torn final line; readers
 tolerate that and the next snapshot supersedes it.
 
-Retention is append-only, and the absence is enforced rather than incidental: the verbs restic may
-be asked for are a closed set of eight, every invocation is built by the one function that admits a
-verb or throws, and `forget`, `prune`, `repair` and `unlock` are not among them. Adding a ninth is
-a reviewable line in a named list, not a reachable call.
+**Everything else only reads, and takes no lock.** Retention is append-only, and the absence is
+enforced rather than incidental: the verbs restic may be asked for are a closed set of eight,
+every invocation is built by the one function that admits a verb or throws, and `forget`,
+`prune`, `repair` and `unlock` are not among them. Adding a ninth is a reviewable line in a named
+list, not a reachable call. Of the eight, `backup` is the `archive` job's and `init` is called
+only by disposable test fixtures; the six reads — `cat`, `snapshots`, `ls`, `dump`, `restore` and
+`check` — run without taking a lock, so a catalog, a preparation or a verification leaves nothing
+behind in the repository, not even a lock, and needs no write access to it. The repository and
+the secrets that open it come from the job's own service binding and nowhere else.
 
 **Babel reads the archive back.** The `verify` operation runs `restic check` — structurally, or
-over every stored byte — and restores one catalogued session from a named snapshot, comparing what
-comes back against the digest the catalog recorded. It takes the snapshot and the digest out of
-`sessions` rather than out of a caller's request, so a verification cannot be aimed at something
-the deployment never archived. Restoring by hand against the repository remains the path when
-there is no hub, when the session is not catalogued, or when a whole snapshot is wanted:
-`docs/runbook.md` §2 owns both, and archive recovery depends on neither the catalog nor Babel.
+over every stored byte — and restores one catalogued session from its catalogued snapshot and
+path, comparing what comes back against the digest the catalog recorded. It takes the snapshot,
+the path and the digest out of `sessions` rather than out of a caller's request, so a
+verification cannot be aimed at something the deployment never archived. Restoring by hand
+against the repository remains the path when there is no hub, when the session is not
+catalogued, or when a whole snapshot is wanted: `docs/runbook.md` §2 owns both, and archive
+recovery depends on neither the catalog nor Babel.
 
 ### 6.2 Catalog
 
-The `scan` job discovers and describes this machine's sessions in place — title, workspace,
-timestamps, repository fingerprint, completeness reasons, size, cost, turns, tool errors — and
-writes one row per session. It reads the live files and never writes into them. The catalog is
-rebuildable convenience state, never archive truth.
+The `catalog` job lists what the archive holds — the snapshots tagged `babel`, and in each the
+primary logs the adapters claim — and writes one row per session naming the newest capture that
+holds it: the snapshot, the path inside it, the host label, and the size and modification time
+restic recorded. It opens no transcript to do so. The tag is matched exactly, so the hub store's
+own backup, tagged `babel-store` in the same repository, is never catalogued. It is the
+conductor's beat: each run lists a bounded number of snapshots it has not listed before, the
+newest of each chain first, so the chain heads give a fresh hub every current session before
+older snapshots add the sessions their machine has since deleted.
+
+A host label maps to a hub machine id only where the operator has recorded that mapping
+(`rehostSessions`, §8.1); an unmapped label is kept verbatim, because the hub resolves no names,
+and its sessions are selected and prepared like any other. A row keeps its capture while newer
+snapshots hold the same observation, so a reading of it stays reusable; a changed observation
+moves the row to the newer capture and clears what was read of the old one. What a capture says
+— title, workspace, usage — is filled the first time a preparation reads it. The catalog is
+rebuildable convenience state, never archive truth: listing the repository again reproduces it.
 
 ### 6.3 Ingest and normalize
 
-The `prepare` job parses the selected sessions into one canonical record per line — object keys
-ordered, insignificant whitespace gone — with an explicit opaque marker for a line that is not a
-record, so nothing is ever dropped. It seals the result as the run's material, with an index naming
-each session's selector, its file, and the digest it was served at. Unknown or partial Codex and
-Claude structures degrade explicitly rather than being discarded.
+The `prepare` job streams exactly the captures the hub selected, each by snapshot and path, out
+of the archive and parses them into one canonical record per line — object keys ordered,
+insignificant whitespace gone — with an explicit opaque marker for a line that is not a record,
+so nothing is ever dropped. It seals the result as the run's material, with an index naming each
+session's selector, its file, the capture it was read from and the digest it was served at.
+Unknown or partial Codex and Claude structures degrade explicitly rather than being discarded. A
+preparation never falls back to a machine's local files: an archive that cannot be opened, a
+capture its snapshot does not hold, a fetch that is not the catalogued size, or a material that
+would not fit the machine's named-output storage refuses the preparation whole, and the last is
+refused before anything is fetched.
 
 A queried preparation maintains its session term index in the already-managed preparation cache.
-It excludes live logs and known own-run paths before opening their content, including on first
-sight; `agentSessions` may opt in own runs but never bypasses the live check. A matching cached
-reading is verified while it is indexed, otherwise the existing normalized/redacted pass supplies
-both the reading cache and term index. Unchanged indexed observations need only metadata checks
-before retrieval; selected material still replays and verifies its kept stream. Switching the
-requested material's preflight mode may require rereading selected sources, never indexing an
-unredacted stream. Already-redacted records that are no longer parseable JSON remain searchable
-as opaque text, not a reason to lose that session or refuse all content retrieval.
+It excludes known own-run paths before opening their content; `agentSessions` may opt them in. A
+matching cached reading is verified while it is indexed, otherwise the existing
+normalized/redacted pass supplies both the reading cache and term index. An indexed capture needs
+no fetch before retrieval; selected material still replays and verifies its kept stream.
+Switching the requested material's preflight mode may require rereading selected sources, never
+indexing an unredacted stream. Already-redacted records that are no longer parseable JSON remain
+searchable as opaque text, not a reason to lose that session or refuse all content retrieval.
 
 One bounded SQLite write transaction publishes each session's replacement terms. Concurrent
 builders recheck coverage under the lock; a loser reuses the winner or reports bounded contention,
 never treats a lock as corruption or deletes the database. Failed or changing reads roll back,
-and source observations are checked again before selection and before and after sealing.
-Unavailable coverage refuses the queried preparation whole. Ordinary selector preparations do
-not open the index and remain independent of its locks.
+and a fetched capture must be exactly the size the catalog recorded. Unavailable coverage refuses
+the queried preparation whole. Ordinary preparations do not open the index and remain
+independent of its locks.
 
 **A preparation is content-addressed.** Its identity is a function of the selection it holds and
-not of the run that asked for it, so the same sessions selected twice name the same preparation
-rather than two copies of it, and a citation resolves against bytes any later reader recovers
-whole. Preparing is still a pass per job — nothing recognizes that another job has already
-prepared the same scope (§6.4) — so content addressing buys identity and comparability, not a
-skipped pass.
+not of the run that asked for it or the machine that prepared it, so the same captures selected
+twice name the same preparation rather than two copies of it, and a citation resolves against
+bytes any later reader recovers whole. Preparing is still a pass per job — nothing recognizes
+that another job has already prepared the same scope (§6.4) — so content addressing buys
+identity and comparability, not a skipped pass.
 
 #### 6.3.1 Recall: archived evidence for an outside agent
 
@@ -1040,14 +1095,14 @@ and path makes the corpus useless and gets switched off, which is worse than not
 Two of the three remaining checks are not built: nothing checks a session for truncation, and
 nothing bounds a transcript by size.
 
-**What is recognized is the session, not the scope.** A machine keeps its reading of each settled
-log — both digests and the normalized, scanned record stream — keyed on the observation it was
-taken from, so a second preparation over an unchanged scope re-seals its material without
-re-reading the corpus. The kept stream is re-hashed as it is replayed, so the source digest a
-citation carries is always a digest of the bytes that were sealed rather than one remembered from
-an earlier pass. A log that could still be moving is never kept, because it is never in a scope
-(§6.2). Recognizing that another job already prepared the same scope is a different and unbuilt
-thing (§6.3).
+**What is recognized is the session, not the scope.** A machine keeps its reading of each
+capture — both digests and the normalized, scanned record stream — keyed on the capture it was
+read from (snapshot, path, size and modification time), so a second preparation over an
+unchanged scope re-seals its material without fetching the archive again. The kept stream is
+re-hashed as it is replayed, so the source digest a citation carries is always a digest of the
+bytes that were sealed rather than one remembered from an earlier pass. A capture never moves, so
+every reading is keepable. Recognizing that another job already prepared the same scope is a
+different and unbuilt thing (§6.3).
 
 ### 6.5 Explore through Code
 
@@ -1108,10 +1163,10 @@ primary log is written in, declared in one place, and a harness whose language B
 joins by registering that pair.
 
 The original bytes are retained verbatim, and they are what backup preserves. The forward
-transformation is neither destructive nor authoritative: adapters read live files in place, restic
-snapshots them as the harness wrote them, and the canonical model is recomputable by rescanning the
-same bytes. That is why the parse is versioned — a better reading of an undocumented format is a
-rescan, not a migration of stored derivatives.
+transformation is neither destructive nor authoritative: the collector snapshots the harness's
+files as it wrote them, adapters read those captures, and the canonical model is recomputable by
+re-reading the same capture. That is why the parse is versioned — a better reading of an
+undocumented format is a re-read, not a migration of stored derivatives.
 
 Rehydration reads the retained original bytes and uses the canonical model only to locate records
 within them. It never synthesizes a harness log from the canonical model alone, and that is a
@@ -1123,7 +1178,9 @@ silently. **Reverse transformers are specified and not built.**
 ## 7. Incremental behavior
 
 When nobody pressed anything, the conductor decides what deserves a run. It wakes on the hub's
-cadence, and every cycle is an ordinary run carrying an authority the receipt records.
+cadence — its beat is a scheduled `catalog` job (§6.2) on the machine the policy names for its
+work, so every beat also brings the hub's view of the archive up to date — and every cycle is an
+ordinary run carrying an authority the receipt records.
 
 A cycle draws against ceilings rather than a wish: a per-cycle cost, a daily cost, and a bound on
 how many jobs one machine may hold at once. The bound is per machine, because a deployment-wide
@@ -1140,9 +1197,10 @@ machine unavailable. Those reasons are counted and readable, because a loop that
 and said nothing is indistinguishable from one that is broken.
 
 Session retrieval is incremental per observed source, not per review. Its cache identity includes
-the canonical session identity, path, size, modification time, normalization schema and detector
-set. Unknown modification times prove no reusable coverage. This index is local convenience
-state; it neither changes archive truth nor adds an automatic corpus-read duty to the conductor.
+the canonical session identity, path, size, modification time, archive capture, normalization
+schema and detector set. Unknown modification times prove no reusable coverage. This index is
+local convenience state; it neither changes archive truth nor adds an automatic corpus-read duty
+to the conductor.
 
 Every run records:
 
@@ -1218,7 +1276,8 @@ Every act and every read is a door, named once in the plugin's contract. Reading
 `record`, `thread`, `topics`, `topic`, `pulse`, `runs`, `run`, `policy`. The operator's acts:
 `rule`, `comment`, `answer`, `interest`, `file`, `unfile`, `tell`, `setPolicy`, `setBudget`,
 `clearBudget`. Running: `launch`, `stop`, `profiles`, `drainStart`, `drainStatus`, `drainStop`.
-The crossing, owner only: `importLedger`, `rehostSessions`.
+The crossing, owner only: `importLedger`, `rehostSessions`. `rehostSessions` also records what an
+archive host label means: the machine its later captures are catalogued under (§6.2).
 
 A door's result shape is spelled once, and a field a door does not spell is refused rather than
 passed through. That is what keeps a panel from rendering something no contract promised.
@@ -1226,9 +1285,9 @@ passed through. That is what keeps a panel from rendering something no contract 
 ### 8.3 Watch: runs, spend, and what Babel is set to do
 
 Watch is the observatory: what is running now with its progress, what finished and what it cost,
-the day's cycles and the reasons they did not spend, the machines and what they can run, the
-standing policy with its ceilings and any budget overlay, the recipes the hub holds, and the
-drains. It is where a run is started and stopped.
+the day's cycles and the reasons they did not spend, the archive host labels no machine is mapped
+to, the machines and what they can run, the standing policy with its ceilings and any budget
+overlay, the recipes the hub holds, and the drains. It is where a run is started and stopped.
 
 ### 8.4 Stored data, stateless workers, and one interaction surface
 
@@ -1256,7 +1315,7 @@ across immutable revisions and support paths is retained for each harness/source
 the latest among distinct sources can renew attention. Repeated runs, changed digests and copied
 edges do not make the same source new. Retained preparation material may resolve a missing
 catalog selector only when its identity is unambiguous. Agent-classified sources are excluded.
-Missing or unusable history stays unknown rather than borrowing an import, scan or preparation
+Missing or unusable history stays unknown rather than borrowing an import, catalog or preparation
 timestamp. A later graph repair dates a self-declared correction from its original record,
 not the repair sweep.
 
@@ -1401,7 +1460,9 @@ outcome is known, even if the lease expires.
 Invariants:
 
 - local source sessions are never modified;
-- archived snapshots are never deleted by any path;
+- archived snapshots are never deleted by any path, and no Babel operation but the `archive`
+  job's `backup` writes to the repository;
+- analysis reads archived captures, never a machine's local session files;
 - every row carries a schema version and provenance;
 - a record is never edited; a correction supersedes;
 - a run may write records, edges, statuses and questions, and may not write a ruling;
@@ -1435,9 +1496,13 @@ operator, by hand.
   readers tolerate torn lines and the next snapshot supersedes it.
 - An interrupted backup publishes no partial snapshot; a re-run uploads only chunks the repository
   does not already hold.
-- A backup against a missing repository fails and says so rather than creating one; a repository
-  that exists but does not open reports that instead, because initializing over it would answer a
-  credential problem destructively.
+- A backup or a reading against a missing repository fails and says so, and Babel never creates
+  one; a repository that exists but does not open reports that instead, because initializing
+  over it would answer a credential problem destructively.
+- An archive that cannot be reached refuses a preparation or a catalog run whole; nothing falls
+  back to a machine's local files.
+- A material that would not fit the preparing machine's named-output storage is refused before
+  anything is fetched, naming both figures.
 - Unsupported or changed Codex and Claude formats preserve raw logs and mark metadata incomplete.
 - A session that sealed no transcript submitted nothing: it settles at zero with the closure the
   job itself reported, and is counted as skipped rather than failed, because a streak of operator

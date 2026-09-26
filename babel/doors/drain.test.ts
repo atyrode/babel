@@ -14,13 +14,16 @@
 */
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { PluginManifestSchema } from "@manifold/protocol";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
   DrainReportSchema,
+  MATERIAL_HEADROOM_BYTES,
   MATERIAL_SCHEMA,
   OPERATIONS,
   PRESET_OPERATIONS,
+  PrepareInputSchema,
   type ProfileRow,
 } from "../contract.ts";
 import { actionSchemas, type ActionInput } from "@atyrode/manifold-code";
@@ -33,11 +36,12 @@ import type {
   RunPlan,
 } from "../server/conductor.ts";
 import { drainTick, type DrainDeps, type DrainLaunch } from "../server/drain.ts";
-import type { BabelJobs } from "../server/plan.ts";
+import { runPlan, type BabelJobs } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { drainReportId, readDrain, readDrainReport } from "../store/drains.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
+import manifestJson from "../manifest.json";
 import type { Door } from "./door.ts";
 import { drainDoors } from "./drain.ts";
 import { hubRefusal, launchMachinery, type LaunchIdentity, type Started } from "./launch.ts";
@@ -147,7 +151,7 @@ const PLAN: RunPlan = { metered: { [OPERATIONS.explore]: true }, limits: LIMITS 
 const READY: MachineReadiness = {
   connected: true,
   operations: {
-    [OPERATIONS.scan]: { ready: true, reason: null },
+    [PRESET_OPERATIONS["keep-going"]]: { ready: true, reason: null },
     [OPERATIONS.explore]: { ready: true, reason: null },
     [OPERATIONS.evaluate]: { ready: true, reason: null },
   },
@@ -477,6 +481,7 @@ beforeEach(async () => {
     }),
     recorded_at: stamp(NOW - HOUR),
   });
+  // Archived captures, which is all a preparation reads (#453).
   for (const n of [1, 2, 3, 4, 5]) {
     await insert(db, "sessions", {
       selector: `omp/s${String(n)}`,
@@ -484,7 +489,12 @@ beforeEach(async () => {
       harness: "omp",
       source_id: `s${String(n)}`,
       title: `session ${String(n)}`,
-      content_digest: `d${String(n)}`,
+      archive_label: "dev-01",
+      archive_path: `/home/alex/.omp/agent/sessions/s${String(n)}.jsonl`,
+      snapshot_id: "5".repeat(64),
+      archived_at: new Date(NOW - HOUR).toISOString(),
+      size: 1000,
+      modified_at: new Date(NOW - 2 * HOUR).toISOString(),
       seen_at: stamp(NOW - 2 * HOUR),
     });
   }
@@ -539,24 +549,25 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
   // `machines:run` at the explore operation: the host discharges that before the handler runs
   // and no installation declares the operation, so the dispatch was refused "explicit
   // version-bound consent required" and the operator never heard `engine_pending`. The governed
-  // requirement returns with Code's node. What it does carry is the machine read its own first
-  // fan makes: `startExplore`/`startBeat` describe the machine through `ready` before posting,
-  // and a describe outside the door's ceiling is refused `job_capability_absent:machines:read`
-  // before any slot is filled.
+  // requirement returns with Code's node. What it does carry is what its own first fan needs:
+  // `startExplore`/`startBeat` describe the machine through `ready` before posting, and then post
+  // Babel's own `prepare` or `catalog` — a describe outside the door's ceiling is refused
+  // `job_capability_absent:machines:read`, and a posting outside it `authority_or_consent_refused`
+  // at `execute` (#448), before any slot is filled.
   expect(begin?.action.caps).toEqual(["containers:read"]);
   expect(begin?.action.requirements).toBeUndefined();
-  expect(begin?.action.delegates).toEqual(["machines:read"]);
+  expect(begin?.action.delegates).toEqual(["machines:read", "machines:run"]);
 
   // The dry read asks no machine anything ITSELF, so it carries no governed capability and no
   // target — the panel polls it every five seconds while the operator watches. It DOES delegate
-  // `jobs:read` and `machines:read`, because a cycle follows it (`server.ts`'s `WAKES`) and the
-  // dispatcher attenuates `ctx.jobs` to what the door declared: without the first that cycle can
-  // read back no job, nothing settles and the `run_progress` fold this wake exists for never
-  // happens; without the second it can describe no machine and the loop's beat is never
-  // registered on one.
+  // `jobs:read`, `machines:read` and `machines:run`, because a cycle follows it (`server.ts`'s
+  // `WAKES`) and the dispatcher attenuates `ctx.jobs` to what the door declared: without the first
+  // that cycle can read back no job, nothing settles and the `run_progress` fold this wake exists
+  // for never happens; without the second it can describe no machine and the loop's beat is never
+  // registered on one; without the third it relaunches no settled slot (#448).
   expect(read?.action.caps).toEqual(["containers:read"]);
   expect(read?.action.requirements).toBeUndefined();
-  expect(read?.action.delegates).toEqual(["jobs:read", "machines:read"]);
+  expect(read?.action.delegates).toEqual(["jobs:read", "machines:read", "machines:run"]);
 
   // A stop closes this plugin's own row and reaches its jobs through its OWN ceiling. It
   // asked `jobs:cancel` at the operation they share, and that operation is one no
@@ -1263,6 +1274,38 @@ async function sealDrainJob(drainId: string, ordinal: number): Promise<void> {
   );
 }
 
+test("a drain bounds each material to its fan's share of the machine's measured scratch", async () => {
+  // The machine's newest receipt measured room for 5000 catalogued bytes past the headroom: one
+  // material alone would hold all five 1000-byte captures, and a fan of two holds two apiece.
+  await insert(harness.db, "runs", {
+    id: "run_catalog_earlier",
+    kind: PRESET_OPERATIONS["keep-going"],
+    machine_id: MACHINE,
+    job_id: "job_catalog_earlier",
+    started_at: stamp(NOW - HOUR),
+    finished_at: stamp(NOW - HOUR),
+    closure: "completed",
+    records: 0,
+    payload: JSON.stringify({
+      closure: "completed",
+      outputCapacity: { bytes: MATERIAL_HEADROOM_BYTES + 5000, free: 0 },
+    }),
+  });
+  realLaunch();
+  const handed = (job: JobLaunch | undefined): number =>
+    PrepareInputSchema.parse(JSON.parse(String(job?.input["input"]))).captures.flatMap(
+      (group) => group.sessions,
+    ).length;
+
+  // The door's own first fan…
+  const drainId = String((await start({ concurrent: 2 }))["drainId"]);
+  expect(fleet.executed.map(handed)).toEqual([2, 2]);
+  // …and the fan a later tick refills.
+  await harness.db.run(`UPDATE drains SET live = '[]' WHERE id = ?`, [drainId]);
+  await drainTick(deps);
+  expect(fleet.executed.map(handed)).toEqual([2, 2, 2, 2]);
+});
+
 test("a bounded fan recovers a lost admission write without buying a third Code job", async () => {
   const machinery = realLaunch();
   const inferenceLimits = { calls: 2, costMicros: 50_000 };
@@ -1318,6 +1361,37 @@ test("a later wake replays reviewed limits and stops refilling at the cumulative
   expect(code.posted).toHaveLength(2);
   expect(fleet.executed).toHaveLength(2);
   expect(code.cancelled).toEqual([]);
+});
+
+test("a drain's first slot and its relaunch post their preparations within prepare's own ceiling", async () => {
+  // The drain plans each round for the operation its press posts (#449), and the hub judges that
+  // posting against the MANIFEST's declaration — so the plan here is `runPlan` over the shipped
+  // manifest, the way `server.ts` plans a real drain, rather than this file's one fixed answer.
+  const manifest = PluginManifestSchema.parse(manifestJson);
+  let machinery = realLaunch();
+  const planned: DrainDeps["plan"] = (policy, operationId) =>
+    runPlan({ manifest, policy, operationId });
+  deps = { ...deps, plan: planned };
+  const drainId = String((await start({ concurrent: 1, maxJobs: 2 }))["drainId"]);
+  await sealDrainJob(drainId, 0);
+  await machinery.postPrepared(fleet, code, PLAN);
+  await settleJob(`run_${drainId}_0`, { costMicros: 0, outputTokens: 0 });
+
+  machinery = realLaunch();
+  deps = { ...deps, plan: planned };
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 1 });
+
+  const ceiling = manifest.machine?.operations[OPERATIONS.prepare]?.limits;
+  expect(ceiling).toBeDefined();
+  expect(fleet.executed.map((job) => job.operationId)).toEqual([
+    OPERATIONS.prepare,
+    OPERATIONS.prepare,
+  ]);
+  for (const job of fleet.executed) {
+    expect(job.limits?.timeoutMs ?? Infinity).toBeLessThanOrEqual(ceiling?.timeoutMs ?? 0);
+    expect(job.limits?.memoryBytes ?? Infinity).toBeLessThanOrEqual(ceiling?.memoryBytes ?? 0);
+    expect(job.limits?.outputBytes ?? Infinity).toBeLessThanOrEqual(ceiling?.outputBytes ?? 0);
+  }
 });
 
 test("an unresolved ordinary Code admission remains held across wakes and drain Stop", async () => {

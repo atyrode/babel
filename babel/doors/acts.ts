@@ -213,12 +213,14 @@ const importLedgerAction = defineServerAction({
 });
 
 /**
- * The crossing's repair (#310). Owner-only for the same reason `importLedger` is: it rewrites
- * provenance the crossing wrote, and no capability in the vocabulary means "the owner".
+ * The crossing's repair and the archive's label mapping (#310, #453). Owner-only for the same
+ * reason `importLedger` is: it rewrites provenance the crossing wrote, it decides which machine
+ * every later capture under a label is hosted at, and no capability in the vocabulary means
+ * "the owner".
  */
 const rehostSessionsAction = defineServerAction({
   name: ACTIONS.rehostSessions,
-  title: "Re-host catalogued sessions onto a machine id the hub knows (owner only)",
+  title: "Re-host catalogued sessions and map an archive label onto a machine id (owner only)",
   caps: [],
   delegates: ["machines:read"],
   input: RehostSessionsInputSchema,
@@ -477,13 +479,14 @@ export function actDoors(
           if (!ctx.auth.isRoot) {
             return {
               refused:
-                "re-hosting the crossing's rows is the owner's act; this principal is not the owner",
+                "re-hosting sessions and mapping an archive label is the owner's act; this principal is not the owner",
             };
           }
           // THE HUB DECIDES WHETHER THE DESTINATION EXISTS, because that is the whole defect being
           // repaired: a `host` no machine answers to. `describe` is keyed on the machine id and
           // refuses an identifier that names no enrolled machine, so a name — the very thing in
-          // the rows — cannot be written back in as a second unusable value.
+          // the rows, and what a label is — cannot be written back in as a second unusable value,
+          // nor recorded as what a label means.
           try {
             await jobs(ctx).describe({ machineId: args.to, pluginId: BABEL_PLUGIN_ID });
           } catch (error) {

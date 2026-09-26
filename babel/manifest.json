@@ -44,20 +44,20 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "b3e714b9bb85377096068288861995fa60c9166268e13dbcf190d8835a2efd89",
+        "sha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "b3e714b9bb85377096068288861995fa60c9166268e13dbcf190d8835a2efd89",
+        "entrySha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "b3e714b9bb85377096068288861995fa60c9166268e13dbcf190d8835a2efd89",
+        "sha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "b3e714b9bb85377096068288861995fa60c9166268e13dbcf190d8835a2efd89",
+        "entrySha256": "bd30e90857b409ef5f86cdd6746b3d65aabfc59d811a572c769337352363e099",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -103,54 +103,75 @@
         "guestPath": "/home/job/.cache"
       },
       "atyrode.babel.omp": {
-        "anchor": "home",
+        "anchor": "operator.omp-sessions",
         "kind": "directory",
-        "components": [".omp", "agent", "sessions"],
-        "revision": "1",
+        "components": [],
+        "revision": "2",
         "guestPath": "/home/job/.omp/agent/sessions"
       },
-      "atyrode.babel.codex": {
-        "anchor": "home",
+      "atyrode.babel.omp-blobs": {
+        "anchor": "operator.omp-blobs",
         "kind": "directory",
-        "components": [".codex"],
+        "components": [],
         "revision": "1",
+        "guestPath": "/home/job/.omp/agent/blobs"
+      },
+      "atyrode.babel.codex": {
+        "anchor": "operator.codex-home",
+        "kind": "directory",
+        "components": [],
+        "revision": "2",
         "guestPath": "/home/job/.codex"
       },
       "atyrode.babel.claude": {
-        "anchor": "home",
+        "anchor": "operator.claude-home",
         "kind": "directory",
-        "components": [".claude"],
-        "revision": "1",
+        "components": [],
+        "revision": "2",
         "guestPath": "/home/job/.claude"
       }
     },
     "operations": {
-      "atyrode.babel.scan": {
+      "atyrode.babel.catalog": {
         "argv": [
           { "literal": "/job/artifact" },
-          { "literal": "scan" },
+          { "literal": "catalog" },
           { "literal": "--input" },
           { "literal": "/inputs/input" },
           { "literal": "--out" },
           { "literal": "/outputs/outputs" }
         ],
         "input": { "input": { "type": "string", "required": true, "maxLength": 65536 } },
-        "inputFiles": { "input": { "input": "input" } },
-        "runtimeTools": ["bun", "development", "system"],
+        "inputFiles": {
+          "input": { "input": "input" },
+          "restic": {
+            "literal": "{\"url\":\"\",\"bearer\":\"\"}",
+            "jsonValues": [
+              { "path": ["url"], "serviceId": "atyrode.babel.restic", "value": "url" },
+              { "path": ["bearer"], "serviceId": "atyrode.babel.restic", "value": "bearer" }
+            ]
+          }
+        },
+        "services": [
+          { "serviceId": "atyrode.babel.restic", "revision": "1", "operationIds": ["storage"] }
+        ],
+        "environment": {
+          "BABEL_CATALOG_CACHE_DIR": "/home/job/.cache/catalog",
+          "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic"
+        },
+        "runtimeTools": ["bun", "restic", "system"],
         "executable": { "runtimeTool": "bun" },
         "locations": [
           { "locationId": "atyrode.babel.outputs", "access": "write" },
-          { "locationId": "atyrode.babel.omp", "access": "read" },
-          { "locationId": "atyrode.babel.codex", "access": "read" },
-          { "locationId": "atyrode.babel.claude", "access": "read" }
+          { "locationId": "atyrode.babel.cache", "access": "write" }
         ],
         "outputs": ["outputs"],
-        "network": "none",
+        "network": "host",
         "limits": {
-          "timeoutMs": 600000,
+          "timeoutMs": 1800000,
           "memoryBytes": 1073741824,
           "processes": 64,
-          "outputBytes": 67108864
+          "outputBytes": 1073741824
         },
         "stdin": false
       },
@@ -184,6 +205,7 @@
           { "locationId": "atyrode.babel.outputs", "access": "write" },
           { "locationId": "atyrode.babel.cache", "access": "write" },
           { "locationId": "atyrode.babel.omp", "access": "read" },
+          { "locationId": "atyrode.babel.omp-blobs", "access": "read" },
           { "locationId": "atyrode.babel.codex", "access": "read" },
           { "locationId": "atyrode.babel.claude", "access": "read" }
         ],
@@ -193,7 +215,7 @@
           "timeoutMs": 600000,
           "memoryBytes": 1073741824,
           "processes": 64,
-          "outputBytes": 67108864
+          "outputBytes": 1073741824
         },
         "stdin": false
       },
@@ -209,25 +231,37 @@
           { "literal": "/outputs/material" }
         ],
         "input": { "input": { "type": "string", "required": true, "maxLength": 65536 } },
-        "inputFiles": { "input": { "input": "input" } },
-        "environment": { "BABEL_PREPARE_CACHE_DIR": "/home/job/.cache/prepare" },
-        "runtimeTools": ["bun", "development", "system"],
+        "inputFiles": {
+          "input": { "input": "input" },
+          "restic": {
+            "literal": "{\"url\":\"\",\"bearer\":\"\"}",
+            "jsonValues": [
+              { "path": ["url"], "serviceId": "atyrode.babel.restic", "value": "url" },
+              { "path": ["bearer"], "serviceId": "atyrode.babel.restic", "value": "bearer" }
+            ]
+          }
+        },
+        "services": [
+          { "serviceId": "atyrode.babel.restic", "revision": "1", "operationIds": ["storage"] }
+        ],
+        "environment": {
+          "BABEL_PREPARE_CACHE_DIR": "/home/job/.cache/prepare",
+          "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic"
+        },
+        "runtimeTools": ["bun", "restic", "system"],
         "executable": { "runtimeTool": "bun" },
         "locations": [
           { "locationId": "atyrode.babel.outputs", "access": "write" },
-          { "locationId": "atyrode.babel.cache", "access": "write" },
-          { "locationId": "atyrode.babel.omp", "access": "read" },
-          { "locationId": "atyrode.babel.codex", "access": "read" },
-          { "locationId": "atyrode.babel.claude", "access": "read" }
+          { "locationId": "atyrode.babel.cache", "access": "write" }
         ],
         "outputs": ["outputs", "material"],
         "exports": ["material"],
-        "network": "none",
+        "network": "host",
         "limits": {
           "timeoutMs": 1800000,
           "memoryBytes": 1073741824,
           "processes": 64,
-          "outputBytes": 536870912
+          "outputBytes": 1073741824
         },
         "stdin": false
       },
@@ -270,7 +304,7 @@
           "timeoutMs": 3600000,
           "memoryBytes": 1073741824,
           "processes": 64,
-          "outputBytes": 67108864
+          "outputBytes": 1073741824
         },
         "stdin": false
       },
@@ -306,7 +340,7 @@
           "timeoutMs": 600000,
           "memoryBytes": 268435456,
           "processes": 16,
-          "outputBytes": 16777216
+          "outputBytes": 1073741824
         },
         "stdin": false
       },
@@ -345,7 +379,7 @@
           "timeoutMs": 600000,
           "memoryBytes": 268435456,
           "processes": 16,
-          "outputBytes": 16777216
+          "outputBytes": 1073741824
         },
         "stdin": false
       },

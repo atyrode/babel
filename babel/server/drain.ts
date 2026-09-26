@@ -41,7 +41,12 @@ import {
   type Embedder,
 } from "../store/corpus.ts";
 import type { BabelStore } from "../store/store.ts";
-import { materialJobId, type LaunchIdentity, type Started } from "../doors/launch.ts";
+import {
+  materialJobId,
+  pressOperation,
+  type LaunchIdentity,
+  type Started,
+} from "../doors/launch.ts";
 import type { RunPlan } from "./conductor.ts";
 import type { CodeEngine } from "./engine/session.ts";
 import type { BabelJobs } from "./plan.ts";
@@ -718,11 +723,13 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
 
   if (row.preset === MAP_DRAIN_PRESET)
     return await tickMapDrain(deps, row, inForce.policy, seen, notes, at);
-
-  const operationId = drainOperation(row.preset);
   // The session is the drain's own, every time: the model and the account the operator named
-  // when they started it, not whatever a later default would be (#267, #279).
-  const plan = deps.plan(inForce.policy, operationId, row.profile);
+  // when they started it, not whatever a later default would be (#267, #279). Its fan holds
+  // `concurrent` materials on the machine at once, so each is bounded to that share (#453).
+  const plan = {
+    ...deps.plan(inForce.policy, pressOperation(row.preset), row.profile),
+    materials: row.concurrent,
+  };
   const input = drainInput(row);
   const holding = [...seen.holding];
   // What this round could not do. It is journaled AFTER the round rather than folded with it,

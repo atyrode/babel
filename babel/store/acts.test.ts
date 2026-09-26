@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginDatabase, SqlRow } from "@manifold/plugin";
 import { openPluginDatabase } from "@manifold/server/plugin-database";
-import { BABEL_PLUGIN_ID, isRecordId } from "../contract.ts";
+import { BABEL_PLUGIN_ID, isRecordId, SessionRowSchema } from "../contract.ts";
 import {
   parseReviewResult,
   ResultRefusal,
@@ -27,9 +27,12 @@ import {
   importableTables,
   interest,
   leaseFloor,
+  machineColumns,
   newId,
+  recordColumns,
   refuseRow,
   validateNewPolicy,
+  rehostSessions,
   rule,
   setPolicy,
   stamp,
@@ -40,6 +43,7 @@ import {
   type ActsStore,
 } from "./acts.ts";
 import { nameableRecordSql, SCHEMA_V1 } from "./schema.ts";
+import { upsertSessionRows } from "./sessions.ts";
 
 /*
   These run against a REAL plugin database — the engine's own file, opened by
@@ -1768,6 +1772,67 @@ test("the importable tables are derived from the migration itself", () => {
   expect(tables["sqlite_master"]).toBeUndefined();
 });
 
+test("every machine column of the migration is one the crossing guard covers", () => {
+  // THE PIN IS THE EXHAUSTIVENESS. The guard's worth is that it covers ALL of them: two of three
+  // reads as a statement that the third is fine, which is how `runs.machine_id` went untested
+  // and `drains.machine_id` went unguarded (#378, #379). TypeScript cannot carry this — the
+  // columns live inside SQL text, so no union it can check is anything but a second hand-written
+  // list — and the derivation reads that text, so this is where the schema and the guard are
+  // held to each other. A column added to `SCHEMA_V1` under either machine spelling lands here
+  // and fails this line; one added under a third spelling fails nothing, which is why the rule
+  // is a shape and not a set of table names.
+  expect(machineColumns()).toEqual({
+    sessions: ["host"],
+    runs: ["machine_id"],
+    drains: ["machine_id"],
+    run_calls: ["transcript_host"],
+    // The label a capture was taken under is a NAME and stays out of this map, which is why its
+    // column is `sessions.archive_label` and not `archive_host`; what the operator says it means
+    // is a machine id, and is guarded like every other (#453).
+    archive_labels: ["machine_id"],
+    // Transcript maps (#223) are keyed by the source owner that answered for them. The capture's
+    // `host` is its archived label, so it is over-guarded by shape: the crossing refuses such a
+    // row rather than admitting one, and no imported Go-era store carries a transcript map.
+    transcript_map_access: ["machine_id"],
+    transcript_map_captures: ["host"],
+    transcript_map_contexts: ["machine_id"],
+    transcript_map_heads: ["machine_id"],
+    transcript_map_scan: ["machine_id"],
+    transcript_map_versions: ["machine_id"],
+  });
+  // A count of jobs per machine is not a machine, and the crossing must still be able to carry
+  // an overlay row: `concurrent_per_machine` is in `budgets` and `budgets` is not in the map.
+  expect(importableTables()["budgets"]).toContain("concurrent_per_machine");
+  expect(machineColumns()["budgets"]).toBeUndefined();
+});
+
+test("every record-identifier column of the migration is one the crossing guard covers", () => {
+  // The same pin as the machine columns above, for the same reason and against the same failure
+  // mode. A column added to `SCHEMA_V1` that holds a record id — by name, or by saying
+  // `REFERENCES records(id)` — lands here and fails this line rather than quietly becoming the
+  // one place an unopenable row can still get in (#414).
+  expect(recordColumns()).toEqual({
+    records: ["id", "root_id", "supersedes_id", "parent_id"],
+    status_events: ["record_id"],
+    dispositions: ["record_id", "duplicate_of_id"],
+    next_actions: ["record_id"],
+    filings: ["record_id"],
+    feedback: ["record_id"],
+    steering: ["root_id"],
+    assessments: ["record_id", "revision_id"],
+    claims: ["record_id"],
+    record_vectors: ["record_id"],
+  });
+  // A `supersedes_id` that references its OWN table is not a record id, and the crossing must
+  // still carry those rows: the name family is the columns whose meaning is fixed, and the
+  // REFERENCES clause carries the rest. `filings` and `facts` supersede themselves.
+  expect(importableTables()["filings"]).toContain("supersedes_id");
+  expect(recordColumns()["filings"]).toEqual(["record_id"]);
+  expect(recordColumns()["facts"]).toBeUndefined();
+  // `edges` is absent because its ends are polymorphic; the row's own kind decides, which the
+  // import path checks and the test below proves.
+  expect(recordColumns()["edges"]).toBeUndefined();
+});
 test("the crossing refuses a record id no door could read back, and imports none of the chunk", async () => {
   const store = openStore();
   await migrate(store);
@@ -1904,6 +1969,87 @@ test("importing a chunk is idempotent by primary key and keeps its own ledger", 
   expect(
     importLedger(store, { source: "x", table: "records", rows: [{ id: "hyp_x", nonsense: "1" }] }),
   ).rejects.toThrow(/has no column "nonsense"/);
+});
+
+test("a re-host maps the label, moves what it names by host and by label, and hosts every later capture there", async () => {
+  const store = openStore();
+  await migrate(store);
+  // A Go-era row hosted at the name `dev-01`, and captures catalogued under the labels
+  // `dev-01` and `workstation-linux` before anybody said what either means.
+  await store.db.run(
+    `INSERT INTO sessions(selector, host, harness, source_id, seen_at)
+     VALUES('omp/imported', 'dev-01', 'omp', 'imported', '2026-09-01T00:00:00Z')`,
+  );
+  const capture = (id: string, label: string) =>
+    SessionRowSchema.parse({
+      selector: `omp/${id}`,
+      harness: "omp",
+      source_id: id,
+      kind: "operator",
+      archive_label: label,
+      archive_path: `/home/operator/.omp/agent/sessions/${id}.jsonl`,
+      snapshot_id: "a".repeat(64),
+      archived_at: "2026-09-24T21:00:00.000Z",
+      size: 10,
+      modified_at: "2026-09-24T20:00:00.000Z",
+    });
+  const seen = "2026-09-24T22:00:00.000Z";
+  await upsertSessionRows(
+    store,
+    [capture("captured", "dev-01"), capture("elsewhere", "workstation-linux")],
+    seen,
+  );
+  const hosts = async () =>
+    Object.fromEntries(
+      (await rows(store, `SELECT selector, host FROM sessions ORDER BY selector`)).map((row) => [
+        row["selector"],
+        row["host"],
+      ]),
+    );
+
+  expect(await rehostSessions(store, { from: "dev-01", to: "m-1" })).toEqual({
+    from: "dev-01",
+    to: "m-1",
+    sessions: 2,
+    labelled: 1,
+  });
+  expect(await hosts()).toEqual({
+    "omp/captured": "m-1",
+    "omp/elsewhere": "",
+    "omp/imported": "m-1",
+  });
+  // The mapping is what makes it stick: the next capture under the label is hosted there.
+  await upsertSessionRows(store, [capture("later", "dev-01")], seen);
+  expect((await hosts())["omp/later"]).toBe("m-1");
+  // Idempotent, and it says what the label holds either way.
+  expect(await rehostSessions(store, { from: "dev-01", to: "m-1" })).toMatchObject({
+    sessions: 0,
+    labelled: 2,
+  });
+
+  // Mapping the label again moves what was captured under it, and nothing it merely hosted.
+  expect(await rehostSessions(store, { from: "dev-01", to: "m-2" })).toMatchObject({
+    sessions: 2,
+    labelled: 2,
+  });
+  expect(await hosts()).toMatchObject({
+    "omp/captured": "m-2",
+    "omp/later": "m-2",
+    "omp/imported": "m-1",
+  });
+  expect(await rows(store, `SELECT label, machine_id FROM archive_labels`)).toEqual([
+    { label: "dev-01", machine_id: "m-2" },
+  ]);
+
+  // A label that is itself a machine id — one an owner may choose for `archive` — means nothing
+  // to the hub until it is recorded, so naming it twice is the mapping and not a mistake.
+  await upsertSessionRows(store, [capture("archived", "m-3")], seen);
+  expect((await hosts())["omp/archived"]).toBe("");
+  expect(await rehostSessions(store, { from: "m-3", to: "m-3" })).toMatchObject({
+    sessions: 1,
+    labelled: 1,
+  });
+  expect((await hosts())["omp/archived"]).toBe("m-3");
 });
 
 // ---------------------------------------------------------------------------- what a job wrote

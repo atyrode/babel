@@ -6,15 +6,18 @@
   provenance survives the rewrite; the crossing runs once and the Go stores are then retired.
 
   What changed in the crossing, and why:
-  - ninety-four tables become twenty-three, and the shapes since have added seven (`budgets`,
+  - ninety-four tables become twenty-three, and the shapes since have added eight (`budgets`,
     #260, `run_progress`, #261, `drains`, #258, `next_actions` with `next_action_rulings`,
-    #340, `run_calls`, #349, `session_titles`, #342, and the corpus index of `record_terms`
-    and `record_vectors`, #337). The Go tree kept a table per concept per
-    package; here a record is a record whatever its kind, an edge is an edge whatever it
-    relates, and a revision is a row that supersedes another rather than a parallel table of
-    revisions.
+    #340, `run_calls`, #349, `session_titles`, #342, the corpus index of `record_terms`
+    and `record_vectors`, #337, and `archive_labels`, #453). The Go tree kept a table per
+    concept per package; here a record is a record whatever its kind, an edge is an edge
+    whatever it relates, and a revision is a row that supersedes another rather than a
+    parallel table of revisions.
   - nothing is sealed and nothing is synced. The hub is the one place (§9 is retired); a row is
     plaintext on the operator's own server, and "published" is a word this schema does not need.
+    One place is also one copy: until the hub's backup lands (#454), losing its volume loses
+    every row here. The backup puts an image of this database into the transcripts' restic
+    repository under the `babel-store` tag; it is never a second store this schema writes or reads.
   - every table that records an act is append-only by trigger: a ruling, a vote, a filing, a
     status, a fact are written once and superseded by a later row, never edited or deleted. The
     triggers below are the whole of that guarantee, and a purge is the engine deleting the file.
@@ -390,6 +393,30 @@ const SESSION_TITLE_SCHEMA: readonly string[] = [
 ];
 
 /**
+ * THE ARCHIVE'S LABELS, AND THE ORDER A CATALOGUED CORPUS IS READ IN (#453) — spelled once and
+ * created twice, for the reason `budgets`, `drains`, `next_actions`, `run_calls` and
+ * `session_titles` are.
+ *
+ * A restic host label is a machine's NAME as the collector spelled it (`dev-01`), and a
+ * session's `host` is a hub machine ID. The hub resolves no names, so the operator states the
+ * mapping — `rehostSessions` records it — and an ingestion reads the host of every capture off
+ * it. A label nobody mapped hosts nothing: its captures are catalogued with `host` `''` and stay
+ * selectable. A mapping is state rather than an act: mapping the same label again replaces the
+ * row, and `mapped_at` says when it last changed.
+ *
+ * `sessions_by_modified` is what "recent" reads once `seen_at` means "last catalogued", which it
+ * comes to mean for every session at every beat.
+ */
+const ARCHIVE_CATALOG_SCHEMA: readonly string[] = [
+  `CREATE TABLE archive_labels(
+     label TEXT PRIMARY KEY,
+     machine_id TEXT NOT NULL,
+     mapped_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE INDEX sessions_by_modified ON sessions(modified_at DESC)`,
+];
+
+/**
  * THE CORPUS INDEX (#337) — spelled once and created twice, for the reason `budgets`, `drains`,
  * `next_actions`, `run_calls` and `session_titles` are.
  *
@@ -633,6 +660,12 @@ export const SCHEMA_V1: readonly string[] = [
   // from Babel's: a transcript one of Babel's runs wrote is `agent`, catalogued and archived
   // like every other session (#177) and skipped by default where a preparation is built, so
   // studying Babel itself is something a preset asks for rather than something it stumbles on.
+  //
+  // A session catalogued from the archive also names its CAPTURE (#453): `snapshot_id`, the
+  // `archive_path` inside it and the `archive_label` it was taken under, with `archived_at`,
+  // `size` and `modified_at` as restic recorded them. `archive_label` is the label verbatim and
+  // not a machine id, which is why it is not called `archive_host`: the crossing reads a column
+  // ending in `host` as a machine id. `store/sessions.ts` is what writes all of them together.
   `CREATE TABLE sessions(
      selector TEXT PRIMARY KEY,
      host TEXT NOT NULL,
@@ -655,10 +688,13 @@ export const SCHEMA_V1: readonly string[] = [
      content_digest TEXT,
      snapshot_id TEXT,
      archived_at TEXT,
-     seen_at TEXT NOT NULL
+     seen_at TEXT NOT NULL,
+     archive_label TEXT,
+     archive_path TEXT
    ) STRICT`,
   `CREATE INDEX sessions_by_repository ON sessions(repository_identity)`,
   `CREATE INDEX sessions_by_host ON sessions(host, modified_at DESC)`,
+  ...ARCHIVE_CATALOG_SCHEMA,
 
   // ---------------------------------------------------------------- records and their relations
   // Every revision of every hypothesis, observation, finding and proposal is a row; the head of
@@ -1241,6 +1277,21 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     column: "models",
     sql: `ALTER TABLE run_progress ADD COLUMN models TEXT NOT NULL DEFAULT ''`,
   },
+  // #453: the capture a catalogued session is held under. Two nullable columns with no default,
+  // additive in the strictest sense: every row an earlier shape wrote reads NULL, and NULL is the
+  // truth about it — nothing had catalogued it from the archive yet. Then the label mapping and
+  // the recency index, from the same list `SCHEMA_V1` spreads.
+  {
+    object: "sessions",
+    column: "archive_label",
+    sql: `ALTER TABLE sessions ADD COLUMN archive_label TEXT`,
+  },
+  {
+    object: "sessions",
+    column: "archive_path",
+    sql: `ALTER TABLE sessions ADD COLUMN archive_path TEXT`,
+  },
+  ...ARCHIVE_CATALOG_SCHEMA.map(objectAddition),
 ];
 
 /**

@@ -19,6 +19,11 @@ import { RUNTIME_TOOL_BIN, normalizeRemote } from "../contract.ts";
   Every probe is read-only. `rev-parse` and `remote get-url` read git's own metadata; nothing
   here runs a command that touches the index, the worktree or the network, because observing
   where a session's work happened must never modify it.
+
+  No operation runs this since #453: `scan`, its one caller, retired, and repository identity is
+  the hub's question (the conductor's `machines.repository`). It is kept by the operator's
+  decision, reachable through its own test only, and no operation names the `development`
+  toolset whose `git` the lookup below prefers.
 */
 
 export interface Repository {

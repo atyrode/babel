@@ -44,6 +44,7 @@ import {
 import type { BabelStore } from "../store/store.ts";
 import { mappingPolicy, type Coordinator } from "../store/coordinator.ts";
 import { defineDoor, type Door } from "./door.ts";
+import { pressOperation } from "./launch.ts";
 
 /*
   THE THREE DOORS A DRAIN IS RUN THROUGH: start one, read one, end one (#258).
@@ -54,14 +55,16 @@ import { defineDoor, type Door } from "./door.ts";
   self-stop. `drain.start` is that decision stated once: the account, the preset, the fan, and
   where it stops.
 
-  WHAT `drain.start` IS LENT, AND WHY IT IS ONE READ AND NOT THE FAN'S WHOLE AUTHORITY. It names
-  no node today (#279, below), but it does post the first fan through `launchMachinery`'s own
+  WHAT `drain.start` IS LENT: THE READ BEFORE THE FAN, AND THE POSTING ITSELF. It names no node
+  today (#279, below), but it posts the first fan through `launchMachinery`'s own
   `startExplore`/`startBeat` — and the first thing either of those does is ask the machine
   whether it can run the operation at all, `engine.jobs.describe` behind `ready`. That read is
   `machines:read` since atyrode/manifold#736 and delegable since atyrode/manifold#740, and the
   dispatcher attenuates `ctx.jobs` to the door's own caps plus delegates — so a start that did
   not name it would be refused `job_capability_absent:machines:read` at the first slot and report
-  "launched nothing" about a machine nobody ever asked. `doors/read.ts` carries the reasoning.
+  "launched nothing" about a machine nobody ever asked. The posting that follows is Babel's own
+  `prepare` or its beat, discharged at `engine.jobs.execute` against the same bridge, so the start
+  carries `machines:run` too (#448). `doors/read.ts` carries the reasoning.
 
   WHY `drain.stop` IS GOVERNED AT THE OPERATION NODE AND NOT AT A JOB. A drain holds several jobs
   and a declared requirement resolves to exactly ONE node (`plugin-host.ts` parses one
@@ -84,9 +87,11 @@ import { defineDoor, type Door } from "./door.ts";
   `reconcileRuns` refuses, nothing settles, and the `run_progress` fold this wake EXISTS for
   never happens. `pulse` and `runs` carry the same delegate for the same reason
   (`doors/read.ts`), and the same cycle's `machines:read`: it is the cycle, not this door, that
-  describes a machine to keep the loop's beat registered. It widens nothing: a delegate is the
-  native ceiling the door's own job authority may reach, intersected with the caller's
-  capabilities and the plugin's install grant, and the caller still needs only `containers:read`.
+  describes a machine to keep the loop's beat registered, and the cycle that relaunches a
+  drain's settled slot, so it carries `machines:run` as well (#448). It widens nothing: a
+  delegate is the native ceiling the door's own job authority may reach, intersected with the
+  caller's capabilities and the plugin's install grant, and the caller still needs only
+  `containers:read`.
 */
 
 /**
@@ -98,8 +103,8 @@ import { defineDoor, type Door } from "./door.ts";
  * consent required" and the operator never hears `engine_pending` — nor, on a drain v0.3.0
  * left running, can he stop it at all. `doors/launch.ts` says the whole of it.
  *
- * So a start asks `containers:read` and carries `machines:read` as a DELEGATE — the one read
- * the launch path makes before it posts anything — and a stop asks `containers:write`
+ * So a start asks `containers:read` and carries `machines:read` and `machines:run` as
+ * DELEGATES — the read the launch path makes before it posts, and the posting — and a stop asks `containers:write`
  * — closing the row is a write of this plugin's own rows — and carries `jobs:cancel` as a
  * DELEGATE, the native ceiling its own job authority may reach. The hub still checks consent
  * at the effect: a cancel it will not admit is reported by name rather than assumed. The
@@ -107,16 +112,16 @@ import { defineDoor, type Door } from "./door.ts";
  * operation, once its door posts the job.
  */
 const START_CAPS = ["containers:read"] as const;
-const START_DELEGATES = ["machines:read"] as const;
+const START_DELEGATES = ["machines:read", "machines:run"] as const;
 
 const STOP_CAPS = ["containers:write"] as const;
 const STOP_DELEGATES = ["jobs:cancel"] as const;
 
 /** A dry read of this plugin's own tables; it asks no machine anything. */
 const STATUS_CAPS = ["containers:read"] as const;
-/** …but a cycle follows it, and a cycle that cannot read a job or describe a machine folds
- *  nothing and keeps no cadence; see above. */
-const STATUS_DELEGATES = ["jobs:read", "machines:read"] as const;
+/** …but a cycle follows it, and a cycle that cannot read a job, describe a machine or post a
+ *  drain's next slot folds nothing, keeps no cadence and relaunches nothing; see above. */
+const STATUS_DELEGATES = ["jobs:read", "machines:read", "machines:run"] as const;
 
 /** Every act of a drain is news on this plugin's own node, as `doors/acts.ts` explains. */
 const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;
@@ -291,7 +296,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       const stops = stopsAt(input.target, input.maxJobs, at);
       if ("refused" in stops) return stops;
       // A PRESET THAT SPENDS NOTHING CANNOT MEET A SPEND TARGET, so one is refused rather than
-      // started as a fan nothing will ever stop: `keep-going` is a `scan`, it reaches no model,
+      // started as a fan nothing will ever stop: `keep-going` is the beat, it reaches no model,
       // and its metered spend is zero for as long as it runs.
       if (
         !SPENDING.includes(input.preset) &&
@@ -378,7 +383,12 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       const row = await readDrain(store, drainId);
       if (row === null) return { refused: `the drain row for ${drainId} was not written` };
       const deps = doorDepsAtStart;
-      const plan = deps.plan(inForce.policy, operationId, ledger);
+      // The fan holds `concurrent` materials on the machine at once: each is bounded to that
+      // share of its scratch, as every later tick's are (#453).
+      const plan = {
+        ...deps.plan(inForce.policy, pressOperation(input.preset), ledger),
+        materials: input.concurrent,
+      };
       const request = drainInput(row);
       const live: { runId: string; jobId: string; launchedAt: number }[] = [];
       let refused = "";

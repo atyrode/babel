@@ -18,8 +18,8 @@
     needs (HOME, PATH, TMPDIR) when the parent has them. Behaviour therefore does not drift
     with whatever ambient RESTIC_* variables the machine's shell happens to carry.
   - restic itself is taken from where the owner bound it (`RUNTIME_TOOL_BIN/restic`) first and
-    from PATH second — the same rule as git in machine/repository.ts, because inside a job
-    sandbox there is no PATH and outside one nothing is bound.
+    from PATH second, because inside a job sandbox there is no PATH and outside one nothing is
+    bound.
   - THE VERBS ARE A CLOSED SET ({@link RESTIC_VERBS}) and every invocation is built by
     {@link resticArgv}, which admits a verb or throws. `forget`, `prune`, `repair` and
     `unlock` are absent from that set and from this file: never-delete is policy, and an
@@ -30,6 +30,13 @@
     holds, `dump` streams one archived file without touching a disk, and `restore` writes the
     files back. An archive whose restore path has never been run is an archive nobody has
     tested.
+  - EVERY READ RUNS WITHOUT A LOCK. {@link resticArgv} gives each verb of
+    {@link RESTIC_READ_VERBS} restic's global `--no-lock`, so a reading job that is killed
+    leaves nothing behind in the repository — not even a stale lock for the operator to clear —
+    and a read-only object-store credential is enough for every analysis. `init` and `backup`
+    are the writes, and take restic's ordinary lock: `backup` is `archive`'s, the collector's,
+    and `init` is called only by disposable test fixtures, because a deployment's repository is
+    created once, by hand.
 
   Snapshots are crash-consistent per file, not transactional across files: a backup taken
   while a session log is being appended to may capture a torn final line. Readers tolerate
@@ -145,6 +152,20 @@ export const RESTIC_VERBS = [
   "restore",
 ] as const;
 
+/**
+ * The verbs that only read, each built with restic's global `--no-lock`. They are listed rather
+ * than the writes, so a verb added to {@link RESTIC_VERBS} without a decision here takes the
+ * lock: a write run without one is the unsafe default, a read run with one only the untidy one.
+ */
+const RESTIC_READ_VERBS: readonly (typeof RESTIC_VERBS)[number][] = [
+  "cat",
+  "snapshots",
+  "check",
+  "ls",
+  "dump",
+  "restore",
+];
+
 /** A snapshot as restic names one: a full or short id, or `latest`. It is checked because it
  *  travels into argv as a POSITIONAL, where a value beginning with `-` would be read as a flag
  *  — and the values reaching this module come from a door's caller. */
@@ -155,13 +176,16 @@ const SNAPSHOT_ID = /^(latest|[0-9a-f]{8,64})$/;
  *
  * Every child of this module is spawned from this, so a verb outside {@link RESTIC_VERBS}
  * cannot be reached by any path — including a future one whose author never read the policy.
- * The refusal happens before restic exists: nothing is contacted and nothing is written.
+ * The refusal happens before restic exists: nothing is contacted and nothing is written. A
+ * read verb's `--no-lock` is added here for the same reason: no caller can forget it.
  */
 export function resticArgv(verb: string, flags: readonly string[] = []): readonly string[] {
   if (!(RESTIC_VERBS as readonly string[]).includes(verb)) {
     throw new ResticError("refused", `restic ${verb} is not a verb Babel runs`);
   }
-  return [verb, ...flags];
+  return (RESTIC_READ_VERBS as readonly string[]).includes(verb)
+    ? [verb, "--no-lock", ...flags]
+    : [verb, ...flags];
 }
 
 /** A snapshot id fit to pass as a positional, or the refusal naming what was asked. */
@@ -367,16 +391,16 @@ export interface Repo {
     paths: readonly string[],
     attribution: { host: string; tags: readonly string[] },
   ): Promise<BackupOutcome>;
-  /** Every snapshot the repository holds, restic's own order (newest last). */
-  snapshots(): Promise<readonly Snapshot[]>;
+  /** Every snapshot the repository holds, restic's own order (newest last) — or, given ids,
+   *  only those of them it holds: an id it does not hold is left out, not refused. */
+  snapshots(ids?: readonly string[]): Promise<readonly Snapshot[]>;
   /**
    * Verifies the repository and reports what it found. Structure always; the stored bytes when
    * {@link CheckOptions.readData} asks for them.
    *
-   * restic takes an EXCLUSIVE lock for this, so a check and a backup of the same repository do
-   * not overlap — one of them waits and then fails. A lock left behind by a killed process is
-   * cleared with restic's `unlock`, which Babel does not run: removing another process's claim
-   * is the operator's act.
+   * It runs without a lock, as every read does, so it neither waits for a collector's backup
+   * nor leaves a lock behind when it is killed. A backup running concurrently may make it
+   * report that backup's packs as not yet referenced, which the next check no longer sees.
    */
   check(options?: CheckOptions): Promise<CheckOutcome>;
   /** What one snapshot holds, entirely or under the given absolute paths. */
@@ -502,7 +526,7 @@ async function readStorage(endpoint: ServiceEndpoint): Promise<ResticStorage> {
 
 /** restic where the owner bound it, and on PATH otherwise: inside a job the sandbox has no
  *  PATH and the tool is at its bound path; outside one — a hand-run, the tests — nothing is
- *  bound and PATH is the answer. The same rule as git in machine/repository.ts. */
+ *  bound and PATH is the answer. */
 async function resticBinary(): Promise<string> {
   const bound = `${RUNTIME_TOOL_BIN}/restic`;
   if (await Bun.file(bound).exists()) return bound;
@@ -585,8 +609,9 @@ class ResticRepo implements Repo {
     };
   }
 
-  async snapshots(): Promise<readonly Snapshot[]> {
-    const stdout = await this.#run("list snapshots", resticArgv("snapshots", ["--json"]));
+  async snapshots(ids: readonly string[] = []): Promise<readonly Snapshot[]> {
+    const named = ids.length === 0 ? [] : ["--", ...ids.map(snapshotArgument)];
+    const stdout = await this.#run("list snapshots", resticArgv("snapshots", ["--json", ...named]));
     const parsed: unknown = JSON.parse(stdout.trim() === "" ? "[]" : stdout);
     if (!Array.isArray(parsed)) return [];
     const snapshots: Snapshot[] = [];

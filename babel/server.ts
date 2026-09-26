@@ -31,6 +31,7 @@ import { codeEngine, type ActionsSlice } from "./server/engine/session.ts";
 import { drainTick, type DrainDeps } from "./server/drain.ts";
 import { embedder, type EmbeddingServices } from "./server/embed.ts";
 import {
+  BEAT_OPERATION,
   conductor,
   describeMapHost,
   SCHEDULE_LIFETIME_MS,
@@ -50,7 +51,7 @@ import {
   unauthorized,
   type BabelJobs,
 } from "./server/plan.ts";
-import { coordinator, type Policy } from "./store/coordinator.ts";
+import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { ensureTerms } from "./store/corpus.ts";
 import { openStore } from "./store/store.ts";
@@ -90,10 +91,10 @@ import manifestJson from "./manifest.json";
 /**
  * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column, table, index and
  * trigger `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
- * `2026-09-14-store-v1-run-calls` — recorded under the same key by the enable before
+ * `2026-09-24-store-v1-archive-captures` — recorded under the same key by the enable before
  * it — is its predecessor.
  */
-const STORE_MIGRATION = "2026-09-21-store-v1-transcript-maps";
+const STORE_MIGRATION = "2026-09-25-store-v1-transcript-maps";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -209,7 +210,9 @@ function loop(
           profile: route.profile,
           recipes: [recipe],
         },
-        planFor(policy, MACHINE_OPERATIONS.prepare),
+        // The conductor's lanes share the routed machine's scratch at the per-machine bound, so
+        // each material is bounded to its share of it (#453).
+        { ...planFor(policy, MACHINE_OPERATIONS.prepare), materials: perMachineBound(policy) },
         {
           stage: assignment.activity,
           selectors: [...assignment.selectors],
@@ -431,7 +434,7 @@ async function catalogCycle(
       jobs,
       unaskable(HOOK_WITHOUT_MACHINES),
       undefined,
-      planFor(policy, MACHINE_OPERATIONS.scan),
+      planFor(policy, BEAT_OPERATION),
       planFor(policy, MACHINE_OPERATIONS.mapCatalog),
       planFor(policy, MACHINE_OPERATIONS.mapPrepare),
       // The free catalog lane never enters paid dispatch, whatever authority settled it.
@@ -516,8 +519,10 @@ async function cycle(
   nativeDispatch = false,
 ): Promise<void> {
   const policy = (await coordinated.policy()).policy;
-  // Native work uses each operation's own declared limits; model work remains Code's to post.
-  const plan = planFor(policy, MACHINE_OPERATIONS.scan);
+  // The beat is the only job this loop still posts itself, so its operation is what the plan's
+  // limits are read for; a run that reaches a model is Code's to post (#279). Mapping's native
+  // work uses each of its operations' own declared limits.
+  const plan = planFor(policy, BEAT_OPERATION);
   const report = await loop(
     jobs,
     machines,
@@ -569,7 +574,7 @@ async function cycle(
   }
   /*
     …AND ONE TITLING RUN, IF THIS CYCLE MAY AFFORD ONE (#342). A session whose own log records
-    no title never gets one from a scan, so the only way it gets one at all is a model — which
+    no title never gets one from its capture, so the only way it gets one at all is a model — which
     in Babel is a Code session like every other model call. It is posted here, after the
     conductor has drawn and dispatched, so the ceilings it is admitted against already include
     everything this cycle committed to reviewing.
@@ -651,7 +656,7 @@ const doors = babelDoors(
         jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
         machinesSlice(ctx.machines),
         ctx.actions,
-        planFor(policy, MACHINE_OPERATIONS.scan),
+        planFor(policy, BEAT_OPERATION),
         planFor(policy, MACHINE_OPERATIONS.mapCatalog),
         planFor(policy, MACHINE_OPERATIONS.mapPrepare),
         true,

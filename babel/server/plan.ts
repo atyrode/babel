@@ -1,6 +1,6 @@
 import { jobLimits, type MachineHalf, type PluginManifest } from "@manifold/protocol";
 import type { GuestCtx, GuestHookJobs, GuestJobs } from "@manifold/plugin-kit/server";
-import { MACHINE_OPERATIONS, type OperationName } from "../contract.ts";
+import { PRESET_OPERATIONS, type OperationName } from "../contract.ts";
 import type { Policy } from "../store/coordinator.ts";
 import type {
   Awaitable,
@@ -51,7 +51,7 @@ export const DEFAULT_LIMITS: JobLimits = {
   timeoutMs: 3_600_000,
   memoryBytes: 2_147_483_648,
   processes: 64,
-  outputBytes: 67_108_864,
+  outputBytes: 1_073_741_824,
 };
 
 // ---------------------------------------------------------------------------- the machine block
@@ -120,7 +120,7 @@ export interface PlanRequest {
   readonly manifest: PluginManifest;
   /** The policy in force; a disabled one is what stops a cycle before it asks for anything. */
   readonly policy: Policy;
-  /** The operation the plan's limits are for; the beat's is `scan`. */
+  /** The operation the plan's limits are for; the default is the beat's (`keep-going`'s). */
   readonly operationId?: OperationName | undefined;
 }
 
@@ -152,7 +152,7 @@ export function runPlan(request: PlanRequest): RunPlan {
   const machine = request.manifest.machine ?? null;
   return {
     metered: meterableOperations(machine),
-    limits: operationLimits(machine, request.operationId ?? MACHINE_OPERATIONS.scan),
+    limits: operationLimits(machine, request.operationId ?? PRESET_OPERATIONS["keep-going"]),
   };
 }
 

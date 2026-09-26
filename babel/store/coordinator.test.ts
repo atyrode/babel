@@ -1077,6 +1077,84 @@ test("a batch is held by claims with a job, and abandoning four dead ones admits
   expect((await coord.spend(NOW)).total).toBeCloseTo(0.4, 10);
 });
 
+test("an abandoned review drawn again is granted at the next fence, its dead epoch charged once", async () => {
+  // Reviews only: an analysis assignment names itself by its retry, not by an ordinal.
+  const { db, coord } = await deployment({
+    enabled: true,
+    activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0 },
+  });
+  const id = await record(db, "hyp_00000001", "hypothesis", 40);
+  await filing(db, id, "ent_0000000a");
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+  const assignment = drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n }));
+  expect(assignment.activity).toBe("review");
+  const first = await coord.claim({ assignment, runId: "run_a", jobId: "job_a", now: NOW });
+  if (first.outcome !== "granted") throw new Error(first.refusal.detail);
+  const abandoned = await coord.abandon({
+    id: assignment.id,
+    fence: 1,
+    reason: "job_a died",
+    now: NOW,
+  });
+  expect(abandoned.outcome).toBe("abandoned");
+
+  // The abandonment withholds nothing, so a later draw offers the same record and role — under
+  // the same assignment id. Refusing that as finished stopped every cycle that drew it first.
+  let again: Assignment | undefined;
+  for (let seed = 0n; seed < 64n && again === undefined; seed += 1n) {
+    const offered = drawn(await coord.draw({ runId: "cycle_2", now: NOW + 1000, seed }));
+    if (offered.role === assignment.role) again = offered;
+  }
+  if (again === undefined) throw new Error(`no draw offered the ${assignment.role} role again`);
+  expect(again.id).toBe(assignment.id);
+  // Two workers reaching for the reopened epoch get one winner and one conflict.
+  const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
+  const raced = await Promise.all([
+    coord.claim({ assignment: again, runId: "run_b", jobId: "job_b", now: NOW + 1000 }),
+    other.claim({ assignment: again, runId: "run_x", jobId: "job_x", now: NOW + 1000 }),
+  ]);
+  expect(raced.map((result) => result.outcome).sort()).toEqual(["granted", "refused"]);
+  const loser = raced.find((result) => result.outcome === "refused");
+  expect(loser?.outcome === "refused" ? loser.refusal.reason : null).toBe("conflict");
+  const second = raced.find((result) => result.outcome === "granted");
+  if (second?.outcome !== "granted") throw new Error("no worker was granted the reopened epoch");
+  expect(second.claim.fence).toBe(2);
+  const winner = second.claim.runId;
+
+  // The dead epoch keeps its charge on its own row and cannot report into the new one.
+  const archived = await db.query<{ outcome: string; run_id: string }>(
+    `SELECT outcome, run_id FROM claims WHERE id = ?`,
+    [`${assignment.id}~1`],
+  );
+  expect(archived).toEqual([{ outcome: "abandoned", run_id: "run_a" }]);
+  const stale = await coord.finish({
+    id: assignment.id,
+    runId: "run_a",
+    fence: 1,
+    cost: 0.01,
+    outcome: "completed",
+    now: NOW + 2000,
+  });
+  expect(stale.outcome).toBe("refused");
+  const spend = await coord.spend(NOW + 2000);
+  expect(spend.byRun["run_a"]).toBeCloseTo(assignment.reservedCost, 10);
+  expect(spend.total).toBeCloseTo(2 * assignment.reservedCost, 10);
+
+  // A claim that finished any other way is still finished.
+  const done = await coord.finish({
+    id: assignment.id,
+    runId: winner,
+    fence: 2,
+    cost: 0.01,
+    outcome: "completed",
+    now: NOW + 3000,
+  });
+  expect(done.outcome).toBe("finished");
+  const third = await coord.claim({ assignment: again, runId: "run_c", now: NOW + 4000 });
+  if (third.outcome !== "refused") throw new Error("a completed assignment was granted again");
+  expect(third.refusal.reason).toBe("finished");
+});
+
 test("a grant whose job was never posted holds no batch slot", async () => {
   const { db, coord } = await deployment({ enabled: true, batchSize: 1, perCycleCost: 0.4 });
   const id = await record(db, "hyp_00000001", "hypothesis", 40);
@@ -1603,6 +1681,11 @@ function stagePolicy(stage: Stage, over: Partial<Policy> = {}): Policy {
   });
 }
 
+/**
+ * One catalogued session. By default it names an archived capture, which is what a preparation
+ * can read (#453); `captured: false` is a row the catalog has not listed from the archive yet —
+ * an imported one — and `machine` is the host its label maps to, which selection never reads.
+ */
 async function catalog(
   db: GuestDatabase,
   selector: string,
@@ -1611,11 +1694,14 @@ async function catalog(
     live?: number;
     kind?: string;
     bytes?: number;
+    captured?: boolean;
   } = {},
 ): Promise<void> {
+  const captured = over.captured ?? true;
   await db.run(
-    `INSERT INTO sessions(selector, host, harness, source_id, live, kind, size, content_digest, seen_at)
-     VALUES(?,?,'omp',?,?,?,?,?,?)`,
+    `INSERT INTO sessions(selector, host, harness, source_id, live, kind, size, content_digest,
+                          archive_label, archive_path, snapshot_id, archived_at, modified_at, seen_at)
+     VALUES(?,?,'omp',?,?,?,?,?,?,?,?,?,?,?)`,
     [
       selector,
       over.machine ?? "dev-01",
@@ -1624,6 +1710,11 @@ async function catalog(
       over.kind ?? "operator",
       over.bytes ?? 100,
       `digest-${selector}`,
+      captured ? "dev-01" : null,
+      captured ? `/home/alex/.omp/agent/sessions/${selector}.jsonl` : null,
+      captured ? "a".repeat(64) : null,
+      captured ? ago(1) : null,
+      captured ? ago(1) : null,
       ago(1),
     ],
   );
@@ -1713,9 +1804,11 @@ test("exploration consumes eligible material once, including across conductors a
   const { db, coord } = await deployment(stagePolicy("explore", { cooldownSeconds: 0 }));
   await catalog(db, "omp/live", { live: 1 });
   await catalog(db, "omp/agent", { kind: "agent" });
-  await catalog(db, "omp/elsewhere", { machine: "dev-02" });
+  // A preparation reads the archive only, so a row naming no capture is never material…
+  await catalog(db, "omp/unarchived", { captured: false });
   await catalog(db, "omp/huge", { bytes: MAX_MATERIAL_BYTES + 1 });
-  await catalog(db, "omp/real");
+  // …and a capture is material whichever machine its label maps to (#453).
+  await catalog(db, "omp/real", { machine: "dev-02" });
   const other = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
   const one = drawn(await coord.draw({ runId: "a", seed: 1n }));
   const two = drawn(await other.draw({ runId: "b", seed: 99n }));
@@ -2281,6 +2374,7 @@ test("a full offer stage stops independently while challenge and synthesis remai
   const offers = analysisOffers(
     db,
     "dev-01",
+    1,
     ["explore", "challenge", "synthesize"],
     new Set(ids),
     new Map(),

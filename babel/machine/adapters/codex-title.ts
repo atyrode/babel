@@ -42,10 +42,6 @@ export const MAX_REQUEST_BYTES = 4 << 10;
 /** How many response_item user records the fallback channel examines before giving up. */
 export const MAX_REQUEST_CANDIDATES = 8;
 
-/** Which rule produced a derived title: a rule name, never transcript text. */
-export const TITLE_BASES = ["agent_path", "request", "request_fallback"] as const;
-export type TitleBasis = (typeof TITLE_BASES)[number];
-
 /**
  * The decoded `session_meta.source` union. Codex writes either a bare string naming a front
  * end or an object naming the subagent mechanism that opened the thread, so it is read
@@ -101,45 +97,24 @@ export function decodeThreadSource(raw: unknown): ThreadSource {
   return source;
 }
 
-export interface DerivedTitle {
-  title: string;
-  basis: TitleBasis | null;
-  /** Why there is no title, for the description's absence list. */
-  reason: string;
-}
-
-export function deriveTitle(evidence: TitleEvidence): DerivedTitle {
+/** The title a thread's own evidence states, or "" when it states none. */
+export function deriveTitle(evidence: TitleEvidence): string {
   const source = evidence.source;
-  if (source.role !== "") {
-    return {
-      title: "",
-      basis: null,
-      reason:
-        `codex opened this thread for its built-in ${quoteRole(source.role)} role, whose opening ` +
-        "turn is a fixed harness template rather than a caller's request",
-    };
-  }
+  // Codex opened the thread for one of its built-in roles, whose opening turn is a fixed
+  // harness template rather than a caller's request.
+  if (source.role !== "") return "";
   if (source.spawn) {
     const segment = lastPathSegment(source.agentPath);
     if (segment !== "") {
       const title = condense(humanize(segment));
-      if (runeLength(title) >= MIN_TITLE_RUNES) return { title, basis: "agent_path", reason: "" };
+      if (runeLength(title) >= MIN_TITLE_RUNES) return title;
     }
-    if (source.agentRole === "") {
-      return {
-        title: "",
-        basis: null,
-        reason:
-          "codex records nothing about this spawned thread's own request: it carries no agent " +
-          "path, and a spawned thread's transcript may replay its parent's conversation",
-      };
-    }
+    // No agent path and no agent role: a spawned thread's transcript may replay its parent's
+    // conversation, so nothing in it is known to be about this one.
+    if (source.agentRole === "") return "";
   }
   const delivered = titleFromRequest(evidence.request);
-  if (delivered !== "") return { title: delivered, basis: "request", reason: "" };
-  const fallback = titleFromRequest(evidence.requestFallback);
-  if (fallback !== "") return { title: fallback, basis: "request_fallback", reason: "" };
-  return { title: "", basis: null, reason: "no delivered request record exposed titleable text" };
+  return delivered !== "" ? delivered : titleFromRequest(evidence.requestFallback);
 }
 
 /**
@@ -202,18 +177,6 @@ function firstContentLine(text: string): string {
     i = end + 1;
   }
   return "";
-}
-
-/** Renders a role name for a reason without letting the log choose the punctuation around it. */
-function quoteRole(role: string): string {
-  let clean = "";
-  for (const character of role) {
-    const code = character.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f || character === '"') continue;
-    clean += character;
-  }
-  const runes = [...clean];
-  return '"' + (runes.length > 32 ? runes.slice(0, 32).join("") : clean) + '"';
 }
 
 /**
@@ -297,40 +260,6 @@ function runeLength(text: string): number {
   let count = 0;
   for (const _ of text) count++;
   return count;
-}
-
-/** Cuts text to at most `bytes` UTF-8 bytes without splitting a character. */
-export function truncateUtf8(text: string, bytes: number): string {
-  if (Buffer.byteLength(text) <= bytes) return text;
-  const buffer = Buffer.from(text, "utf8");
-  let end = bytes;
-  // Back off over a continuation byte so the cut lands on a character boundary.
-  while (end > 0 && (buffer[end] ?? 0) >= 0x80 && (buffer[end] ?? 0) < 0xc0) end--;
-  return buffer.subarray(0, end).toString("utf8");
-}
-
-/**
- * The text of one `response_item` message or `user_message` event, bounded. Codex writes
- * content either as a bare string or as a list of typed parts, and a part type this adapter
- * does not know contributes nothing rather than failing the record.
- */
-export function messageText(payload: Record<string, unknown>): string {
-  const message = payload["message"];
-  if (typeof message === "string" && message !== "")
-    return truncateUtf8(message, MAX_REQUEST_BYTES);
-  const content = payload["content"];
-  if (typeof content === "string") return truncateUtf8(content, MAX_REQUEST_BYTES);
-  if (!Array.isArray(content)) return "";
-  let out = "";
-  for (const part of content) {
-    if (typeof part !== "object" || part === null) continue;
-    const text = (part as Record<string, unknown>)["text"];
-    if (typeof text !== "string" || text === "") continue;
-    if (out.length > 0) out += "\n";
-    out += text;
-    if (Buffer.byteLength(out) >= MAX_REQUEST_BYTES) break;
-  }
-  return truncateUtf8(out, MAX_REQUEST_BYTES);
 }
 
 /**

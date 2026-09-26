@@ -23,12 +23,15 @@ import {
   asLaunchRequest,
   BABEL_PLUGIN_ID,
   OPERATIONS,
+  PRESET_OPERATIONS,
   RECALL_SERVICE_ID,
   RUN_STAGES,
+  SessionRowSchema,
   TRANSCRIPT_MAP_SERVICE_OPERATION,
 } from "./contract.ts";
 import { WAKES, plugin } from "./server.ts";
 import { stamp } from "./store/feedindex.ts";
+import { upsertSessionRows } from "./store/sessions.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
 import { PolicySchema } from "./store/coordinator.ts";
 import type { JobLaunch, ScheduleTiming } from "./server/conductor.ts";
@@ -50,7 +53,7 @@ class Jobs {
     this.described += 1;
     return {
       connected: true,
-      operations: { [OPERATIONS.scan]: { ready: true, reason: null } },
+      operations: { [PRESET_OPERATIONS["keep-going"]]: { ready: true, reason: null } },
       installation: {
         revision: "rev-7",
         artifactSha256: "a".repeat(64),
@@ -180,8 +183,8 @@ function context(
     principal: { id: "operator" },
     database,
     jobs: slice as unknown as GuestHookJobs,
-    // Only a DISPATCH is served one (`serveCtxCall`), and this plugin asks it one question:
-    // what a folder a scan catalogued is. Nothing here catalogues one, so nothing asks.
+    // Only a DISPATCH is served one (`serveCtxCall`), and this plugin asks it one question: what
+    // a folder a catalogued session worked in is. Nothing here catalogues one, so nothing asks.
     machines: {
       repository: async () =>
         await Promise.resolve({ ok: false, reason: "this test enrolls no machine" }),
@@ -202,13 +205,16 @@ function context(
 
 /**
  * What the bridge asks of one job verb before it is served, as `job-service.ts` asks it: the
- * reads a cycle ingests with, and the machine read a cadence is registered from.
+ * reads a cycle ingests with, the machine read a cadence is registered from, and the run a
+ * posting or a schedule is discharged against (#448).
  */
 const VERB_CAPS: Record<string, string> = {
   status: "jobs:read",
   follow: "jobs:read",
   listRuns: "jobs:read",
   describe: "machines:read",
+  execute: "machines:run",
+  schedule: "machines:run",
 };
 
 /**
@@ -461,7 +467,10 @@ test("the cycle behind a read describes a machine, so the loop keeps its own cad
     delegates, and `machines:read` could not be delegated at all until #740, so every describe
     behind a read was refused `job_capability_absent:machines:read` however privileged the
     caller: `reconcileSchedule` noted that the beat could not be registered and registered
-    nothing, and Babel beat for exactly as long as somebody kept pressing something.
+    nothing, and Babel beat for exactly as long as somebody kept pressing something. The
+    schedule itself is then discharged against `machines:run`, which no wake carried either
+    (#448): on the integrated preview every cycle logged `the beat cannot be registered:
+    job_capability_absent:machines:run`.
   */
   await pending();
   const ctx = context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.pulse));
@@ -474,6 +483,80 @@ test("the cycle behind a read describes a machine, so the loop keeps its own cad
   ]);
 });
 
+test("the doors that ask a machine what it can run are lent that read, and no others are", () => {
+  /*
+    WHO ASKS, AND THEREFORE WHO IS LENT IT. Every door a cycle follows asks: the conductor
+    describes a machine to register the beat on it. `drainStart` asks on its own account too — it
+    posts the fan's first slot through `launchMachinery`, and `ready` describes before it posts.
+    `verify` asks for the same reason: it posts one of Babel's own jobs (#338) through the same
+    path, and a verification aimed at a machine with no Babel on it should be refused at the
+    press rather than by a job that never starts. The crossing's two owner-only doors ask for a
+    different reason: `importLedger` and `rehostSessions` write a session's machine column, and a
+    column carrying a name the hub does not know is provenance nothing can read back, so each
+    checks the id against the hub before writing it (#312). Recall's owner setup describes
+    the native service candidate and rechecks it on installation, and the two mapping starts
+    describe the route's hosts before admitting it. Nothing else asks a machine anything: reading
+    a feed, ruling on a record and stopping a run stay inside this plugin's own tables and job
+    nodes.
+  */
+  const asks: Record<string, true> = {
+    ...WAKES,
+    [ACTIONS.drainStart]: true,
+    [ACTIONS.verify]: true,
+    [ACTIONS.importLedger]: true,
+    [ACTIONS.rehostSessions]: true,
+    [ACTIONS.previewRecall]: true,
+    [ACTIONS.installRecall]: true,
+    [ACTIONS.startMapCatalog]: true,
+    [ACTIONS.mapDrainStart]: true,
+  };
+  for (const action of plugin.actions) {
+    const reach = [...(action.caps ?? []), ...(action.delegates ?? [])];
+    expect({ door: action.name, describes: reach.includes("machines:read") }).toEqual({
+      door: action.name,
+      describes: Object.hasOwn(asks, action.name),
+    });
+  }
+  // And it is a DELEGATE everywhere it appears: a caller is never asked to hold a machine
+  // capability to be told whether the machine Babel was deployed to is ready.
+  for (const action of plugin.actions) {
+    expect(action.caps).not.toContain("machines:read");
+  }
+});
+
+test("the doors whose wake or press starts Babel's own jobs are lent machines:run, and no others are", () => {
+  /*
+    WHO POSTS, AND THEREFORE WHO IS LENT IT (#448). `engine.jobs.execute` and `schedule` discharge
+    `machines:run` against the dispatch's attenuated bridge, so a door that starts work without it
+    is refused `authority_or_consent_refused` however privileged its caller — on the integrated
+    preview the beat never registered and no explicit explore, drain slot or analysis stage was
+    ever admitted. The cycle behind every wake registers the beat, posts analysis preparations and
+    relaunches a drain's settled slot; `launch`, `drainStart` and `verify` post on their own
+    account. Nothing else starts anything, and it is a delegate everywhere, never a cap the
+    caller is asked to hold — except the two mapping starts (#223), which are governed at the
+    exact nodes they post to: the executor's operation and the source owner's private mapping
+    target, which a delegate alone would never discharge.
+  */
+  const posts: Record<string, true> = {
+    ...WAKES,
+    [ACTIONS.drainStart]: true,
+    [ACTIONS.verify]: true,
+  };
+  const governed: Record<string, true> = {
+    [ACTIONS.startMapCatalog]: true,
+    [ACTIONS.mapDrainStart]: true,
+  };
+  for (const action of plugin.actions) {
+    expect({ door: action.name, runs: (action.delegates ?? []).includes("machines:run") }).toEqual({
+      door: action.name,
+      runs: Object.hasOwn(posts, action.name),
+    });
+    if (Object.hasOwn(governed, action.name)) {
+      expect(action.caps).toContain("machines:run");
+      expect(action.requirements).toContainEqual({ cap: "machines:run", target: ["operation"] });
+    } else expect(action.caps).not.toContain("machines:run");
+  }
+});
 test("a second dispatch inside the floor is the same wake, not another cycle", async () => {
   await pending();
   const at = (clock += HOUR);
@@ -556,8 +639,8 @@ test("enabling a store made before the catalog's two columns adds them and keeps
   const { db } = harness;
   // A store exactly as the first shape (`2026-09-12-store-v1`) left it: the tables are there,
   // and `sessions` has neither column. `planDataMigration` runs no chain for a MINOR version,
-  // so if the enable did not add them here nothing ever would — and every session row a `scan`
-  // wrote would name a column the table has not got.
+  // so if the enable did not add them here nothing ever would — and every session row naming
+  // them would name a column the table has not got.
   await db.run(`ALTER TABLE sessions DROP COLUMN live`);
   await db.run(`ALTER TABLE sessions DROP COLUMN kind`);
   await insert(db, "sessions", {
@@ -578,7 +661,7 @@ test("enabling a store made before the catalog's two columns adds them and keeps
   expect(older[0]?.kind).toBe("operator");
   expect(Number(older[0]?.live)).toBe(0);
 
-  // And a row in the shape `scan` writes now lands, which is the whole point of the column.
+  // And a row that names both columns now lands, which is the whole point of the column.
   await insert(db, "sessions", {
     selector: "omp/run-7/explore",
     host: MACHINE,
@@ -699,7 +782,10 @@ test("mapping-only methods are unavailable to ordinary exploration", async () =>
       recipes: ["triage"],
     }) as never,
   );
-  expect(ordinary).toMatchObject({ refused: expect.stringContaining(MACHINE) });
+  // An ordinary method is not refused for its method: it reaches transcript selection, which
+  // this fixture's empty archive refuses by its own sentence.
+  expect(ordinary).toMatchObject({ refused: expect.any(String) });
+  expect(String((ordinary as { refused: string }).refused)).not.toContain("triage");
 });
 
 test("catalog admission refuses mismatched targets without waking ordinary or paid work", async () => {
@@ -945,4 +1031,56 @@ test("explicit catalog admission posts free work without settling or launching p
   expect(disabled).toEqual([scheduled[0]!.revision]);
   expect(executed.map((job) => job.machineId)).toEqual([MACHINE]);
   expect(scheduled.map((job) => job.machineId)).toEqual([MACHINE]);
+});
+
+test("enabling a store made before archive captures adds their columns, the label map and the recency index", async () => {
+  const { db } = harness;
+  // A store exactly as the shape before #453 left it, holding one session the crossing hosted
+  // at a host NAME. Every row an earlier shape wrote must read as naming no capture yet.
+  await db.run(`DROP INDEX sessions_by_modified`);
+  await db.run(`DROP TABLE archive_labels`);
+  await db.run(`ALTER TABLE sessions DROP COLUMN archive_label`);
+  await db.run(`ALTER TABLE sessions DROP COLUMN archive_path`);
+  await insert(db, "sessions", {
+    selector: "omp/older",
+    host: "dev-01",
+    harness: "omp",
+    source_id: "older",
+    seen_at: stamp(NOW - HOUR),
+  });
+
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+  // A second enable is the ordinary case and must find nothing missing.
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+
+  expect(
+    await db.query(
+      `SELECT name FROM sqlite_master WHERE name IN ('archive_labels', 'sessions_by_modified')
+        ORDER BY name`,
+    ),
+  ).toEqual([{ name: "archive_labels" }, { name: "sessions_by_modified" }]);
+  // And what the columns are for works on the row the store already held: a mapped label
+  // hosts its first capture at the machine, where the crossing had left a name.
+  await db.run(`INSERT INTO archive_labels(label, machine_id, mapped_at) VALUES('dev-01', ?, ?)`, [
+    MACHINE,
+    stamp(NOW),
+  ]);
+  const row = SessionRowSchema.parse({
+    selector: "omp/older",
+    harness: "omp",
+    source_id: "older",
+    kind: "operator",
+    archive_label: "dev-01",
+    archive_path: "/home/operator/.omp/agent/sessions/older.jsonl",
+    snapshot_id: "a".repeat(64),
+    archived_at: "2026-09-12T11:00:00.000Z",
+    size: 10,
+    modified_at: "2026-09-12T10:00:00.000Z",
+  });
+  expect(
+    await upsertSessionRows({ db, touch: () => undefined }, [row], new Date(NOW).toISOString()),
+  ).toMatchObject({ moved: 1 });
+  expect(await db.query(`SELECT host, archive_label, archive_path FROM sessions`)).toEqual([
+    { host: MACHINE, archive_label: "dev-01", archive_path: row.archive_path },
+  ]);
 });

@@ -14,14 +14,18 @@ import {
   MATERIAL_EXPORT,
   MATERIAL_OUTPUT,
   MAX_MATERIAL_BYTES,
+  MaterialIndexSchema,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   PANELS,
   MACHINE_OPERATIONS,
   PRESET_OPERATIONS,
+  PrepareInputSchema,
   RESTIC_SERVICE,
   RUNTIME_TOOLS,
+  RUNTIME_SCRATCH_BYTES,
+  SessionRowSchema,
   WATCH_PLUGIN_ID,
   asLaunchRequest,
   RECALL_SERVICE_ID,
@@ -96,6 +100,10 @@ describe("the baseline's manifest spells the contract", () => {
     // being evidence about anything.
     expect(INGESTIBLE_TABLES).not.toContain("dispositions");
     expect(INGESTIBLE_TABLES).not.toContain("next_action_rulings");
+    // Nor may a run say what an archive label means (#453): the mapping decides which machine
+    // every capture under the label is hosted at, and only the operator's `rehostSessions`
+    // records it.
+    expect(INGESTIBLE_TABLES).not.toContain("archive_labels");
     // And every name in it is a table the migration actually creates, so the boundary cannot be
     // widened by a typo into a table nothing would refuse.
     const tables = Object.keys(importableTables());
@@ -259,6 +267,119 @@ describe("what a press posts", () => {
   });
 });
 
+/*
+  THE CAPTURE CONTRACT (#453). The hub selects captures and the machine half reads exactly those;
+  the machine half catalogues captures and the hub ingests them. Each shape below is written on
+  one side and read on the other, so what one side may not say is refused by the shape itself
+  rather than by whichever side happens to check.
+*/
+describe("the capture contract", () => {
+  const SNAPSHOT = "a".repeat(64);
+  const CATALOGUED = {
+    selector: "omp/-work-project/s1",
+    harness: "omp",
+    source_id: "-work-project/s1",
+    kind: "operator",
+    archive_label: "dev-01",
+    archive_path: "/home/operator/.omp/agent/sessions/-work-project/s1.jsonl",
+    snapshot_id: SNAPSHOT,
+    archived_at: "2026-09-24T22:13:00.000Z",
+    size: 1000,
+    modified_at: "2026-09-24T22:12:59.123Z",
+  };
+
+  test("a session row names one capture in one spelling, and nothing a machine may not say", () => {
+    expect(SessionRowSchema.safeParse(CATALOGUED).success).toBe(true);
+    expect(
+      SessionRowSchema.safeParse({
+        ...CATALOGUED,
+        content_digest: `sha256:${"d".repeat(64)}`,
+        title: "Port the catalog",
+        title_provenance: "recorded",
+        workspace: "/work/project",
+        total_tokens: 1200,
+      }).success,
+    ).toBe(true);
+    for (const refused of [
+      // restic's own spelling of an instant: the backing machine's offset and nanoseconds. The
+      // hub compares these as text and turns them into epoch milliseconds and back, and only
+      // `toISOString`'s spelling survives both.
+      { archived_at: "2026-09-25T00:13:00.123456789+02:00" },
+      { modified_at: "2026-09-24T22:12:59Z" },
+      // A host is the hub's to derive from the label; a machine never states one.
+      { host: "m-dev-01" },
+      // A capture never moves.
+      { live: 1 },
+      // Only the hub's title lane infers a title.
+      { title: "Named by a model", title_provenance: "inferred" },
+      // A title without its provenance, and the identity out of step with itself.
+      { title: "Port the catalog" },
+      { selector: "omp/-work-project/s2" },
+      // An abbreviated snapshot id names no capture exactly.
+      { snapshot_id: SNAPSHOT.slice(0, 8) },
+    ]) {
+      expect({
+        refused,
+        parsed: SessionRowSchema.safeParse({ ...CATALOGUED, ...refused }).success,
+      }).toEqual({ refused, parsed: false });
+    }
+  });
+
+  test("a preparation is handed captures and names each session once", () => {
+    const session = {
+      harness: "omp",
+      sourceId: "-work-project/s1",
+      path: CATALOGUED.archive_path,
+      size: 1000,
+      modifiedAt: Date.parse(CATALOGUED.modified_at),
+    };
+    const group = { snapshotId: SNAPSHOT, label: "dev-01", sessions: [session] };
+    expect(PrepareInputSchema.safeParse({ machineId: "m-dev-01", captures: [group] }).success).toBe(
+      true,
+    );
+    // The catalogued instant and the epoch milliseconds a preparation is handed are one value.
+    expect(new Date(session.modifiedAt).toISOString()).toBe(CATALOGUED.modified_at);
+    // Selectors and discovery are gone: an input in the old shape is refused, not reinterpreted.
+    expect(
+      PrepareInputSchema.safeParse({ machineId: "m-dev-01", selectors: ["omp/s1"] }).success,
+    ).toBe(false);
+    // One session in two snapshots would be two readings of one selector in one material.
+    expect(
+      PrepareInputSchema.safeParse({
+        machineId: "m-dev-01",
+        captures: [group, { ...group, snapshotId: "b".repeat(64) }],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("a material sealed before captures had an origin still parses beside one that has it", () => {
+    const entry = {
+      selector: CATALOGUED.selector,
+      harness: "omp",
+      sourceId: CATALOGUED.source_id,
+      captureDigest: `sha256:${"d".repeat(64)}`,
+      sourceDigest: `sha256:${"e".repeat(64)}`,
+      file: "sessions/0001-omp-work-project-s1.jsonl",
+      records: 3,
+      bytes: 1000,
+    };
+    const material = (sessions: readonly object[]) => ({
+      schema: "babel.material/1",
+      preparationId: "prep-1",
+      preparedAt: "2026-09-24T22:30:00.000Z",
+      machineId: "m-dev-01",
+      sessions,
+    });
+    const origin = { label: "dev-01", snapshotId: SNAPSHOT, path: CATALOGUED.archive_path };
+    expect(MaterialIndexSchema.safeParse(material([entry])).success).toBe(true);
+    expect(MaterialIndexSchema.safeParse(material([{ ...entry, origin }])).success).toBe(true);
+    expect(
+      MaterialIndexSchema.safeParse(material([{ ...entry, origin: { ...origin, path: "rel" } }]))
+        .success,
+    ).toBe(false);
+  });
+});
+
 describe("the machine half is declared as the machine half is built", () => {
   /*
     The manifest's `machine` block and `machine/main.ts` are one contract written twice: the
@@ -295,7 +416,7 @@ describe("the machine half is declared as the machine half is built", () => {
     //
     // The VERB is the operation's short word, never its declared id: the hub needs a namespaced
     // id to tell two plugins' operations apart, and the binary behind the id belongs to one
-    // plugin and takes `scan`.
+    // plugin and takes `catalog`.
     //
     // Source and map preparation take a SECOND lease (#279). The material a Code session reads is a
     // separate sealed output, because a session binds one named output of one job and Babel's
@@ -361,19 +482,22 @@ describe("the machine half is declared as the machine half is built", () => {
     /*
       THE HUB'S OWN BOUND IS UNDER THE MACHINE'S, WITH ROOM. `doors/launch.ts` refuses a
       selection whose catalogued bytes exceed `MAX_MATERIAL_BYTES`, BEFORE a job is posted;
-      the machine refuses at the seal, AFTER it has read every log in the selection. The
-      first must be the one that fires, or the operator learns his window was too wide from a
-      twenty-minute job that failed at the end.
+      the machine refuses when its runtime scratch fills or at the seal, AFTER it has read every
+      log in the selection. The first must be the one that fires, or the operator learns his
+      window was too wide from a twenty-minute job that failed at the end.
 
-      And `<=` would not be enough: `outputBytes` is the AGGREGATE the owner seals against —
-      stdout, stderr and BOTH of this operation's leases come out of one running budget, and
-      each lease is a ustar archive carrying 512 bytes of header and padding per member
-      (`agent/src/job-owner.ts`). A selection admitted at exactly the job's bound packs to it
-      and is refused `output_collection_refused` after the full read. A tenth of the job is
-      the margin this pins; the constant currently leaves an eighth.
+      Two bounds are the machine's. The leases are written into the runtime scratch, which is
+      smaller than the job's `outputBytes` by design (below). And `outputBytes` is the AGGREGATE
+      the owner seals against — stdout, stderr and BOTH of this operation's leases come out of
+      one running budget, and each lease is a ustar archive carrying 512 bytes of header and
+      padding per member (`agent/src/job-owner.ts`). A selection admitted at exactly either
+      bound fills it and fails after the full read, so `<=` would not be enough: a tenth of the
+      smaller bound is the margin this pins.
     */
-    const outputBytes = machine.operations[OPERATIONS.prepare]!.limits?.outputBytes ?? 0;
-    expect(MAX_MATERIAL_BYTES).toBeLessThanOrEqual(Math.floor(outputBytes * 0.9));
+    const outputBytes = machine.operations[OPERATIONS.prepare]!.limits.outputBytes;
+    expect(MAX_MATERIAL_BYTES).toBeLessThanOrEqual(
+      Math.floor(Math.min(outputBytes, RUNTIME_SCRATCH_BYTES) * 0.9),
+    );
     const prepare = machine.operations[OPERATIONS.prepare]!;
     expect(prepare.outputs).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
     expect(prepare.exports).toEqual([MATERIAL_EXPORT]);
@@ -383,9 +507,40 @@ describe("the machine half is declared as the machine half is built", () => {
     // The material's lease is cut from the same managed location the ordinary one is: a second
     // anchor would be a second thing an operator has to arrange per machine.
     expect(prepare.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
-    // …and no other operation exports anything: `scan` and `archive` write for this hub alone.
-    for (const operation of [OPERATIONS.scan, OPERATIONS.archive]) {
+    // …and no other operation exports anything: `catalog`, `archive` and `verify` write for
+    // this hub alone.
+    for (const operation of [OPERATIONS.catalog, OPERATIONS.archive, OPERATIONS.verify]) {
       expect(machine.operations[operation]!.exports ?? []).toEqual([]);
+    }
+  });
+
+  /*
+    ONE RUNTIME SCRATCH, AND EVERY OPERATION THAT WRITES IT DECLARES MORE THAN IT HOLDS. The
+    leases of every operation writing a `runtime`-anchored location are cut from the one
+    named-output tmpfs that anchor mounts. The runtime refuses a job whose `outputBytes` is
+    below that capacity (`bounded-output-storage-required`) and leaves stdio only what is above
+    it. So a machine sized to `RUNTIME_SCRATCH_BYTES` runs all of them only if each declares
+    strictly more. When three of them declared 64 MiB and `prepare` 512 MiB, no size both
+    admitted `scan`, `archive` and `verify` and held a material above 64 MiB.
+  */
+  test("every operation writing the runtime scratch declares more than the scratch holds", () => {
+    const locations = machine.locations ?? {};
+    // The named output is on the runtime anchor, so the operations below are the ones it binds.
+    expect(locations[OUTPUT_LOCATION]?.anchor).toBe("runtime");
+    const writesRuntime = (operation: string): boolean => {
+      const op = machine.operations[operation]!;
+      return (
+        op.outputs.length > 0 ||
+        op.locations.some(
+          (bind) => bind.access !== "read" && locations[bind.locationId]?.anchor === "runtime",
+        )
+      );
+    };
+    for (const operation of declared.filter(writesRuntime)) {
+      expect({
+        operation,
+        aboveScratch: machine.operations[operation]!.limits.outputBytes > RUNTIME_SCRATCH_BYTES,
+      }).toEqual({ operation, aboveScratch: true });
     }
   });
 
@@ -407,42 +562,108 @@ describe("the machine half is declared as the machine half is built", () => {
     expect(dependency).toBe(`github:atyrode/code#${pinned}`);
   });
 
-  test("the roots the adapters read are the roots the job mounts", () => {
+  test("the roots archive backs up are the roots its job mounts, and no reader mounts one", () => {
     // Inside the sandbox HOME is /home/job, so a read location is only the right one if its
     // guest path is what the adapter will build there. A root that moved on one side and not
-    // the other is a scan that finds nothing and reports success.
+    // the other is a backup that finds nothing and reports success.
     const home = process.env["HOME"];
     const codexHome = process.env["CODEX_HOME"];
     process.env["HOME"] = "/home/job";
     delete process.env["CODEX_HOME"];
     try {
-      for (const operation of [OPERATIONS.scan, OPERATIONS.archive]) {
-        const mounted = machine.operations[operation]!.locations.filter(
-          (location) => location.access === "read",
-        ).map((location) => machine.locations[location.locationId]?.guestPath);
-        expect(mounted.toSorted()).toEqual(
-          ADAPTERS.flatMap((adapter) => adapter.defaultRoots()).toSorted(),
-        );
-      }
+      const mounted = machine.operations[OPERATIONS.archive]!.locations.filter(
+        (location) => location.access === "read",
+      ).map((location) => machine.locations[location.locationId]?.guestPath ?? "");
+      // Every backup root is mounted — OMP's blobs too, without which an archived session does
+      // not restore whole (SPEC §6.8) — except `~/.omp/collab`: a required read location that
+      // does not exist makes the whole operation unavailable, and no enrolled machine holds one.
+      const backedUp = ADAPTERS.flatMap((adapter) => adapter.backupRoots());
+      expect([...mounted].sort()).toEqual(
+        backedUp.filter((path) => path !== "/home/job/.omp/collab").sort(),
+      );
     } finally {
       if (home === undefined) delete process.env["HOME"];
       else process.env["HOME"] = home;
       if (codexHome !== undefined) process.env["CODEX_HOME"] = codexHome;
     }
+    // ANALYSIS READS THE ARCHIVE, NEVER A MACHINE'S OWN FILES (#453). `archive` is the
+    // collector and the one operation that reads a machine's sessions; the catalog, a
+    // preparation, a verification and Recall read captures out of the repository, and an
+    // operator anchor bound to one of them would be a local read the specification says never
+    // happens.
+    for (const platform of Object.keys(machine.artifacts) as (keyof typeof machine.artifacts)[]) {
+      for (const operation of declared) {
+        const anchors = jobResourceRequirements(machine, operation, platform).anchors;
+        expect({
+          operation,
+          operatorAnchors: anchors.filter((anchor) => anchor.startsWith("operator.")).sort(),
+        }).toEqual({
+          operation,
+          operatorAnchors:
+            operation === OPERATIONS.archive
+              ? [
+                  "operator.claude-home",
+                  "operator.codex-home",
+                  "operator.omp-blobs",
+                  "operator.omp-sessions",
+                ]
+              : [],
+        });
+      }
+    }
   });
 
-  test("filesystem-only work stays offline and service proxies declare host networking", () => {
-    expect(machine.operations[OPERATIONS.scan]?.network).toBe("none");
-    expect(machine.operations[OPERATIONS.prepare]?.network).toBe("none");
-    // The pinned native owner serves even loopback proxies only under host networking.
-    for (const operation of [
-      MACHINE_OPERATIONS.archive,
-      MACHINE_OPERATIONS.verify,
-      MACHINE_OPERATIONS.recall,
-      MACHINE_OPERATIONS.mapCatalog,
-      MACHINE_OPERATIONS.mapPrepare,
-    ]) {
-      expect(machine.operations[operation]?.network).toBe("host");
+  test("archive reads the operator's session trees through read-only operator anchors, never `home`", () => {
+    // THE WORKLOAD HOME IS NOT THE OPERATOR'S (atyrode/manifold#839). On a native worker the
+    // `home` anchor is the service account's own directory, so a location on it backs up an
+    // empty tree. Each session tree is instead an anchor the machine's operator declares and
+    // Manifold presents read-only; these names are what the machine declares (dotfiles, dev-01),
+    // so a rename here is an `anchors_unavailable` there.
+    const locations = machine.locations ?? {};
+    expect(Object.values(locations).filter((location) => location.anchor === "home")).toEqual([]);
+    const read = machine.operations[OPERATIONS.archive]!.locations.filter(
+      (location) => location.access === "read",
+    );
+    expect(
+      Object.fromEntries(
+        read.map(({ locationId }) => {
+          const { anchor, components, kind } = locations[locationId]!;
+          return [locationId, { anchor, components, kind }];
+        }),
+      ),
+    ).toEqual({
+      "atyrode.babel.omp": { anchor: "operator.omp-sessions", components: [], kind: "directory" },
+      "atyrode.babel.omp-blobs": {
+        anchor: "operator.omp-blobs",
+        components: [],
+        kind: "directory",
+      },
+      "atyrode.babel.codex": { anchor: "operator.codex-home", components: [], kind: "directory" },
+      "atyrode.babel.claude": { anchor: "operator.claude-home", components: [], kind: "directory" },
+    });
+    // Read, and read only, wherever an operation names one: the protocol refuses anything
+    // else, and a writable binding of the operator's sessions is not one Babel may even ask for.
+    for (const operation of declared) {
+      for (const bind of machine.operations[operation]!.locations) {
+        if (!locations[bind.locationId]!.anchor.startsWith("operator.")) continue;
+        expect({ operation, access: bind.access }).toEqual({
+          operation: OPERATIONS.archive,
+          access: "read",
+        });
+      }
+    }
+  });
+
+  test("every operation reaches the repository, so every operation is given the network", () => {
+    // Each one reads or writes the archive, and its storage service proxy is loopback HTTP the
+    // engine refuses to open without it (`service_proxy_requires_host_network`). The catalog and
+    // a preparation joined `archive`, `verify` and Recall with #453: the protocol offers `none`
+    // or `host` and nothing between, and restic must reach the object store.
+    for (const operation of declared) {
+      expect({ operation, network: machine.operations[operation]?.network }).toEqual({
+        operation,
+        network: "host",
+      });
     }
   });
 
@@ -453,14 +674,16 @@ describe("the machine half is declared as the machine half is built", () => {
     // input file, and the operation asks that service for the storage document that carries
     // the locator and its secrets together (machine/restic.ts).
     //
-    // Archive, verification and Recall share one storage-binding contract; no operation
-    // may invent an alternative path to its repository coordinates or credentials.
-    const touching: readonly string[] = [
-      OPERATIONS.archive,
-      MACHINE_OPERATIONS.verify,
-      MACHINE_OPERATIONS.recall,
+    // Every operation that reads or writes the archive binds the same service; none may invent
+    // an alternative path to its repository coordinates or credentials. The two mapping
+    // operations (#223) reach the archive only through the Recall source owner's private mapping
+    // service, so they hold no repository binding at all: an executor never sees the storage
+    // document.
+    const mappingOperations: readonly string[] = [
+      MACHINE_OPERATIONS.mapCatalog,
+      MACHINE_OPERATIONS.mapPrepare,
     ];
-    for (const operation of touching) {
+    for (const operation of declared.filter((name) => !mappingOperations.includes(name))) {
       const op = machine.operations[operation]!;
       expect(op.services).toEqual([
         {
@@ -476,10 +699,6 @@ describe("the machine half is declared as the machine half is built", () => {
         { path: ["bearer"], serviceId: RESTIC_SERVICE.serviceId, value: "bearer" },
       ]);
     }
-    const mappingOperations: readonly string[] = [
-      MACHINE_OPERATIONS.mapCatalog,
-      MACHINE_OPERATIONS.mapPrepare,
-    ];
     for (const operation of mappingOperations) {
       const op = machine.operations[operation]!;
       expect(op.services).toEqual([
@@ -512,61 +731,55 @@ describe("the machine half is declared as the machine half is built", () => {
         });
       }
     }
-    // No other operation acquires storage or model authority through a service binding.
-    for (const other of declared.filter(
-      (operation) => !touching.includes(operation) && !mappingOperations.includes(operation),
-    )) {
-      expect(machine.operations[other]!.services).toBeUndefined();
-    }
   });
 
   test("the ceiling on a run is the ceiling the operator was promised", () => {
     // The loop launches with the operation's own limits; the hub refuses anything above them.
-    // These three numbers are therefore the whole answer to "how long can this run".
+    // These numbers are therefore the whole answer to "how long can this run".
     //
-    // `prepare` is thirty minutes and half a gigabyte because it SEALS THE MATERIAL now
-    // (#279): it reads every selected log and writes the normalized record stream into a
-    // second lease, and the bound `doors/launch.ts` refuses a selection against
-    // (`MAX_MATERIAL_BYTES`) has to fit under this one or the machine is what discovers the
-    // window was too wide.
+    // A catalog and a preparation are thirty minutes. A catalog lists up to `maxSnapshots`
+    // snapshots a run, and a fresh hub's first runs list every chain head; a preparation streams
+    // every selected capture out of the archive and seals the material into a second lease
+    // (#279, #453). Its bytes are not a figure of its own: every operation writing the runtime
+    // scratch declares more than the scratch holds, and the material bound fits under both
+    // (above).
     const minutes = (operation: string): number =>
       machine.operations[operation]!.limits.timeoutMs / 60_000;
-    expect(minutes(OPERATIONS.scan)).toBe(10);
+    expect(minutes(OPERATIONS.catalog)).toBe(30);
     expect(minutes(OPERATIONS.prepare)).toBe(30);
     expect(minutes(OPERATIONS.archive)).toBe(10);
     // `verify` is an hour because `--read-data` reads every stored byte of the repository,
     // which is the whole point of asking for it; the door posts under this ceiling and the
     // structural check that most verifications ask for finishes in a fraction of it.
     expect(minutes(MACHINE_OPERATIONS.verify)).toBe(60);
-    expect(machine.operations[OPERATIONS.prepare]!.limits.outputBytes).toBe(512 * 1024 * 1024);
   });
 
   test("every operation asks the machine only for resources the fleet advertises", () => {
-    // WHAT #303 WAS: a machine answers for tool resources BY NAME, dev-01 advertises two
+    // WHAT #303 WAS: a machine answers for tool resources BY NAME, dev-01 advertised two
     // (`development` and `system`), and this half asked for `bun`, `git` and `restic` — so
     // `engine.jobs.reviewDeployment` answered `resource_evidence_unknown` and Babel had no
     // native installation at all. `jobResourceRequirements` is the engine's own answer to what
     // an operation needs from the host, and it drops every alias the installation's immutable
     // declaration pins itself, which is why pinning bun is what makes these satisfiable.
     //
-    // `git` is not gone: it is inside the `development` closure the owner already binds, and
-    // machine/repository.ts resolves it at RUNTIME_TOOL_BIN first and on PATH second.
+    // restic is the one alias asked for by name, and every operation that reads or writes the
+    // archive asks for it (#453): upstream's whole Linux distribution is bare bzip2 while
+    // `MachineArtifactSchema` takes `raw`, `zip` or `tar.gz`, so there is nothing honest to pin.
+    // The mapping operations reach sessions only through the Recall owner's mapping service
+    // (#223), so they need neither restic nor the storage service. `development` is asked for by
+    // nothing: `scan` was the one operation that ran git.
+    const mapping: readonly string[] = [
+      MACHINE_OPERATIONS.mapCatalog,
+      MACHINE_OPERATIONS.mapPrepare,
+    ];
     for (const platform of Object.keys(machine.artifacts) as (keyof typeof machine.artifacts)[]) {
-      for (const operation of [OPERATIONS.scan, OPERATIONS.prepare]) {
+      for (const operation of declared) {
         const required = jobResourceRequirements(machine, operation, platform);
-        expect(required.tools).toEqual(["development", "system"]);
-        expect(required.services).toEqual([]);
-      }
-      // restic is the one alias still asked for by name, and only the two operations that
-      // touch the repository ask: upstream's whole Linux distribution is bare bzip2 while
-      // `MachineArtifactSchema` takes `raw`, `zip` or `tar.gz`, so there is nothing honest to
-      // pin. Per-operation is the point — a machine that binds no restic disables those two
-      // and leaves scan and prepare installable.
-      for (const operation of [OPERATIONS.archive, MACHINE_OPERATIONS.verify]) {
-        expect(jobResourceRequirements(machine, operation, platform).tools).toEqual([
-          "restic",
-          "system",
-        ]);
+        expect({ operation, tools: required.tools, services: required.services }).toEqual(
+          mapping.includes(operation)
+            ? { operation, tools: ["system"], services: [RECALL_SERVICE_ID] }
+            : { operation, tools: ["restic", "system"], services: [RESTIC_SERVICE.serviceId] },
+        );
       }
     }
     for (const operation of declared) {

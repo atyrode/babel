@@ -19,9 +19,80 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   their intent before posting and recover without losing a cursor or buying a duplicate effect;
   only the named result lease is ingested, so native logs cannot stall receipt replay. Real-store
   regressions cover interrupted writes and ambiguous admission; synthetic archived-source
-  exercises verify exact spans, class boundaries and citation refusal. A zero-model, cross-owner
-  native fixture discovered a second capture without reactivation and stopped on policy disablement.
-  Same-owner native activation and the paid isolated dispatcher are not yet delivered (#223).
+  exercises verify exact spans, class boundaries and citation refusal. Paid generation, served
+  review and bounded correction run only inside an operator-started `map-transcripts` drain
+  (`mapDrainStart`): installing a route or admitting its free catalog spends nothing, reads never
+  draw mapping work, and the drain stops at its target, deadline or `maxJobs`, or when no eligible
+  work remains. Its jobs are ordinary claims under the mapping daily cap; conductor regressions
+  cover read-wake exclusion, drain-only dispatch, target stop, self-ending and stop cancellation
+  at `map-prepare` (#223).
+
+- **The machine half can catalogue the archive, and every restic read runs without a lock.**
+  `babel/machine/catalog.ts` lists the snapshots tagged exactly `babel` (never the hub store's
+  `babel-store` backup) and writes one session row per capture, newest per label, with times
+  normalized to UTC. Chain heads are listed first, `maxSnapshots` bounds a run, and a memory in
+  the managed cache carries the rest to the next run. The receipt reports per-label counts and
+  the output lease's capacity. Recall and the catalog now share one listing rule
+  (`babel/machine/archive-listing.ts`). `cat`, `snapshots`, `check`, `ls`, `dump` and `restore`
+  run with `--no-lock`, while `init` and `backup` keep restic's lock. Tests against a synthetic
+  repository cover chain order, the cap, the memory, the tag exclusion, offset times, and a
+  restic killed mid-listing leaving no lock (#453).
+
+- **The hub selects archived captures and ingests the catalog's rows.** A preparation is handed
+  the exact captures it reads, grouped by snapshot with each path, size and modification time,
+  instead of selectors. `launch`, the conductor's analysis draw and the title lane select only
+  sessions whose row names an archived capture, under every host label rather than the launch
+  machine's, and "recent" is when a session was last written rather than when it was catalogued.
+  The input stops before `PREPARE_INPUT_MAX_BYTES`, and the material is bounded by the machine's
+  newest `outputCapacity` less `MATERIAL_HEADROOM_BYTES`, divided by the lane's concurrency (one
+  launch, the per-machine bound, a drain's fan); both bounds count what they leave in
+  `overBound`. `sessions.json` rows are parsed against `SessionRowSchema` and written through
+  `upsertSessionRows`, and a row naming no capture is refused by name. The beat and the default
+  plan follow `keep-going`'s operation, `verify` runs on any machine and lists the catalogued
+  path, and a titling run whose preparation read every recorded title settles with no Code
+  session. Regressions cover selection, both bounds, the drain share, ingestion and the title
+  lane (#453).
+
+- **Watch names the archive labels no machine answers for, and a retired `scan` run keeps its
+  name.** The `pulse` door's answer gains `archive`: each host label the catalog filed sessions
+  under that no `archive_labels` row maps, with its session count, most first, at most 64 with
+  the rest counted. Watch renders it as one Archive line under the last cycle, from the same read,
+  and nothing when every label is mapped; those sessions are still selected and prepared, and
+  `rehostSessions` is what maps a label. `RETIRED_OPERATIONS` names `atyrode.babel.scan`, so a
+  historic scan receipt reads as "Scan (retired)" rather than a bare id. The specification and
+  the building, runbook, parity and threat-model documents state the archive-first contract:
+  collection on the machine that holds the sessions, the `catalog` beat, preparation from
+  archived captures on any machine holding the archive binding with host network, lock-free
+  reads, label mapping and the store's `babel-store` backup. Regressions cover the pulse's
+  mapping, ordering and bound, and the rendered line (#453).
+
+- **Catalogued sessions record their archive capture, and `rehostSessions` maps restic host
+  labels.** The store moves to data version 1.12. Each session gains `archive_label` and
+  `archive_path` beside its snapshot, and a new `archive_labels` table holds the operator's
+  mapping of restic host labels to hub machine ids. `rehostSessions` records that mapping in the
+  same transaction as the move and reports `labelled`, so later captures under the label are
+  hosted on that machine. A label may map to itself. The capture-aware upsert
+  (`babel/store/sessions.ts`) keeps a session on its newest capture and keeps the digest of an
+  unchanged observation. The contract now fixes the capture, `prepare`/`catalog` input, session
+  row and receipt shapes the archive slices implement. Regressions cover the upsert rules, label
+  mapping and the 1.12 migration (#453).
+
+- **Zero autonomous activity weights also stop auxiliary work.** The conductor withdraws its
+  scan beat and posts no new title-generation preparation. Explicit explorations and drains keep
+  their routed recipes and ordinary admission checks; already admitted work still reconciles.
+  Regressions cover beat withdrawal, retained preparation and manual-only exploration (#264).
+
+- **The Code/omp closure includes optional gateway request bounds.** Reviewed configuration can
+  cap provider attempts and output tokens per call, including SDK retries and credential replay.
+  The dependency gate and compiled worker verification pass; a deployed spending bound still
+  requires matching runtime approval, explicit prices and job limits (#264, atyrode/code#170).
+
+- **Disabling policy fences deferred model admission.** An ordinary exploration whose material
+  finished preparing cannot buy its Code session under a disabled policy. Activation is checked
+  atomically with the posting claim, so disablement during preparation cannot slip through a
+  stale check. An unclaimed intent remains resumable after re-enablement; already claimed or
+  uncertain work keeps its existing accounting fence. Regressions cover both disablement
+  boundaries and exactly-once resumption (#444).
 
 - **Bounded drains retain admission and inference limits across wakes.** `maxJobs` caps total
   admitted ordinals, not just concurrency; refused attempts consume a slot, and reaching the cap
@@ -852,6 +923,70 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **`archive` reads the operator's session trees through read-only operator anchors, under the
+  machine's own label.** Its locations move off the `home` anchor, which on a native worker is the
+  service account's workload home, onto `operator.omp-sessions`, `operator.codex-home` and
+  `operator.claude-home`, each named whole and read-only at unchanged guest paths, and
+  `operator.omp-blobs` joins them so an archived OMP session restores with the blobs it
+  references. No location in the manifest names `home` any more. The job's input gains a required
+  `label`, which is restic's `--host` in place of the machine id: a machine's Manifold-made
+  snapshots are filed under the label its collector already uses (`dev-01`), so one
+  `archive_labels` mapping covers both. The label is the input's rather than the storage
+  document's, which is custody and may serve the whole fleet. `test/contract.test.ts` pins the
+  four anchors, read-only access by `archive` alone, no `home` location, and a mount for every
+  backup root but the deferred `~/.omp/collab`; `babel/machine/archive.test.ts` backs up a
+  job-shaped home with the adapters' own discovery and finds four per-root snapshots, blobs
+  included, under the label. A machine that collects now needs the four anchors declared, bound
+  and consented (`docs/runbook.md` §6) (#453).
+
+- **`catalog` is the beat, `prepare` binds the archive, and `scan` is retired.** Analysis reads
+  the fleet's restic archive and never a machine's own session files. The manifest declares
+  `atyrode.babel.catalog` — restic, the `atyrode.babel.restic` storage binding, host network, its
+  memory and restic's index in the managed cache, 1 GiB of output — and `keep-going` and the
+  conductor's beat post it. `atyrode.babel.prepare` binds the same service with host network and
+  mounts no `home` location. `atyrode.babel.scan` and `machine/scan.ts` are deleted, with the
+  adapters' file-based discovery and description; the git observer only `scan` used
+  (`machine/repository.ts`) is kept, by the operator's decision, with nothing but its own test
+  importing it. `RETIRED_OPERATIONS` keeps its historic runs named, and Watch labels a catalog run
+  "Catalog". `archive` stays the collector, with its `home` locations until a Manifold anchor
+  replaces them, and writes an empty `sessions` document: the catalog lists its snapshots like
+  any other `babel` snapshot, so captures have one writer. Every operation asks the owner for
+  `restic` and none for `development`. `test/contract.test.ts` pins host network, the storage
+  binding and restic on every operation, and a `home` anchor on `archive` alone; the packed
+  bundle runs `catalog`, and the dispatcher runs `catalog` and `prepare`, against a synthetic
+  archive (#453).
+
+- **`prepare` reads the captures the hub selected out of the archive, and never a local file.**
+  Its input is the contract's `PrepareInputSchema`: captures grouped by snapshot, each with its
+  path, size and modification time. Each capture is streamed with `restic dump` into the single
+  pass that normalizes, scans, digests and seals, and the redacted reading is kept per
+  repository and label in the managed cache, so a second preparation over the same captures
+  spawns no restic at all. A preparation refuses whole with a `PREPARE_REFUSALS` code:
+  `material_bound` and `material_storage_insufficient` before anything is fetched,
+  `capture_missing`, `capture_changed` and `archive_unavailable`. Each material entry names its
+  `origin`, the selection's host is the capture's label, and the receipt reports `fetched`,
+  `fetchedBytes` and `outputCapacity`. `sessions.json` rows name the capture read, with the
+  snapshot's own time as `archived_at`, and carry the title, workspace and usage the pass read
+  from the redacted stream (`babel/machine/session-facts.ts`, through Recall's metadata rule and the
+  adapters' usage fold). `verify` lists only a catalogued `restore.path`, and `resolveRedaction`
+  takes the capture's byte stream. Tests against a synthetic repository cover two labels in one
+  material, a cache hit with no restic call, each refusal, redaction, the rows and own-run
+  transcripts (#453).
+
+- **The documents stop calling the store durable and `mkdir -p` a fix.** `AGENTS.md` and the
+  README said a settled run's records were durable the instant they were written. The hub's
+  store is a single copy: Manifold's `data.db.backup` is a same-volume migration rollback image
+  and Litestream excludes plugin databases, so losing the hub's volume loses every record.
+  `AGENTS.md`, the README, runbook §5 and the schema's header now keep it the one Babel-owned
+  store, with no sync and no second store, and name its backup as open work with a decided
+  destination: the session transcripts' restic repository under its own `babel-store` tag
+  (#454). The `home` anchor guidance said creating the three session directories was the whole
+  fix; on a native Manifold worker that anchor is the service account's workload home, so the
+  jobs start and read an empty tree. It now says so and points at preparing from the archive
+  (#453). And running Babel's ordinary work on any model, a free one included, is stated as
+  ordinary operation: the runbook's §11 ceremony applies when the operator asks to drain a paid
+  usage window.
+
 - **The tree is `babel/`, and the judgement part lives inside it.** Two layout facts had drifted
   apart from what they meant. `atyrode/babel` contained `atyrode.babel/` — the organisation named
   twice and the product named twice — because the id-named directory made sense inside the
@@ -936,6 +1071,76 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   the door's (atyrode/manifold#749). An owner key is unaffected.
 
 ### Fixed
+
+- **The dependency closure follows Manifold `2ee760dd`.** `MANIFOLD_REV` and both workflow
+  `uses:` refs move to atyrode/manifold `2ee760dd`. `CODE_REV` and `@atyrode/manifold-code` move
+  to atyrode/code#220, whose omp closure is atyrode/manifold-omp#84, so all three name that
+  one revision. That revision contains atyrode/manifold#843. Before it, a machine owner gave the
+  hub 5 s to decide a native service call's authorization and then answered 403
+  `service_unauthorized`, even when the hub allowed the call. Now the wait is bounded by the
+  call's own deadline, and only a denial is a 403. That fix is owner-side: it reaches a machine
+  with its Manifold agent, not with these bundles. The revision also validates exported bundle
+  bytes in one linear pass (atyrode/manifold#845) and adds operator-declared read-only anchors
+  (atyrode/manifold#842). The omp closure also brings atyrode/manifold-omp#82 and
+  atyrode/manifold-omp#83: a one-shot's unset model roles stay on its configured model, and only
+  its configured providers are registered and credentialed. There are no Babel source changes.
+  All four Babel bundles, all four Code bundles and all three omp bundles have new digests. The
+  machine stamp moves because `machine.js` bundles the changed SDK code. The full frozen gate
+  passes 1,203 tests. A disposable engine installs all eleven bundles and dispatches their doors.
+
+- **One runtime scratch size admits every Babel operation that writes it.** `scan`, `archive`
+  and `verify` declared 64 MiB of output and `prepare` 512 MiB, all cut from the one tmpfs the
+  `runtime` anchor mounts. Manifold refuses a job whose `outputBytes` is below that tmpfs's
+  capacity (`bounded-output-storage-required`), so a machine sized to hold a material above
+  64 MiB refused the other three. All four now declare 1 GiB, Manifold's per-job ceiling and
+  what `atyrode.omp.session` declares, and the scratch a machine is sized to is spelled once as
+  `RUNTIME_SCRATCH_BYTES`: 768 MiB with 10000 inodes, which leaves each job 256 MiB of stdio.
+  `MAX_MATERIAL_BYTES` stays 448 MiB, under both the scratch and the session's 512 MiB
+  `inputBytes`. The building guide and runbook §6 give the sizing rule and the operator step,
+  bundle first and then scratch. The contract test holds every runtime-writing operation above
+  the scratch and the material bound under it, and fails on the old declarations.
+
+- **An abandoned review no longer stalls the conductor.** An abandonment withholds nothing
+  (#259), so the draw offers the same record and role again, under the same assignment id,
+  because the ordinal that names a review does not count abandonments. `claim` refused that id
+  as finished, and the conductor stops a cycle at its first refused dispatch. Once the eligible
+  pool thinned, every cycle drew the dead assignment first and launched nothing until the policy
+  version changed. On the integrated preview, launches fell from 44 to about 1 per ten minutes.
+  The draw now treats an abandoned review as free, and `claim` takes the abandoned epoch over at
+  the next fence, exactly as it takes over an expired lease: the dead epoch keeps its charge on
+  its own `~fence` row. A completed, skipped or failed claim is still finished. An abandoned
+  analysis stays settled, as before: its identity is its context, and unchanged context never
+  receives another paid sample. `coordinator.test.ts` drives the review path: abandon, redraw,
+  two workers racing for fence 2 (one winner, one conflict), spend charged once per epoch. It
+  fails without the change.
+
+- **A Code-backed review runs the model its profile names, or does not run.** `CODE_REV` and
+  `@atyrode/manifold-code` move to atyrode/code#219, whose omp closure carries
+  atyrode/manifold-omp#81. A one-shot now starts with exactly its configured model in scope.
+  Gateway discovery waits 60 s rather than 10 s, and a live-listed id with a thinking level keeps
+  its reasoning. Before this, a slow gateway let a review configured for
+  openrouter/stealth/space-bunny-alpha start on the machine default, and on the integrated
+  preview it answered as anthropic/claude-opus-4-8. Babel's own bundles are byte-identical, and
+  only the `atyrode.omp` and `atyrode.omp.gateway` bundles beneath them moved. The full frozen
+  gate passes 1,193 tests. A disposable engine installs all eleven bundles and dispatches their
+  doors.
+
+- **Babel can post its own jobs again.** `launch`, `drainStart`, `verify` and the three doors a
+  cycle follows (`pulse`, `runs`, `drainStatus`) now delegate `machines:run`, the capability
+  `engine.jobs.execute` and `schedule` discharge a posting against. Without it the integrated
+  preview refused every Babel job `authority_or_consent_refused` and every cycle logged `the beat
+  cannot be registered: job_capability_absent:machines:run`, so no scan, explicit explore, drain
+  slot, drain relaunch or analysis stage ever ran; only Code-posted reviews did. The host still
+  intersects the delegate with the caller's own capabilities and requires the operator's
+  version-bound consent at each operation node. The server regression drives a `pulse` through a
+  job slice attenuated the way the host attenuates it and fails without the delegate (#448).
+
+- **An explicit explore's preparation is posted under `prepare`'s own limits.** The operator's
+  press and the drain planned an explore for the undeclared `atyrode.babel.explore`, fell back to
+  `DEFAULT_LIMITS` (an hour, 2 GiB) and posted the preparation above `prepare`'s declared thirty
+  minutes and 1 GiB, which the hub refused `limit_exceeded`. They now plan for the operation the
+  press posts, as the conductor already did; the launch and drain regressions plan through
+  `runPlan` over the shipped manifest and fail on the old plan (#449).
 
 - **Old malformed identifiers no longer poison a whole search.** Retrieval excludes unnameable
   records before its candidate limit, reports their count in coverage, and keeps topics and

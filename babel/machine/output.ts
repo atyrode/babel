@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, statfs } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -52,6 +52,23 @@ export function directorySink(dir: string): OutputSink {
     write: (file, rows) => writeFile(file, rows),
     receipt: (receipt) => writeFile("receipt", receipt),
   };
+}
+
+/**
+ * THE RUNTIME SCRATCH AS THIS JOB SEES IT (#453): `statfs` of a named-output lease, total and
+ * free bytes, which a `catalog` and a `prepare` report as their receipt's `outputCapacity`. Every
+ * named output of a job shares one device, the runtime anchor's tmpfs, so any lease measures it.
+ * Null where it cannot be measured: an unknown capacity is not a capacity of zero.
+ */
+export async function outputCapacity(
+  dir: string,
+): Promise<NonNullable<Receipt["outputCapacity"]> | null> {
+  try {
+    const device = await statfs(dir);
+    return { bytes: device.blocks * device.bsize, free: device.bavail * device.bsize };
+  } catch {
+    return null;
+  }
 }
 
 /*

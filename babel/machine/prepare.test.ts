@@ -1,134 +1,79 @@
 /*
-  The preparation's identity and the two digests behind it, over real files on disk.
+  The preparation from the archive (#453), against a REAL restic repository
+  (`machine/test/restic-fixture.ts`): synthetic session roots under the fixture's own home,
+  snapshots taken under two host labels, the catalog run over them, and the hub's own input built
+  from the catalog's rows exactly as the selection builds it — grouped by snapshot, `modifiedAt`
+  read back from `modified_at`. What is pinned is what the hub and a model will read: which bytes
+  were sealed and from which capture, what the rows say, what a second preparation does not do
+  again, and each way a preparation refuses whole.
 
-  What is being pinned is a contract later phases lean on: `explore --preparation <id>` names a
-  corpus, so the same corpus must be the same id however it was discovered or when, and a
-  corpus that changed by one byte must not be.
-
-  Every fixture is written and then BACKDATED (`settle`), because a log written a moment ago is
-  one a preparation refuses to read at all (#262): the identity under test is a settled corpus's,
-  and a moving file has none. The exclusion itself is the subject of the last three tests.
+  The identity tests at the top are the preparation record's own and need no archive.
 */
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  utimesSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CatalogInputSchema,
   MATERIAL_INDEX,
-  MATERIAL_SCHEMA,
   MATERIAL_SESSIONS,
+  MAX_MATERIAL_BYTES,
   MaterialIndexSchema,
   PREFLIGHT_SCHEMA,
+  PrepareInputSchema,
+  ReceiptSchema,
+  SessionRowSchema,
   materialFile,
+  type CaptureGroup,
+  type MaterialIndex,
   type Receipt,
+  type SessionRow,
 } from "../contract.ts";
-import type { SessionRef } from "./adapters/index.ts";
-import { materialSink, type OutputFile, type OutputSink } from "./output.ts";
-import { PREFLIGHT_DETECTORS, secretScan } from "./preflight.ts";
+import { catalog } from "./catalog.ts";
+import { materialSink, outputCapacity, type OutputFile, type OutputSink } from "./output.ts";
+import { PREFLIGHT_DETECTORS } from "./preflight.ts";
 import {
   PREPARATION_SCHEMA,
-  PrepareInputSchema,
-  type PreparationEntry,
-  digests,
   newPreparation,
-  observe,
   prepare,
   resolveRedaction,
+  type PreparationEntry,
   type PrepareDeps,
 } from "./prepare.ts";
+import { openRepo, resticConfig, type ResticConfig, type Snapshot } from "./restic.ts";
+import { sessionDigester } from "./session-records.ts";
+import {
+  digestOf,
+  writeClaudeSession,
+  writeCodexRollout,
+  writeOmpSession,
+} from "./test/fixtures.ts";
+import { syntheticArchive, type SyntheticArchive } from "./test/restic-fixture.ts";
 
-/** An hour ago: past `LIVE_GRACE_MS`, so this file is a settled session and not a moving one. */
-function settle(path: string, contents?: string): string {
-  if (contents !== undefined) writeFileSync(path, contents);
-  const at = new Date(Date.now() - 60 * 60 * 1000);
-  utimesSync(path, at, at);
-  return path;
-}
+const TIMEOUT = 120_000;
+const MACHINE = "prepare-machine-01";
+const DEV = "dev-01";
+const WORKSTATION = "workstation-linux";
 
-const MACHINE = "test-machine-01";
+const OMP = "omp/-home-alex-babel/2026-09-01T00-00-00-000Z_01a0";
+const LEAKY = "omp/-home-alex-ops/2026-09-04T00-00-00-000Z_03c0";
+const OWN = "omp/-home-alex-babel/run_01.babel";
+const ROLLOUT = "codex/sessions/2026/09/02/rollout-2026-09-02T10-00-00-000Z-abc.jsonl";
+const CLAUDE = "claude/-home-alex-code/11111111-2222-4333-8444-555555555555";
 
-let root = "";
-let sessions: SessionRef[] = [];
+/** A credential in a format the scan matches, assembled so no literal of it is committed. */
+const LEAKED_KEY = `${"AKIA"}IOSFODNN7SYNTH01`;
 
-class Recorder implements OutputSink {
-  readonly files: Record<string, readonly unknown[]> = {};
-  written: Receipt | null = null;
-
-  async write(file: OutputFile, rows: readonly unknown[]): Promise<void> {
-    this.files[file] = rows;
-  }
-
-  async receipt(receipt: Receipt): Promise<void> {
-    this.written = receipt;
-  }
-}
+// ------------------------------------------------------------------ the preparation's identity
 
 const entry = (sourceId: string, capture: string, source: string): PreparationEntry => ({
-  host: MACHINE,
+  host: DEV,
   harness: "omp",
   sourceId,
   captureDigest: `sha256:${capture.repeat(64)}`,
   sourceDigest: `sha256:${source.repeat(64)}`,
-});
-
-function ref(harness: SessionRef["harness"], sourceId: string): SessionRef {
-  return {
-    harness,
-    sourceId,
-    selector: `${harness}/${sourceId}`,
-    primaryPath: join(root, harness, `${sourceId}.jsonl`),
-  };
-}
-
-function deps(over: readonly SessionRef[] = sessions): PrepareDeps {
-  return { discover: async () => over, digests, observe };
-}
-
-async function run(
-  input: Partial<{
-    selectors: string[];
-    agentSessions: boolean;
-    preflight: "redact" | "refuse" | "off";
-  }> = {},
-  over: readonly SessionRef[] = sessions,
-): Promise<{ receipt: Receipt; rows: readonly Record<string, unknown>[] }> {
-  const recorder = new Recorder();
-  const receipt = await prepare(
-    PrepareInputSchema.parse({ machineId: MACHINE, ...input }),
-    recorder,
-    deps(over),
-  );
-  expect(recorder.written).toEqual(receipt);
-  return {
-    receipt,
-    rows: (recorder.files["sessions"] ?? []) as readonly Record<string, unknown>[],
-  };
-}
-
-beforeAll(() => {
-  root = mkdtempSync(join(tmpdir(), "babel-prepare-"));
-  mkdirSync(join(root, "omp"), { recursive: true });
-  mkdirSync(join(root, "codex"), { recursive: true });
-  settle(join(root, "omp", "a1b2c3.jsonl"), '{"type":"user","text":"first"}\n');
-  settle(join(root, "omp", "d4e5f6.jsonl"), '{"type":"user","text":"second"}\n');
-  settle(join(root, "codex", "0192ab.jsonl"), '{"type":"message","text":"third"}\n');
-  sessions = [ref("omp", "a1b2c3"), ref("omp", "d4e5f6"), ref("codex", "0192ab")];
-});
-
-afterAll(() => {
-  if (root !== "") rmSync(root, { recursive: true, force: true });
 });
 
 test("a preparation id is the selection's content, not the moment it was fixed", () => {
@@ -141,7 +86,7 @@ test("a preparation id is the selection's content, not the moment it was fixed",
   expect(later.preparedAt).not.toBe(first.preparedAt);
   expect(first.schema).toBe(PREPARATION_SCHEMA);
 
-  // Discovery order is not content: the record is canonically ordered before it is derived.
+  // The input's order is not content: the record is canonically ordered before it is derived.
   const reversed = newPreparation("2026-09-12T10:00:00.000Z", [...selection].reverse());
   expect(reversed.id).toBe(first.id);
   expect(reversed.selection.map((held) => held.sourceId)).toEqual(["a1b2c3", "d4e5f6"]);
@@ -164,10 +109,10 @@ test("a different capture, a different reading, or a different scope is a differ
     ]).id,
     // a narrower scope over unchanged sessions
     newPreparation("2026-09-12T10:00:00.000Z", [entry("a1b2c3", "a", "b")]).id,
-    // the same sessions, held by another machine
+    // the same sessions, recorded by another machine
     newPreparation(
       "2026-09-12T10:00:00.000Z",
-      base.map((held) => ({ ...held, host: "other-machine" })),
+      base.map((held) => ({ ...held, host: WORKSTATION })),
     ).id,
   ]);
   expect(ids.size).toBe(5);
@@ -191,673 +136,750 @@ test("a scope that names nothing, or one session twice, is refused", () => {
   ).toThrow(/no capture digest/);
 });
 
-test("the bytes of a log and the records in it are digested apart", async () => {
-  const path = join(root, "omp", "digest-me.jsonl");
-  const session = ref("omp", "digest-me");
-  writeFileSync(path, '{"type":"user","text":"hello"}\n{"type":"agent","text":"hi"}\n');
-  const original = await digests(session);
-  expect(original.captureDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
-  expect(original.sourceDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+test("the bytes of a capture and the records in it are digested apart", () => {
+  const digest = (text: string) => {
+    const digester = sessionDigester();
+    digester.write(new TextEncoder().encode(text));
+    return digester.finish();
+  };
+  const original = digest('{"type":"user","text":"hello"}\n{"type":"agent","text":"hi"}\n');
   expect(original.bytes).toBe(60);
-
   // The same records, spelled differently: a reflowed, reordered log is the same corpus.
-  writeFileSync(path, '{ "text":"hello" , "type":"user"}\n{"text": "hi", "type":"agent"}\n');
-  const respelled = await digests(session);
+  const respelled = digest('{ "text":"hello" , "type":"user"}\n{"text": "hi", "type":"agent"}\n');
   expect(respelled.captureDigest).not.toBe(original.captureDigest);
   expect(respelled.sourceDigest).toBe(original.sourceDigest);
-  expect(respelled.bytes).not.toBe(original.bytes);
-
   // A record that says something else is not the same corpus.
-  writeFileSync(path, '{"type":"user","text":"hello"}\n{"type":"agent","text":"bye"}\n');
-  const changed = await digests(session);
-  expect(changed.sourceDigest).not.toBe(original.sourceDigest);
-
+  expect(
+    digest('{"type":"user","text":"hello"}\n{"type":"agent","text":"bye"}\n').sourceDigest,
+  ).not.toBe(original.sourceDigest);
   // A torn final line is evidence that was seen, not evidence dropped.
-  writeFileSync(path, '{"type":"user","text":"hello"}\n{"type":"agent","te');
-  const torn = await digests(session);
-  writeFileSync(path, '{"type":"user","text":"hello"}\n');
-  const truncated = await digests(session);
-  expect(torn.sourceDigest).not.toBe(truncated.sourceDigest);
-  rmSync(path);
-});
-
-test("the operation fixes a scope over every session it discovered", async () => {
-  const { receipt, rows } = await run();
-
-  expect(receipt.kind).toBe("prepare");
-  expect(receipt.closure).toBe("completed");
-  expect(receipt.runId).toMatch(/^run_/);
-  expect(receipt.counts["discovered"]).toBe(3);
-  expect(receipt.counts["selected"]).toBe(3);
-  expect(receipt.counts["bytes"]).toBeGreaterThan(0);
-
-  const preparation = receipt.preparation as
-    { id: string; selection: readonly PreparationEntry[] } | undefined;
-  expect(preparation?.id).toMatch(/^prep-[0-9a-f]{64}$/);
-  expect(preparation?.selection.map((held) => `${held.harness}/${held.sourceId}`)).toEqual([
-    "codex/0192ab",
-    "omp/a1b2c3",
-    "omp/d4e5f6",
-  ]);
-  for (const held of preparation?.selection ?? []) {
-    expect(held.host).toBe(MACHINE);
-    expect(held.captureDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
-  }
-
-  // Every scoped session is registered, with the capture the scope fixed.
-  expect(rows.length).toBe(3);
-  expect(rows.map((row) => row["selector"]).sort()).toEqual([
-    "codex/0192ab",
-    "omp/a1b2c3",
-    "omp/d4e5f6",
-  ]);
-  const first = rows.find((row) => row["selector"] === "omp/a1b2c3");
-  expect(first?.["host"]).toBe(MACHINE);
-  expect(first?.["harness"]).toBe("omp");
-  expect(first?.["source_id"]).toBe("a1b2c3");
-  expect(first?.["content_digest"]).toBe(
-    preparation?.selection.find((held) => held.sourceId === "a1b2c3")?.captureDigest,
+  expect(digest('{"type":"user","text":"hello"}\n{"type":"agent","te').sourceDigest).not.toBe(
+    digest('{"type":"user","text":"hello"}\n').sourceDigest,
   );
-  expect(first?.["size"]).toBe(31);
-  expect(typeof first?.["seen_at"]).toBe("string");
 });
 
-test("re-preparing an unchanged corpus is the same scope; one changed session is not", async () => {
-  const first = await run();
-  const again = await run();
-  expect(idOf(again.receipt)).toBe(idOf(first.receipt));
-
-  const path = join(root, "omp", "d4e5f6.jsonl");
-  settle(path, '{"type":"user","text":"second"}\n{"type":"agent","text":"more"}\n');
-  const after = await run();
-  expect(idOf(after.receipt)).not.toBe(idOf(first.receipt));
-
-  settle(path, '{"type":"user","text":"second"}\n');
-  const restored = await run();
-  expect(idOf(restored.receipt)).toBe(idOf(first.receipt));
-});
-
-test("a session being appended to is left out, so the scope's id does not move with it", async () => {
-  // The 2026-09-13 failure, reproduced: one session appended between preparations while the
-  // rest of the corpus sits still. Ten preparations, one id — and the moving file in none of
-  // them, which is why there is one id rather than ten.
-  const moving = join(root, "omp", "still-writing.jsonl");
-  writeFileSync(moving, '{"type":"user","text":"0"}\n');
-  const over = [...sessions, ref("omp", "still-writing")];
-
-  const ids = new Set<string>();
-  for (let turn = 0; turn < 10; turn++) {
-    const { receipt } = await run({}, over);
-    ids.add(idOf(receipt));
-    expect(receipt.counts["live"]).toBe(1);
-    expect(receipt.counts["selected"]).toBe(3);
-    appendFileSync(moving, `{"type":"agent","text":"${String(turn)}"}\n`);
-  }
-
-  expect(ids.size).toBe(1);
-  expect([...ids][0]).toBe(idOf((await run()).receipt));
-  rmSync(moving);
-});
-
-test("a scope holds none of Babel's own run transcripts unless it asks for them", async () => {
-  const own = settle(
-    join(root, "omp", "run-abc.babel.jsonl"),
-    '{"type":"session","runId":"run-abc"}\n',
-  );
-  const over = [...sessions, ref("omp", "run-abc.babel")];
-
-  const ordinary = await run({}, over);
-  expect(ordinary.receipt.counts["agent"]).toBe(1);
-  expect(ordinary.receipt.counts["selected"]).toBe(3);
-  expect(ordinary.rows.map((row) => row["selector"])).not.toContain("omp/run-abc.babel");
-
-  // #270's preset, asking on purpose: the same corpus plus Babel's own.
-  const studied = await run({ agentSessions: true }, over);
-  expect(studied.receipt.counts["agent"]).toBe(0);
-  expect(studied.receipt.counts["selected"]).toBe(4);
-  expect(studied.rows.map((row) => row["selector"])).toContain("omp/run-abc.babel");
-  expect(idOf(studied.receipt)).not.toBe(idOf(ordinary.receipt));
-  rmSync(own);
-});
-
-test("a selector that names an excluded session is refused, never quietly dropped", async () => {
-  const moving = ref("omp", "still-writing");
-  writeFileSync(moving.primaryPath, '{"type":"user","text":"0"}\n');
-  const own = ref("omp", "run-abc.babel");
-  settle(own.primaryPath, '{"type":"session","runId":"run-abc"}\n');
-  const over = [...sessions, moving, own];
-
-  const live = await run({ selectors: ["omp/still-writing"] }, over);
-  expect(live.receipt.closure).toBe("failed");
-  expect(live.receipt.reason).toContain("omp/still-writing");
-  expect(live.receipt.reason).toContain("still being appended");
-  expect(live.receipt.preparation).toBeUndefined();
-  expect(live.rows).toEqual([]);
-
-  const babel = await run({ selectors: ["omp/run-abc.babel"] }, over);
-  expect(babel.receipt.closure).toBe("failed");
-  expect(babel.receipt.reason).toContain("Babel's own runs' transcripts");
-  expect(babel.receipt.preparation).toBeUndefined();
-
-  // Asked for on purpose, the same selector is a scope.
-  const asked = await run({ selectors: ["omp/run-abc.babel"], agentSessions: true }, over);
-  expect(asked.receipt.closure).toBe("completed");
-  expect(asked.receipt.counts["selected"]).toBe(1);
-
-  rmSync(moving.primaryPath);
-  rmSync(own.primaryPath);
-});
-
-test("a corpus of nothing but moving and own sessions is skipped, and says which", async () => {
-  const moving = ref("omp", "still-writing");
-  writeFileSync(moving.primaryPath, '{"type":"user","text":"0"}\n');
-  const own = ref("omp", "run-abc.babel");
-  settle(own.primaryPath, '{"type":"session","runId":"run-abc"}\n');
-
-  const { receipt, rows } = await run({}, [moving, own]);
-  expect(receipt.closure).toBe("skipped");
-  expect(receipt.reason).toContain("1 still being written");
-  expect(receipt.reason).toContain("1 Babel's own runs'");
-  expect(receipt.preparation).toBeUndefined();
-  expect(rows).toEqual([]);
-
-  rmSync(moving.primaryPath);
-  rmSync(own.primaryPath);
-});
-
-test("a selector is resolved by suffix, and an unmatched one refuses the scope", async () => {
-  const chosen = await run({ selectors: ["a1b2c3", "codex/0192ab"] });
-  expect(chosen.receipt.closure).toBe("completed");
-  expect(chosen.receipt.counts["selected"]).toBe(2);
-  expect(chosen.rows.map((row) => row["selector"]).sort()).toEqual(["codex/0192ab", "omp/a1b2c3"]);
-
-  const missed = await run({ selectors: ["omp/nothing-here"] });
-  expect(missed.receipt.closure).toBe("failed");
-  expect(missed.receipt.reason).toContain("omp/nothing-here");
-  expect(missed.receipt.preparation).toBeUndefined();
-  expect(missed.rows).toEqual([]);
-});
-
-test("an ambiguous selector is refused with its candidates, never guessed", async () => {
-  const twins = [ref("omp", "shared-tail"), ref("codex", "shared-tail")];
-  writeFileSync(twins[0]?.primaryPath ?? "", '{"type":"user"}\n');
-  writeFileSync(twins[1]?.primaryPath ?? "", '{"type":"user"}\n');
-  const { receipt, rows } = await run({ selectors: ["shared-tail"] }, twins);
-
-  expect(receipt.closure).toBe("failed");
-  expect(receipt.reason).toContain("ambiguous");
-  expect(receipt.reason).toContain("omp/shared-tail");
-  expect(receipt.reason).toContain("codex/shared-tail");
-  expect(rows).toEqual([]);
-});
-
-test("a machine with nothing to prepare is skipped, not an empty scope", async () => {
-  const { receipt, rows } = await run({}, []);
-
-  expect(receipt.closure).toBe("skipped");
-  expect(receipt.reason).toBe("no session on this machine to prepare");
-  expect(receipt.preparation).toBeUndefined();
-  expect(rows).toEqual([]);
-});
+// ---------------------------------------------------------------------------- the fleet
 
 /*
-  THE SEALED MATERIAL (#279).
-
-  A Code session reads `/inputs/material`, and every later reader of a claim recovers its bytes
-  from there. The layout is fixed in `contract.ts` because two things far apart depend on it
-  being the same: this half writes it and `server/engine/prompts.ts` describes it. What the
-  tests below pin is the three promises the prompt makes about it — an index at the root, one
-  file per session named the way the index names it, one canonical JSON record per line — and
-  the one that makes a citation checkable: the digest in the index is taken over exactly the
-  bytes of that file.
+  ONE SYNTHETIC FLEET for every archive test below: dev-01's omp and codex roots in one
+  Go-shaped snapshot, the workstation's claude root in another, and the catalog's rows over
+  both. Each test prepares a subset of those captures into directories of its own.
 */
-test("the material is an index plus one canonical record stream per session", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "babel-material-"));
-  try {
-    const recorder = new Recorder();
-    const receipt = await prepare(PrepareInputSchema.parse({ machineId: MACHINE }), recorder, {
-      ...deps(),
-      material: materialSink(dir),
-    });
+let fx: SyntheticArchive;
+let dev: Snapshot;
+let workstation: Snapshot;
+/** The catalog's rows, by selector. */
+const catalogued = new Map<string, SessionRow>();
+/** Each session's archived bytes' digest, taken before the live files were changed. */
+const archived = new Map<string, string>();
+/** Scratch directories the tests made, removed at the end. */
+let scratch = "";
 
-    const index = MaterialIndexSchema.parse(
-      JSON.parse(readFileSync(join(dir, MATERIAL_INDEX), "utf8")),
-    );
-    expect(index.schema).toBe(MATERIAL_SCHEMA);
-    expect(index.preparationId).toBe(idOf(receipt));
-    expect(index.machineId).toBe(MACHINE);
-    // The receipt carries the SAME document, so the hub can verify a citation from one row
-    // rather than pulling the sealed archive back to read the front of it.
-    expect(receipt.material).toEqual(index);
+class Recorder implements OutputSink {
+  readonly files: Partial<Record<OutputFile, readonly unknown[]>> = {};
+  written: Receipt | null = null;
 
-    // The ordinal goes in front of the name so two selectors differing only in a replaced
-    // character cannot become one file — a material where one session silently overwrote
-    // another is worse than no material at all.
-    expect(index.sessions.map((held) => held.file)).toEqual(
-      index.sessions.map((held, ordinal) => materialFile(ordinal, held.selector)),
-    );
-
-    for (const held of index.sessions) {
-      const body = readFileSync(join(dir, MATERIAL_SESSIONS, held.file), "utf8");
-      const lines = body.split("\n").filter((line) => line !== "");
-      // ONE CANONICAL RECORD PER LINE, in the order the harness wrote them: re-serialised,
-      // so a reflowed log and a tidy one are byte-identical here and cite the same digest.
-      expect(lines).toHaveLength(held.records);
-      for (const line of lines) {
-        expect(JSON.stringify(JSON.parse(line) as unknown)).toBe(line);
-      }
-      // AND THE DIGEST IS OVER EXACTLY THOSE BYTES. This is the whole reason a claim may cite
-      // a line of this file: the index's `sourceDigest` is what the model copies into its
-      // locator, and it must be a digest of what the model actually read.
-      const hashed = new Bun.CryptoHasher("sha256").update(body).digest("hex");
-      expect(held.sourceDigest).toBe(`sha256:${hashed}`);
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+  async write(file: OutputFile, rows: readonly unknown[]): Promise<void> {
+    this.files[file] = rows;
   }
-});
 
-test("a preparation that selected nothing seals no material rather than an empty one", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "babel-material-"));
-  try {
-    const receipt = await prepare(
-      PrepareInputSchema.parse({ machineId: MACHINE }),
-      new Recorder(),
-      { ...deps([]), material: materialSink(dir) },
-    );
-
-    expect(receipt.closure).toBe("skipped");
-    expect(receipt.material).toBeUndefined();
-    // The lease is left exactly as it was found: a bound material nobody chose the contents of
-    // is a directory a session would read and call evidence.
-    expect(existsSync(join(dir, MATERIAL_INDEX))).toBe(false);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+  async receipt(receipt: Receipt): Promise<void> {
+    this.written = receipt;
   }
-});
-
-/*
-  THE SECRET PREFLIGHT, AS THE OPERATION RUNS IT (#339).
-
-  `preflight.test.ts` pins the rules; what is pinned here is the property the rules exist for: a
-  credential in a session on this machine does not reach the sealed material, and a reviewer
-  reading the receipt afterwards can tell a scanned preparation from an unscanned one. The
-  fixture's key is assembled rather than written whole for the reason every fixture of this shape
-  is: a literal in the format a scanner matches is a literal a push protection rejects.
-*/
-const LEAKED_KEY = `${"AKIA"}IOSFODNN7SYNTH01`;
-
-/** A settled session holding one record with a credential in it, and the record's own text. */
-function leaky(): { readonly over: readonly SessionRef[]; readonly text: string } {
-  const session = ref("omp", "leaky");
-  const text = `deploy with aws_access_key_id ${LEAKED_KEY} and then stop`;
-  settle(session.primaryPath, `${JSON.stringify({ type: "user", text })}\n`);
-  return { over: [session], text };
 }
 
-test("a credential in a session never reaches the sealed material", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "babel-preflight-"));
-  const { over } = leaky();
-  try {
-    const receipt = await prepare(
-      PrepareInputSchema.parse({ machineId: MACHINE }),
-      new Recorder(),
-      { ...deps(over), material: materialSink(dir) },
-    );
-
-    expect(receipt.closure).toBe("completed");
-    const index = MaterialIndexSchema.parse(
-      JSON.parse(readFileSync(join(dir, MATERIAL_INDEX), "utf8")),
-    );
-    const held = index.sessions[0];
-    const body = readFileSync(join(dir, MATERIAL_SESSIONS, held?.file ?? ""), "utf8");
-    expect(body).not.toContain(LEAKED_KEY);
-    expect(body).toContain("[[babel-redacted:aws-access-key-id@1:");
-    // Still one canonical record per line, and still the digest of exactly these bytes: a
-    // redaction that broke either would have broken every citation of this session.
-    expect(JSON.stringify(JSON.parse(body.trimEnd()) as unknown)).toBe(body.trimEnd());
-    const hashed = new Bun.CryptoHasher("sha256").update(body).digest("hex");
-    expect(held?.sourceDigest).toBe(`sha256:${hashed}`);
-
-    // THE RECEIPT SAYS IT WAS SCANNED, BY WHAT, AND WHAT IT FOUND — by class, never by value.
-    expect(receipt.preflight).toEqual({
-      schema: PREFLIGHT_SCHEMA,
-      detectors: PREFLIGHT_DETECTORS,
-      mode: "redact",
-      records: 1,
-      redactions: 1,
-      classes: [{ class: "aws-access-key-id", redactions: 1 }],
-      sites: [
-        { class: "aws-access-key-id", selector: "omp/leaky", line: 1, offset: 39, length: 20 },
+beforeAll(async () => {
+  fx = await syntheticArchive();
+  scratch = await mkdtemp(join(tmpdir(), "babel-prepare-"));
+  const omp = fx.sessionRoot("omp");
+  const codex = fx.sessionRoot("codex");
+  const claude = fx.sessionRoot("claude");
+  const paths: Record<string, string> = {
+    [OMP]: await writeOmpSession(omp, {
+      project: "-home-alex-babel",
+      stem: "2026-09-01T00-00-00-000Z_01a0",
+      title: "Porting the adapters",
+      cwd: "/home/alex/babel",
+      turns: [
+        { toolCalls: 2, usage: { totalTokens: 8504, cost: 0.5 } },
+        { toolCalls: 1, usage: { totalTokens: 8725, cost: 0.25 } },
       ],
-      sitesOmitted: 0,
-    });
-    expect(JSON.stringify(receipt)).not.toContain(LEAKED_KEY);
-    expect(receipt.counts["redacted"]).toBe(1);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+      toolErrors: 1,
+    }),
+    [LEAKY]: await writeOmpSession(omp, {
+      project: "-home-alex-ops",
+      stem: "2026-09-04T00-00-00-000Z_03c0",
+      title: "Rotating the deploy key",
+      cwd: "/home/alex/ops",
+      trailing: [
+        JSON.stringify({
+          type: "message",
+          message: {
+            role: "user",
+            content: `deploy with aws_access_key_id ${LEAKED_KEY} and then stop`,
+          },
+        }),
+      ],
+    }),
+    [OWN]: await writeOmpSession(omp, {
+      project: "-home-alex-babel",
+      stem: "run_01.babel",
+      runId: "run_01",
+    }),
+    [ROLLOUT]: await writeCodexRollout(codex, {
+      date: ["2026", "09", "02"],
+      name: "rollout-2026-09-02T10-00-00-000Z-abc",
+      cwd: "/home/alex/manifold",
+      delivered: "Port the session adapters to TypeScript, keeping the identities",
+    }),
+    [CLAUDE]: await writeClaudeSession(claude, {
+      project: "-home-alex-code",
+      session: "11111111-2222-4333-8444-555555555555",
+      title: "Reviewing the broker's restart path",
+      cwd: "/home/alex/code",
+    }),
+  };
+  for (const [selector, path] of Object.entries(paths))
+    archived.set(selector, await digestOf(path));
+  dev = await fx.snapshot(DEV, [omp, codex]);
+  workstation = await fx.snapshot(WORKSTATION, [claude]);
 
-test("the locator on a redaction recovers the original, and only on this machine", async () => {
-  const { over } = leaky();
-  const receipt = await prepare(PrepareInputSchema.parse({ machineId: MACHINE }), new Recorder(), {
-    ...deps(over),
+  const recorder = new Recorder();
+  await catalog(CatalogInputSchema.parse({ machineId: MACHINE }), recorder, {
+    archive: async () => openRepo(await delivered()),
+    cacheDir: "",
+    capacity: async () => null,
   });
+  for (const row of recorder.files.sessions ?? []) {
+    const parsed = SessionRowSchema.parse(row);
+    catalogued.set(parsed.selector, parsed);
+  }
+  expect([...catalogued.keys()].sort()).toEqual([CLAUDE, ROLLOUT, LEAKY, OMP, OWN].sort());
 
-  const site = receipt.preflight?.sites[0];
-  expect(site).toBeDefined();
-  const session = over.find((candidate) => candidate.selector === site?.selector);
-  expect(session).toBeDefined();
-  const resolved =
-    session === undefined || site === undefined ? null : await resolveRedaction(session, site);
-  // The value the receipt refused to carry, recovered from the log this machine holds — which is
-  // the whole disclosure argument: the locator travels, the bytes do not.
-  expect(resolved?.value).toBe(LEAKED_KEY);
-  // And it came out of the same bytes the preparation read, which is what makes the offsets
-  // meaningful: a log that had moved would answer with a different digest.
-  expect(resolved?.captureDigest).toBe(
-    receipt.material?.sessions[0]?.captureDigest ?? "no capture digest",
+  // THE MACHINE'S OWN FILES ARE NOT WHAT IS READ. Every live log now says something else, and
+  // the session roots are unreadable: a preparation that opened one would fail or seal the wrong
+  // bytes, and every capture digest below is checked against the ARCHIVED bytes.
+  for (const path of Object.values(paths)) writeFileSync(path, '{"type":"user","text":"live"}\n');
+  for (const root of [omp, codex, claude]) chmodSync(root, 0o000);
+}, TIMEOUT);
+
+afterAll(async () => {
+  for (const harness of ["omp", "codex", "claude"] as const) {
+    chmodSync(fx.sessionRoot(harness), 0o700);
+  }
+  await fx.close();
+  await rm(scratch, { recursive: true, force: true });
+});
+
+/** The storage document through the same delivery a job uses: the loopback service's binding. */
+function delivered(): Promise<ResticConfig> {
+  return resticConfig({ credentialFile: fx.credentialFile, env: fx.env });
+}
+
+/** The hub's input for these sessions, built from the catalog's rows as the selection builds
+ *  it: grouped by snapshot, the modification time read back as epoch milliseconds. */
+function offer(selectors: readonly string[]): CaptureGroup[] {
+  const groups = new Map<string, CaptureGroup & { sessions: CaptureGroup["sessions"][number][] }>();
+  for (const selector of selectors) {
+    const row = catalogued.get(selector);
+    if (row === undefined) throw new Error(`the catalog holds no ${selector}`);
+    let group = groups.get(row.snapshot_id);
+    if (group === undefined) {
+      group = { snapshotId: row.snapshot_id, label: row.archive_label, sessions: [] };
+      groups.set(row.snapshot_id, group);
+    }
+    group.sessions.push({
+      harness: row.harness,
+      sourceId: row.source_id,
+      path: row.archive_path,
+      size: row.size,
+      modifiedAt: Date.parse(row.modified_at),
+    });
+  }
+  return [...groups.values()];
+}
+
+/** A directory of this test's own under the suite's scratch. */
+async function directory(name: string): Promise<string> {
+  return await mkdtemp(join(scratch, `${name}-`));
+}
+
+/** restic behind a wrapper that logs every verb it is run with: the observable for "no fetch". */
+async function counted(): Promise<{ readonly config: ResticConfig; calls(): Promise<string[]> }> {
+  const dir = await directory("counted");
+  const log = join(dir, "calls");
+  const wrapper = join(dir, "restic");
+  await writeFile(log, "");
+  await writeFile(
+    wrapper,
+    `#!/bin/sh\nprintf '%s\\n' "$1" >> '${log}'\nexec '${fx.config.binary}' "$@"\n`,
+    { mode: 0o700 },
   );
-});
-
-test("a locator after an oversized record resolves against the same local normalization", async () => {
-  const session = ref("omp", "oversized-redaction");
-  const raw = `${"x".repeat(4 << 20)}aws_access_key_id ${LEAKED_KEY}\n`;
-  writeFileSync(session.primaryPath, raw);
-  try {
-    const scan = secretScan();
-    let body = "";
-    const measured = await digests(
-      session,
-      {
-        write: (record) => {
-          body += typeof record === "string" ? record : new TextDecoder().decode(record);
-        },
-        close: async () => {},
-      },
-      scan,
-    );
-    expect(measured.records).toBe(2);
-    expect(body).not.toContain(LEAKED_KEY);
-    expect(measured.sourceDigest).toBe(
-      `sha256:${new Bun.CryptoHasher("sha256").update(body).digest("hex")}`,
-    );
-    const site = scan.report().sites[0];
-    expect(site?.line).toBe(2);
-    if (site === undefined) throw new Error("expected the oversized record's credential locator");
-    const resolved = await resolveRedaction(session, site);
-    expect(resolved).toEqual({ value: LEAKED_KEY, captureDigest: measured.captureDigest });
-  } finally {
-    rmSync(session.primaryPath);
-  }
-});
-
-test("a refused preparation names what it found by class, seals nothing, and quotes no value", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "babel-preflight-"));
-  const { over } = leaky();
-  try {
-    const receipt = await prepare(
-      PrepareInputSchema.parse({ machineId: MACHINE, preflight: "refuse" }),
-      new Recorder(),
-      { ...deps(over), material: materialSink(dir) },
-    );
-
-    expect(receipt.closure).toBe("failed");
-    expect(receipt.reason).toBe(
-      "secret preflight refused omp/leaky: aws-access-key-id (1); values are never named",
-    );
-    expect(receipt.reason).not.toContain(LEAKED_KEY);
-    // No index, so nothing is bound into a session's sandbox — and what the refused pass did
-    // write into the lease is the redacted stream, not the log.
-    expect(receipt.material).toBeUndefined();
-    expect(existsSync(join(dir, MATERIAL_INDEX))).toBe(false);
-    const held = materialFile(0, "omp/leaky");
-    expect(readFileSync(join(dir, MATERIAL_SESSIONS, held), "utf8")).not.toContain(LEAKED_KEY);
-    // And the refusal is still countable by class: a reviewer acts on "an AWS key id", not on
-    // "something was found".
-    expect(receipt.preflight?.classes).toEqual([{ class: "aws-access-key-id", redactions: 1 }]);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("an unscanned preparation says so, because an absent answer would read as a clean one", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "babel-preflight-"));
-  const { over } = leaky();
-  try {
-    const receipt = await prepare(
-      PrepareInputSchema.parse({ machineId: MACHINE, preflight: "off" }),
-      new Recorder(),
-      { ...deps(over), material: materialSink(dir) },
-    );
-
-    expect(receipt.closure).toBe("completed");
-    expect(receipt.preflight?.mode).toBe("off");
-    // Zero records READ is what distinguishes this from a scan that found nothing, and it is why
-    // the field is written at all rather than omitted when no rule ran.
-    expect(receipt.preflight?.records).toBe(0);
-    expect(receipt.preflight?.redactions).toBe(0);
-    const index = MaterialIndexSchema.parse(
-      JSON.parse(readFileSync(join(dir, MATERIAL_INDEX), "utf8")),
-    );
-    const body = readFileSync(join(dir, MATERIAL_SESSIONS, index.sessions[0]?.file ?? ""), "utf8");
-    expect(body).toContain(LEAKED_KEY);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("a corpus with nothing to redact prepares to the same identity scanned or not", async () => {
-  // The source digest is taken over the bytes the scan produced, so a scanner that rewrote a
-  // clean record — a dropped newline, a re-serialisation — would move the id of every
-  // preparation in the corpus and orphan every citation of it.
-  const scanned = await run();
-  const unscanned = await run({ preflight: "off" });
-
-  expect(idOf(scanned.receipt)).toBe(idOf(unscanned.receipt));
-  // And the two are still distinguishable, which is the point of the field: one read the records
-  // and found nothing, the other never looked.
-  expect(scanned.receipt.preflight?.records).toBeGreaterThan(0);
-  expect(scanned.receipt.preflight?.redactions).toBe(0);
-  expect(unscanned.receipt.preflight?.records).toBe(0);
-});
-
-/*
-  THE READING KEPT BETWEEN PREPARATIONS (#236).
-
-  The defect was measured rather than guessed: twenty concurrent explorations over overlapping
-  scopes read and hashed the same logs twenty times, ~12 GB per draw, load 41 on twelve cores
-  with no model call in flight. So what is pinned here is the OBSERVABLE, not a duration — which
-  logs the operation opened — and, beside it, the two properties that make skipping a read
-  admissible at all: a log that moved is read again, and bytes that do not hash to what they
-  were kept as never reach a material.
-
-  `deps.digests` is the only thing in this operation that opens a session's log, so a recording
-  wrapper around it is exactly "which sessions were read".
-*/
-
-/** The same deps the suite uses, with the selector of every session actually read. */
-function counting(over: readonly SessionRef[] = sessions): {
-  readonly deps: PrepareDeps;
-  readonly read: string[];
-} {
-  const read: string[] = [];
   return {
-    read,
-    deps: {
-      discover: async () => over,
-      digests: async (session, seal, scan) => {
-        read.push(session.selector);
-        return await digests(session, seal, scan);
-      },
-      observe,
-    },
+    config: { ...fx.config, binary: wrapper },
+    calls: async () => (await readFile(log, "utf8")).split("\n").filter((line) => line !== ""),
   };
 }
 
-/** One preparation, with somewhere to keep readings and somewhere to seal the material. */
-async function prepareInto(
-  cacheDir: string,
-  materialDir: string,
-  over: readonly SessionRef[] = sessions,
-  input: Partial<{ selectors: string[]; preflight: "redact" | "refuse" | "off" }> = {},
-): Promise<{ readonly receipt: Receipt; readonly read: readonly string[] }> {
-  const counted = counting(over);
+function deps(overrides: Partial<PrepareDeps> = {}): PrepareDeps {
+  return {
+    archive: async () => openRepo(await delivered()),
+    repository: async () => (await delivered()).repository,
+    capacity: () => outputCapacity(scratch),
+    ...overrides,
+  };
+}
+
+async function run(
+  selectors: readonly string[],
+  input: Partial<{
+    machineId: string;
+    agentSessions: boolean;
+    preflight: "redact" | "refuse" | "off";
+    captures: CaptureGroup[];
+  }> = {},
+  overrides: Partial<PrepareDeps> = {},
+): Promise<{ receipt: Receipt; rows: readonly SessionRow[] }> {
+  const recorder = new Recorder();
   const receipt = await prepare(
-    PrepareInputSchema.parse({ machineId: MACHINE, ...input }),
-    new Recorder(),
-    { ...counted.deps, cacheDir, material: materialSink(materialDir) },
+    PrepareInputSchema.parse({ machineId: MACHINE, captures: offer(selectors), ...input }),
+    recorder,
+    deps(overrides),
   );
-  return { receipt, read: counted.read };
-}
-
-function scratch(): { readonly cache: string; readonly material: () => string; drop(): void } {
-  const made = [mkdtempSync(join(tmpdir(), "babel-readings-"))];
+  expect(recorder.written).toEqual(receipt);
+  expect(ReceiptSchema.parse(receipt)).toEqual(receipt);
+  // A read never takes a lock, so none is ever left behind.
+  expect(await fx.locks()).toBe(0);
   return {
-    cache: made[0] ?? "",
-    material: () => {
-      const dir = mkdtempSync(join(tmpdir(), "babel-material-"));
-      made.push(dir);
-      return dir;
-    },
-    drop: () => {
-      for (const dir of made) rmSync(dir, { recursive: true, force: true });
-    },
+    receipt,
+    rows: (recorder.files.sessions ?? []).map((row) => SessionRowSchema.parse(row)),
   };
 }
 
-test("a second preparation over an unchanged scope opens none of the logs again", async () => {
-  const dirs = scratch();
-  try {
-    const one = dirs.material();
-    const first = await prepareInto(dirs.cache, one);
-    // Discovery order, which is the order the logs are opened in; the SELECTION is sorted.
-    expect(first.read).toEqual(["omp/a1b2c3", "omp/d4e5f6", "codex/0192ab"]);
-    expect(first.receipt.counts["reused"]).toBe(0);
+function indexOf(material: string): MaterialIndex {
+  return MaterialIndexSchema.parse(
+    JSON.parse(readFileSync(join(material, MATERIAL_INDEX), "utf8")),
+  );
+}
 
-    const two = dirs.material();
-    const again = await prepareInto(dirs.cache, two);
+function idOf(receipt: Receipt): string {
+  return (receipt.preparation as { id?: string } | undefined)?.id ?? "";
+}
 
-    // THE OBSERVABLE: not one session's log was opened the second time.
-    expect(again.read).toEqual([]);
-    expect(again.receipt.counts["reused"]).toBe(3);
-    expect(again.receipt.counts["selected"]).toBe(3);
+const sha256 = (bytes: Uint8Array | string): string =>
+  `sha256:${new Bun.CryptoHasher("sha256").update(bytes).digest("hex")}`;
+
+// -------------------------------------------------------------------------------- reading
+
+test(
+  "captures from two labels are prepared into one material with origin set",
+  async () => {
+    const material = await directory("material");
+    const { receipt } = await run([OMP, ROLLOUT, CLAUDE], {}, { material: materialSink(material) });
+
+    expect(receipt.kind).toBe("prepare");
+    expect(receipt.closure).toBe("completed");
+    expect(receipt.reason).toBeUndefined();
+    expect(receipt.counts).toMatchObject({ offered: 3, selected: 3, fetched: 3, reused: 0 });
+    expect(receipt.counts["fetchedBytes"]).toBe(
+      [OMP, ROLLOUT, CLAUDE].reduce((sum, selector) => sum + catalogued.get(selector)!.size, 0),
+    );
+    // The lease was measured, which is what the hub bounds the next material on this machine by.
+    expect(receipt.outputCapacity?.bytes).toBeGreaterThan(0);
+
+    const index = indexOf(material);
+    expect(receipt.material).toEqual(index);
+    expect(index.machineId).toBe(MACHINE);
+    expect(index.sessions.map((held) => held.selector).sort()).toEqual(
+      [CLAUDE, ROLLOUT, OMP].sort(),
+    );
+    for (const [ordinal, held] of index.sessions.entries()) {
+      const row = catalogued.get(held.selector)!;
+      // EVERY ENTRY NAMES THE CAPTURE ITS BYTES CAME FROM, whichever label recorded it.
+      expect(held.origin).toEqual({
+        label: row.archive_label,
+        snapshotId: row.snapshot_id,
+        path: row.archive_path,
+      });
+      expect(held.origin?.snapshotId).toBe(held.selector === CLAUDE ? workstation.id : dev.id);
+      // The archived bytes, not the machine's own live file that says something else.
+      expect(held.captureDigest).toBe(archived.get(held.selector)!);
+      expect(held.file).toBe(materialFile(ordinal, held.selector));
+      // One canonical record per line, and the source digest is over exactly those bytes.
+      const body = readFileSync(join(material, MATERIAL_SESSIONS, held.file));
+      expect(held.sourceDigest).toBe(sha256(body));
+      const lines = body
+        .toString("utf8")
+        .split("\n")
+        .filter((line) => line !== "");
+      expect(lines).toHaveLength(held.records);
+      for (const line of lines) expect(JSON.stringify(JSON.parse(line) as unknown)).toBe(line);
+    }
+
+    // THE SELECTION NAMES THE MACHINE THAT RECORDED EACH SESSION, not the one that prepared it,
+    // so the same captures are the same preparation wherever they are prepared.
+    const selection = (receipt.preparation as { selection: PreparationEntry[] }).selection;
+    expect(selection.map((held) => held.host).sort()).toEqual([DEV, DEV, WORKSTATION]);
+    const elsewhere = await run([OMP, ROLLOUT, CLAUDE], { machineId: "another-machine" });
+    expect(elsewhere.receipt.closure).toBe("completed");
+    expect(idOf(elsewhere.receipt)).toBe(idOf(receipt));
+  },
+  TIMEOUT,
+);
+
+test(
+  "sessions.json rows parse with SessionRowSchema and carry archived_at from the snapshot",
+  async () => {
+    const { receipt, rows } = await run([OMP, ROLLOUT, CLAUDE]);
+    expect(receipt.closure).toBe("completed");
+    expect(rows.map((row) => row.selector).sort()).toEqual([CLAUDE, ROLLOUT, OMP].sort());
+    for (const row of rows) {
+      const listed = catalogued.get(row.selector)!;
+      const snapshot = row.selector === CLAUDE ? workstation : dev;
+      // The snapshot's own time, as restic stated it in the backing machine's zone, normalized.
+      expect(snapshot.time).toContain("+05:30");
+      expect(row.archived_at).toBe(new Date(Date.parse(snapshot.time)).toISOString());
+      // THE ROW NAMES THE CAPTURE THE CATALOG NAMED, so the hub applies what it read.
+      expect({
+        archive_label: row.archive_label,
+        archive_path: row.archive_path,
+        snapshot_id: row.snapshot_id,
+        archived_at: row.archived_at,
+        size: row.size,
+        modified_at: row.modified_at,
+        kind: row.kind,
+      }).toEqual({
+        archive_label: listed.archive_label,
+        archive_path: listed.archive_path,
+        snapshot_id: listed.snapshot_id,
+        archived_at: listed.archived_at,
+        size: listed.size,
+        modified_at: listed.modified_at,
+        kind: "operator",
+      });
+      expect(row.content_digest).toBe(archived.get(row.selector)!);
+    }
+    // And what the capture says about itself, from the stream that was sealed.
+    const bySelector = new Map(rows.map((row) => [row.selector, row]));
+    expect(bySelector.get(OMP)).toMatchObject({
+      title: "Porting the adapters",
+      title_provenance: "recorded",
+      workspace: "/home/alex/babel",
+      cost_usd: 0.75,
+      total_tokens: 17229,
+      turns: 2,
+      tool_errors: 1,
+    });
+    expect(bySelector.get(ROLLOUT)).toMatchObject({
+      title: "Port the session adapters to TypeScript, keeping the identities",
+      title_provenance: "derived",
+      workspace: "/home/alex/manifold",
+    });
+    expect(bySelector.get(CLAUDE)).toMatchObject({
+      title: "Reviewing the broker's restart path",
+      title_provenance: "recorded",
+      workspace: "/home/alex/code",
+    });
+  },
+  TIMEOUT,
+);
+
+test(
+  "a cache hit makes no restic call",
+  async () => {
+    const cacheDir = await directory("cache");
+    const restic = await counted();
+    const bindings = {
+      archive: async () => openRepo(restic.config),
+      repository: async () => fx.repository,
+      cacheDir,
+    };
+    const one = await directory("material");
+    const first = await run(
+      [OMP, ROLLOUT, CLAUDE],
+      {},
+      { ...bindings, material: materialSink(one) },
+    );
+    expect(first.receipt.counts).toMatchObject({ fetched: 3, reused: 0 });
+    // One snapshot lookup for both labels' snapshots, then one dump per capture.
+    expect((await restic.calls()).sort()).toEqual(["dump", "dump", "dump", "snapshots"]);
+
+    const two = await directory("material");
+    const again = await run(
+      [OMP, ROLLOUT, CLAUDE],
+      {},
+      { ...bindings, material: materialSink(two) },
+    );
+    // THE OBSERVABLE: no restic child was spawned the second time.
+    expect(await restic.calls()).toHaveLength(4);
+    expect(again.receipt.counts).toMatchObject({
+      fetched: 0,
+      fetchedBytes: 0,
+      reused: 3,
+      selected: 3,
+    });
     expect(idOf(again.receipt)).toBe(idOf(first.receipt));
-    expect(again.receipt.counts["bytes"]).toBe(first.receipt.counts["bytes"]);
-    expect(again.receipt.counts["records"]).toBe(first.receipt.counts["records"]);
-    // Including what the scan found, which the receipt is the only record of: a reused reading
-    // that forgot its report would say a corpus was clean because nobody looked at it twice.
     expect(again.receipt.preflight).toEqual(first.receipt.preflight);
-    // AND THE MATERIAL IS THE SAME EVIDENCE, byte for byte, under the same names — which is the
-    // whole claim, because a citation carries the digest of the file a model actually read.
+    // The rows are the same rows, snapshot times and facts included, off the kept readings.
+    expect(again.rows).toEqual(first.rows);
+    // AND THE MATERIAL IS THE SAME EVIDENCE, byte for byte, under the same names.
     expect(again.receipt.material?.sessions).toEqual(first.receipt.material?.sessions);
     for (const held of again.receipt.material?.sessions ?? []) {
       const body = readFileSync(join(two, MATERIAL_SESSIONS, held.file));
       expect(body).toEqual(readFileSync(join(one, MATERIAL_SESSIONS, held.file)));
-      expect(`sha256:${new Bun.CryptoHasher("sha256").update(body).digest("hex")}`).toBe(
-        held.sourceDigest,
-      );
+      expect(sha256(body)).toBe(held.sourceDigest);
     }
-  } finally {
-    dirs.drop();
-  }
-});
+  },
+  TIMEOUT,
+);
 
-test("a log that moved is read again, and it is the only one that is", async () => {
-  const dirs = scratch();
-  const moved = join(root, "omp", "d4e5f6.jsonl");
-  try {
-    const first = await prepareInto(dirs.cache, dirs.material());
-    expect(first.read).toHaveLength(3);
+test(
+  "a kept stream that does not digest to what it was kept as refuses the scope",
+  async () => {
+    const cacheDir = await directory("cache");
+    const first = await run([ROLLOUT], {}, { cacheDir });
+    expect(first.receipt.closure).toBe("completed");
 
-    settle(moved, '{"type":"user","text":"second"}\n{"type":"agent","text":"appended"}\n');
-    const again = await prepareInto(dirs.cache, dirs.material());
+    // One reading, corrupted in place at its own length — the one failure the observation
+    // cannot see, because size and modification time are the capture's and not the cache's.
+    const labels = join(cacheDir, "archive", readdirSync(join(cacheDir, "archive"))[0]!, "labels");
+    const slot = join(labels, readdirSync(labels)[0]!);
+    const stream = join(
+      slot,
+      readdirSync(slot).find((name) => name.endsWith(".records"))!,
+    );
+    writeFileSync(stream, "x".repeat(statSync(stream).size));
 
-    expect(again.read).toEqual(["omp/d4e5f6"]);
-    expect(again.receipt.counts["reused"]).toBe(2);
-    expect(idOf(again.receipt)).not.toBe(idOf(first.receipt));
+    const corrupt = await run([ROLLOUT], {}, { cacheDir });
+    expect(corrupt.receipt.closure).toBe("failed");
+    expect(corrupt.receipt.reason).toContain(ROLLOUT);
+    expect(corrupt.receipt.reason).toContain("does not digest to what it was kept as");
+    expect(corrupt.receipt.preparation).toBeUndefined();
+    expect(corrupt.rows).toEqual([]);
 
-    // And the entry the changed log overwrote is the one that is reused next time: a cache that
-    // grew an entry per version of a file would be a second copy of the corpus per week.
-    const third = await prepareInto(dirs.cache, dirs.material());
-    expect(third.read).toEqual([]);
-    expect(idOf(third.receipt)).toBe(idOf(again.receipt));
-  } finally {
-    settle(moved, '{"type":"user","text":"second"}\n');
-    dirs.drop();
-  }
-});
+    // The entry is gone, so the next preparation fetches the capture and is the scope the first
+    // one was: a corrupt cache costs one refusal, never a machine that can no longer prepare.
+    const after = await run([ROLLOUT], {}, { cacheDir });
+    expect(after.receipt.counts).toMatchObject({ fetched: 1, reused: 0 });
+    expect(idOf(after.receipt)).toBe(idOf(first.receipt));
+  },
+  TIMEOUT,
+);
 
-test("a preparation that redacts never reuses a stream kept unscanned", async () => {
-  // The kept stream is the stream that was SEALED, so under `off` it is the raw record. Serving
-  // it to a preparation that redacts would put a credential into a material a provider reads —
-  // the exact disclosure #339 exists to prevent, reintroduced by a cache.
-  const dirs = scratch();
-  const { over } = leaky();
-  try {
-    const raw = dirs.material();
-    const unscanned = await prepareInto(dirs.cache, raw, over, { preflight: "off" });
-    expect(unscanned.read).toEqual(["omp/leaky"]);
+// ----------------------------------------------------------------------------- refusals
+
+test(
+  "a size mismatch refuses capture_changed",
+  async () => {
+    const [group] = offer([ROLLOUT]);
+    const session = group!.sessions[0]!;
+    for (const size of [session.size + 1, session.size - 1]) {
+      const material = await directory("material");
+      const { receipt, rows } = await run(
+        [],
+        { captures: [{ ...group!, sessions: [{ ...session, size }] }] },
+        { material: materialSink(material) },
+      );
+      expect(receipt.closure).toBe("failed");
+      expect(receipt.reason).toStartWith("capture_changed: ");
+      expect(receipt.reason).toContain(ROLLOUT);
+      expect(receipt.counts["fetched"]).toBe(1);
+      expect(receipt.preparation).toBeUndefined();
+      expect(receipt.material).toBeUndefined();
+      expect(existsSync(join(material, MATERIAL_INDEX))).toBe(false);
+      expect(rows).toEqual([]);
+    }
+  },
+  TIMEOUT,
+);
+
+test(
+  "a missing path refuses capture_missing",
+  async () => {
+    const [group] = offer([OMP]);
+    const session = group!.sessions[0]!;
+    const absent = session.path.replace("01a0.jsonl", "09z9.jsonl");
+    const missingPath = await run([], {
+      captures: [{ ...group!, sessions: [{ ...session, path: absent }] }],
+    });
+    expect(missingPath.receipt.closure).toBe("failed");
+    expect(missingPath.receipt.reason).toBe(
+      `capture_missing: snapshot ${dev.id} holds no file at ${absent}`,
+    );
+    expect(missingPath.rows).toEqual([]);
+
+    // A snapshot the archive does not hold is refused before any capture of it is fetched.
+    const unknown = "f".repeat(64);
+    const missingSnapshot = await run([], { captures: [{ ...group!, snapshotId: unknown }] });
+    expect(missingSnapshot.receipt.reason).toBe(
+      `capture_missing: snapshot ${unknown} is not in the archive`,
+    );
+    expect(missingSnapshot.receipt.counts["fetched"]).toBe(0);
+    // And so is one the archive holds under another label than the one it was named with.
+    const relabelled = await run([], { captures: [{ ...group!, label: WORKSTATION }] });
+    expect(relabelled.receipt.reason).toBe(
+      `capture_missing: snapshot ${dev.id} was taken under the label ${DEV}, not ${WORKSTATION}`,
+    );
+  },
+  TIMEOUT,
+);
+
+test(
+  "an unreachable archive refuses archive_unavailable",
+  async () => {
+    // No binding at all: the job was never handed the storage service.
+    const unbound = await run(
+      [OMP],
+      {},
+      {
+        archive: async () =>
+          openRepo(
+            await resticConfig({ credentialFile: join(scratch, "no-binding.json"), env: fx.env }),
+          ),
+      },
+    );
+    expect(unbound.receipt.closure).toBe("failed");
+    expect(unbound.receipt.reason).toStartWith("archive_unavailable: ");
+    expect(unbound.receipt.reason).toContain("bound no atyrode.babel.restic service");
+    expect(unbound.rows).toEqual([]);
+    expect(unbound.receipt.material).toBeUndefined();
+
+    // A binding whose repository does not answer: restic's own diagnosis is the reason.
+    const gone = await run(
+      [OMP],
+      {},
+      {
+        archive: async () => openRepo({ ...fx.config, repository: join(scratch, "gone") }),
+      },
+    );
+    expect(gone.receipt.closure).toBe("failed");
+    expect(gone.receipt.reason).toStartWith("archive_unavailable: ");
+    expect(gone.receipt.reason).toContain("repository does not exist");
+    expect(gone.receipt.counts["fetched"]).toBe(0);
+
+    // With a cache to file readings in, the binding is asked for its locator first.
+    const cached = await run(
+      [OMP],
+      {},
+      {
+        cacheDir: await directory("cache"),
+        repository: async () =>
+          (await resticConfig({ credentialFile: join(scratch, "no-binding.json"), env: fx.env }))
+            .repository,
+      },
+    );
+    expect(cached.receipt.reason).toStartWith("archive_unavailable: ");
+  },
+  TIMEOUT,
+);
+
+test(
+  "capacity preflight refuses before any fetch",
+  async () => {
+    const restic = await counted();
+    let opened = 0;
+    const archive = async () => {
+      opened++;
+      return openRepo(restic.config);
+    };
+    const need = [OMP, ROLLOUT].reduce((sum, selector) => sum + catalogued.get(selector)!.size, 0);
+    const full = await run(
+      [OMP, ROLLOUT],
+      {},
+      {
+        archive,
+        capacity: async () => ({ bytes: 1 << 20, free: 4096 }),
+      },
+    );
+    expect(full.receipt.closure).toBe("failed");
+    // Both figures: what the material needs, and what the lease has free.
+    expect(full.receipt.reason).toBe(
+      `material_storage_insufficient: 2 captures need ${String(need + 512 * 5 + (1 << 20))} ` +
+        `bytes of material and the material lease has 4096 free`,
+    );
+    expect(full.receipt.outputCapacity).toEqual({ bytes: 1 << 20, free: 4096 });
+
+    // Past what one material may hold at all, whatever the lease has free.
+    const [group] = offer([OMP]);
+    const huge = await run(
+      [],
+      {
+        captures: [{ ...group!, sessions: [{ ...group!.sessions[0]!, size: MAX_MATERIAL_BYTES }] }],
+      },
+      { archive },
+    );
+    expect(huge.receipt.reason).toStartWith("material_bound: ");
+
+    for (const refused of [full, huge]) {
+      expect(refused.receipt.counts["fetched"]).toBe(0);
+      expect(refused.rows).toEqual([]);
+    }
+    // NOTHING WAS FETCHED, AND THE ARCHIVE WAS NEVER EVEN OPENED.
+    expect(opened).toBe(0);
+    expect(await restic.calls()).toEqual([]);
+  },
+  TIMEOUT,
+);
+
+test(
+  "a babelOwnLog capture is refused unless agentSessions is set",
+  async () => {
+    expect(catalogued.get(OWN)?.kind).toBe("agent");
+    const refused = await run([OMP, OWN]);
+    expect(refused.receipt.closure).toBe("failed");
+    expect(refused.receipt.reason).toBe(
+      `${OWN} is one of Babel's own runs' transcripts, which a preparation of the operator's ` +
+        `work does not read`,
+    );
+    expect(refused.receipt.counts["fetched"]).toBe(0);
+    expect(refused.rows).toEqual([]);
+
+    // A preset that studies Babel asks on purpose, and the same captures are a scope.
+    const asked = await run([OMP, OWN], { agentSessions: true });
+    expect(asked.receipt.closure).toBe("completed");
+    expect(asked.receipt.counts["selected"]).toBe(2);
+    expect(asked.rows.find((row) => row.selector === OWN)?.kind).toBe("agent");
+  },
+  TIMEOUT,
+);
+
+// ------------------------------------------------------------------------- the preflight
+
+test(
+  "secrets in an archived transcript are redacted in the material",
+  async () => {
+    const material = await directory("material");
+    const cacheDir = await directory("cache");
+    const { receipt, rows } = await run(
+      [LEAKY],
+      {},
+      { material: materialSink(material), cacheDir },
+    );
+
+    expect(receipt.closure).toBe("completed");
+    const held = indexOf(material).sessions[0]!;
+    const body = readFileSync(join(material, MATERIAL_SESSIONS, held.file), "utf8");
+    expect(body).not.toContain(LEAKED_KEY);
+    expect(body).toContain("[[babel-redacted:aws-access-key-id@");
+    // Still the digest of exactly these bytes, which every citation of this session relies on.
+    expect(held.sourceDigest).toBe(sha256(body));
+
+    // THE RECEIPT SAYS IT WAS SCANNED, BY WHAT, AND WHAT IT FOUND — by class, never by value.
+    expect(receipt.preflight).toMatchObject({
+      schema: PREFLIGHT_SCHEMA,
+      detectors: PREFLIGHT_DETECTORS,
+      mode: "redact",
+      redactions: 1,
+      classes: [{ class: "aws-access-key-id", redactions: 1 }],
+    });
+    expect(receipt.counts["redacted"]).toBe(1);
+
+    // THE VALUE IS NOWHERE BABEL WROTE: not the receipt, not the rows, not the kept reading.
+    expect(JSON.stringify(receipt)).not.toContain(LEAKED_KEY);
+    expect(JSON.stringify(rows)).not.toContain(LEAKED_KEY);
+    const kept = await readdir(cacheDir, { recursive: true, withFileTypes: true });
+    expect(kept.filter((entry) => entry.isFile()).length).toBeGreaterThan(0);
+    for (const entry of kept.filter((candidate) => candidate.isFile())) {
+      const bytes = await readFile(join(entry.parentPath, entry.name));
+      expect(bytes.includes(LEAKED_KEY)).toBe(false);
+    }
+
+    // The locator resolves against the capture's own bytes, fetched by a job holding the
+    // archive binding, and names the digest of the bytes the preparation read.
+    const site = receipt.preflight?.sites[0];
+    if (site === undefined) throw new Error("expected the credential's locator");
+    const origin = held.origin!;
+    const resolved = await resolveRedaction(
+      (async function* () {
+        yield await fx.repo.dump(origin.snapshotId, origin.path);
+      })(),
+      site,
+    );
+    expect(resolved).toEqual({ value: LEAKED_KEY, captureDigest: held.captureDigest });
+  },
+  TIMEOUT,
+);
+
+test(
+  "a refused preparation names what it found by class, seals nothing, and quotes no value",
+  async () => {
+    const material = await directory("material");
+    const { receipt, rows } = await run(
+      [LEAKY],
+      { preflight: "refuse" },
+      { material: materialSink(material) },
+    );
+    expect(receipt.closure).toBe("failed");
+    expect(receipt.reason).toBe(
+      `secret preflight refused ${LEAKY}: aws-access-key-id (1); values are never named`,
+    );
+    expect(receipt.material).toBeUndefined();
+    expect(rows).toEqual([]);
+    // No index, so nothing is bound into a session's sandbox — and what the refused pass did
+    // write into the lease is the redacted stream, not the capture.
+    expect(existsSync(join(material, MATERIAL_INDEX))).toBe(false);
     expect(
-      readFileSync(
-        join(raw, MATERIAL_SESSIONS, unscanned.receipt.material?.sessions[0]?.file ?? ""),
-        "utf8",
-      ),
-    ).toContain(LEAKED_KEY);
+      readFileSync(join(material, MATERIAL_SESSIONS, materialFile(0, LEAKY)), "utf8"),
+    ).not.toContain(LEAKED_KEY);
+    expect(receipt.preflight?.classes).toEqual([{ class: "aws-access-key-id", redactions: 1 }]);
+  },
+  TIMEOUT,
+);
 
-    const scanned = dirs.material();
-    const redacted = await prepareInto(dirs.cache, scanned, over);
+test(
+  "an unscanned preparation says so, and a redacting one never reuses its stream",
+  async () => {
+    const cacheDir = await directory("cache");
+    const raw = await directory("material");
+    const unscanned = await run(
+      [LEAKY],
+      { preflight: "off" },
+      { material: materialSink(raw), cacheDir },
+    );
+    expect(unscanned.receipt.closure).toBe("completed");
+    // Zero records READ is what distinguishes this from a scan that found nothing.
+    expect(unscanned.receipt.preflight).toMatchObject({ mode: "off", records: 0, redactions: 0 });
+    const held = unscanned.receipt.material?.sessions[0];
+    expect(readFileSync(join(raw, MATERIAL_SESSIONS, held!.file), "utf8")).toContain(LEAKED_KEY);
 
-    expect(redacted.read).toEqual(["omp/leaky"]);
-    expect(redacted.receipt.counts["reused"]).toBe(0);
+    // The kept stream is the stream that was SEALED, so under `off` it is the raw record:
+    // serving it to a preparation that redacts would be the disclosure #339 exists to prevent.
+    const scanned = await directory("material");
+    const redacted = await run([LEAKY], {}, { material: materialSink(scanned), cacheDir });
+    expect(redacted.receipt.counts).toMatchObject({ reused: 0, fetched: 1, redacted: 1 });
     const body = readFileSync(
-      join(scanned, MATERIAL_SESSIONS, redacted.receipt.material?.sessions[0]?.file ?? ""),
+      join(scanned, MATERIAL_SESSIONS, redacted.receipt.material!.sessions[0]!.file),
       "utf8",
     );
     expect(body).not.toContain(LEAKED_KEY);
-    expect(redacted.receipt.counts["redacted"]).toBe(1);
-  } finally {
-    dirs.drop();
-  }
-});
+  },
+  TIMEOUT,
+);
 
-test("a kept stream that does not digest to what it was kept as refuses the scope", async () => {
-  const dirs = scratch();
-  try {
-    const first = await prepareInto(dirs.cache, dirs.material(), sessions, {
-      selectors: ["codex/0192ab"],
-    });
-    expect(first.receipt.closure).toBe("completed");
+test(
+  "a corpus with nothing to redact prepares to the same identity scanned or not",
+  async () => {
+    const scanned = await run([OMP, CLAUDE]);
+    const unscanned = await run([OMP, CLAUDE], { preflight: "off" });
+    expect(idOf(scanned.receipt)).toBe(idOf(unscanned.receipt));
+    expect(scanned.receipt.preflight?.records).toBeGreaterThan(0);
+    expect(scanned.receipt.preflight?.redactions).toBe(0);
+    expect(unscanned.receipt.preflight?.records).toBe(0);
+  },
+  TIMEOUT,
+);
 
-    // One entry, corrupted in place at its own length — the one failure the observation cannot
-    // see, because size and mtime are the log's and not the cache's.
-    const stream = readdirSync(dirs.cache).find((name) => name.endsWith(".records")) ?? "";
-    const held = join(dirs.cache, stream);
-    writeFileSync(held, "x".repeat(statSync(held).size));
-
-    const corrupt = await prepareInto(dirs.cache, dirs.material(), sessions, {
-      selectors: ["codex/0192ab"],
-    });
-    expect(corrupt.receipt.closure).toBe("failed");
-    expect(corrupt.receipt.reason).toContain("codex/0192ab");
-    expect(corrupt.receipt.reason).toContain("does not digest to what it was kept as");
-    expect(corrupt.receipt.preparation).toBeUndefined();
-    expect(corrupt.receipt.material).toBeUndefined();
-
-    // And the entry is gone, so the next preparation reads the log and is the scope the first
-    // one was: a corrupt cache costs one refusal, never a machine that can no longer prepare.
-    const after = await prepareInto(dirs.cache, dirs.material(), sessions, {
-      selectors: ["codex/0192ab"],
-    });
-    expect(after.read).toEqual(["codex/0192ab"]);
-    expect(idOf(after.receipt)).toBe(idOf(first.receipt));
-  } finally {
-    dirs.drop();
-  }
-});
-
-function idOf(receipt: Receipt): string {
-  const preparation = receipt.preparation as { id?: string } | undefined;
-  return preparation?.id ?? "";
-}
+test(
+  "a preparation offered nothing is skipped, and seals no material",
+  async () => {
+    const material = await directory("material");
+    const { receipt, rows } = await run([], {}, { material: materialSink(material) });
+    expect(receipt.closure).toBe("skipped");
+    expect(receipt.reason).toBe("no capture was offered to prepare");
+    expect(receipt.preparation).toBeUndefined();
+    expect(receipt.material).toBeUndefined();
+    expect(rows).toEqual([]);
+    expect(existsSync(join(material, MATERIAL_INDEX))).toBe(false);
+  },
+  TIMEOUT,
+);

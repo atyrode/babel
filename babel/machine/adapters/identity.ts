@@ -1,34 +1,39 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  HARNESSES,
+  TITLE_PROVENANCES,
+  type Harness,
+  type TitleProvenance,
+} from "../../contract.ts";
 
 /*
   THE HARNESS SOURCE-ADAPTER PORT, ported from v0.4.0:internal/adapter (SPEC.md §3).
 
-  An adapter answers three questions about one harness's files and refuses the others':
-  which sessions are here (discover), which session is this file the log of (claim), and what
-  does this session's own transcript say about itself (describe). Everything an adapter reports
-  is read from the live files in place and nothing is copied: durability is restic's job, so a
-  description is a best-effort view of one instant, refreshed on every scan.
+  An adapter answers three questions about one harness and refuses the others' files: which
+  session a path is the primary log of (`claim`), what a backup must capture to restore that
+  harness's sessions whole (`backupRoots`), and what the harness's own records say it spent
+  (`usage`, a fold over parsed records). It opens no session log: `claim` is asked of the
+  paths a restic listing names, and the usage fold is fed an archived capture's normalized,
+  redacted stream (`machine/session-facts.ts`). A session's title and workspace are not an
+  adapter's question: Recall's metadata rule reads them from that same stream
+  (`machine/recall-records.ts`), so a catalog row and a Recall answer state one reading of one
+  capture.
 
-  Two rules of the Go port carry over unchanged because the product depends on them:
+  Two rules of the Go port carry over because the product depends on them:
 
-  - An absent value is explained, never synthesized. `absent` carries one reason per field the
-    adapter could not observe, so "this session has no title" and "this reader found none" stay
-    different claims. The store has no column for those reasons; they are the scan's own
-    evidence and reach the operator through the receipt's counts.
+  - An absent value is never synthesized. A total the harness did not write is null, and null
+    is not zero: a harness whose records carry no usage folds to no totals (`NO_USAGE`), never
+    to a free session.
   - A title's provenance travels with it. A harness that wrote the title into its own log is
     reporting a fact ("recorded"); a deterministic rule over the transcript is Babel's
-    arithmetic ("derived"); a model summary is a guess that cost money ("inferred") and a scan
-    never produces one.
+    arithmetic ("derived", `codex-title.ts`); a model summary is a guess that cost money
+    ("inferred") and no machine row carries one — the contract's session row refuses it.
 */
 
-export const HARNESSES = ["omp", "codex", "claude"] as const;
-export type Harness = (typeof HARNESSES)[number];
+export { HARNESSES, TITLE_PROVENANCES, type Harness, type TitleProvenance };
 
-export const TITLE_PROVENANCES = ["recorded", "derived", "inferred"] as const;
-export type TitleProvenance = (typeof TITLE_PROVENANCES)[number];
-
-/** One discovered session: the identity the catalog files it under, and where its log is. */
+/** One claimed session: the identity the catalog files it under, and where its log is. */
 export interface SessionRef {
   harness: Harness;
   sourceId: string;
@@ -49,36 +54,25 @@ export interface SessionUsage {
   toolErrors: number | null;
 }
 
-/** One best-effort view of a session, read from its live files. */
-export interface SessionFacts {
-  ref: SessionRef;
-  title: string | null;
-  titleProvenance: TitleProvenance | null;
-  workspace: string | null;
-  /** ISO 8601, UTC. */
-  createdAt: string | null;
-  modifiedAt: string | null;
-  /** The bytes read, and their canonical digest: "sha256:<64 lowercase hex>". */
-  size: number;
-  contentDigest: string;
-  usage: SessionUsage | null;
-  /**
-   * The Babel run whose own transcript this session is, when the harness's own session header
-   * names one; null for every session a person had. Babel writes its analysis logs in OMP's
-   * record language, so the OMP adapter is the one that can read the `runId` field out of the
-   * `{"type":"session"}` header — the other two harnesses write formats Babel never writes.
-   */
-  babelRunId: string | null;
-  /** field → why this adapter could not observe it. */
-  absent: Record<string, string>;
+/**
+ * THE HARNESS'S OWN USAGE, folded one parsed record at a time. It reads records rather than a
+ * file, so it sums a capture's normalized, redacted stream (`machine/session-facts.ts`, #453):
+ * numbers survive redaction, and a total is the same total whichever stream carried it.
+ */
+export interface UsageFold {
+  record(fields: Record<string, unknown>): void;
+  /** The totals, or null when the harness recorded no usage this fold reads. */
+  finish(): SessionUsage | null;
 }
+
+/** The fold of a harness that records no usage an adapter reads: every total is absent. */
+export const NO_USAGE: UsageFold = {
+  record() {},
+  finish: () => null,
+};
 
 export interface Adapter {
   readonly harness: Harness;
-  /** The version of this adapter's discovery and description behaviour. */
-  readonly schema: number;
-  /** Where this harness keeps its sessions on this machine, whether or not they exist. */
-  defaultRoots(): string[];
   /** What a backup must capture to be able to restore a session, closure included. */
   backupRoots(): string[];
   /** The session this path is the primary log of. Archive callers supply listing existence
@@ -88,8 +82,8 @@ export interface Adapter {
     exists?: (path: string) => boolean,
     roots?: ReadonlySet<string>,
   ): SessionRef | null;
-  discover(roots: readonly string[]): Promise<SessionRef[]>;
-  describe(ref: SessionRef): Promise<SessionFacts>;
+  /** A fresh fold of this harness's own usage over parsed records. */
+  usage(): UsageFold;
 }
 
 /** The one place the selector is spelled. */
@@ -166,24 +160,13 @@ export function walkablePath(path: string): boolean {
 /**
  * The home directory the roots hang off, as the process sees it NOW: $HOME when the job set
  * one, the passwd entry otherwise. The environment is read per call and never cached, because
- * a job's child is given its own HOME and a scan's roots belong to the machine it runs on —
+ * a job's child is given its own HOME and an archive's roots belong to the machine it runs on —
  * `os.homedir()` alone answers from where the process started.
  */
 export function homeDir(): string {
   const declared = process.env["HOME"]?.trim() ?? "";
   return declared !== "" ? declared : homedir().trim();
 }
-
-/**
- * How recently a session's primary log must have been written to count as STILL BEING WRITTEN.
- *
- * Two minutes is the Go product's own `liveSessionGrace` (b3d57c8, filed as #236 and met again
- * on 2026-09-13: a 240 MB Code session the operator had open, re-read by every one of twelve
- * concurrent draws, its mtime moving the whole time). It is a grace and not a lock: a harness
- * that appends every second is excluded for as long as it does so, and the same file two
- * minutes after the operator closed his terminal is an ordinary settled session.
- */
-export const LIVE_GRACE_MS = 120_000;
 
 /**
  * Babel's own analysis-session root, `<data dir>/babel/analysis` — where a run's transcript is
@@ -206,14 +189,13 @@ const BABEL_SESSION_EXT = ".babel.jsonl";
  *
  * Two tests, because either alone is reachable without the other. Under the analysis root a log
  * is Babel's whatever it is called; and the compound extension identifies one anywhere, which
- * matters because a run's transcript that has been moved, restored out of a snapshot or scanned
+ * matters because a run's transcript that has been moved, restored out of a snapshot or archived
  * under a root the operator named explicitly is the same session — and because OMP's own layout
  * is this one ("*.jsonl" a directory below a root), so a plain extension under an explicit root
  * would let the OMP adapter claim Babel's transcripts as OMP's.
  *
- * It is a PATH rule: it costs no read, so `prepare` can honour it before digesting 240 MB. What
- * a path cannot say — that a session some other harness wrote belongs to a Babel run — is the
- * harness's own metadata to say, and `SessionFacts.babelRunId` is where an adapter says it.
+ * It is a PATH rule: it costs no read, so `catalog` and `prepare` can honour it from a listing
+ * before a single byte of the capture is fetched.
  */
 export function babelOwnLog(path: string): boolean {
   if (path.endsWith(BABEL_SESSION_EXT)) return true;

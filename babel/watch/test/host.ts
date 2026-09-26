@@ -220,15 +220,20 @@ export const HEALTHY_CYCLE: CycleReport = {
 };
 
 /**
- * THE PULSE THIS PANEL READS: a deployment whose last cycle spent normally. The panel takes
- * only the cycle out of it, and the healthy shape is the default because "nothing to report"
- * is what a working loop reports on nearly every tick.
+ * THE PULSE THIS PANEL READS: a deployment whose last cycle spent normally and whose every
+ * archive label is mapped. The panel takes only the cycle and the archive out of it, and the
+ * quiet shape is the default because "nothing to report" is what a working loop reports on
+ * nearly every tick.
  */
-export function pulseResult(cycle: CycleReport | null = HEALTHY_CYCLE): PulseResult {
+export function pulseResult(
+  cycle: CycleReport | null = HEALTHY_CYCLE,
+  archive: PulseResult["archive"] = { unmapped: [], omitted: 0 },
+): PulseResult {
   return {
     since: "2026-09-12T00:00:00.000Z",
     today: { sessionsRead: 4, records: 3, votes: 2, proposals: 1, topicProposals: 0, ruled: 1 },
     reviewing: [],
+    archive,
     cycle,
   };
 }

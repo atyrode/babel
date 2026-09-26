@@ -41,6 +41,24 @@ export const RECORD_KINDS = ["hypothesis", "observation", "finding", "proposal"]
 export const RecordKindSchema = z.enum(RECORD_KINDS);
 export type RecordKind = z.infer<typeof RecordKindSchema>;
 
+/**
+ * THE HARNESSES WHOSE SESSIONS BABEL READS. A selector is `<harness>/<source id>`, so the
+ * harness is part of every session's identity; the machine half's adapters
+ * (`machine/adapters/identity.ts`) and the capture schemas below spell it from here.
+ */
+export const HARNESSES = ["omp", "codex", "claude"] as const;
+export const HarnessSchema = z.enum(HARNESSES);
+export type Harness = z.infer<typeof HarnessSchema>;
+
+/**
+ * HOW A SESSION'S TITLE CAME ABOUT. `recorded`: the harness wrote it into its own log.
+ * `derived`: a deterministic rule over the transcript produced it. `inferred`: a model named the
+ * session (#342), which only the hub's title lane does — so no row a machine writes may say it.
+ */
+export const TITLE_PROVENANCES = ["recorded", "derived", "inferred"] as const;
+export const TitleProvenanceSchema = z.enum(TITLE_PROVENANCES);
+export type TitleProvenance = z.infer<typeof TitleProvenanceSchema>;
+
 /** §8.7's sorts. `next` is what needs the operator, most urgent first. */
 export const FEED_SORTS = ["next", "hot", "new", "top", "controversial", "rising"] as const;
 export const FeedSortSchema = z.enum(FEED_SORTS);
@@ -191,8 +209,35 @@ export const CHALLENGE_RELATION = "challenges";
 export const ANALYSIS_BRIEF_LIMIT = 24;
 export const ANALYSIS_BRIEF_BYTE_LIMIT = 16 * 1024;
 export const ANALYSIS_SOURCE_LIMIT = 16;
-/** Leave 64 MiB of prepare's 512 MiB output bound for framing, receipts and output streams. */
+/**
+ * THE RUNTIME SCRATCH A BABEL MACHINE IS SIZED FOR: the capacity of the named-output tmpfs its
+ * `runtime` anchor mounts (`services.manifold.execution.outputBytes` on a native worker, with
+ * `outputInodes` 10000). Every operation writing `OUTPUT_LOCATION` cuts its leases from it, and
+ * so does `atyrode.omp.session`. The runtime refuses a job with
+ * `bounded-output-storage-required` when that capacity exceeds its `limits.outputBytes`, then
+ * charges the whole capacity before stdout and stderr (atyrode/manifold at `7b5fe301`,
+ * `packages/agent/src/job-linux.ts:440-453,804`). So each such operation declares 1 GiB, the
+ * per-job ceiling (`packages/protocol/src/jobs.ts:86`) and the session's own declaration, and
+ * 768 MiB leaves every one of them 256 MiB of stdio. A scratch of the full 1 GiB would admit
+ * them with none, and their first byte of stdout would end the job `output-limit`.
+ */
+export const RUNTIME_SCRATCH_BYTES = 768 * 1024 * 1024;
+/**
+ * The most catalogued bytes one preparation seals: 64 MiB under the 512 MiB `inputBytes` into
+ * which `atyrode.omp.session` extracts a bound material (atyrode/manifold-omp at `4470475`,
+ * `plugins/atyrode.omp/manifest.json:992-993`), and well inside the runtime scratch with the
+ * receipt lease beside it. Concurrent jobs share that scratch, so two materials at this bound do
+ * not fit it together; a bound per lane's concurrency is #453's.
+ */
 export const MAX_MATERIAL_BYTES = 448 * 1024 * 1024;
+/**
+ * WHAT A MATERIAL BOUND LEAVES OF A MACHINE'S RUNTIME SCRATCH FOR EVERYTHING ELSE (#453): the
+ * receipt lease, stdio and the leases of the jobs running beside it. One preparation is bounded
+ * at `min(MAX_MATERIAL_BYTES, ⌊(capacity − MATERIAL_HEADROOM_BYTES) / k⌋)`, where `capacity` is
+ * the newest `outputCapacity.bytes` that machine's receipts reported and `k` is how many
+ * materials the lane may hold at once. With no report, the bound is `MAX_MATERIAL_BYTES`.
+ */
+export const MATERIAL_HEADROOM_BYTES = 64 * 1024 * 1024;
 
 /** Immutable prior claims, not newly served evidence or an instruction source. */
 export const AnalysisBriefRecordSchema = z.strictObject({
@@ -239,12 +284,13 @@ export const EntityIdSchema = z.string().regex(/^ent_[0-9a-f]{8,64}$/);
 /**
  * HOW A RECORD CAME TO NAME A REPOSITORY, which is two claims rather than one (#183).
  *
- * `observed` is Babel's own: the scan probed the workspace a cited session worked in and git
- * answered, so the repository is a fact this deployment established (`machine/repository.ts`,
- * `sessions.repository_remote`). `named` is the evidence's: a run read a repository in a
- * transcript and nothing of Babel's ever stood in that checkout. Folding the two together would
- * let a repository a conversation merely mentioned read as one Babel saw, which is the quiet
- * kind of error 42.7% of the corpus not naming its codebase at all is the loud kind of.
+ * `observed` is Babel's own: the hub asked the machine a cited session's archive label maps to
+ * what the session's workspace is, and git answered there, so the repository is a fact this
+ * deployment established (the conductor's `machines.repository`, `sessions.repository_remote`).
+ * `named` is the evidence's: a run read a repository in a transcript and nothing of Babel's ever
+ * stood in that checkout. Folding the two together would let a repository a conversation merely
+ * mentioned read as one Babel saw, which is the quiet kind of error 42.7% of the corpus not
+ * naming its codebase at all is the loud kind of.
  */
 export const REPOSITORY_PROVENANCES = ["observed", "named"] as const;
 export const RepositoryProvenanceSchema = z.enum(REPOSITORY_PROVENANCES);
@@ -401,10 +447,10 @@ export const ACTIONS = {
   /**
    * VERIFYING THE ARCHIVE, AND RESTORING OUT OF IT (#338).
    *
-   * It posts `atyrode.babel.verify` on the machine that holds the repository: `restic check`,
+   * It posts `atyrode.babel.verify` on a machine holding the archive binding: `restic check`,
    * structurally or over the stored bytes, and optionally ONE catalogued session restored from
-   * a named snapshot and proved byte-exact against the digest `scan` recorded. The verdict
-   * arrives as the run's receipt, which the `run` door already serves.
+   * its catalogued snapshot and proved byte-exact against the digest its preparation recorded.
+   * The verdict arrives as the run's receipt, which the `run` door already serves.
    *
    * There is no companion act for forgetting, pruning or unlocking, and there will not be one
    * by accident: the machine half admits a closed set of restic verbs and none of those three
@@ -1766,6 +1812,11 @@ export const ParkReasonSchema = z.enum(PARK_REASONS);
 
 // ---------------------------------------------------------------------------- the pulse
 
+/**
+ * The most host labels one `catalog` receipt, or one pulse, lists by name; the rest are counted.
+ */
+export const ARCHIVE_LABELS_REPORTED = 64;
+
 /** What the STORE can answer about the pulse: today's counts, off its own tables. */
 export const PulseTodaySchema = z.strictObject({
   since: z.string(),
@@ -1780,6 +1831,19 @@ export const PulseTodaySchema = z.strictObject({
   reviewing: z.array(
     z.strictObject({ id: z.string(), kind: z.string(), title: z.string(), since: z.string() }),
   ),
+  /**
+   * THE ARCHIVE LABELS NO MACHINE ANSWERS FOR (#453): each host label the catalog has filed
+   * sessions under and no `archive_labels` row maps, with how many sessions it holds, most
+   * first, at most {@link ARCHIVE_LABELS_REPORTED} of them and `omitted` counting the rest.
+   * Those sessions are still selected and prepared; what an unmapped label loses is the hub's
+   * repository question, and `rehostSessions` is what maps one.
+   */
+  archive: z.strictObject({
+    unmapped: z
+      .array(z.strictObject({ label: z.string(), sessions: z.number().int().min(1) }))
+      .max(ARCHIVE_LABELS_REPORTED),
+    omitted: z.number().int().nonnegative(),
+  }),
 });
 
 /**
@@ -1867,10 +1931,12 @@ export const CONDUCTOR_TALLY_KEY = "conductor:tally";
  *
  * THE IDS ARE NAMESPACED because the engine requires it: `engine.jobs.install` refuses a machine
  * half whose operation or location keys are not prefixed with the plugin's own id
- * (`unqualified_declaration`), so a bare `scan` is a declaration no hub would ever install.
+ * (`unqualified_declaration`), so a bare `catalog` is a declaration no hub would ever install.
  */
 export const MACHINE_OPERATIONS = {
-  scan: `${BABEL_PLUGIN_ID}.scan`,
+  /** What the fleet archive holds (#453): the `babel` snapshots and the primary logs in them,
+   *  one row per session naming its newest capture. The conductor's beat. */
+  catalog: `${BABEL_PLUGIN_ID}.catalog`,
   archive: `${BABEL_PLUGIN_ID}.archive`,
   prepare: `${BABEL_PLUGIN_ID}.prepare`,
   /** The archive's reading half (#338): `restic check`, and one session restored from a named
@@ -1881,6 +1947,15 @@ export const MACHINE_OPERATIONS = {
   recall: `${BABEL_PLUGIN_ID}.recall`,
   mapCatalog: `${BABEL_PLUGIN_ID}.map-catalog`,
   mapPrepare: `${BABEL_PLUGIN_ID}.map-prepare`,
+} as const;
+
+/**
+ * OPERATIONS THIS BUNDLE NO LONGER DECLARES, whose runs the store still holds (#453). `scan`
+ * catalogued a machine's local session files; `catalog` lists the fleet archive instead. A
+ * historic run row keeps its `kind`, and a reader still names it by this table.
+ */
+export const RETIRED_OPERATIONS = {
+  scan: `${BABEL_PLUGIN_ID}.scan`,
 } as const;
 
 /**
@@ -1908,8 +1983,8 @@ export type OperationName = (typeof OPERATIONS)[keyof typeof OPERATIONS];
 
 /**
  * The word the machine half's CLI takes and the receipt records — the KEY of the declared table.
- * A binary's verb is `scan`, not `atyrode.babel.scan`: the namespace exists so a hub can tell
- * two plugins' operations apart, and there is only ever one plugin inside that binary.
+ * A binary's verb is `catalog`, not `atyrode.babel.catalog`: the namespace exists so a hub can
+ * tell two plugins' operations apart, and there is only ever one plugin inside that binary.
  */
 export type OperationWord = Exclude<keyof typeof MACHINE_OPERATIONS, "recall">;
 
@@ -1980,11 +2055,17 @@ export const ImportChunkSchema = z.strictObject({
 });
 
 /**
- * The crossing's repair: one `sessions.host` value, replaced by one machine id (#310).
+ * The crossing's repair and the archive's label mapping, as one act (#310, #453).
  *
- * `from` is whatever is in the store — a Go host name, which is why the rows are unusable. `to`
- * is a hub machine id, and the door describes it before it writes: a second unusable value would
- * be the same defect with a different string in it. Both are required and neither is guessed.
+ * `from` is a name the store holds: a Go-era `sessions.host`, or the restic host label a capture
+ * was catalogued under. Both are a machine's name as something outside the hub spelled it, which
+ * is why neither is usable as a host. `to` is a hub machine id, and the door describes it before
+ * it writes: a second unusable value would be the same defect with a different string in it.
+ * The act moves every session hosted at `from` or captured under the label `from` onto `to`,
+ * and records that the label means that machine, so every later capture under it is catalogued
+ * there too. Both are required and neither is guessed. `from` may equal `to`: a label that IS a
+ * machine id, which an owner may choose as the label `archive` backs up under, still means nothing
+ * to the hub until the operator records it.
  */
 export const RehostSessionsInputSchema = z.strictObject({
   from: bounded(200),
@@ -2156,6 +2237,38 @@ export const DrainProfileSchema = z.strictObject({
 });
 export type DrainProfile = z.infer<typeof DrainProfileSchema>;
 
+// ------------------------------------------------------------------- the archive's captures
+
+/*
+  A CAPTURE is one session's primary log as one restic snapshot holds it: the snapshot, the path
+  inside it, and the host label the snapshot was taken under (#453). A capture never changes, so
+  it is what a preparation reads and what a kept reading is keyed on, and a session is catalogued
+  under the newest capture that holds it. The label is restic's `--host`: a machine's name as
+  the collector spelled it, not a hub machine id. `archive_labels` maps one to the other
+  (`store/schema.ts`), and only where the operator recorded the mapping.
+*/
+
+/** A restic host label as a snapshot carries it: the name, verbatim. */
+export const ArchiveLabelSchema = z.string().min(1).max(128);
+/** restic's full snapshot id: 64 lowercase hex characters, never an abbreviation. */
+export const SnapshotIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
+/** An absolute path inside a snapshot, as restic lists it. */
+export const ArchivePathSchema = z.string().startsWith("/").max(4096);
+/**
+ * AN INSTANT A CATALOGUED SESSION CARRIES, spelled exactly as `Date.prototype.toISOString()`
+ * spells it: UTC, `Z`, three fractional digits. restic reports the backing machine's own offset
+ * and nanoseconds; a row normalizes both, because the hub compares these strings as text and
+ * turns them into epoch milliseconds and back, and one fixed spelling is what survives both.
+ */
+export const CaptureInstantSchema = z.iso.datetime({ precision: 3 });
+/** Where one capture is: enough to fetch exactly those bytes, and nothing about what they say. */
+export const CaptureRefSchema = z.strictObject({
+  label: ArchiveLabelSchema,
+  snapshotId: SnapshotIdSchema,
+  path: ArchivePathSchema,
+});
+export type CaptureRef = z.infer<typeof CaptureRefSchema>;
+
 // ------------------------------------------------------------------- the material a run reads
 
 /*
@@ -2222,6 +2335,13 @@ export const MaterialEntrySchema = z.strictObject({
   file: z.string(),
   records: z.number().int(),
   bytes: z.number().int(),
+  /**
+   * The capture these bytes were read from (#453). A preparation from the archive names it on
+   * every entry; it is optional only because a material sealed before that has none, and such a
+   * receipt must still parse. Nothing checks it: a citation is verified by `file` and the two
+   * digests, and the prompt does not print it.
+   */
+  origin: CaptureRefSchema.optional(),
 });
 export type MaterialEntry = z.infer<typeof MaterialEntrySchema>;
 
@@ -2380,7 +2500,7 @@ export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> 
   "explore-topic": OPERATIONS.explore,
   "review-backlog": OPERATIONS.evaluate,
   "file-and-tidy": OPERATIONS.evaluate,
-  "keep-going": OPERATIONS.scan,
+  "keep-going": OPERATIONS.catalog,
 };
 
 /**
@@ -2390,7 +2510,7 @@ export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> 
  *   `explore` — a Code session over sealed material. It reaches a model, so it needs a CODE
  *               PROFILE: the operator picks a saved one or parametrizes a workspace in Code's
  *               generator, and the launch carries its container and the revision he was shown.
- *   `beat`    — one `atyrode.babel.scan`, Babel's own job. It reaches no model and takes no
+ *   `beat`    — one `atyrode.babel.catalog`, Babel's own job. It reaches no model and takes no
  *               profile; a form that demanded one would be asking for a field nothing reads.
  *   `draw`    — a review the COORDINATOR picks, claims under a fence and dispatches through
  *               Code with a blinded projection of the record. The conductor owns that shared
@@ -2451,7 +2571,7 @@ export const LaunchInputSchema = z.strictObject({
    * THE CODE PROFILE THE RUN IS POSTED ON (#279), for a preset that reaches a model.
    *
    * Optional on the schema and required by the presets that need one, because `keep-going` is a
-   * `scan` of Babel's own and reaches no model at all: a field the schema demanded would make
+   * `catalog` of Babel's own and reaches no model at all: a field the schema demanded would make
    * the beat carry a profile nothing would read. `startExplore` refuses by name when a model
    * preset names none, so the requirement is stated where it is true.
    */
@@ -2879,8 +2999,9 @@ export const PolicyResultSchema = z.strictObject({
 
   THE REPORT NAMES CLASSES AND POSITIONS AND NEVER A VALUE. `sites` carries the locator of each
   redaction: the session, the record, and the range inside it. Resolving that locator back into
-  bytes needs the machine that holds the session (`resolveRedaction`), so the receipt travels to
-  the hub carrying no credential and no commitment to one.
+  bytes needs the capture's own bytes (`resolveRedaction`), which only a job holding the archive
+  binding can fetch, so the receipt travels to the hub carrying no credential and no commitment
+  to one.
 */
 
 /** The shape of a preflight report, recorded in it so a reader never guesses which layout it has. */
@@ -2929,6 +3050,105 @@ export const PreflightReportSchema = z.strictObject({
   sitesOmitted: z.number().int().nonnegative(),
 });
 export type PreflightReport = z.infer<typeof PreflightReportSchema>;
+
+// ------------------------------------------------------------ what the archive operations take
+
+/**
+ * ONE SESSION A PREPARATION IS HANDED, as the hub catalogued it (#453). `size` and `modifiedAt`
+ * are the catalogued observation: a fetch whose byte count is not `size` refuses the preparation
+ * as {@link PREPARE_REFUSALS}`.changed`, and the pair, with the capture, is what a kept reading
+ * is keyed on. `modifiedAt` is epoch milliseconds: the row's `modified_at` read back with
+ * `Date.parse`, which {@link CaptureInstantSchema}'s one spelling makes exact.
+ */
+export const CaptureSessionSchema = z.strictObject({
+  harness: HarnessSchema,
+  sourceId: z.string().min(1).max(512),
+  path: ArchivePathSchema,
+  size: z.number().int().nonnegative(),
+  modifiedAt: z.number().int().positive(),
+});
+export type CaptureSession = z.infer<typeof CaptureSessionSchema>;
+
+/** The sessions one snapshot holds, so the snapshot and its label are said once. */
+export const CaptureGroupSchema = z.strictObject({
+  snapshotId: SnapshotIdSchema,
+  label: ArchiveLabelSchema,
+  sessions: z.array(CaptureSessionSchema).min(1).max(500),
+});
+export type CaptureGroup = z.infer<typeof CaptureGroupSchema>;
+
+/**
+ * THE MOST BYTES ONE ENCODED `prepare` INPUT MAY REACH, under the operation's declared 64 KiB
+ * input with room for the fields beside the captures. A selection stops adding captures before
+ * the next one would pass it and counts the rest as over the bound, so a preparation is never
+ * refused as an oversized job input.
+ */
+export const PREPARE_INPUT_MAX_BYTES = 60 * 1024;
+
+/**
+ * WHAT A PREPARATION FROM THE ARCHIVE IS HANDED (#453): the exact captures the hub selected,
+ * grouped by snapshot. There is no selector list and nothing is discovered: a preparation reads
+ * the bytes it is named and nothing on the machine it runs on. `machineId` is where the job
+ * ran, for the receipt, and says nothing about where a session came from.
+ *
+ * A session is named at most once, because a material holds one file per session and the same
+ * session twice would be two readings of one selector. `agentSessions` admits the logs of
+ * Babel's own runs, which are refused by default so a corpus never reads itself by accident.
+ * `preflight` is what the scan does about a likely secret; `redact` is what every door posts.
+ */
+export const PrepareInputSchema = z
+  .strictObject({
+    runId: z.string().trim().max(120).default(""),
+    machineId: z.string().trim().min(1).max(120),
+    captures: z.array(CaptureGroupSchema).max(500).default([]),
+    query: SessionContentQuerySchema.optional(),
+    agentSessions: z.boolean().default(false),
+    preflight: PreflightModeSchema.default("redact"),
+  })
+  .refine(
+    (input) => {
+      const named = input.captures.flatMap((group) =>
+        group.sessions.map((session) => `${session.harness}/${session.sourceId}`),
+      );
+      return new Set(named).size === named.length;
+    },
+    { message: "a preparation names each session once" },
+  );
+export type PrepareInput = z.infer<typeof PrepareInputSchema>;
+
+/**
+ * WHAT `atyrode.babel.catalog` IS HANDED (#453). The beat's fixed input is `{ machineId }`: which
+ * snapshots are new is the machine's own memory, and `full` sets that memory aside.
+ * `maxSnapshots` bounds one run; what it leaves is the receipt's `counts.pending`, and the next
+ * beat continues from there.
+ */
+export const CatalogInputSchema = z.strictObject({
+  runId: z.string().trim().max(120).default(""),
+  machineId: z.string().trim().min(1).max(120),
+  full: z.boolean().default(false),
+  maxSnapshots: z.number().int().min(1).max(512).default(64),
+});
+export type CatalogInput = z.infer<typeof CatalogInputSchema>;
+
+/**
+ * WHY A PREPARATION FROM THE ARCHIVE REFUSES WHOLE (#453), as the code its receipt's `reason`
+ * begins with (`<code>: <sentence>`). None of them falls back to a machine's local files.
+ *
+ * - `bound`: the catalogued bytes, with the material's own overhead, exceed `MAX_MATERIAL_BYTES`.
+ * - `storage`: they exceed what the material lease has free, and the reason names both figures.
+ *   Both of these are decided before anything is fetched.
+ * - `missing`: a snapshot does not hold the path it was named with.
+ * - `changed`: a fetch returned a byte count other than the catalogued `size`.
+ * - `archive`: the archive binding is absent or refused, or the repository did not answer.
+ */
+export const PREPARE_REFUSALS = {
+  bound: "material_bound",
+  storage: "material_storage_insufficient",
+  missing: "capture_missing",
+  changed: "capture_changed",
+  archive: "archive_unavailable",
+} as const;
+export type PrepareRefusal = (typeof PREPARE_REFUSALS)[keyof typeof PREPARE_REFUSALS];
 
 // ---------------------------------------------------------------------------- job outputs
 
@@ -2981,6 +3201,56 @@ export const INGESTIBLE_TABLES = [
 export type IngestibleTable = (typeof INGESTIBLE_TABLES)[number];
 
 /**
+ * ONE ROW OF `sessions.json` ONCE SESSIONS ARE CATALOGUED FROM THE ARCHIVE (#453): the capture
+ * that holds one session, and what a reading of that capture found. `catalog` writes the capture
+ * alone; `prepare` writes the capture it read with the facts it found. `store/sessions.ts`
+ * ingests it, and applies a row only while it names the session's current capture or a newer
+ * one.
+ *
+ * What is absent is deliberate. No `host`: a label is not a machine id, and the hub derives the
+ * host from `archive_labels`. No `live`: a capture never moves. No `seen_at`: that is the hub's
+ * clock at ingestion. No repository column: repository identity is the hub's question. An
+ * absent or null fact means "this reading found none", never "there is none", so it never
+ * erases a value the store already holds.
+ */
+export const SessionRowSchema = z
+  .strictObject({
+    selector: z.string().min(1).max(600),
+    harness: HarnessSchema,
+    source_id: z.string().min(1).max(512),
+    kind: z.enum(["operator", "agent"]),
+    archive_label: ArchiveLabelSchema,
+    archive_path: ArchivePathSchema,
+    snapshot_id: SnapshotIdSchema,
+    /** When the snapshot was taken. */
+    archived_at: CaptureInstantSchema,
+    size: z.number().int().nonnegative(),
+    /** The archived file's own modification time. */
+    modified_at: CaptureInstantSchema,
+    /** The capture digest of exactly these bytes; only a reading of them can say it. */
+    content_digest: z
+      .string()
+      .regex(/^sha256:[0-9a-f]{64}$/)
+      .optional(),
+    title: z.string().min(1).max(4096).nullable().optional(),
+    title_provenance: TitleProvenanceSchema.exclude(["inferred"]).optional(),
+    workspace: z.string().min(1).max(4096).nullable().optional(),
+    cost_usd: z.number().nonnegative().nullable().optional(),
+    total_tokens: z.number().int().nonnegative().nullable().optional(),
+    turns: z.number().int().nonnegative().nullable().optional(),
+    tool_errors: z.number().int().nonnegative().nullable().optional(),
+  })
+  .refine((row) => row.selector === `${row.harness}/${row.source_id}`, {
+    message: "a session's selector is its harness and source id",
+    path: ["selector"],
+  })
+  .refine((row) => (typeof row.title === "string") === (row.title_provenance !== undefined), {
+    message: "a title travels with its provenance, and a provenance with its title",
+    path: ["title_provenance"],
+  });
+export type SessionRow = z.infer<typeof SessionRowSchema>;
+
+/**
  * WHAT THE OPERATOR'S STANDING MEMORY PUT INTO ONE RUN'S PROMPT (#331).
  *
  * A remark reaches a run as quoted evidence, bounded — so a receipt has to say which remarks,
@@ -3022,6 +3292,7 @@ export const ReceiptSchema = z.strictObject({
   kind: z.enum([
     "scan",
     "archive",
+    "catalog",
     "prepare",
     "verify",
     "explore",
@@ -3043,7 +3314,7 @@ export const ReceiptSchema = z.strictObject({
    * launcher's words; these two fields are the flat pair every reader wants — the run row, the
    * drain's fold, the receipt page — and they are the ones a drain is measured by, because
    * "drain THIS account" is answered by summing the runs that named it and by nothing else.
-   * Absent for a run that reaches no model at all (`scan`, `archive`, `prepare`).
+   * Absent for a run that reaches no model at all (`catalog`, `archive`, `prepare`, `verify`).
    */
   account: z.strictObject({ provider: z.string(), identityKey: z.string() }).optional(),
   model: z.string().optional(),
@@ -3073,6 +3344,39 @@ export const ReceiptSchema = z.strictObject({
    * corpus was checked before a provider read it needs those two states not to look alike.
    */
   preflight: PreflightReportSchema.optional(),
+  /**
+   * THE RUNTIME SCRATCH AS THIS RUN MEASURED IT (#453): `statfs` of the named-output lease,
+   * total and free bytes. A `catalog` and a `prepare` report it, and the hub bounds the next
+   * material on that machine by the newest report ({@link MATERIAL_HEADROOM_BYTES}). Absent from
+   * every other kind, and from a run that could not measure it.
+   */
+  outputCapacity: z
+    .strictObject({
+      bytes: z.number().int().nonnegative(),
+      free: z.number().int().nonnegative(),
+    })
+    .optional(),
+  /**
+   * WHAT A `catalog` FOUND IN THE ARCHIVE, PER HOST LABEL (#453): how many `babel` snapshots each
+   * label holds and when its newest was taken, newest first, at most
+   * {@link ARCHIVE_LABELS_REPORTED} of them, with `omitted` counting the rest. The totals are the
+   * receipt's `counts`. A label no `archive_labels` row maps is how the operator learns that a
+   * machine collects under a name the hub does not know.
+   */
+  archive: z
+    .strictObject({
+      labels: z
+        .array(
+          z.strictObject({
+            label: ArchiveLabelSchema,
+            snapshots: z.number().int().nonnegative(),
+            newestAt: CaptureInstantSchema,
+          }),
+        )
+        .max(ARCHIVE_LABELS_REPORTED),
+      omitted: z.number().int().nonnegative(),
+    })
+    .optional(),
   startedAt: z.string(),
   finishedAt: z.string(),
   closure: z.enum(["completed", "failed", "stopped", "skipped"]),
@@ -3451,18 +3755,19 @@ export function diffRunTraces(a: RunTrace, b: RunTrace): RunDiff {
  *   `machine.tools` entry (url, digest and extracted-entry digest measured by
  *   `scripts/measure-runtime-tools.ts`). `jobResourceRequirements` drops a tool the
  *   installation's own declaration pins, which is what makes the operations satisfiable.
- * - `development` is the OWNER'S toolset, advertised by the fleet, and `git` lives inside its
- *   closure. So scan and prepare name the toolset rather than the binary; `machine/repository.ts`
- *   still resolves git at `RUNTIME_TOOL_BIN` first and on PATH second.
+ * - `development` is the OWNER'S toolset, advertised by the fleet, and no operation names it any
+ *   more: `git` lives inside its closure, and the one operation that ran it, `scan`, retired with
+ *   #453. Repository identity is the hub's question, asked of a machine through Manifold.
  * - `system` is the owner's reviewed, digest-promoted native closure. A pinned bun is
  *   dynamically linked (runtime-tools.json records the measured interpreter and DT_NEEDED list)
  *   and a job sandbox carries no libc, so every operation that runs it names this too.
- * - `restic` stays the owner's, by name, and only `archive` asks for it: upstream's whole Linux
- *   distribution is bare bzip2 and `MachineArtifactSchema` takes `raw`, `zip` or `tar.gz`, so
- *   there is nothing honest to pin. A machine that binds no restic disables that ONE operation
- *   (`jobResourceRequirements` is per-operation) and scan and prepare still reach `ready`.
+ * - `restic` stays the owner's, by name, and every operation asks for it, because every one reads
+ *   or writes the archive: upstream's whole Linux distribution is bare bzip2 and
+ *   `MachineArtifactSchema` takes `raw`, `zip` or `tar.gz`, so there is nothing honest to pin. A
+ *   machine that binds no restic can run none of them (`jobResourceRequirements` is
+ *   per-operation, and every operation names it).
  */
-export const RUNTIME_TOOLS = ["bun", "development", "restic", "system"] as const;
+export const RUNTIME_TOOLS = ["bun", "restic", "system"] as const;
 /** Where a runtime tool is bound inside the sandbox: `<RUNTIME_TOOL_BIN>/<alias>`. */
 export const RUNTIME_TOOL_BIN = "/runtime/bin";
 
