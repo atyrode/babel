@@ -1037,15 +1037,19 @@ strands a posting on authority it does not hold. The free catalog's cadence carr
 authority and never refills a drain. The start still requires an admitted catalog for its route,
 because the drain maps what the catalog planned. Jobs are ordinary coordinator claims, so the
 mapping subcap, shared ceilings and uncertain-post accounting still apply. Reads never post one.
-A run takes its drain's launch slot before anything is started or posted, and the drain's durable
-launch cursor decides between overlapping wakes; the one that loses posts nothing, abandons its
-claim and leaves the work item at its current attempt. Each new preparation, native retry or Code
-posting then belongs to the drain that admitted its run: that drain must still be running, short
-of its spend target and short of its deadline at that moment, whatever the controller has yet to
-record. Work already posted settles whatever its drain did since. The deadline ends admission,
-not settlement, so the drain's cadence keeps waking until the drain has ended and its last
-session is folded, and it is disabled on the first wake after that. Stopping the drain cancels a
-preparation at `map-prepare` and a posted session through Code.
+A run takes its drain's launch slot in the same write that publishes its parent and native intent,
+so no wake ever sees an open mapping run its drain does not hold, and the drain's durable launch
+cursor decides between overlapping wakes. The loser publishes nothing: its claim is withdrawn at
+zero cost and the work item is offered again at its current attempt, taken over at the next fence
+— as is a claim whose wake crashed before publishing. Each new preparation, native retry or Code
+posting belongs to the drain that admitted its run: that drain must still be running, short of
+its spend target and short of its deadline at that moment, whatever the controller has yet to
+record. The Code job id a posting receives is published in the same write that binds the claim to
+it, so a reconciling wake never reads an acknowledged session as unauthorized. Work already posted
+settles whatever its drain did since. The deadline ends admission, not settlement, so the drain's
+cadence keeps waking until the drain has ended and its last session is folded, and it is disabled
+on the first wake after that. Stopping the drain cancels a preparation at `map-prepare` and a
+posted session through Code.
 
 The mapping configuration explicitly names `sourceMachineId` (the Recall owner) and
 `executorMachineId` (native catalog/preparation and eventual Code execution). Both same-machine

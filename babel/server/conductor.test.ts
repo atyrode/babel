@@ -7847,7 +7847,7 @@ test("an open mapping run holds its executor's drain, but spends nothing no runn
   ).toEqual([{ closure: "failed", reason: "no running mapping drain admitted this run" }]);
 });
 
-test("a wake that loses the drain's launch slot posts nothing and costs the work no attempt", async () => {
+test("a wake that loses the drain's launch slot publishes nothing, spends nothing and can draw again", async () => {
   const f = await paidMapDeployment();
   const claim = f.coordinator.claim.bind(f.coordinator);
   f.coordinator.claim = async (request) => {
@@ -7858,8 +7858,18 @@ test("a wake that loses the drain's launch slot posts nothing and costs the work
   };
   await f.tick();
   expect(f.fleet.launched).toEqual([]);
-  expect(await f.db.query(`SELECT outcome FROM claims`)).toEqual([{ outcome: "abandoned" }]);
-  // The item was never started, so it is still queued at its first attempt for the winner.
+  // No run row was ever visible to another wake, and the claim is released at zero.
+  expect(
+    await f.db.query(`SELECT id FROM runs WHERE kind IN (?, ?)`, [
+      TRANSCRIPT_MAP_SESSION_OPERATION,
+      OPERATIONS.mapPrepare,
+    ]),
+  ).toEqual([]);
+  expect(await f.db.query(`SELECT actual_cost, outcome FROM claims`)).toEqual([
+    { actual_cost: 0, outcome: "withdrawn" },
+  ]);
+  expect((await f.coordinator.spend(clock)).mapping).toBe(0);
+  // The item was never started, so it is still queued at its first attempt.
   const work = await f.db.query<{ state: string; attempt: number; run_id: string | null }>(
     `SELECT state, attempt, run_id FROM transcript_map_work`,
   );
@@ -7868,6 +7878,44 @@ test("a wake that loses the drain's launch slot posts nothing and costs the work
     new Set(work.map((row) => `${row.state}:${String(row.attempt)}:${String(row.run_id)}`)),
   ).toEqual(new Set(["queued:1:null"]));
   expect((await readDrain(f.store, "drn_map"))!.live).toEqual([]);
+  // The next wake draws the same assignment again and takes it over at the next fence.
+  f.coordinator.claim = claim;
+  await f.tick();
+  expect(f.fleet.launched).toHaveLength(1);
+  expect(
+    await f.db.query(`SELECT fence, finished_at FROM claims WHERE finished_at IS NULL`),
+  ).toEqual([{ fence: 2n, finished_at: null }]);
+});
+
+test("a wake reconciling while a mapping posting binds never stops the posted session", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  // Code has acknowledged the session; before the posting wake has bound it, another wake runs.
+  const runSession = f.engine.runSession.bind(f.engine);
+  let armed = false;
+  f.engine.runSession = async (request) => {
+    const answer = await runSession(request);
+    armed = true;
+    return answer;
+  };
+  const policy = f.coordinator.policy.bind(f.coordinator);
+  f.coordinator.policy = async (moment) => {
+    if (armed) {
+      armed = false;
+      await f.tick(true, false);
+    }
+    return await policy(moment);
+  };
+  await f.tick();
+  expect(f.cancelled).toEqual([]);
+  f.answer({ kind: "summary", text: "Navigation posted once." });
+  await f.tick();
+  expect(
+    await f.db.query(
+      `SELECT closure, json_extract(payload,'$.reason') reason FROM runs WHERE job_id='map_code_1'`,
+    ),
+  ).toEqual([{ closure: "completed", reason: null }]);
 });
 
 test("a prepared mapping session is never posted once its drain has passed its deadline", async () => {
@@ -8262,10 +8310,20 @@ test("an expired mapping claim that crashed before its durable intent is reaped 
   f.coordinator.claim = claim;
   clock += POLICY.leaseSeconds * 3_000;
   await f.tick();
+  // Nothing was published for it, so it is withdrawn at zero rather than finished as a failure.
   expect(
-    await f.db.query(`SELECT actual_cost,outcome FROM claims WHERE id=?`, [held[0]!.id]),
-  ).toEqual([{ actual_cost: 0, outcome: "failed" }]);
+    await f.db.query(
+      `SELECT actual_cost, outcome FROM claims WHERE (id=? OR id LIKE ?) AND outcome='withdrawn'`,
+      [held[0]!.id, `${held[0]!.id}~%`],
+    ),
+  ).toEqual([{ actual_cost: 0, outcome: "withdrawn" }]);
   expect(f.posted).toEqual([]);
+  // And the same work item is drawn again under the same assignment, at the next fence.
+  await f.tick();
+  expect(f.fleet.launched).toHaveLength(1);
+  expect(
+    await f.db.query(`SELECT fence, finished_at FROM claims WHERE id=?`, [held[0]!.id]),
+  ).toEqual([{ fence: 2n, finished_at: null }]);
 });
 
 test("a completed material receipt cannot authorize inference after its native job failed", async () => {

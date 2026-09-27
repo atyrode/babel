@@ -71,9 +71,10 @@ import {
   activeDrains,
   addSpend,
   deadlineOf,
+  drainHoldsRun,
   noteDrain,
   reconcileLive,
-  reserveLaunch,
+  reserveLaunchStatement,
   targetMet,
 } from "../store/drains.ts";
 import {
@@ -716,6 +717,14 @@ const TERMINAL_STATES: Record<string, true> = {
  * a live review for it would be worse than the ghost; two in a row is a worker that is gone.
  */
 const UNREPORTED_CYCLES = 2;
+
+/** What a mapping dispatch answers when another wake took its drain's launch slot first. */
+const LOST_LAUNCH_SLOT = "the mapping drain's launch slot was taken by another wake";
+
+/** A claim withdrawn at zero because its work was never published, as the cycle's report row. */
+function withdrawal(claimId: string, reason: string): SettledClaim {
+  return { claimId, outcome: "skipped", cost: 0, overrun: false, refused: null, reason };
+}
 
 /**
  * HOW MANY DEAD CLAIMS ONE TICK RELEASES, because a reap with no bound is a cycle with no end.
@@ -2344,7 +2353,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     at: number,
     requested: RequestedJob[],
     settled: SettledClaim[],
-    reserve: (runId: string, jobId: string) => Promise<boolean>,
+    slot: { readonly drainId: string; readonly ordinal: number },
   ): Promise<string | null> {
     const route = mappingPolicy(policy);
     if (!route || !deps.mapPreparePlan) return "mapping preparation limits are unavailable";
@@ -2386,11 +2395,18 @@ export function conductor(deps: ConductorDeps): Conductor {
       limits: deps.mapPreparePlan.limits,
       promptVersion: TRANSCRIPT_MAP_PROMPT_VERSION,
     });
-    // Parent and native intent are atomic. A crash before execute can resume this exact ID.
-    await store.db.batch([
+    // THE DRAIN'S SLOT, THE PARENT AND THE NATIVE INTENT ARE ONE WRITE. Two overlapping wakes can
+    // read the same free slot; the drain's launch cursor decides which run it admits, and the
+    // run rows are inserted only where that reservation landed. So no wake ever sees an open
+    // mapping run its drain does not hold, and a crash before execute resumes this exact ID. The
+    // loser published nothing: its claim is withdrawn at zero and the work item it drew is
+    // offered again at its current attempt.
+    const held = drainHoldsRun(slot.drainId, runId);
+    const published = await store.db.batch([
+      reserveLaunchStatement(slot.drainId, { runId, jobId, launchedAt: at }, slot.ordinal),
       {
         sql: `INSERT INTO runs(id,kind,machine_id,container_id,prepare_job_id,profile,authority_kind,authority_id,preparation,started_at,records,payload)
-          VALUES(?,?,?,?,?,?,'conductor',?,?,?,0,'{}')`,
+          SELECT ?,?,?,?,?,?,'conductor',?,?,?,0,'{}' WHERE ${held.sql}`,
         params: [
           runId,
           TRANSCRIPT_MAP_SESSION_OPERATION,
@@ -2401,32 +2417,32 @@ export function conductor(deps: ConductorDeps): Conductor {
           cycleRunId,
           JSON.stringify({ mapping: intent }),
           new Date(at).toISOString(),
+          ...held.params,
         ],
       },
       {
-        sql: `INSERT INTO runs(id,kind,machine_id,job_id,started_at,records,payload) VALUES(?,?,?,?,?,0,'{}')`,
+        sql: `INSERT INTO runs(id,kind,machine_id,job_id,started_at,records,payload)
+          SELECT ?,?,?,?,?,0,'{}' WHERE ${held.sql}`,
         params: [
           intent.input.runId,
           OPERATIONS.mapPrepare,
           route.executorMachineId,
           jobId,
           new Date(at).toISOString(),
+          ...held.params,
         ],
       },
     ]);
-    // THE DRAIN'S SLOT IS TAKEN BEFORE ANYTHING IS STARTED OR POSTED. Two overlapping wakes can
-    // read the same free slot; the drain's launch cursor decides which run it admits. The loser
-    // has spent nothing and never started its work item, so it closes as skipped and its claim
-    // is abandoned without costing the item an attempt.
-    if (!(await reserve(runId, jobId))) {
-      const why = "the mapping drain's slot was taken by another wake";
-      await store.db.run(
-        `UPDATE runs SET closure='skipped',finished_at=?,payload=json_set(payload,'$.reason',?)
-          WHERE id IN (?,?) AND closure IS NULL`,
-        [new Date(at).toISOString(), why, runId, intent.input.runId],
-      );
-      settled.push(await release(claimed.claim, why));
-      return why;
+    if ((published[0]?.length ?? 0) === 0) {
+      const withdrawn = await coordinator.withdraw({
+        id: claimed.claim.id,
+        fence: claimed.claim.fence,
+        reason: LOST_LAUNCH_SLOT,
+        now: at,
+      });
+      if (withdrawn.outcome === "withdrawn")
+        settled.push(withdrawal(claimed.claim.id, LOST_LAUNCH_SLOT));
+      return LOST_LAUNCH_SLOT;
     }
     if (
       !(await maps.startWork(
@@ -2516,8 +2532,6 @@ export function conductor(deps: ConductorDeps): Conductor {
         const assignment = drawn.assignment;
         if (assignment.activity !== "mapping") break;
         const before = requested.length;
-        const slot = ordinal;
-        let lost = false;
         const detail = await dispatchMapping(
           assignment,
           policy,
@@ -2525,20 +2539,11 @@ export function conductor(deps: ConductorDeps): Conductor {
           at,
           requested,
           settled,
-          async (runId, jobId) => {
-            const reserved = await reserveLaunch(
-              store,
-              drain.id,
-              { runId, jobId, launchedAt: at },
-              slot,
-            );
-            lost = !reserved;
-            return reserved;
-          },
+          { drainId: drain.id, ordinal },
         );
-        if (lost) {
+        if (detail === LOST_LAUNCH_SLOT) {
           // Another wake took this slot first; it owns the fan now, and nothing was spent here.
-          notes.push(`mapping drain ${drain.id}: another wake took launch slot ${String(slot)}`);
+          notes.push(`mapping drain ${drain.id}: another wake took launch slot ${String(ordinal)}`);
           break;
         }
         if (detail !== null || requested.length === before) {
@@ -2774,37 +2779,42 @@ export function conductor(deps: ConductorDeps): Conductor {
           );
           continue;
         }
-        // Keep the actual job before transferring authority. A failed bind still needs accounting.
-        await store.db.run(`UPDATE runs SET job_id=? WHERE id=? AND job_id IS NULL`, [
-          answered.value.jobId,
-          run.id,
-        ]);
+        const jobId = answered.value.jobId;
         const invalid =
           answered.value.machineId !== intent.route.executorMachineId ||
           answered.value.operationId !== TRANSCRIPT_MAP_SESSION_OPERATION;
-        const reason = invalid
+        let stop = invalid
           ? "Code returned a different execution boundary"
           : await mappingAuthority(prepared, run.prepare_job_id, "admission", run.id);
-        const bound =
-          reason === null
-            ? await coordinator.bind({
-                ...intent.claim,
-                jobId: answered.value.jobId,
-                previousJobId: run.prepare_job_id,
-                now: deps.now(),
-              })
-            : null;
-        if (reason !== null || bound?.outcome !== "bound") {
-          const stop =
-            reason ??
-            `mapping claim did not bind: ${bound?.outcome === "refused" ? bound.refusal.reason : "refused"}`;
+        // THE JOB ID AND ITS AUTHORITY ARE ONE WRITE. A wake reconciling this run reads its claim
+        // as bound the moment it sees the Code job; publishing the id before the bind let that
+        // wake stop a legitimate session as unauthorized.
+        if (stop === null) {
+          const written = await store.db.batch([
+            coordinator.bindStatement({
+              ...intent.claim,
+              jobId,
+              previousJobId: run.prepare_job_id,
+              now: deps.now(),
+            }),
+            {
+              sql: `UPDATE runs SET job_id=? WHERE id=? AND job_id IS NULL
+                AND EXISTS (SELECT 1 FROM claims WHERE id=? AND fence=? AND job_id=?)`,
+              params: [jobId, run.id, intent.claim.id, intent.claim.fence, jobId],
+            },
+          ]);
+          if ((written[0]?.length ?? 0) === 0) stop = "mapping claim did not bind to the Code job";
+        }
+        if (stop !== null) {
+          // A job that cannot be bound is still accounted: its id and the stop are one write.
           await store.db.run(
-            `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true'),'$.stopReason',?) WHERE id=?`,
-            [stop, run.id],
+            `UPDATE runs SET job_id=coalesce(job_id,?),
+              payload=json_set(payload,'$.stopRequested',json('true'),'$.stopReason',?) WHERE id=?`,
+            [jobId, stop, run.id],
           );
           await engine.cancelSession({
             containerId: intent.route.profile.containerId,
-            jobId: answered.value.jobId,
+            jobId,
           });
         }
         await store.db.run(`DELETE FROM run_progress WHERE run_id=?`, [run.id]);
@@ -5403,6 +5413,24 @@ export function conductor(deps: ConductorDeps): Conductor {
             // This is NOT proof of termination. The guarded finish below proves that no
             // post was authorized: analysis now persists its parent before native execute.
           }
+        }
+        // A mapping claim that published no run is WITHDRAWN rather than finished: it cost
+        // nothing and the work item's attempt never moved, so the next draw of the same
+        // assignment must be able to take it over (#223). An analysis settles, as before.
+        if (mapping) {
+          const reason = `expired mapping job ${jobId} was never published by a run`;
+          const withdrawn = await coordinator.withdraw({
+            id: orphan.id,
+            fence: orphan.fence,
+            reason,
+            now: at,
+          });
+          if (withdrawn.outcome === "withdrawn") {
+            released += 1;
+            settled.push(withdrawal(orphan.id, reason));
+            notes.push(`claim ${orphan.id} released without spend: ${reason}`);
+          }
+          continue;
         }
         const finished = await coordinator.finish({
           id: orphan.id,

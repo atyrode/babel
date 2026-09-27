@@ -1,4 +1,4 @@
-import type { PluginDatabase, SqlParam } from "@manifold/plugin";
+import type { PluginDatabase, SqlParam, SqlStatement } from "@manifold/plugin";
 import {
   CodeProfileSchema,
   DRAIN_ENDINGS,
@@ -574,29 +574,36 @@ export async function recordLaunch(
 }
 
 /**
- * One slot of a RUNNING drain, taken before its job is posted.
+ * One slot of a RUNNING drain, taken before its job is posted, as a statement to batch with the
+ * rows it admits (it returns the drain's id when the slot was won).
  *
  * {@link recordLaunch} records a job the hub has already taken, so it must land on a closing
  * drain too. A reservation is the other order — the slot first, the post only if it was won — so
  * only a running drain grants one, and the same durable cursor decides between overlapping
- * wakes: the loser's snapshot of the fan is stale, and it posts nothing.
+ * wakes: the loser's snapshot of the fan is stale, and it publishes nothing.
  */
-export async function reserveLaunch(
-  store: DrainsStore,
-  id: string,
-  job: LiveJob,
-  ordinal: number,
-): Promise<boolean> {
-  const rows = await store.db.query<{ id: string }>(
-    `UPDATE drains SET live = json_insert(live, '$[#]', json(?)),
+export function reserveLaunchStatement(id: string, job: LiveJob, ordinal: number): SqlStatement {
+  return {
+    sql: `UPDATE drains SET live = json_insert(live, '$[#]', json(?)),
                        jobs_launched = jobs_launched + 1
       WHERE id = ? AND state = 'running' AND jobs_launched = ?
         AND NOT EXISTS (SELECT 1 FROM json_each(drains.live)
                          WHERE json_extract(value, '$.jobId') = ?)
       RETURNING id`,
-    [JSON.stringify(job), id, ordinal, job.jobId],
-  );
-  return rows.length > 0;
+    params: [JSON.stringify(job), id, ordinal, job.jobId],
+  };
+}
+
+/** Whether a drain's `live` holds one run: the guard a reservation's rows are written under. */
+export function drainHoldsRun(
+  id: string,
+  runId: string,
+): { readonly sql: string; readonly params: SqlParam[] } {
+  return {
+    sql: `EXISTS (SELECT 1 FROM drains, json_each(drains.live)
+                   WHERE drains.id = ? AND json_extract(json_each.value, '$.runId') = ?)`,
+    params: [id, runId],
+  };
 }
 
 /** What one tick folded: the jobs still held, the settled totals, the tallies and the journal. */

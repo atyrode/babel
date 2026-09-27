@@ -757,6 +757,17 @@ export type AbandonResult =
   | { readonly outcome: "abandoned"; readonly cost: number; readonly reason: string }
   | { readonly outcome: "refused"; readonly refusal: Refusal };
 
+/**
+ * What ends a claim whose work was never PUBLISHED: no run names its job, so nothing was posted
+ * and nothing could have spent. That proof is what separates it from an abandonment, which
+ * charges the reservation because a dead worker says nothing about what it burned. A withdrawn
+ * claim is released at zero and withholds nothing, so the draw offers the same assignment again
+ * and the next claim takes it over at the next fence — a mapping drain's lost launch slot (#223)
+ * must neither charge the day nor wedge the work item it drew.
+ */
+export type WithdrawResult =
+  { readonly outcome: "withdrawn" } | { readonly outcome: "refused"; readonly refusal: Refusal };
+
 /** What the day already owes: reported cost where a claim settled, the full reservation where it
  *  did not. An expired lease says nothing about what it spent, so releasing it as zero would let
  *  one abandoned attempt authorize a second for free. */
@@ -786,9 +797,12 @@ export interface Coordinator {
   claim(request: ClaimRequest): Promise<ClaimResult>;
   /** Attaches the owner-minted job id after a fenced claim has been granted. */
   bind(request: BindRequest): Promise<BindResult>;
+  /** The same fenced bind as one statement, to publish the job id in the same write. */
+  bindStatement(request: BindRequest): { sql: string; params: GuestSqlParam[] };
   renew(request: RenewRequest): Promise<RenewResult>;
   finish(request: FinishRequest): Promise<FinishResult>;
   abandon(request: AbandonRequest): Promise<AbandonResult>;
+  withdraw(request: AbandonRequest): Promise<WithdrawResult>;
   spend(now?: number): Promise<Spend>;
   /** The open batch slots per machine, which is what the loop dispatches by (#260). */
   open(now?: number): Promise<OpenClaims>;
@@ -946,13 +960,17 @@ type WorkCandidate = Candidate | AnalysisCandidate | MappingCandidate;
 /**
  * A closed native preparation is not a closed parent; expiry is not job termination.
  * An analysis post whose retention and cancellation both failed may have no run row at all.
- * Its known job remains unconfirmed work until the native reaper establishes termination.
+ * Its known job remains unconfirmed work until the native reaper establishes termination. A
+ * WITHDRAWN claim is the exception by construction: `withdraw` proved in the same statement
+ * that no run was ever published for its job, and a mapping run is published before anything
+ * is posted, so its absent run is proof of nothing posted rather than a missing receipt.
  */
 const RUNNING_CLAIM = `(EXISTS (
   SELECT 1 FROM runs live
    WHERE (live.job_id = c.job_id OR live.prepare_job_id = c.job_id)
      AND live.closure IS NULL
-) OR ((c.role LIKE 'analysis:%' OR c.role LIKE 'mapping:%') AND c.job_id IS NOT NULL AND NOT EXISTS (
+) OR ((c.role LIKE 'analysis:%' OR c.role LIKE 'mapping:%') AND c.job_id IS NOT NULL
+  AND COALESCE(c.outcome, '') <> 'withdrawn' AND NOT EXISTS (
   SELECT 1 FROM runs known WHERE known.job_id = c.job_id OR known.prepare_job_id = c.job_id
 )))`;
 const OCCUPIED_CLAIM = `c.finished_at IS NULL AND c.job_id IS NOT NULL AND (
@@ -1484,7 +1502,7 @@ export function coordinator(
   async function claimFacts(moment: number): Promise<Map<string, ClaimFacts>> {
     const rows = await scan(
       `SELECT COALESCE(r.root_id, c.record_id) AS root, c.role AS role,
-              SUM(CASE WHEN COALESCE(c.outcome, '') <> 'abandoned' THEN 1 ELSE 0 END) AS total,
+              SUM(CASE WHEN COALESCE(c.outcome, '') NOT IN ('abandoned', 'withdrawn') THEN 1 ELSE 0 END) AS total,
               SUM(CASE WHEN c.finished_at IS NULL AND (c.expires_at > ? OR ${RUNNING_CLAIM}) THEN 1 ELSE 0 END) AS active,
               SUM(CASE WHEN COALESCE(c.outcome, '') IN ('skipped','failed') THEN 1 ELSE 0 END) AS setbacks,
               SUM(CASE WHEN COALESCE(c.outcome, '') = 'completed' THEN 1 ELSE 0 END) AS completed,
@@ -2252,11 +2270,11 @@ export function coordinator(
     // Read open claims plus only the selected identity's terminal receipt: a finish landing
     // during selection must still defeat the stale draw, without scanning finished history. An
     // abandonment is not such a receipt: it withholds nothing (#259), and `claim` takes the
-    // abandoned epoch over at the next fence.
+    // abandoned epoch over at the next fence, and a withdrawn one published nothing at all.
     const rows = await db.query(
       `SELECT c.id FROM claims c WHERE c.finished_at IS NULL AND (c.expires_at > ? OR ${RUNNING_CLAIM})
        UNION SELECT c.id FROM claims c WHERE c.id = ? AND c.finished_at IS NOT NULL
-         AND COALESCE(c.outcome, '') <> 'abandoned'`,
+         AND COALESCE(c.outcome, '') NOT IN ('abandoned', 'withdrawn')`,
       [iso(moment), pickedId],
     );
     return new Set(rows.map((row) => text(row["id"])));
@@ -2607,12 +2625,14 @@ export function coordinator(
     // every cycle drew it first, was refused, and stopped — until the policy version changed. It
     // is taken over at the next fence instead, exactly as an expired lease is. An analysis is not:
     // its identity is its context, an abandoned attempt may have spent, and `buildAnalysis`
-    // settles it, because unchanged context never receives another paid sample.
+    // settles it, because unchanged context never receives another paid sample. A WITHDRAWN
+    // claim of any activity published nothing and was released at zero (`withdraw`), so it too is
+    // taken over rather than refused as finished.
     const reopened =
-      assignment.activity === "review" &&
       existing !== null &&
       existing.finishedAt !== null &&
-      existing.outcome === "abandoned";
+      (existing.outcome === "withdrawn" ||
+        (assignment.activity === "review" && existing.outcome === "abandoned"));
 
     if (existing !== null) {
       if (existing.recordId !== assignment.recordId || existing.role !== assignment.role) {
@@ -2866,13 +2886,14 @@ export function coordinator(
     }
 
     // The epoch being superseded, and how its row is kept. An expired lease is closed now, at
-    // what it reserved; an abandoned one was closed and charged when it was abandoned, and is
-    // archived exactly as it stands.
+    // what it reserved; an abandoned one was closed and charged when it was abandoned, and a
+    // withdrawn one released at zero, and each is archived exactly as it stands.
     const superseded = reopened
       ? {
           closed: `c.actual_cost, c.granted_at, c.expires_at, c.finished_at, c.outcome`,
           closedParams: [] as GuestSqlParam[],
-          guard: (row: string) => `${row}finished_at IS NOT NULL AND ${row}outcome = 'abandoned'`,
+          guard: (row: string) =>
+            `${row}finished_at IS NOT NULL AND ${row}outcome IN ('abandoned', 'withdrawn')`,
           guardParams: [] as GuestSqlParam[],
           archived: `archived.finished_at = claims.finished_at`,
           archivedParams: [] as GuestSqlParam[],
@@ -2944,6 +2965,32 @@ export function coordinator(
   }
 
   /**
+   * The fenced bind below as one statement, for a caller that must publish the job id in the
+   * same write — so no other wake can observe a job id its claim does not yet authorize. It
+   * returns the bound claim's row when the bind landed.
+   */
+  function bindStatement(request: BindRequest): { sql: string; params: GuestSqlParam[] } {
+    return {
+      sql: `UPDATE claims SET job_id = ?
+             WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL
+               AND expires_at > ? AND ? <> ''
+               AND (job_id = ? OR (job_id IS NULL AND ? IS NULL) OR job_id = ?)
+             RETURNING ${CLAIM_COLUMNS}`,
+      params: [
+        request.jobId,
+        request.id,
+        request.runId,
+        count(request.fence),
+        iso(request.now ?? now()),
+        request.jobId,
+        request.jobId,
+        request.previousJobId ?? null,
+        request.previousJobId ?? null,
+      ],
+    };
+  }
+
+  /**
    * Attaches the job Code minted to the fenced claim that authorized its posting. Code, rather
    * than Babel, owns the job namespace, so the id cannot be known at claim time. The fence makes
    * this update the same authority check as renew and finish; a late answer from a superseded
@@ -2958,25 +3005,7 @@ export function coordinator(
     }
     const fence = count(request.fence);
     const moment = request.now ?? now();
-    const rows = await db.batch([
-      {
-        sql: `UPDATE claims SET job_id = ?
-               WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL
-                 AND expires_at > ?
-                 AND (job_id = ? OR (job_id IS NULL AND ? IS NULL) OR job_id = ?)
-               RETURNING ${CLAIM_COLUMNS}`,
-        params: [
-          request.jobId,
-          request.id,
-          request.runId,
-          fence,
-          iso(moment),
-          request.jobId,
-          request.previousJobId ?? null,
-          request.previousJobId ?? null,
-        ],
-      },
-    ]);
+    const rows = await db.batch([bindStatement({ ...request, now: moment })]);
     const bound = rows[0]?.[0];
     if (bound !== undefined) return { outcome: "bound", claim: toClaim(bound) };
     const held = await readClaim(request.id);
@@ -3327,14 +3356,48 @@ export function coordinator(
     return { outcome: "abandoned", cost: count(row["reserved_cost"]), reason: request.reason };
   }
 
+  /**
+   * Releases, at zero, a MAPPING claim whose job no run names. The proof is the same statement as
+   * the release: a run published for this job — even one closed since — makes it an
+   * abandonment's question, and the claim is refused here rather than released free. Only mapping
+   * qualifies, because only mapping publishes its run in the same write that admits it before
+   * anything is posted; an analysis post can exist with no run row at all.
+   */
+  async function withdraw(request: AbandonRequest): Promise<WithdrawResult> {
+    const moment = request.now ?? now();
+    const rows = await db.batch([
+      {
+        sql: `UPDATE claims SET finished_at = ?, actual_cost = 0, outcome = 'withdrawn'
+               WHERE id = ? AND fence = ? AND finished_at IS NULL AND role LIKE 'mapping:%'
+                 AND NOT EXISTS (SELECT 1 FROM runs
+                                  WHERE runs.job_id = claims.job_id
+                                     OR runs.prepare_job_id = claims.job_id)
+               RETURNING id`,
+        params: [iso(moment), request.id, count(request.fence)],
+      },
+    ]);
+    if (rows[0]?.[0] === undefined) {
+      return {
+        outcome: "refused",
+        refusal: {
+          reason: "conflict",
+          detail: `assignment ${request.id} is not an open, unpublished claim at fence ${String(count(request.fence))}`,
+        },
+      };
+    }
+    return { outcome: "withdrawn" };
+  }
+
   return {
     policy: policyInForce,
     draw,
     claim,
     bind,
+    bindStatement,
     renew,
     finish,
     abandon,
+    withdraw,
     spend: async (moment?: number) => spendOn(moment ?? now()),
     open: async (moment?: number) => openClaims(moment ?? now()),
   };

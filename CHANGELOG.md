@@ -29,13 +29,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   native cadence under that credential, so only its own wakes draw, prepare or post sessions: a
   session is graded against the settled job that woke Babel (#469). A session the conductor stops
   keeps the cause in its receipt, and a session two wakes settle at once keeps the first
-  settlement's receipt and claims. A run takes its drain's launch slot before anything is posted,
-  so overlapping wakes cannot post outside the fan; every later spend, native retries included, is
-  admitted only by the drain that holds the run while it is short of its target and deadline; and
-  the drain's cadence outlives the deadline until its last session is folded. Conductor
-  regressions cover read-wake exclusion, drain-only dispatch and authority, target stop,
-  self-ending, holding for an open run, lost launch slots, deadline and retry authority,
-  concurrent settlement and stop cancellation at `map-prepare` (#223).
+  settlement's receipt and claims. A run takes its drain's launch slot in the same write that
+  publishes it, so overlapping wakes cannot post outside the fan; a claim that published nothing
+  (a lost slot, or a crash before publishing) is withdrawn at zero and its work drawn again at the
+  next fence; every later spend, native retries included, is admitted only by the drain that holds
+  the run while it is short of its target and deadline; a Code job id is published in the same
+  write as its bind; and the drain's cadence outlives the deadline until its last session is
+  folded. Conductor regressions cover read-wake exclusion, drain-only dispatch and authority,
+  target stop, self-ending, holding for an open run, lost launch slots and their redraw, crashed
+  claims and their redraw, deadline and retry authority, a reconcile racing a bind, concurrent
+  settlement and stop cancellation at `map-prepare` (#223).
 
 - **The machine half can catalogue the archive, and every restic read runs without a lock.**
   `babel/machine/catalog.ts` lists the snapshots tagged exactly `babel` (never the hub store's
