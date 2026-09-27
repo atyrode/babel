@@ -54,7 +54,7 @@ import {
 import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { ensureTerms } from "./store/corpus.ts";
-import { activeDrains, deadlineOf, readDrain } from "./store/drains.ts";
+import { activeDrains, readDrain } from "./store/drains.ts";
 import { openStore } from "./store/store.ts";
 import manifestJson from "./manifest.json";
 
@@ -480,14 +480,15 @@ function mapDrainWakeId(drainId: string): string {
  *
  * `jobs` must be a slice holding the drain's authority (the press, or a wake of the drain's own
  * jobs). A registration already current is left alone; a new revision replaces it before its
- * lifetime or the drain's deadline runs out.
+ * lifetime runs out.
+ *
+ * THE CADENCE OUTLIVES THE DEADLINE. The deadline ends admission, not settlement: a session
+ * still at the model when it passes must be read, settled and folded, and nothing else wakes a
+ * drain whose standing weights are zero. So the cadence runs until the drain has ended — every
+ * wake disables the cadence of an ended drain — while every spend it could make is refused past
+ * the drain's own bounds (`mappingAuthority` in `server/conductor.ts`).
  */
-async function mapDrainWake(
-  jobs: BabelJobs,
-  drainId: string,
-  policy: Policy,
-  deadline: number | null,
-): Promise<string[]> {
+async function mapDrainWake(jobs: BabelJobs, drainId: string, policy: Policy): Promise<string[]> {
   const route = policy.mapping;
   if (!policy.enabled || route === undefined) return [];
   const scheduleId = mapDrainWakeId(drainId);
@@ -546,7 +547,7 @@ async function mapDrainWake(
       firstNominalAt: at + intervalMs,
       intervalMs,
       deadlineMs: intervalMs,
-      expiresAt: Math.min(at + SCHEDULE_LIFETIME_MS, deadline ?? Number.MAX_SAFE_INTEGER),
+      expiresAt: at + SCHEDULE_LIFETIME_MS,
       offlinePolicy: "coalesce-one",
     });
     return [];
@@ -575,7 +576,7 @@ async function mapDrainWakes(jobs: BabelJobs, policy: Policy, renew: boolean): P
     }
     if (renew)
       for (const drain of live.values())
-        notes.push(...(await mapDrainWake(jobs, drain.id, policy, deadlineOf(drain.target))));
+        notes.push(...(await mapDrainWake(jobs, drain.id, policy)));
   } catch (error) {
     notes.push(`mapping drain cadence: ${message(error)}`);
   }
@@ -783,8 +784,7 @@ const doors = babelDoors(
       ).tickMapDrains();
       // The drain's own wake, registered by this press so it carries this press's authority.
       const row = await readDrain(store, drainId);
-      const cadence =
-        row === null ? [] : await mapDrainWake(jobs, drainId, policy, deadlineOf(row.target));
+      const cadence = row === null ? [] : await mapDrainWake(jobs, drainId, policy);
       return { launched: started.launched, notes: [...started.notes, ...cadence] };
     },
     now: () => store.now(),

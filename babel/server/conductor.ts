@@ -73,7 +73,7 @@ import {
   deadlineOf,
   noteDrain,
   reconcileLive,
-  recordLaunch,
+  reserveLaunch,
   targetMet,
 } from "../store/drains.ts";
 import {
@@ -2089,11 +2089,43 @@ export function conductor(deps: ConductorDeps): Conductor {
     };
   }
 
+  /**
+   * The drain that admitted a mapping run, and whether its window still admits a new spend.
+   *
+   * Each new spend — the native preparation, then the Code session — belongs to the drain whose
+   * slot the run took (`dispatchMapDrains` records it before anything is posted). That drain must
+   * still be running, short of its spend target and short of its deadline at this moment: the
+   * controller only ends a drain after the conductor has run, so a check of "some drain is
+   * running" would buy a session the operator's window had already closed on.
+   */
+  async function drainAdmits(runId: string, machineId: string): Promise<string | null> {
+    const owner = (await activeDrains(store)).find(
+      (drain) =>
+        drain.preset === MAP_DRAIN_PRESET &&
+        drain.machineId === machineId &&
+        drain.live.some((job) => job.runId === runId),
+    );
+    if (owner === undefined || owner.state !== "running")
+      return "no running mapping drain admitted this run";
+    const seen = await reconcileLive(store, owner.live);
+    const spent = addSpend(
+      seen.settled.reduce((total, run) => addSpend(total, run.spend), owner.spent),
+      seen.inFlight,
+    );
+    if (targetMet(owner.target, spent) !== "")
+      return "the mapping drain that admitted this run has met its target";
+    const deadline = deadlineOf(owner.target);
+    if (deadline !== null && deps.now() >= deadline)
+      return "the mapping drain that admitted this run has passed its deadline";
+    return null;
+  }
+
   /** Observation is not admission: native execute also carries the exact signed service pin. */
   async function mappingAuthority(
     intent: TranscriptMapRun,
     jobId: string,
     phase: "admission" | "bound",
+    runId: string,
   ): Promise<string | null> {
     const policy = (await coordinator.policy()).policy;
     const configured = mappingPolicy(policy);
@@ -2104,14 +2136,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       JSON.stringify(route) !== JSON.stringify(intent.route)
     )
       return "mapping policy or reviewed configuration changed";
-    // Each new spend — the native preparation, then the Code session — needs a mapping drain
-    // still running on this executor. Work already posted settles whatever the drain did since.
+    // Work already posted settles whatever its drain did since; only a new spend is bounded.
     if (phase === "admission") {
-      const draining = await store.db.query<{ id: string }>(
-        `SELECT id FROM drains WHERE preset=? AND machine_id=? AND state='running' LIMIT 1`,
-        [MAP_DRAIN_PRESET, intent.route.executorMachineId],
-      );
-      if (draining.length === 0) return "no mapping drain is running on this executor";
+      const refused = await drainAdmits(runId, intent.route.executorMachineId);
+      if (refused !== null) return refused;
     }
     const fence = mappingFence(intent, jobId, phase);
     const held = await store.db.query<{ held: number }>(`SELECT (${fence.sql}) held`, fence.params);
@@ -2191,7 +2219,9 @@ export function conductor(deps: ConductorDeps): Conductor {
     settled: SettledClaim[],
     notes: string[],
   ): Promise<void> {
-    const refusal = await mappingAuthority(intent, jobId, "admission");
+    // Every native preparation post is a new spend under the drain's credential.
+    if (deps.mappingAuthority !== true) return;
+    const refusal = await mappingAuthority(intent, jobId, "admission", runId);
     if (refusal !== null) {
       await closeMappingPreparation(runId, jobId, intent, refusal, settled);
       return;
@@ -2314,6 +2344,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     at: number,
     requested: RequestedJob[],
     settled: SettledClaim[],
+    reserve: (runId: string, jobId: string) => Promise<boolean>,
   ): Promise<string | null> {
     const route = mappingPolicy(policy);
     if (!route || !deps.mapPreparePlan) return "mapping preparation limits are unavailable";
@@ -2383,6 +2414,20 @@ export function conductor(deps: ConductorDeps): Conductor {
         ],
       },
     ]);
+    // THE DRAIN'S SLOT IS TAKEN BEFORE ANYTHING IS STARTED OR POSTED. Two overlapping wakes can
+    // read the same free slot; the drain's launch cursor decides which run it admits. The loser
+    // has spent nothing and never started its work item, so it closes as skipped and its claim
+    // is abandoned without costing the item an attempt.
+    if (!(await reserve(runId, jobId))) {
+      const why = "the mapping drain's slot was taken by another wake";
+      await store.db.run(
+        `UPDATE runs SET closure='skipped',finished_at=?,payload=json_set(payload,'$.reason',?)
+          WHERE id IN (?,?) AND closure IS NULL`,
+        [new Date(at).toISOString(), why, runId, intent.input.runId],
+      );
+      settled.push(await release(claimed.claim, why));
+      return why;
+    }
     if (
       !(await maps.startWork(
         details.work.id,
@@ -2471,6 +2516,8 @@ export function conductor(deps: ConductorDeps): Conductor {
         const assignment = drawn.assignment;
         if (assignment.activity !== "mapping") break;
         const before = requested.length;
+        const slot = ordinal;
+        let lost = false;
         const detail = await dispatchMapping(
           assignment,
           policy,
@@ -2478,7 +2525,22 @@ export function conductor(deps: ConductorDeps): Conductor {
           at,
           requested,
           settled,
+          async (runId, jobId) => {
+            const reserved = await reserveLaunch(
+              store,
+              drain.id,
+              { runId, jobId, launchedAt: at },
+              slot,
+            );
+            lost = !reserved;
+            return reserved;
+          },
         );
+        if (lost) {
+          // Another wake took this slot first; it owns the fan now, and nothing was spent here.
+          notes.push(`mapping drain ${drain.id}: another wake took launch slot ${String(slot)}`);
+          break;
+        }
         if (detail !== null || requested.length === before) {
           const why = detail ?? "mapping dispatch posted nothing";
           refused.push({
@@ -2488,19 +2550,6 @@ export function conductor(deps: ConductorDeps): Conductor {
             detail: why,
           });
           await noteDrain(store, drain.id, [{ at, kind: "admission", detail: why }]);
-          break;
-        }
-        const job = requested[requested.length - 1]!;
-        const recorded = await recordLaunch(
-          store,
-          drain.id,
-          { runId: job.runId, jobId: job.jobId, launchedAt: at },
-          ordinal,
-        );
-        if (!recorded) {
-          // Another wake advanced this drain's ordinal first. The run stays a claimed, cap-
-          // counted mapping run; only its fold into this drain's total is lost, so say so.
-          notes.push(`mapping drain ${drain.id}: ${job.runId} was posted but not recorded`);
           break;
         }
         ordinal += 1;
@@ -2585,7 +2634,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         );
         continue;
       }
-      const refusal = await mappingAuthority(intent, run.prepare_job_id, "admission");
+      const refusal = await mappingAuthority(intent, run.prepare_job_id, "admission", run.id);
       if (refusal !== null) {
         await closeMappingPreparation(run.id, run.prepare_job_id, intent, refusal, settled);
         continue;
@@ -2671,7 +2720,12 @@ export function conductor(deps: ConductorDeps): Conductor {
         );
         continue;
       }
-      const currentRefusal = await mappingAuthority(intent, run.prepare_job_id, "admission");
+      const currentRefusal = await mappingAuthority(
+        intent,
+        run.prepare_job_id,
+        "admission",
+        run.id,
+      );
       if (currentRefusal !== null) {
         await closeMappingPreparation(run.id, run.prepare_job_id, intent, currentRefusal, settled);
         continue;
@@ -2730,7 +2784,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           answered.value.operationId !== TRANSCRIPT_MAP_SESSION_OPERATION;
         const reason = invalid
           ? "Code returned a different execution boundary"
-          : await mappingAuthority(prepared, run.prepare_job_id, "admission");
+          : await mappingAuthority(prepared, run.prepare_job_id, "admission", run.id);
         const bound =
           reason === null
             ? await coordinator.bind({
@@ -2785,7 +2839,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         AND coalesce(json_extract(payload,'$.stopRequested'),0)=0)`,
       params: [...authority.params, run.id],
     };
-    let reason = await mappingAuthority(intent, run.job_id, "bound");
+    let reason = await mappingAuthority(intent, run.job_id, "bound", run.id);
     const stopped = await store.db.query<{
       stopped: number;
       why: string | null;
@@ -4717,7 +4771,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     const containerId = run.container_id ?? "";
     const mapping = mappingIntent(run.preparation);
     if (mapping !== null) {
-      const refusal = await mappingAuthority(mapping, run.job_id, "bound");
+      const refusal = await mappingAuthority(mapping, run.job_id, "bound", run.id);
       if (refusal !== null) {
         await store.db.run(
           `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true'),'$.stopReason',?) WHERE id=?`,
@@ -5054,13 +5108,16 @@ export function conductor(deps: ConductorDeps): Conductor {
   async function renewAnalysis(jobId: string, at: number): Promise<void> {
     const policy = (await coordinator.policy(at)).policy;
     if (!policy.enabled) return;
-    const parents = await store.db.query<{ preparation: string | null }>(
-      `SELECT preparation FROM runs WHERE closure IS NULL AND (job_id = ? OR prepare_job_id = ?)`,
+    const parents = await store.db.query<{ id: string; preparation: string | null }>(
+      `SELECT id, preparation FROM runs WHERE closure IS NULL AND (job_id = ? OR prepare_job_id = ?)`,
       [jobId, jobId],
     );
     for (const parent of parents) {
       const mapping = mappingIntent(parent.preparation);
-      if (mapping !== null && (await mappingAuthority(mapping, jobId, "admission")) === null) {
+      if (
+        mapping !== null &&
+        (await mappingAuthority(mapping, jobId, "admission", parent.id)) === null
+      ) {
         await coordinator.renew({ ...mapping.claim, now: at });
         continue;
       }
@@ -5148,7 +5205,10 @@ export function conductor(deps: ConductorDeps): Conductor {
           const intent = catalogIntent(run.preparation);
           if (intent) await postCatalog(run.id, run.job_id, intent, notes);
         }
+        // Retrying a preparation is a new spend: only the drain's own wake carries it. Any other
+        // wake leaves the intent untouched for that one (#469).
         if (
+          deps.mappingAuthority === true &&
           run.kind === OPERATIONS.mapPrepare &&
           nativeFailureToken(error, "jobs.status") === "job_not_started"
         ) {

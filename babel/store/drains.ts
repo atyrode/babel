@@ -573,6 +573,32 @@ export async function recordLaunch(
   return rows.length > 0;
 }
 
+/**
+ * One slot of a RUNNING drain, taken before its job is posted.
+ *
+ * {@link recordLaunch} records a job the hub has already taken, so it must land on a closing
+ * drain too. A reservation is the other order — the slot first, the post only if it was won — so
+ * only a running drain grants one, and the same durable cursor decides between overlapping
+ * wakes: the loser's snapshot of the fan is stale, and it posts nothing.
+ */
+export async function reserveLaunch(
+  store: DrainsStore,
+  id: string,
+  job: LiveJob,
+  ordinal: number,
+): Promise<boolean> {
+  const rows = await store.db.query<{ id: string }>(
+    `UPDATE drains SET live = json_insert(live, '$[#]', json(?)),
+                       jobs_launched = jobs_launched + 1
+      WHERE id = ? AND state = 'running' AND jobs_launched = ?
+        AND NOT EXISTS (SELECT 1 FROM json_each(drains.live)
+                         WHERE json_extract(value, '$.jobId') = ?)
+      RETURNING id`,
+    [JSON.stringify(job), id, ordinal, job.jobId],
+  );
+  return rows.length > 0;
+}
+
 /** What one tick folded: the jobs still held, the settled totals, the tallies and the journal. */
 export interface DrainFold {
   readonly live: readonly LiveJob[];

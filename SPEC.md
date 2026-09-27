@@ -1037,10 +1037,15 @@ strands a posting on authority it does not hold. The free catalog's cadence carr
 authority and never refills a drain. The start still requires an admitted catalog for its route,
 because the drain maps what the catalog planned. Jobs are ordinary coordinator claims, so the
 mapping subcap, shared ceilings and uncertain-post accounting still apply. Reads never post one.
-Each new preparation or Code posting requires a mapping drain still running on the executor, and
-work already posted settles whatever the drain did since. A drain's cadence is disabled on the
-first wake after the drain ends. Stopping the drain cancels a preparation at `map-prepare` and a
-posted session through Code.
+A run takes its drain's launch slot before anything is started or posted, and the drain's durable
+launch cursor decides between overlapping wakes; the one that loses posts nothing, abandons its
+claim and leaves the work item at its current attempt. Each new preparation, native retry or Code
+posting then belongs to the drain that admitted its run: that drain must still be running, short
+of its spend target and short of its deadline at that moment, whatever the controller has yet to
+record. Work already posted settles whatever its drain did since. The deadline ends admission,
+not settlement, so the drain's cadence keeps waking until the drain has ended and its last
+session is folded, and it is disabled on the first wake after that. Stopping the drain cancels a
+preparation at `map-prepare` and a posted session through Code.
 
 The mapping configuration explicitly names `sourceMachineId` (the Recall owner) and
 `executorMachineId` (native catalog/preparation and eventual Code execution). Both same-machine

@@ -7820,7 +7820,7 @@ test("a mapping drain ends on its own when every eligible transcript is mapped",
   expect(report?.reason).toBe("no eligible transcript-mapping work remains");
 });
 
-test("a mapping drain does not end on its target while a run it has not recorded is open", async () => {
+test("an open mapping run holds its executor's drain, but spends nothing no running drain admitted", async () => {
   const f = await paidMapDeployment();
   await f.tick();
   for (let index = 0; index < 2; index++) {
@@ -7829,21 +7829,95 @@ test("a mapping drain does not end on its target while a run it has not recorded
     f.answer({ kind: "summary", text: `Navigation ${String(index)}` });
     await f.tick();
   }
-  // The last item is claimed and its preparation posted, but the launch has not landed in the
-  // drain's own list — the window between a dispatch's claim and `recordLaunch`, or a run a
-  // previous drain launched. Nothing else is offered.
+  // The last item's preparation is posted, but no running drain holds its run — one a previous
+  // drain launched. Nothing else is offered, and still this drain does not end under it.
   expect(f.fleet.launched).toHaveLength(3);
   await f.db.run(`UPDATE drains SET live='[]' WHERE id='drn_map'`);
   const [held] = await drainTick(mapDrainDeps(f));
   expect(held?.state).toBe("running");
-  // So the run's next spend is still admitted, and the drain ends only once it has settled.
+  // Its next spend belongs to the drain that admitted it, which no longer holds it.
   f.seal();
   await f.tick();
-  expect(f.posted).toHaveLength(3);
-  f.answer({ kind: "summary", text: "Navigation 2" });
+  expect(f.posted).toHaveLength(2);
+  expect(
+    await f.db.query(
+      `SELECT closure, json_extract(payload,'$.reason') reason FROM runs WHERE prepare_job_id=?`,
+      [f.fleet.launched[2]!.jobId],
+    ),
+  ).toEqual([{ closure: "failed", reason: "no running mapping drain admitted this run" }]);
+});
+
+test("a wake that loses the drain's launch slot posts nothing and costs the work no attempt", async () => {
+  const f = await paidMapDeployment();
+  const claim = f.coordinator.claim.bind(f.coordinator);
+  f.coordinator.claim = async (request) => {
+    const claimed = await claim(request);
+    // Another wake takes the same slot between this wake's read of the fan and its own.
+    await f.db.run(`UPDATE drains SET jobs_launched = jobs_launched + 1 WHERE id='drn_map'`);
+    return claimed;
+  };
   await f.tick();
-  const [ended] = await drainTick(mapDrainDeps(f));
-  expect(ended?.state).toBe("target");
+  expect(f.fleet.launched).toEqual([]);
+  expect(await f.db.query(`SELECT outcome FROM claims`)).toEqual([{ outcome: "abandoned" }]);
+  // The item was never started, so it is still queued at its first attempt for the winner.
+  const work = await f.db.query<{ state: string; attempt: number; run_id: string | null }>(
+    `SELECT state, attempt, run_id FROM transcript_map_work`,
+  );
+  expect(work.length).toBeGreaterThan(0);
+  expect(
+    new Set(work.map((row) => `${row.state}:${String(row.attempt)}:${String(row.run_id)}`)),
+  ).toEqual(new Set(["queued:1:null"]));
+  expect((await readDrain(f.store, "drn_map"))!.live).toEqual([]);
+});
+
+test("a prepared mapping session is never posted once its drain has passed its deadline", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  // The controller has not run yet, so the drain still reads as running.
+  await f.db.run(`UPDATE drains SET target=json_set(target,'$.deadline',?) WHERE id='drn_map'`, [
+    new Date(clock).toISOString(),
+  ]);
+  f.seal();
+  await f.tick();
+  expect(f.posted).toEqual([]);
+  expect(
+    await f.db.query(
+      `SELECT closure, json_extract(payload,'$.reason') reason FROM runs WHERE prepare_job_id=?`,
+      [f.fleet.launched[0]!.jobId],
+    ),
+  ).toEqual([
+    {
+      closure: "failed",
+      reason: "the mapping drain that admitted this run has passed its deadline",
+    },
+  ]);
+});
+
+test("only the drain's own wake retries a mapping preparation that never started", async () => {
+  const f = await paidMapDeployment();
+  const execute = f.fleet.execute.bind(f.fleet);
+  const status = f.fleet.status.bind(f.fleet);
+  let posts = 0;
+  f.fleet.execute = () => {
+    posts += 1;
+    throw new HostCallError("jobs.execute", "transport unavailable");
+  };
+  f.fleet.status = (node) => {
+    if (!f.fleet.jobs.has(node.jobId)) throw new HostCallError("jobs.status", "job_not_started");
+    return status(node);
+  };
+  await f.tick();
+  expect(posts).toBe(1);
+  f.fleet.execute = (request) => {
+    posts += 1;
+    return execute(request);
+  };
+  // A native-capable wake that does not carry the drain's credential leaves the intent alone.
+  await f.tick(true, false);
+  expect(posts).toBe(1);
+  await f.tick();
+  expect(posts).toBe(2);
+  expect(f.fleet.launched).toHaveLength(1);
 });
 
 test("a second wake settling the same mapping session never rewrites its completed receipt", async () => {

@@ -22,18 +22,21 @@ import {
   ACTIONS,
   asLaunchRequest,
   BABEL_PLUGIN_ID,
+  MAP_DRAIN_PRESET,
   OPERATIONS,
   PRESET_OPERATIONS,
   RECALL_SERVICE_ID,
   RUN_STAGES,
   SessionRowSchema,
   TRANSCRIPT_MAP_SERVICE_OPERATION,
+  TRANSCRIPT_MAP_SESSION_OPERATION,
 } from "./contract.ts";
 import { WAKES, plugin } from "./server.ts";
 import { stamp } from "./store/feedindex.ts";
 import { upsertSessionRows } from "./store/sessions.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
 import { PolicySchema } from "./store/coordinator.ts";
+import { insertDrain } from "./store/drains.ts";
 import type { JobLaunch, ScheduleTiming } from "./server/conductor.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
@@ -1031,6 +1034,107 @@ test("explicit catalog admission posts free work without settling or launching p
   expect(disabled).toEqual([scheduled[0]!.revision]);
   expect(executed.map((job) => job.machineId)).toEqual([MACHINE]);
   expect(scheduled.map((job) => job.machineId)).toEqual([MACHINE]);
+});
+
+test("a mapping drain's own cadence outlives its admission deadline", async () => {
+  const rows = await harness.db.query<{ payload: string }>(
+    `SELECT payload FROM policies ORDER BY seq DESC LIMIT 1`,
+  );
+  const policy = PolicySchema.parse(JSON.parse(rows[0]!.payload));
+  const profile = { containerId: "ctr_workbench", expectedRevision: 1 };
+  await insert(harness.db, "policies", {
+    version: "p2",
+    seq: 2,
+    actor_id: "operator",
+    reason: "paid mapping route",
+    recorded_at: stamp(NOW),
+    payload: JSON.stringify({
+      ...policy,
+      activityWeights: Object.fromEntries(
+        Object.keys(policy.activityWeights).map((name) => [name, 0]),
+      ),
+      mapping: {
+        sourceMachineId: "source-machine",
+        executorMachineId: MACHINE,
+        profile,
+        dailyCost: 1,
+        generateRecipe: "triage",
+        reviewRecipe: "triage",
+      },
+    }),
+  });
+  // The drain's admission window closes in a minute; its sessions may still be at the model.
+  const deadline = NOW + 60_000;
+  await insertDrain({ db: harness.db, now: () => NOW } as never, {
+    id: "drn_map",
+    machineId: MACHINE,
+    preset: MAP_DRAIN_PRESET,
+    profile: { profile, model: "synthetic", thinking: "low", accounts: [], resolved: true },
+    knobs: { recipes: [] },
+    concurrent: 1,
+    target: { deadline: new Date(deadline).toISOString() },
+    startedBy: "operator",
+  });
+  // A session of this drain is still at the model, so the drain holds rather than ending.
+  await insert(harness.db, "runs", {
+    id: "run_at_model",
+    kind: TRANSCRIPT_MAP_SESSION_OPERATION,
+    machine_id: MACHINE,
+    started_at: stamp(NOW),
+    records: 0,
+    payload: "{}",
+  });
+  await harness.db.run(`UPDATE drains SET live=?, jobs_launched=1 WHERE id='drn_map'`, [
+    JSON.stringify([{ runId: "run_at_model", jobId: "job_at_model", launchedAt: NOW }]),
+  ]);
+  const scheduled: (JobLaunch & ScheduleTiming)[] = [];
+  const native = {
+    describe: () => ({
+      connected: true,
+      operations: {
+        [OPERATIONS.mapPrepare]: {
+          ready: true,
+          reason: null,
+          resourceBindingDigest: "b".repeat(64),
+          serviceBindings: {
+            [RECALL_SERVICE_ID]: {
+              machineId: "source-machine",
+              serviceId: RECALL_SERVICE_ID,
+              revision: "source-revision-1",
+              policySha256: "c".repeat(64),
+            },
+          },
+        },
+      },
+      installation: {
+        revision: "rev-7",
+        artifactSha256: "a".repeat(64),
+        enabled: true,
+        ready: true,
+      },
+    }),
+    status: () => {
+      throw new Error("this drain holds no job");
+    },
+    listRuns: () => ({ runs: [], nextCursor: null }),
+    schedules: () => [...scheduled],
+    schedule: (request: JobLaunch & ScheduleTiming) => {
+      scheduled.push(request);
+      return {};
+    },
+    disableSchedule: () => ({}),
+  };
+  // A wake of the drain's own job carries its authority and renews its cadence.
+  await plugin.lifecycle?.onJobSettled?.(
+    { ...context(harness.db as unknown as GuestDatabase, jobs, NOW), jobs: native } as never,
+    settled({ machineId: MACHINE, operationId: OPERATIONS.mapPrepare }),
+  );
+  const cadence = scheduled.filter(
+    (job) => JSON.parse(String(job.input["input"])).kind === "drain-wake",
+  );
+  expect(cadence).toHaveLength(1);
+  // Settlement, not admission, decides when the cadence may stop.
+  expect(cadence[0]!.expiresAt).toBeGreaterThan(deadline);
 });
 
 test("enabling a store made before archive captures adds their columns, the label map and the recency index", async () => {
