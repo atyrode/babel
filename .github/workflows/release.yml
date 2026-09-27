@@ -30,6 +30,13 @@ jobs:
             grab { print }
           ' CHANGELOG.md > dist/notes.md
           test -s dist/notes.md || echo "See CHANGELOG.md." > dist/notes.md
+          # A release body is bounded: GitHub refuses one over 125,000 characters, and the
+          # release is what `deliver` attaches the verified bundles to. A section longer than
+          # that is linked at the tag rather than inlined, so the release is still created.
+          if [ "$(wc -c < dist/notes.md)" -gt 120000 ]; then
+            printf 'The notes for %s are longer than a release body may hold. They are the `[%s]` section of [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md).\n' \
+              "$GITHUB_REF_NAME" "$version" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" > dist/notes.md
+          fi
 
       - name: Create GitHub Release
         env:
