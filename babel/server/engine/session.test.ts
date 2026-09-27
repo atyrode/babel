@@ -479,6 +479,22 @@ test("a locally invalid posting request is refused without pretending its spendi
   expect(posts).toBe(0);
 });
 
+test("a keyed create that lost to a retire is a definitive refusal, not an unconfirmed post", async () => {
+  const engine = codeEngine(
+    actions(
+      hostRefusal("refused: atyrode.babel -> atyrode.code.runSession (code_posting_retired)"),
+    ),
+  );
+  const answer = await engine.runSession({
+    profile: { containerId: "ctr_a", expectedRevision: 4 },
+    machineId: "m-dev-01",
+    prompt: "read the material",
+    postingKey: "run_asg_1_1",
+  });
+  // Asking again could never post: the caller settles it through its own retire.
+  expect(answer).toMatchObject({ ok: false, code: ENGINE_REFUSALS.refused });
+});
+
 test("a keyed call skips the profile preflight, and a retire hears a definitive no", async () => {
   const slice = actions((args) => {
     // A profile that moved since the first post must not hide the session its key names.

@@ -238,6 +238,9 @@ const CODE_TOKENS: Readonly<Record<string, EngineRefusalCode>> = {
   // A retire that found nothing: final — the key posted nothing and never will. A retire still
   // waiting on a retained dispatch answers another token, which reads as unconfirmed below.
   code_omp_posting_unknown: ENGINE_REFUSALS.postingUnknown,
+  // A keyed create that lost to a retire posted nothing, and its key never will: definitive, so
+  // the caller settles it through a retire of its own rather than asking again for ever.
+  code_posting_retired: ENGINE_REFUSALS.refused,
 };
 
 /** `<class>: <offenders>`, which is the message BOTH boundaries carry (ADR 0041). */

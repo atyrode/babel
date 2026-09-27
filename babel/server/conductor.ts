@@ -1983,7 +1983,11 @@ interface Unestablished {
   readonly unestablished: string;
 }
 
-/** The SDK resolves the exact instance behind the executor's installed native operation. */
+/**
+ * The SDK resolves the exact instance behind the executor's installed native operation. A
+ * refusal after the executor answered keeps what it answered, so a caller can still tell a pin
+ * that moved from a machine that is merely not ready.
+ */
 export async function describeMapHost(
   jobs: Pick<JobsSlice, "describe">,
   route: Pick<TranscriptMapConfig, "sourceMachineId" | "executorMachineId">,
@@ -1994,7 +1998,7 @@ export async function describeMapHost(
       serviceBinding: TranscriptMapServiceBinding;
       resourceBindingDigest: string;
     }
-  | { refused: string }
+  | { refused: string; readiness?: MachineReadiness }
 > {
   let readiness: MachineReadiness;
   try {
@@ -2021,6 +2025,7 @@ export async function describeMapHost(
   )
     return {
       refused: "mapping executor has no ready native binding to the configured source owner",
+      readiness,
     };
   return {
     readiness,
@@ -2184,16 +2189,26 @@ export function conductor(deps: ConductorDeps): Conductor {
     )
       return "mapping source, version or inputs changed";
     const described = await describeMapHost(jobs, intent.route, OPERATIONS.mapPrepare);
-    if ("refused" in described) return { unestablished: described.refused };
+    // Every pin the executor DID report is compared, ready or not: a source binding that names
+    // another owner, or an installation that moved, is a change even on a machine not ready now.
+    const readiness = described.readiness;
+    const operation = readiness?.operations?.[OPERATIONS.mapPrepare];
+    const binding = TranscriptMapServiceBindingSchema.safeParse(
+      operation?.serviceBindings?.[RECALL_SERVICE_ID],
+    );
+    const installation = readiness?.installation;
     if (
-      described.resourceBindingDigest !== intent.resourceBindingDigest ||
-      JSON.stringify(described.serviceBinding) !==
-        JSON.stringify(intent.expectedServiceBindings[RECALL_SERVICE_ID]) ||
-      described.readiness.installation?.revision !== intent.installationRevision ||
-      described.readiness.installation?.artifactSha256 !== intent.artifactSha256
+      (typeof operation?.resourceBindingDigest === "string" &&
+        operation.resourceBindingDigest !== intent.resourceBindingDigest) ||
+      (binding.success &&
+        JSON.stringify(binding.data) !==
+          JSON.stringify(intent.expectedServiceBindings[RECALL_SERVICE_ID])) ||
+      (installation &&
+        (installation.revision !== intent.installationRevision ||
+          installation.artifactSha256 !== intent.artifactSha256))
     )
       return "mapping native installation or source binding changed";
-    return null;
+    return "refused" in described ? { unestablished: described.refused } : null;
   }
 
   /** Whether a mapping authority answer is {@link Unestablished} rather than a verdict. */

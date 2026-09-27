@@ -7595,12 +7595,12 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       const key = request.postingKey;
       const keyed = key === undefined ? undefined : byKey.get(key);
       if (keyed !== undefined) return { ok: true, value: keyed };
-      if (key !== undefined && retired.has(key))
-        return refusedByCode("engine_refused", "code_posting_retired");
       if (request.adoptOnly === true) {
         retired.add(key!);
         return refusedByCode("engine_posting_unknown", "nothing was posted under this key");
       }
+      if (key !== undefined && retired.has(key))
+        return refusedByCode("engine_refused", "code_posting_retired");
       posted.push(request);
       const job = {
         jobId: `map_code_${posted.length}`,
@@ -8175,6 +8175,43 @@ test("a refused first post is settled by a retire, which binds a session the key
   ]);
 });
 
+test("a retire whose answer was lost is finished by the next wake, at zero and never reposted", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  // The first post is refused before posting; the retire that settles it lands, but its answer
+  // is lost. The key can no longer post, so the next wake's ask is refused for good and the
+  // retire it then makes finds nothing: the reservation goes, and nothing was ever bought.
+  const runSession = f.engine.runSession.bind(f.engine);
+  let calls = 0;
+  f.engine.runSession = async (request) => {
+    calls += 1;
+    if (calls === 1)
+      return refusedByCode("engine_stale_profile", "the profile moved under this invocation");
+    const answer = await runSession(request);
+    return calls === 2
+      ? refusedByCode("engine_unconfirmed", "the retire's answer was lost")
+      : answer;
+  };
+  await f.tick();
+  const [run] = await f.db.query<{ id: string; claim: string; closure: string | null }>(
+    `SELECT id, json_extract(preparation,'$.mapping.claim.id') claim, closure FROM runs WHERE kind=?`,
+    [TRANSCRIPT_MAP_SESSION_OPERATION],
+  );
+  expect(run!.closure).toBeNull();
+  await f.tick();
+  expect(f.posted).toEqual([]);
+  expect(await f.db.query(`SELECT closure, job_id FROM runs WHERE id=?`, [run!.id])).toEqual([
+    { closure: "failed", job_id: null },
+  ]);
+  expect(
+    await f.db.query(
+      `SELECT actual_cost, finished_at IS NOT NULL finished FROM claims WHERE id=?`,
+      [run!.claim],
+    ),
+  ).toEqual([{ actual_cost: 0, finished: 1n }]);
+});
+
 test("a lost mapping posting is asked again only by a wake of the drain that posted it", async () => {
   const f = await paidMapDeployment();
   await f.tick();
@@ -8236,6 +8273,43 @@ test("a wake that cannot describe the executor neither closes, stops nor settles
   await f.tick();
   expect(await f.db.query(`SELECT closure FROM runs WHERE job_id='map_code_1'`)).toEqual([
     { closure: "completed" },
+  ]);
+});
+
+test("a source binding moved to another owner stops a bound session even on an executor not ready", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  await f.tick();
+  expect(f.posted).toHaveLength(1);
+  // Not ready is no evidence; a binding that names another owner is, whatever the readiness.
+  const describe = f.fleet.describe.bind(f.fleet);
+  f.fleet.describe = (args) => {
+    const ready = describe(args);
+    const operation = ready.operations![OPERATIONS.mapPrepare]!;
+    const binding = operation.serviceBindings![RECALL_SERVICE_ID]!;
+    return {
+      ...ready,
+      connected: false,
+      operations: {
+        ...ready.operations,
+        [OPERATIONS.mapPrepare]: {
+          ...operation,
+          serviceBindings: { [RECALL_SERVICE_ID]: { ...binding, machineId: "another-owner" } },
+        },
+      },
+    };
+  };
+  await f.tick();
+  expect(f.cancelled).toEqual(["map_code_1"]);
+  expect(
+    await f.db.query(`SELECT json_extract(payload,'$.reason') reason FROM runs WHERE job_id=?`, [
+      "map_code_1",
+    ]),
+  ).toEqual([
+    {
+      reason: "mapping session was stopped: mapping native installation or source binding changed",
+    },
   ]);
 });
 
