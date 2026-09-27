@@ -2786,11 +2786,17 @@ export function conductor(deps: ConductorDeps): Conductor {
       params: [...authority.params, run.id],
     };
     let reason = await mappingAuthority(intent, run.job_id, "bound");
-    const stopped = await store.db.query<{ stopped: number; why: string | null }>(
+    const stopped = await store.db.query<{
+      stopped: number;
+      why: string | null;
+      closure: string | null;
+    }>(
       `SELECT coalesce(json_extract(payload,'$.stopRequested'),0) stopped,
-        json_extract(payload,'$.stopReason') why FROM runs WHERE id=?`,
+        json_extract(payload,'$.stopReason') why, closure FROM runs WHERE id=?`,
       [run.id],
     );
+    // Two wakes can reach the same terminal session; the one that closed the run settled it.
+    if (stopped[0]?.closure !== null && stopped[0]?.closure !== undefined) return;
     // The receipt names what stopped it, not only that something did.
     if (Number(stopped[0]?.stopped) === 1)
       reason = `mapping session was stopped${stopped[0]?.why ? `: ${stopped[0].why}` : ""}`;
@@ -2875,10 +2881,16 @@ export function conductor(deps: ConductorDeps): Conductor {
       reason: reason ?? "mapping authority changed at settlement",
     };
     const uncommitted: SqlCondition = { sql: `NOT (${committed.sql})`, params: committed.params };
-    await store.db.batch([
+    // Only a settlement that finds the run open closes it: a concurrent wake that settled the
+    // same session first keeps its receipt, and this one leaves the claims to it.
+    const open = (condition: SqlCondition): SqlCondition => ({
+      sql: `(${condition.sql}) AND EXISTS (SELECT 1 FROM runs WHERE id=? AND closure IS NULL)`,
+      params: [...condition.params, run.id],
+    });
+    const closed = await store.db.batch([
       ...statements,
-      runStatement(run.id, target, receipt, receipt.counts, committed),
-      runStatement(run.id, target, rejected, {}, uncommitted),
+      runStatement(run.id, target, receipt, receipt.counts, open(committed)),
+      runStatement(run.id, target, rejected, {}, open(uncommitted)),
       callStatement(
         sessionCall({
           runId: run.id,
@@ -2905,6 +2917,11 @@ export function conductor(deps: ConductorDeps): Conductor {
       ),
       { sql: `DELETE FROM run_progress WHERE run_id=?`, params: [run.id] },
     ]);
+    if (
+      (closed[statements.length]?.length ?? 0) === 0 &&
+      (closed[statements.length + 1]?.length ?? 0) === 0
+    )
+      return;
     const result = await store.db.query<{ closure: string }>(
       `SELECT closure FROM runs WHERE id=?`,
       [run.id],

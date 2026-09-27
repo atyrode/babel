@@ -28,9 +28,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   writing in the route's Code workspace and lends the account-broker read. The drain keeps its own
   native cadence under that credential, so only its own wakes draw, prepare or post sessions: a
   session is graded against the settled job that woke Babel (#469). A session the conductor stops
-  keeps the cause in its receipt. Conductor regressions cover read-wake exclusion, drain-only
-  dispatch and authority, target stop, self-ending, holding for an unrecorded run and stop
-  cancellation at `map-prepare` (#223).
+  keeps the cause in its receipt, and a session two wakes settle at once keeps the first
+  settlement's receipt and claims. Conductor regressions cover read-wake exclusion, drain-only
+  dispatch and authority, target stop, self-ending, holding for an unrecorded run, concurrent
+  settlement and stop cancellation at `map-prepare` (#223).
 
 - **The machine half can catalogue the archive, and every restic read runs without a lock.**
   `babel/machine/catalog.ts` lists the snapshots tagged exactly `babel` (never the hub store's

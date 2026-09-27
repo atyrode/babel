@@ -7846,6 +7846,42 @@ test("a mapping drain does not end on its target while a run it has not recorded
   expect(ended?.state).toBe("target");
 });
 
+test("a second wake settling the same mapping session never rewrites its completed receipt", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  await f.tick();
+  f.answer({ kind: "summary", text: "Navigation settled once." });
+  // One wake has taken the open run and is still asking Code about it when another settles it.
+  const readSession = f.engine.readSession.bind(f.engine);
+  let arrive: (() => void) | undefined;
+  let release: (() => void) | undefined;
+  const arrived = new Promise<void>((resolve) => (arrive = resolve));
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let calls = 0;
+  f.engine.readSession = async (input) => {
+    calls += 1;
+    if (calls === 1) {
+      arrive!();
+      await held;
+    }
+    return await readSession(input);
+  };
+  const slow = f.tick();
+  await arrived;
+  await f.tick();
+  release!();
+  await slow;
+  expect(
+    await f.db.query(
+      `SELECT closure, json_extract(payload,'$.reason') reason FROM runs WHERE job_id='map_code_1'`,
+    ),
+  ).toEqual([{ closure: "completed", reason: null }]);
+  expect(await f.db.query(`SELECT outcome FROM claims WHERE job_id='map_code_1'`)).toEqual([
+    { outcome: "completed" },
+  ]);
+});
+
 test("stopping a mapping drain cancels its preparation at map-prepare and releases the claim", async () => {
   const f = await paidMapDeployment();
   await f.tick();
