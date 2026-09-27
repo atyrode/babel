@@ -1056,6 +1056,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The Code pin carries keyed, retirable session postings.** `CODE_REV` and
+  `@atyrode/manifold-code` move to atyrode/code#222 (`20e9626f`), whose omp closure is
+  atyrode/manifold-omp#87 (`20d92746`); Manifold stays at `2229a2fa`. Code's `runSession` now
+  accepts a `postingKey`, answering a repeated keyed call with the session that key already
+  posted before composing anything, and an `adoptOnly` ask that retires the key: it returns the
+  key's job, or finally refuses `code_omp_posting_unknown` after which the key can never post, or
+  answers a retryable `code_omp_posting_pending` while omp holds a dispatch it has not landed.
+  There are no Babel source changes here; this is the Code behaviour the transcript-map drain's
+  posting recovery builds on (atyrode/babel#470). The machine stamp in `babel/manifest.json`
+  follows the repacked `machine.js`, and the gate passes against the new closure.
+
 - **The dependency closure follows Manifold `2229a2fa`.** `MANIFOLD_REV` and both workflow
   `uses:` refs move to atyrode/manifold `2229a2fa`. `CODE_REV` and `@atyrode/manifold-code` move
   to atyrode/code#221, whose omp closure is atyrode/manifold-omp#85, so all three name that one
