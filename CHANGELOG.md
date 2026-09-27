@@ -1056,6 +1056,25 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The dependency closure follows Manifold `2229a2fa`.** `MANIFOLD_REV` and both workflow
+  `uses:` refs move to atyrode/manifold `2229a2fa`. `CODE_REV` and `@atyrode/manifold-code` move
+  to atyrode/code#221, whose omp closure is atyrode/manifold-omp#85, so all three name that one
+  revision. It brings three Manifold changes:
+  - atyrode/manifold#825: jobs pin the instance services they call, and output lease backing is
+    isolated.
+  - atyrode/manifold#829: a same-plugin instance service is reviewed and bootstrapped together
+    with its installation.
+  - atyrode/manifold#886: a governed door can hand one named container's authority to the work
+    it starts.
+
+  The closure also brings a one-shot confined to one declared sealed file:
+  `atyrode.omp.material-session` hands that file to the model verbatim, with no `@file`
+  expansion, and Code carries `isolation` through `runSession`. There are no Babel source
+  changes. The kit now stamps `hardenedContract: 8`. Every bundle has a new digest, and the
+  machine stamp moves because `machine.js` bundles the changed SDK code. The full frozen gate
+  passes 1,205 tests, and a disposable engine installs all eleven bundles and dispatches their
+  doors.
+
 - **The dependency closure follows Manifold `2ee760dd`.** `MANIFOLD_REV` and both workflow
   `uses:` refs move to atyrode/manifold `2ee760dd`. `CODE_REV` and `@atyrode/manifold-code` move
   to atyrode/code#220, whose omp closure is atyrode/manifold-omp#84, so all three name that
