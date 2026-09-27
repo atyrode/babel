@@ -55,7 +55,10 @@ jobs:
   plugins:
     uses: atyrode/manifold/.github/workflows/plugins.yml@2229a2fa84905a4414ed4548fba4ec7aabc47a22
     with:
-      plugins-dir: "."
+      # The repository IS the plugin family, so the caller directory is the checkout root, as in
+      # manifold-plugins.yml. "." is not a root: the reusable workflow keys its cache on
+      # hashFiles('caller/./bun.lock'), which refuses the "./" segment and failed v0.5.0's gate.
+      plugins-dir: ""
       prepare-command: |
         bun run deps:tests
         bun run deps:code

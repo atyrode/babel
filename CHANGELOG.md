@@ -9,6 +9,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-27
+
+### Fixed
+
+- **A release tag runs its plugin gate from the checkout root again.** `release.yml` called the
+  reusable gate with `plugins-dir: "."` after the repository became the plugin family (#326),
+  while the pull-request gate uses `""`. The reusable workflow keys its cache on
+  `hashFiles('caller/./bun.lock')`, which refuses the `./` segment, so v0.5.0's gate failed
+  before its first step: its release exists, but no bundles were attached or delivered to the
+  preview. The release's call now matches the pull-request gate, and 0.5.1 ships what 0.5.0
+  meant to.
+
 ## [0.5.0] - 2026-09-27
 
 ### Added
@@ -5356,7 +5368,8 @@ storage configuration yet — repository selection is per-invocation
   (ea65a45…85fe13f), replaced in 8636960 and a879067. SPEC.md and README.md
   rewritten around the restic model (5b8d593).
 
-[Unreleased]: https://github.com/atyrode/babel/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/atyrode/babel/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/atyrode/babel/releases/tag/v0.5.1
 [0.5.0]: https://github.com/atyrode/babel/releases/tag/v0.5.0
 [0.4.0]: https://github.com/atyrode/babel/releases/tag/v0.4.0
 [0.3.0]: https://github.com/atyrode/babel/releases/tag/v0.3.0
