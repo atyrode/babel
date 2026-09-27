@@ -8203,6 +8203,42 @@ test("a lost mapping posting is asked again only by a wake of the drain that pos
   expect(f.posted).toHaveLength(1);
 });
 
+test("a wake that cannot describe the executor neither closes, stops nor settles a mapping run", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  // Another principal's wake may not read the executor at all: that is not a revocation.
+  const describe = f.fleet.describe.bind(f.fleet);
+  let blind = false;
+  f.fleet.describe = (args) => {
+    if (blind) throw new Error("forbidden: machines:read at the executor");
+    return describe(args);
+  };
+  const open = async () =>
+    await f.db.query(
+      `SELECT r.closure, json_extract(r.payload,'$.stopRequested') stopped, c.finished_at
+        FROM runs r JOIN claims c ON c.id=json_extract(r.preparation,'$.mapping.claim.id')
+        WHERE r.kind=?`,
+      [TRANSCRIPT_MAP_SESSION_OPERATION],
+    );
+  f.seal();
+  blind = true;
+  await f.tick(true, null);
+  expect(await open()).toEqual([{ closure: null, stopped: null, finished_at: null }]);
+  blind = false;
+  await f.tick();
+  expect(f.posted).toHaveLength(1);
+  f.answer({ kind: "summary", text: "Navigation the blind wake could not judge." });
+  blind = true;
+  await f.tick(true, null);
+  expect(f.cancelled).toEqual([]);
+  expect(await open()).toEqual([{ closure: null, stopped: null, finished_at: null }]);
+  blind = false;
+  await f.tick();
+  expect(await f.db.query(`SELECT closure FROM runs WHERE job_id='map_code_1'`)).toEqual([
+    { closure: "completed" },
+  ]);
+});
+
 test("a prepared mapping session is never posted once its drain has passed its deadline", async () => {
   const f = await paidMapDeployment();
   await f.tick();

@@ -1035,7 +1035,11 @@ Only a wake of the drain's own jobs draws mapping work, posts a preparation, pos
 renews the cadence, and it does so for that drain's runs alone: every job of a drain carries its
 press's principal, and another drain's wake would spend, post and register under another. Any
 other wake still reconciles and closes mapping runs, but it never spends a work's attempt or
-strands a posting on authority it does not hold. The free catalog's cadence carries no paid
+strands a posting on authority it does not hold. Only positive evidence closes, stops or fails a
+mapping run — a changed policy, drain, lease, executor binding or work item. An executor the
+waking credential cannot describe, or that is not connected and ready, has changed nothing: the
+run's next spend and a finished session's settlement wait for a wake that can see, and a posted
+session keeps running meanwhile. The free catalog's cadence carries no paid
 authority and never refills a drain. The start still requires an admitted catalog for its route,
 because the drain maps what the catalog planned. Jobs are ordinary coordinator claims, so the
 mapping subcap, shared ceilings and uncertain-post accounting still apply. Reads never post one.

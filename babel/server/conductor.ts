@@ -1978,6 +1978,11 @@ export async function describeHost(
   return { readiness: described };
 }
 
+/** A mapping authority this wake's own credential cannot establish: never a revocation. */
+interface Unestablished {
+  readonly unestablished: string;
+}
+
 /** The SDK resolves the exact instance behind the executor's installed native operation. */
 export async function describeMapHost(
   jobs: Pick<JobsSlice, "describe">,
@@ -2136,13 +2141,23 @@ export function conductor(deps: ConductorDeps): Conductor {
     return null;
   }
 
-  /** Observation is not admission: native execute also carries the exact signed service pin. */
+  /**
+   * Observation is not admission: native execute also carries the exact signed service pin.
+   *
+   * A string is a REFUSAL: positive evidence that the run's authority is gone — the policy, its
+   * drain, its lease or claim, the executor's binding or the work moved — which any wake may act
+   * on. {@link Unestablished} is not: the executor could not be described under this wake's own
+   * credential, or is not connected and ready right now. Another drain's principal may not read
+   * that machine at all, and a machine offline has changed nothing, so it closes, stops and
+   * releases nothing. A new spend, and the settlement of a posted session, wait for a wake that
+   * can see; a posted session keeps running meanwhile.
+   */
   async function mappingAuthority(
     intent: TranscriptMapRun,
     jobId: string,
     phase: "admission" | "bound",
     runId: string,
-  ): Promise<string | null> {
+  ): Promise<string | Unestablished | null> {
     const policy = (await coordinator.policy()).policy;
     const configured = mappingPolicy(policy);
     const route = configured === null ? null : TranscriptMapPolicySchema.parse(configured);
@@ -2160,16 +2175,6 @@ export function conductor(deps: ConductorDeps): Conductor {
     const fence = mappingFence(intent, jobId, phase);
     const held = await store.db.query<{ held: number }>(`SELECT (${fence.sql}) held`, fence.params);
     if (Number(held[0]?.held) !== 1) return "mapping lease or claim is no longer held";
-    const described = await describeMapHost(jobs, intent.route, OPERATIONS.mapPrepare);
-    if ("refused" in described) return described.refused;
-    if (
-      described.resourceBindingDigest !== intent.resourceBindingDigest ||
-      JSON.stringify(described.serviceBinding) !==
-        JSON.stringify(intent.expectedServiceBindings[RECALL_SERVICE_ID]) ||
-      described.readiness.installation?.revision !== intent.installationRevision ||
-      described.readiness.installation?.artifactSha256 !== intent.artifactSha256
-    )
-      return "mapping native installation or source binding changed";
     const details = await maps.work(intent.details.work.id);
     if (
       !details ||
@@ -2178,7 +2183,22 @@ export function conductor(deps: ConductorDeps): Conductor {
       details.context?.policyDigest !== intent.input.expectedPolicyDigest
     )
       return "mapping source, version or inputs changed";
+    const described = await describeMapHost(jobs, intent.route, OPERATIONS.mapPrepare);
+    if ("refused" in described) return { unestablished: described.refused };
+    if (
+      described.resourceBindingDigest !== intent.resourceBindingDigest ||
+      JSON.stringify(described.serviceBinding) !==
+        JSON.stringify(intent.expectedServiceBindings[RECALL_SERVICE_ID]) ||
+      described.readiness.installation?.revision !== intent.installationRevision ||
+      described.readiness.installation?.artifactSha256 !== intent.artifactSha256
+    )
+      return "mapping native installation or source binding changed";
     return null;
+  }
+
+  /** Whether a mapping authority answer is {@link Unestablished} rather than a verdict. */
+  function unestablished(verdict: string | Unestablished | null): verdict is Unestablished {
+    return verdict !== null && typeof verdict !== "string";
   }
 
   async function closeMappingPreparation(
@@ -2248,6 +2268,10 @@ export function conductor(deps: ConductorDeps): Conductor {
     // Every native preparation post is a new spend under the drain's credential.
     if (!(await wakeHoldsRun(runId))) return;
     const refusal = await mappingAuthority(intent, jobId, "admission", runId);
+    if (unestablished(refusal)) {
+      notes.push(`mapping ${runId}: preparation waits: ${refusal.unestablished}`);
+      return;
+    }
     if (refusal !== null) {
       await closeMappingPreparation(runId, jobId, intent, refusal, settled);
       return;
@@ -2667,6 +2691,8 @@ export function conductor(deps: ConductorDeps): Conductor {
         continue;
       }
       const refusal = await mappingAuthority(intent, run.prepare_job_id, "admission", run.id);
+      // What this wake cannot see closes nothing: the drain's own wake decides.
+      if (unestablished(refusal)) continue;
       if (refusal !== null) {
         await closeMappingPreparation(run.id, run.prepare_job_id, intent, refusal, settled);
         continue;
@@ -2746,6 +2772,10 @@ export function conductor(deps: ConductorDeps): Conductor {
         "admission",
         run.id,
       );
+      if (unestablished(currentRefusal)) {
+        notes.push(`mapping ${run.id}: posting waits: ${currentRefusal.unestablished}`);
+        continue;
+      }
       if (currentRefusal !== null) {
         await closeMappingPreparation(run.id, run.prepare_job_id, intent, currentRefusal, settled);
         continue;
@@ -2830,6 +2860,11 @@ export function conductor(deps: ConductorDeps): Conductor {
     notes: string[],
   ): Promise<void> {
     const refusal = await mappingAuthority(prepared, run.prepare_job_id, "admission", run.id);
+    // Neither a post nor a retire on what this wake cannot see: the marker waits for one that can.
+    if (unestablished(refusal)) {
+      notes.push(`mapping ${run.id}: posting recovery waits: ${refusal.unestablished}`);
+      return;
+    }
     const answered =
       refusal === null
         ? await engine.runSession({
@@ -2897,9 +2932,13 @@ export function conductor(deps: ConductorDeps): Conductor {
       const invalid =
         answered.value.machineId !== prepared.route.executorMachineId ||
         answered.value.operationId !== TRANSCRIPT_MAP_SESSION_OPERATION;
-      let stop = invalid
+      const verdict = invalid
         ? "Code returned a different execution boundary"
         : await mappingAuthority(prepared, run.prepare_job_id, "admission", run.id);
+      // A job this wake cannot judge is neither bound nor stopped: the marker keeps it for the
+      // drain's next wake, which asks under the same key and gets this job again.
+      if (unestablished(verdict)) throw new Error(verdict.unestablished);
+      let stop = verdict;
       // THE JOB ID AND ITS AUTHORITY ARE ONE WRITE. A wake reconciling this run reads its claim
       // as bound the moment it sees the Code job; publishing the id before the bind let that
       // wake stop a legitimate session as unauthorized. The same write requires the drain that
@@ -2968,11 +3007,13 @@ export function conductor(deps: ConductorDeps): Conductor {
     store.touch();
   }
 
+  /** `verdict` is the run's bound authority as this wake saw it, never an unestablished one. */
   async function settleMappingSession(
     at: number,
     run: PendingRun,
     read: SessionRead,
     intent: TranscriptMapRun,
+    verdict: string | null,
     ingested: IngestedRun[],
     settled: SettledClaim[],
   ): Promise<void> {
@@ -2984,7 +3025,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         AND coalesce(json_extract(payload,'$.stopRequested'),0)=0)`,
       params: [...authority.params, run.id],
     };
-    let reason = await mappingAuthority(intent, run.job_id, "bound", run.id);
+    let reason = verdict;
     const stopped = await store.db.query<{
       stopped: number;
       why: string | null;
@@ -4543,11 +4584,6 @@ export function conductor(deps: ConductorDeps): Conductor {
     notes: string[],
     refusals: Refusals,
   ): Promise<void> {
-    const mapping = mappingIntent(run.preparation);
-    if (mapping !== null) {
-      await settleMappingSession(at, run, read, mapping, ingested, settled);
-      return;
-    }
     const preparedReview = reviewPreparation(preparationOf(run.preparation));
     if (preparedReview !== null) {
       await settleReviewSession(
@@ -4915,18 +4951,19 @@ export function conductor(deps: ConductorDeps): Conductor {
   ): Promise<{ readonly inFlight: boolean; readonly stage?: string; readonly stalled?: boolean }> {
     const containerId = run.container_id ?? "";
     const mapping = mappingIntent(run.preparation);
-    if (mapping !== null) {
-      const refusal = await mappingAuthority(mapping, run.job_id, "bound", run.id);
-      if (refusal !== null) {
-        await store.db.run(
-          `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true'),'$.stopReason',?) WHERE id=?`,
-          [refusal, run.id],
-        );
-        try {
-          await engine.cancelSession({ containerId, jobId: run.job_id });
-        } catch {
-          notes.push(`mapping ${run.id}: cancellation remains unconfirmed`);
-        }
+    // What this wake can see of a mapping run's authority. Only a refusal stops the session; an
+    // executor this wake's credential cannot describe is no evidence anything changed.
+    const authority =
+      mapping === null ? null : await mappingAuthority(mapping, run.job_id, "bound", run.id);
+    if (typeof authority === "string") {
+      await store.db.run(
+        `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true'),'$.stopReason',?) WHERE id=?`,
+        [authority, run.id],
+      );
+      try {
+        await engine.cancelSession({ containerId, jobId: run.job_id });
+      } catch {
+        notes.push(`mapping ${run.id}: cancellation remains unconfirmed`);
       }
     }
     const answered = await engine.readSession({ containerId, jobId: run.job_id });
@@ -4973,6 +5010,17 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (TERMINAL_STATES[job.state] !== true)
       return { inFlight: true, ...(await foldSession(at, run, answered.value.activity)) };
     const closure: Receipt["closure"] = job.state === "cancelled" ? "stopped" : "failed";
+    if (mapping !== null) {
+      // A terminal mapping session is settled only by a wake that can see its authority:
+      // publishing or failing it on a view this credential cannot establish is a verdict this
+      // wake cannot make, so it waits, reserved, for one that can.
+      if (unestablished(authority)) {
+        notes.push(`mapping ${run.id}: settlement waits: ${authority.unestablished}`);
+        return { inFlight: true, ...(await foldSession(at, run, answered.value.activity)) };
+      }
+      await settleMappingSession(at, run, answered.value, mapping, authority, ingested, settled);
+      return { inFlight: false };
+    }
     await settleSession(at, run, answered.value, closure, ingested, settled, notes, refusals);
     return { inFlight: false };
   }

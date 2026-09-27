@@ -42,7 +42,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   that nothing was bought (#470); and the drain's cadence outlives the deadline until its last session is
   folded, for the longest life the press's credential allows, while a press whose credential
   cannot keep it past the deadline launches nothing. Conductor regressions cover read-wake
-  exclusion, drain-only dispatch and authority, a lost posting recovered, retired or released,
+  exclusion, drain-only dispatch and authority, a lost posting recovered, retired or released, a
+  wake that cannot describe the executor closing, stopping and settling nothing,
   target stop, self-ending, holding for an open run, lost launch slots and their redraw, crashed
   claims and their redraw, deadline and retry authority, a reconcile racing a bind, concurrent
   settlement and stop cancellation at `map-prepare` (#223).
