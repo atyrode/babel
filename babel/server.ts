@@ -822,7 +822,14 @@ const doors = babelDoors(
         true,
         true,
       ).tickMapDrains();
-      return { launched: started.launched, notes: [...started.notes] };
+      // The cadence registered above may already have launched this drain's first fan on a wake
+      // of its own, leaving this tick nothing to add: what the drain launched is its durable
+      // cursor, not this call's count, so a spending drain is never ended as launching nothing.
+      const launched = Math.max(
+        started.launched,
+        (await readDrain(store, drainId))?.jobsLaunched ?? 0,
+      );
+      return { launched, notes: [...started.notes] };
     },
     now: () => store.now(),
   },
