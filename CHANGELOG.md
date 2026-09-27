@@ -23,11 +23,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   review and bounded correction run only inside an operator-started `map-transcripts` drain
   (`mapDrainStart`): installing a route or admitting its free catalog spends nothing, reads never
   draw mapping work, and the drain stops at its target, deadline or `maxJobs`, or when no eligible
-  work remains. Its jobs are ordinary claims under the mapping daily cap. The start discharges
+  work remains and no mapping run on its executor is still open, so a run it has not recorded yet
+  is never refused for want of a drain. Its jobs are ordinary claims under the mapping daily cap. The start discharges
   writing in the route's Code workspace and lends the account-broker read. The drain keeps its own
   native cadence under that credential, so only its own wakes draw, prepare or post sessions: a
-  session is graded against the settled job that woke Babel (#469). Conductor regressions cover
-  read-wake exclusion, drain-only dispatch and authority, target stop, self-ending and stop
+  session is graded against the settled job that woke Babel (#469). A session the conductor stops
+  keeps the cause in its receipt. Conductor regressions cover read-wake exclusion, drain-only
+  dispatch and authority, target stop, self-ending, holding for an unrecorded run and stop
   cancellation at `map-prepare` (#223).
 
 - **The machine half can catalogue the archive, and every restic read runs without a lock.**

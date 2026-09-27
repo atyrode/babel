@@ -2741,9 +2741,12 @@ export function conductor(deps: ConductorDeps): Conductor {
               })
             : null;
         if (reason !== null || bound?.outcome !== "bound") {
+          const stop =
+            reason ??
+            `mapping claim did not bind: ${bound?.outcome === "refused" ? bound.refusal.reason : "refused"}`;
           await store.db.run(
-            `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true')) WHERE id=?`,
-            [run.id],
+            `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true'),'$.stopReason',?) WHERE id=?`,
+            [stop, run.id],
           );
           await engine.cancelSession({
             containerId: intent.route.profile.containerId,
@@ -2783,11 +2786,14 @@ export function conductor(deps: ConductorDeps): Conductor {
       params: [...authority.params, run.id],
     };
     let reason = await mappingAuthority(intent, run.job_id, "bound");
-    const stopped = await store.db.query<{ stopped: number }>(
-      `SELECT coalesce(json_extract(payload,'$.stopRequested'),0) stopped FROM runs WHERE id=?`,
+    const stopped = await store.db.query<{ stopped: number; why: string | null }>(
+      `SELECT coalesce(json_extract(payload,'$.stopRequested'),0) stopped,
+        json_extract(payload,'$.stopReason') why FROM runs WHERE id=?`,
       [run.id],
     );
-    if (Number(stopped[0]?.stopped) === 1) reason = "mapping session was stopped";
+    // The receipt names what stopped it, not only that something did.
+    if (Number(stopped[0]?.stopped) === 1)
+      reason = `mapping session was stopped${stopped[0]?.why ? `: ${stopped[0].why}` : ""}`;
     let statements: SqlStatement[] = [];
     let summaryId: string | null = null;
     if (reason === null) {
@@ -4697,8 +4703,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       const refusal = await mappingAuthority(mapping, run.job_id, "bound");
       if (refusal !== null) {
         await store.db.run(
-          `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true')) WHERE id=?`,
-          [run.id],
+          `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true'),'$.stopReason',?) WHERE id=?`,
+          [refusal, run.id],
         );
         try {
           await engine.cancelSession({ containerId, jobId: run.job_id });

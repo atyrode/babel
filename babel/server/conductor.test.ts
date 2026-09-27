@@ -7820,6 +7820,32 @@ test("a mapping drain ends on its own when every eligible transcript is mapped",
   expect(report?.reason).toBe("no eligible transcript-mapping work remains");
 });
 
+test("a mapping drain does not end on its target while a run it has not recorded is open", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  for (let index = 0; index < 2; index++) {
+    f.seal();
+    await f.tick();
+    f.answer({ kind: "summary", text: `Navigation ${String(index)}` });
+    await f.tick();
+  }
+  // The last item is claimed and its preparation posted, but the launch has not landed in the
+  // drain's own list — the window between a dispatch's claim and `recordLaunch`, or a run a
+  // previous drain launched. Nothing else is offered.
+  expect(f.fleet.launched).toHaveLength(3);
+  await f.db.run(`UPDATE drains SET live='[]' WHERE id='drn_map'`);
+  const [held] = await drainTick(mapDrainDeps(f));
+  expect(held?.state).toBe("running");
+  // So the run's next spend is still admitted, and the drain ends only once it has settled.
+  f.seal();
+  await f.tick();
+  expect(f.posted).toHaveLength(3);
+  f.answer({ kind: "summary", text: "Navigation 2" });
+  await f.tick();
+  const [ended] = await drainTick(mapDrainDeps(f));
+  expect(ended?.state).toBe("target");
+});
+
 test("stopping a mapping drain cancels its preparation at map-prepare and releases the claim", async () => {
   const f = await paidMapDeployment();
   await f.tick();
@@ -8024,6 +8050,14 @@ test("terminal mapping cancellation charges conservative exposure and clears run
     { actual_cost: 0.5, outcome: "failed" },
   ]);
   expect(await f.db.query(`SELECT id FROM transcript_map_summaries`)).toEqual([]);
+  // The receipt says what stopped the session, not only that something did.
+  expect(
+    await f.db.query(
+      `SELECT json_extract(payload,'$.reason') reason FROM runs WHERE job_id='map_code_1'`,
+    ),
+  ).toEqual([
+    { reason: "mapping session was stopped: mapping policy or reviewed configuration changed" },
+  ]);
 });
 
 test("native ambiguous post resumes the same preparation identity, while definitive admission refusal refunds", async () => {

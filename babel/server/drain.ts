@@ -893,6 +893,15 @@ async function tickMapDrain(
       "the policy in force no longer routes transcript mapping to this drain's executor",
     );
   if (seen.holding.length > 0) return held;
+  // A run this drain has not recorded yet is still its work: a dispatch claims the item — so
+  // it is no longer offered — before the launch lands in `live`, and a run another drain
+  // launched may still be posting. Ending here would refuse that run's next spend and burn
+  // the item's bounded attempt on "no mapping drain is running".
+  const open = await deps.store.db.query<{ id: string }>(
+    `SELECT id FROM runs WHERE kind=? AND machine_id=? AND closure IS NULL LIMIT 1`,
+    [TRANSCRIPT_MAP_SESSION_OPERATION, row.machineId],
+  );
+  if (open.length > 0) return held;
   const maps = transcriptMaps(deps.store);
   const now = new Date(at).toISOString();
   await maps.refreshWork(route, now, 64);
