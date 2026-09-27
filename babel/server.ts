@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import {
   defineServerPlugin,
   type GuestDatabase,
@@ -12,8 +13,15 @@ import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   DRAIN_CONCURRENT_MAX,
+  INPUT_FIELD,
   MACHINE_OPERATIONS,
+  MAP_DRAIN_PRESET,
+  RECALL_SERVICE_ID,
   type OperationName,
+  TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY,
+  TranscriptMapCatalogAdmissionSchema,
+  TranscriptMapConfigSchema,
+  type TranscriptMapCatalogAdmission,
 } from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
 import { declaredServices } from "./doors/services.ts";
@@ -25,6 +33,8 @@ import { embedder, type EmbeddingServices } from "./server/embed.ts";
 import {
   BEAT_OPERATION,
   conductor,
+  describeMapHost,
+  SCHEDULE_LIFETIME_MS,
   type Conductor,
   type KeysSlice,
   type MachinesSlice,
@@ -44,6 +54,7 @@ import {
 import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { ensureTerms } from "./store/corpus.ts";
+import { activeDrains, deadlineOf, readDrain } from "./store/drains.ts";
 import { openStore } from "./store/store.ts";
 import manifestJson from "./manifest.json";
 
@@ -81,10 +92,10 @@ import manifestJson from "./manifest.json";
 /**
  * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column, table, index and
  * trigger `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
- * `2026-09-21-store-v1-recall-traces` — recorded under the same key by the enable before
+ * `2026-09-24-store-v1-archive-captures` — recorded under the same key by the enable before
  * it — is its predecessor.
  */
-const STORE_MIGRATION = "2026-09-24-store-v1-archive-captures";
+const STORE_MIGRATION = "2026-09-25-store-v1-transcript-maps";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -169,6 +180,10 @@ function loop(
   machines: MachinesSlice,
   actions: ActionsSlice | undefined,
   plan: RunPlan,
+  catalogPlan: RunPlan,
+  mapPreparePlan: RunPlan,
+  nativeDispatch: boolean,
+  mappingDrainId?: string,
 ): Conductor {
   const engine = codeEngine(actions);
   return conductor({
@@ -210,6 +225,10 @@ function loop(
     },
     keys,
     plan,
+    catalogPlan,
+    mapPreparePlan,
+    nativeDispatch,
+    ...(mappingDrainId === undefined ? {} : { mappingDrainId }),
     now: () => store.now(),
   });
 }
@@ -230,6 +249,7 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
   const payload = rows[0]?.payload;
   if (payload === undefined) return {};
   let held: unknown;
+  let mapping: Record<string, unknown> | undefined;
   try {
     const parsed = JSON.parse(payload) as Record<string, unknown>;
     const review = parsed["review"];
@@ -238,6 +258,13 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
         ? (review as Record<string, unknown>)["recipes"]
         : undefined;
     held = Array.isArray(routed) ? routed : parsed["recipes"];
+    const configuredMapping = parsed["mapping"];
+    if (
+      typeof configuredMapping === "object" &&
+      configuredMapping !== null &&
+      !Array.isArray(configuredMapping)
+    )
+      mapping = configuredMapping as Record<string, unknown>;
   } catch {
     return {};
   }
@@ -253,6 +280,8 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
     if (typeof id !== "string" || id === "") continue;
     if (typeof body !== "string" || body.trim() === "") continue;
     if (recipe["enabled"] === false) continue;
+    // Mapping methods never become exploration methods, including the implicit all-recipes case.
+    if (id === mapping?.["generateRecipe"] || id === mapping?.["reviewRecipe"]) continue;
     cookbook[id] = {
       id,
       version: typeof version === "number" && Number.isFinite(version) ? version : 0,
@@ -280,6 +309,337 @@ const LAUNCH_DEPS: LaunchDeps = {
 
 /** The launch path every start goes through, doors and drain controller alike (#258). */
 const machinery = launchMachinery(store, LAUNCH_DEPS);
+
+/**
+ * One native cadence per admitted machine. Keep its immutable template until configuration or
+ * pins change or renewal is due; replacement is the SDK's, never a plugin timer or a scan.
+ */
+async function catalogSchedule(
+  jobs: BabelJobs,
+  machineId: string,
+  policy: Policy,
+  admission: TranscriptMapCatalogAdmission | null,
+): Promise<string[]> {
+  const notes: string[] = [];
+  const machineKey = createHash("sha256").update(machineId).digest("hex").slice(0, 32);
+  const scheduleId = `${BABEL_PLUGIN_ID}.map-catalog.${machineKey}`;
+  try {
+    const registered = (await jobs.schedules()).filter(
+      (row) =>
+        row.scheduleId === scheduleId &&
+        row.machineId === machineId &&
+        row.operationId === MACHINE_OPERATIONS.mapCatalog,
+    );
+    if (!policy.enabled || policy.mapping?.executorMachineId !== machineId || admission === null) {
+      for (const row of registered)
+        await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+      return notes;
+    }
+    const intervalMs = policy.cadenceSeconds * 1000;
+    const described = await describeMapHost(jobs, policy.mapping, MACHINE_OPERATIONS.mapCatalog);
+    if ("refused" in described) return [`catalog cadence: ${described.refused}`];
+    if (
+      JSON.stringify(admission.route) !==
+        JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping)) ||
+      admission.resourceBindingDigest !== described.resourceBindingDigest ||
+      JSON.stringify(admission.serviceBinding) !== JSON.stringify(described.serviceBinding)
+    ) {
+      for (const row of registered)
+        await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+      return ["catalog admission changed; startMapCatalog is required again"];
+    }
+    const installation = described.readiness.installation;
+    const limits = planFor(policy, MACHINE_OPERATIONS.mapCatalog).limits;
+    const configuration = createHash("sha256")
+      .update(
+        JSON.stringify({
+          machineId,
+          sourceMachineId: policy.mapping.sourceMachineId,
+          route: policy.mapping,
+          serviceBinding: described.serviceBinding,
+          resourceBindingDigest: described.resourceBindingDigest,
+          intervalMs,
+          limits,
+          installationRevision: installation?.revision,
+          artifactSha256: installation?.artifactSha256,
+        }),
+      )
+      .digest("hex");
+    const at = store.now();
+    if (
+      registered.some(
+        (row) => row.revision.startsWith(`${configuration}.`) && row.expiresAt - at > intervalMs,
+      )
+    )
+      return notes;
+    const revision = `${configuration}.${String(at)}`;
+    await jobs.schedule({
+      jobId: `catalog_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
+      machineId,
+      operationId: MACHINE_OPERATIONS.mapCatalog,
+      input: {
+        [INPUT_FIELD]: JSON.stringify({
+          kind: "catalog-wake",
+          sourceMachineId: policy.mapping.sourceMachineId,
+          executorMachineId: machineId,
+        }),
+      },
+      outputs: [],
+      limits,
+      resourceBindingDigest: described.resourceBindingDigest,
+      expectedServiceBindings: { [RECALL_SERVICE_ID]: admission.serviceBinding },
+      ...(installation === null
+        ? {}
+        : {
+            installationRevision: installation.revision,
+            artifactSha256: installation.artifactSha256,
+          }),
+      scheduleId,
+      revision,
+      firstNominalAt: at + intervalMs,
+      intervalMs,
+      deadlineMs: intervalMs,
+      expiresAt: at + SCHEDULE_LIFETIME_MS,
+      offlinePolicy: "coalesce-one",
+    });
+  } catch (error) {
+    notes.push(`catalog cadence: ${message(error)}`);
+  }
+  return notes;
+}
+
+/** Only the explicitly admitted machine may continue this free lane, including after settlement. */
+async function catalogCycle(
+  jobs: BabelJobs,
+  machineId: string,
+  explicitAdmission?: TranscriptMapCatalogAdmission,
+): Promise<readonly string[]> {
+  const { policy, standing } = await coordinated.policy();
+  const parsed = TranscriptMapCatalogAdmissionSchema.safeParse(
+    explicitAdmission ??
+      JSON.parse((await keys.get(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY)) ?? "null"),
+  );
+  const admission =
+    parsed.success &&
+    policy.enabled &&
+    policy.mapping !== undefined &&
+    parsed.data.route.executorMachineId === machineId &&
+    JSON.stringify(parsed.data.route) ===
+      JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping))
+      ? parsed.data
+      : null;
+  if (explicitAdmission !== undefined && admission !== null)
+    await keys.set(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY, JSON.stringify(admission));
+  const notes = await catalogSchedule(jobs, machineId, standing, admission);
+  return [
+    ...notes,
+    ...(await loop(
+      jobs,
+      unaskable(HOOK_WITHOUT_MACHINES),
+      undefined,
+      planFor(policy, BEAT_OPERATION),
+      planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+      planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+      // The free catalog lane never enters paid dispatch, whatever authority settled it.
+      false,
+    ).tickCatalog(machineId, admission ?? undefined)),
+  ];
+}
+
+/**
+ * WHY A MAPPING DRAIN CANNOT START, or null. The free catalog's cadence is the native wake that
+ * refills a mapping drain's fan once its Code sessions settle — a Code session settling wakes
+ * Code, never Babel — so a drain is refused while that cadence is not admitted for the route.
+ */
+async function catalogAdmitted(policy: Policy): Promise<string | null> {
+  if (!policy.enabled || policy.mapping === undefined)
+    return "the policy in force installs no transcript-mapping route";
+  const parsed = TranscriptMapCatalogAdmissionSchema.safeParse(
+    JSON.parse((await keys.get(TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY)) ?? "null"),
+  );
+  return parsed.success &&
+    JSON.stringify(parsed.data.route) ===
+      JSON.stringify(TranscriptMapConfigSchema.parse(policy.mapping))
+    ? null
+    : `start the free catalog for this route (${ACTIONS.startMapCatalog}) first: its cadence is what refills a mapping drain`;
+}
+
+/** The scheduler id of one paid mapping drain's own cadence. */
+function mapDrainWakeId(drainId: string): string {
+  return `${BABEL_PLUGIN_ID}.map-drain.${createHash("sha256").update(drainId).digest("hex").slice(0, 32)}`;
+}
+
+/** The lifetimes a drain's cadence is registered for, longest first (see `mapDrainWake`). */
+const CADENCE_LIFETIMES_MS = [
+  SCHEDULE_LIFETIME_MS,
+  7 * 24 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+  6 * 60 * 60 * 1000,
+  60 * 60 * 1000,
+] as const;
+
+/**
+ * A PAID MAPPING DRAIN'S OWN WAKE (#469). A Code session settling wakes Code, not Babel, so a
+ * drain needs a native cadence to settle its sessions and refill its fan — and that cadence is
+ * posted under the drain's own credential, at the `map-prepare` node the press was admitted at,
+ * so every settlement it wakes carries exactly what the press discharged: the Code workspace
+ * and the broker read a session needs. The free catalog's cadence never does this; it carries
+ * no paid authority and must not borrow any.
+ *
+ * `jobs` must be a slice holding the drain's authority (the press, or a wake of the drain's own
+ * jobs). A registration already current is left alone; a new revision replaces it before its
+ * lifetime runs out.
+ *
+ * THE CADENCE OUTLIVES THE DEADLINE. The deadline ends admission, not settlement: a session
+ * still at the model when it passes must be read, settled and folded, and nothing else wakes a
+ * drain whose standing weights are zero. So the cadence runs until the drain has ended — every
+ * wake disables the cadence of an ended drain — while every spend it could make is refused past
+ * the drain's own bounds (`mappingDrainId` in `server/conductor.ts`). The hub refuses an expiry
+ * past the registering credential's own, and a plugin cannot read that ceiling, so the
+ * registration steps down {@link CADENCE_LIFETIMES_MS} and keeps the longest it accepts — but
+ * never one that ends before the deadline has been passed by two intervals: a cadence that
+ * cannot settle what the drain admitted is not a cadence, and `ok` says so.
+ */
+async function mapDrainWake(
+  jobs: BabelJobs,
+  drainId: string,
+  policy: Policy,
+  deadline: number | null,
+): Promise<{ readonly ok: boolean; readonly notes: readonly string[] }> {
+  const route = policy.mapping;
+  if (!policy.enabled || route === undefined) return { ok: false, notes: [] };
+  const scheduleId = mapDrainWakeId(drainId);
+  const refused = (why: string) => ({
+    ok: false,
+    notes: [`mapping drain ${drainId} cadence: ${why}`],
+  });
+  try {
+    const described = await describeMapHost(jobs, route, MACHINE_OPERATIONS.mapPrepare);
+    if ("refused" in described) return refused(described.refused);
+    const installation = described.readiness.installation;
+    const intervalMs = policy.cadenceSeconds * 1000;
+    const limits = planFor(policy, MACHINE_OPERATIONS.mapPrepare).limits;
+    const configuration = createHash("sha256")
+      .update(
+        JSON.stringify({
+          drainId,
+          route,
+          serviceBinding: described.serviceBinding,
+          resourceBindingDigest: described.resourceBindingDigest,
+          intervalMs,
+          limits,
+          installationRevision: installation?.revision,
+          artifactSha256: installation?.artifactSha256,
+        }),
+      )
+      .digest("hex");
+    const at = store.now();
+    const registered = (await jobs.schedules()).filter((row) => row.scheduleId === scheduleId);
+    if (
+      registered.some(
+        (row) => row.revision.startsWith(`${configuration}.`) && row.expiresAt - at > intervalMs,
+      )
+    )
+      return { ok: true, notes: [] };
+    const revision = `${configuration}.${String(at)}`;
+    const floor = Math.max(at + intervalMs, deadline === null ? 0 : deadline + 2 * intervalMs);
+    for (const lifetime of CADENCE_LIFETIMES_MS) {
+      const expiresAt = at + lifetime;
+      if (expiresAt <= floor) break;
+      try {
+        await jobs.schedule({
+          jobId: `mapwake_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
+          machineId: route.executorMachineId,
+          operationId: MACHINE_OPERATIONS.mapPrepare,
+          input: {
+            [INPUT_FIELD]: JSON.stringify({
+              kind: "drain-wake",
+              drainId,
+              executorMachineId: route.executorMachineId,
+            }),
+          },
+          outputs: [],
+          limits,
+          resourceBindingDigest: described.resourceBindingDigest,
+          expectedServiceBindings: { [RECALL_SERVICE_ID]: described.serviceBinding },
+          ...(installation === null
+            ? {}
+            : {
+                installationRevision: installation.revision,
+                artifactSha256: installation.artifactSha256,
+              }),
+          scheduleId,
+          revision,
+          firstNominalAt: at + intervalMs,
+          intervalMs,
+          deadlineMs: intervalMs,
+          expiresAt,
+          offlinePolicy: "coalesce-one",
+        });
+        return { ok: true, notes: [] };
+      } catch (error) {
+        if (!message(error).includes("schedule-expiry-ceiling")) throw error;
+      }
+    }
+    return refused(
+      "the credential it runs under ends before the drain's deadline could be settled past",
+    );
+  } catch (error) {
+    return refused(message(error));
+  }
+}
+
+/**
+ * Every paid mapping drain's cadence, reconciled on a wake: a cadence whose drain has ended is
+ * disabled on any wake, because stopping one spends nothing; the waking drain's own is renewed,
+ * and only that one — a registration carries the credential that made it, and another drain's
+ * cadence re-registered under this one would wake that drain under the wrong principal.
+ */
+async function mapDrainWakes(
+  jobs: BabelJobs,
+  policy: Policy,
+  drainId: string | undefined,
+): Promise<string[]> {
+  const notes: string[] = [];
+  try {
+    const live = new Map(
+      (await activeDrains(store))
+        .filter((drain) => drain.preset === MAP_DRAIN_PRESET)
+        .map((drain) => [mapDrainWakeId(drain.id), drain] as const),
+    );
+    for (const row of await jobs.schedules()) {
+      if (!row.scheduleId.startsWith(`${BABEL_PLUGIN_ID}.map-drain.`) || live.has(row.scheduleId))
+        continue;
+      await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+    }
+    const own = drainId === undefined ? undefined : live.get(mapDrainWakeId(drainId));
+    if (own !== undefined)
+      notes.push(...(await mapDrainWake(jobs, own.id, policy, deadlineOf(own.target))).notes);
+  } catch (error) {
+    notes.push(`mapping drain cadence: ${message(error)}`);
+  }
+  return notes;
+}
+
+/**
+ * THE PAID MAPPING DRAIN A SETTLED `map-prepare` JOB BELONGS TO (#470): its cadence names it by
+ * schedule, and a preparation by the run that drain holds. That settlement carries the drain's
+ * own credential, and every paid spend on it is for that drain's runs alone.
+ */
+async function settledMapDrain(job: {
+  readonly jobId: string;
+  readonly scheduleId?: string | undefined;
+}): Promise<string | undefined> {
+  const drains = (await activeDrains(store)).filter((drain) => drain.preset === MAP_DRAIN_PRESET);
+  if (job.scheduleId !== undefined)
+    return drains.find((drain) => mapDrainWakeId(drain.id) === job.scheduleId)?.id;
+  const runs = await store.db.query<{ id: string }>(`SELECT id FROM runs WHERE prepare_job_id=?`, [
+    job.jobId,
+  ]);
+  return drains.find((drain) =>
+    drain.live.some((held) => runs.some((run) => run.id === held.runId)),
+  )?.id;
+}
 
 /**
  * The controller's dependencies over one wake's own authority (#258, #279).
@@ -325,12 +685,27 @@ async function cycle(
   machines: MachinesSlice,
   actions: ActionsSlice | undefined,
   services?: EmbeddingServices | undefined,
+  // Only a hook's slice — the settled job's own authority, or the installer's at enable — can
+  // post native work; a door's bridge is attenuated to that door's delegates.
+  nativeDispatch = false,
+  // Only a wake of a paid mapping drain's own job carries that drain's authority (#469, #470).
+  mappingDrainId?: string,
 ): Promise<void> {
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
-  // limits are read for; a run that reaches a model is Code's to post (#279).
+  // limits are read for; a run that reaches a model is Code's to post (#279). Mapping's native
+  // work uses each of its operations' own declared limits.
   const plan = planFor(policy, BEAT_OPERATION);
-  const report = await loop(jobs, machines, actions, plan).tick();
+  const report = await loop(
+    jobs,
+    machines,
+    actions,
+    plan,
+    planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+    planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+    nativeDispatch,
+    mappingDrainId,
+  ).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
     drew nothing, or stopped on a gap, or refused a dispatch, left no trace outside the tick
@@ -387,6 +762,9 @@ async function cycle(
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
     }
   }
+  // After the controller, so a drain it just ended loses its cadence on this same wake.
+  for (const note of await mapDrainWakes(jobs, policy, mappingDrainId))
+    console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
 }
 
 /**
@@ -447,6 +825,37 @@ const doors = babelDoors(
         ctx.services,
       ),
     concurrentJobs: DRAIN_FAN,
+    startMapping: async (ctx, drainId) => {
+      const { policy } = await coordinated.policy();
+      const refusal = await catalogAdmitted(policy);
+      if (refusal !== null) return { refused: refusal };
+      const jobs = jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive));
+      // The drain's own wake comes FIRST, registered by this press so it carries this press's
+      // authority. A drain whose sessions nothing could ever settle must not buy one: without a
+      // cadence past its deadline the press launches nothing and the door ends it.
+      const row = await readDrain(store, drainId);
+      if (row === null) return { launched: 0, notes: [`the drain row for ${drainId} is gone`] };
+      const cadence = await mapDrainWake(jobs, drainId, policy, deadlineOf(row.target));
+      if (!cadence.ok) return { launched: 0, notes: [...cadence.notes] };
+      const started = await loop(
+        jobs,
+        machinesSlice(ctx.machines),
+        ctx.actions,
+        planFor(policy, BEAT_OPERATION),
+        planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+        planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+        true,
+        drainId,
+      ).tickMapDrains();
+      // The cadence registered above may already have launched this drain's first fan on a wake
+      // of its own, leaving this tick nothing to add: what the drain launched is its durable
+      // cursor, not this call's count, so a spending drain is never ended as launching nothing.
+      const launched = Math.max(
+        started.launched,
+        (await readDrain(store, drainId))?.jobsLaunched ?? 0,
+      );
+      return { launched, notes: [...started.notes] };
+    },
     now: () => store.now(),
   },
   CONCURRENT_JOBS,
@@ -454,6 +863,12 @@ const doors = babelDoors(
   // `services` block on `archive` and `verify` is the declaration; the composer behind the two
   // owner doors turns it into the policy, so the binding and the policy cannot be edited apart.
   declaredServices(manifest),
+  async (ctx, admission) =>
+    await catalogCycle(
+      jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+      admission.route.executorMachineId,
+      admission,
+    ),
 );
 
 /**
@@ -476,7 +891,9 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
     return await dispatched.run({ database: served, storage: ctx.storage }, async () => {
       const produced = await handler(ctx, args);
       const at = ctx.now();
-      if (wakes && at - woke >= WAKE_FLOOR_MS) {
+      const refused =
+        produced !== null && typeof produced === "object" && Object.hasOwn(produced, "refused");
+      if (wakes && !refused && at - woke >= WAKE_FLOOR_MS) {
         woke = at;
         try {
           await cycle(
@@ -581,6 +998,8 @@ export const plugin: ServerPluginDef = {
             installer === undefined ? unauthorized(ENABLE_WITHOUT_JOBS) : jobsSlice(installer),
             unaskable(HOOK_WITHOUT_MACHINES),
             ctx.actions,
+            undefined,
+            installer !== undefined,
           );
         });
       } catch (error) {
@@ -609,7 +1028,25 @@ export const plugin: ServerPluginDef = {
         throw new Error(`${BABEL_PLUGIN_ID}: a settled job was served without the plugin's tables`);
       }
       await dispatched.run({ database, storage: ctx.storage }, async () => {
-        await cycle(jobsSlice(ctx.jobs), unaskable(HOOK_WITHOUT_MACHINES), ctx.actions);
+        if (job.operationId === MACHINE_OPERATIONS.mapCatalog) {
+          // The free lane: it carries no paid authority, so it never refills a paid drain.
+          for (const note of await catalogCycle(jobsSlice(ctx.jobs), job.machineId))
+            console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);
+        } else {
+          // A `map-prepare` job — a drain's preparation or its own cadence — was posted under
+          // a paid mapping drain's credential, and this wake carries it for that drain alone
+          // (#469, #470).
+          await cycle(
+            jobsSlice(ctx.jobs),
+            unaskable(HOOK_WITHOUT_MACHINES),
+            ctx.actions,
+            undefined,
+            true,
+            job.operationId === MACHINE_OPERATIONS.mapPrepare
+              ? await settledMapDrain(job)
+              : undefined,
+          );
+        }
       });
     },
   },

@@ -16,6 +16,7 @@ import {
   LaunchResultSchema,
   MATERIAL_OUTPUT,
   OPERATIONS,
+  TRANSCRIPT_MAP_SESSION_OPERATION,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   PREPARE_INPUT_MAX_BYTES,
@@ -27,6 +28,9 @@ import {
   SnapshotIdSchema,
   StopInputSchema,
   StopResultSchema,
+  StartMapCatalogRequestSchema,
+  StartMapCatalogResultSchema,
+  type TranscriptMapCatalogAdmission,
   VerifyRequestSchema,
   VerifyResultSchema,
   MaterialIndexSchema,
@@ -65,6 +69,7 @@ import {
 } from "../server/engine/session.ts";
 import {
   describeHost,
+  describeMapHost,
   type InferenceUsage,
   type JobLaunch,
   type RunPlan,
@@ -1767,6 +1772,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
          FROM runs r JOIN runs p ON p.job_id = r.prepare_job_id
         WHERE r.closure IS NULL AND r.job_id IS NULL AND r.container_id IS NOT NULL
           AND p.closure IS NOT NULL
+          AND r.kind != '${TRANSCRIPT_MAP_SESSION_OPERATION}'
         ORDER BY r.started_at`,
     );
     const posted: Posted[] = [];
@@ -2083,6 +2089,56 @@ function materialOf(payload: string): MaterialIndex | null {
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * A free mapping wake has its own exact admission targets. A scan launch cannot lend its
+ * operation grant to the private mapping service, and a reader must never acquire that grant.
+ */
+export function mapCatalogDoor(
+  coordinator: Coordinator,
+  advance: (ctx: GuestCtx, admission: TranscriptMapCatalogAdmission) => Promise<readonly string[]>,
+): Door {
+  return defineDoor(
+    defineServerAction({
+      name: ACTIONS.startMapCatalog,
+      title: "Start free transcript-map catalog and planning",
+      caps: ["machines:run", "operations:invoke", "services:invoke", "network:host"],
+      delegates: ["machines:read", "jobs:read", "locations:write"],
+      requirements: [
+        { cap: "machines:run", target: ["operation"] },
+        { cap: "operations:invoke", target: ["operation"] },
+        { cap: "network:host", target: ["operation"] },
+        { cap: "services:invoke", target: ["target"] },
+      ],
+      input: StartMapCatalogRequestSchema,
+      result: StartMapCatalogResultSchema,
+    }),
+    async (ctx, { operation, target }) => {
+      const { policy } = await coordinator.policy();
+      if (
+        !policy.enabled ||
+        policy.mapping?.executorMachineId !== operation.machineId ||
+        policy.mapping.sourceMachineId !== target.machineId
+      )
+        return {
+          refused: "The enabled mapping policy must name the requested source owner and executor.",
+        };
+      const binding = await describeMapHost(ctx.jobs, policy.mapping, OPERATIONS.mapCatalog);
+      if ("refused" in binding) return binding;
+      return {
+        sourceMachineId: target.machineId,
+        executorMachineId: operation.machineId,
+        notes: [
+          ...(await advance(ctx, {
+            route: policy.mapping,
+            serviceBinding: binding.serviceBinding,
+            resourceBindingDigest: binding.resourceBindingDigest,
+          })),
+        ],
+      };
+    },
+  );
+}
+
 export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[] {
   const machinery = launchMachinery(store, deps);
 
@@ -2207,7 +2263,13 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       // The caller was admitted at the node it POSTED; the row says which job this run is. A
       // request that authorized one job and named another is refused rather than reconciled.
       const node = preparing
-        ? { jobId: prepareJobId, operationId: OPERATIONS.prepare as string }
+        ? {
+            jobId: prepareJobId,
+            operationId:
+              run.kind === TRANSCRIPT_MAP_SESSION_OPERATION
+                ? OPERATIONS.mapPrepare
+                : OPERATIONS.prepare,
+          }
         : { jobId, operationId: run.kind };
       if (
         job.jobId !== node.jobId ||
@@ -2415,7 +2477,7 @@ export function hubRefusal(error: unknown): string {
   return error instanceof HostCallError ? error.detail : error.message;
 }
 
-function nativeFailureToken(
+export function nativeFailureToken(
   error: unknown,
   method: "jobs.execute" | "jobs.status",
 ): string | undefined {
@@ -2434,7 +2496,7 @@ function nativeFailureToken(
  * enough: execute can also throw after commit while notifying or dispatching. A status probe
  * after an arbitrary transport failure cannot prove the request was never admitted.
  */
-function nativeAdmissionRefusal(error: unknown): boolean {
+export function nativeAdmissionRefusal(error: unknown): boolean {
   switch (nativeFailureToken(error, "jobs.execute")) {
     case "unknown_operation":
     case "installation_changed":

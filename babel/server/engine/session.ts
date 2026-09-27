@@ -164,6 +164,20 @@ export interface SessionRequest {
   /** The `prepare` job whose sealed `material` output this run reads, when one is needed. */
   readonly prepareJobId?: string | undefined;
   readonly inferenceLimits?: ActionInput<"runSession">["inferenceLimits"];
+  readonly isolation?: ActionInput<"runSession">["isolation"];
+  /**
+   * THE POSTING'S OWN NAME (#470). Code and omp derive the session's job id from it, so a post
+   * whose answer was lost can be asked again under the same key and returns the session it
+   * created rather than buying a second one.
+   * A keyed call is answered from what the key already posted before Code composes anything,
+   * and Code checks the profile itself when it did not, so no Babel preflight runs for it.
+   */
+  readonly postingKey?: string;
+  /**
+   * SETTLE `postingKey` FOR GOOD: return what it posted, else retire it so it can never post,
+   * refused `engine_posting_unknown`. Nothing is composed or bought.
+   */
+  readonly adoptOnly?: boolean;
 }
 
 export interface CodeEngine {
@@ -221,6 +235,12 @@ const HOST_CLASSES: Readonly<Record<string, EngineRefusalCode>> = {
  */
 const CODE_TOKENS: Readonly<Record<string, EngineRefusalCode>> = {
   code_stale_preferences: ENGINE_REFUSALS.staleProfile,
+  // A retire that found nothing: final — the key posted nothing and never will. A retire still
+  // waiting on a retained dispatch answers another token, which reads as unconfirmed below.
+  code_omp_posting_unknown: ENGINE_REFUSALS.postingUnknown,
+  // A keyed create that lost to a retire posted nothing, and its key never will: definitive, so
+  // the caller settles it through a retire of its own rather than asking again for ever.
+  code_posting_retired: ENGINE_REFUSALS.refused,
 };
 
 /** `<class>: <offenders>`, which is the message BOTH boundaries carry (ADR 0041). */
@@ -386,8 +406,13 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
 
     // Guard every posting path, including conductor reviews and prepared explorations.
     runSession: async (request: SessionRequest): Promise<EngineAnswer<CodeJob>> => {
-      const may = await checkProfile(request.profile);
-      if (!may.ok) return may;
+      // A keyed call is answered from what its key posted before anything is composed, so a
+      // profile that moved since must not hide the session it names; Code checks the profile
+      // itself before a keyed call posts anything new.
+      if (request.postingKey === undefined) {
+        const may = await checkProfile(request.profile);
+        if (!may.ok) return may;
+      }
       return await call("runSession", {
         containerId: request.profile.containerId,
         machineId: request.machineId,
@@ -397,6 +422,9 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
         ...(request.inferenceLimits === undefined
           ? {}
           : { inferenceLimits: request.inferenceLimits }),
+        ...(request.isolation === undefined ? {} : { isolation: request.isolation }),
+        ...(request.postingKey === undefined ? {} : { postingKey: request.postingKey }),
+        ...(request.adoptOnly === true ? { adoptOnly: true } : {}),
       });
     },
 

@@ -11,6 +11,43 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Transcript maps are navigation artifacts, never evidence.** The capture, store and read layer
+  keeps immutable source coordinates, bounded hierarchy and versioned prose outside the frontier.
+  Summary and source traces stay distinct, current disclosure is checked even after cache warming,
+  and only actually served summaries become review candidates. A scoped start and stdout-only
+  native cadence continue free catalog work without ordinary scans or Code calls. Requests retain
+  their intent before posting and recover without losing a cursor or buying a duplicate effect;
+  only the named result lease is ingested, so native logs cannot stall receipt replay. Real-store
+  regressions cover interrupted writes and ambiguous admission; synthetic archived-source
+  exercises verify exact spans, class boundaries and citation refusal. Paid generation, served
+  review and bounded correction run only inside an operator-started `map-transcripts` drain
+  (`mapDrainStart`): installing a route or admitting its free catalog spends nothing, reads never
+  draw mapping work, and the drain stops at its target, deadline or `maxJobs`, or when no eligible
+  work remains and no mapping run on its executor is still open, so a run it has not recorded yet
+  is never refused for want of a drain. Its jobs are ordinary claims under the mapping daily cap. The start discharges
+  writing in the route's Code workspace and lends the account-broker read. The drain keeps its own
+  native cadence under that credential, so only its own wakes draw, prepare, post sessions or
+  renew the cadence, each for its own drain's runs: a session is graded against the settled job
+  that woke Babel (#469). A session the conductor stops
+  keeps the cause in its receipt, and a session two wakes settle at once keeps the first
+  settlement's receipt and claims. A run takes its drain's launch slot in the same write that
+  publishes it, so overlapping wakes cannot post outside the fan; a claim that published nothing
+  (a lost slot, or a crash before publishing) is withdrawn at zero and its work drawn again at the
+  next fence; every later spend, native retries included, is admitted only by the drain that holds
+  the run while it is short of its target and deadline; a Code job id is published in the same
+  write as its bind, and only while its drain still runs, so a stop before the bind cancels it; a session is posted under
+  its run id as Code's posting key, so a posting whose answer a settled hook's lease lost is asked
+  again by its own drain and recovered, bought at most once, and a posting that ends without a job
+  ends through a retire after which the key can post nothing, so a refusal is never read as proof
+  that nothing was bought (#470); and the drain's cadence outlives the deadline until its last session is
+  folded, for the longest life the press's credential allows, while a press whose credential
+  cannot keep it past the deadline launches nothing. Conductor regressions cover read-wake
+  exclusion, drain-only dispatch and authority, a lost posting recovered, retired or released, a
+  wake that cannot describe the executor closing, stopping and settling nothing,
+  target stop, self-ending, holding for an open run, lost launch slots and their redraw, crashed
+  claims and their redraw, deadline and retry authority, a reconcile racing a bind, concurrent
+  settlement and stop cancellation at `map-prepare` (#223).
+
 - **The machine half can catalogue the archive, and every restic read runs without a lock.**
   `babel/machine/catalog.ts` lists the snapshots tagged exactly `babel` (never the hub store's
   `babel-store` backup) and writes one session row per capture, newest per label, with times

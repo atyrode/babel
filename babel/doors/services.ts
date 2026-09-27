@@ -24,8 +24,8 @@ import { defineDoor, type Door } from "./door.ts";
 /*
   THE DOORS A SERVICE POLICY IS INSTALLED THROUGH (#400).
 
-  Babel binds one host service today — `atyrode.babel.restic`, named by the `archive` and
-  `verify` operations — and installing its policy was a hand-written owner call to
+  Babel binds one external host service — `atyrode.babel.restic` — and installing its policy
+  was a hand-written owner call to
   `engine.services.configureConfiguration` with its arguments spelled out in prose in
   `docs/runbook.md` §4. A procedure living in a document is the shape this repository keeps
   deciding is not good enough: an archive whose restore path lives only in an operator's head is
@@ -72,7 +72,8 @@ export interface DeclaredService {
 }
 
 /**
- * The services this bundle's machine half binds, read off the manifest it ships.
+ * External host services this bundle binds. A binding named for a provided-service operation
+ * belongs to that operation's instance owner, not this origin-and-credential composer.
  *
  * Two operations binding one service at two revisions is a manifest that cannot be installed —
  * the hub fingerprints one policy per service, not one per operation — so it raises at load,
@@ -82,6 +83,7 @@ export function declaredServices(manifest: PluginManifest): readonly DeclaredSer
   const found = new Map<string, { revision: string; operationIds: Set<string> }>();
   for (const [operationId, operation] of Object.entries(manifest.machine?.operations ?? {})) {
     for (const binding of operation.services ?? []) {
+      if (manifest.machine?.operations[binding.serviceId]?.providesService === true) continue;
       const held = found.get(binding.serviceId);
       if (held === undefined) {
         found.set(binding.serviceId, {

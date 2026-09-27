@@ -84,14 +84,14 @@ async function compose(root: HTMLElement): Promise<void> {
   await type(field(root, "Why"), "the 7-day window resets at 13:00Z");
 }
 
-test("the three drain presets are the ones a drain fans out, and the beat says it spends nothing", async () => {
+test("the drain presets are the ones a drain fans out, and the beat says it spends nothing", async () => {
   const { root } = await open();
   const cards = [...section(root).querySelectorAll(DRAIN_PRESET)];
   expect(
     cards.map(
       (card) => card.querySelector(".plugin-atyrode_babel_watch__preset-title")?.textContent,
     ),
-  ).toEqual(["Read what's new", "Explore a topic", "Keep going"]);
+  ).toEqual(["Read what's new", "Explore a topic", "Keep going", "Map transcripts"]);
   // THE DRAWN PRESETS ARE ABSENT BY DESIGN: fanning them out would be a second implementation of
   // the coordinator, and the panel must not offer what the door refuses.
   expect(section(root).textContent).not.toContain("Review the backlog");

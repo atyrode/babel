@@ -150,25 +150,6 @@ function resticPolicy(origin = ORIGIN): ServicePolicy {
   return composed.policy;
 }
 
-test("the composed policy is the manifest's binding, not a second spelling of it", () => {
-  // A binding mismatch is installable exactly when these two are typed apart, so the expected
-  // values come out of the manifest rather than out of this file.
-  expect(DECLARED).toEqual([
-    {
-      serviceId: RESTIC_SERVICE.serviceId,
-      revision: RESTIC_SERVICE.revision,
-      operationIds: [RESTIC_SERVICE.operationId],
-    },
-  ]);
-  const policy = resticPolicy();
-  expect(policy.serviceId).toBe(RESTIC_SERVICE.serviceId);
-  expect(policy.revision).toBe(RESTIC_SERVICE.revision);
-  expect(Object.keys(policy.operations)).toEqual([RESTIC_SERVICE.operationId]);
-  // And the route is the one the machine half calls: `machine/restic.ts` fetches this path.
-  const storage = policy.operations[RESTIC_SERVICE.operationId];
-  expect(storage).toMatchObject({ kind: "http-proxy", method: "GET", path: RESTIC_SERVICE.path });
-});
-
 test("an operation the manifest binds and this bundle calls no route for is refused, not composed", () => {
   // The other half of "a binding mismatch cannot be installed by hand-editing one of the two":
   // a manifest that grows an operation id before the code that calls it composes nothing.

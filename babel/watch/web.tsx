@@ -23,12 +23,15 @@ import {
   WATCH_PLUGIN_ID,
 } from "../contract.ts";
 import {
+  DRAIN_CARDS,
   INITIAL_DRAIN,
   INITIAL_LAUNCH,
   act,
   chosenProfile,
   drainStartRequest,
   drainStopInput,
+  mapDrainStartRequest,
+  mappingRouteOf,
   launchRequest,
   read,
   serviceOrigins,
@@ -304,18 +307,25 @@ export function Watch({ host }: PanelProps) {
     } else profiles.refresh();
   }, [draft, host, profiles, runs]);
 
+  const mappingRoute = useMemo(() => mappingRouteOf(policy.value), [policy.value]);
   const onDrainStart = useCallback(async () => {
-    if (drainProfile === null) return;
+    const mapping = DRAIN_CARDS[drainDraft.preset].knob === "route";
+    // The deadline is an instant computed at the press, from the minutes the operator set: a
+    // form left open for ten minutes must not post a deadline ten minutes in the past.
+    const press = mapping
+      ? mappingRoute === null
+        ? null
+        : ([
+            ACTIONS.mapDrainStart,
+            mapDrainStartRequest(drainDraft, mappingRoute, Date.now()),
+          ] as const)
+      : drainProfile === null
+        ? null
+        : ([ACTIONS.drainStart, drainStartRequest(drainDraft, drainProfile, Date.now())] as const);
+    if (press === null) return;
     setDraining(true);
     setDrainNote("");
-    const outcome = await act(
-      host,
-      ACTIONS.drainStart,
-      // The deadline is an instant computed at the press, from the minutes the operator set: a
-      // form left open for ten minutes must not post a deadline ten minutes in the past.
-      drainStartRequest(drainDraft, drainProfile, Date.now()),
-      DrainStartResultSchema,
-    );
+    const outcome = await act(host, press[0], press[1], DrainStartResultSchema);
     setDraining(false);
     if (outcome.ok) {
       const started = outcome.value;
@@ -329,7 +339,7 @@ export function Watch({ host }: PanelProps) {
       return;
     }
     setDrainNote(outcome.message);
-  }, [drainDraft, drainProfile, drains, host, runs]);
+  }, [drainDraft, drainProfile, drains, host, mappingRoute, runs]);
 
   /*
     THE STOP'S ANSWER IS READ, NOT ASSUMED. The door returns `cancelled` and a `note` precisely
@@ -477,6 +487,7 @@ export function Watch({ host }: PanelProps) {
           machines={machines.value}
           topics={topics.value.topics}
           profiles={drainProfiles}
+          mappingRoute={mappingRoute}
           now={now}
           starting={draining}
           stopping={drainStopping}

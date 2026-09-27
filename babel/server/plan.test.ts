@@ -15,7 +15,7 @@
 import { expect, test } from "bun:test";
 import { JobLimitsSchema, PluginManifestSchema, type PluginManifest } from "@manifold/protocol";
 import type { GuestCtx, GuestHookJobs, GuestJobs } from "@manifold/plugin-kit/server";
-import { OPERATIONS, PRESET_OPERATIONS } from "../contract.ts";
+import { OPERATIONS, PRESET_OPERATIONS, RECALL_SERVICE_ID, RESTIC_SERVICE } from "../contract.ts";
 import { PolicySchema } from "../store/coordinator.ts";
 import type { JobLaunch } from "./conductor.ts";
 import {
@@ -152,16 +152,16 @@ test("the ceiling a bound is judged against is the manifest's, and it never ride
   expect(JobLimitsSchema.safeParse(plan.limits).success).toBe(true);
 });
 
-test("native operations have storage authority but no inference service binding", () => {
+test("native operations bind only storage and archive navigation services", () => {
   const shipped = PluginManifestSchema.parse(manifestJson);
   // Inference belongs to Code's job. Adding a provider binding to Babel would widen native
   // authority, not merely change the conductor's conservative meterability classification.
   const bindings = Object.values(shipped.machine?.operations ?? {}).flatMap(
     (operation) => operation.services ?? [],
   );
-  expect([...new Set(bindings.map((binding) => binding.serviceId))]).toEqual([
-    "atyrode.babel.restic",
-  ]);
+  expect(new Set(bindings.map((binding) => binding.serviceId))).toEqual(
+    new Set([RESTIC_SERVICE.serviceId, RECALL_SERVICE_ID]),
+  );
 });
 
 test("every verb the boundary serves passes straight through, arrays and all", async () => {

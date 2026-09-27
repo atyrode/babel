@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ageClause, elapsedClock, stopInput, usd, usdRate } from "../api.ts";
-import { OPERATIONS } from "../../contract.ts";
+import { OPERATIONS, TRANSCRIPT_MAP_SESSION_OPERATION } from "../../contract.ts";
 import { runRow } from "./host.ts";
 
 /*
@@ -59,6 +59,23 @@ test("a run still preparing is stopped at its preparation, not at a job it does 
     machineId: "m-dev-01",
     operationId: OPERATIONS.prepare,
     jobId: "job_1_material",
+  });
+  const mapping = stopInput(
+    runRow({
+      id: "map_run",
+      state: "running",
+      startedAt: "2026-09-14T12:00:00.000Z",
+      lastWord: "2026-09-14T12:00:00.000Z",
+      kind: TRANSCRIPT_MAP_SESSION_OPERATION,
+      jobId: "",
+      prepareJobId: "map_material",
+    }),
+  );
+  expect(mapping.job).toEqual({
+    kind: "job",
+    machineId: "m-dev-01",
+    operationId: OPERATIONS.mapPrepare,
+    jobId: "map_material",
   });
 
   // Once the session is posted the run has its own job, and that is the node again.

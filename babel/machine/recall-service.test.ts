@@ -4,6 +4,7 @@ import {
   RECALL_MAX_SERVED_BYTES,
   RECALL_REQUEST_TTL_MS,
   RecallReplySchema,
+  TranscriptMapNativeReplySchema,
   type RecallPolicy,
   type RecallReply,
   type RecallResult,
@@ -69,7 +70,13 @@ interface Harness {
 async function fixture(body: (h: Harness) => Promise<void>): Promise<void> {
   const gates: Gate[] = [];
   const clock = { now: Date.parse("2026-09-21T00:00:00.000Z") };
-  const archive: RecallArchive = { execute: async () => result(), close: async () => {} };
+  const archive: RecallArchive = {
+    execute: async () => result(),
+    executeMap: async () => {
+      throw new Error("Unexpected mapping call.");
+    },
+    close: async () => {},
+  };
   const service = openRecallService({
     archive,
     policy: POLICY,
@@ -356,4 +363,58 @@ test("stop closes admission, waits for active work and drops queued work before 
     await h.stop();
     expect(events).toEqual(["execute", "finished", "close"]);
   });
+});
+
+test("raw, map-read and job-only mapping routes cannot poll or execute across capabilities", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const calls: string[] = [];
+  const archive: RecallArchive = {
+    execute: async () => result(),
+    async executeMap(classId, request, privileged) {
+      calls.push(`${classId}/${privileged}`);
+      entered.resolve();
+      await release.promise;
+      return {
+        operation: request.kind,
+        entries: [],
+        accesses: [],
+        nextCursor: null,
+        cost: result().cost,
+        refusal: null,
+      };
+    },
+    close: async () => {},
+  };
+  const service = openRecallService({
+    archive,
+    policy: { ...POLICY, mappingClassId: "private" },
+    bearer: BEARER,
+  });
+  const post = (path: string, request: unknown) =>
+    fetch(`http://127.0.0.1:${service.port}${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${BEARER}`, "content-type": "application/json" },
+      body: frame(id(50), request),
+    });
+  try {
+    expect((await post("/recall/private", { kind: "map-context" })).status).toBe(403);
+    expect((await post("/maps/private", { kind: "map-release", previewId: id(51) })).status).toBe(
+      403,
+    );
+    expect((await post("/mapping", SEARCH)).status).toBe(403);
+    const pending = TranscriptMapNativeReplySchema.parse(
+      await (await post("/mapping", { kind: "map-context" })).json(),
+    );
+    expect(pending.state).toBe("pending");
+    await entered.promise;
+    expect(
+      TranscriptMapNativeReplySchema.parse(await (await post("/maps/private", POLL)).json()).state,
+    ).toBe("expired");
+    expect((await post("/mapping", { kind: "map-inventory", maxCaptures: 1 })).status).toBe(409);
+    expect(calls).toEqual(["private/true"]);
+  } finally {
+    release.resolve();
+    await service.stop();
+  }
 });

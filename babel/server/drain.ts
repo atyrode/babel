@@ -1,7 +1,9 @@
 import {
+  DRAIN_OPERATIONS,
   DRAIN_SPENDING_PRESETS,
+  MAP_DRAIN_PRESET,
   OPERATIONS,
-  PRESET_OPERATIONS,
+  TRANSCRIPT_MAP_SESSION_OPERATION,
   type DrainEnding,
   type DrainPreset,
   type DrainSpend,
@@ -9,7 +11,8 @@ import {
   type OperationName,
   type DrainProfile,
 } from "../contract.ts";
-import type { Coordinator, Policy } from "../store/coordinator.ts";
+import { mappingPolicy, type Coordinator, type Policy } from "../store/coordinator.ts";
+import { transcriptMaps } from "../store/transcript-maps.ts";
 import {
   activeDrains,
   addSpend,
@@ -177,9 +180,12 @@ const SPENDING: readonly string[] = DRAIN_SPENDING_PRESETS;
  * the profile still points where it did at the start.
  */
 export function drainInput(row: DrainRow): LaunchInput {
+  const preset = row.preset;
+  // A mapping drain launches no preset: its jobs are drawn claims (`tickMapDrain`).
+  if (preset === MAP_DRAIN_PRESET) throw new Error(`drain ${row.id} launches no preset`);
   return {
     machineId: row.machineId,
-    preset: row.preset,
+    preset,
     recipes: [...row.knobs.recipes],
     profile: row.profile.profile,
     ...(row.knobs.sinceDays === undefined ? {} : { sinceDays: row.knobs.sinceDays }),
@@ -194,7 +200,7 @@ export function drainInput(row: DrainRow): LaunchInput {
 
 /** The operation a drain's preset posts, which is also the node its jobs are cancelled at. */
 export function drainOperation(preset: DrainPreset): OperationName {
-  return PRESET_OPERATIONS[preset];
+  return DRAIN_OPERATIONS[preset];
 }
 
 /**
@@ -344,6 +350,7 @@ export interface Ended {
  *   That one is Babel's own job at `atyrode.babel.prepare`.
  */
 interface RunLane {
+  readonly kind: string;
   readonly container: string;
   readonly jobId: string;
   readonly prepareJobId: string;
@@ -352,17 +359,19 @@ interface RunLane {
 
 async function laneOf(store: DrainDeps["store"], runId: string): Promise<RunLane> {
   const rows = await store.db.query<{
+    kind: string | null;
     container_id: string | null;
     job_id: string | null;
     prepare_job_id: string | null;
     posting: number | bigint | null;
   }>(
-    `SELECT container_id, job_id, prepare_job_id, json_extract(payload, '$.posting') AS posting
+    `SELECT kind, container_id, job_id, prepare_job_id, json_extract(payload, '$.posting') AS posting
        FROM runs WHERE id = ?`,
     [runId],
   );
   const row = rows[0];
   return {
+    kind: row?.kind ?? "",
     container: row?.container_id ?? "",
     jobId: row?.job_id ?? "",
     prepareJobId: row?.prepare_job_id ?? "",
@@ -405,8 +414,20 @@ export async function endDrain(
   const journaled: DrainNote[] = [];
   const at = deps.now();
   const operationId = drainOperation(row.preset);
+  /*
+    A MAPPING DRAIN IS CLOSED BEFORE ITS LANES ARE READ. A session Code has acknowledged is
+    published only while its drain is running (`reconcileMappingPreparations`), so after this
+    write every posting either published before it — and the read below finds the job id and
+    cancels it — or finds the drain no longer running and cancels its session itself. Read first
+    and close after, and a posting that binds in between is seen by neither. What is cancelled is
+    the drain's DURABLE held set, read after the close: a run another wake reserved after the
+    caller's snapshot was taken is in it, and no reservation can join it once the drain is closed.
+  */
+  const mapping = row.preset === MAP_DRAIN_PRESET;
+  const early = mapping ? await closeDrain(deps.store, row.id, ending, reason) : null;
+  const held = mapping ? ((await readDrain(deps.store, row.id))?.live ?? live) : live;
   let cancelled = 0;
-  for (const job of live) {
+  for (const job of held) {
     const lane = await laneOf(deps.store, job.runId);
     try {
       if (lane.container === "") {
@@ -430,10 +451,15 @@ export async function endDrain(
           that the wake's own `WHERE r.closure IS NULL` reads.
         */
         if (lane.prepareJobId !== "") {
+          // A mapping run's preparation is `map-prepare`; the conductor releases its claim and
+          // work once this closed row is read (`reconcileMappingPreparations`).
           await deps.jobs.cancel({
             kind: "job",
             machineId: row.machineId,
-            operationId: OPERATIONS.prepare,
+            operationId:
+              lane.kind === TRANSCRIPT_MAP_SESSION_OPERATION
+                ? OPERATIONS.mapPrepare
+                : OPERATIONS.prepare,
             jobId: lane.prepareJobId,
           });
         }
@@ -463,13 +489,13 @@ export async function endDrain(
       journaled.push({ at, kind: "cancel", detail: `${job.jobId}: ${message(error)}` });
     }
   }
-  const closed = await closeDrain(deps.store, row.id, ending, reason);
+  const closed = early ?? (await closeDrain(deps.store, row.id, ending, reason));
   if (closed === "already") {
     notes.push(`drain ${row.id} had already ended when this tick closed it`);
   }
   if (closed === "closing") {
     notes.push(
-      `${String(live.length)} job(s) of this drain are still running: it ends as ${ending} when ` +
+      `${String(held.length)} job(s) of this drain are still running: it ends as ${ending} when ` +
         `their receipts have landed`,
     );
   }
@@ -707,6 +733,8 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
     };
   }
 
+  if (row.preset === MAP_DRAIN_PRESET)
+    return await tickMapDrain(deps, row, inForce.policy, seen, notes, at);
   // The session is the drain's own, every time: the model and the account the operator named
   // when they started it, not whatever a later default would be (#267, #279). Its fan holds
   // `concurrent` materials on the machine at once, so each is bounded to that share (#453).
@@ -838,6 +866,59 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
     reason: "",
     notes,
   };
+}
+
+/**
+ * A MAPPING DRAIN LAUNCHES NOTHING HERE. Its jobs are coordinator claims — drawn under the
+ * policy's mapping daily cap and posted as a native `map-prepare` then a material-only Code
+ * session — which the conductor posts into the slots this row leaves free, in the same wake and
+ * only on a wake that can post native work (`dispatchMapDrains` in `conductor.ts`). A read
+ * wake's bridge is attenuated below posting, so launching from here would spend each work
+ * item's bounded attempt on an admission refusal. What this tick owns is the end: a route that
+ * no longer names this drain's executor, and a backlog with nothing left to map.
+ */
+async function tickMapDrain(
+  deps: DrainDeps,
+  row: DrainRow,
+  policy: Policy,
+  seen: Reconciled,
+  notes: readonly string[],
+  at: number,
+): Promise<DrainReport> {
+  const held: DrainReport = {
+    drainId: row.id,
+    launched: 0,
+    settled: seen.settled.length,
+    live: seen.holding.length,
+    state: "running",
+    reason: "",
+    notes,
+  };
+  const end = async (ending: DrainEnding, why: string): Promise<DrainReport> => {
+    const ended = await endDrain(deps, row, ending, why, seen.holding);
+    return { ...held, state: ended.state, reason: why, notes: [...notes, ...ended.notes] };
+  };
+  const route = mappingPolicy(policy);
+  if (route === null || route.executorMachineId !== row.machineId || route.dailyCost <= 0)
+    return await end(
+      "stopped",
+      "the policy in force no longer routes transcript mapping to this drain's executor",
+    );
+  if (seen.holding.length > 0) return held;
+  // A run this drain has not recorded yet is still its work: a dispatch claims the item — so
+  // it is no longer offered — before the launch lands in `live`, and a run another drain
+  // launched may still be posting. Ending here would refuse that run's next spend and burn
+  // the item's bounded attempt on "no mapping drain is running".
+  const open = await deps.store.db.query<{ id: string }>(
+    `SELECT id FROM runs WHERE kind=? AND machine_id=? AND closure IS NULL LIMIT 1`,
+    [TRANSCRIPT_MAP_SESSION_OPERATION, row.machineId],
+  );
+  if (open.length > 0) return held;
+  const maps = transcriptMaps(deps.store);
+  const now = new Date(at).toISOString();
+  await maps.refreshWork(route, now, 64);
+  if ((await maps.offers(route, now, 1)).length > 0) return held;
+  return await end("target", "no eligible transcript-mapping work remains");
 }
 
 /**

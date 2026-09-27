@@ -24,6 +24,9 @@ import {
   type RecallRequest,
   type RecallResult,
 } from "../contract.ts";
+import type { TranscriptMapNativeRequest, TranscriptMapNativeResult } from "../contract.ts";
+import { transcriptMapCaptureId } from "../transcript-map-identity.ts";
+import { transcriptMapArchive } from "./transcript-map-archive.ts";
 import { babelSnapshot, capturesOf } from "./archive-listing.ts";
 import {
   readingCache,
@@ -108,6 +111,11 @@ function publishedMetadata(value: RecallMetadata): RecallMetadata {
 /** Only the selected repository is consulted. Native routes, not requests, supply classId. */
 export interface RecallArchive {
   execute(classId: string, request: RecallRequest): Promise<RecallResult>;
+  executeMap(
+    classId: string,
+    request: TranscriptMapNativeRequest,
+    privileged?: boolean,
+  ): Promise<TranscriptMapNativeResult>;
   close(): Promise<void>;
 }
 
@@ -217,7 +225,7 @@ export async function createRecallArchive(options: {
     entry: Capture,
     reading: ReusedReading,
     sink: RecordSink,
-    result: RecallResult,
+    result: Pick<RecallResult, "cost">,
   ): Promise<void> => {
     let failed = false;
     let failure: unknown;
@@ -251,7 +259,7 @@ export async function createRecallArchive(options: {
   };
   const load = async (
     entry: Capture,
-    result: RecallResult,
+    result: Pick<RecallResult, "cost">,
     budget: number,
     fetched: Set<Capture>,
     expected?: Pick<ReusedReading, "captureDigest" | "sourceDigest">,
@@ -351,12 +359,14 @@ export async function createRecallArchive(options: {
   };
   const enumerate = async (
     filter: RecallFilter,
-    result: RecallResult,
+    result: Pick<RecallResult, "cost" | "newestSnapshotAt" | "refusedSubjects">,
     ceiling: number,
+    all = false,
+    inventory?: readonly Snapshot[],
   ): Promise<Capture[]> => {
     const refused = new Set<string>();
     const newest = new Map<string, Capture>();
-    const snapshots = (await options.repo.snapshots()).filter(
+    const snapshots = (inventory ?? (await options.repo.snapshots())).filter(
       (snapshot) =>
         babelSnapshot(snapshot) &&
         (filter.host === undefined || filter.host === snapshot.host) &&
@@ -378,7 +388,9 @@ export async function createRecallArchive(options: {
             (filter.harness !== undefined && filter.harness !== session.harness)
           )
             return;
-          const key = sourceKey(snapshot.host, session.selector);
+          const key = all
+            ? JSON.stringify([snapshot.host, snapshot.id, node.path])
+            : sourceKey(snapshot.host, session.selector);
           const previous = newest.get(key);
           if (
             previous !== undefined &&
@@ -485,7 +497,73 @@ export async function createRecallArchive(options: {
     return result;
   };
 
+  const mappingHandles = new Map<string, number>();
+  const mapping = transcriptMapArchive({
+    policy,
+    temporaryDir: options.temporaryDir ?? tmpdir(),
+    now,
+    reason: safeReason,
+    reserve(classId, bytes) {
+      const handles =
+        (mappingHandles.get(classId) ?? 0) +
+        [...tokens.values()].filter((value) => value.classId === classId && value.path !== null)
+          .length;
+      if (handles >= previewHandleLimit || bytes > previewByteLimit - stagedBytes.get(classId)!)
+        return false;
+      mappingHandles.set(classId, (mappingHandles.get(classId) ?? 0) + 1);
+      stagedBytes.set(classId, stagedBytes.get(classId)! + bytes);
+      return true;
+    },
+    release(classId, bytes) {
+      mappingHandles.set(classId, (mappingHandles.get(classId) ?? 1) - 1);
+      stagedBytes.set(classId, stagedBytes.get(classId)! - bytes);
+    },
+    async inventory(ceiling, cost) {
+      if (closed) throw new Refused("archive-unavailable");
+      await expire();
+      const snapshots = await options.repo.snapshots();
+      const captures = await enumerate(
+        {},
+        { cost, newestSnapshotAt: null, refusedSubjects: [] },
+        ceiling,
+        true,
+        snapshots,
+      );
+      return {
+        inventory: snapshots
+          .map(({ id, host, time, paths, tags }) => ({
+            id,
+            host,
+            time,
+            paths: [...paths].sort(),
+            tags: [...tags].sort(),
+          }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+        captures: captures.map((entry) => {
+          const identity = {
+            host: entry.host,
+            harness: entry.session.harness,
+            session: entry.session.selector,
+            snapshot: entry.snapshot.id,
+            path: entry.session.primaryPath,
+            capturedAt: new Date(entry.snapshot.time).toISOString(),
+          };
+          return {
+            capture: { id: transcriptMapCaptureId(identity), ...identity },
+            sensitivity: Math.max(...entry.subjects.map((subject) => subject.sensitivity)),
+            load: (cost: RecallResult["cost"]) =>
+              load(entry, { cost }, MAX_MATERIAL_BYTES, new Set()),
+            verify: (reading: ReusedReading, sink: RecordSink, cost: RecallResult["cost"]) =>
+              verify(entry, reading, sink, { cost }),
+          };
+        }),
+      };
+    },
+  });
+
   return {
+    executeMap: (classId, request, privileged = false) =>
+      mapping.execute(classId, request, privileged),
     async execute(classId, input) {
       const result: RecallResult = {
         operation: input.kind,
@@ -516,6 +594,7 @@ export async function createRecallArchive(options: {
         const disclosure = policy.classes.find((entry) => entry.id === classId);
         if (disclosure === undefined) throw new Refused("disclosure");
         await expire();
+        await mapping.expire();
         if (request.kind === "session") {
           const token = tokens.get(request.previewId);
           if (token === undefined) throw new Refused("preview-expired");
@@ -780,13 +859,15 @@ export async function createRecallArchive(options: {
             )
               throw new Refused("locator-mismatch");
             let owned = 0;
+            let active = 0;
             let completed: string | undefined;
             for (const [token, widening] of tokens) {
               if (widening.classId !== classId) continue;
               owned++;
+              if (widening.path !== null) active++;
               if (completed === undefined && widening.path === null) completed = token;
             }
-            if (owned >= previewHandleLimit && completed === undefined)
+            if (active + (mappingHandles.get(classId) ?? 0) >= previewHandleLimit)
               throw new Refused("fetch-bound");
             // The native service supplies its private /tmp tmpfs: Manifold 89b065d,
             // packages/agent/src/job-linux.ts:229-230,742-747. That mount disappears with the
@@ -888,6 +969,7 @@ export async function createRecallArchive(options: {
       if (closed) return;
       closed = true;
       try {
+        await mapping.close();
         index.close();
       } finally {
         tokens.clear();

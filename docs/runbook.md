@@ -842,6 +842,27 @@ are untouched, and its jobs take no claim. Native token/cost thresholds are chec
 call, so an accepted response can overshoot. Provider-internal retries and charged failures
 still require a conservative exposure reservation in the shared ledger before admission.
 
+**The mapping drain is the one exception to "a drawn preset is not fannable"**, and it is not a
+second arbitration. `map-transcripts` is started with `mapDrainStart`, admitted at the executor's
+`map-prepare` node and the source owner's private mapping target, and it is the only way paid
+transcript mapping runs: installing a mapping route and admitting its free catalog spend nothing.
+Its fan holds coordinator claims that the conductor draws and posts — so, unlike the other
+presets, its jobs DO take claims, count against the policy's mapping daily cap and follow the
+uncertain-post accounting. The start also names the route's Code workspace and discharges
+writing there. Every job of the drain, including the drain's own native cadence at
+`map-prepare`, carries that authority, because the drain's sessions are posted later by its own
+wakes (#469). Nothing else posts paid mapping: not the standing loop, not reads and not the
+catalog cadence. The start still refuses until the route's catalog is admitted with
+`startMapCatalog`, because the drain maps what the catalog planned. It stops admitting at its
+target, deadline or `maxJobs`: past any of them no preparation, retry or session is posted for it,
+even before the controller records the ending. It ends when nothing it admitted is still open,
+or when no eligible mapping work remains, and its cadence keeps waking until then so the last
+sessions are settled and folded; the cadence is disabled on the first wake after the drain ends.
+The cadence runs under the press's credential, so start a mapping drain with a credential that
+outlives its deadline: a press whose credential cannot keep the cadence past the deadline is
+refused as "launched nothing" before anything is spent. `drainStop` at the same `map-prepare`
+node cancels a preparation there and a posted session through Code.
+
 ### 11.2 Pre-flight (T-24h, rehearsal)
 
 > **OPERATOR STEP — pre-flight (not executed).**
