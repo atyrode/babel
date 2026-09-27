@@ -419,12 +419,15 @@ export async function endDrain(
     published only while its drain is running (`reconcileMappingPreparations`), so after this
     write every posting either published before it — and the read below finds the job id and
     cancels it — or finds the drain no longer running and cancels its session itself. Read first
-    and close after, and a posting that binds in between is seen by neither.
+    and close after, and a posting that binds in between is seen by neither. What is cancelled is
+    the drain's DURABLE held set, read after the close: a run another wake reserved after the
+    caller's snapshot was taken is in it, and no reservation can join it once the drain is closed.
   */
   const mapping = row.preset === MAP_DRAIN_PRESET;
   const early = mapping ? await closeDrain(deps.store, row.id, ending, reason) : null;
+  const held = mapping ? ((await readDrain(deps.store, row.id))?.live ?? live) : live;
   let cancelled = 0;
-  for (const job of live) {
+  for (const job of held) {
     const lane = await laneOf(deps.store, job.runId);
     try {
       if (lane.container === "") {
@@ -492,7 +495,7 @@ export async function endDrain(
   }
   if (closed === "closing") {
     notes.push(
-      `${String(live.length)} job(s) of this drain are still running: it ends as ${ending} when ` +
+      `${String(held.length)} job(s) of this drain are still running: it ends as ${ending} when ` +
         `their receipts have landed`,
     );
   }

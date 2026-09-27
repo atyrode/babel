@@ -7997,6 +7997,18 @@ test("a stop that reads its lanes before a session binds still leaves that sessi
   expect(f.cancelled).toEqual(["map_code_1"]);
 });
 
+test("a mapping drain's stop cancels every run it holds, not only the caller's snapshot", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  await f.tick();
+  expect(f.posted).toHaveLength(1);
+  // The caller folded before another wake reserved and posted this run: its snapshot is empty.
+  const row = (await readDrain(f.store, "drn_map"))!;
+  await endDrain(mapDrainDeps(f), { ...row, live: [] }, "stopped", "operator stop", []);
+  expect(f.cancelled).toEqual(["map_code_1"]);
+});
+
 test("a prepared mapping session is never posted once its drain has passed its deadline", async () => {
   const f = await paidMapDeployment();
   await f.tick();
