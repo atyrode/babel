@@ -1045,7 +1045,12 @@ zero cost and the work item is offered again at its current attempt, taken over 
 posting belongs to the drain that admitted its run: that drain must still be running, short of
 its spend target and short of its deadline at that moment, whatever the controller has yet to
 record. The Code job id a posting receives is published in the same write that binds the claim to
-it, so a reconciling wake never reads an acknowledged session as unauthorized. Work already posted
+it, so a reconciling wake never reads an acknowledged session as unauthorized. Every mapping
+session is posted under its run's id as Code's posting key, from which Code and omp derive the
+session's job id: a posting whose answer was lost — a settled hook that overran its lease — is
+asked again under the same key by the drain's next wake and gets the same session back, posted at
+most once. Once the drain no longer admits the run, that ask is adopt-only: a session that exists
+is recorded and stopped, and one that never existed releases the reservation (#470). Work already posted
 settles whatever its drain did since. The deadline ends admission, not settlement, so the drain's
 cadence keeps waking until the drain has ended and its last session is folded, and it is disabled
 on the first wake after that. The hub refuses a cadence that would outlive the credential it is

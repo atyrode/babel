@@ -7583,10 +7583,17 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
   const posted: SessionRequest[] = [];
   const readings = new Map<string, SessionRead>();
   const cancelled: string[] = [];
+  // Code and omp derive a keyed session's job id from its posting key: asking again returns
+  // the session that key posted, and an adopt-only ask never posts (#470).
+  const byKey = new Map<string, CodeJob>();
   const engine: CodeEngine = {
     profiles: async () => ({ ok: true, value: [] }),
     checkProfile: async () => ({ ok: true, value: null }),
     async runSession(request) {
+      const keyed = request.postingKey === undefined ? undefined : byKey.get(request.postingKey);
+      if (keyed !== undefined) return { ok: true, value: keyed };
+      if (request.adoptOnly === true)
+        return refusedByCode("engine_posting_unknown", "nothing was posted under this key");
       posted.push(request);
       const job = {
         jobId: `map_code_${posted.length}`,
@@ -7596,6 +7603,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
         state: "started" as const,
       };
       readings.set(job.jobId, { job, session: null });
+      if (request.postingKey !== undefined) byKey.set(request.postingKey, job);
       return { ok: true, value: job };
     },
     async readSession({ jobId }) {
@@ -8009,6 +8017,89 @@ test("a mapping drain's stop cancels every run it holds, not only the caller's s
   expect(f.cancelled).toEqual(["map_code_1"]);
 });
 
+test("a mapping posting whose answer was lost is recovered under its key, buying one session", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  // The session is created, but the wake that posted it never hears back (#470).
+  const runSession = f.engine.runSession.bind(f.engine);
+  let lost = true;
+  f.engine.runSession = async (request) => {
+    const answer = await runSession(request);
+    if (!lost) return answer;
+    lost = false;
+    return refusedByCode("engine_unconfirmed", "the settled hook's lease closed");
+  };
+  await f.tick();
+  expect(f.posted).toHaveLength(1);
+  expect(
+    await f.db.query(`SELECT job_id FROM runs WHERE kind=?`, [TRANSCRIPT_MAP_SESSION_OPERATION]),
+  ).toEqual([{ job_id: null }]);
+  // The drain's next wake asks again under the same key and gets the same session back.
+  await f.tick();
+  expect(f.posted).toHaveLength(1);
+  f.answer({ kind: "summary", text: "Navigation recovered once." });
+  await f.tick();
+  expect(await f.db.query(`SELECT closure FROM runs WHERE job_id='map_code_1'`)).toEqual([
+    { closure: "completed" },
+  ]);
+  expect(f.cancelled).toEqual([]);
+});
+
+test("a lost mapping posting whose drain has stopped is adopted and cancelled, never reposted", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  const runSession = f.engine.runSession.bind(f.engine);
+  let lost = true;
+  f.engine.runSession = async (request) => {
+    const answer = await runSession(request);
+    if (!lost) return answer;
+    lost = false;
+    return refusedByCode("engine_unconfirmed", "the settled hook's lease closed");
+  };
+  await f.tick();
+  const row = (await readDrain(f.store, "drn_map"))!;
+  await endDrain(mapDrainDeps(f), row, "stopped", "operator stop", row.live);
+  await f.tick();
+  expect(f.posted).toHaveLength(1);
+  expect(f.cancelled).toEqual(["map_code_1"]);
+  expect(
+    await f.db.query(
+      `SELECT job_id, json_extract(payload,'$.stopReason') reason FROM runs WHERE kind=?`,
+      [TRANSCRIPT_MAP_SESSION_OPERATION],
+    ),
+  ).toEqual([{ job_id: "map_code_1", reason: "no running mapping drain admitted this run" }]);
+});
+
+test("a lost mapping posting that never reached Code is released once its drain stops", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  const runSession = f.engine.runSession.bind(f.engine);
+  let lost = true;
+  f.engine.runSession = async (request) => {
+    if (!lost) return await runSession(request);
+    lost = false;
+    return refusedByCode("engine_unconfirmed", "the request never arrived");
+  };
+  await f.tick();
+  const row = (await readDrain(f.store, "drn_map"))!;
+  await endDrain(mapDrainDeps(f), row, "stopped", "operator stop", row.live);
+  await f.tick();
+  // Asked adopt-only, Code has nothing under the key: nothing was bought, the reservation goes.
+  expect(f.posted).toEqual([]);
+  expect(f.cancelled).toEqual([]);
+  expect(
+    await f.db.query(`SELECT closure, job_id FROM runs WHERE kind=?`, [
+      TRANSCRIPT_MAP_SESSION_OPERATION,
+    ]),
+  ).toEqual([{ closure: "failed", job_id: null }]);
+  expect(await f.db.query(`SELECT finished_at IS NOT NULL finished FROM claims`)).toEqual([
+    { finished: 1n },
+  ]);
+});
+
 test("a prepared mapping session is never posted once its drain has passed its deadline", async () => {
   const f = await paidMapDeployment();
   await f.tick();
@@ -8213,9 +8304,9 @@ test("unconfirmed Code post remains visible and reserved across restart, disable
   const f = await paidMapDeployment();
   await f.tick();
   f.seal();
-  let calls = 0;
-  f.engine.runSession = async () => {
-    calls++;
+  const asked: SessionRequest[] = [];
+  f.engine.runSession = async (request) => {
+    asked.push(request);
     return refusedByCode("engine_unconfirmed", "synthetic lost acknowledgement");
   };
   await f.tick();
@@ -8223,7 +8314,14 @@ test("unconfirmed Code post remains visible and reserved across restart, disable
   await f.tick();
   await f.db.run(`UPDATE policies SET payload=json_set(payload,'$.enabled',json('false'))`);
   await f.tick();
-  expect(calls).toBe(1);
+  // Every wake asks again under the one posting key, so Code can have bought at most one
+  // session; once the policy no longer admits the run, a wake only asks what exists (#470).
+  const [parent] = await f.db.query<{ id: string }>(`SELECT id FROM runs WHERE kind=?`, [
+    TRANSCRIPT_MAP_SESSION_OPERATION,
+  ]);
+  expect(asked.length).toBeGreaterThan(1);
+  expect(new Set(asked.map((request) => request.postingKey))).toEqual(new Set([parent!.id]));
+  expect(asked.at(-1)!.adoptOnly).toBe(true);
   expect(await f.db.query(`SELECT actual_cost,finished_at FROM claims`)).toEqual([
     { actual_cost: null, finished_at: null },
   ]);

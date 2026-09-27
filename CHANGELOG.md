@@ -34,7 +34,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   (a lost slot, or a crash before publishing) is withdrawn at zero and its work drawn again at the
   next fence; every later spend, native retries included, is admitted only by the drain that holds
   the run while it is short of its target and deadline; a Code job id is published in the same
-  write as its bind, and only while its drain still runs, so a stop before the bind cancels it; and the drain's cadence outlives the deadline until its last session is
+  write as its bind, and only while its drain still runs, so a stop before the bind cancels it; a session is posted under
+  its run id as Code's posting key, so a posting whose answer a settled hook's lease lost is asked
+  again and recovered, bought at most once, or adopted and stopped once its drain no longer admits
+  it (#470); and the drain's cadence outlives the deadline until its last session is
   folded, for the longest life the press's credential allows, while a press whose credential
   cannot keep it past the deadline launches nothing. Conductor regressions cover read-wake
   exclusion, drain-only dispatch and authority,

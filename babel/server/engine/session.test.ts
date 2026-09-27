@@ -478,3 +478,24 @@ test("a locally invalid posting request is refused without pretending its spendi
   expect(answer).toMatchObject({ ok: false, code: ENGINE_REFUSALS.refused });
   expect(posts).toBe(0);
 });
+
+test("a keyed posting passes its key, and an adoption skips the profile check and hears a definitive no", async () => {
+  const slice = actions((args) => {
+    if (args.action === "listProfiles")
+      throw new Error("an adoption must not re-check the profile");
+    return hostRefusal(
+      "refused: atyrode.babel -> atyrode.code.runSession (code_omp_posting_unknown)",
+    )();
+  });
+  const answer = await codeEngine(slice).runSession({
+    profile: { containerId: "ctr_a", expectedRevision: 4 },
+    machineId: "m-dev-01",
+    prompt: "read the material",
+    postingKey: "run_asg_1_1",
+    adoptOnly: true,
+  });
+  // Nothing was ever posted under the key: that is spending proof, not an unconfirmed post.
+  expect(answer).toMatchObject({ ok: false, code: ENGINE_REFUSALS.postingUnknown });
+  expect(slice.calls.map((call) => call.action)).toEqual(["runSession"]);
+  expect(slice.calls[0]!.input).toMatchObject({ postingKey: "run_asg_1_1", adoptOnly: true });
+});

@@ -165,6 +165,14 @@ export interface SessionRequest {
   readonly prepareJobId?: string | undefined;
   readonly inferenceLimits?: ActionInput<"runSession">["inferenceLimits"];
   readonly isolation?: ActionInput<"runSession">["isolation"];
+  /**
+   * THE POSTING'S OWN NAME (#470). Code and omp derive the session's job id from it, so a post
+   * whose answer was lost can be asked again under the same key and returns the session it
+   * created rather than buying a second one.
+   */
+  readonly postingKey?: string;
+  /** Only find what `postingKey` already posted; refused `engine_posting_unknown` if nothing. */
+  readonly adoptOnly?: boolean;
 }
 
 export interface CodeEngine {
@@ -222,6 +230,8 @@ const HOST_CLASSES: Readonly<Record<string, EngineRefusalCode>> = {
  */
 const CODE_TOKENS: Readonly<Record<string, EngineRefusalCode>> = {
   code_stale_preferences: ENGINE_REFUSALS.staleProfile,
+  // An adopt-only lookup that found nothing: a definitive answer that no session exists.
+  code_omp_posting_unknown: ENGINE_REFUSALS.postingUnknown,
 };
 
 /** `<class>: <offenders>`, which is the message BOTH boundaries carry (ADR 0041). */
@@ -387,8 +397,12 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
 
     // Guard every posting path, including conductor reviews and prepared explorations.
     runSession: async (request: SessionRequest): Promise<EngineAnswer<CodeJob>> => {
-      const may = await checkProfile(request.profile);
-      if (!may.ok) return may;
+      // An adoption buys nothing, and a profile that moved since must not hide the session a
+      // stop still has to cancel.
+      if (request.adoptOnly !== true) {
+        const may = await checkProfile(request.profile);
+        if (!may.ok) return may;
+      }
       return await call("runSession", {
         containerId: request.profile.containerId,
         machineId: request.machineId,
@@ -399,6 +413,8 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
           ? {}
           : { inferenceLimits: request.inferenceLimits }),
         ...(request.isolation === undefined ? {} : { isolation: request.isolation }),
+        ...(request.postingKey === undefined ? {} : { postingKey: request.postingKey }),
+        ...(request.adoptOnly === true ? { adoptOnly: true } : {}),
       });
     },
 

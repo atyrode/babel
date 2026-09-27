@@ -2461,6 +2461,8 @@ export const MIN_CITATION_QUOTE = 12;
  *                           its own. An unresolved observation is not this refusal (#255).
  *   `engine_unconfirmed`  — Code may have posted a session, but no usable job id returned.
  *                           Retain its reservation; absence of a reply is not spending proof.
+ *   `engine_posting_unknown` — an adopt-only lookup under a posting key found nothing: no
+ *                           session was ever posted under that key, so nothing was spent (#470).
  */
 export const ENGINE_REFUSALS = {
   unavailable: "engine_unavailable",
@@ -2469,6 +2471,7 @@ export const ENGINE_REFUSALS = {
   refused: "engine_refused",
   noAccount: "engine_no_account",
   unconfirmed: "engine_unconfirmed",
+  postingUnknown: "engine_posting_unknown",
 } as const;
 export type EngineRefusalCode = (typeof ENGINE_REFUSALS)[keyof typeof ENGINE_REFUSALS];
 
