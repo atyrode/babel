@@ -479,23 +479,29 @@ test("a locally invalid posting request is refused without pretending its spendi
   expect(posts).toBe(0);
 });
 
-test("a keyed posting passes its key, and an adoption skips the profile check and hears a definitive no", async () => {
+test("a keyed call skips the profile preflight, and a retire hears a definitive no", async () => {
   const slice = actions((args) => {
+    // A profile that moved since the first post must not hide the session its key names.
     if (args.action === "listProfiles")
-      throw new Error("an adoption must not re-check the profile");
-    return hostRefusal(
-      "refused: atyrode.babel -> atyrode.code.runSession (code_omp_posting_unknown)",
-    )();
+      throw new Error("a keyed call must not re-check the profile");
+    return (args.input as { adoptOnly?: boolean }).adoptOnly === true
+      ? hostRefusal(
+          "refused: atyrode.babel -> atyrode.code.runSession (code_omp_posting_unknown)",
+        )()
+      : POSTED;
   });
-  const answer = await codeEngine(slice).runSession({
+  const engine = codeEngine(slice);
+  const request = {
     profile: { containerId: "ctr_a", expectedRevision: 4 },
     machineId: "m-dev-01",
     prompt: "read the material",
     postingKey: "run_asg_1_1",
-    adoptOnly: true,
-  });
-  // Nothing was ever posted under the key: that is spending proof, not an unconfirmed post.
+  };
+  expect(await engine.runSession(request)).toMatchObject({ ok: true });
+  const answer = await engine.runSession({ ...request, adoptOnly: true });
+  // The retired key posted nothing and never will: that is spending proof, not an unconfirmed post.
   expect(answer).toMatchObject({ ok: false, code: ENGINE_REFUSALS.postingUnknown });
-  expect(slice.calls.map((call) => call.action)).toEqual(["runSession"]);
-  expect(slice.calls[0]!.input).toMatchObject({ postingKey: "run_asg_1_1", adoptOnly: true });
+  expect(slice.calls.map((call) => call.action)).toEqual(["runSession", "runSession"]);
+  expect(slice.calls[0]!.input).toMatchObject({ postingKey: "run_asg_1_1" });
+  expect(slice.calls[1]!.input).toMatchObject({ postingKey: "run_asg_1_1", adoptOnly: true });
 });

@@ -521,14 +521,17 @@ export interface ConductorDeps {
    */
   readonly nativeDispatch?: boolean;
   /**
-   * WHETHER THIS WAKE CARRIES A PAID MAPPING DRAIN'S AUTHORITY (#469): the `mapDrainStart` press
-   * itself, or the settlement of a job that press started (a preparation, or the drain's own
-   * cadence at its `map-prepare` node). Only such a credential holds the Code workspace and the
-   * broker read a session needs, so only such a wake draws paid mapping work, posts a
-   * preparation or posts a session. Every other wake still reconciles and closes mapping runs;
-   * it never spends a work's attempt or strands a posting on an authority it does not have.
+   * THE PAID MAPPING DRAIN WHOSE AUTHORITY THIS WAKE CARRIES (#469, #470): the `mapDrainStart`
+   * press itself, or the settlement of a job that press's drain started (a preparation, or the
+   * drain's own cadence at its `map-prepare` node). Only such a credential holds the Code
+   * workspace and the broker read a session needs, so only such a wake draws paid mapping work,
+   * posts a preparation or posts a session — and only for runs THAT drain holds. A drain's jobs
+   * all carry its press's principal, and a Code posting key names a session only under the
+   * principal that posted it: another drain's wake asking under the same key would be asking
+   * about a different posting. Every other wake still reconciles and closes mapping runs; it
+   * never spends a work's attempt or strands a posting on an authority it does not have.
    */
-  readonly mappingAuthority?: boolean;
+  readonly mappingDrainId?: string;
   readonly now: () => number;
 }
 
@@ -2225,6 +2228,16 @@ export function conductor(deps: ConductorDeps): Conductor {
     store.touch();
   }
 
+  /**
+   * WHETHER THIS WAKE MAY SPEND FOR ONE MAPPING RUN: only a wake carrying the credential of the
+   * drain that holds it ({@link ConductorDeps.mappingDrainId}).
+   */
+  async function wakeHoldsRun(runId: string): Promise<boolean> {
+    if (deps.mappingDrainId === undefined) return false;
+    const held = drainHoldsRun(deps.mappingDrainId, runId);
+    return (await store.db.query(`SELECT 1 WHERE ${held.sql}`, held.params)).length > 0;
+  }
+
   async function postMappingNative(
     runId: string,
     jobId: string,
@@ -2233,7 +2246,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     notes: string[],
   ): Promise<void> {
     // Every native preparation post is a new spend under the drain's credential.
-    if (deps.mappingAuthority !== true) return;
+    if (!(await wakeHoldsRun(runId))) return;
     const refusal = await mappingAuthority(intent, jobId, "admission", runId);
     if (refusal !== null) {
       await closeMappingPreparation(runId, jobId, intent, refusal, settled);
@@ -2501,12 +2514,15 @@ export function conductor(deps: ConductorDeps): Conductor {
     refused: RefusedDraw[],
     notes: string[],
   ): Promise<number> {
-    if (deps.nativeDispatch !== true || deps.mappingAuthority !== true || !policy.enabled) return 0;
+    if (deps.nativeDispatch !== true || deps.mappingDrainId === undefined || !policy.enabled)
+      return 0;
     const route = mappingPolicy(policy);
     if (route === null) return 0;
     let launched = 0;
     for (const drain of await activeDrains(store)) {
+      // Only the waking drain's own fan: what it posts is posted under its principal.
       if (
+        drain.id !== deps.mappingDrainId ||
         drain.preset !== MAP_DRAIN_PRESET ||
         drain.state !== "running" ||
         drain.machineId !== route.executorMachineId
@@ -2634,9 +2650,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       const payload = JSON.parse(run.payload) as { posting?: boolean; nativeAttempts?: number };
       if (payload.posting) {
         // A posting whose answer was lost (#470) is asked again under its own key, and only on
-        // the drain's own wake: while the drain admits it, that posts it at most once in total.
+        // a wake of the drain that holds it: the key names a session under that principal alone.
         const material = intent.material;
-        if (deps.mappingAuthority === true && run.closure === null && material !== undefined)
+        if (run.closure === null && material !== undefined && (await wakeHoldsRun(run.id)))
           await resumeMappingPosting(run, { ...intent, material }, settled, notes);
         continue;
       }
@@ -2657,7 +2673,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
       // Posting a preparation or a session spends the drain's authority, which only a wake
       // carrying it holds; any other wake leaves the prepared run for the drain's next one.
-      if (deps.mappingAuthority !== true) continue;
+      if (!(await wakeHoldsRun(run.id))) continue;
       if (
         !(await maps.startWork(
           intent.details.work.id,
@@ -2754,18 +2770,14 @@ export function conductor(deps: ConductorDeps): Conductor {
       // The run's own id names the posting, so a later wake can ask for exactly this session
       // again if the answer is lost (#470).
       const answered = await engine.runSession({ ...request, postingKey: run.id });
-      if (!answered.ok && answered.code !== ENGINE_REFUSALS.unconfirmed) {
-        await closeMappingPreparation(
-          run.id,
-          run.prepare_job_id,
-          prepared,
-          "Code refused mapping admission",
-          settled,
-          true,
-        );
-        continue;
-      }
-      await answerMappingPosting(run, prepared, answered, notes);
+      await settleMappingPosting(
+        run,
+        prepared,
+        answered,
+        "Code refused mapping admission",
+        settled,
+        notes,
+      );
     }
   }
 
@@ -2806,9 +2818,10 @@ export function conductor(deps: ConductorDeps): Conductor {
   /**
    * A POSTING WHOSE ANSWER WAS LOST (#470): the marker is set, no job id was ever written. The
    * run's id is the posting key, so the drain's own wake asks Code again under it. While the
-   * drain still admits the run, that returns the session the lost post created — or posts it
-   * now, exactly once. When it no longer does, the question is adopt-only: a session that
-   * exists is recorded and stopped, and one that never existed releases the reservation.
+   * drain still admits the run, that returns the session the lost post created — Code answers a
+   * keyed ask from what the key already posted before it composes anything — or posts it now,
+   * the key's one posting. When the drain no longer admits it, nothing is asked to post at all:
+   * the posting is settled by a retire.
    */
   async function resumeMappingPosting(
     run: { readonly id: string; readonly prepare_job_id: string },
@@ -2817,27 +2830,55 @@ export function conductor(deps: ConductorDeps): Conductor {
     notes: string[],
   ): Promise<void> {
     const refusal = await mappingAuthority(prepared, run.prepare_job_id, "admission", run.id);
-    const answered = await engine.runSession({
+    const answered =
+      refusal === null
+        ? await engine.runSession({
+            ...mappingSessionRequest(prepared, run.prepare_job_id),
+            postingKey: run.id,
+          })
+        : null;
+    await settleMappingPosting(
+      run,
+      prepared,
+      answered,
+      refusal ?? "Code refused mapping admission",
+      settled,
+      notes,
+    );
+  }
+
+  /**
+   * WHAT ONE ASK UNDER A MAPPING POSTING KEY SETTLES (#470); `answered` is null when the drain no
+   * longer admits the run and nothing was asked. A job, or an unconfirmed answer, goes on to
+   * {@link answerMappingPosting}. A REFUSAL IS NOT PROOF THAT NOTHING WAS BOUGHT: it says this
+   * one invocation posted nothing, while another under the same key — a first post whose hook
+   * overran its lease is still running on the hub — may yet land. So a posting that ends without
+   * a job ends through a RETIRE, an adopt-only ask after which the key can post nothing but the
+   * job it returns, and only the retire's "nothing was posted" releases the reservation at zero.
+   * A job it returns is bound while the drain admits the run and recorded and stopped when not.
+   */
+  async function settleMappingPosting(
+    run: { readonly id: string; readonly prepare_job_id: string },
+    prepared: TranscriptMapRun & { readonly material: NonNullable<TranscriptMapRun["material"]> },
+    answered: EngineAnswer<CodeJob> | null,
+    refused: string,
+    settled: SettledClaim[],
+    notes: string[],
+  ): Promise<void> {
+    if (answered !== null && (answered.ok || answered.code === ENGINE_REFUSALS.unconfirmed)) {
+      await answerMappingPosting(run, prepared, answered, notes);
+      return;
+    }
+    const retired = await engine.runSession({
       ...mappingSessionRequest(prepared, run.prepare_job_id),
       postingKey: run.id,
-      ...(refusal === null ? {} : { adoptOnly: true }),
+      adoptOnly: true,
     });
-    if (!answered.ok && answered.code === ENGINE_REFUSALS.postingUnknown) {
-      await closeMappingPreparation(
-        run.id,
-        run.prepare_job_id,
-        prepared,
-        refusal ?? "mapping posting found no session to adopt",
-        settled,
-        true,
-      );
+    if (!retired.ok && retired.code === ENGINE_REFUSALS.postingUnknown) {
+      await closeMappingPreparation(run.id, run.prepare_job_id, prepared, refused, settled, true);
       return;
     }
-    if (!answered.ok && answered.code !== ENGINE_REFUSALS.unconfirmed) {
-      notes.push(`mapping ${run.id}: posting recovery refused: ${answered.refused}`);
-      return;
-    }
-    await answerMappingPosting(run, prepared, answered, notes);
+    await answerMappingPosting(run, prepared, retired, notes);
   }
 
   /**
@@ -2864,7 +2905,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       // wake stop a legitimate session as unauthorized. The same write requires the drain that
       // holds the run to be RUNNING: an operator's stop that landed after the admission check
       // could not see an unpublished job to cancel, so this posting cancels it itself. Both are
-      // idempotent for the same job, so a recovered posting and a late first answer agree.
+      // idempotent for the same job.
       if (stop === null) {
         const running = runningDrainHoldsRun(run.id);
         const written = await store.db.batch([
@@ -2894,13 +2935,22 @@ export function conductor(deps: ConductorDeps): Conductor {
           stop = "the mapping drain stopped before this session was bound";
       }
       if (stop !== null) {
-        // A job that cannot be bound is still accounted: its id and the stop are one write.
-        await store.db.run(
-          `UPDATE runs SET job_id=coalesce(job_id,?),
-            payload=json_set(payload,'$.stopRequested',json('true'),'$.stopReason',?) WHERE id=?`,
+        // A job that cannot be bound is still accounted: its id and the stop are one write —
+        // unless another answer under this same key (a recovery, a retire, a late first answer)
+        // recorded this job first. That one decided: bound, it is a legitimate session this
+        // answer's stale view must not stop; stopped, it is already cancelled.
+        const recorded = await store.db.query(
+          `UPDATE runs SET job_id=?,
+            payload=json_set(payload,'$.stopRequested',json('true'),'$.stopReason',?)
+            WHERE id=? AND job_id IS NULL RETURNING id`,
           [jobId, stop, run.id],
         );
-        await engine.cancelSession({ containerId: prepared.route.profile.containerId, jobId });
+        const decided =
+          recorded.length === 0 &&
+          (await store.db.query(`SELECT 1 FROM runs WHERE id=? AND job_id=?`, [run.id, jobId]))
+            .length > 0;
+        if (!decided)
+          await engine.cancelSession({ containerId: prepared.route.profile.containerId, jobId });
       }
       await store.db.run(`DELETE FROM run_progress WHERE run_id=?`, [run.id]);
     } catch (error) {
@@ -5303,7 +5353,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         // Retrying a preparation is a new spend: only the drain's own wake carries it. Any other
         // wake leaves the intent untouched for that one (#469).
         if (
-          deps.mappingAuthority === true &&
+          deps.mappingDrainId !== undefined &&
           run.kind === OPERATIONS.mapPrepare &&
           nativeFailureToken(error, "jobs.status") === "job_not_started"
         ) {

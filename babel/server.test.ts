@@ -1041,9 +1041,13 @@ test("explicit catalog admission posts free work without settling or launching p
  * past the registering credential's ceiling, `credential` ms from now (`job-schedules.ts`,
  * `schedule-expiry-ceiling`). The drain's admission deadline is a minute away and one of its
  * sessions is still at the model. The plugin's store reads the host's clock, so everything here
- * is measured from the moments around the wake.
+ * is measured from the moments around the wake. `settledJobId` is the preparation that settled:
+ * the drain's own by default.
  */
-async function drainCadence(credential: number): Promise<{
+async function drainCadence(
+  credential: number,
+  settledJobId = "job_live",
+): Promise<{
   readonly expiries: readonly number[];
   readonly deadline: number;
   readonly before: number;
@@ -1088,11 +1092,13 @@ async function drainCadence(credential: number): Promise<{
     target: { deadline: new Date(deadline).toISOString() },
     startedBy: "operator",
   });
-  // A session of this drain is still at the model, so the drain holds rather than ending.
+  // A session of this drain is still at the model, so the drain holds rather than ending; its
+  // preparation, `job_live`, is the job whose settlement wakes Babel.
   await insert(harness.db, "runs", {
     id: "run_at_model",
     kind: TRANSCRIPT_MAP_SESSION_OPERATION,
     machine_id: MACHINE,
+    prepare_job_id: "job_live",
     started_at: stamp(NOW),
     records: 0,
     payload: "{}",
@@ -1141,7 +1147,7 @@ async function drainCadence(credential: number): Promise<{
   // A wake of the drain's own job carries its authority and renews its cadence.
   await plugin.lifecycle?.onJobSettled?.(
     { ...context(harness.db as unknown as GuestDatabase, jobs, NOW), jobs: native } as never,
-    settled({ machineId: MACHINE, operationId: OPERATIONS.mapPrepare }),
+    settled({ jobId: settledJobId, machineId: MACHINE, operationId: OPERATIONS.mapPrepare }),
   );
   const after = Date.now();
   return {
@@ -1168,6 +1174,13 @@ test("a drain's cadence takes the longest life its credential allows past the de
   expect(expiries).toHaveLength(1);
   expect(expiries[0]!).toBeGreaterThanOrEqual(before + day);
   expect(expiries[0]!).toBeLessThanOrEqual(after + day);
+});
+
+test("a wake of another drain's job never re-registers this drain's cadence", async () => {
+  // A registration carries the credential that made it: another principal's wake must not
+  // become the one this drain's sessions are later settled under (#470).
+  const { expiries } = await drainCadence(Number.MAX_SAFE_INTEGER / 2, "job_of_another_drain");
+  expect(expiries).toEqual([]);
 });
 
 test("a drain's cadence is never registered to end before its deadline is settled past", async () => {

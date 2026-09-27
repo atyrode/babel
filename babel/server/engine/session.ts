@@ -169,9 +169,14 @@ export interface SessionRequest {
    * THE POSTING'S OWN NAME (#470). Code and omp derive the session's job id from it, so a post
    * whose answer was lost can be asked again under the same key and returns the session it
    * created rather than buying a second one.
+   * A keyed call is answered from what the key already posted before Code composes anything,
+   * and Code checks the profile itself when it did not, so no Babel preflight runs for it.
    */
   readonly postingKey?: string;
-  /** Only find what `postingKey` already posted; refused `engine_posting_unknown` if nothing. */
+  /**
+   * SETTLE `postingKey` FOR GOOD: return what it posted, else retire it so it can never post,
+   * refused `engine_posting_unknown`. Nothing is composed or bought.
+   */
   readonly adoptOnly?: boolean;
 }
 
@@ -230,7 +235,8 @@ const HOST_CLASSES: Readonly<Record<string, EngineRefusalCode>> = {
  */
 const CODE_TOKENS: Readonly<Record<string, EngineRefusalCode>> = {
   code_stale_preferences: ENGINE_REFUSALS.staleProfile,
-  // An adopt-only lookup that found nothing: a definitive answer that no session exists.
+  // A retire that found nothing: final — the key posted nothing and never will. A retire still
+  // waiting on a retained dispatch answers another token, which reads as unconfirmed below.
   code_omp_posting_unknown: ENGINE_REFUSALS.postingUnknown,
 };
 
@@ -397,9 +403,10 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
 
     // Guard every posting path, including conductor reviews and prepared explorations.
     runSession: async (request: SessionRequest): Promise<EngineAnswer<CodeJob>> => {
-      // An adoption buys nothing, and a profile that moved since must not hide the session a
-      // stop still has to cancel.
-      if (request.adoptOnly !== true) {
+      // A keyed call is answered from what its key posted before anything is composed, so a
+      // profile that moved since must not hide the session it names; Code checks the profile
+      // itself before a keyed call posts anything new.
+      if (request.postingKey === undefined) {
         const may = await checkProfile(request.profile);
         if (!may.ok) return may;
       }

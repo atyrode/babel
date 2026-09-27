@@ -183,7 +183,7 @@ function loop(
   catalogPlan: RunPlan,
   mapPreparePlan: RunPlan,
   nativeDispatch: boolean,
-  mappingAuthority = false,
+  mappingDrainId?: string,
 ): Conductor {
   const engine = codeEngine(actions);
   return conductor({
@@ -228,7 +228,7 @@ function loop(
     catalogPlan,
     mapPreparePlan,
     nativeDispatch,
-    mappingAuthority,
+    ...(mappingDrainId === undefined ? {} : { mappingDrainId }),
     now: () => store.now(),
   });
 }
@@ -494,7 +494,7 @@ const CADENCE_LIFETIMES_MS = [
  * still at the model when it passes must be read, settled and folded, and nothing else wakes a
  * drain whose standing weights are zero. So the cadence runs until the drain has ended — every
  * wake disables the cadence of an ended drain — while every spend it could make is refused past
- * the drain's own bounds (`mappingAuthority` in `server/conductor.ts`). The hub refuses an expiry
+ * the drain's own bounds (`mappingDrainId` in `server/conductor.ts`). The hub refuses an expiry
  * past the registering credential's own, and a plugin cannot read that ceiling, so the
  * registration steps down {@link CADENCE_LIFETIMES_MS} and keeps the longest it accepts — but
  * never one that ends before the deadline has been passed by two intervals: a cadence that
@@ -591,10 +591,15 @@ async function mapDrainWake(
 
 /**
  * Every paid mapping drain's cadence, reconciled on a wake: a cadence whose drain has ended is
- * disabled on any wake, because stopping one spends nothing; one whose drain still runs is
- * renewed only where `renew` says this wake carries the drain's authority.
+ * disabled on any wake, because stopping one spends nothing; the waking drain's own is renewed,
+ * and only that one — a registration carries the credential that made it, and another drain's
+ * cadence re-registered under this one would wake that drain under the wrong principal.
  */
-async function mapDrainWakes(jobs: BabelJobs, policy: Policy, renew: boolean): Promise<string[]> {
+async function mapDrainWakes(
+  jobs: BabelJobs,
+  policy: Policy,
+  drainId: string | undefined,
+): Promise<string[]> {
   const notes: string[] = [];
   try {
     const live = new Map(
@@ -607,13 +612,33 @@ async function mapDrainWakes(jobs: BabelJobs, policy: Policy, renew: boolean): P
         continue;
       await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
     }
-    if (renew)
-      for (const drain of live.values())
-        notes.push(...(await mapDrainWake(jobs, drain.id, policy, deadlineOf(drain.target))).notes);
+    const own = drainId === undefined ? undefined : live.get(mapDrainWakeId(drainId));
+    if (own !== undefined)
+      notes.push(...(await mapDrainWake(jobs, own.id, policy, deadlineOf(own.target))).notes);
   } catch (error) {
     notes.push(`mapping drain cadence: ${message(error)}`);
   }
   return notes;
+}
+
+/**
+ * THE PAID MAPPING DRAIN A SETTLED `map-prepare` JOB BELONGS TO (#470): its cadence names it by
+ * schedule, and a preparation by the run that drain holds. That settlement carries the drain's
+ * own credential, and every paid spend on it is for that drain's runs alone.
+ */
+async function settledMapDrain(job: {
+  readonly jobId: string;
+  readonly scheduleId?: string | undefined;
+}): Promise<string | undefined> {
+  const drains = (await activeDrains(store)).filter((drain) => drain.preset === MAP_DRAIN_PRESET);
+  if (job.scheduleId !== undefined)
+    return drains.find((drain) => mapDrainWakeId(drain.id) === job.scheduleId)?.id;
+  const runs = await store.db.query<{ id: string }>(`SELECT id FROM runs WHERE prepare_job_id=?`, [
+    job.jobId,
+  ]);
+  return drains.find((drain) =>
+    drain.live.some((held) => runs.some((run) => run.id === held.runId)),
+  )?.id;
 }
 
 /**
@@ -663,8 +688,8 @@ async function cycle(
   // Only a hook's slice — the settled job's own authority, or the installer's at enable — can
   // post native work; a door's bridge is attenuated to that door's delegates.
   nativeDispatch = false,
-  // Only a wake of a paid mapping drain's own job carries that drain's authority (#469).
-  mappingAuthority = false,
+  // Only a wake of a paid mapping drain's own job carries that drain's authority (#469, #470).
+  mappingDrainId?: string,
 ): Promise<void> {
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
@@ -679,7 +704,7 @@ async function cycle(
     planFor(policy, MACHINE_OPERATIONS.mapCatalog),
     planFor(policy, MACHINE_OPERATIONS.mapPrepare),
     nativeDispatch,
-    mappingAuthority,
+    mappingDrainId,
   ).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
@@ -738,7 +763,7 @@ async function cycle(
     }
   }
   // After the controller, so a drain it just ended loses its cadence on this same wake.
-  for (const note of await mapDrainWakes(jobs, policy, mappingAuthority))
+  for (const note of await mapDrainWakes(jobs, policy, mappingDrainId))
     console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
 }
 
@@ -820,7 +845,7 @@ const doors = babelDoors(
         planFor(policy, MACHINE_OPERATIONS.mapCatalog),
         planFor(policy, MACHINE_OPERATIONS.mapPrepare),
         true,
-        true,
+        drainId,
       ).tickMapDrains();
       // The cadence registered above may already have launched this drain's first fan on a wake
       // of its own, leaving this tick nothing to add: what the drain launched is its durable
@@ -1009,14 +1034,17 @@ export const plugin: ServerPluginDef = {
             console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);
         } else {
           // A `map-prepare` job — a drain's preparation or its own cadence — was posted under
-          // a paid mapping drain's credential, and this wake carries it (#469).
+          // a paid mapping drain's credential, and this wake carries it for that drain alone
+          // (#469, #470).
           await cycle(
             jobsSlice(ctx.jobs),
             unaskable(HOOK_WITHOUT_MACHINES),
             ctx.actions,
             undefined,
             true,
-            job.operationId === MACHINE_OPERATIONS.mapPrepare,
+            job.operationId === MACHINE_OPERATIONS.mapPrepare
+              ? await settledMapDrain(job)
+              : undefined,
           );
         }
       });

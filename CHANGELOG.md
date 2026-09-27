@@ -26,8 +26,9 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   work remains and no mapping run on its executor is still open, so a run it has not recorded yet
   is never refused for want of a drain. Its jobs are ordinary claims under the mapping daily cap. The start discharges
   writing in the route's Code workspace and lends the account-broker read. The drain keeps its own
-  native cadence under that credential, so only its own wakes draw, prepare or post sessions: a
-  session is graded against the settled job that woke Babel (#469). A session the conductor stops
+  native cadence under that credential, so only its own wakes draw, prepare, post sessions or
+  renew the cadence, each for its own drain's runs: a session is graded against the settled job
+  that woke Babel (#469). A session the conductor stops
   keeps the cause in its receipt, and a session two wakes settle at once keeps the first
   settlement's receipt and claims. A run takes its drain's launch slot in the same write that
   publishes it, so overlapping wakes cannot post outside the fan; a claim that published nothing
@@ -36,11 +37,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   the run while it is short of its target and deadline; a Code job id is published in the same
   write as its bind, and only while its drain still runs, so a stop before the bind cancels it; a session is posted under
   its run id as Code's posting key, so a posting whose answer a settled hook's lease lost is asked
-  again and recovered, bought at most once, or adopted and stopped once its drain no longer admits
-  it (#470); and the drain's cadence outlives the deadline until its last session is
+  again by its own drain and recovered, bought at most once, and a posting that ends without a job
+  ends through a retire after which the key can post nothing, so a refusal is never read as proof
+  that nothing was bought (#470); and the drain's cadence outlives the deadline until its last session is
   folded, for the longest life the press's credential allows, while a press whose credential
   cannot keep it past the deadline launches nothing. Conductor regressions cover read-wake
-  exclusion, drain-only dispatch and authority,
+  exclusion, drain-only dispatch and authority, a lost posting recovered, retired or released,
   target stop, self-ending, holding for an open run, lost launch slots and their redraw, crashed
   claims and their redraw, deadline and retry authority, a reconcile racing a bind, concurrent
   settlement and stop cancellation at `map-prepare` (#223).

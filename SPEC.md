@@ -1031,8 +1031,10 @@ of the job whose settlement caused it. So the start discharges `containers:write
 profile's container and lends `services:read` for the account broker, and every job of the drain
 carries exactly that (#469). The drain registers its own native cadence at the same `map-prepare`
 node, under the same credential, because a Code session settling wakes Code rather than Babel.
-Only a wake of the drain's own jobs draws mapping work, posts a preparation or posts a session.
-Any other wake still reconciles and closes mapping runs, but it never spends a work's attempt or
+Only a wake of the drain's own jobs draws mapping work, posts a preparation, posts a session or
+renews the cadence, and it does so for that drain's runs alone: every job of a drain carries its
+press's principal, and another drain's wake would spend, post and register under another. Any
+other wake still reconciles and closes mapping runs, but it never spends a work's attempt or
 strands a posting on authority it does not hold. The free catalog's cadence carries no paid
 authority and never refills a drain. The start still requires an admitted catalog for its route,
 because the drain maps what the catalog planned. Jobs are ordinary coordinator claims, so the
@@ -1047,10 +1049,14 @@ its spend target and short of its deadline at that moment, whatever the controll
 record. The Code job id a posting receives is published in the same write that binds the claim to
 it, so a reconciling wake never reads an acknowledged session as unauthorized. Every mapping
 session is posted under its run's id as Code's posting key, from which Code and omp derive the
-session's job id: a posting whose answer was lost — a settled hook that overran its lease — is
-asked again under the same key by the drain's next wake and gets the same session back, posted at
-most once. Once the drain no longer admits the run, that ask is adopt-only: a session that exists
-is recorded and stopped, and one that never existed releases the reservation (#470). Work already posted
+session's job id under the posting principal: a posting whose answer was lost — a settled hook
+that overran its lease — is asked again under the same key by a later wake of the same drain and
+gets the same session back, posted at most once. A refusal proves only that one invocation posted
+nothing while another under the key may still land, so a posting that ends without a job ends
+through a retire: an adopt-only ask after which the key can post nothing but the job it returns.
+A job it returns is bound while the drain admits the run and recorded and stopped when not; only
+its "nothing was posted" releases the reservation at zero, and a dispatch it cannot yet see keeps
+the reservation and the posting row until it can (#470). Work already posted
 settles whatever its drain did since. The deadline ends admission, not settlement, so the drain's
 cadence keeps waking until the drain has ended and its last session is folded, and it is disabled
 on the first wake after that. The hub refuses a cadence that would outlive the credential it is

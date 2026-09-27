@@ -7584,16 +7584,23 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
   const readings = new Map<string, SessionRead>();
   const cancelled: string[] = [];
   // Code and omp derive a keyed session's job id from its posting key: asking again returns
-  // the session that key posted, and an adopt-only ask never posts (#470).
+  // the session that key posted, and an adopt-only ask RETIRES the key — it never posts, and a
+  // key it found unused can never post afterwards (#470).
   const byKey = new Map<string, CodeJob>();
+  const retired = new Set<string>();
   const engine: CodeEngine = {
     profiles: async () => ({ ok: true, value: [] }),
     checkProfile: async () => ({ ok: true, value: null }),
     async runSession(request) {
-      const keyed = request.postingKey === undefined ? undefined : byKey.get(request.postingKey);
+      const key = request.postingKey;
+      const keyed = key === undefined ? undefined : byKey.get(key);
       if (keyed !== undefined) return { ok: true, value: keyed };
-      if (request.adoptOnly === true)
+      if (key !== undefined && retired.has(key))
+        return refusedByCode("engine_refused", "code_posting_retired");
+      if (request.adoptOnly === true) {
+        retired.add(key!);
         return refusedByCode("engine_posting_unknown", "nothing was posted under this key");
+      }
       posted.push(request);
       const job = {
         jobId: `map_code_${posted.length}`,
@@ -7621,7 +7628,10 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
     },
   };
   // A native wake in this fixture is the drain's own unless a test says otherwise (#469).
-  const tick = (nativeDispatch = true, mappingAuthority = nativeDispatch) => {
+  const tick = (
+    nativeDispatch = true,
+    drain: string | null = nativeDispatch ? "drn_map" : null,
+  ) => {
     clock += 1_000;
     return conductor({
       store: f.store,
@@ -7633,7 +7643,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       plan: PLAN,
       mapPreparePlan: UNMETERED_PLAN,
       nativeDispatch,
-      mappingAuthority,
+      ...(drain === null ? {} : { mappingDrainId: drain }),
       now: () => clock,
     }).tick();
   };
@@ -7743,18 +7753,18 @@ test("only a wake carrying the drain's authority draws, prepares or posts paid m
   // nor strand a posting on an authority it does not hold; it leaves both for the drain's wake.
   const f = await paidMapDeployment();
   await f.maps.refreshWork(f.route, new Date(clock).toISOString(), 64);
-  await f.tick(true, false);
+  await f.tick(true, null);
   expect(f.fleet.launched).toEqual([]);
   expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 0n }]);
-  await f.tick(true, true);
+  await f.tick(true);
   expect(f.fleet.launched.map((launch) => launch.operationId)).toEqual([OPERATIONS.mapPrepare]);
   f.seal();
-  await f.tick(true, false);
+  await f.tick(true, null);
   expect(f.posted).toEqual([]);
   expect(
     await f.db.query(`SELECT count(*) n FROM run_progress WHERE stage='posting unconfirmed'`),
   ).toEqual([{ n: 0n }]);
-  await f.tick(true, true);
+  await f.tick(true);
   expect(f.posted).toHaveLength(1);
 });
 
@@ -7911,7 +7921,7 @@ test("a wake reconciling while a mapping posting binds never stops the posted se
   f.coordinator.policy = async (moment) => {
     if (armed) {
       armed = false;
-      await f.tick(true, false);
+      await f.tick(true, null);
     }
     return await policy(moment);
   };
@@ -8046,6 +8056,42 @@ test("a mapping posting whose answer was lost is recovered under its key, buying
   expect(f.cancelled).toEqual([]);
 });
 
+test("a first answer arriving after a recovery bound the same session never stops it", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  // The first post creates the session but its answer is held; a later wake recovers it first.
+  const runSession = f.engine.runSession.bind(f.engine);
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let created: (() => void) | undefined;
+  const posted = new Promise<void>((resolve) => (created = resolve));
+  let first = true;
+  f.engine.runSession = async (request) => {
+    const answer = await runSession(request);
+    if (first) {
+      first = false;
+      created!();
+      await held;
+    }
+    return answer;
+  };
+  const late = f.tick();
+  await posted;
+  await f.tick();
+  expect(
+    await f.db.query(`SELECT job_id FROM runs WHERE kind=?`, [TRANSCRIPT_MAP_SESSION_OPERATION]),
+  ).toEqual([{ job_id: "map_code_1" }]);
+  release!();
+  await late;
+  expect(f.cancelled).toEqual([]);
+  f.answer({ kind: "summary", text: "Navigation bound once." });
+  await f.tick();
+  expect(await f.db.query(`SELECT closure FROM runs WHERE job_id='map_code_1'`)).toEqual([
+    { closure: "completed" },
+  ]);
+});
+
 test("a lost mapping posting whose drain has stopped is adopted and cancelled, never reposted", async () => {
   const f = await paidMapDeployment();
   await f.tick();
@@ -8087,7 +8133,7 @@ test("a lost mapping posting that never reached Code is released once its drain 
   const row = (await readDrain(f.store, "drn_map"))!;
   await endDrain(mapDrainDeps(f), row, "stopped", "operator stop", row.live);
   await f.tick();
-  // Asked adopt-only, Code has nothing under the key: nothing was bought, the reservation goes.
+  // Retired, the key posted nothing and never can: nothing was bought, the reservation goes.
   expect(f.posted).toEqual([]);
   expect(f.cancelled).toEqual([]);
   expect(
@@ -8098,6 +8144,63 @@ test("a lost mapping posting that never reached Code is released once its drain 
   expect(await f.db.query(`SELECT finished_at IS NOT NULL finished FROM claims`)).toEqual([
     { finished: 1n },
   ]);
+});
+
+test("a refused first post is settled by a retire, which binds a session the key did buy", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  // Another invocation under the same key bought the session; this one hears a refusal. That
+  // proves only that this invocation posted nothing, so the reservation is not released at zero.
+  const runSession = f.engine.runSession.bind(f.engine);
+  let first = true;
+  f.engine.runSession = async (request) => {
+    const answer = await runSession(request);
+    if (!first) return answer;
+    first = false;
+    return refusedByCode("engine_stale_profile", "the profile moved under this invocation");
+  };
+  await f.tick();
+  expect(f.posted).toHaveLength(1);
+  expect(f.cancelled).toEqual([]);
+  expect(
+    await f.db.query(`SELECT job_id, closure FROM runs WHERE kind=?`, [
+      TRANSCRIPT_MAP_SESSION_OPERATION,
+    ]),
+  ).toEqual([{ job_id: "map_code_1", closure: null }]);
+  f.answer({ kind: "summary", text: "Navigation the retire found." });
+  await f.tick();
+  expect(await f.db.query(`SELECT outcome FROM claims WHERE job_id='map_code_1'`)).toEqual([
+    { outcome: "completed" },
+  ]);
+});
+
+test("a lost mapping posting is asked again only by a wake of the drain that posted it", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  const asked: SessionRequest[] = [];
+  const runSession = f.engine.runSession.bind(f.engine);
+  f.engine.runSession = async (request) => {
+    asked.push(request);
+    const answer = await runSession(request);
+    return asked.length === 1
+      ? refusedByCode("engine_unconfirmed", "the settled hook's lease closed")
+      : answer;
+  };
+  await f.tick();
+  expect(asked).toHaveLength(1);
+  // Another drain's wake carries another principal: the same key there names another posting,
+  // and its "nothing posted" is not this run's answer. It asks nothing and releases nothing.
+  await f.tick(true, "drn_other");
+  expect(asked).toHaveLength(1);
+  expect(await f.db.query(`SELECT finished_at FROM claims`)).toEqual([{ finished_at: null }]);
+  await f.tick();
+  expect(asked).toHaveLength(2);
+  expect(
+    await f.db.query(`SELECT job_id FROM runs WHERE kind=?`, [TRANSCRIPT_MAP_SESSION_OPERATION]),
+  ).toEqual([{ job_id: "map_code_1" }]);
+  expect(f.posted).toHaveLength(1);
 });
 
 test("a prepared mapping session is never posted once its drain has passed its deadline", async () => {
@@ -8143,7 +8246,7 @@ test("only the drain's own wake retries a mapping preparation that never started
     return execute(request);
   };
   // A native-capable wake that does not carry the drain's credential leaves the intent alone.
-  await f.tick(true, false);
+  await f.tick(true, null);
   expect(posts).toBe(1);
   await f.tick();
   expect(posts).toBe(2);
@@ -8315,7 +8418,8 @@ test("unconfirmed Code post remains visible and reserved across restart, disable
   await f.db.run(`UPDATE policies SET payload=json_set(payload,'$.enabled',json('false'))`);
   await f.tick();
   // Every wake asks again under the one posting key, so Code can have bought at most one
-  // session; once the policy no longer admits the run, a wake only asks what exists (#470).
+  // session; once the policy no longer admits the run, a wake only retires the key, and an
+  // unconfirmed retire is no proof of absence: the reservation stays (#470).
   const [parent] = await f.db.query<{ id: string }>(`SELECT id FROM runs WHERE kind=?`, [
     TRANSCRIPT_MAP_SESSION_OPERATION,
   ]);
