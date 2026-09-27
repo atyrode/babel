@@ -1048,8 +1048,13 @@ record. The Code job id a posting receives is published in the same write that b
 it, so a reconciling wake never reads an acknowledged session as unauthorized. Work already posted
 settles whatever its drain did since. The deadline ends admission, not settlement, so the drain's
 cadence keeps waking until the drain has ended and its last session is folded, and it is disabled
-on the first wake after that. Stopping the drain cancels a preparation at `map-prepare` and a
-posted session through Code.
+on the first wake after that. The hub refuses a cadence that would outlive the credential it is
+registered under, so the cadence takes the longest life that credential allows, and never one
+ending before the deadline is two intervals past; the start registers it before posting anything,
+and a press whose credential cannot keep the drain's cadence past its deadline launches nothing.
+Stopping the drain cancels a preparation at `map-prepare` and a posted session through Code; a
+session Code acknowledged before the stop but bound after it is published only while its drain
+still runs, so its own posting cancels it.
 
 The mapping configuration explicitly names `sourceMachineId` (the Recall owner) and
 `executorMachineId` (native catalog/preparation and eventual Code execution). Both same-machine

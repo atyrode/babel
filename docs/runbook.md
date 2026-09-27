@@ -858,8 +858,10 @@ target, deadline or `maxJobs`: past any of them no preparation, retry or session
 even before the controller records the ending. It ends when nothing it admitted is still open,
 or when no eligible mapping work remains, and its cadence keeps waking until then so the last
 sessions are settled and folded; the cadence is disabled on the first wake after the drain ends.
-`drainStop` at the same `map-prepare` node cancels a preparation there and a posted session
-through Code.
+The cadence runs under the press's credential, so start a mapping drain with a credential that
+outlives its deadline: a press whose credential cannot keep the cadence past the deadline is
+refused as "launched nothing" before anything is spent. `drainStop` at the same `map-prepare`
+node cancels a preparation there and a posted session through Code.
 
 ### 11.2 Pre-flight (T-24h, rehearsal)
 

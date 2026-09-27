@@ -7918,6 +7918,85 @@ test("a wake reconciling while a mapping posting binds never stops the posted se
   ).toEqual([{ closure: "completed", reason: null }]);
 });
 
+test("an operator stop landing between a session's admission and its bind cancels that session", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  // Code has acknowledged the session and admission has passed; the stop lands before the bind.
+  const runSession = f.engine.runSession.bind(f.engine);
+  let armed = false;
+  f.engine.runSession = async (request) => {
+    const answer = await runSession(request);
+    armed = true;
+    return answer;
+  };
+  const describe = f.fleet.describe.bind(f.fleet);
+  f.fleet.describe = (async (args: Parameters<typeof describe>[0]) => {
+    if (armed) {
+      armed = false;
+      const row = (await readDrain(f.store, "drn_map"))!;
+      await endDrain(mapDrainDeps(f), row, "stopped", "operator stop", row.live);
+    }
+    return describe(args);
+  }) as unknown as typeof f.fleet.describe;
+  await f.tick();
+  expect(f.cancelled).toEqual(["map_code_1"]);
+  expect(
+    await f.db.query(
+      `SELECT json_extract(payload,'$.stopReason') reason FROM runs WHERE job_id='map_code_1'`,
+    ),
+  ).toEqual([{ reason: "the mapping drain stopped before this session was bound" }]);
+});
+
+test("a stop that reads its lanes before a session binds still leaves that session cancelled", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  f.seal();
+  const runSession = f.engine.runSession.bind(f.engine);
+  let armed = false;
+  f.engine.runSession = async (request) => {
+    const answer = await runSession(request);
+    armed = true;
+    return answer;
+  };
+  // The stop reads the run's lane while the posting is still unbound, and the posting's bind
+  // lands before the stop goes on: the interleaving a read-then-close stop cannot see.
+  let bound: (() => void) | undefined;
+  const binding = new Promise<void>((resolve) => (bound = resolve));
+  let read: (() => void) | undefined;
+  const reading = new Promise<void>((resolve) => (read = resolve));
+  const query = f.store.db.query.bind(f.store.db);
+  f.store.db.query = (async (sql: string, params?: never) => {
+    const rows = await query(sql, params);
+    if (sql.includes("AS posting")) {
+      read!();
+      await binding;
+    }
+    return rows;
+  }) as typeof f.store.db.query;
+  const batch = f.store.db.batch.bind(f.store.db);
+  f.store.db.batch = (async (statements: Parameters<typeof batch>[0]) => {
+    const written = await batch(statements);
+    if (statements.some((statement) => statement.sql.includes("UPDATE claims SET job_id")))
+      bound!();
+    return written;
+  }) as typeof f.store.db.batch;
+  let stopping: Promise<unknown> = Promise.resolve();
+  const describe = f.fleet.describe.bind(f.fleet);
+  f.fleet.describe = (async (args: Parameters<typeof describe>[0]) => {
+    if (armed) {
+      armed = false;
+      const row = (await readDrain(f.store, "drn_map"))!;
+      stopping = endDrain(mapDrainDeps(f), row, "stopped", "operator stop", row.live);
+      await reading;
+    }
+    return describe(args);
+  }) as unknown as typeof f.fleet.describe;
+  await f.tick();
+  await stopping;
+  expect(f.cancelled).toEqual(["map_code_1"]);
+});
+
 test("a prepared mapping session is never posted once its drain has passed its deadline", async () => {
   const f = await paidMapDeployment();
   await f.tick();

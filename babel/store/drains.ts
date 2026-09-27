@@ -606,6 +606,23 @@ export function drainHoldsRun(
   };
 }
 
+/**
+ * Whether a RUNNING drain holds one run: the guard a mapping session's job id is published under.
+ * An operator's stop moves the drain off `running` in its own write, so a posting that binds after
+ * it finds this false and stops its session itself, while one that bound first is visible to the
+ * stop as a job it can cancel.
+ */
+export function runningDrainHoldsRun(runId: string): {
+  readonly sql: string;
+  readonly params: SqlParam[];
+} {
+  return {
+    sql: `EXISTS (SELECT 1 FROM drains, json_each(drains.live)
+                   WHERE drains.state = 'running' AND json_extract(json_each.value, '$.runId') = ?)`,
+    params: [runId],
+  };
+}
+
 /** What one tick folded: the jobs still held, the settled totals, the tallies and the journal. */
 export interface DrainFold {
   readonly live: readonly LiveJob[];

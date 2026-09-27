@@ -34,8 +34,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   (a lost slot, or a crash before publishing) is withdrawn at zero and its work drawn again at the
   next fence; every later spend, native retries included, is admitted only by the drain that holds
   the run while it is short of its target and deadline; a Code job id is published in the same
-  write as its bind; and the drain's cadence outlives the deadline until its last session is
-  folded. Conductor regressions cover read-wake exclusion, drain-only dispatch and authority,
+  write as its bind, and only while its drain still runs, so a stop before the bind cancels it; and the drain's cadence outlives the deadline until its last session is
+  folded, for the longest life the press's credential allows, while a press whose credential
+  cannot keep it past the deadline launches nothing. Conductor regressions cover read-wake
+  exclusion, drain-only dispatch and authority,
   target stop, self-ending, holding for an open run, lost launch slots and their redraw, crashed
   claims and their redraw, deadline and retry authority, a reconcile racing a bind, concurrent
   settlement and stop cancellation at `map-prepare` (#223).

@@ -414,6 +414,15 @@ export async function endDrain(
   const journaled: DrainNote[] = [];
   const at = deps.now();
   const operationId = drainOperation(row.preset);
+  /*
+    A MAPPING DRAIN IS CLOSED BEFORE ITS LANES ARE READ. A session Code has acknowledged is
+    published only while its drain is running (`reconcileMappingPreparations`), so after this
+    write every posting either published before it — and the read below finds the job id and
+    cancels it — or finds the drain no longer running and cancels its session itself. Read first
+    and close after, and a posting that binds in between is seen by neither.
+  */
+  const mapping = row.preset === MAP_DRAIN_PRESET;
+  const early = mapping ? await closeDrain(deps.store, row.id, ending, reason) : null;
   let cancelled = 0;
   for (const job of live) {
     const lane = await laneOf(deps.store, job.runId);
@@ -477,7 +486,7 @@ export async function endDrain(
       journaled.push({ at, kind: "cancel", detail: `${job.jobId}: ${message(error)}` });
     }
   }
-  const closed = await closeDrain(deps.store, row.id, ending, reason);
+  const closed = early ?? (await closeDrain(deps.store, row.id, ending, reason));
   if (closed === "already") {
     notes.push(`drain ${row.id} had already ended when this tick closed it`);
   }

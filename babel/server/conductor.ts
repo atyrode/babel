@@ -75,6 +75,7 @@ import {
   noteDrain,
   reconcileLive,
   reserveLaunchStatement,
+  runningDrainHoldsRun,
   targetMet,
 } from "../store/drains.ts";
 import {
@@ -2788,8 +2789,11 @@ export function conductor(deps: ConductorDeps): Conductor {
           : await mappingAuthority(prepared, run.prepare_job_id, "admission", run.id);
         // THE JOB ID AND ITS AUTHORITY ARE ONE WRITE. A wake reconciling this run reads its claim
         // as bound the moment it sees the Code job; publishing the id before the bind let that
-        // wake stop a legitimate session as unauthorized.
+        // wake stop a legitimate session as unauthorized. The same write requires the drain that
+        // holds the run to be RUNNING: an operator's stop that landed after the admission check
+        // could not see an unpublished job to cancel, so this posting cancels it itself.
         if (stop === null) {
+          const running = runningDrainHoldsRun(run.id);
           const written = await store.db.batch([
             coordinator.bindStatement({
               ...intent.claim,
@@ -2799,11 +2803,21 @@ export function conductor(deps: ConductorDeps): Conductor {
             }),
             {
               sql: `UPDATE runs SET job_id=? WHERE id=? AND job_id IS NULL
-                AND EXISTS (SELECT 1 FROM claims WHERE id=? AND fence=? AND job_id=?)`,
-              params: [jobId, run.id, intent.claim.id, intent.claim.fence, jobId],
+                AND EXISTS (SELECT 1 FROM claims WHERE id=? AND fence=? AND job_id=?)
+                AND ${running.sql} RETURNING id`,
+              params: [
+                jobId,
+                run.id,
+                intent.claim.id,
+                intent.claim.fence,
+                jobId,
+                ...running.params,
+              ],
             },
           ]);
           if ((written[0]?.length ?? 0) === 0) stop = "mapping claim did not bind to the Code job";
+          else if ((written[1]?.length ?? 0) === 0)
+            stop = "the mapping drain stopped before this session was bound";
         }
         if (stop !== null) {
           // A job that cannot be bound is still accounted: its id and the stop are one write.

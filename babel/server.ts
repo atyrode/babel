@@ -54,7 +54,7 @@ import {
 import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { ensureTerms } from "./store/corpus.ts";
-import { activeDrains, readDrain } from "./store/drains.ts";
+import { activeDrains, deadlineOf, readDrain } from "./store/drains.ts";
 import { openStore } from "./store/store.ts";
 import manifestJson from "./manifest.json";
 
@@ -464,11 +464,19 @@ async function catalogAdmitted(policy: Policy): Promise<string | null> {
     : `start the free catalog for this route (${ACTIONS.startMapCatalog}) first: its cadence is what refills a mapping drain`;
 }
 
-/** Whether a mapping drain is running on this executor, so its catalog settlement may refill it. */
 /** The scheduler id of one paid mapping drain's own cadence. */
 function mapDrainWakeId(drainId: string): string {
   return `${BABEL_PLUGIN_ID}.map-drain.${createHash("sha256").update(drainId).digest("hex").slice(0, 32)}`;
 }
+
+/** The lifetimes a drain's cadence is registered for, longest first (see `mapDrainWake`). */
+const CADENCE_LIFETIMES_MS = [
+  SCHEDULE_LIFETIME_MS,
+  7 * 24 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+  6 * 60 * 60 * 1000,
+  60 * 60 * 1000,
+] as const;
 
 /**
  * A PAID MAPPING DRAIN'S OWN WAKE (#469). A Code session settling wakes Code, not Babel, so a
@@ -486,15 +494,28 @@ function mapDrainWakeId(drainId: string): string {
  * still at the model when it passes must be read, settled and folded, and nothing else wakes a
  * drain whose standing weights are zero. So the cadence runs until the drain has ended — every
  * wake disables the cadence of an ended drain — while every spend it could make is refused past
- * the drain's own bounds (`mappingAuthority` in `server/conductor.ts`).
+ * the drain's own bounds (`mappingAuthority` in `server/conductor.ts`). The hub refuses an expiry
+ * past the registering credential's own, and a plugin cannot read that ceiling, so the
+ * registration steps down {@link CADENCE_LIFETIMES_MS} and keeps the longest it accepts — but
+ * never one that ends before the deadline has been passed by two intervals: a cadence that
+ * cannot settle what the drain admitted is not a cadence, and `ok` says so.
  */
-async function mapDrainWake(jobs: BabelJobs, drainId: string, policy: Policy): Promise<string[]> {
+async function mapDrainWake(
+  jobs: BabelJobs,
+  drainId: string,
+  policy: Policy,
+  deadline: number | null,
+): Promise<{ readonly ok: boolean; readonly notes: readonly string[] }> {
   const route = policy.mapping;
-  if (!policy.enabled || route === undefined) return [];
+  if (!policy.enabled || route === undefined) return { ok: false, notes: [] };
   const scheduleId = mapDrainWakeId(drainId);
+  const refused = (why: string) => ({
+    ok: false,
+    notes: [`mapping drain ${drainId} cadence: ${why}`],
+  });
   try {
     const described = await describeMapHost(jobs, route, MACHINE_OPERATIONS.mapPrepare);
-    if ("refused" in described) return [`mapping drain ${drainId} cadence: ${described.refused}`];
+    if ("refused" in described) return refused(described.refused);
     const installation = described.readiness.installation;
     const intervalMs = policy.cadenceSeconds * 1000;
     const limits = planFor(policy, MACHINE_OPERATIONS.mapPrepare).limits;
@@ -519,40 +540,52 @@ async function mapDrainWake(jobs: BabelJobs, drainId: string, policy: Policy): P
         (row) => row.revision.startsWith(`${configuration}.`) && row.expiresAt - at > intervalMs,
       )
     )
-      return [];
+      return { ok: true, notes: [] };
     const revision = `${configuration}.${String(at)}`;
-    await jobs.schedule({
-      jobId: `mapwake_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
-      machineId: route.executorMachineId,
-      operationId: MACHINE_OPERATIONS.mapPrepare,
-      input: {
-        [INPUT_FIELD]: JSON.stringify({
-          kind: "drain-wake",
-          drainId,
-          executorMachineId: route.executorMachineId,
-        }),
-      },
-      outputs: [],
-      limits,
-      resourceBindingDigest: described.resourceBindingDigest,
-      expectedServiceBindings: { [RECALL_SERVICE_ID]: described.serviceBinding },
-      ...(installation === null
-        ? {}
-        : {
-            installationRevision: installation.revision,
-            artifactSha256: installation.artifactSha256,
-          }),
-      scheduleId,
-      revision,
-      firstNominalAt: at + intervalMs,
-      intervalMs,
-      deadlineMs: intervalMs,
-      expiresAt: at + SCHEDULE_LIFETIME_MS,
-      offlinePolicy: "coalesce-one",
-    });
-    return [];
+    const floor = Math.max(at + intervalMs, deadline === null ? 0 : deadline + 2 * intervalMs);
+    for (const lifetime of CADENCE_LIFETIMES_MS) {
+      const expiresAt = at + lifetime;
+      if (expiresAt <= floor) break;
+      try {
+        await jobs.schedule({
+          jobId: `mapwake_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
+          machineId: route.executorMachineId,
+          operationId: MACHINE_OPERATIONS.mapPrepare,
+          input: {
+            [INPUT_FIELD]: JSON.stringify({
+              kind: "drain-wake",
+              drainId,
+              executorMachineId: route.executorMachineId,
+            }),
+          },
+          outputs: [],
+          limits,
+          resourceBindingDigest: described.resourceBindingDigest,
+          expectedServiceBindings: { [RECALL_SERVICE_ID]: described.serviceBinding },
+          ...(installation === null
+            ? {}
+            : {
+                installationRevision: installation.revision,
+                artifactSha256: installation.artifactSha256,
+              }),
+          scheduleId,
+          revision,
+          firstNominalAt: at + intervalMs,
+          intervalMs,
+          deadlineMs: intervalMs,
+          expiresAt,
+          offlinePolicy: "coalesce-one",
+        });
+        return { ok: true, notes: [] };
+      } catch (error) {
+        if (!message(error).includes("schedule-expiry-ceiling")) throw error;
+      }
+    }
+    return refused(
+      "the credential it runs under ends before the drain's deadline could be settled past",
+    );
   } catch (error) {
-    return [`mapping drain ${drainId} cadence: ${message(error)}`];
+    return refused(message(error));
   }
 }
 
@@ -576,7 +609,7 @@ async function mapDrainWakes(jobs: BabelJobs, policy: Policy, renew: boolean): P
     }
     if (renew)
       for (const drain of live.values())
-        notes.push(...(await mapDrainWake(jobs, drain.id, policy)));
+        notes.push(...(await mapDrainWake(jobs, drain.id, policy, deadlineOf(drain.target))).notes);
   } catch (error) {
     notes.push(`mapping drain cadence: ${message(error)}`);
   }
@@ -772,6 +805,13 @@ const doors = babelDoors(
       const refusal = await catalogAdmitted(policy);
       if (refusal !== null) return { refused: refusal };
       const jobs = jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive));
+      // The drain's own wake comes FIRST, registered by this press so it carries this press's
+      // authority. A drain whose sessions nothing could ever settle must not buy one: without a
+      // cadence past its deadline the press launches nothing and the door ends it.
+      const row = await readDrain(store, drainId);
+      if (row === null) return { launched: 0, notes: [`the drain row for ${drainId} is gone`] };
+      const cadence = await mapDrainWake(jobs, drainId, policy, deadlineOf(row.target));
+      if (!cadence.ok) return { launched: 0, notes: [...cadence.notes] };
       const started = await loop(
         jobs,
         machinesSlice(ctx.machines),
@@ -782,10 +822,7 @@ const doors = babelDoors(
         true,
         true,
       ).tickMapDrains();
-      // The drain's own wake, registered by this press so it carries this press's authority.
-      const row = await readDrain(store, drainId);
-      const cadence = row === null ? [] : await mapDrainWake(jobs, drainId, policy);
-      return { launched: started.launched, notes: [...started.notes, ...cadence] };
+      return { launched: started.launched, notes: [...started.notes] };
     },
     now: () => store.now(),
   },

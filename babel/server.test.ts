@@ -1036,7 +1036,19 @@ test("explicit catalog admission posts free work without settling or launching p
   expect(scheduled.map((job) => job.machineId)).toEqual([MACHINE]);
 });
 
-test("a mapping drain's own cadence outlives its admission deadline", async () => {
+/**
+ * One wake of a running mapping drain's own job, against a hub that refuses a schedule expiring
+ * past the registering credential's ceiling, `credential` ms from now (`job-schedules.ts`,
+ * `schedule-expiry-ceiling`). The drain's admission deadline is a minute away and one of its
+ * sessions is still at the model. The plugin's store reads the host's clock, so everything here
+ * is measured from the moments around the wake.
+ */
+async function drainCadence(credential: number): Promise<{
+  readonly expiries: readonly number[];
+  readonly deadline: number;
+  readonly before: number;
+  readonly after: number;
+}> {
   const rows = await harness.db.query<{ payload: string }>(
     `SELECT payload FROM policies ORDER BY seq DESC LIMIT 1`,
   );
@@ -1063,8 +1075,9 @@ test("a mapping drain's own cadence outlives its admission deadline", async () =
       },
     }),
   });
-  // The drain's admission window closes in a minute; its sessions may still be at the model.
-  const deadline = NOW + 60_000;
+  const before = Date.now();
+  const deadline = before + 60_000;
+  const ceiling = before + credential;
   await insertDrain({ db: harness.db, now: () => NOW } as never, {
     id: "drn_map",
     machineId: MACHINE,
@@ -1119,6 +1132,7 @@ test("a mapping drain's own cadence outlives its admission deadline", async () =
     listRuns: () => ({ runs: [], nextCursor: null }),
     schedules: () => [...scheduled],
     schedule: (request: JobLaunch & ScheduleTiming) => {
+      if (request.expiresAt > ceiling) throw new Error("schedule-expiry-ceiling");
       scheduled.push(request);
       return {};
     },
@@ -1129,12 +1143,37 @@ test("a mapping drain's own cadence outlives its admission deadline", async () =
     { ...context(harness.db as unknown as GuestDatabase, jobs, NOW), jobs: native } as never,
     settled({ machineId: MACHINE, operationId: OPERATIONS.mapPrepare }),
   );
-  const cadence = scheduled.filter(
-    (job) => JSON.parse(String(job.input["input"])).kind === "drain-wake",
-  );
-  expect(cadence).toHaveLength(1);
+  const after = Date.now();
+  return {
+    deadline,
+    before,
+    after,
+    expiries: scheduled
+      .filter((job) => JSON.parse(String(job.input["input"])).kind === "drain-wake")
+      .map((job) => job.expiresAt),
+  };
+}
+
+test("a mapping drain's own cadence outlives its admission deadline", async () => {
   // Settlement, not admission, decides when the cadence may stop.
-  expect(cadence[0]!.expiresAt).toBeGreaterThan(deadline);
+  const { expiries, deadline } = await drainCadence(Number.MAX_SAFE_INTEGER / 2);
+  expect(expiries).toHaveLength(1);
+  expect(expiries[0]!).toBeGreaterThan(deadline);
+});
+
+test("a drain's cadence takes the longest life its credential allows past the deadline", async () => {
+  // A credential ending in two days cannot hold a thirty-day or a seven-day cadence.
+  const day = 24 * 60 * 60 * 1000;
+  const { expiries, before, after } = await drainCadence(2 * day);
+  expect(expiries).toHaveLength(1);
+  expect(expiries[0]!).toBeGreaterThanOrEqual(before + day);
+  expect(expiries[0]!).toBeLessThanOrEqual(after + day);
+});
+
+test("a drain's cadence is never registered to end before its deadline is settled past", async () => {
+  // Every rung the credential admits ends before the deadline has been passed by two intervals.
+  const { expiries } = await drainCadence(90_000);
+  expect(expiries).toEqual([]);
 });
 
 test("enabling a store made before archive captures adds their columns, the label map and the recency index", async () => {
