@@ -535,9 +535,9 @@ bun install --cwd ../manifold --frozen-lockfile   # the kit resolves zod and the
 ```
 
 `MANIFOLD_REV` follows Manifold `main` and currently names
-`2ee760dda83ad023150c5d206e8cfcbdf9d99e4e`. At that revision the kit stamps
-`hardenedContract: 5` into repacked bundles (`packages/plugin-kit/src/pack.ts:298-304`),
-while the host retains contracts 1–5 (`packages/protocol/src/isolate.ts:744-758`).
+`2229a2fa84905a4414ed4548fba4ec7aabc47a22`. At that revision the kit stamps
+`hardenedContract: 8` into repacked bundles (`packages/plugin-kit/src/pack.ts:298-304`),
+while the host retains contracts 1–8 (`packages/protocol/src/isolate.ts:826-830`).
 The reviewed bounded-result channel includes exact digest-reviewed `textFields`: string-or-null
 leaves preserve already-redacted evidence rather than refusing a redaction marker as a credential
 carrier. Ordinary agent-facing results remain mechanical-only without trusted source approval,
