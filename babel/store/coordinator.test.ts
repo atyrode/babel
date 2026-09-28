@@ -1917,6 +1917,99 @@ test("challenge carries whole prior claims and recovers selectors from the nativ
   expect((await coord.draw({ runId: "no-material" })).outcome).toBe("gap");
 });
 
+/*
+  THE CONDUCTOR DRAWS ONCE PER REVIEW IT POSTS. An in-realm half's statements run on the hub's
+  own thread, so a draw that scans a table once per row of another stalls the whole hub for as
+  long as its history is long. On the 2026-09-28 preview store that was 36.7 s per draw and one
+  review posted every 37 s, and the service authorizations the hub owed during a draw ran past
+  their deadline. Row counts do not change SQLite's plan, because the store keeps no statistics
+  (no `sqlite_stat1`), so a small history shows every per-row scan a large one pays for.
+*/
+test("the per-review reads scan no table once per row of another", async () => {
+  const handle = store();
+  const issued = new Map<string, readonly GuestSqlParam[]>();
+  const note = (sql: string, params: readonly GuestSqlParam[] | undefined): void => {
+    if (!issued.has(sql)) issued.set(sql, params ?? []);
+  };
+  const db: GuestDatabase = {
+    ...handle.db,
+    query: async <Row extends GuestSqlRow>(sql: string, params?: readonly GuestSqlParam[]) => {
+      note(sql, params);
+      return await handle.db.query<Row>(sql, params);
+    },
+    run: async (sql: string, params?: readonly GuestSqlParam[]) => {
+      note(sql, params);
+      return await handle.db.run(sql, params);
+    },
+    batch: async (statements: readonly GuestSqlStatement[]) => {
+      for (const statement of statements) note(statement.sql, statement.params);
+      return await handle.db.batch(statements);
+    },
+  };
+  const coord = coordinator({ db }, () => NOW, CONCURRENT_JOBS);
+  // Review and both analysis stages, so the draw builds every candidate set it can.
+  const policy = stagePolicy("challenge", {
+    activityWeights: { review: 1, explore: 0, challenge: 1, synthesize: 1, map: 0 },
+    review: {
+      ...stagePolicy("challenge").review!,
+      stageRecipes: { challenge: "installed", synthesize: "installed" },
+    },
+  });
+  await handle.db.run(
+    `INSERT INTO policies(version, seq, actor_id, reason, payload, recorded_at)
+     VALUES(?,?,?,?,?,?)`,
+    [policy.version, 1, "operator", "the test's policy", JSON.stringify(policy), ago(1)],
+  );
+  await catalog(handle.db, "omp/served");
+  await record(handle.db, "hyp_reviewed", "hypothesis", 3);
+  await assessment(handle.db, "hyp_reviewed", ROLES[0]!, 2);
+  await fact(handle.db, "ent_00000001", "lifecycle", "active");
+  await analysisRecord(handle.db, "hyp_00000001", "source", null, { statement: "a claim" });
+  await analysisRecord(handle.db, "obs_00000001", "source", "hyp_00000001", { evidence: [] });
+  await citation(handle.db, "obs_00000001", "omp/served");
+  await handle.db.run(
+    `INSERT INTO runs(id,kind,prepare_job_id,closure,started_at,records,payload)
+     VALUES('source',?,'prepare_source','completed',?,1,'{}')`,
+    [OPERATIONS.explore, ago(1)],
+  );
+
+  await coord.open(NOW);
+  const assignment = drawn(await coord.draw({ runId: "run_audit", now: NOW }));
+  expect((await coord.claim({ assignment, runId: "run_audit", now: NOW })).outcome).toBe("granted");
+  await coord.open(NOW);
+
+  const perRow: string[] = [];
+  for (const [sql, params] of issued) {
+    const plan = await handle.db.query<{ id: bigint; parent: bigint; detail: string }>(
+      `EXPLAIN QUERY PLAN ${sql}`,
+      params,
+    );
+    const byId = new Map(plan.map((step) => [step.id, step]));
+    for (const step of plan) {
+      // A throwaway index is a full scan paid again on every execution of the statement.
+      let repeated = step.detail.includes("AUTOMATIC");
+      if (/^SCAN \w+( USING (COVERING )?INDEX \w+)?$/.test(step.detail)) {
+        // Scanned once per row of an enclosing correlated subquery…
+        for (let up = byId.get(step.parent); up !== undefined; up = byId.get(up.parent))
+          if (up.detail.startsWith("CORRELATED")) repeated = true;
+        // …or as the inner loop of a join, once per row of the loop before it.
+        if (
+          plan.some(
+            (outer) =>
+              outer.parent === step.parent &&
+              outer.id < step.id &&
+              /^(SCAN|SEARCH) /.test(outer.detail) &&
+              outer.detail !== "SCAN CONSTANT ROW",
+          )
+        )
+          repeated = true;
+      }
+      if (repeated) perRow.push(`${step.detail} in ${sql.replace(/\s+/g, " ").slice(0, 100)}`);
+    }
+  }
+  expect(perRow).toEqual([]);
+});
+
 test("synthesis needs two known source runs connected by the actual candidate", async () => {
   const { db, coord } = await deployment(stagePolicy("synthesize"));
   await catalog(db, "omp/a");

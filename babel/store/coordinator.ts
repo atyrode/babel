@@ -1327,11 +1327,12 @@ export function coordinator(
   }
 
   /**
-   * The head of every record: the newest revision of each root. It is read through the
-   * `records_by_root(root_id, seq)` index rather than as `NOT EXISTS (… supersedes_id = r.id)`,
-   * which has no index behind it and would scan the whole table once per row — the head scan runs
-   * on every draw, and a quadratic one over several thousand records is a cycle spent finding out
-   * what work there is rather than doing it.
+   * The head of every record: the newest revision of each root. It is read in one pass through
+   * the `records_by_root(root_id, seq)` index. The review tally's
+   * `NOT EXISTS (… supersedes_id = r.id)` has `records_by_supersedes` behind it instead
+   * (`HISTORY_INDEX_SCHEMA`). Without an index, either question scans the whole table once per
+   * row. The head scan runs on every draw, and a quadratic scan over several thousand records
+   * spends the cycle finding out what work there is rather than doing it.
    */
   async function heads(): Promise<readonly Head[]> {
     const rows = await scan(
