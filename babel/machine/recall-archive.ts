@@ -27,7 +27,12 @@ import {
 import type { TranscriptMapNativeRequest, TranscriptMapNativeResult } from "../contract.ts";
 import { transcriptMapCaptureId } from "../transcript-map-identity.ts";
 import { transcriptMapArchive } from "./transcript-map-archive.ts";
-import { babelSnapshot, capturesOf } from "./archive-listing.ts";
+import {
+  babelSnapshot,
+  capturesOf,
+  listingMemory,
+  type SnapshotListing,
+} from "./archive-listing.ts";
 import {
   readingCache,
   type ReadingCache,
@@ -132,6 +137,8 @@ export async function createRecallArchive(options: {
   const root = join(options.cacheDir, "recall", hash(options.repo.repository));
   await mkdir(root, { recursive: true, mode: 0o700 });
   const index = await sessionIndex(root, context);
+  // Beside the index, in the same owner-private directory: raw claims, never a policy's view.
+  const listings = listingMemory(join(root, "listings"));
   const caches = new Map<string, ReadingCache>();
   // One bounded, rebuildable sidecar per kept session, never transcript bytes in the catalog.
   const tokens = new Map<string, Widening>();
@@ -377,47 +384,59 @@ export async function createRecallArchive(options: {
     result.newestSnapshotAt =
       snapshots[0] === undefined ? null : new Date(snapshots[0].time).toISOString();
     for (const snapshot of snapshots) {
-      result.cost.listedSnapshots++;
-      await capturesOf(options.repo, snapshot, {
-        entry: () => {
-          result.cost.listedEntries++;
-        },
-        capture: (session, node) => {
-          if (
-            session.selector.length > 600 ||
-            (filter.harness !== undefined && filter.harness !== session.harness)
-          )
-            return;
-          const key = all
-            ? JSON.stringify([snapshot.host, snapshot.id, node.path])
-            : sourceKey(snapshot.host, session.selector);
-          const previous = newest.get(key);
-          if (
-            previous !== undefined &&
-            (previous.snapshot.id !== snapshot.id ||
-              previous.session.primaryPath.localeCompare(node.path) <= 0)
-          )
-            return;
-          const subjects = policy.subjects.filter((subject) =>
-            matchesSubject(subject, snapshot.host, session.harness, session.selector),
-          );
-          const modified = Date.parse(node.modifiedAt);
-          newest.set(key, {
-            host: snapshot.host,
-            snapshot,
-            session,
-            subjects,
-            cache: cacheFor(snapshot.host),
-            namespace: hash(JSON.stringify([options.repo.repository, snapshot.host])),
-            seen: {
-              size: node.size,
-              modifiedAt:
-                Number.isFinite(modified) && modified > 0 ? modified : Date.parse(snapshot.time),
-              capture: JSON.stringify([snapshot.id, node.path]),
-            },
-          });
-        },
-      });
+      let listing = await listings.recall(snapshot.id);
+      if (listing === null) {
+        // Only restic's work is a listing's cost: a remembered snapshot is replayed, not listed.
+        result.cost.listedSnapshots++;
+        let entries = 0;
+        const captures: SnapshotListing["captures"][number][] = [];
+        await capturesOf(options.repo, snapshot, {
+          entry: () => {
+            entries++;
+            result.cost.listedEntries++;
+          },
+          capture: (session, node) => {
+            captures.push({ session, node });
+          },
+        });
+        listing = { entries, captures };
+        await listings.keep(snapshot.id, listing);
+      }
+      for (const { session, node } of listing.captures) {
+        if (
+          session.selector.length > 600 ||
+          (filter.harness !== undefined && filter.harness !== session.harness)
+        )
+          continue;
+        const key = all
+          ? JSON.stringify([snapshot.host, snapshot.id, node.path])
+          : sourceKey(snapshot.host, session.selector);
+        const previous = newest.get(key);
+        if (
+          previous !== undefined &&
+          (previous.snapshot.id !== snapshot.id ||
+            previous.session.primaryPath.localeCompare(node.path) <= 0)
+        )
+          continue;
+        const subjects = policy.subjects.filter((subject) =>
+          matchesSubject(subject, snapshot.host, session.harness, session.selector),
+        );
+        const modified = Date.parse(node.modifiedAt);
+        newest.set(key, {
+          host: snapshot.host,
+          snapshot,
+          session,
+          subjects,
+          cache: cacheFor(snapshot.host),
+          namespace: hash(JSON.stringify([options.repo.repository, snapshot.host])),
+          seen: {
+            size: node.size,
+            modifiedAt:
+              Number.isFinite(modified) && modified > 0 ? modified : Date.parse(snapshot.time),
+            capture: JSON.stringify([snapshot.id, node.path]),
+          },
+        });
+      }
     }
     const eligible: Capture[] = [];
     for (const entry of newest.values()) {

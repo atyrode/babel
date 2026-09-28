@@ -76,7 +76,8 @@ export interface Adapter {
   /** What a backup must capture to be able to restore a session, closure included. */
   backupRoots(): string[];
   /** The session this path is the primary log of. Archive callers supply listing existence
-   *  and recorded roots; omitted arguments retain the live filesystem behavior. */
+   *  and recorded roots; omitted arguments retain the live filesystem behavior. A change to
+   *  what any adapter claims bumps `CLAIM_RULES` (index.ts): remembered listings replay it. */
   claim(
     path: string,
     exists?: (path: string) => boolean,

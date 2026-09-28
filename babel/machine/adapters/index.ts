@@ -30,6 +30,17 @@ export { omp } from "./omp.ts";
 /** Every adapter, in the order a path is offered to them. */
 export const ADAPTERS: readonly Adapter[] = [omp, codex, claude];
 
+/**
+ * The identity of what {@link claim} decides for an archived path.
+ *
+ * A snapshot's listing is remembered with the claims it produced (`../archive-listing.ts`) and
+ * replayed only under the rules it was claimed with. Bump this whenever any adapter's `claim`,
+ * or anything it calls, would claim a different set of paths or report a different
+ * `SessionRef` for one. Forgetting to is silent: every snapshot already remembered keeps
+ * being read under the old rules.
+ */
+export const CLAIM_RULES = "babel.adapters.claim/1";
+
 /** The session this path is the primary log of, from the first adapter that recognizes it. */
 export function claim(
   path: string,
