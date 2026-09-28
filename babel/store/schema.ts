@@ -1159,6 +1159,12 @@ export const SCHEMA_V1: readonly string[] = [
  * could only ask about tables, and a store that reached this shape by addition would otherwise
  * have the tables and none of the triggers, which is an append-only ledger that appends by
  * convention.
+ *
+ * A REMOVAL IS THE SAME QUESTION WITH THE OTHER ANSWER: applied where the thing it names is
+ * still there. It belongs in this list only for something a fresh store is already created
+ * without and no build of this shape reads or writes — taking it away then brings an earlier
+ * store to the shape `SCHEMA_V1` makes and changes nothing a current build can observe, which is
+ * the same verdict a MINOR version gives an addition.
  */
 export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   {
@@ -1244,6 +1250,20 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     column: "profile",
     sql: `ALTER TABLE drains ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'`,
   },
+  // #279's other half: the column `profile` REPLACED. It held the `SessionChoice` the operator
+  // typed, NOT NULL with no default, and the addition above gave it a successor without taking
+  // it away — so on every store an enable before #279 created, a drain start, whose writer
+  // names only `profile`, was refused by a column nothing writes any more, while a fresh store,
+  // created without it, never could show it. What it held names a model and an account of
+  // Babel's own, which no Code session spends, so nothing a drain can still use goes with it.
+  // No index, trigger or CHECK ever named it, which is what lets SQLite drop it in place and
+  // keep every other column of every row.
+  {
+    object: "drains",
+    column: "session",
+    removes: true,
+    sql: `ALTER TABLE drains DROP COLUMN session`,
+  },
   // #340: a run's proposed next actions and the operator's ledger over them, derived from the
   // one place they are spelled so the two creation paths cannot come to disagree.
   ...NEXT_ACTION_SCHEMA.map(objectAddition),
@@ -1297,11 +1317,13 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
 /**
  * One addition a later shape made to the store the first migration created: a column on one of
  * its tables, or — with no `column` — a schema object of its own, named as `sqlite_master`
- * names it.
+ * names it. With `removes`, the opposite: something a later shape took away, applied only where
+ * it is still there.
  */
 export interface SchemaAddition {
   readonly object: string;
   readonly column?: string | undefined;
+  readonly removes?: true | undefined;
   readonly sql: string;
 }
 

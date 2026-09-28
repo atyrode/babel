@@ -940,7 +940,8 @@ export const plugin: ServerPluginDef = {
         // table, or the schema object itself when it names no column: this runs on every enable
         // and must do nothing on all but one of them. The object query carries no `type`
         // filter, because a table, an index and a trigger share one namespace in SQLite and an
-        // append-only table whose triggers could not be added would append by convention.
+        // append-only table whose triggers could not be added would append by convention. A
+        // removal is asked the same question and is due on the other answer, in the same batch.
         const pending: SqlStatement[] = [];
         for (const addition of SCHEMA_ADDITIONS) {
           const held =
@@ -953,7 +954,8 @@ export const plugin: ServerPluginDef = {
                   "SELECT count(*) AS n FROM pragma_table_info(?) WHERE name = ?",
                   [addition.object, addition.column],
                 );
-          if (Number(held[0]?.n ?? 0) === 0) pending.push({ sql: addition.sql });
+          const present = Number(held[0]?.n ?? 0) > 0;
+          if (present === (addition.removes === true)) pending.push({ sql: addition.sql });
         }
         if (pending.length > 0) await database.batch(pending);
       }

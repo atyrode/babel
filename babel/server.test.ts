@@ -36,7 +36,7 @@ import { stamp } from "./store/feedindex.ts";
 import { upsertSessionRows } from "./store/sessions.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
 import { PolicySchema } from "./store/coordinator.ts";
-import { insertDrain } from "./store/drains.ts";
+import { insertDrain, readDrain } from "./store/drains.ts";
 import type { JobLaunch, ScheduleTiming } from "./server/conductor.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
@@ -726,6 +726,100 @@ test("enabling a store made before the trace adds run_calls, triggers and all", 
   await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
   expect(await db.query(`SELECT seq FROM run_calls WHERE run_id = 'run_traced'`)).toEqual([
     { seq: 1n },
+  ]);
+});
+
+test("enabling a store made before drains named a profile drops the session column, and a drain starts", async () => {
+  const { db } = harness;
+  /*
+    A store exactly as the shape before #279 left `drains`: the account a drain spent was a
+    `session` column, NOT NULL with no default, and there was no `profile`. #279 added `profile`
+    and a writer that names only it, so on such a store every drain start was refused by a
+    column nothing writes any more — which a fresh store, never having had it, could not show.
+  */
+  await db.run(`DROP TABLE drains`);
+  await db.run(`CREATE TABLE drains(
+     id TEXT PRIMARY KEY,
+     machine_id TEXT NOT NULL,
+     preset TEXT NOT NULL,
+     session TEXT NOT NULL,
+     knobs TEXT NOT NULL DEFAULT '{}',
+     concurrent INTEGER NOT NULL CHECK (concurrent >= 1),
+     target TEXT NOT NULL,
+     started_at TEXT NOT NULL,
+     started_by TEXT NOT NULL,
+     finished_at TEXT,
+     state TEXT NOT NULL DEFAULT 'running'
+       CHECK (state IN ('running','closing','stopped','target','deadline','failed')),
+     ending TEXT NOT NULL DEFAULT ''
+       CHECK (ending IN ('','stopped','target','deadline','failed')),
+     reason TEXT NOT NULL DEFAULT '',
+     spent TEXT NOT NULL DEFAULT '{}',
+     live TEXT NOT NULL DEFAULT '[]',
+     samples TEXT NOT NULL DEFAULT '[]',
+     closures TEXT NOT NULL DEFAULT '{}',
+     refusals TEXT NOT NULL DEFAULT '{}',
+     jobs_launched INTEGER NOT NULL DEFAULT 0,
+     jobs_settled INTEGER NOT NULL DEFAULT 0,
+     CHECK ((state IN ('running','closing')) = (finished_at IS NULL)),
+     CHECK (state != 'closing' OR ending != '')
+   ) STRICT`);
+  const older = {
+    id: "drn_older",
+    machine_id: MACHINE,
+    preset: "keep-going",
+    knobs: JSON.stringify({ recipes: ["triage"] }),
+    concurrent: 2n,
+    target: JSON.stringify({ costMicros: 250_000 }),
+    started_at: stamp(NOW - 2 * HOUR),
+    started_by: "operator",
+    finished_at: stamp(NOW - HOUR),
+    state: "target",
+    ending: "",
+    reason: "the target was met",
+    spent: JSON.stringify({
+      calls: 3,
+      inputTokens: 12_000,
+      outputTokens: 400,
+      costMicros: 270_000,
+    }),
+    live: "[]",
+    samples: "[]",
+    closures: JSON.stringify({ completed: 3 }),
+    refusals: "{}",
+    jobs_launched: 3n,
+    jobs_settled: 3n,
+  };
+  await insert(db, "drains", {
+    ...older,
+    session: JSON.stringify({ model: "claude-sonnet-4-5", account: "operator" }),
+  });
+
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+  // A second enable is the ordinary case and must find nothing left to add or take away.
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+
+  // A drain starts, through the writer both start doors use (`drainStart`, `mapDrainStart`).
+  const profile = { containerId: "ctr_workbench", expectedRevision: 1 };
+  await insertDrain(harness.store, {
+    id: "drn_after",
+    machineId: MACHINE,
+    preset: MAP_DRAIN_PRESET,
+    profile: { profile, model: "synthetic", thinking: "low", accounts: [], resolved: true },
+    knobs: { recipes: [] },
+    concurrent: 1,
+    target: { deadline: new Date(NOW + HOUR).toISOString() },
+    startedBy: "operator",
+  });
+  expect(await readDrain(harness.store, "drn_after")).toMatchObject({
+    state: "running",
+    profile: { profile },
+  });
+
+  // And the drain the store already held keeps every column but the one taken away, naming no
+  // profile — the truth about a drain started before there was one to name.
+  expect(await db.query(`SELECT * FROM drains WHERE id = 'drn_older'`)).toEqual([
+    { ...older, profile: "{}" },
   ]);
 });
 
