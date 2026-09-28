@@ -1722,6 +1722,27 @@ function catalogIntent(preparation: string | null): TranscriptMapCatalogRun | nu
 }
 
 /**
+ * WHETHER THE HUB NEVER RETAINED A JOB BABEL ITSELF POSTED, read from what `jobs.status` threw.
+ *
+ * `job_not_started` says so outright. `job_owner_mismatch` says so ONLY for the exact node
+ * Babel posted: the pinned hub asks ownership first (`authorizedJob` → `callerOwnsNode` →
+ * `ownsNode` in Manifold's `job-service.ts`), and `ownsNode` resolves a job node through the
+ * request retained under its id — none retained is `job_request_unretained`, so no plugin owns
+ * the node and even its poster is told `job_owner_mismatch`. An execute refused before
+ * retention (`service_bindings_protocol_unsupported` from an older native owner) leaves exactly
+ * that (#476). Babel's job ids are its own, deterministic and namespaced, and it asks at the
+ * machine and operation it posted to, so a node another plugin owns, or a request retained at
+ * another node, cannot be what it hears. A retained job whose machine or installation has since
+ * gone answers the same word; re-posting that id is refused or answered by the retained job,
+ * never admitted twice, and a run still closes only once every attempt was refused at admission.
+ * Never read it for a job Babel did not post.
+ */
+function neverRetained(error: unknown): boolean {
+  const token = nativeFailureToken(error, "jobs.status");
+  return token === "job_not_started" || token === "job_owner_mismatch";
+}
+
+/**
  * One run the loop is waiting on. `container_id` is the fork in the road: null is a job of
  * Babel's own, polled through `ctx.jobs`; non-null is a CODE SESSION, whose job belongs to
  * another plugin and is reconciled through `code.readSession` (#279).
@@ -2371,7 +2392,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           jobId,
         });
       } catch (statusError) {
-        if (nativeFailureToken(statusError, "jobs.status") !== "job_not_started") return;
+        if (!neverRetained(statusError)) return;
         await store.db.run(
           `UPDATE runs SET payload=json_set(payload,'$.nativeRefused',coalesce(json_extract(payload,'$.nativeRefused'),0)+1)
            WHERE id=? AND closure IS NULL`,
@@ -3294,7 +3315,7 @@ export function conductor(deps: ConductorDeps): Conductor {
             jobId,
           });
         } catch (statusError) {
-          if (nativeFailureToken(statusError, "jobs.status") === "job_not_started") {
+          if (neverRetained(statusError)) {
             await store.db.batch([
               {
                 sql: `UPDATE runs SET preparation=json_set(preparation,'$.refusedAttempts',
@@ -5408,7 +5429,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         if (
           catalogMachineId === run.machine_id &&
           run.kind === OPERATIONS.mapCatalog &&
-          nativeFailureToken(error, "jobs.status") === "job_not_started"
+          neverRetained(error)
         ) {
           const intent = catalogIntent(run.preparation);
           if (intent) await postCatalog(run.id, run.job_id, intent, notes);
@@ -5418,7 +5439,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         if (
           deps.mappingDrainId !== undefined &&
           run.kind === OPERATIONS.mapPrepare &&
-          nativeFailureToken(error, "jobs.status") === "job_not_started"
+          neverRetained(error)
         ) {
           const parents = await store.db.query<{ id: string; preparation: string }>(
             `SELECT id,preparation FROM runs WHERE prepare_job_id=? AND closure IS NULL AND job_id IS NULL`,

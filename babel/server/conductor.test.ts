@@ -7389,27 +7389,71 @@ test("overlapping catalog posts that all refuse do not strand the native slot", 
 });
 
 test("atomic service-binding admission refusals release a never-started catalog slot without paid work", async () => {
-  for (const reason of ["service_bindings_changed", "service_bindings_protocol_unsupported"]) {
-    const f = await catalogDeployment(MACHINE);
-    const execute = f.fleet.execute.bind(f.fleet);
-    f.jobs.execute = () => {
-      throw new HostCallError("jobs.execute", reason);
-    };
-    f.jobs.status = () => {
-      throw new HostCallError("jobs.status", "job_not_started");
-    };
-    await f.tick();
-    expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
-      { n: 0n },
-    ]);
-    expect(f.fleet.launched).toEqual([]);
-    await f.tick();
-    f.jobs.execute = execute;
-    clock += POLICY.cadenceSeconds * 1000;
-    await f.tick();
-    expect(f.fleet.launched).toHaveLength(1);
-    expect(f.codeCalls).toEqual([]);
-  }
+  // A post refused before reservation leaves the hub no request to resolve its node through, so
+  // the pinned hub tells even its poster `job_owner_mismatch` rather than `job_not_started` (#476).
+  for (const reason of ["service_bindings_changed", "service_bindings_protocol_unsupported"])
+    for (const absent of ["job_not_started", "job_owner_mismatch"]) {
+      const f = await catalogDeployment(MACHINE);
+      const execute = f.fleet.execute.bind(f.fleet);
+      f.jobs.execute = () => {
+        throw new HostCallError("jobs.execute", reason);
+      };
+      f.jobs.status = () => {
+        throw new HostCallError("jobs.status", absent);
+      };
+      await f.tick();
+      expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+        { n: 0n },
+      ]);
+      expect(f.fleet.launched).toEqual([]);
+      await f.tick();
+      f.jobs.execute = execute;
+      clock += POLICY.cadenceSeconds * 1000;
+      await f.tick();
+      expect(f.fleet.launched).toHaveLength(1);
+      expect(f.codeCalls).toEqual([]);
+    }
+});
+
+test("a catalog post the hub never retained is re-posted under its own id once the owner accepts it", async () => {
+  const f = await catalogDeployment();
+  const execute = f.fleet.execute.bind(f.fleet);
+  const status = f.fleet.status.bind(f.fleet);
+  const refused: string[] = [];
+  f.jobs.execute = (launch) => {
+    refused.push(launch.jobId);
+    throw new HostCallError("jobs.execute", "service_bindings_protocol_unsupported");
+  };
+  // The probe after the refusal goes unanswered, so this wake proves nothing absent and keeps
+  // the run open: the row an older native owner left on the preview (#476).
+  f.jobs.status = () => {
+    throw new Error("status transport interrupted");
+  };
+  await f.tick();
+  expect(refused).toHaveLength(1);
+  expect(await f.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+    { n: 1n },
+  ]);
+  // The owner is upgraded. For an id it retained no request under, the hub answers the posting
+  // plugin `job_owner_mismatch`.
+  f.jobs.execute = execute;
+  f.jobs.status = (node) => {
+    if (!f.fleet.jobs.has(node.jobId)) throw new HostCallError("jobs.status", "job_owner_mismatch");
+    return status(node);
+  };
+  await f.tick();
+  expect(f.fleet.launched.map((launch) => launch.jobId)).toEqual(refused);
+  f.finish({ kind: "catalog", context: f.context, entries: f.entries, nextCursor: null });
+  await f.tick();
+  expect(await f.db.query(`SELECT closure FROM runs WHERE job_id=?`, [refused[0]!])).toEqual([
+    { closure: "completed" },
+  ]);
+  expect(f.fleet.launched).toHaveLength(2);
+  const next = TranscriptMapCatalogInputSchema.parse(
+    JSON.parse(String(f.fleet.launched[1]!.input[INPUT_FIELD])),
+  );
+  expect(next.request).toMatchObject({ kind: "map-plan", capture: f.captures[0] });
+  expect(f.codeCalls).toEqual([]);
 });
 
 test("a replay refusal cannot retire an earlier unacknowledged catalog post", async () => {
@@ -8621,36 +8665,44 @@ test("terminal mapping cancellation charges conservative exposure and clears run
   ]);
 });
 
-test("native ambiguous post resumes the same preparation identity, while definitive admission refusal refunds", async () => {
-  const f = await paidMapDeployment();
-  const execute = f.fleet.execute.bind(f.fleet);
-  const status = f.fleet.status.bind(f.fleet);
-  let first = "";
-  f.fleet.execute = (request) => {
-    first = request.jobId;
-    throw new HostCallError("jobs.execute", "transport unavailable");
-  };
-  f.fleet.status = (node) => {
-    if (!f.fleet.jobs.has(node.jobId)) throw new HostCallError("jobs.status", "job_not_started");
-    return status(node);
-  };
-  await f.tick();
-  expect((await f.coordinator.spend(clock)).mapping).toBe(0.5);
-  f.fleet.execute = execute;
-  await f.tick();
-  expect(f.fleet.launched.map((job) => job.jobId)).toEqual([first]);
-  expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 1n }]);
-  const g = await paidMapDeployment();
-  g.fleet.execute = () => {
-    throw new HostCallError("jobs.execute", "service_bindings_changed");
-  };
-  g.fleet.status = () => {
-    throw new HostCallError("jobs.status", "job_not_started");
-  };
-  await g.tick();
-  expect((await g.coordinator.spend(clock)).mapping).toBe(0);
-  expect(g.posted).toEqual([]);
-});
+// A post the hub never retained leaves it no request to resolve the node through, so the pinned
+// hub answers its poster `job_owner_mismatch`, not `job_not_started` (#476).
+test.each(["job_not_started", "job_owner_mismatch"] as const)(
+  "native ambiguous post resumes the same preparation identity, while definitive admission refusal refunds (%s)",
+  async (absent) => {
+    const f = await paidMapDeployment();
+    const execute = f.fleet.execute.bind(f.fleet);
+    const status = f.fleet.status.bind(f.fleet);
+    let first = "";
+    f.fleet.execute = (request) => {
+      first = request.jobId;
+      throw new HostCallError("jobs.execute", "transport unavailable");
+    };
+    f.fleet.status = (node) => {
+      if (!f.fleet.jobs.has(node.jobId)) throw new HostCallError("jobs.status", absent);
+      return status(node);
+    };
+    await f.tick();
+    expect((await f.coordinator.spend(clock)).mapping).toBe(0.5);
+    f.fleet.execute = execute;
+    await f.tick();
+    expect(f.fleet.launched.map((job) => job.jobId)).toEqual([first]);
+    expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 1n }]);
+    const g = await paidMapDeployment();
+    g.fleet.execute = () => {
+      throw new HostCallError("jobs.execute", "service_bindings_protocol_unsupported");
+    };
+    g.fleet.status = () => {
+      throw new HostCallError("jobs.status", absent);
+    };
+    await g.tick();
+    expect((await g.coordinator.spend(clock)).mapping).toBe(0);
+    expect(await g.db.query(`SELECT count(*) n FROM runs WHERE closure IS NULL`)).toEqual([
+      { n: 0n },
+    ]);
+    expect(g.posted).toEqual([]);
+  },
+);
 
 test("mapping reconciles earned spend after a crash between artifact projection and ledger finish", async () => {
   const f = await paidMapDeployment();
