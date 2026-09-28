@@ -9,7 +9,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-09-28
+
 ### Fixed
+
+- **A door-woken conductor renews a lapsed beat.** Every door that wakes the cycle now delegates
+  the write locations, bound service invocation and host network that the beat's `catalog`
+  operation declares, so a reconnect can re-register its cadence instead of stopping at
+  `job_capability_absent:locations:write` (#495).
 
 - **One-shot sessions seal their own transcript output and retry a statusless transient gateway
   failure.** `CODE_REV` and `@atyrode/manifold-code` move to atyrode/code#224 (`60438074`),
@@ -50,10 +57,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   holds. Watch lists `map` beside the other four weights.
 
 ### Fixed
-- **A door-woken conductor renews a lapsed beat.** Every door that wakes the cycle now delegates
-  the write locations, bound service invocation and host network that the beat's `catalog`
-  operation declares, so a reconnect can re-register its cadence instead of stopping at
-  `job_capability_absent:locations:write` (#495).
 
 - **A session whose model call failed at the gateway settles as an infrastructure failure, not
   a schema refusal (refs #461).** A review whose one call the gateway failed still exits 0, with
@@ -5565,7 +5568,8 @@ storage configuration yet — repository selection is per-invocation
   (ea65a45…85fe13f), replaced in 8636960 and a879067. SPEC.md and README.md
   rewritten around the restic model (5b8d593).
 
-[Unreleased]: https://github.com/atyrode/babel/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/atyrode/babel/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/atyrode/babel/releases/tag/v0.5.5
 [0.5.4]: https://github.com/atyrode/babel/releases/tag/v0.5.4
 [0.5.3]: https://github.com/atyrode/babel/releases/tag/v0.5.3
 [0.5.2]: https://github.com/atyrode/babel/releases/tag/v0.5.2
