@@ -8,6 +8,8 @@ import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/p
 import { HostCallError } from "@manifold/plugin-kit/errors";
 import {
   BABEL_PLUGIN_ID,
+  BeatChainSchema,
+  beatChainKey,
   CONDUCTOR_CYCLE_KEY,
   CONDUCTOR_TALLY_KEY,
   INPUT_FIELD,
@@ -6456,6 +6458,50 @@ test("a lease lost between the post and its job id strands nothing: its own chai
     { closure: "completed" },
   ]);
   expect((await coordinator.spend(clock)).total).toBeCloseTo(0.12, 8);
+});
+
+test("a delayed beat-chain write for an older registration never replaces a newer revision's chain", async () => {
+  // Every occurrence carries the credential of the wake that registered its revision, so the
+  // chain a beat's settlement acts for is its own revision's, whatever wrote later (#470).
+  const { db, store, coordinator, fleet, code } = await weightedCycle("challenge");
+  const keys = new Keys();
+  const set = keys.set.bind(keys);
+  let paused!: () => void;
+  const reached = new Promise<void>((resolve) => (paused = resolve));
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  keys.set = async (key: string, value: string) => {
+    if (key === beatChainKey(POLICY.version)) {
+      paused();
+      await held;
+    }
+    set(key, value);
+  };
+  const wake = (chain: string) =>
+    conductor({
+      store,
+      coordinator,
+      jobs: fleet,
+      engine: code,
+      machines: new Folders(),
+      keys,
+      plan: PLAN,
+      chain,
+      now: () => clock,
+    });
+  const first = wake("enable:earlier").tick();
+  await reached;
+  await db.run(
+    `INSERT INTO policies(version, seq, actor_id, reason, payload, recorded_at)
+     SELECT 'pol_moved', 2, actor_id, 'moved', payload, recorded_at FROM policies WHERE seq = 1`,
+  );
+  expect((await wake("principal:operator").tick()).schedule).toBe("registered");
+  release();
+  await first;
+  const chainOf = (revision: string) =>
+    BeatChainSchema.parse(JSON.parse(keys.held[beatChainKey(revision)] ?? "null")).chain;
+  expect(chainOf("pol_moved")).toBe("principal:operator");
+  expect(chainOf(POLICY.version)).toBe("enable:earlier");
 });
 
 test("a terminal Code job whose cancellation failed accounts the unchanged preparation grant exactly once", async () => {

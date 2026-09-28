@@ -32,7 +32,13 @@ import {
   type ProfileRow,
   ENGINE_REFUSALS,
 } from "../contract.ts";
-import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
+import {
+  conductor,
+  type JobLaunch,
+  type JobRef,
+  type JobRunState,
+  type MachineReadiness,
+} from "../server/conductor.ts";
 import { runPlan, type BabelJobs } from "../server/plan.ts";
 import {
   type CodeEngine,
@@ -2670,6 +2676,75 @@ test.each(["released", "found", "pending"] as const)(
     }
   },
 );
+
+test("a Stop that finds a session after its grant lapsed settles that grant once, itself", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  code.posting = stageJob;
+  const keyed = code.runSession.bind(code);
+  let asks = 0;
+  code.runSession = async (request) => {
+    asks += 1;
+    const answered = await keyed(request);
+    return asks === 1
+      ? refusedByCode(ENGINE_REFUSALS.unconfirmed, "the settled hook's lease closed")
+      : answered;
+  };
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+  // The grant's lease runs out before the operator stops the run: the session the retire finds
+  // can no longer be bound to it, so the grant still names the preparation.
+  await harness.db.run(`UPDATE claims SET expires_at = ? WHERE id = 'asg_stage'`, [stamp(NOW)]);
+  // Its cancellation reports what it actually spent, which is not what the grant reserved.
+  const cancel = code.cancelSession.bind(code);
+  code.cancelSession = async (args) => {
+    const cancelled = await cancel(args);
+    if (!cancelled.ok) return cancelled;
+    const inference = {
+      calls: 1,
+      inputTokens: 300,
+      outputTokens: 20,
+      cachedInputTokens: 0,
+      costMicros: 20_000,
+    };
+    return {
+      ok: true,
+      value: { ...cancelled.value, result: { exitCode: null, usage: { inference } } as never },
+    };
+  };
+  expect(
+    await halt("run_stage", { operationId: OPERATIONS.prepare, jobId: "job_stage_material" }),
+  ).toMatchObject({ jobId: "job_stage_code", closure: "stopped" });
+  expect(await harness.db.query(`SELECT cost_usd FROM runs WHERE id = 'run_stage'`)).toEqual([
+    { cost_usd: 0.02 },
+  ]);
+  expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_stage_code" }]);
+  const account = async () =>
+    await harness.db.query(
+      `SELECT finished_at IS NOT NULL AS finished, outcome, actual_cost FROM claims WHERE id = 'asg_stage'`,
+    );
+  // The stop charges the grant what the session actually spent, and only once.
+  expect(await account()).toEqual([{ finished: 1n, outcome: "skipped", actual_cost: 0.02 }]);
+  const held: Record<string, string> = {};
+  const report = await conductor({
+    store: harness.store,
+    coordinator: coordinator(harness.store, () => NOW, 16),
+    jobs: fleet,
+    engine: code,
+    machines: { repository: async () => await Promise.resolve({ ok: false, reason: "none" }) },
+    keys: {
+      get: (key: string) => held[key] ?? null,
+      set: (key: string, value: string) => {
+        held[key] = value;
+      },
+    },
+    plan: ANALYSIS_PLAN,
+    now: () => NOW + 2 * HOUR,
+  }).tick();
+  expect(report.settled.filter((claim) => claim.claimId === "asg_stage")).toEqual([]);
+  expect(await account()).toEqual([{ finished: 1n, outcome: "skipped", actual_cost: 0.02 }]);
+  expect((await coordinator(harness.store, () => NOW, 16).spend(NOW)).total).toBeCloseTo(0.02, 8);
+});
 
 test.each(["posting", "bound"] as const)(
   "Stop's preparing snapshot cannot close a parent that becomes %s while cancellation is awaited",

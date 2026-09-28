@@ -1451,6 +1451,43 @@ test("an unresolved ordinary Code admission remains held across wakes and drain 
   expect(fleet.executed).toHaveLength(2);
 });
 
+test("a lost posting whose drain was stopped is retired and never posted, and the drain then ends", async () => {
+  const machinery = realLaunch();
+  const drainId = String((await start({ concurrent: 1, maxJobs: 1 }))["drainId"]);
+  await sealDrainJob(drainId, 0);
+  // The first post throws before Code created anything, and the operator stops the drain.
+  const lost: CodeEngine = {
+    ...code,
+    runSession: async () => await Promise.reject(new Error("Code posting response lost")),
+  };
+  await machinery.postPrepared(fleet, lost, PLAN, WAKE);
+  await halt(drainId);
+  // The posting account's own next wake may no longer buy the session: it only retires the key.
+  const asked: boolean[] = [];
+  const spy: CodeEngine = {
+    ...code,
+    runSession: async (request) => {
+      asked.push(request.adoptOnly === true);
+      if (request.adoptOnly === true)
+        return {
+          ok: false,
+          code: "engine_posting_unknown",
+          refused: "engine_posting_unknown: nothing was posted under this key",
+        };
+      return await code.runSession(request);
+    },
+  };
+  await machinery.postPrepared(fleet, spy, PLAN, WAKE);
+  expect(asked).toEqual([true]);
+  expect(code.posted).toEqual([]);
+  expect(
+    await harness.db.query(`SELECT closure FROM runs WHERE id = ?`, [`run_${drainId}_0`]),
+  ).toEqual([{ closure: "failed" }]);
+  // With its only run released, the closing drain ends.
+  expect((await drainTick(deps))[0]).toMatchObject({ drainId, live: 0 });
+  expect((await readDrain(harness.store, drainId))?.state).not.toBe("closing");
+});
+
 test("a refusal Babel wrote itself ends the round, whatever words it happens to contain", async () => {
   /*
     THE OTHER HALF OF READING THE CODE (#288): a sentence this plugin composed carries no code

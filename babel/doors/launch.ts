@@ -45,6 +45,7 @@ import {
 } from "../contract.ts";
 import { ARCHIVED_CAPTURE, materialBound } from "../store/analysis.ts";
 import { perMachineBound, type Coordinator, type Policy } from "../store/coordinator.ts";
+import { runningDrainHoldsRun } from "../store/drains.ts";
 import {
   carriedSteering,
   composeExplorePrompt,
@@ -384,7 +385,13 @@ export type Posted =
  * the proof that it posted none and never will, or why neither is known yet.
  */
 export type Retired =
-  { readonly jobId: string } | { readonly released: true } | { readonly refused: string };
+  | {
+      readonly jobId: string;
+      /** The run's grant when its lease had lapsed, so it could not follow the session. */
+      readonly lapsed: AnalysisWork["claim"] | null;
+    }
+  | { readonly released: true }
+  | { readonly refused: string };
 
 export interface LaunchMachinery {
   /**
@@ -2054,9 +2061,19 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         },
       ];
     const request = { ...sessionTarget(run), prompt };
-    const refusal = (await deps.coordinator.policy()).policy.enabled
-      ? await continuing(run)
-      : "the evaluation policy in force is disabled";
+    // A run its drain no longer admits — the drain is closing or ended — may buy nothing: like
+    // a mapping run its drain stopped, its posting is settled by a retire (#470).
+    const running = runningDrainHoldsRun(run.id);
+    const released = await store.db.query(
+      `SELECT 1 FROM drains, json_each(drains.live)
+        WHERE json_extract(json_each.value, '$.runId') = ? AND NOT ${running.sql}`,
+      [run.id, ...running.params],
+    );
+    const refusal = !(await deps.coordinator.policy()).policy.enabled
+      ? "the evaluation policy in force is disabled"
+      : released.length > 0
+        ? "its drain no longer admits this run"
+        : await continuing(run);
     const answered =
       refusal === null ? await engine.runSession({ ...request, postingKey: run.id }) : null;
     return await settlePosting(
@@ -2303,12 +2320,13 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         : { refused: retired.refused };
     const jobId = retired.value.jobId;
     const analysis = analysisOf(run);
+    const claim = analysis === null || analysis === "invalid" ? null : analysis.claim;
     const written = await store.db.batch([
-      ...(analysis === null || analysis === "invalid"
+      ...(claim === null
         ? []
         : [
             deps.coordinator.bindStatement({
-              ...analysis.claim,
+              ...claim,
               jobId,
               previousJobId: run.prepare_job_id ?? "",
               now: deps.now(),
@@ -2324,7 +2342,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       return { refused: `${runId} changed while its posting was retired` };
     await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
     store.touch();
-    return { jobId };
+    // A grant whose lease lapsed cannot follow the session it paid for: it still names the
+    // preparation, and the stop settles it onto the session through the terminal transfer.
+    return { jobId, lapsed: claim !== null && (written[0]?.length ?? 0) === 0 ? claim : null };
   }
 
   return { startExplore, startBeat, startVerify, postPrepared, retirePosting, inferTitles };
@@ -2568,6 +2588,8 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
             `for authority at ${job.machineId}/${job.operationId}/${job.jobId}`,
         };
       }
+      // A retired posting's grant that could not follow its session (see `Retired`).
+      let lapsed: AnalysisWork["claim"] | null = null;
       if (unresolvedPosting) {
         /*
           THE STOP OF THE ACCOUNT THAT POSTED IT RETIRES THE POSTING (#470): an adopt-only ask
@@ -2619,6 +2641,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
           return { runId, jobId: "", machineId, closure: "stopped" as const };
         }
         jobId = retired.jobId;
+        lapsed = retired.lapsed;
         preparing = false;
       }
       /*
@@ -2731,6 +2754,21 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
           cost: cost ?? Number(claim.reserved_cost),
           outcome: "skipped",
         });
+      }
+      if (lapsed !== null) {
+        // The original fenced grant, and only it, moves onto the session it paid for.
+        const grant = await store.db.query<{ reserved_cost: number }>(
+          `SELECT reserved_cost FROM claims
+            WHERE id = ? AND run_id = ? AND fence = ? AND job_id = ? AND finished_at IS NULL`,
+          [lapsed.id, lapsed.runId, lapsed.fence, prepareJobId],
+        );
+        if (grant[0] !== undefined)
+          await deps.coordinator.finish({
+            ...lapsed,
+            cost: cost ?? Number(grant[0].reserved_cost),
+            outcome: "skipped",
+            terminalJob: { jobId, previousJobId: prepareJobId },
+          });
       }
       store.touch();
       return { runId, jobId, machineId, closure: "stopped" as const };

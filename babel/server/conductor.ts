@@ -9,7 +9,7 @@ import {
   AnalysisWorkSchema,
   type AnalysisBriefRecord,
   BeatChainSchema,
-  CONDUCTOR_BEAT_CHAIN_KEY,
+  beatChainKey,
   CONDUCTOR_CYCLE_KEY,
   CONDUCTOR_TALLY_KEY,
   INPUT_FIELD,
@@ -3816,7 +3816,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     // named resumes no posting.
     try {
       await keys.set(
-        CONDUCTOR_BEAT_CHAIN_KEY,
+        beatChainKey(policy.version),
         JSON.stringify(
           BeatChainSchema.parse({ revision: policy.version, chain: deps.chain ?? null }),
         ),

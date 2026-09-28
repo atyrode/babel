@@ -13,7 +13,7 @@ import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   BeatChainSchema,
-  CONDUCTOR_BEAT_CHAIN_KEY,
+  beatChainKey,
   DRAIN_CONCURRENT_MAX,
   INPUT_FIELD,
   MACHINE_OPERATIONS,
@@ -667,7 +667,7 @@ async function settledChain(job: {
     if (job.scheduleId !== CONDUCTOR_SCHEDULE_ID) return null;
     let kept: unknown;
     try {
-      kept = JSON.parse((await keys.get(CONDUCTOR_BEAT_CHAIN_KEY)) ?? "null");
+      kept = JSON.parse((await keys.get(beatChainKey(job.revision ?? ""))) ?? "null");
     } catch {
       return null;
     }
