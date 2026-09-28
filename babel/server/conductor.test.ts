@@ -8035,7 +8035,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
     },
   };
   // A native wake in this fixture is the drain's own unless a test says otherwise (#469).
-  const loop = (nativeDispatch: boolean, drain: string | null) => {
+  const loop = (nativeDispatch: boolean, drain: string | null, chain: string | null = null) => {
     clock += 1_000;
     return conductor({
       store: f.store,
@@ -8048,6 +8048,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       mapPreparePlan: UNMETERED_PLAN,
       nativeDispatch,
       ...(drain === null ? {} : { mappingDrainId: drain }),
+      chain,
       now: () => clock,
     });
   };
@@ -8133,6 +8134,56 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
     tick,
     /** What a settled `map-prepare` job of the drain wakes: its own lane and nothing else. */
     wake: () => loop(true, "drn_map").tickMapDrains(),
+    loop,
+    /** The policy in force, rewritten in place: these activity weights, and any bounds given. */
+    async weigh(
+      weights: Partial<Record<"review" | "map", number>>,
+      bounds: { readonly batchSize?: number; readonly concurrentPerMachine?: number } = {},
+    ): Promise<void> {
+      const activityWeights = {
+        review: 0,
+        explore: 0,
+        challenge: 0,
+        synthesize: 0,
+        map: 0,
+        ...weights,
+      };
+      await f.db.run(`UPDATE policies SET payload=json_patch(payload, ?)`, [
+        JSON.stringify({ activityWeights, ...bounds }),
+      ]);
+    },
+    /** Every capture catalogued and planned: six leaves offered, not two. */
+    async planEveryCapture(): Promise<void> {
+      const now = new Date(clock).toISOString();
+      const machineId = route.sourceMachineId;
+      await maps.recordCatalog({
+        machineId,
+        context: f.context,
+        entries: f.entries,
+        nextCursor: null,
+        now,
+      });
+      for (const [n, planned] of f.trees.entries()) {
+        await maps.recordPlan({
+          machineId,
+          context: f.context,
+          access: f.entries[n]!.access,
+          plan: planned.header,
+          nodes: planned.nodes,
+          offset: 0,
+          nextOffset: null,
+          now,
+        });
+        await maps.ensureVersion(planned.header.id, route, now);
+      }
+    },
+    /** The standing lane's mapping runs: the parents it published, in id order. */
+    async standingRuns() {
+      return await f.db.query<{ id: string; chain: string | null; job_id: string | null }>(
+        `SELECT id, chain, job_id FROM runs WHERE kind=? AND json_extract(payload,'$.standing')=1 ORDER BY id`,
+        [TRANSCRIPT_MAP_SESSION_OPERATION],
+      );
+    },
     seal,
     answer,
   };
@@ -8240,7 +8291,7 @@ function mapDrainDeps(f: Awaited<ReturnType<typeof paidMapDeployment>>): DrainDe
   };
 }
 
-test("without a running mapping drain, even a native-capable wake draws no mapping work", async () => {
+test("without a running mapping drain or a map weight, even a native-capable wake draws no mapping work", async () => {
   const f = await paidMapDeployment();
   await f.db.run(`UPDATE drains SET state='stopped', finished_at=? WHERE id='drn_map'`, [
     new Date(clock).toISOString(),
@@ -8248,6 +8299,138 @@ test("without a running mapping drain, even a native-capable wake draws no mappi
   await f.tick(true);
   expect(f.fleet.launched).toEqual([]);
   expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 0n }]);
+});
+
+test("a positive map weight keeps mapping work in flight with no drain row", async () => {
+  // Mapping is one more standing activity: the beat's wake draws it, the preparation's own
+  // settlement posts its session, and the next beat settles it. Nobody starts a drain.
+  const f = await paidMapDeployment();
+  await f.db.run(`DELETE FROM drains`);
+  await f.weigh({ map: 1 });
+  const beat = () => f.loop(true, null, "enable:standing");
+  await beat().tick();
+  expect(f.fleet.launched.map((launch) => launch.operationId)).toEqual([OPERATIONS.mapPrepare]);
+  expect(await f.db.query(`SELECT count(*) n FROM drains`)).toEqual([{ n: 0n }]);
+  // The run is the standing lane's, recorded under the chain of the wake that posted it, so its
+  // preparation's settlement acts for that chain (#470).
+  expect((await f.standingRuns()).map(({ chain, job_id }) => ({ chain, job_id }))).toEqual([
+    { chain: "enable:standing", job_id: null },
+  ]);
+  f.seal();
+  await beat().tickMapDrains();
+  expect(f.posted).toHaveLength(1);
+  f.answer({ kind: "summary", text: "Navigation from the standing lane." });
+  await beat().tick();
+  expect(await f.db.query(`SELECT closure FROM runs WHERE job_id='map_code_1'`)).toEqual([
+    { closure: "completed" },
+  ]);
+  expect(await f.db.query(`SELECT outcome FROM claims WHERE job_id='map_code_1'`)).toEqual([
+    { outcome: "completed" },
+  ]);
+});
+
+test("a policy that stops weighting mapping draws nothing more and posts no prepared session", async () => {
+  const f = await paidMapDeployment();
+  await f.db.run(`DELETE FROM drains`);
+  await f.weigh({ map: 1 });
+  const beat = () => f.loop(true, null, "enable:standing");
+  await beat().tick();
+  expect(f.fleet.launched).toHaveLength(1);
+  f.seal();
+  // The next policy is written the way every policy before this one was: with no `map` weight.
+  await f.db.run(
+    `INSERT INTO policies(version,seq,actor_id,reason,payload,recorded_at)
+     SELECT 'pol_2', 2, 'operator', 'mapping off',
+       json_set(json_remove(payload,'$.activityWeights.map'),'$.version','pol_2'), ?
+     FROM policies WHERE seq=1`,
+    [new Date(clock).toISOString()],
+  );
+  await beat().tickMapDrains();
+  await beat().tick();
+  expect(f.posted).toEqual([]);
+  // The second leaf is still queued, and nothing draws it.
+  expect(f.fleet.launched).toHaveLength(1);
+  expect(await f.db.query(`SELECT count(*) n FROM claims WHERE finished_at IS NULL`)).toEqual([
+    { n: 0n },
+  ]);
+  expect(
+    await f.db.query(`SELECT closure FROM runs WHERE kind=?`, [TRANSCRIPT_MAP_SESSION_OPERATION]),
+  ).toEqual([{ closure: "failed" }]);
+});
+
+test("the map weight's share of the machine bounds how many mapping runs stand open", async () => {
+  const f = await paidMapDeployment();
+  await f.db.run(`DELETE FROM drains`);
+  await f.planEveryCapture();
+  const beat = () => f.loop(true, null, "enable:standing");
+  const bound = { batchSize: 4, concurrentPerMachine: 4 };
+  // A small weight still holds one slot of four.
+  await f.weigh({ review: 1, map: 0.1 }, bound);
+  await beat().tick();
+  await beat().tick();
+  expect(await f.standingRuns()).toHaveLength(1);
+  // Weighted as heavily as review, it holds half of them.
+  await f.weigh({ review: 1, map: 1 }, bound);
+  await beat().tick();
+  await beat().tick();
+  expect(await f.standingRuns()).toHaveLength(2);
+  // Alone, it holds the whole machine.
+  await f.weigh({ map: 1 }, bound);
+  await beat().tick();
+  expect(await f.standingRuns()).toHaveLength(4);
+  expect(f.fleet.launched).toHaveLength(4);
+});
+
+test("the standing lane and a running mapping drain never claim the same work", async () => {
+  const f = await paidMapDeployment();
+  await f.planEveryCapture();
+  await f.weigh({ review: 1, map: 1 }, { batchSize: 4, concurrentPerMachine: 4 });
+  const beat = () => f.loop(true, null, "enable:standing");
+  await beat().tick();
+  await f.tick();
+  await beat().tick();
+  await f.tick();
+  // Two for the standing lane's share, one for the drain's fan, and each a different item.
+  const claimed = await f.db.query<{ id: string; claim_id: string }>(
+    `SELECT id, claim_id FROM transcript_map_work WHERE claim_id IS NOT NULL ORDER BY id`,
+  );
+  expect(claimed).toHaveLength(3);
+  expect(new Set(claimed.map((work) => work.claim_id)).size).toBe(3);
+  expect(f.fleet.launched).toHaveLength(3);
+  const drain = (await readDrain(f.store, "drn_map"))!;
+  const standing = (await f.standingRuns()).map((run) => run.id);
+  expect(standing).toHaveLength(2);
+  expect(drain.live).toHaveLength(1);
+  expect(standing).not.toContain(drain.live[0]!.runId);
+});
+
+test("a lost standing mapping posting is asked again only by a wake of the chain that posted it", async () => {
+  const f = await paidMapDeployment();
+  await f.db.run(`DELETE FROM drains`);
+  await f.weigh({ map: 1 });
+  await f.loop(true, null, "enable:standing").tick();
+  f.seal();
+  const asked: SessionRequest[] = [];
+  const runSession = f.engine.runSession.bind(f.engine);
+  f.engine.runSession = async (request) => {
+    asked.push(request);
+    const answer = await runSession(request);
+    return asked.length === 1
+      ? refusedByCode("engine_unconfirmed", "the settled hook's lease closed")
+      : answer;
+  };
+  await f.loop(true, null, "enable:standing").tickMapDrains();
+  expect(asked).toHaveLength(1);
+  // Another account's wake, and a wake with no chain, would be asking about another posting:
+  // they ask nothing and release nothing.
+  await f.loop(true, null, "principal:someone-else").tick();
+  await f.loop(true, null, null).tick();
+  expect(asked).toHaveLength(1);
+  expect(await f.db.query(`SELECT finished_at FROM claims`)).toEqual([{ finished_at: null }]);
+  await f.loop(true, null, "enable:standing").tick();
+  expect(asked).toHaveLength(2);
+  expect(f.posted).toHaveLength(1);
+  expect((await f.standingRuns()).map((run) => run.job_id)).toEqual(["map_code_1"]);
 });
 
 test("a mapping drain folds its runs, stops drawing at its target and ends when it is met", async () => {

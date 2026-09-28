@@ -1075,6 +1075,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    * ceilings; and finally a session that actually needs a name.
    * A routed cookbook remains available to explicit runs when every autonomous activity has
    * zero weight; keeping those recipes is not permission to name sessions in the background.
+   * Nor is mapping: a title serves the review and analysis draws, and a map names nothing.
    */
   async function inferTitles(
     jobs: BabelJobs,
@@ -1087,7 +1088,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     if (
       !policy.enabled ||
       route === undefined ||
-      !ACTIVITIES.some((activity) => policy.activityWeights[activity] > 0)
+      !ACTIVITIES.some((activity) => activity !== "map" && policy.activityWeights[activity] > 0)
     )
       return null;
     const open = await store.db.query<{ n: number | bigint }>(

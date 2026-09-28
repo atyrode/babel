@@ -1014,62 +1014,76 @@ distinguish summaries served from source material served; reading an inference i
 as reading its evidence. Summary storage, search and expansion preserve the source disclosure
 boundary, including after another class warms a cache.
 
-Mapping is separate from analysis and from read-only Recall. Every eligible captured session
-enters an idempotent mapping queue; unavailable authority or exhausted budgets leave a visible
-backlog. Mapping is not a standing conductor activity: paid generation, review and correction run
-only inside an operator-started mapping drain (`mapDrainStart`), which keeps its fan of jobs in
-flight until its own target, deadline, `maxJobs` or stop, and ends itself when no eligible work
-remains. The work runs through the route's explicitly configured Code profile and versioned
-recipes. The profile is the operator's choice, including its price; Babel neither chooses a
-provider nor holds its credentials. Redaction applies before material reaches the model and before
+Mapping is separate from analysis and from read-only Recall. Every eligible captured session enters
+an idempotent mapping queue; unavailable authority or exhausted budgets leave a visible backlog.
+Mapping is a standing conductor activity with its own weight, `activityWeights.map`, which is zero
+by default and in every policy written before it existed. While it is positive and the policy
+installs a mapping route, the conductor keeps paid generation, review and correction in flight on
+its own: every native-capable wake that is no drain's (the beat, an enable, or the settlement of a
+job one of those posted) fills the lane up to its share of the executor, which is the map weight's
+share of all the activity weights, of the per-machine bound, and at least one slot. It draws before
+the review lane, so reviews cannot crowd it out. It stops when no work is queued, when the policy
+stops weighting it, or when a ceiling (the day's, or the mapping daily cap) refuses the next claim.
+Its runs are posted under the authority the review and analysis lanes post with: each is recorded
+under the account chain of the wake that published it, its preparation's settlement acts for that
+chain, and a posting whose answer was lost is asked again only by a wake of that chain (#470). An
+operator-started mapping drain (`mapDrainStart`) maps on top of it inside an explicit window,
+keeping its fan of jobs in flight until its own target, deadline, `maxJobs` or stop, and ending
+itself when no eligible work remains. Both lanes draw ordinary coordinator claims, so neither can
+take work the other holds. The work runs through the route's explicitly configured Code profile and
+versioned recipes. The profile is the operator's choice, including its price; Babel neither chooses
+a provider nor holds its credentials. Redaction applies before material reaches the model and before
 generated prose is retained or served.
 
-A mapping drain's start is admitted at the executor's `map-prepare` node, the source owner's
-private mapping target and the route's Code workspace, and posts the first fan itself. A session
-is posted later, by a wake the press did not make, and that wake is graded against the credential
-of the job whose settlement caused it. So the start discharges `containers:write` in the Code
-profile's container and lends `services:read` for the account broker, and every job of the drain
-carries exactly that (#469). The drain registers its own native cadence at the same `map-prepare`
-node, under the same credential, because a Code session settling wakes Code rather than Babel.
-Only a wake of the drain's own jobs draws mapping work, posts a preparation, posts a session or
-renews the cadence, and it does so for that drain's runs alone: every job of a drain carries its
-press's principal, and another drain's wake would spend, post and register under another. Any
-other wake still reconciles and closes mapping runs, but it never spends a work's attempt or
-strands a posting on authority it does not hold. Only positive evidence closes, stops or fails a
-mapping run — a changed policy, drain, lease, executor binding or work item. An executor the
-waking credential cannot describe, or that is not connected and ready, has changed nothing: the
-run's next spend and a finished session's settlement wait for a wake that can see, and a posted
-session keeps running meanwhile. The free catalog's cadence carries no paid
-authority and never refills a drain. The start still requires an admitted catalog for its route,
+A mapping drain's start is admitted at the executor's `map-prepare` node, the source owner's private
+mapping target and the route's Code workspace, and posts the first fan itself. A session is posted
+later, by a wake the press did not make, and that wake is graded against the credential of the job
+whose settlement caused it. So the start discharges `containers:write` in the Code profile's
+container and lends `services:read` for the account broker, and every job of the drain carries
+exactly that (#469). The drain registers its own native cadence at the same `map-prepare` node,
+under the same credential, because a Code session settling wakes Code rather than Babel. Only a wake
+of the drain's own jobs draws the drain's mapping work, posts its preparations and sessions or
+renews its cadence, and it does so for that drain's runs alone: every job of a drain carries its
+press's principal, and another drain's wake would spend, post and register under another. A drain's
+wake never spends for the standing lane, and the standing lane's wakes never spend for a drain. Any
+other wake still reconciles and closes mapping runs, but it never spends a work's attempt or strands
+a posting on authority it does not hold. Only positive evidence closes, stops or fails a mapping run
+— a changed policy, drain, lease, executor binding or work item. An executor the waking credential
+cannot describe, or that is not connected and ready, has changed nothing: the run's next spend and a
+finished session's settlement wait for a wake that can see, and a posted session keeps running
+meanwhile. The free catalog's cadence carries no paid authority and never refills a drain. Once
+admitted it keeps inventorying and planning new captures every `cadenceSeconds`, so the queue both
+lanes draw from refills without a press. The start still requires an admitted catalog for its route,
 because the drain maps what the catalog planned. Jobs are ordinary coordinator claims, so the
-mapping subcap, shared ceilings and uncertain-post accounting still apply. Reads never post one.
-A run takes its drain's launch slot in the same write that publishes its parent and native intent,
-so no wake ever sees an open mapping run its drain does not hold, and the drain's durable launch
-cursor decides between overlapping wakes. The loser publishes nothing: its claim is withdrawn at
-zero cost and the work item is offered again at its current attempt, taken over at the next fence
-— as is a claim whose wake crashed before publishing. Each new preparation, native retry or Code
-posting belongs to the drain that admitted its run: that drain must still be running, short of
-its spend target and short of its deadline at that moment, whatever the controller has yet to
-record. The Code job id a posting receives is published in the same write that binds the claim to
-it, so a reconciling wake never reads an acknowledged session as unauthorized. Every mapping
-session is posted under its run's id as Code's posting key, from which Code and omp derive the
-session's job id under the posting principal: a posting whose answer was lost — a settled hook
-that overran its lease — is asked again under the same key by a later wake of the same drain and
-gets the same session back, posted at most once. A refusal proves only that one invocation posted
-nothing while another under the key may still land, so a posting that ends without a job ends
-through a retire: an adopt-only ask after which the key can post nothing but the job it returns.
-A job it returns is bound while the drain admits the run and recorded and stopped when not; only
-its "nothing was posted" releases the reservation at zero, and a dispatch it cannot yet see keeps
-the reservation and the posting row until it can (#470). Work already posted
-settles whatever its drain did since. The deadline ends admission, not settlement, so the drain's
-cadence keeps waking until the drain has ended and its last session is folded, and it is disabled
-on the first wake after that. The hub refuses a cadence that would outlive the credential it is
-registered under, so the cadence takes the longest life that credential allows, and never one
-ending before the deadline is two intervals past; the start registers it before posting anything,
-and a press whose credential cannot keep the drain's cadence past its deadline launches nothing.
-Stopping the drain cancels a preparation at `map-prepare` and a posted session through Code; a
-session Code acknowledged before the stop but bound after it is published only while its drain
-still runs, so its own posting cancels it.
+mapping subcap, shared ceilings and uncertain-post accounting still apply. Reads never post one. A
+run takes its lane's slot in the same write that publishes its parent and native intent: a drain's
+launch slot, whose durable cursor decides between overlapping wakes, or the standing lane's share,
+counted in that write, which also marks the run as the standing lane's. So no wake ever sees an open
+mapping run its lane does not hold. The loser publishes nothing: its claim is withdrawn at zero cost
+and the work item is offered again at its current attempt, taken over at the next fence — as is a
+claim whose wake crashed before publishing. Each new preparation, native retry or Code posting
+belongs to the lane that admitted its run. A drain must still be running, short of its spend target
+and short of its deadline at that moment, whatever the controller has yet to record; the standing
+lane must still be weighted by the same policy. The Code job id a posting receives is published in
+the same write that binds the claim to it, so a reconciling wake never reads an acknowledged session
+as unauthorized. Every mapping session is posted under its run's id as Code's posting key, from
+which Code and omp derive the session's job id under the posting principal: a posting whose answer
+was lost — a settled hook that overran its lease — is asked again under the same key by a later wake
+of the same drain, or for a standing run of the same account chain, and gets the same session back,
+posted at most once. A refusal proves only that one invocation posted nothing while another under
+the key may still land, so a posting that ends without a job ends through a retire: an adopt-only
+ask after which the key can post nothing but the job it returns. A job it returns is bound while the
+lane admits the run and recorded and stopped when not; only its "nothing was posted" releases the
+reservation at zero, and a dispatch it cannot yet see keeps the reservation and the posting row
+until it can (#470). Work already posted settles whatever its drain did since. The deadline ends
+admission, not settlement, so the drain's cadence keeps waking until the drain has ended and its
+last session is folded, and it is disabled on the first wake after that. The hub refuses a cadence
+that would outlive the credential it is registered under, so the cadence takes the longest life that
+credential allows, and never one ending before the deadline is two intervals past; the start
+registers it before posting anything, and a press whose credential cannot keep the drain's cadence
+past its deadline launches nothing. Stopping the drain cancels a preparation at `map-prepare` and a
+posted session through Code; a session Code acknowledged before the stop but bound after it is
+published only while its drain still runs, so its own posting cancels it.
 
 The mapping configuration explicitly names `sourceMachineId` (the Recall owner) and
 `executorMachineId` (native catalog/preparation and eventual Code execution). Both same-machine
@@ -1113,10 +1127,10 @@ explicit finite bounds, target exact versions, and preserve earlier receipts and
 Reviewing a node cannot itself mark more nodes as served or create a recursive review obligation.
 A correction that needs another model run returns to the same queue, claim and budget machinery.
 
-Installation enables no paid mapping, installs no source classification and grants no corpus
-access. Installing a mapping route and admitting its free catalog spend nothing either: only a
-mapping drain the operator starts does. Activation, the source disclosure route and the producing
-Code profile remain separately authorized configuration.
+Installation enables no paid mapping, installs no source classification and grants no corpus access.
+Installing a mapping route and admitting its free catalog spend nothing either: only a positive map
+weight, or a mapping drain the operator starts, does. Activation, the source disclosure route and
+the producing Code profile remain separately authorized configuration.
 
 ### 6.4 Deterministic preflight
 

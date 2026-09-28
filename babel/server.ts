@@ -38,6 +38,7 @@ import {
   conductor,
   describeMapHost,
   SCHEDULE_LIFETIME_MS,
+  STANDING_RUN,
   type Conductor,
   type KeysSlice,
   type MachinesSlice,
@@ -817,29 +818,49 @@ async function cycle(
 }
 
 /**
- * A PAID MAPPING DRAIN'S OWN WAKE, and nothing else: what a settled `map-prepare` job — one of
- * a drain's preparations, or its cadence — is delivered for (#469, #470).
+ * A `map-prepare` JOB'S OWN WAKE, and nothing else: what a settled `map-prepare` job — one of a
+ * drain's preparations, its cadence, or a preparation of the standing mapping lane — is
+ * delivered for (#469, #470).
  *
  * THE HOOK'S TABLES ARE GONE AT TWO SECONDS. The host closes a settled-job hook's data lease at
  * its lifecycle bound whether the hook has returned or not, and the hook runs on without them
  * (Manifold's `jobSettled` in `packages/server/src/plugin-host.ts`, `runHook` in
  * `packages/plugin/src/lifecycle.ts`). The whole cycle behind this wake polled every open run
  * and drew review work before it reached the one act only this wake may perform — posting a
- * prepared session, which spends the drain's own credential — so on a preview every
- * preparation finished and not one session was posted. This wake is therefore the drain's lane
+ * prepared session, which spends the lane's own credential — so on a preview every
+ * preparation finished and not one session was posted. This wake is therefore the mapping lane
  * alone, in the order posting needs: its runs settled and its prepared sessions posted, then
  * its lane's dead claims reaped and its free slots refilled (`Conductor.tickMapDrains`), then
  * the mapping drains' controller, then the cadences. The reap is here because with every
  * activity weight at zero no beat runs, and on a hub nobody is watching this wake is the only
  * cycle there is. The rest of the loop is a full cycle's: a door the operator knocks on, the
  * beat's own settlement.
+ *
+ * A drain's wake is scoped by its drain, which is a chain in all but name, so it carries no
+ * chain of its own. A standing preparation's wake carries the chain its job was posted under
+ * (`settledChain`), exactly as an analysis preparation's does: the standing lane posts under
+ * the authority the review and analysis lanes post with. A job of neither — an ended drain's
+ * late preparation or cadence — spends for no lane: its wake only reconciles.
  */
 async function mapDrainCycle(
   jobs: BabelJobs,
   actions: ActionsSlice | undefined,
-  mappingDrainId: string | undefined,
+  job: {
+    readonly jobId: string;
+    readonly scheduleId?: string | undefined;
+    readonly revision?: string | undefined;
+  },
 ): Promise<void> {
   const policy = (await coordinated.policy()).policy;
+  const mappingDrainId = await settledMapDrain(job);
+  const standing =
+    mappingDrainId === undefined &&
+    job.scheduleId === undefined &&
+    (
+      await store.db.query(`SELECT 1 FROM runs WHERE prepare_job_id=? AND ${STANDING_RUN}`, [
+        job.jobId,
+      ])
+    ).length > 0;
   const moved = await loop(
     jobs,
     unaskable(HOOK_WITHOUT_MACHINES),
@@ -847,10 +868,8 @@ async function mapDrainCycle(
     planFor(policy, BEAT_OPERATION),
     planFor(policy, MACHINE_OPERATIONS.mapCatalog),
     planFor(policy, MACHINE_OPERATIONS.mapPrepare),
-    true,
-    // A mapping drain's wake is scoped by its drain, which is a chain in all but name (#470):
-    // it posts no analysis session and launches no preset, so it carries no chain of its own.
-    null,
+    mappingDrainId !== undefined || standing,
+    standing ? await settledChain(job) : null,
     mappingDrainId,
   ).tickMapDrains();
   for (const note of moved.notes) console.warn(`${BABEL_PLUGIN_ID}: mapping: ${note}`);
@@ -1140,10 +1159,10 @@ export const plugin: ServerPluginDef = {
           for (const note of await catalogCycle(jobsSlice(ctx.jobs), job.machineId))
             console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);
         } else if (job.operationId === MACHINE_OPERATIONS.mapPrepare) {
-          // A `map-prepare` job — a drain's preparation or its own cadence — was posted under
-          // a paid mapping drain's credential, and this wake carries it for that drain alone
-          // (#469, #470).
-          await mapDrainCycle(jobsSlice(ctx.jobs), ctx.actions, await settledMapDrain(job));
+          // A `map-prepare` job is a drain's preparation or cadence, posted under that drain's
+          // credential and woken for that drain alone, or a preparation of the standing lane,
+          // woken under the chain it was posted with (#469, #470).
+          await mapDrainCycle(jobsSlice(ctx.jobs), ctx.actions, job);
         } else {
           await cycle(
             jobsSlice(ctx.jobs),

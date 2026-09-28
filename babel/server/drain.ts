@@ -47,7 +47,7 @@ import {
   type LaunchIdentity,
   type Started,
 } from "../doors/launch.ts";
-import type { RunPlan } from "./conductor.ts";
+import { STANDING_RUN, type RunPlan } from "./conductor.ts";
 import type { CodeEngine } from "./engine/session.ts";
 import type { BabelJobs } from "./plan.ts";
 
@@ -919,9 +919,10 @@ async function tickMapDrain(
   // A run this drain has not recorded yet is still its work: a dispatch claims the item — so
   // it is no longer offered — before the launch lands in `live`, and a run another drain
   // launched may still be posting. Ending here would refuse that run's next spend and burn
-  // the item's bounded attempt on "no mapping drain is running".
+  // the item's bounded attempt on "no mapping drain is running". The standing lane's runs are
+  // never a drain's, and do not hold one open.
   const open = await deps.store.db.query<{ id: string }>(
-    `SELECT id FROM runs WHERE kind=? AND machine_id=? AND closure IS NULL LIMIT 1`,
+    `SELECT id FROM runs WHERE kind=? AND machine_id=? AND closure IS NULL AND NOT (${STANDING_RUN}) LIMIT 1`,
     [TRANSCRIPT_MAP_SESSION_OPERATION, row.machineId],
   );
   if (open.length > 0) return held;

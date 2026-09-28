@@ -527,13 +527,14 @@ export interface ConductorDeps {
   /**
    * THE PAID MAPPING DRAIN WHOSE AUTHORITY THIS WAKE CARRIES (#469, #470): the `mapDrainStart`
    * press itself, or the settlement of a job that press's drain started (a preparation, or the
-   * drain's own cadence at its `map-prepare` node). Only such a credential holds the Code
-   * workspace and the broker read a session needs, so only such a wake draws paid mapping work,
-   * posts a preparation or posts a session — and only for runs THAT drain holds. A drain's jobs
-   * all carry its press's principal, and a Code posting key names a session only under the
-   * principal that posted it: another drain's wake asking under the same key would be asking
-   * about a different posting. Every other wake still reconciles and closes mapping runs; it
-   * never spends a work's attempt or strands a posting on an authority it does not have.
+   * drain's own cadence at its `map-prepare` node). Such a wake draws, prepares and posts only
+   * for runs THAT drain holds: a drain's jobs all carry its press's principal, and a Code
+   * posting key names a session only under the principal that posted it, so another drain's
+   * wake asking under the same key would be asking about a different posting. A native wake
+   * without one is the conductor's own, and spends only for the standing mapping lane's runs,
+   * under the authority the review and analysis lanes post with. Every other wake still
+   * reconciles and closes mapping runs; it never spends a work's attempt or strands a posting
+   * on an authority it does not have.
    */
   readonly mappingDrainId?: string;
   /**
@@ -692,10 +693,10 @@ export interface Conductor {
     admission?: TranscriptMapCatalogAdmission,
   ): Promise<readonly string[]>;
   /**
-   * Only the running mapping drains' own conductor step: their runs settled, their prepared
-   * sessions posted, their dead claims reaped, then their dispatch. It is what the drain's start
-   * door and every wake of a drain's `map-prepare` job run; no review, title or catalog work
-   * rides either.
+   * Only the mapping lanes' own conductor step: their runs settled, their prepared sessions
+   * posted, their dead claims reaped, then their dispatch. It is what a mapping drain's start
+   * door and every wake of a `map-prepare` job run: a drain's wake moves that drain's lane, any
+   * other native wake the standing lane. No review, title or catalog work rides either.
    */
   tickMapDrains(): Promise<{ readonly launched: number; readonly notes: readonly string[] }>;
 }
@@ -738,8 +739,32 @@ const TERMINAL_STATES: Record<string, true> = {
  */
 const UNREPORTED_CYCLES = 2;
 
-/** What a mapping dispatch answers when another wake took its drain's launch slot first. */
-const LOST_LAUNCH_SLOT = "the mapping drain's launch slot was taken by another wake";
+/** What a mapping dispatch answers when another wake took the slot its lane had free first. */
+const LOST_LAUNCH_SLOT = "the mapping lane's launch slot was taken by another wake";
+
+/**
+ * A mapping parent run of the conductor's own standing lane rather than of a drain: marked on
+ * the run in the write that publishes it, so an ended drain's leftover run never reads as one.
+ */
+export const STANDING_RUN = "coalesce(json_extract(payload,'$.standing'),0)=1";
+
+/**
+ * Where one mapping dispatch takes its slot: the next launch of a running drain's fan, or the
+ * conductor's own standing lane, whose open runs its weighted share of the machine bounds.
+ */
+type MappingSlot =
+  { readonly drainId: string; readonly ordinal: number } | { readonly share: number };
+
+/**
+ * The standing mapping lane's slots on its executor: the map weight's share of all the activity
+ * weights, of the policy's per-machine bound, and at least one while the weight is positive.
+ */
+function mappingShare(policy: Policy): number {
+  const weight = policy.activityWeights.map;
+  if (weight <= 0) return 0;
+  const total = ACTIVITIES.reduce((sum, activity) => sum + policy.activityWeights[activity], 0);
+  return Math.max(1, Math.floor((perMachineBound(policy) * weight) / total));
+}
 
 /**
  * THE KINDS A RUN WITH NO CODE CONTAINER CAN BE A JOB OF THIS HUB UNDER: the native operations
@@ -2235,16 +2260,32 @@ export function conductor(deps: ConductorDeps): Conductor {
     };
   }
 
+  /** Whether a mapping run is the conductor's own standing lane's rather than a drain's. */
+  async function standingRun(runId: string): Promise<boolean> {
+    const rows = await store.db.query(`SELECT 1 FROM runs WHERE id=? AND ${STANDING_RUN}`, [runId]);
+    return rows.length > 0;
+  }
+
   /**
-   * The drain that admitted a mapping run, and whether its window still admits a new spend.
+   * The lane that admitted a mapping run, and whether it still admits a new spend.
    *
-   * Each new spend — the native preparation, then the Code session — belongs to the drain whose
-   * slot the run took (`dispatchMapDrains` records it before anything is posted). That drain must
-   * still be running, short of its spend target and short of its deadline at this moment: the
+   * A STANDING run, the conductor's own lane's, is admitted while the policy in force still
+   * weights mapping: the day's ceilings and the mapping subcap were already charged when its
+   * claim reserved them. Any other run belongs to the drain whose slot it took
+   * (`dispatchMapDrains` records it before anything is posted). That drain must still be
+   * running, short of its spend target and short of its deadline at this moment: the
    * controller only ends a drain after the conductor has run, so a check of "some drain is
    * running" would buy a session the operator's window had already closed on.
    */
-  async function drainAdmits(runId: string, machineId: string): Promise<string | null> {
+  async function laneAdmits(
+    runId: string,
+    machineId: string,
+    policy: Policy,
+  ): Promise<string | null> {
+    if (await standingRun(runId))
+      return policy.activityWeights.map > 0
+        ? null
+        : "the policy in force no longer weights mapping";
     const owner = (await activeDrains(store)).find(
       (drain) =>
         drain.preset === MAP_DRAIN_PRESET &&
@@ -2292,9 +2333,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       JSON.stringify(route) !== JSON.stringify(intent.route)
     )
       return "mapping policy or reviewed configuration changed";
-    // Work already posted settles whatever its drain did since; only a new spend is bounded.
+    // Work already posted settles whatever its lane did since; only a new spend is bounded.
     if (phase === "admission") {
-      const refused = await drainAdmits(runId, intent.route.executorMachineId);
+      const refused = await laneAdmits(runId, intent.route.executorMachineId, policy);
       if (refused !== null) return refused;
     }
     const fence = mappingFence(intent, jobId, phase);
@@ -2384,11 +2425,15 @@ export function conductor(deps: ConductorDeps): Conductor {
   }
 
   /**
-   * WHETHER THIS WAKE MAY SPEND FOR ONE MAPPING RUN: only a wake carrying the credential of the
-   * drain that holds it ({@link ConductorDeps.mappingDrainId}).
+   * WHETHER THIS WAKE MAY SPEND FOR ONE MAPPING RUN. A drain's run: only a wake carrying the
+   * credential of the drain that holds it ({@link ConductorDeps.mappingDrainId}). A standing
+   * run: only a native-capable wake that is no drain's, which is the authority the review and
+   * analysis lanes post under: the beat, an enable, or the settlement of a job one of those
+   * posted. A drain's wake never spends for the standing lane, nor the reverse.
    */
   async function wakeHoldsRun(runId: string): Promise<boolean> {
-    if (deps.mappingDrainId === undefined) return false;
+    if (deps.mappingDrainId === undefined)
+      return deps.nativeDispatch === true && (await standingRun(runId));
     const held = drainHoldsRun(deps.mappingDrainId, runId);
     return (await store.db.query(`SELECT 1 WHERE ${held.sql}`, held.params)).length > 0;
   }
@@ -2529,7 +2574,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     at: number,
     requested: RequestedJob[],
     settled: SettledClaim[],
-    slot: { readonly drainId: string; readonly ordinal: number },
+    slot: MappingSlot,
   ): Promise<string | null> {
     const route = mappingPolicy(policy);
     if (!route || !deps.mapPreparePlan) return "mapping preparation limits are unavailable";
@@ -2571,18 +2616,27 @@ export function conductor(deps: ConductorDeps): Conductor {
       limits: deps.mapPreparePlan.limits,
       promptVersion: TRANSCRIPT_MAP_PROMPT_VERSION,
     });
-    // THE DRAIN'S SLOT, THE PARENT AND THE NATIVE INTENT ARE ONE WRITE. Two overlapping wakes can
-    // read the same free slot; the drain's launch cursor decides which run it admits, and the
-    // run rows are inserted only where that reservation landed. So no wake ever sees an open
-    // mapping run its drain does not hold, and a crash before execute resumes this exact ID. The
-    // loser published nothing: its claim is withdrawn at zero and the work item it drew is
-    // offered again at its current attempt.
-    const held = drainHoldsRun(slot.drainId, runId);
+    // THE LANE'S SLOT, THE PARENT AND THE NATIVE INTENT ARE ONE WRITE. Two overlapping wakes can
+    // read the same free slot. A drain's launch cursor decides which run it admits; the standing
+    // lane's share is counted in the write that publishes the parent, which is marked as the
+    // lane's own there. So no wake ever sees an open mapping run its lane does not hold, and a
+    // crash before execute resumes this exact ID. The loser published nothing: its claim is
+    // withdrawn at zero and the work item it drew is offered again at its current attempt.
+    const drain = "drainId" in slot;
+    const held: SqlCondition = drain
+      ? drainHoldsRun(slot.drainId, runId)
+      : {
+          sql: `(SELECT count(*) FROM runs WHERE closure IS NULL AND ${STANDING_RUN}) < ?`,
+          params: [slot.share],
+        };
+    const reserve = drain
+      ? [reserveLaunchStatement(slot.drainId, { runId, jobId, launchedAt: at }, slot.ordinal)]
+      : [];
     const published = await store.db.batch([
-      reserveLaunchStatement(slot.drainId, { runId, jobId, launchedAt: at }, slot.ordinal),
+      ...reserve,
       {
-        sql: `INSERT INTO runs(id,kind,machine_id,container_id,prepare_job_id,profile,authority_kind,authority_id,preparation,started_at,records,payload)
-          SELECT ?,?,?,?,?,?,'conductor',?,?,?,0,'{}' WHERE ${held.sql}`,
+        sql: `INSERT INTO runs(id,kind,machine_id,container_id,prepare_job_id,profile,authority_kind,authority_id,preparation,started_at,records,chain,payload)
+          SELECT ?,?,?,?,?,?,'conductor',?,?,?,0,?,? WHERE ${held.sql} RETURNING id`,
         params: [
           runId,
           TRANSCRIPT_MAP_SESSION_OPERATION,
@@ -2593,23 +2647,28 @@ export function conductor(deps: ConductorDeps): Conductor {
           cycleRunId,
           JSON.stringify({ mapping: intent }),
           new Date(at).toISOString(),
+          // The account chain this wake acts for, which the preparation's settlement is handed
+          // back (`settledChain` in `server.ts`); a drain's wake carries none (#470).
+          deps.chain ?? null,
+          JSON.stringify(drain ? {} : { standing: true }),
           ...held.params,
         ],
       },
       {
-        sql: `INSERT INTO runs(id,kind,machine_id,job_id,started_at,records,payload)
-          SELECT ?,?,?,?,?,0,'{}' WHERE ${held.sql}`,
+        sql: `INSERT INTO runs(id,kind,machine_id,job_id,started_at,records,chain,payload)
+          SELECT ?,?,?,?,?,0,?,'{}' WHERE EXISTS (SELECT 1 FROM runs WHERE id=?)`,
         params: [
           intent.input.runId,
           OPERATIONS.mapPrepare,
           route.executorMachineId,
           jobId,
           new Date(at).toISOString(),
-          ...held.params,
+          deps.chain ?? null,
+          runId,
         ],
       },
     ]);
-    if ((published[0]?.length ?? 0) === 0) {
+    if ((published[reserve.length]?.length ?? 0) === 0) {
       const withdrawn = await coordinator.withdraw({
         id: claimed.claim.id,
         fence: claimed.claim.fence,
@@ -2656,13 +2715,78 @@ export function conductor(deps: ConductorDeps): Conductor {
   }
 
   /**
-   * THE ONLY PLACE PAID MAPPING IS DRAWN (#223): into the free slots of each running mapping
-   * drain, and only on a wake that can post native work (`nativeDispatch`). A mapping
+   * Draws and dispatches mapping work into `free` slots of one lane, stopping at the first gap.
+   * Each draw is an ordinary coordinator claim, so the batch, the shared ceilings, the mapping
+   * daily cap and the uncertain-post accounting all still hold, and "no queued work" is the
+   * coordinator's own answer. `slotAt(n)` names the n-th launch's slot, or null once the lane
+   * may launch no more. Answers what it launched and, when a dispatch was refused, why.
+   */
+  async function fillMapping(
+    lane: string,
+    free: number,
+    slotAt: (launched: number) => MappingSlot | null,
+    policy: Policy,
+    executorMachineId: string,
+    at: number,
+    cycleRunId: string,
+    requested: RequestedJob[],
+    settled: SettledClaim[],
+    refused: RefusedDraw[],
+    notes: string[],
+  ): Promise<{ readonly launched: number; readonly refusal: string | null }> {
+    let launched = 0;
+    for (let slot = slotAt(0); launched < free && slot !== null; slot = slotAt(launched)) {
+      const drawn = await coordinator.draw({
+        runId: cycleRunId,
+        machines: [executorMachineId],
+        now: at,
+        only: "mapping",
+      });
+      if (drawn.outcome === "gap") {
+        if (drawn.gap.reason !== "no-candidates") notes.push(`${lane}: ${drawn.gap.detail}`);
+        break;
+      }
+      const assignment = drawn.assignment;
+      if (assignment.activity !== "mapping") break;
+      const before = requested.length;
+      const detail = await dispatchMapping(
+        assignment,
+        policy,
+        cycleRunId,
+        at,
+        requested,
+        settled,
+        slot,
+      );
+      if (detail === LOST_LAUNCH_SLOT) {
+        // Another wake took this slot first; it owns the lane now, and nothing was spent here.
+        notes.push(
+          `${lane}: another wake took ${"drainId" in slot ? `launch slot ${String(slot.ordinal)}` : "its last free slot"}`,
+        );
+        break;
+      }
+      if (detail !== null || requested.length === before) {
+        const why = detail ?? "mapping dispatch posted nothing";
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: "mapping",
+          detail: why,
+        });
+        return { launched, refusal: why };
+      }
+      launched += 1;
+    }
+    return { launched, refusal: null };
+  }
+
+  /**
+   * PAID MAPPING DRAWN INTO A DRAIN (#223): the free slots of the running mapping drain this wake
+   * carries, and only on a wake that can post native work (`nativeDispatch`). A mapping
    * assignment's first act is a native `map-prepare`, and a read wake's bridge is attenuated
    * below posting; drawing there would spend the work's bounded attempt on an admission
-   * refusal. Each draw is an ordinary coordinator claim, so the mapping daily cap, the shared
-   * ceilings and the uncertain-post accounting all still hold; the drain adds its own fan,
-   * `maxJobs`, target and deadline on top, and folds what its runs spend (`server/drain.ts`).
+   * refusal. The drain adds its own fan, `maxJobs`, target and deadline on top of the
+   * coordinator's bounds, and folds what its runs spend (`server/drain.ts`).
    */
   async function dispatchMapDrains(
     policy: Policy,
@@ -2694,55 +2818,72 @@ export function conductor(deps: ConductorDeps): Conductor {
       );
       const deadline = deadlineOf(drain.target);
       if (targetMet(drain.target, spent) !== "" || (deadline !== null && at >= deadline)) continue;
-      let ordinal = drain.jobsLaunched;
-      let free = drain.concurrent - seen.holding.length;
-      while (free > 0 && (drain.knobs.maxJobs === undefined || ordinal < drain.knobs.maxJobs)) {
-        const drawn = await coordinator.draw({
-          runId: cycleRunId,
-          machines: [route.executorMachineId],
-          now: at,
-          only: "mapping",
-        });
-        if (drawn.outcome === "gap") {
-          if (drawn.gap.reason !== "no-candidates")
-            notes.push(`mapping drain ${drain.id}: ${drawn.gap.detail}`);
-          break;
-        }
-        const assignment = drawn.assignment;
-        if (assignment.activity !== "mapping") break;
-        const before = requested.length;
-        const detail = await dispatchMapping(
-          assignment,
-          policy,
-          cycleRunId,
-          at,
-          requested,
-          settled,
-          { drainId: drain.id, ordinal },
-        );
-        if (detail === LOST_LAUNCH_SLOT) {
-          // Another wake took this slot first; it owns the fan now, and nothing was spent here.
-          notes.push(`mapping drain ${drain.id}: another wake took launch slot ${String(ordinal)}`);
-          break;
-        }
-        if (detail !== null || requested.length === before) {
-          const why = detail ?? "mapping dispatch posted nothing";
-          refused.push({
-            assignmentId: assignment.id,
-            recordId: assignment.recordId,
-            reason: "mapping",
-            detail: why,
-          });
-          await noteDrain(store, drain.id, [{ at, kind: "admission", detail: why }]);
-          break;
-        }
-        ordinal += 1;
-        free -= 1;
-        launched += 1;
-      }
+      const first = drain.jobsLaunched;
+      const filled = await fillMapping(
+        `mapping drain ${drain.id}`,
+        drain.concurrent - seen.holding.length,
+        (n) =>
+          drain.knobs.maxJobs === undefined || first + n < drain.knobs.maxJobs
+            ? { drainId: drain.id, ordinal: first + n }
+            : null,
+        policy,
+        route.executorMachineId,
+        at,
+        cycleRunId,
+        requested,
+        settled,
+        refused,
+        notes,
+      );
+      if (filled.refusal !== null)
+        await noteDrain(store, drain.id, [{ at, kind: "admission", detail: filled.refusal }]);
+      launched += filled.launched;
     }
     if (launched > 0) store.touch();
     return launched;
+  }
+
+  /**
+   * THE CONDUCTOR'S OWN MAPPING LANE: while the policy in force weights `map` above zero and
+   * installs a mapping route, every native-capable wake that is no drain's keeps mapping work in
+   * flight, under the authority the review and analysis lanes post under: the beat, an enable,
+   * or the settlement of a job one of those posted. It holds at most {@link mappingShare} open
+   * runs, and stops when no work is queued, the policy turns it off, or a ceiling — the day's,
+   * or the mapping daily cap — refuses the next claim. A mapping drain maps on top of it inside
+   * its own window; each draws ordinary claims, so neither can take work the other holds.
+   */
+  async function dispatchStandingMapping(
+    policy: Policy,
+    at: number,
+    cycleRunId: string,
+    requested: RequestedJob[],
+    settled: SettledClaim[],
+    refused: RefusedDraw[],
+    notes: string[],
+  ): Promise<number> {
+    if (deps.nativeDispatch !== true || deps.mappingDrainId !== undefined || !policy.enabled)
+      return 0;
+    const route = mappingPolicy(policy);
+    const share = mappingShare(policy);
+    if (route === null || share === 0) return 0;
+    const open = await store.db.query<{ n: number }>(
+      `SELECT count(*) n FROM runs WHERE closure IS NULL AND ${STANDING_RUN}`,
+    );
+    const filled = await fillMapping(
+      "mapping",
+      share - Number(open[0]?.n ?? 0),
+      () => ({ share }),
+      policy,
+      route.executorMachineId,
+      at,
+      cycleRunId,
+      requested,
+      settled,
+      refused,
+      notes,
+    );
+    if (filled.launched > 0) store.touch();
+    return filled.launched;
   }
 
   async function reconcileMappingPreparations(
@@ -2806,13 +2947,26 @@ export function conductor(deps: ConductorDeps): Conductor {
     for (const run of parents) {
       const intent = mappingIntent(run.preparation);
       if (!intent) continue; // Corrupt authority is never reconstructed from current policy.
-      const payload = JSON.parse(run.payload) as { posting?: boolean; nativeAttempts?: number };
+      const payload = JSON.parse(run.payload) as {
+        posting?: boolean;
+        nativeAttempts?: number;
+        standing?: boolean;
+        postingChain?: string | null;
+      };
       if (payload.posting) {
-        // A posting whose answer was lost (#470) is asked again under its own key, and only on
-        // a wake of the drain that holds it: the key names a session under that principal alone.
+        // A posting whose answer was lost (#470) is asked again under its own key, and only by a
+        // wake of the principal that posted it, because the key names a session under that
+        // principal alone: the drain's own wake, or for a standing run a wake of the account
+        // chain that posted it (the analysis lane's rule, `resumePosting` in `doors/launch.ts`).
         const material = intent.material;
-        if (run.closure === null && material !== undefined && (await wakeHoldsRun(run.id)))
-          await resumeMappingPosting(run, { ...intent, material }, settled, notes);
+        if (run.closure !== null || material === undefined || !(await wakeHoldsRun(run.id)))
+          continue;
+        const chain = deps.chain ?? null;
+        if (payload.standing === true && (chain === null || payload.postingChain !== chain))
+          notes.push(
+            `mapping ${run.id}: its Code posting is unresolved and waits for a wake of the account chain that posted it`,
+          );
+        else await resumeMappingPosting(run, { ...intent, material }, settled, notes);
         continue;
       }
       if (run.closure !== null) {
@@ -2826,14 +2980,14 @@ export function conductor(deps: ConductorDeps): Conductor {
         continue;
       }
       const refusal = await mappingAuthority(intent, run.prepare_job_id, "admission", run.id);
-      // What this wake cannot see closes nothing: the drain's own wake decides.
+      // What this wake cannot see closes nothing: the lane's own wake decides.
       if (unestablished(refusal)) continue;
       if (refusal !== null) {
         await closeMappingPreparation(run.id, run.prepare_job_id, intent, refusal, settled);
         continue;
       }
-      // Posting a preparation or a session spends the drain's authority, which only a wake
-      // carrying it holds; any other wake leaves the prepared run for the drain's next one.
+      // Posting a preparation or a session spends the lane's authority, which only a wake
+      // carrying it holds; any other wake leaves the prepared run for the lane's next one.
       if (!(await wakeHoldsRun(run.id))) continue;
       if (
         !(await maps.startWork(
@@ -2918,10 +3072,17 @@ export function conductor(deps: ConductorDeps): Conductor {
       const fence = mappingFence(intent, run.prepare_job_id, "admission");
       const owned = await store.db.batch([
         {
-          sql: `UPDATE runs SET preparation=?,payload=json_set(payload,'$.posting',json('true'))
+          // THE SAME WRITE RECORDS WHO ASKS (#470): the account chain this wake acts for, which
+          // alone may ask again for a standing run if the answer is lost.
+          sql: `UPDATE runs SET preparation=?,payload=json_set(payload,'$.posting',json('true'),'$.postingChain',?)
             WHERE id=? AND closure IS NULL AND job_id IS NULL AND coalesce(json_extract(payload,'$.posting'),0)=0
               AND ${fence.sql} RETURNING id`,
-          params: [JSON.stringify({ mapping: prepared }), run.id, ...fence.params],
+          params: [
+            JSON.stringify({ mapping: prepared }),
+            deps.chain ?? null,
+            run.id,
+            ...fence.params,
+          ],
         },
         {
           sql: `INSERT INTO run_progress(run_id,job_id,stage,message,since,updated_at)
@@ -3071,17 +3232,26 @@ export function conductor(deps: ConductorDeps): Conductor {
         ? "Code returned a different execution boundary"
         : await mappingAuthority(prepared, run.prepare_job_id, "admission", run.id);
       // A job this wake cannot judge is neither bound nor stopped: the marker keeps it for the
-      // drain's next wake, which asks under the same key and gets this job again.
+      // lane's next wake, which asks under the same key and gets this job again.
       if (unestablished(verdict)) throw new Error(verdict.unestablished);
       let stop = verdict;
       // THE JOB ID AND ITS AUTHORITY ARE ONE WRITE. A wake reconciling this run reads its claim
       // as bound the moment it sees the Code job; publishing the id before the bind let that
-      // wake stop a legitimate session as unauthorized. The same write requires the drain that
-      // holds the run to be RUNNING: an operator's stop that landed after the admission check
-      // could not see an unpublished job to cancel, so this posting cancels it itself. Both are
-      // idempotent for the same job.
+      // wake stop a legitimate session as unauthorized. The same write requires the lane that
+      // holds the run to still admit it: a drain still RUNNING, or for a standing run the same
+      // policy still weighting mapping. A stop that landed after the admission check — an
+      // operator's drain stop, a policy turning mapping off — could not see an unpublished job to
+      // cancel, so this posting cancels it itself. Both are idempotent for the same job.
       if (stop === null) {
-        const running = runningDrainHoldsRun(run.id);
+        const standing = await standingRun(run.id);
+        const running: SqlCondition = standing
+          ? {
+              sql: `NOT EXISTS (SELECT 1 FROM policies WHERE seq=(SELECT max(seq) FROM policies)
+                AND (version!=? OR json_extract(payload,'$.enabled')=0
+                  OR coalesce(json_extract(payload,'$.activityWeights.map'),0)<=0))`,
+              params: [prepared.policyVersion],
+            }
+          : runningDrainHoldsRun(run.id);
         const written = await store.db.batch([
           coordinator.bindStatement({
             ...prepared.claim,
@@ -3106,7 +3276,9 @@ export function conductor(deps: ConductorDeps): Conductor {
         ]);
         if ((written[0]?.length ?? 0) === 0) stop = "mapping claim did not bind to the Code job";
         else if ((written[1]?.length ?? 0) === 0)
-          stop = "the mapping drain stopped before this session was bound";
+          stop = standing
+            ? "the policy stopped weighting mapping before this session was bound"
+            : "the mapping drain stopped before this session was bound";
       }
       if (stop !== null) {
         // A job that cannot be bound is still accounted: its id and the stop are one write —
@@ -5568,10 +5740,11 @@ export function conductor(deps: ConductorDeps): Conductor {
           const intent = catalogIntent(run.preparation);
           if (intent) await postCatalog(run.id, run.job_id, intent, notes);
         }
-        // Retrying a preparation is a new spend: only the drain's own wake carries it. Any other
-        // wake leaves the intent untouched for that one (#469).
+        // Retrying a preparation is a new spend: only a wake carrying the run's lane does it
+        // (`postMappingNative` asks). Any other wake leaves the intent untouched for that one
+        // (#469).
         if (
-          deps.mappingDrainId !== undefined &&
+          (deps.mappingDrainId !== undefined || deps.nativeDispatch === true) &&
           run.kind === OPERATIONS.mapPrepare &&
           neverRetained(error)
         ) {
@@ -6055,8 +6228,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       if (drawn.outcome === "gap") return { stop: drawn.gap, gaps };
       const assignment: Assignment = drawn.assignment;
       if (assignment.activity === "mapping") {
-        // A standing draw never offers mapping; only a mapping drain's own draw does.
-        const detail = "mapping work is drawn only for a running mapping drain";
+        // The review draw never offers mapping; only a mapping lane's own draw does.
+        const detail = "mapping work is drawn only by a mapping lane";
         refused.push({
           assignmentId: assignment.id,
           recordId: assignment.recordId,
@@ -6471,7 +6644,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       );
       await reconcileMappingPreparations(settled, notes);
       if (policy.enabled) await reapClaims(at, policy.leaseSeconds, settled, notes, "mapping");
-      const launched = await dispatchMapDrains(policy, at, cycleRunId, [], settled, [], notes);
+      // A drain's wake refills its own fan; any other native wake, the standing lane's share.
+      const launched =
+        (await dispatchMapDrains(policy, at, cycleRunId, [], settled, [], notes)) +
+        (await dispatchStandingMapping(policy, at, cycleRunId, [], settled, [], notes));
       return { launched, notes };
     },
     async tick(): Promise<TickReport> {
@@ -6549,12 +6725,14 @@ export function conductor(deps: ConductorDeps): Conductor {
       // reads "the recipe refused three answers I paid for" rather than "the lane is broken".
       const parked = await parkState(policy, at);
       if (parked !== null) notes.push(`the loop is parked on ${parked.reason}: ${parked.detail}`);
-
+      // THE STANDING MAPPING LANE TAKES ITS SHARE FIRST, independent of the review batch and its
+      // park: drawn after, it would find every slot a review could hold already held.
+      await dispatchStandingMapping(policy, at, cycleRunId, requested, settled, refused, notes);
       const dispatched =
         parked === null
           ? await dispatchReviews(policy, at, cycleRunId, requested, settled, refused)
           : { stop: null, gaps: [] as readonly Gap[] };
-      // Mapping is its own fan, independent of the review batch and its park.
+      // A mapping drain's window is its own fan, independent of the review batch and its park.
       await dispatchMapDrains(policy, at, cycleRunId, requested, settled, refused, notes);
       const stop = dispatched.stop;
       const gaps = dispatched.gaps;

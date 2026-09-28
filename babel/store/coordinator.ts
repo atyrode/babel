@@ -337,6 +337,8 @@ export function validatePolicy(policy: Policy, concurrentJobs: number | null): s
       return `analysis stage ${stage} requires an installed stage recipe`;
     }
   }
+  if (policy.activityWeights.map > 0 && policy.mapping === undefined)
+    return "the map activity requires an installed mapping route";
   if (policy.review !== undefined) {
     const ids = new Set<string>();
     for (const recipe of policy.review.recipes) {
@@ -2414,6 +2416,8 @@ export function coordinator(
         }
         return null;
       }
+      // `map` is never eligible here, since no analysis candidate is a mapping stage: its work is
+      // drawn only by `only: "mapping"`, into the conductor's mapping lane or a mapping drain.
       const eligible = ACTIVITIES.filter(
         (activity) =>
           policy.activityWeights[activity] > 0 &&

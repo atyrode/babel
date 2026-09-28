@@ -168,8 +168,13 @@ export function isRecordId(id: string): boolean {
 export const STAGES = ["explore", "challenge", "synthesize"] as const;
 export const StageSchema = z.enum(STAGES);
 export type Stage = z.infer<typeof StageSchema>;
-/** Standing conductor activities. Transcript mapping is not one: it runs only in a mapping drain. */
-export const ACTIVITIES = ["review", ...STAGES] as const;
+/**
+ * Standing conductor activities, each with a weight in the policy's `activityWeights`. `map` is
+ * transcript mapping: while its weight is positive and the policy installs a mapping route, the
+ * conductor keeps mapping work in flight on its own, in its weighted share of the machine's
+ * slots. A mapping drain still maps inside an explicit window on top of that.
+ */
+export const ACTIVITIES = ["review", ...STAGES, "map"] as const;
 export const ActivitySchema = z.enum(ACTIVITIES);
 export type Activity = z.infer<typeof ActivitySchema>;
 export const ANALYSIS_ROLES = {
@@ -185,6 +190,7 @@ export const DEFAULT_ACTIVITY_WEIGHTS = {
   explore: 0,
   challenge: 0,
   synthesize: 0,
+  map: 0,
 } as const;
 const activityWeight = z.number().min(0).max(1);
 export const ActivityWeightsSchema = z
@@ -193,6 +199,8 @@ export const ActivityWeightsSchema = z
     explore: activityWeight,
     challenge: activityWeight,
     synthesize: activityWeight,
+    // A policy written before mapping was a standing activity carries no `map`: it maps nothing.
+    map: activityWeight.default(0),
   })
   .default(DEFAULT_ACTIVITY_WEIGHTS);
 export type ActivityWeights = z.infer<typeof ActivityWeightsSchema>;
