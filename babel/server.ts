@@ -679,6 +679,8 @@ function draining(
  * what settles a finished job and writes what it metered, so a controller that read the runs
  * table first would decide whether to launch another against last cycle's numbers. A settlement
  * is also the wake that matters to a drain, because a settlement is exactly when a slot opens.
+ *
+ * A mapping drain's own wake is not this: see {@link mapDrainCycle}.
  */
 async function cycle(
   jobs: BabelJobs,
@@ -688,8 +690,6 @@ async function cycle(
   // Only a hook's slice — the settled job's own authority, or the installer's at enable — can
   // post native work; a door's bridge is attenuated to that door's delegates.
   nativeDispatch = false,
-  // Only a wake of a paid mapping drain's own job carries that drain's authority (#469, #470).
-  mappingDrainId?: string,
 ): Promise<void> {
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
@@ -704,7 +704,6 @@ async function cycle(
     planFor(policy, MACHINE_OPERATIONS.mapCatalog),
     planFor(policy, MACHINE_OPERATIONS.mapPrepare),
     nativeDispatch,
-    mappingDrainId,
   ).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
@@ -758,6 +757,51 @@ async function cycle(
     console.warn(`${BABEL_PLUGIN_ID}: no session was named this cycle: ${named.refused}`);
   }
   for (const report of await drainTick(draining(jobs, actions, services))) {
+    for (const note of report.notes) {
+      console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
+    }
+  }
+  // After the controller, so a drain it just ended loses its cadence on this same wake.
+  for (const note of await mapDrainWakes(jobs, policy, undefined))
+    console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
+}
+
+/**
+ * A PAID MAPPING DRAIN'S OWN WAKE, and nothing else: what a settled `map-prepare` job — one of
+ * a drain's preparations, or its cadence — is delivered for (#469, #470).
+ *
+ * THE HOOK'S TABLES ARE GONE AT TWO SECONDS. The host closes a settled-job hook's data lease at
+ * its lifecycle bound whether the hook has returned or not, and the hook runs on without them
+ * (Manifold's `jobSettled` in `packages/server/src/plugin-host.ts`, `runHook` in
+ * `packages/plugin/src/lifecycle.ts`). The whole cycle behind this wake polled every open run
+ * and drew review work before it reached the one act only this wake may perform — posting a
+ * prepared session, which spends the drain's own credential — so on a preview every
+ * preparation finished and not one session was posted. This wake is therefore the drain's lane
+ * alone, in the order posting needs: its runs settled and its prepared sessions posted, then
+ * its lane's dead claims reaped and its free slots refilled (`Conductor.tickMapDrains`), then
+ * the mapping drains' controller, then the cadences. The reap is here because with every
+ * activity weight at zero no beat runs, and on a hub nobody is watching this wake is the only
+ * cycle there is. The rest of the loop is a full cycle's: a door the operator knocks on, the
+ * beat's own settlement.
+ */
+async function mapDrainCycle(
+  jobs: BabelJobs,
+  actions: ActionsSlice | undefined,
+  mappingDrainId: string | undefined,
+): Promise<void> {
+  const policy = (await coordinated.policy()).policy;
+  const moved = await loop(
+    jobs,
+    unaskable(HOOK_WITHOUT_MACHINES),
+    actions,
+    planFor(policy, BEAT_OPERATION),
+    planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+    planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+    true,
+    mappingDrainId,
+  ).tickMapDrains();
+  for (const note of moved.notes) console.warn(`${BABEL_PLUGIN_ID}: mapping: ${note}`);
+  for (const report of await drainTick(draining(jobs, actions), MAP_DRAIN_PRESET)) {
     for (const note of report.notes) {
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
     }
@@ -1034,19 +1078,18 @@ export const plugin: ServerPluginDef = {
           // The free lane: it carries no paid authority, so it never refills a paid drain.
           for (const note of await catalogCycle(jobsSlice(ctx.jobs), job.machineId))
             console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);
-        } else {
+        } else if (job.operationId === MACHINE_OPERATIONS.mapPrepare) {
           // A `map-prepare` job — a drain's preparation or its own cadence — was posted under
           // a paid mapping drain's credential, and this wake carries it for that drain alone
           // (#469, #470).
+          await mapDrainCycle(jobsSlice(ctx.jobs), ctx.actions, await settledMapDrain(job));
+        } else {
           await cycle(
             jobsSlice(ctx.jobs),
             unaskable(HOOK_WITHOUT_MACHINES),
             ctx.actions,
             undefined,
             true,
-            job.operationId === MACHINE_OPERATIONS.mapPrepare
-              ? await settledMapDrain(job)
-              : undefined,
           );
         }
       });

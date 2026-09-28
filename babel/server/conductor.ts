@@ -12,6 +12,7 @@ import {
   CONDUCTOR_TALLY_KEY,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
+  MACHINE_OPERATIONS,
   MATERIAL_OUTPUT,
   MODELS_KEPT,
   MaterialIndexSchema,
@@ -20,6 +21,7 @@ import {
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   PRESET_OPERATIONS,
+  RETIRED_OPERATIONS,
   RUN_STAGES,
   ReceiptSchema,
   SessionRowSchema,
@@ -681,8 +683,10 @@ export interface Conductor {
     admission?: TranscriptMapCatalogAdmission,
   ): Promise<readonly string[]>;
   /**
-   * Only the running mapping drains' dispatch, for the drain's own start door: no review, title
-   * or catalog work rides the press that started a mapping drain.
+   * Only the running mapping drains' own conductor step: their runs settled, their prepared
+   * sessions posted, their dead claims reaped, then their dispatch. It is what the drain's start
+   * door and every wake of a drain's `map-prepare` job run; no review, title or catalog work
+   * rides either.
    */
   tickMapDrains(): Promise<{ readonly launched: number; readonly notes: readonly string[] }>;
 }
@@ -727,6 +731,25 @@ const UNREPORTED_CYCLES = 2;
 
 /** What a mapping dispatch answers when another wake took its drain's launch slot first. */
 const LOST_LAUNCH_SLOT = "the mapping drain's launch slot was taken by another wake";
+
+/**
+ * THE KINDS A RUN WITH NO CODE CONTAINER CAN BE A JOB OF THIS HUB UNDER: the native operations
+ * this bundle posts, and the retired one it once did. Anything else is history a store was
+ * given — an import from the product before Babel's runs became Code sessions (#279) keeps a
+ * `kind` like `explore` and a job id no hub ever retained — and asking the hub about it answers
+ * `job_owner_mismatch` on every cycle for ever, while the run counts as in flight.
+ */
+const NATIVE_KINDS: readonly string[] = [
+  ...Object.values(MACHINE_OPERATIONS),
+  ...Object.values(RETIRED_OPERATIONS),
+];
+
+/** Which open runs one wake reconciles, beyond every run the hub could answer for. */
+type RunScope =
+  /** One executor's free catalog, under that lane's admission. */
+  | { readonly lane: "catalog"; readonly machineId: string }
+  /** Paid mapping's own: its native preparations and its Code sessions. */
+  | { readonly lane: "mapping" };
 
 /** A claim withdrawn at zero because its work was never published, as the cycle's report row. */
 function withdrawal(claimId: string, reason: string): SettledClaim {
@@ -5374,6 +5397,16 @@ export function conductor(deps: ConductorDeps): Conductor {
    * moves on, which is the only reason this loop asks the hub about a job it cannot settle:
    * before #261 a running job was polled purely to be counted, and the count was the whole of
    * what anyone could learn about it.
+   *
+   * ONLY A JOB THIS HUB COULD ANSWER FOR IS SELECTED: a Code session, or a run of one of
+   * {@link NATIVE_KINDS}. A row Babel never posted is left exactly as it was — not polled, not
+   * counted in flight, its silence never incremented — because no answer could ever settle it
+   * and 604 of them on a preview cost a cycle seconds of refusals. The filter is in the query,
+   * so such a row costs a cycle nothing at all.
+   *
+   * A SCOPED WAKE READS ONLY ITS OWN LANE ({@link RunScope}). A settled-job hook's data lease
+   * closes at the host's lifecycle bound whether the hook is done or not, so the wake of one
+   * lane must not spend that bound on every other lane's runs.
    */
   async function reconcileRuns(
     at: number,
@@ -5382,16 +5415,26 @@ export function conductor(deps: ConductorDeps): Conductor {
     settled: SettledClaim[],
     notes: string[],
     refusals: Refusals,
-    catalogMachineId?: string,
+    scope?: RunScope,
   ): Promise<{ inFlight: number; runs: RunsTally }> {
+    const lane: SqlCondition =
+      scope === undefined
+        ? { sql: "1", params: [] }
+        : scope.lane === "catalog"
+          ? { sql: "kind=? AND machine_id=?", params: [OPERATIONS.mapCatalog, scope.machineId] }
+          : {
+              sql: "(kind=? OR json_type(preparation,'$.mapping')='object')",
+              params: [OPERATIONS.mapPrepare],
+            };
     const pending = await store.db.query<PendingRun>(
       `SELECT id, job_id, machine_id, kind, container_id, prepare_job_id, started_at,
               profile, preparation, unreadable
          FROM runs
         WHERE closure IS NULL AND job_id IS NOT NULL AND machine_id IS NOT NULL
-          AND (? IS NULL OR (kind=? AND machine_id=?))
+          AND (coalesce(container_id, '') <> '' OR kind IN (${NATIVE_KINDS.map(() => "?").join(", ")}))
+          AND ${lane.sql}
         ORDER BY started_at`,
-      [catalogMachineId ?? null, OPERATIONS.mapCatalog, catalogMachineId ?? null],
+      [...NATIVE_KINDS, ...lane.params],
     );
     let inFlight = 0;
     let atModel = 0;
@@ -5427,7 +5470,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       } catch (error) {
         notes.push(`job ${run.job_id} cannot be read: ${message(error)}`);
         if (
-          catalogMachineId === run.machine_id &&
+          scope?.lane === "catalog" &&
+          scope.machineId === run.machine_id &&
           run.kind === OPERATIONS.mapCatalog &&
           neverRetained(error)
         ) {
@@ -5578,12 +5622,18 @@ export function conductor(deps: ConductorDeps): Conductor {
    * THE LEASE IS COMPARED AS TEXT because every instant this store writes is one fixed-width
    * ISO string, so text order is time order (`parkState` leans on the same fact) and a grant
    * time that is not one sorts below every real one and is taken as old, which is what it is.
+   *
+   * A MAPPING DRAIN'S OWN WAKE REAPS ITS LANE'S CLAIMS AND NO OTHER (`lane`). With every activity
+   * weight at zero no beat runs, so on a hub nobody is watching that wake is the only cycle, and
+   * a mapping claim it never reaped would keep its reservation — and the mapping daily cap it
+   * counts against — for ever; an analysis claim is another lane's to ask the hub about.
    */
   async function reapClaims(
     at: number,
     leaseSeconds: number,
     settled: SettledClaim[],
     notes: string[],
+    lane?: "mapping",
   ): Promise<void> {
     const stale = new Date(at - Math.max(leaseSeconds, 0) * 1000).toISOString();
     // One more than the bound is read so the note can say whether anything was left, without a
@@ -5596,7 +5646,7 @@ export function conductor(deps: ConductorDeps): Conductor {
                         AND r.closure IS NULL) AS open_runs,
                       (SELECT MAX(r.unreadable) FROM runs r WHERE r.job_id = c.job_id) AS silent
                  FROM claims c
-                WHERE c.finished_at IS NULL)
+                WHERE c.finished_at IS NULL AND (? IS NULL OR c.role LIKE 'mapping:%'))
         WHERE NOT ((role LIKE 'analysis:%' OR role LIKE 'mapping:%') AND open_runs > 0)
           AND ((job_id IS NULL AND granted_at <= ?)
            OR (job_id IS NOT NULL AND runs = 0 AND granted_at <= ?)
@@ -5604,7 +5654,7 @@ export function conductor(deps: ConductorDeps): Conductor {
            OR (job_id IS NOT NULL AND COALESCE(silent, 0) >= ?))
         ORDER BY granted_at
         LIMIT ?`,
-      [stale, stale, UNREPORTED_CYCLES, CLAIMS_REAPED_PER_TICK + 1],
+      [lane ?? null, stale, stale, UNREPORTED_CYCLES, CLAIMS_REAPED_PER_TICK + 1],
     );
     let released = 0;
     for (const orphan of orphans.slice(0, CLAIMS_REAPED_PER_TICK)) {
@@ -6287,7 +6337,18 @@ export function conductor(deps: ConductorDeps): Conductor {
       const at = deps.now();
       const policy = (await coordinator.policy(at)).policy;
       const notes: string[] = [];
-      await reconcileRuns(at, [], [], [], notes, { paid: new Map(), free: new Map() }, machineId);
+      await reconcileRuns(
+        at,
+        [],
+        [],
+        [],
+        notes,
+        { paid: new Map(), free: new Map() },
+        {
+          lane: "catalog",
+          machineId,
+        },
+      );
       await catalogReceipts(policy, at, notes, machineId);
       // An old settlement cannot transfer its admission when policy moves to another host.
       if (catalogAdmission !== undefined && policy.mapping?.executorMachineId === machineId)
@@ -6301,7 +6362,23 @@ export function conductor(deps: ConductorDeps): Conductor {
       const policy = (await coordinator.policy(at)).policy;
       const notes: string[] = [];
       const settled: SettledClaim[] = [];
+      // A prepared session is posted only once its preparation's run is settled, and a
+      // settlement is what wakes this: the preparation that just finished is read first, then
+      // the posting that waited on it, then the dead claims of this lane, then the slots that
+      // opened — the full tick's own order.
+      await reconcileRuns(
+        at,
+        [],
+        [],
+        settled,
+        notes,
+        { paid: new Map(), free: new Map() },
+        {
+          lane: "mapping",
+        },
+      );
       await reconcileMappingPreparations(settled, notes);
+      if (policy.enabled) await reapClaims(at, policy.leaseSeconds, settled, notes, "mapping");
       const launched = await dispatchMapDrains(policy, at, cycleRunId, [], settled, [], notes);
       return { launched, notes };
     },

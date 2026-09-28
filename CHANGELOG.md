@@ -22,6 +22,32 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Every other column of every drain row is kept, and a drain written before #279 still reads
   `profile` as `{}` (#483).
 
+- **A mapping drain's own wake posts its prepared sessions.** The first real transcript-map
+  drain on the preview stalled: both `map-prepare` jobs exited 0 with a completed receipt, and
+  neither parent run ever became a Code session. Every settlement of a `map-prepare` job ran the
+  whole cycle — the beat's schedule, every open run polled, review drawing, titles, every drain
+  — and a prepared session is posted only on the wake of the drain that holds it, after that
+  cycle has polled every open run. Manifold closes a settled-job hook's tables at its
+  two-second lifecycle bound whether the hook has returned or not, so every such wake overran
+  and the posting never ran. That wake is now the drain's lane alone, in the order posting
+  needs: the mapping runs settled (its `map-prepare` preparations and its Code sessions), the
+  prepared sessions posted, the lane's dead claims reaped, the drain's free slots refilled, the
+  mapping drains' controller, then the cadences. It polls no other lane's run, reaps no other
+  lane's claim and draws, titles and prepares nothing else; a door's cycle and the beat's
+  settlement still run the whole loop. With every activity weight at zero no beat runs, so on
+  a hub nobody is watching that wake is the only cycle, and its reap is what releases a mapping
+  claim whose run was never published before the claim's stale reservation can hold the
+  mapping daily cap (#484).
+
+- **A run this hub never posted is no longer asked about on every cycle.** A store imported
+  from the product before Babel's runs became Code sessions holds open runs of a kind this
+  bundle never posts — `explore`, `evaluate` — with a host name where a machine id goes and a
+  job id no hub retained: 604 of them on the preview. Every cycle asked the hub about each one,
+  was refused `job_owner_mismatch`, counted it in flight and incremented its silence, which
+  made a door-woken cycle take about eight seconds. The loop now selects only a Code session or
+  a run of one of this bundle's own native operations, so such a row is neither polled nor
+  counted, and it is left exactly as the import wrote it (#484).
+
 ## [0.5.2] - 2026-09-28
 
 ### Fixed
