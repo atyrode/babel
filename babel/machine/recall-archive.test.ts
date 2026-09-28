@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -194,6 +194,11 @@ test(
       const cold = await archive.execute("public", search());
       expect(cold.cost.listedSnapshots).toBe(1);
       expect(cold.cost.listedEntries).toBeGreaterThan(0);
+      const [kept] = await rememberedListings(cacheDir);
+      if (kept === undefined) throw new Error("missing remembered listing");
+      // Owner-only, as the rest of Recall's cache: a listing names every archived session path.
+      expect((await stat(dirname(join(cacheDir, kept)))).mode & 0o777).toBe(0o700);
+      expect((await stat(join(cacheDir, kept))).mode & 0o777).toBe(0o600);
       const coldMap = await archive.executeMap("public", inventory);
       const reopened = await createRecallArchive({
         repo,
@@ -269,6 +274,8 @@ test(
       const path = join(cacheDir, remembered[0]!);
       const original = await Bun.file(path).bytes();
       const document = JSON.parse(gunzipSync(original).toString());
+      // A widened directory is narrowed again by the next write into it.
+      await chmod(dirname(path), 0o755);
       // Each would hide the session if it were believed.
       const variants: [string, Uint8Array | string][] = [
         ["truncated", original.subarray(0, Math.floor(original.byteLength / 2))],
@@ -288,6 +295,8 @@ test(
         expect(relisted.hits).toEqual(cold.hits);
         // Relisting replaces the memory whole.
         expect(gunzipSync(await Bun.file(path).bytes())).toEqual(gunzipSync(original));
+        expect((await stat(path)).mode & 0o777).toBe(0o600);
+        expect((await stat(dirname(path))).mode & 0o777).toBe(0o700);
       }
       expect(listed).toHaveBeenCalledTimes(1 + variants.length);
       // The control: a well-formed memory under the current rules IS what a request reads.

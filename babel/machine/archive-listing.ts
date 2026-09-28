@@ -22,7 +22,7 @@
   It is convenience state; an absent, unreadable or foreign one costs one listing.
 */
 
-import { mkdir, rename, rm } from "node:fs/promises";
+import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { z } from "zod";
@@ -223,7 +223,10 @@ export function listingMemory(directory: string): ListingMemory {
       const temporary = `${path}.${crypto.randomUUID()}`;
       try {
         await mkdir(directory, { recursive: true, mode: 0o700 });
-        await Bun.write(temporary, gzipSync(document), { mode: 0o600 });
+        // mkdir's mode reaches only a directory it creates; an existing one is narrowed here.
+        await chmod(directory, 0o700);
+        // Created exclusively and owner-only: the umask can narrow this mode, never widen it.
+        await writeFile(temporary, gzipSync(document), { mode: 0o600, flag: "wx" });
         await rename(temporary, path);
       } catch {
         // The memory is an optimization, never a condition of reading the archive.
