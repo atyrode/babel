@@ -82,16 +82,15 @@ import { pressOperation } from "./launch.ts";
   of them is.
 
   BUT IT IS ONE OF THE DOORS A CYCLE FOLLOWS (`server.ts`'s `WAKES`), and that is what the
-  delegate is for: the dispatcher attenuates `ctx.jobs` to what the door declared, so a cycle
+  delegates are for: the dispatcher attenuates `ctx.jobs` to what the door declared, so a cycle
   behind a door with no `jobs:read` cannot read back a single job — every `jobs.status` in
   `reconcileRuns` refuses, nothing settles, and the `run_progress` fold this wake EXISTS for
-  never happens. `pulse` and `runs` carry the same delegate for the same reason
-  (`doors/read.ts`), and the same cycle's `machines:read`: it is the cycle, not this door, that
-  describes a machine to keep the loop's beat registered, and the cycle that relaunches a
-  drain's settled slot, so it carries `machines:run` as well (#448). It widens nothing: a
-  delegate is the native ceiling the door's own job authority may reach, intersected with the
-  caller's capabilities and the plugin's install grant, and the caller still needs only
-  `containers:read`.
+  never happens. The same cycle describes a machine to keep its beat registered, then schedules
+  or executes `catalog` and `prepare`: their manifest declarations require `machines:read`,
+  `machines:run`, `locations:write`, `services:invoke` and `network:host`. `pulse`, `runs` and
+  `launch` carry the same cycle ceiling (`doors/read.ts` and `doors/launch.ts`). It widens
+  nothing: each delegate is intersected with the caller's capabilities and the plugin's install
+  grant, and the caller still needs only `containers:read`.
 */
 
 /**
@@ -119,9 +118,17 @@ const STOP_DELEGATES = ["jobs:cancel"] as const;
 
 /** A dry read of this plugin's own tables; it asks no machine anything. */
 const STATUS_CAPS = ["containers:read"] as const;
-/** …but a cycle follows it, and a cycle that cannot read a job, describe a machine or post a
- *  drain's next slot folds nothing, keeps no cadence and relaunches nothing; see above. */
-const STATUS_DELEGATES = ["jobs:read", "machines:read", "machines:run"] as const;
+/** …but a cycle follows it, and a cycle that cannot read a job, describe a machine or register
+ *  its declared operation requirements folds nothing, keeps no cadence and relaunches nothing;
+ *  see above. */
+const STATUS_DELEGATES = [
+  "jobs:read",
+  "machines:read",
+  "machines:run",
+  "locations:write",
+  "services:invoke",
+  "network:host",
+] as const;
 
 /** Every act of a drain is news on this plugin's own node, as `doors/acts.ts` explains. */
 const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;

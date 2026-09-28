@@ -143,8 +143,9 @@ import { defineDoor, type Door } from "./door.ts";
 /** A dry act on this plugin's own rows plus one call onto Code, which reads containers. */
 const LAUNCH_CAPS = ["containers:read"] as const;
 /**
- * The native ceiling the jobs this door posts inherit: reading them back, the locations the
- * `prepare` it posts declares, and the read that says whether the machine can run any of it.
+ * The native ceiling the jobs this door posts inherit: reading them back, their declared
+ * locations and services, the host network they declare, and the read that says whether the
+ * machine can run any of it.
  *
  * `jobs:read` is also the one DELEGATE every door a cycle follows carries — `launch` is in
  * `server.ts`'s `WAKES`, and the dispatcher attenuates `ctx.jobs` to what the door declared, so
@@ -161,17 +162,21 @@ const LAUNCH_CAPS = ["containers:read"] as const;
  * is ever asked — whatever authority his own key holds, because a delegate is the door's
  * ceiling and not the caller's grant. `doors/read.ts` carries the whole reasoning.
  *
- * `machines:run` IS WHAT THE POSTING ITSELF IS DISCHARGED AGAINST (#448). `engine.jobs.execute`
- * admits Babel's own `prepare` or its beat only when this bridge carries it; the host still
- * intersects it with the caller's own capabilities and still requires the operator's
- * version-bound consent at the operation node, so it lends nothing the caller does not hold.
+ * `machines:run`, `locations:write`, `services:invoke` AND `network:host` ARE THE POSTING
+ * REQUIREMENTS. `prepare`, `catalog` and `verify` all write their declared output/cache
+ * locations, bind restic `storage`, and use the host network; Manifold derives those requirements
+ * on both `engine.jobs.execute` and `schedule` (the latter through
+ * `job-service.ts`'s `reauthorizeDeferred`). The host still intersects this ceiling with the
+ * caller's capabilities and requires version-bound consent at the operation, location and service
+ * targets, so it lends nothing the caller does not hold.
  */
 const LAUNCH_DELEGATES = [
   "jobs:read",
-  "locations:read",
   "locations:write",
   "machines:read",
   "machines:run",
+  "services:invoke",
+  "network:host",
 ] as const;
 
 /** Reading Code's saved profiles is a read of containers and nothing else. */
