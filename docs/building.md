@@ -713,8 +713,8 @@ workflow, a document or the changelog merge with nothing having run at all.
 Release delivery is `release.yml`: a `v*` tag runs the same reusable gate against the tagged
 revision, builds the dependency closure beside it, attaches `dist/*.manifold-plugin.json` and
 its checksums to the GitHub Release — a tag publishes plugin bundles and nothing else — and
-hands each asset URL and sha to the integrated preview's receiver (`plugin <url> <sha256>` over
-the forced-command key, the same verb a developer runs from dev-01), dependencies first and a
+hands each asset URL and sha to the integrated preview's receiver (`plugin <url> <sha> --in-realm`
+over the forced-command key, the same verb a developer runs from dev-01), dependencies first and a
 baseline before its parts, so the preview installs the release by itself. That order is read off
 the bundles: `scripts/delivery-order.ts` sorts the packed artifacts by their own declared
 dependencies through the kit's `familyOrder`, the function `verify` and `dev` install by, so a
