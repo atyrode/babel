@@ -239,7 +239,7 @@ function context(
  * door-woken cycle registered an operation whose write locations, service binding and host
  * network the bridge had silently discarded.
  */
-const BEAT = manifestJson.machine.operations[PRESET_OPERATIONS["keep-going"]];
+const BEAT = manifestJson.machine.operations[OPERATIONS.catalog];
 const BEAT_SCHEDULE_CAPS = [
   "machines:run",
   ...BEAT.locations.map((location) => `locations:${location.access}`),
