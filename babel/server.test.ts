@@ -243,9 +243,7 @@ const BEAT = manifestJson.machine.operations[OPERATIONS.catalog];
 const BEAT_SCHEDULE_CAPS = [
   "machines:run",
   ...BEAT.locations.map((location) => `locations:${location.access}`),
-  ...(BEAT.services ?? []).flatMap((binding) =>
-    binding.operationIds.map(() => "services:invoke"),
-  ),
+  ...(BEAT.services ?? []).flatMap((binding) => binding.operationIds.map(() => "services:invoke")),
   ...(BEAT.network === "host" ? ["network:host"] : []),
 ];
 
