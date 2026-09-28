@@ -67,7 +67,9 @@ jobs:
   # preview that receives Babel alone refuses composition. This job builds the exact dependency
   # bundles the gate verified against - Code at CODE_REV, omp at the pin Code names -
   # through the same `deps:code` the gate runs, in the same sibling layout the reusable workflow
-  # lays out, and hands them to `deliver` so the preview receives the closure in order.
+  # lays out, and hands them to `deliver` so the preview receives the closure in order. omp's
+  # bundles go to `deps/hardened/` and Code's to `deps/in-realm/`: the directory is the runner
+  # each owner verifies its bundles under, and `deliver` reads it off the path.
   dependencies:
     runs-on: ubuntu-latest
     steps:
@@ -98,10 +100,12 @@ jobs:
           set -euo pipefail
           bun install --frozen-lockfile
           bun run deps:code
-          mkdir -p ../deps
-          cp .integration/code/plugins/.integration/omp/plugins/dist/*.manifold-plugin.json ../deps/
-          cp .integration/code/plugins/dist/*.manifold-plugin.json ../deps/
-          (cd ../deps && sha256sum ./*.manifold-plugin.json | sed "s#\./##" > SHA256SUMS && cat SHA256SUMS)
+          mkdir -p ../deps/hardened ../deps/in-realm
+          cp .integration/code/plugins/.integration/omp/plugins/dist/*.manifold-plugin.json ../deps/hardened/
+          cp .integration/code/plugins/dist/*.manifold-plugin.json ../deps/in-realm/
+          # Named by asset, as the release publishes them: the directory is not part of the name.
+          (cd ../deps && sha256sum hardened/*.manifold-plugin.json in-realm/*.manifold-plugin.json \
+            | sed -E "s#  (hardened|in-realm)/#  #" > SHA256SUMS && cat SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
           name: dependency-plugins
@@ -109,7 +113,7 @@ jobs:
           if-no-files-found: error
 
   # The verified bundles ride the release, then reach the integrated preview through its
-  # receiver: `plugin <url> <sha256> --in-realm` over the forced-command key, dependency closure
+  # receiver: `plugin <asset-url> <sha256>` over the forced-command SSH key, dependency closure
   # first and baseline before its parts - omp, then Code, then Babel - exactly what a developer
   # types from dev-01 (docs/building.md "Where a change is proved"). THAT SEQUENCE IS READ OFF
   # THE BUNDLES rather than written out here: `scripts/delivery-order.ts` sorts the two
@@ -117,7 +121,8 @@ jobs:
   # `verify` installs by in the job above, so a plugin added to the repository is delivered with
   # no edit to this file. That is why the job holds a checkout and the SDK beside the artifacts.
   # Production (manifold.tyrode.dev) is installed by the operator, by hand, and is
-  # not touched here.
+  # not touched here. An in-realm bundle carries the receiver's explicit fourth word,
+  # `--in-realm`; the install step says which bundles those are and why.
   deliver:
     needs: [release, plugins, dependencies]
     runs-on: ubuntu-latest
@@ -171,24 +176,24 @@ jobs:
           cp deps/SHA256SUMS deps/dependency-plugins.SHA256SUMS
           gh release upload "$TAG" --repo "$REPOSITORY" --clobber \
             dist/*.manifold-plugin.json dist/manifold-plugins.SHA256SUMS \
-            deps/*.manifold-plugin.json deps/dependency-plugins.SHA256SUMS
+            deps/*/*.manifold-plugin.json deps/dependency-plugins.SHA256SUMS
 
       # THE GUARD THE OTHER WAY ROUND. The old one proved every id it was asked about had a
       # checksum, which says nothing about a bundle nobody asked about: that is how a part is
       # attached to a release and never delivered. This proves the packed were asked for -
-      # every artifact in `deps/` and `dist/` appears in the order - and it is its own step so
+      # every artifact under `deps/` and `dist/` appears in the order - and it is its own step so
       # that it runs whether or not a receiver is configured below.
       - name: Derive the delivery order, and refuse a bundle nobody delivers
         run: |
           set -euo pipefail
-          bun caller/scripts/delivery-order.ts deps dist > order
+          bun caller/scripts/delivery-order.ts deps/hardened deps/in-realm dist > order
           cat order
-          ls deps/*.manifold-plugin.json dist/*.manifold-plugin.json | sort > packed
+          find deps dist -name '*.manifold-plugin.json' | sort > packed
           cut -d " " -f 2 order | sort > asked
           undelivered="$(comm -23 packed asked)"
           [ -z "$undelivered" ] || {
             printf 'packed and never delivered:\n%s\n' "$undelivered"
-            echo "every bundle in deps/ and dist/ must appear in the delivery order"
+            echo "every bundle under deps/ and dist/ must appear in the delivery order"
             exit 1
           }
 
@@ -207,19 +212,28 @@ jobs:
           # above; `sums` is what the release published over those same bytes, so a disagreement
           # means the artifact and its checksum came apart between packing and delivery.
           # `ssh -n` because a receiver that read stdin would swallow the rest of the order.
-          # `--in-realm` because these bundles are verified in-realm - `bun run verify` and the
-          # `bun run dev` loop run them without `--hardened` - and the receiver's three-word form
-          # is the hardened runner, which refuses them with no fallback. The fourth word is the
-          # receiver's explicit trust choice, not a manifest preference.
+          # The receiver's three-word `plugin <url> <sha256>` is its hardened runner, with no
+          # fallback for a bundle that does not target it; only a fourth word `--in-realm` runs one
+          # in the hub/page realm, as the receiver's explicit trust choice rather than a manifest
+          # preference. The runner is read off the directory the bundle was packed into: omp's
+          # server-only bundles (`deps/hardened/`) are verified hardened and keep the three words;
+          # Code's (`deps/in-realm/`, whose dev loop refuses `--hardened`) and this family's
+          # (`dist/`, which `bun run verify` and `bun run dev` run without it) are in-realm. A
+          # path with no declared runner is refused rather than guessed at.
           while read -r id file sha; do
+            case "$file" in
+              deps/hardened/*) runner="" ;;
+              deps/in-realm/* | dist/*) runner=" --in-realm" ;;
+              *) echo "$file: no runner is declared for this directory"; exit 1 ;;
+            esac
             asset="${file##*/}"
             published=$(awk -v f="$asset" '$2 == f { print $1 }' sums)
             [ "$published" = "$sha" ] || { echo "$asset: published checksum is not the delivered bytes"; exit 1; }
-            echo "installing $id"
+            echo "installing $id$runner"
             url="https://github.com/$REPOSITORY/releases/download/$TAG/$asset"
             for attempt in 1 2 3; do
               if ssh -n -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
-                "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "plugin $url $sha --in-realm"; then break; fi
+                "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "plugin $url $sha$runner"; then break; fi
               [ "$attempt" -lt 3 ] || exit 1
               sleep 15
             done

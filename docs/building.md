@@ -713,15 +713,18 @@ workflow, a document or the changelog merge with nothing having run at all.
 Release delivery is `release.yml`: a `v*` tag runs the same reusable gate against the tagged
 revision, builds the dependency closure beside it, attaches `dist/*.manifold-plugin.json` and
 its checksums to the GitHub Release — a tag publishes plugin bundles and nothing else — and
-hands each asset URL and sha to the integrated preview's receiver (`plugin <url> <sha> --in-realm`
-over the forced-command key, the same verb a developer runs from dev-01), dependencies first and a
+hands each asset URL and sha to the integrated preview's receiver (`plugin <url> <sha256>` over
+the forced-command key, the same verb a developer runs from dev-01), dependencies first and a
 baseline before its parts, so the preview installs the release by itself. That order is read off
 the bundles: `scripts/delivery-order.ts` sorts the packed artifacts by their own declared
 dependencies through the kit's `familyOrder`, the function `verify` and `dev` install by, so a
 plugin added to the repository is delivered without the workflow being edited — and a bundle the
-order does not name fails the job rather than riding the release undelivered. Between
-releases a preview gets a build through `bun run dev --deliver`, and the sha256 that counts is
-the one CI prints. A tag is permanent: a bad one stays and the next patch follows it.
+order does not name fails the job rather than riding the release undelivered. The receiver's
+three-word form is its hardened runner, with no fallback: omp's server-only bundles, verified
+hardened, take it, while Code's and this family's, verified and developed in-realm, add its
+explicit fourth word `--in-realm` — the directory each dependency was packed into says which.
+Between releases a preview gets a build through `bun run dev --deliver`, and the sha256 that
+counts is the one CI prints. A tag is permanent: a bad one stays and the next patch follows it.
 
 The sha256 is over an artifact's exact bytes, and Bun writes every bundled module's path as a
 comment, so a hash reproduces only from the layout above with the same Bun. The pins are what
