@@ -11,6 +11,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A session whose model call failed at the gateway settles as an infrastructure failure, not
+  a schema refusal (refs #461).** A review whose one call the gateway failed still exits 0, with
+  an empty final message and Code's receipt naming the transcript's last verdict in `failure`.
+  Babel dropped that field, settled the run `schema: the session ended with no final message at
+  all`, and — because the meter counts the failed attempt as a call — parked three in a row as
+  `spent`, blaming "the recipe or the review contract". On the preview between 2026-09-24 and
+  09-26, 1,280 reviews ended that way. `SessionReceipt` now keeps Code's `failure` and
+  `SessionRead` Code's `silence`. A sealed session with a failure and no final message settles
+  `infrastructure: … gave no answer: "<failure>"` in review, titling and analysis alike: a word
+  outside the refusal vocabulary, so the pulse counts no refusal on either side, the call row's
+  `refusal` says `infrastructure`, and the park files the claim under `barren`, the broken-lane
+  word, whatever the meter counted. A session that sealed no transcript now carries Code's word
+  for why in its reason (`… sealed no transcript (omp_session_unsealed) …`), so the next
+  occurrence names its cause. Proved by three reviews that each end on one gateway-failed
+  metered call and now settle `infrastructure`, refuse nothing and park `barren`, where `main`
+  settled them `schema` and parked `spent`; and by an unsealed review whose reason now names
+  `omp_session_unsealed`.
+
 - **A transcript-map session can run on a model only its provider's live listing carries.**
   `CODE_REV` and `@atyrode/manifold-code` move to atyrode/code#223 (`ffc10725`), whose omp
   closure is atyrode/manifold-omp#88 (`1ce18ee1`); Manifold stays at `2229a2fa`. A map's second
