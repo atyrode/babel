@@ -44,6 +44,7 @@ import { buildTranscriptMap } from "./machine/transcript-map-tree.ts";
 import { transcriptMapCaptureId } from "./transcript-map-identity.ts";
 import { insertDrain, readDrain } from "./store/drains.ts";
 import { CONDUCTOR_SCHEDULE_ID, type JobLaunch, type ScheduleTiming } from "./server/conductor.ts";
+import manifestJson from "./manifest.json";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -54,6 +55,8 @@ class Jobs {
   described = 0;
   statuses = 0;
   listed = 0;
+  /** Native bridge refusals, retained only so a test can name the attenuated capability. */
+  readonly refused: string[] = [];
   followed = 0;
   /** The cadences this fake has been asked to register, newest last, as `schedules()` lists them. */
   readonly scheduled: {
@@ -227,17 +230,34 @@ function context(
 }
 
 /**
- * What the bridge asks of one job verb before it is served, as `job-service.ts` asks it: the
- * reads a cycle ingests with, the machine read a cadence is registered from, and the run a
- * posting or a schedule is discharged against (#448).
+ * `JobService.schedule` builds its request then runs `reauthorizeDeferred`, which asks every
+ * requirement `operationRequirements` derives from the operation (Manifold 2229a2fa,
+ * `packages/server/src/job-service.ts:2748-2791`, `4360-4481`). The native bridge is a ceiling,
+ * so a pulse can reach a schedule only when its own action lends every one of these words.
+ *
+ * This fake used to model only the first requirement, `machines:run`, and thereby said a
+ * door-woken cycle registered an operation whose write locations, service binding and host
+ * network the bridge had silently discarded.
  */
-const VERB_CAPS: Record<string, string> = {
-  status: "jobs:read",
-  follow: "jobs:read",
-  listRuns: "jobs:read",
-  describe: "machines:read",
-  execute: "machines:run",
-  schedule: "machines:run",
+const BEAT = manifestJson.machine.operations[OPERATIONS.catalog];
+const BEAT_SCHEDULE_CAPS = [
+  "machines:run",
+  ...BEAT.locations.map((location) => `locations:${location.access}`),
+  ...(BEAT.services ?? []).flatMap((binding) => binding.operationIds.map(() => "services:invoke")),
+  ...(BEAT.network === "host" ? ["network:host"] : []),
+];
+
+/**
+ * What the bridge asks of each job verb before it is served. `schedule` needs every capability
+ * its operation declares, not merely the first `machines:run` requirement.
+ */
+const VERB_CAPS: Record<string, readonly string[]> = {
+  status: ["jobs:read"],
+  follow: ["jobs:read"],
+  listRuns: ["jobs:read"],
+  describe: ["machines:read"],
+  execute: ["machines:run"],
+  schedule: BEAT_SCHEDULE_CAPS,
 };
 
 /**
@@ -255,10 +275,12 @@ function served(slice: Jobs, name: string): Jobs {
   const reach: readonly string[] = [...(action.caps ?? []), ...(action.delegates ?? [])];
   return new Proxy(slice, {
     get(target, key, receiver) {
-      const cap = typeof key === "string" ? VERB_CAPS[key] : undefined;
-      if (cap !== undefined && !reach.includes(cap)) {
+      const caps = typeof key === "string" ? VERB_CAPS[key] : undefined;
+      const missing = caps?.find((cap) => !reach.includes(cap));
+      if (missing !== undefined) {
+        target.refused.push(`job_capability_absent:${missing}`);
         return (): never => {
-          throw new Error(`job_capability_absent:${cap}`);
+          throw new Error(`job_capability_absent:${missing}`);
         };
       }
       return Reflect.get(target, key, receiver);
@@ -501,6 +523,7 @@ test("the cycle behind a read describes a machine, so the loop keeps its own cad
   await plugin.handlers[ACTIONS.pulse]?.(ctx, {} as never);
 
   expect(jobs.described).toBeGreaterThan(0);
+  expect(jobs.refused).toEqual([]);
   expect(jobs.scheduled).toMatchObject([
     { scheduleId: `${BABEL_PLUGIN_ID}.conductor`, machineId: MACHINE },
   ]);

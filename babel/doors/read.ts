@@ -46,7 +46,7 @@ import { defineServerAction, type GuestStorage } from "@manifold/plugin-kit/serv
 const READ_CAPS = ["containers:read"] as const;
 
 /*
-  THE TWO READS THAT WAKE THE LOOP CARRY THREE NATIVE CEILINGS, AND NONE IS A SECOND PERMISSION.
+  THE TWO READS THAT WAKE THE LOOP CARRY SIX NATIVE CEILINGS, AND NONE IS A SECOND PERMISSION.
 
   `pulse` and `runs` are the doors a cycle follows (server.ts's `WAKES`), and the half of a cycle
   that matters when no settlement arrived — a hook that overran, a hub restarted mid-run — is
@@ -62,42 +62,41 @@ const READ_CAPS = ["containers:read"] as const;
   moved off `machines:run` and onto the narrower word (atyrode/manifold#736), and the same
   attenuation rule governs it: a door's native bridge is its own caps plus its delegates, so a
   `describe` this door never declared is refused `job_capability_absent:machines:read` however
-  privileged the CALLER is — the cycle notes that the beat cannot be registered, nothing is
-  registered, and Babel beats only for as long as somebody keeps pressing something.
+  privileged the CALLER is.
 
-  IT COULD NOT BE DELEGATED AT ALL UNTIL atyrode/manifold#740 (#739). `NATIVE_DELEGATE_CAPS`
-  (protocol/src/plugin.ts) — the closed set `ActionDelegatesSchema` admits — held the job,
-  location, operation, service and network capabilities and `machines:run`, and an action naming
-  this one was refused at assembly as an unsupported delegated capability. The set's own rule is
-  "only native job/resource/service APIs can discharge these at concrete targets", `describe` and
-  `engine.machines.repository` are both native reads at `manifold://machine/<id>`, and the set
-  already lent the strictly greater authority to make a machine RUN something — so the omission
-  was the accident and the delegate is now where this belongs. The bundle's MANIFEST still
-  declares it, because that is the ceiling an operator consents to at install and what the folder
-  question a cycle asks through `ctx.machines` (#535) is served against; a delegate is the
-  per-door ceiling underneath that grant, never a replacement for it.
+  THE BEAT'S OTHER FOUR REQUIREMENTS ARE DECLARED, NOT IMPLIED. `keep-going` is this manifest's
+  `catalog`: it writes its output and cache locations, invokes the bound restic `storage` service,
+  and uses the host network. `engine.jobs.schedule` builds that operation's request and then
+  reauthorizes EVERY requirement before it records the cadence (Manifold 2229a2fa,
+  `packages/server/src/job-service.ts:2748-2791`, `4360-4481`): its location declarations become
+  `locations:write`, the service binding becomes `services:invoke`, and `network: "host"` becomes
+  `network:host`. Without the first the cycle reports
+  `the beat cannot be registered: job_capability_absent:locations:write`; adding only it merely
+  reaches the same refusal for the service and then the network.
 
-  ALL THREE ARE DELEGATES, NOT CAPS: a delegate is the native ceiling this door's job authority may
+  STARTING WORK IS REACHABLE FROM HERE, BECAUSE THE CYCLE IS WHERE WORK STARTS (#448). It
+  registers the beat, posts an analysis preparation and relaunches a drain's slot when one has
+  settled. `prepare` declares the same write locations, restic binding and host network as the
+  beat, so its `engine.jobs.execute` needs the same three words as well as `machines:run`.
+  `machines:run` is what each schedule or execute is discharged against; without it each is
+  refused `job_capability_absent:machines:run` whatever the caller held.
+
+  ALL SIX ARE DELEGATES, NOT CAPS: a delegate is the native ceiling this door's job authority may
   reach, while a cap is what the caller must hold. The caller is unchanged — it still needs only
-  `containers:read`, and a reader asking for his own pulse is not asking a machine anything — and
-  nothing is widened, because the ceiling is intersected with the CALLER's own capabilities and
-  with the plugin's install grant before any job verb runs, and the engine still requires the
-  operator's version-bound consent at each operation node before it answers.
-
-  STARTING WORK IS REACHABLE FROM HERE, BECAUSE THE CYCLE IS WHERE WORK STARTS (#448). The cycle
-  registers the beat (`engine.jobs.schedule`), posts an analysis stage's preparation, relaunches
-  a drain's slot when one has settled and names untitled sessions, and every one of those is
-  `engine.jobs.execute` or `schedule` of one of Babel's own operations, which the host discharges
-  against this bridge's `machines:run`. Without the delegate each was refused
-  `job_capability_absent:machines:run` whatever the caller held: on the integrated preview the
-  beat never registered and no drain ever relaunched. #310 withheld it so that a five-second poll
-  could not dispatch; what bounds that is not the absent delegate but the wake floor
-  (`server.ts`'s `WAKE_FLOOR_MS`), the policy's own activation gate and ceilings, and the three
-  checks the host still makes: the ceiling is intersected with the CALLER's capabilities, so a
-  reader holding no `machines:run` still starts nothing, and the operator's version-bound
-  consent is required at each operation node.
+  `containers:read`, and a reader asking for his own pulse is not asking a machine anything —
+  while the ceiling remains intersected with the CALLER's capabilities and the plugin's install
+  grant. The engine still requires the operator's version-bound consent at each operation,
+  location and service target. `locations:read` is deliberately absent: every operation this
+  cycle schedules or executes writes its declared locations; none reads one.
 */
-const WAKING_DELEGATES = ["jobs:read", "machines:read", "machines:run"] as const;
+const WAKING_DELEGATES = [
+  "jobs:read",
+  "machines:read",
+  "machines:run",
+  "locations:write",
+  "services:invoke",
+  "network:host",
+] as const;
 
 /** `pulse` and `topics` are asked without arguments; a strict empty object says so on the wire. */
 const NoQuerySchema = z.strictObject({});

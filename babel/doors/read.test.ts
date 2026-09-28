@@ -149,14 +149,20 @@ describe("the roster", () => {
     }
     /*
       THE TWO READS A CYCLE FOLLOWS ARE LENT WHAT THAT CYCLE SPENDS, and the other seven are lent
-      nothing. `jobs:read` is the ingestion behind a wake; `machines:read` is the describe
-      `reconcileSchedule` registers the loop's cadence from, delegable since
-      atyrode/manifold#740; `machines:run` is what the schedule itself, an analysis stage's
-      preparation and a drain's relaunch are discharged against (#448). None is a cap: a reader
-      asking for his own pulse holds `containers:read` and is asked for nothing else, which the
-      loop above has just pinned.
+      nothing. `jobs:read` is the ingestion behind a wake; `machines:read` describes the host;
+      and `machines:run`, `locations:write`, `services:invoke` and `network:host` are every
+      requirement `catalog` and `prepare` declare when a cycle schedules or executes them.
+      None is a cap: a reader asking for his own pulse holds `containers:read` and is asked for
+      nothing else, which the loop above has just pinned.
     */
-    const cycled = ["jobs:read", "machines:read", "machines:run"];
+    const cycled = [
+      "jobs:read",
+      "machines:read",
+      "machines:run",
+      "locations:write",
+      "services:invoke",
+      "network:host",
+    ];
     const lent: Record<string, readonly string[]> = {};
     for (const entry of doors) lent[entry.action.name] = [...(entry.action.delegates ?? [])];
     expect(lent).toEqual({

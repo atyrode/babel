@@ -396,19 +396,20 @@ test("the roster is profiles, launch, verify and stop, and none is governed at a
   expect(profiles?.action.requirements).toBeUndefined();
 
   // A launch posts Babel's OWN `prepare` or `catalog` job and asks Code to post the session, so
-  // it keeps the delegates that posting needs — reading the job back, the locations the sealed
-  // leases are cut from, the machine read `ready` describes with before anything is posted, and
-  // the `machines:run` the posting itself is discharged against (#448) — and names no governed
-  // node, because the operations a requirement would name (`explore`, `evaluate`) are declared
-  // by nobody.
+  // it keeps the delegates that posting needs — reading jobs back; the locations its output
+  // leases are cut from; the service binding and host network the operation declares; the machine
+  // read `ready` describes before anything is posted; and `machines:run` at the effect (#448).
+  // It names no governed node, because the operations a requirement would name (`explore`,
+  // `evaluate`) are declared by nobody.
   expect(launch?.action.caps).toEqual(["containers:read"]);
   expect(launch?.action.requirements).toBeUndefined();
   expect(launch?.action.delegates).toEqual([
     "jobs:read",
-    "locations:read",
     "locations:write",
     "machines:read",
     "machines:run",
+    "services:invoke",
+    "network:host",
   ]);
 
   // Verifying the archive posts one of Babel's OWN jobs and writes its run row, so it carries
@@ -418,10 +419,11 @@ test("the roster is profiles, launch, verify and stop, and none is governed at a
   expect(verify?.action.requirements).toBeUndefined();
   expect(verify?.action.delegates).toEqual([
     "jobs:read",
-    "locations:read",
     "locations:write",
     "machines:read",
     "machines:run",
+    "services:invoke",
+    "network:host",
   ]);
 
   // A stop closes this plugin's own rows and reaches a job through its OWN ceiling: a delegate

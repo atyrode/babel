@@ -50,6 +50,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   holds. Watch lists `map` beside the other four weights.
 
 ### Fixed
+- **A door-woken conductor renews a lapsed beat.** Every door that wakes the cycle now delegates
+  the write locations, bound service invocation and host network that the beat's `catalog`
+  operation declares, so a reconnect can re-register its cadence instead of stopping at
+  `job_capability_absent:locations:write` (#495).
 
 - **A session whose model call failed at the gateway settles as an infrastructure failure, not
   a schema refusal (refs #461).** A review whose one call the gateway failed still exits 0, with

@@ -582,14 +582,18 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
 
   // The dry read asks no machine anything ITSELF, so it carries no governed capability and no
   // target — the panel polls it every five seconds while the operator watches. It DOES delegate
-  // `jobs:read`, `machines:read` and `machines:run`, because a cycle follows it (`server.ts`'s
-  // `WAKES`) and the dispatcher attenuates `ctx.jobs` to what the door declared: without the first
-  // that cycle can read back no job, nothing settles and the `run_progress` fold this wake exists
-  // for never happens; without the second it can describe no machine and the loop's beat is never
-  // registered on one; without the third it relaunches no settled slot (#448).
+  // the full native ceiling of the cycle that follows it: ingestion, the machine read, and every
+  // requirement `catalog` or `prepare` declares while the cycle schedules or executes them.
   expect(read?.action.caps).toEqual(["containers:read"]);
   expect(read?.action.requirements).toBeUndefined();
-  expect(read?.action.delegates).toEqual(["jobs:read", "machines:read", "machines:run"]);
+  expect(read?.action.delegates).toEqual([
+    "jobs:read",
+    "machines:read",
+    "machines:run",
+    "locations:write",
+    "services:invoke",
+    "network:host",
+  ]);
 
   // A stop closes this plugin's own row and reaches its jobs through its OWN ceiling. It
   // asked `jobs:cancel` at the operation they share, and that operation is one no
