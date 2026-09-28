@@ -9,6 +9,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **A release tag delivers its bundles with the preview receiver's explicit `--in-realm`.**
+  Manifold's preview receiver now reads the three-word `plugin <url> <sha256>` as its hardened
+  runner, with no fallback for a bundle that does not target it; only a fourth word `--in-realm`
+  installs in the hub/page realm, as the key holder's trust choice rather than a manifest
+  preference. Babel's family and its omp/Code closure are in-realm bundles — `bun run verify` and
+  the `bun run dev` loop run them without `--hardened` — so the next tag's `deliver` would have had
+  every bundle refused. `release.yml` now sends `plugin <url> <sha256> --in-realm`; that step's
+  shell, run against a recording `ssh`, sends the fourth word for every bundle in the order.
+
 ## [0.5.1] - 2026-09-27
 
 ### Fixed

@@ -109,7 +109,7 @@ jobs:
           if-no-files-found: error
 
   # The verified bundles ride the release, then reach the integrated preview through its
-  # receiver: `plugin <asset-url> <sha256>` over the forced-command SSH key, dependency closure
+  # receiver: `plugin <url> <sha256> --in-realm` over the forced-command key, dependency closure
   # first and baseline before its parts - omp, then Code, then Babel - exactly what a developer
   # types from dev-01 (docs/building.md "Where a change is proved"). THAT SEQUENCE IS READ OFF
   # THE BUNDLES rather than written out here: `scripts/delivery-order.ts` sorts the two
@@ -207,6 +207,10 @@ jobs:
           # above; `sums` is what the release published over those same bytes, so a disagreement
           # means the artifact and its checksum came apart between packing and delivery.
           # `ssh -n` because a receiver that read stdin would swallow the rest of the order.
+          # `--in-realm` because these bundles are verified in-realm - `bun run verify` and the
+          # `bun run dev` loop run them without `--hardened` - and the receiver's three-word form
+          # is the hardened runner, which refuses them with no fallback. The fourth word is the
+          # receiver's explicit trust choice, not a manifest preference.
           while read -r id file sha; do
             asset="${file##*/}"
             published=$(awk -v f="$asset" '$2 == f { print $1 }' sums)
@@ -215,7 +219,7 @@ jobs:
             url="https://github.com/$REPOSITORY/releases/download/$TAG/$asset"
             for attempt in 1 2 3; do
               if ssh -n -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
-                "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "plugin $url $sha"; then break; fi
+                "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "plugin $url $sha --in-realm"; then break; fi
               [ "$attempt" -lt 3 ] || exit 1
               sleep 15
             done
