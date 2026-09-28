@@ -1270,18 +1270,33 @@ const SESSION_METER: InferenceUsage = {
 };
 
 /**
+ * The word omp answers beside an absent receipt for a job in each terminal state, so a fixture
+ * that seals nothing still says why, as Code always does. A live job's word is
+ * `omp_session_running`.
+ */
+const SILENCE: Partial<Record<SessionRead["job"]["state"], NonNullable<SessionRead["silence"]>>> = {
+  exited: "omp_session_unsealed",
+  cancelled: "omp_session_cancelled",
+  interrupted: "omp_session_interrupted",
+  refused: "omp_session_refused",
+};
+
+/**
  * One Code session as `readSession` answers for it: where the job is, and what it yielded.
  *
  * `session: null` is the answer for a job Code posted that never sealed a transcript — still
  * running, cancelled, interrupted, or exited non-zero — and it is a SUCCESSFUL read, which is
- * the distinction the whole reconcile turns on.
+ * the distinction the whole reconcile turns on. `silence` is then Code's word for which.
  */
 function sessionRead(over: {
   /** The hub's own states, so a fake cannot answer a word `JobStateSchema` does not have. */
   readonly state: SessionRead["job"]["state"];
   readonly jobId?: string;
   readonly sealed?: boolean;
+  readonly silence?: NonNullable<SessionRead["silence"]>;
   readonly finalMessage?: string;
+  /** The transcript's own last verdict when its final turn ended in an error (manifold-omp#43). */
+  readonly failure?: string;
   readonly exitCode?: number;
   readonly usage?: SessionUsage | null;
   readonly inference?: InferenceUsage;
@@ -1324,6 +1339,8 @@ function sessionRead(over: {
           }),
     },
     ...(over.activity === undefined ? {} : { activity: over.activity }),
+    silence:
+      over.sealed === false ? (over.silence ?? SILENCE[over.state] ?? "omp_session_running") : null,
     session:
       over.sealed === false
         ? null
@@ -1337,6 +1354,7 @@ function sessionRead(over: {
                 ? { input: 12_000, output: 900, cacheRead: 400, cacheWrite: 0, cost: 0.31 }
                 : over.usage,
             exitCode: over.exitCode ?? 0,
+            failure: over.failure ?? null,
           },
   };
 }
@@ -1375,7 +1393,10 @@ class ReviewCode implements CodeEngine {
     return await Promise.resolve({ ok: true, value: job });
   }
 
-  async readSession(): Promise<EngineAnswer<SessionRead>> {
+  async readSession(_args: {
+    containerId: string;
+    jobId: string;
+  }): Promise<EngineAnswer<SessionRead>> {
     return await Promise.resolve({ ok: true, value: this.read });
   }
 
@@ -3718,6 +3739,156 @@ test("three jobs that never reached the model park the loop, and an hour of quie
   expect(resumed.parked).toBe(null);
   expect(resumed.notes.some((note) => note.startsWith("the loop is parked"))).toBe(false);
   clock = started;
+});
+
+/**
+ * A Code that posts every review as a job of its own and answers each read by that job's id, so
+ * reviews in flight together settle as separate runs rather than as one read answered twice.
+ */
+class ReviewSessions extends ReviewCode {
+  readonly reads = new Map<string, SessionRead>();
+
+  override async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
+    this.posted.push(request);
+    const jobId = `job_code_review_${String(this.posted.length)}`;
+    this.reads.set(jobId, sessionRead({ jobId, state: "started", sealed: false }));
+    return await Promise.resolve({
+      ok: true,
+      value: {
+        jobId,
+        machineId: request.machineId,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "started",
+      },
+    });
+  }
+
+  override async readSession(args: {
+    containerId: string;
+    jobId: string;
+  }): Promise<EngineAnswer<SessionRead>> {
+    const read = this.reads.get(args.jobId);
+    return await Promise.resolve(
+      read === undefined
+        ? refusedByCode<SessionRead>("engine_unavailable", `no session ${args.jobId}`)
+        : { ok: true, value: read },
+    );
+  }
+}
+
+test("reviews whose model call failed at the gateway settle as infrastructure and park the lane, not the recipe", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const draws = new Draws(db);
+  draws.review = ROUTE;
+  draws.pending = ["asg_g1", "asg_g2", "asg_g3"].map((id) => ({ ...ASSIGNMENT, id }));
+  draws.batchSize = 3;
+  const code = new ReviewSessions();
+  const loop = conductor({
+    engine: code,
+    store: openReadStore(db, () => clock),
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  const posted = await loop.tick();
+  expect(posted.requested).toHaveLength(3);
+
+  // Each session exited 0 after ONE metered call that the gateway failed: no tokens, no money,
+  // no final message, and the transcript's own last verdict naming the failure.
+  clock += 60_000;
+  for (const { jobId } of posted.requested) {
+    code.reads.set(
+      jobId,
+      sessionRead({
+        jobId,
+        state: "exited",
+        model: FIXTURE_MODEL,
+        failure: "gateway_unavailable",
+        usage: null,
+        inference: {
+          calls: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          costMicros: 0,
+        },
+      }),
+    );
+  }
+  const settling = await loop.tick();
+
+  // THE RECEIPT NAMES THE FAILURE, under a word outside the refusal vocabulary: the model gave
+  // no answer, so there is nothing for a `schema` refusal to be about.
+  const runs = await db.query<{ closure: string; payload: string }>(
+    `SELECT closure, payload FROM runs WHERE job_id LIKE 'job_code_review_%' ORDER BY job_id`,
+  );
+  expect(runs.map((run) => run.closure)).toEqual(["failed", "failed", "failed"]);
+  for (const run of runs) {
+    const reason = String((JSON.parse(run.payload) as Record<string, unknown>)["reason"]);
+    expect(reason).toStartWith("infrastructure:");
+    expect(reason).toContain("gateway_unavailable");
+  }
+  expect(settling.settled.map((row) => [row.outcome, row.cost])).toEqual([
+    ["failed", 0],
+    ["failed", 0],
+    ["failed", 0],
+  ]);
+  // Nothing was submitted, so nothing was refused, on either side of the tally.
+  expect(settling.pulse.tick.refusals).toEqual({ paid: {}, free: {} });
+  // THE STREAK PARKS ON THE BROKEN LANE although the meter counted a call for each: the remedy
+  // is the gateway, and an operator sent to the recipe would find nothing wrong with it.
+  expect(settling.parked?.reason).toBe("barren");
+  expect(settling.parked?.barren).toBe(3);
+  expect(settling.parked?.spent).toBe(0);
+  clock = started;
+});
+
+test("a review that sealed no transcript records Code's word for why", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const draws = new Draws(db);
+  draws.review = ROUTE;
+  draws.pending = [{ ...ASSIGNMENT }];
+  draws.batchSize = 1;
+  const code = new ReviewCode();
+  const loop = conductor({
+    engine: code,
+    store: openReadStore(db, () => clock),
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  await loop.tick();
+
+  // The job exited 0 and spent, and its transcript was never sealed: an absence that also
+  // answers "still running", "destination full" and "exited non-zero" unless Code's word is kept.
+  code.read = sessionRead({
+    jobId: "job_code_review",
+    state: "exited",
+    sealed: false,
+    silence: "omp_session_unsealed",
+    inference: SESSION_METER,
+  });
+  await loop.tick();
+
+  const run = (
+    await db.query<{ closure: string; payload: string }>(
+      `SELECT closure, payload FROM runs WHERE job_id = 'job_code_review'`,
+    )
+  )[0]!;
+  expect(run.closure).toBe("failed");
+  const reason = String((JSON.parse(run.payload) as Record<string, unknown>)["reason"]);
+  expect(reason).toStartWith("empty:");
+  expect(reason).toContain("sealed no transcript (omp_session_unsealed)");
 });
 
 test("a batch every slot of which is already claimed stops on `batch` and draws nothing", async () => {
@@ -7845,7 +8016,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
         pluginId: "atyrode.omp",
         state: "started" as const,
       };
-      readings.set(job.jobId, { job, session: null });
+      readings.set(job.jobId, { job, session: null, silence: "omp_session_running" });
       if (request.postingKey !== undefined) byKey.set(request.postingKey, job);
       return { ok: true, value: job };
     },
@@ -7859,7 +8030,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       cancelled.push(jobId);
       const previous = readings.get(jobId)!;
       const job = { ...previous.job, state: "cancelled" as const };
-      readings.set(jobId, { job, session: null });
+      readings.set(jobId, { job, session: null, silence: "omp_session_cancelled" });
       return { ok: true, value: job };
     },
   };

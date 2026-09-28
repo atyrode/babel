@@ -86,6 +86,14 @@ export interface SessionReceipt {
   readonly finalMessage: string;
   readonly usage: SessionUsage | null;
   readonly exitCode: number;
+  /**
+   * THE TRANSCRIPT'S OWN LAST VERDICT when its final turn ended in an error rather than an
+   * answer: the word the provider or the gateway gave it, never Code's and never Babel's, and
+   * null when the session's last turn answered. A model call that failed at the gateway leaves
+   * a receipt that exited 0 with an empty `finalMessage`, which without this reads as a model
+   * that ran and said nothing.
+   */
+  readonly failure: NonNullable<ActionResult<"readSession">["session"]>["failure"];
 }
 /**
  * WHAT `readSession` ANSWERED: where the job is, and the receipt its transcript yielded.
@@ -95,10 +103,16 @@ export interface SessionReceipt {
  * interrupted or non-zero-exit job is a successful read with a null receipt, and the consumer
  * decides from `job.state` and `job.result.exitCode` — a refusal is reserved for a job Code
  * never posted. The distinction is the whole reason a live session no longer reads as a fault.
+ *
+ * `silence` is the word Code carries for WHY there is no receipt — still running, destination
+ * full, transcript unsealed, exited non-zero, cancelled, interrupted, refused — and exactly one
+ * of `session` and `silence` is null. It is Code's word, kept verbatim so a settlement can say
+ * which of those it was rather than one absence standing for all of them.
  */
 export interface SessionRead {
   readonly job: CodeJob;
   readonly session: SessionReceipt | null;
+  readonly silence: ActionResult<"readSession">["silence"];
   readonly activity?: Pick<ActionResult<"followSession">, "inferenceUsage" | "progress">;
 }
 

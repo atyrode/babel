@@ -1311,14 +1311,70 @@ const CALL_COLUMNS = [
 ] as const;
 
 /**
- * WHAT A REFUSED ANSWER'S CALL ROW SAYS WHEN THE REASON CARRIES NO CODE THIS BUILD KNOWS.
+ * WHAT A REFUSED ANSWER'S CALL ROW SAYS WHEN THE REASON CARRIES NO WORD THIS BUILD KNOWS.
  *
- * Every reason either settlement writes is `<code>: <sentence>` built out of {@link REFUSALS},
- * so this is unreachable today. It exists because the alternative — an empty `refusal` — reads
- * as "the answer stood", which is the one thing it certainly did not do. The word is
- * deliberately outside the refusal vocabulary so a tally cannot count it as one of them.
+ * Every reason either settlement writes is `<word>: <sentence>`, the word one of {@link REFUSALS}
+ * or {@link INFRASTRUCTURE_FAILURE}, so this is unreachable today. It exists because the
+ * alternative — an empty `refusal` — reads as "the answer stood", which is the one thing it
+ * certainly did not do. The word is deliberately outside the refusal vocabulary so a tally
+ * cannot count it as one of them.
  */
 const UNCLASSIFIED_REFUSAL = "refused";
+
+/**
+ * THE WORD A SESSION SETTLES UNDER WHEN ITS MODEL CALL FAILED AND NO ANSWER CAME BACK.
+ *
+ * Code's receipt carries the transcript's own last verdict, `failure`, when the agent's final
+ * turn ended in an error rather than an answer: the word the gateway or the provider gave it.
+ * Such a session still exits 0 with an empty final message, and read as an answer it was a
+ * `schema` refusal of "no final message at all" — a verdict on the model for a lane that never
+ * delivered one, filed as spend because the meter counts the failed attempt as a call. On the
+ * preview between 2026-09-24 and 09-26, 1,280 reviews ended exactly so: one call, failed at the
+ * gateway, and a `schema` refusal on the record.
+ *
+ * It is DELIBERATELY OUTSIDE {@link REFUSALS}: nothing was submitted, so nothing was refused,
+ * and neither the tally nor a call row reads it as a refusal. It is written in the same
+ * `<word>: <sentence>` shape so {@link spentOnClaim} reads it back off a settled run row and
+ * files the claim under the park's broken-lane word, never its spend word.
+ */
+const INFRASTRUCTURE_FAILURE = "infrastructure";
+
+/** Whether a receipt's reason is the infrastructure failure {@link failedCallReason} writes. */
+function infrastructureFailed(reason: string | null): boolean {
+  return reason !== null && reason.startsWith(`${INFRASTRUCTURE_FAILURE}: `);
+}
+
+/**
+ * Whether a sealed session ended on a failed model call and left no answer: Code named a
+ * `failure` and the final message is empty. One that failed AFTER writing a final message is
+ * judged on that message like any other answer.
+ */
+function endedOnFailedCall(
+  session: SessionReceipt,
+): session is SessionReceipt & { readonly failure: string } {
+  return session.failure !== null && session.finalMessage.trim() === "";
+}
+
+/** The reason such a session settles with, quoting Code's failure verbatim. */
+function failedCallReason(subject: string, failure: string): string {
+  return (
+    `${INFRASTRUCTURE_FAILURE}: ${subject} ended on a failed model call and gave no answer: ` +
+    JSON.stringify(failure)
+  );
+}
+
+/**
+ * The reason a session that sealed no transcript settles with, carrying Code's word for why
+ * (`silence`): an unsealed transcript, a full destination and a non-zero exit have different
+ * remedies, and one sentence for all of them left every occurrence unexplained.
+ */
+function unsealedReason(subject: string, read: SessionRead): string {
+  return (
+    `${REFUSALS.empty}: ${subject} closed as ${read.job.state} and sealed no transcript` +
+    (read.silence === null ? "" : ` (${read.silence})`) +
+    ", so it submitted no result"
+  );
+}
 
 /** Only the terminal owner's meter supplies calls; transcript totals remain a fallback. */
 function sessionAccounting(read: SessionRead) {
@@ -1371,7 +1427,11 @@ function sessionCall(input: {
     costMicros: input.inference?.costMicros ?? Math.round((usage?.cost ?? 0) * 1_000_000),
     exitCode: session?.exitCode ?? null,
     closure: input.closure,
-    refusal: input.reason === "" ? "" : (refusalCode(input.reason) ?? UNCLASSIFIED_REFUSAL),
+    refusal:
+      input.reason === ""
+        ? ""
+        : (refusalCode(input.reason) ??
+          (infrastructureFailed(input.reason) ? INFRASTRUCTURE_FAILURE : UNCLASSIFIED_REFUSAL)),
     response:
       session === null
         ? { digest: "", bytes: 0 }
@@ -1920,13 +1980,13 @@ function inherit<K extends string>(
 }
 
 /**
- * The refusal code a run's receipt carries, or null when no submission was refused.
+ * The `reason` a run's receipt carries, or null when it carries none.
  *
- * The receipt's `reason` is written by `machine/evaluate.ts` as `refusalReason` spells it, and
- * read back here through the same module's `refusalCode`, which matches the closed vocabulary
- * — so an engine failure written in the same shape (`launch: …`) is not counted as a refusal.
+ * A refusal's is written by `machine/evaluate.ts` as `refusalReason` spells it and read back
+ * through the same module's `refusalCode`, which matches the closed vocabulary — so an engine
+ * failure written in the same shape (`launch: …`) is not counted as a refusal.
  */
-function receiptRefusal(payload: string | null): RefusalCode | null {
+function receiptReason(payload: string | null): string | null {
   if (payload === null) return null;
   let reason: unknown;
   try {
@@ -1934,7 +1994,7 @@ function receiptRefusal(payload: string | null): RefusalCode | null {
   } catch {
     return null;
   }
-  return typeof reason === "string" ? refusalCode(reason) : null;
+  return typeof reason === "string" ? reason : null;
 }
 
 /** The hub's own call count for a settled run, off the meter the run row kept beside the
@@ -1979,14 +2039,21 @@ function paidRefusal(calls: number | null, submitted: boolean): boolean {
  * as {@link paidRefusal} and the same order of witnesses, asked of a row rather than of a
  * settlement in flight: the meter the run row kept, what the run recorded spending, and last
  * the refused submission that only an answer could have produced.
+ *
+ * A RUN THAT ENDED ON A FAILED MODEL CALL IS ASKED FIRST, and is never spend: the meter counts
+ * the failed attempt as a call, but no answer came back for any contract to refuse, and the
+ * remedy is the lane — the gateway, the provider, the machine — never the recipe
+ * ({@link INFRASTRUCTURE_FAILURE}).
  */
 function spentOnClaim(claim: ClosedClaim): boolean {
+  const reason = receiptReason(claim.payload);
+  if (infrastructureFailed(reason)) return false;
   const calls = meteredCalls(claim.payload);
   if (calls !== null) return calls > 0;
   if ((claim.cost ?? 0) > 0 || (claim.tokens ?? 0) > 0) return true;
   // The unmetered fallback {@link paidRefusal} ends on, spelled against the row: a refused
   // submission is an artefact only an answer produces.
-  return receiptRefusal(claim.payload) !== null;
+  return reason !== null && refusalCode(reason) !== null;
 }
 
 /**
@@ -4236,11 +4303,11 @@ export function conductor(deps: ConductorDeps): Conductor {
       {};
     const projection = await project(preparation.recordId);
     if (session === null) {
-      reason =
-        `${REFUSALS.empty}: the review session closed as ${read.job.state} and sealed no transcript, ` +
-        "so it submitted no result";
+      reason = unsealedReason("the review session", read);
     } else if (session.exitCode !== 0) {
       reason = `${REFUSALS.schema}: the review session exited ${String(session.exitCode)} and submitted no result`;
+    } else if (endedOnFailedCall(session)) {
+      reason = failedCallReason("the review session", session.failure);
     } else if (projection === null) {
       reason = `${REFUSALS.unknownReference}: record ${preparation.recordId} is no longer readable`;
     } else {
@@ -4532,11 +4599,11 @@ export function conductor(deps: ConductorDeps): Conductor {
     let reason = "";
     let answers: readonly InferredTitle[] = [];
     if (session === null) {
-      reason =
-        `${REFUSALS.empty}: the session closed as ${read.job.state} and sealed no transcript, ` +
-        `so it submitted no result`;
+      reason = unsealedReason("the session", read);
     } else if (session.exitCode !== 0) {
       reason = `${REFUSALS.schema}: the session exited ${String(session.exitCode)} and submitted no result`;
+    } else if (endedOnFailedCall(session)) {
+      reason = failedCallReason("the session", session.failure);
     } else {
       const answer = readTitleAnswer(session.finalMessage, shown);
       if ("refused" in answer) reason = answer.refused;
@@ -4744,11 +4811,11 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (analysisParse !== undefined && !analysisParse.success) {
       reason = `${REFUSALS.authority}: malformed persisted analysis authority`;
     } else if (session === null) {
-      reason =
-        `${REFUSALS.empty}: the session closed as ${read.job.state} and sealed no transcript, ` +
-        `so it submitted no result`;
+      reason = unsealedReason("the session", read);
     } else if (session.exitCode !== 0) {
       reason = `${REFUSALS.schema}: the session exited ${String(session.exitCode)} and submitted no result`;
+    } else if (endedOnFailedCall(session)) {
+      reason = failedCallReason("the session", session.failure);
     } else if (material === null) {
       // The selection is how a claim is checkable at all, so it is read BEFORE the answer and
       // its absence refuses the whole submission rather than one item of it: a result admitted
@@ -5883,8 +5950,9 @@ export function conductor(deps: ConductorDeps): Conductor {
    *     or the receipt carries a refusal code from a lane that meters at the owner — is
    *     `spent`: money out of the day's allowance for an answer that did not stand.
    *   - anything else — an `abandoned` claim whose job wrote no receipt, a job that failed
-   *     before its first call, a metered job the meter says made no call at all — is
-   *     `barren`: the deployment charged a reservation and learned nothing.
+   *     before its first call, a metered job the meter says made no call at all, a session
+   *     whose model call failed and gave no answer whatever the meter counted for the attempt
+   *     — is `barren`: the deployment charged a reservation and learned nothing.
    *
    * BOTH PARK, and this is where this build parts company with the issue that asked for it.
    * #265 asked only that a paid refusal stop counting as a free failure, which it no longer
