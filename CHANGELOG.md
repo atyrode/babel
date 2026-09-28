@@ -25,6 +25,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   directory. That step's shell, run against a recording `ssh` with an order mixing all three
   directories, sends exactly that split (#477).
 
+- **A native post the hub never retained is re-posted under its id or closed, never left open.**
+  An execute refused before the hub reserved it, such as `service_bindings_protocol_unsupported`
+  from an older native owner, leaves the hub no request to resolve the job's node through, so
+  `jobs.status` tells the posting plugin `job_owner_mismatch` rather than `job_not_started`.
+  Babel read that as "cannot be read": it never re-posted the id and never counted the refusal,
+  so an attempted catalog run stayed open and the free catalog lane posted nothing (seen on the
+  preview). For the exact node Babel itself posted, both answers now mean the job was never
+  retained (`neverRetained`). The reconcile re-posts a catalog or preparation under its original
+  id on the next wake (the drain's own, for paid work). A refused attempt counts toward closing
+  its run, so a refused catalog frees the lane and a refused preparation refunds. An attempt that
+  returned no admission refusal is still never closed on status alone. Regressions answer
+  `job_owner_mismatch` and fail without the change: a refused catalog closes and the lane moves
+  on, a stranded catalog is re-posted under its id once the owner accepts it, and a preparation
+  lost in transport is re-posted under its id while a refused one refunds (#476).
+
 ## [0.5.1] - 2026-09-27
 
 ### Fixed
