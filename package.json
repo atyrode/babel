@@ -27,7 +27,7 @@
     "dev": "./pack.sh --machine && bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/dev.ts\" babel"
   },
   "dependencies": {
-    "@atyrode/manifold-code": "github:atyrode/code#20e9626fb23a9aaf508e70c1365f0bae8690917e",
+    "@atyrode/manifold-code": "github:atyrode/code#ffc107252fb1269561ad5d6c1dc3d3e0f2246c91",
     "zod": "4.4.3"
   },
   "devDependencies": {
