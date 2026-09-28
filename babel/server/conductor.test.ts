@@ -7835,7 +7835,7 @@ test("a door's read wake draws no mapping work; the next hook wake posts it with
   expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 1n }]);
 });
 
-test("a drain's own wake posts its prepared session and asks the hub about no other lane's run", async () => {
+test("a drain's own wake posts its prepared session and asks the hub about no other lane's job", async () => {
   // A settled-job hook keeps its tables only for the host's lifecycle bound. A drain's wake that
   // polled every open run first spent that bound before it reached the posting only that wake
   // may make, so the wake reads its own lane, and the posting comes before anything else.
@@ -7858,6 +7858,16 @@ test("a drain's own wake posts its prepared session and asks the hub about no ot
       ],
     );
   }
+  // …and a long-expired analysis claim whose preparation left no run: the full tick's reaper asks
+  // the hub about its job, and the drain's wake reaps its own lane only.
+  const expired = new Date(clock - POLICY.leaseSeconds * 3_000).toISOString();
+  await f.db.run(
+    `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                        reserved_cost, granted_at, expires_at)
+     VALUES ('clm_analysis', 'hyp_00000001', 'analysis:explore', 'coverage', ?, 'job_analysis',
+             'cyc_analysis', 1, 0.1, ?, ?)`,
+    [POLICY.version, expired, expired],
+  );
   const asked: string[] = [];
   const status = f.fleet.status.bind(f.fleet);
   f.fleet.status = (node) => {
@@ -7869,6 +7879,9 @@ test("a drain's own wake posts its prepared session and asks the hub about no ot
 
   expect(f.posted).toHaveLength(1);
   expect(asked).toEqual([preparation]);
+  expect(await f.db.query(`SELECT finished_at FROM claims WHERE id = 'clm_analysis'`)).toEqual([
+    { finished_at: null },
+  ]);
 });
 
 test("only a wake carrying the drain's authority draws, prepares or posts paid mapping", async () => {
@@ -8833,19 +8846,22 @@ test.each(["source", "executor", "profile", "recipe", "bounds", "lease"] as cons
   },
 );
 
-test("an expired mapping claim that crashed before its durable intent is reaped without fictional spend", async () => {
+test("an expired mapping claim that crashed before its durable intent is reaped by the drain's own wake without fictional spend", async () => {
+  // With every activity weight at zero no beat runs, so on a hub nobody is watching the drain's
+  // own wakes are the only cycles: a dead claim they never reaped would hold its reservation, and
+  // with it the drain's daily cap, for ever.
   const f = await paidMapDeployment();
   const claim = f.coordinator.claim.bind(f.coordinator);
   f.coordinator.claim = async (request) => {
     await claim(request);
     throw new Error("synthetic crash after claim");
   };
-  await expect(f.tick()).rejects.toThrow("synthetic crash after claim");
+  await expect(f.wake()).rejects.toThrow("synthetic crash after claim");
   const held = await f.db.query<{ id: string }>(`SELECT id FROM claims`);
   expect(held).toHaveLength(1);
   f.coordinator.claim = claim;
   clock += POLICY.leaseSeconds * 3_000;
-  await f.tick();
+  await f.wake();
   // Nothing was published for it, so it is withdrawn at zero rather than finished as a failure.
   expect(
     await f.db.query(
@@ -8855,7 +8871,7 @@ test("an expired mapping claim that crashed before its durable intent is reaped 
   ).toEqual([{ actual_cost: 0, outcome: "withdrawn" }]);
   expect(f.posted).toEqual([]);
   // And the same work item is drawn again under the same assignment, at the next fence.
-  await f.tick();
+  await f.wake();
   expect(f.fleet.launched).toHaveLength(1);
   expect(
     await f.db.query(`SELECT fence, finished_at FROM claims WHERE id=?`, [held[0]!.id]),

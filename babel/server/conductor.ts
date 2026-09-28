@@ -684,8 +684,9 @@ export interface Conductor {
   ): Promise<readonly string[]>;
   /**
    * Only the running mapping drains' own conductor step: their runs settled, their prepared
-   * sessions posted, then their dispatch. It is what the drain's start door and every wake of a
-   * drain's `map-prepare` job run; no review, title or catalog work rides either.
+   * sessions posted, their dead claims reaped, then their dispatch. It is what the drain's start
+   * door and every wake of a drain's `map-prepare` job run; no review, title or catalog work
+   * rides either.
    */
   tickMapDrains(): Promise<{ readonly launched: number; readonly notes: readonly string[] }>;
 }
@@ -5621,12 +5622,18 @@ export function conductor(deps: ConductorDeps): Conductor {
    * THE LEASE IS COMPARED AS TEXT because every instant this store writes is one fixed-width
    * ISO string, so text order is time order (`parkState` leans on the same fact) and a grant
    * time that is not one sorts below every real one and is taken as old, which is what it is.
+   *
+   * A MAPPING DRAIN'S OWN WAKE REAPS ITS LANE'S CLAIMS AND NO OTHER (`lane`). With every activity
+   * weight at zero no beat runs, so on a hub nobody is watching that wake is the only cycle, and
+   * a mapping claim it never reaped would keep its reservation — and the mapping daily cap it
+   * counts against — for ever; an analysis claim is another lane's to ask the hub about.
    */
   async function reapClaims(
     at: number,
     leaseSeconds: number,
     settled: SettledClaim[],
     notes: string[],
+    lane?: "mapping",
   ): Promise<void> {
     const stale = new Date(at - Math.max(leaseSeconds, 0) * 1000).toISOString();
     // One more than the bound is read so the note can say whether anything was left, without a
@@ -5639,7 +5646,7 @@ export function conductor(deps: ConductorDeps): Conductor {
                         AND r.closure IS NULL) AS open_runs,
                       (SELECT MAX(r.unreadable) FROM runs r WHERE r.job_id = c.job_id) AS silent
                  FROM claims c
-                WHERE c.finished_at IS NULL)
+                WHERE c.finished_at IS NULL AND (? IS NULL OR c.role LIKE 'mapping:%'))
         WHERE NOT ((role LIKE 'analysis:%' OR role LIKE 'mapping:%') AND open_runs > 0)
           AND ((job_id IS NULL AND granted_at <= ?)
            OR (job_id IS NOT NULL AND runs = 0 AND granted_at <= ?)
@@ -5647,7 +5654,7 @@ export function conductor(deps: ConductorDeps): Conductor {
            OR (job_id IS NOT NULL AND COALESCE(silent, 0) >= ?))
         ORDER BY granted_at
         LIMIT ?`,
-      [stale, stale, UNREPORTED_CYCLES, CLAIMS_REAPED_PER_TICK + 1],
+      [lane ?? null, stale, stale, UNREPORTED_CYCLES, CLAIMS_REAPED_PER_TICK + 1],
     );
     let released = 0;
     for (const orphan of orphans.slice(0, CLAIMS_REAPED_PER_TICK)) {
@@ -6357,7 +6364,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       const settled: SettledClaim[] = [];
       // A prepared session is posted only once its preparation's run is settled, and a
       // settlement is what wakes this: the preparation that just finished is read first, then
-      // the posting that waited on it, then the slots that opened.
+      // the posting that waited on it, then the dead claims of this lane, then the slots that
+      // opened — the full tick's own order.
       await reconcileRuns(
         at,
         [],
@@ -6370,6 +6378,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         },
       );
       await reconcileMappingPreparations(settled, notes);
+      if (policy.enabled) await reapClaims(at, policy.leaseSeconds, settled, notes, "mapping");
       const launched = await dispatchMapDrains(policy, at, cycleRunId, [], settled, [], notes);
       return { launched, notes };
     },

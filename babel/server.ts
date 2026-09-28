@@ -778,8 +778,10 @@ async function cycle(
  * prepared session, which spends the drain's own credential — so on a preview every
  * preparation finished and not one session was posted. This wake is therefore the drain's lane
  * alone, in the order posting needs: its runs settled and its prepared sessions posted, then
- * its free slots refilled (`Conductor.tickMapDrains`), then the mapping drains' controller, then
- * the cadences. The rest of the loop is a full cycle's: a door the operator knocks on, the
+ * its lane's dead claims reaped and its free slots refilled (`Conductor.tickMapDrains`), then
+ * the mapping drains' controller, then the cadences. The reap is here because with every
+ * activity weight at zero no beat runs, and on a hub nobody is watching this wake is the only
+ * cycle there is. The rest of the loop is a full cycle's: a door the operator knocks on, the
  * beat's own settlement.
  */
 async function mapDrainCycle(
