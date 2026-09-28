@@ -1441,6 +1441,26 @@ describe("runs and the policy", () => {
     ]);
   });
 
+  test("a policy written before mapping was a standing activity reads its map weight as zero", async () => {
+    await insert(harness.db, "policies", {
+      version: "pol-4",
+      seq: 4,
+      actor_id: "operator",
+      reason: "before the map weight",
+      payload: JSON.stringify({
+        activityWeights: { review: 1, explore: 0.2, challenge: 0, synthesize: 0 },
+      }),
+      recorded_at: stamp(NOW),
+    });
+    expect((await harness.store.policy()).activityWeights).toEqual({
+      review: 1,
+      explore: 0.2,
+      challenge: 0,
+      synthesize: 0,
+      map: 0,
+    });
+  });
+
   test("the overlay in force is reported against the bound admission reads, never a second one", async () => {
     // `pol-3` is a Go-era row: it spells its numbers with underscores and names no per-machine
     // bound, so the bound in force is the batch it was written with — four. The strip's "from"

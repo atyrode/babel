@@ -1081,7 +1081,7 @@ test("an abandoned review drawn again is granted at the next fence, its dead epo
   // Reviews only: an analysis assignment names itself by its retry, not by an ordinal.
   const { db, coord } = await deployment({
     enabled: true,
-    activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0 },
+    activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0, map: 0 },
   });
   const id = await record(db, "hyp_00000001", "hypothesis", 40);
   await filing(db, id, "ent_0000000a");
@@ -2189,7 +2189,7 @@ test("prepare-to-Code binding requires live exact ownership and the expected pre
 test("activity weights, not the number of review lanes, determine the stage share", async () => {
   const { db, coord } = await deployment(
     stagePolicy("challenge", {
-      activityWeights: { review: 0.1, explore: 0, challenge: 1, synthesize: 0 },
+      activityWeights: { review: 0.1, explore: 0, challenge: 1, synthesize: 0, map: 0 },
     }),
   );
   await catalog(db, "omp/a");
@@ -2851,7 +2851,7 @@ test("mapping requires selected enabled recipes from the shared library and a va
 
 test("a standing draw never offers mapping, even with review enabled", async () => {
   const policy = mapPolicy({
-    activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0 },
+    activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0, map: 0 },
   });
   const { db, coord } = await deployment(policy);
   await mapCapture(db, policy, "standing");
