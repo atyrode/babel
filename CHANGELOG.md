@@ -9,6 +9,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **A transcript-map session can run on a model only its provider's live listing carries.**
+  `CODE_REV` and `@atyrode/manifold-code` move to atyrode/code#223 (`ffc10725`), whose omp
+  closure is atyrode/manifold-omp#88 (`1ce18ee1`); Manifold stays at `2229a2fa`. A map's second
+  job is a material-only Code session, `atyrode.omp.material-session`, and at the previous
+  closure omp's SDK host looked the profile's `<provider>/<id>` up only in its bundled catalog:
+  on the preview, a profile naming an OpenRouter model that only OpenRouter's live listing
+  carries had every such session refused `omp_resume_model_unavailable` before any inference
+  call, while the same profile's ordinary Code session ran. The host now also admits the
+  gateway listing's own `<provider>/<id>` row, matched exactly and only under the configured
+  provider (atyrode/manifold-omp `plugins/sdk-host/sdk-admission.ts:30-34` at `1ce18ee1`). There
+  are no Babel source changes; the release closure now builds that omp. The machine stamp in
+  `babel/manifest.json` moves to the `machine.js` that `main` already builds, whose stamp was
+  last refreshed before #479 and which is byte-identical under both Code pins, and the gate
+  passes against the new closure.
+
 ## [0.5.3] - 2026-09-28
 
 ### Fixed
