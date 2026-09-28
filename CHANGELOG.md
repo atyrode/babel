@@ -40,6 +40,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   on, a stranded catalog is re-posted under its id once the owner accepts it, and a preparation
   lost in transport is re-posted under its id while a refused one refunds (#476).
 
+- **Recall lists a snapshot once, not on every request.** Every search and every
+  transcript-map `/mapping` request listed every `babel` snapshot with `restic ls` again: on
+  the preview's 553 snapshots (about 15M nodes) that is some 18 minutes a request, so the map
+  catalog's 120-second client gave up and maps could not start. A snapshot never changes, so the
+  machine now remembers what its listing claimed — the node count and each claimed capture, one
+  gzipped file per snapshot — beside Recall's index in its owner-private cache, keyed on the
+  snapshot and on the claim rules (`CLAIM_RULES`, bumped whenever an adapter claims
+  differently). Only a snapshot it has not seen is listed; an absent, unreadable, oversized or
+  foreign-rules memory is listed again, never trusted. What is kept is the raw claim, so policy,
+  subjects and request filters still apply on replay, and `listedSnapshots`/`listedEntries`
+  count only restic's work. Real-restic regressions show a second request and a restart list
+  nothing already remembered and return identical results, a new snapshot alone is listed, a
+  corrupt or foreign memory is relisted, and a changed policy still filters a replay; 20
+  synthetic snapshots of 300 sessions each took 10.6 s cold and 0.5 s warm.
+
 ## [0.5.1] - 2026-09-27
 
 ### Fixed

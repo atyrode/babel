@@ -1,8 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { gunzipSync, gzipSync } from "node:zlib";
 import {
   RECALL_MAX_PAYLOAD_BYTES,
   RECALL_MAX_RESULT_BYTES,
@@ -167,6 +168,192 @@ test(
       expect(stale.cost.fetchedFiles).toBe(0);
       expect(stale.hits).toEqual([]);
     });
+  },
+  TIMEOUT,
+);
+
+/** The snapshot listings a Recall cache remembers, relative to it. */
+async function rememberedListings(cacheDir: string): Promise<string[]> {
+  return (await readdir(cacheDir, { recursive: true }))
+    .filter((path) => path.endsWith(".json.gz"))
+    .sort();
+}
+
+/** A synthetic listing changed under the same snapshot id stands for a first listing of it:
+ *  forget the remembered one, which a real (immutable) snapshot never needs. */
+async function forgetListings(cacheDir: string): Promise<void> {
+  for (const path of await rememberedListings(cacheDir)) await rm(join(cacheDir, path));
+}
+
+test(
+  "remembered snapshot listings serve later requests and restarts without listing again",
+  async () => {
+    await fixture(async ({ archive, repo, cacheDir, home, clock }) => {
+      const listed = spyOn(repo, "lsTo");
+      const inventory = { kind: "map-inventory", maxCaptures: 64 } as const;
+      const cold = await archive.execute("public", search());
+      expect(cold.cost.listedSnapshots).toBe(1);
+      expect(cold.cost.listedEntries).toBeGreaterThan(0);
+      const [kept] = await rememberedListings(cacheDir);
+      if (kept === undefined) throw new Error("missing remembered listing");
+      // Owner-only, as the rest of Recall's cache: a listing names every archived session path.
+      expect((await stat(dirname(join(cacheDir, kept)))).mode & 0o777).toBe(0o700);
+      expect((await stat(join(cacheDir, kept))).mode & 0o777).toBe(0o600);
+      const coldMap = await archive.executeMap("public", inventory);
+      const reopened = await createRecallArchive({
+        repo,
+        cacheDir,
+        policy: POLICY,
+        temporaryDir: home,
+        now: () => clock.now,
+      });
+      try {
+        const warm = await reopened.execute("public", search({ maxFetchBytes: 0 }));
+        const warmMap = await reopened.executeMap("public", inventory);
+        expect(listed).toHaveBeenCalledTimes(1);
+        for (const { cost } of [coldMap, warm, warmMap])
+          expect(cost).toMatchObject({ listedSnapshots: 0, listedEntries: 0 });
+        expect(warm.refusal).toBeNull();
+        expect(warm.coverage).toEqual(cold.coverage);
+        expect(warm.hits).toEqual(cold.hits);
+        expect(warmMap.refusal).toBeNull();
+        expect(warmMap.entries).toHaveLength(1);
+        expect(warmMap.entries).toEqual(coldMap.entries);
+        expect(warmMap.context).toEqual(coldMap.context);
+      } finally {
+        await reopened.close();
+      }
+    });
+  },
+  TIMEOUT,
+);
+
+test(
+  "a new snapshot is listed and remembered while remembered ones replay",
+  async () => {
+    await fixture(async ({ archive, repo, source }) => {
+      const [first] = await repo.snapshots();
+      if (first === undefined) throw new Error("missing snapshot");
+      const listed = spyOn(repo, "lsTo");
+      await archive.execute("public", search());
+      await Bun.write(source, HEADER + message("needle in a newer capture"));
+      const { snapshotId } = await repo.backup([dirname(dirname(source))], {
+        host: HOST,
+        tags: [BABEL_TAG],
+      });
+      const newer = await archive.execute("public", search());
+      expect(newer.cost.listedSnapshots).toBe(1);
+      expect(newer.hits.map((hit) => hit.locator.snapshot)).toEqual([snapshotId]);
+      expect(newer.hits[0]?.excerpt.text).toContain("newer capture");
+      const again = await archive.execute("public", search({ maxFetchBytes: 0 }));
+      expect(again.cost.listedSnapshots).toBe(0);
+      expect(again.hits).toEqual(newer.hits);
+      // Retained history comes from both memories: the older capture is replayed, not lost.
+      const history = await archive.executeMap("public", {
+        kind: "map-inventory",
+        maxCaptures: 64,
+      });
+      expect(history.cost.listedSnapshots).toBe(0);
+      expect(history.entries.map((entry) => entry.capture.snapshot).sort()).toEqual(
+        [first.id, snapshotId].sort(),
+      );
+      expect(listed.mock.calls.map(([id]) => id)).toEqual([first.id, snapshotId]);
+    });
+  },
+  TIMEOUT,
+);
+
+test(
+  "an unreadable or foreign remembered listing is listed again, never trusted",
+  async () => {
+    await fixture(async ({ archive, repo, cacheDir }) => {
+      const listed = spyOn(repo, "lsTo");
+      const cold = await archive.execute("public", search());
+      const remembered = await rememberedListings(cacheDir);
+      expect(remembered).toHaveLength(1);
+      const path = join(cacheDir, remembered[0]!);
+      const original = await Bun.file(path).bytes();
+      const document = JSON.parse(gunzipSync(original).toString());
+      // A widened directory is narrowed again by the next write into it.
+      await chmod(dirname(path), 0o755);
+      // Each would hide the session if it were believed.
+      const variants: [string, Uint8Array | string][] = [
+        ["truncated", original.subarray(0, Math.floor(original.byteLength / 2))],
+        ["not gzip", "not a remembered listing"],
+        ["not JSON", gzipSync("{")],
+        ["other rules", gzipSync(JSON.stringify({ ...document, version: "other", captures: [] }))],
+        [
+          "other snapshot",
+          gzipSync(JSON.stringify({ ...document, snapshot: "0".repeat(64), captures: [] })),
+        ],
+        ["malformed capture", gzipSync(JSON.stringify({ ...document, captures: [["omp"]] }))],
+      ];
+      for (const [label, bytes] of variants) {
+        await Bun.write(path, bytes);
+        const relisted = await archive.execute("public", search({ maxFetchBytes: 0 }));
+        expect({ label, listed: relisted.cost.listedSnapshots }).toEqual({ label, listed: 1 });
+        expect(relisted.hits).toEqual(cold.hits);
+        // Relisting replaces the memory whole.
+        expect(gunzipSync(await Bun.file(path).bytes())).toEqual(gunzipSync(original));
+        expect((await stat(path)).mode & 0o777).toBe(0o600);
+        expect((await stat(dirname(path))).mode & 0o777).toBe(0o700);
+      }
+      expect(listed).toHaveBeenCalledTimes(1 + variants.length);
+      // The control: a well-formed memory under the current rules IS what a request reads.
+      await Bun.write(path, gzipSync(JSON.stringify({ ...document, captures: [] })));
+      const replayed = await archive.execute("public", search({ maxFetchBytes: 0 }));
+      expect(replayed.cost.listedSnapshots).toBe(0);
+      expect(replayed.coverage.eligible).toBe(0);
+    });
+  },
+  TIMEOUT,
+);
+
+test(
+  "a remembered listing is raw: filters, policy and subjects still apply on replay",
+  async () => {
+    const subject = POLICY.subjects[0]!;
+    await fixture(
+      async ({ archive, repo, cacheDir, home, clock }) => {
+        const listed = spyOn(repo, "lsTo");
+        const refused = await archive.execute("public", search());
+        expect(refused.cost.listedSnapshots).toBe(1);
+        expect(refused.refusedSubjects).toEqual([subject.name]);
+        expect(refused.coverage.eligible).toBe(0);
+        const reopen = (subjects: RecallPolicy["subjects"]) =>
+          createRecallArchive({
+            repo,
+            cacheDir,
+            policy: { ...POLICY, subjects },
+            temporaryDir: home,
+            now: () => clock.now,
+          });
+        const permitted = await reopen([subject]);
+        try {
+          const codex = await permitted.execute("public", search({ filter: { harness: "codex" } }));
+          expect(codex.coverage.eligible).toBe(0);
+          const found = await permitted.execute("public", search());
+          expect(found.refusedSubjects).toEqual([]);
+          expect(found.coverage.eligible).toBe(1);
+          expect(found.hits[0]?.excerpt.text).toContain("archived content");
+          for (const { cost } of [codex, found]) expect(cost.listedSnapshots).toBe(0);
+        } finally {
+          await permitted.close();
+        }
+        const narrowed = await reopen([{ ...subject, selectorPrefix: "omp/another-project/" }]);
+        try {
+          const unclassified = await narrowed.execute("public", search());
+          expect(unclassified.cost.listedSnapshots).toBe(0);
+          expect(unclassified.refusedSubjects).toEqual([]);
+          expect(unclassified.coverage.eligible).toBe(0);
+          expect(unclassified.hits).toEqual([]);
+        } finally {
+          await narrowed.close();
+        }
+        expect(listed).toHaveBeenCalledTimes(1);
+      },
+      { policy: { ...POLICY, subjects: [{ ...subject, sensitivity: 3 }] } },
+    );
   },
   TIMEOUT,
 );
@@ -1175,7 +1362,8 @@ test("snapshot freshness excludes unknown hosts and follows the enumeration host
     expect(unfiltered.matches).toBe(1);
     const filtered = await archive.execute("public", search({ filter: { host: HOST } }));
     expect(filtered.newestSnapshotAt).toBe(TIME);
-    expect(filtered.cost.listedSnapshots).toBe(1);
+    // Remembered by the unfiltered request: replayed, not listed again.
+    expect(filtered.cost.listedSnapshots).toBe(0);
     const unknown = await archive.execute("public", search({ filter: { host: unknownHost } }));
     expect(unknown.refusal).toBeNull();
     expect(unknown.newestSnapshotAt).toBeNull();
@@ -1213,12 +1401,16 @@ test("archived history eligibility is listing-order independent and ignores live
     expect(first.coverage.eligible).toBe(1);
     expect(first.hits[0]?.locator.session).toBe("codex/state");
     entries.reverse();
+    await forgetListings(join(home, "cache"));
     const reversed = await archive.execute("public", search());
+    expect(reversed.cost.listedSnapshots).toBe(1);
     expect(reversed.hits).toEqual(first.hits);
     // A live sibling cannot substitute for an absent directory in this snapshot.
     await mkdir(join(root, "sessions"), { recursive: true });
     entries.splice(0, 1);
+    await forgetListings(join(home, "cache"));
     const absent = await archive.execute("public", search());
+    expect(absent.cost.listedSnapshots).toBe(1);
     expect(absent.coverage.eligible).toBe(0);
     expect(absent.matches).toBe(0);
   } finally {
@@ -1401,8 +1593,10 @@ test("archive session ownership is exact to recorded roots, not closure-file suf
     expect(first.hits.map((hit) => hit.locator.path).sort()).toEqual([...eligible].sort());
     expect(fetched.sort()).toEqual([...eligible].sort());
     entries.reverse();
+    await forgetListings(home);
     const reversed = await archive.execute("public", search({ maxFetchBytes: 0 }));
     expect(reversed.refusal).toBeNull();
+    expect(reversed.cost.listedSnapshots).toBe(1);
     expect(reversed.hits.map((hit) => hit.locator.path).sort()).toEqual([...eligible].sort());
     expect(reversed.cost.fetchedFiles).toBe(0);
   } finally {

@@ -4726,6 +4726,8 @@ export const RecallResultSchema = z.strictObject({
     fetchedBytes: recallBytes,
     cacheHits: recallBytes,
     indexedFiles: recallBytes,
+    /** Snapshots restic listed for this request, and the nodes it reported. A snapshot whose
+     *  listing the machine already remembers is replayed from its cache and counted in neither. */
     listedSnapshots: recallBytes,
     listedEntries: recallBytes,
     replayedBytes: recallBytes,

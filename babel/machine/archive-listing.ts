@@ -12,10 +12,22 @@
     session only beside its `sessions/` directory, and restic lists a directory's members in
     name order, so `history.jsonl` precedes `sessions/`. A claim that asks whether a sibling
     exists is therefore decided once the whole listing is known, and not before.
+
+  A snapshot never changes, so neither does its listing: only the rules that claim from it can.
+  Recall reads the whole archive on every request, and a large archive's listings are its cost —
+  minutes, repeated — so a listing may be REMEMBERED (`listingMemory`): the node count and the
+  claims `capturesOf` reported, nothing a listing would not already say, kept beside Recall's
+  index in its owner-private cache and keyed on the snapshot and the claim rules. It is raw: no
+  policy, subject or request filter has touched it, so every one of them still applies on replay.
+  It is convenience state; an absent, unreadable or foreign one costs one listing.
 */
 
-import { CaptureInstantSchema } from "../contract.ts";
-import { claim, type SessionRef } from "./adapters/index.ts";
+import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { gunzipSync, gzipSync } from "node:zlib";
+import { z } from "zod";
+import { CaptureInstantSchema, HarnessSchema, SnapshotIdSchema } from "../contract.ts";
+import { CLAIM_RULES, claim, sessionRef, type SessionRef } from "./adapters/index.ts";
 import { BABEL_TAG, type ArchivedEntry, type Repo, type Snapshot } from "./restic.ts";
 
 /** The longest archived path a capture may name (`ArchivePathSchema`); a longer one is listed
@@ -101,4 +113,126 @@ export async function capturesOf(
     const session = claim(node.path, (path) => directories.has(path), roots);
     if (session !== null) visit.capture(session, node);
   }
+}
+
+/** What one listing of a snapshot reported through {@link capturesOf}. */
+export interface SnapshotListing {
+  /** Every node it held. */
+  readonly entries: number;
+  /** Every claim, in the order it was reported. */
+  readonly captures: readonly { readonly session: SessionRef; readonly node: ArchivedEntry }[];
+}
+
+/** Snapshot listings remembered in one owner-private directory. */
+export interface ListingMemory {
+  /** The listing remembered for this snapshot under the current rules, or null when there is
+   *  none, it cannot be read, or it was claimed under other rules. Never throws. */
+  recall(snapshotId: string): Promise<SnapshotListing | null>;
+  /** Remembers one completed listing in place of any before it. Never throws: a listing that
+   *  cannot be kept is listed again next time. */
+  keep(snapshotId: string, listing: SnapshotListing): Promise<void>;
+}
+
+/**
+ * What a remembered listing is keyed on besides its snapshot: the rules that turned it into
+ * captures. The first part is {@link capturesOf}'s own (the path bound, deferred sibling
+ * claims) and this file's spelling of a memory — bump it whenever either changes — and the
+ * second is the adapters' ({@link CLAIM_RULES}). Babel's release is deliberately not part of
+ * it: a release that changes no rule would otherwise list the whole archive again.
+ */
+const LISTING_RULES = `babel.archive-listing/1+${CLAIM_RULES}`;
+
+/** The largest remembered listing, as JSON text: some hundred thousand captures. A listing
+ *  past it is not kept, and is listed again on every read. */
+const MAX_REMEMBERED_BYTES = 32 * 1024 * 1024;
+
+/** One remembered listing. A capture is `[harness, sourceId, path, size, modifiedAt]`: a
+ *  claimed node is always a file whose path is its session's primary path, and the selector is
+ *  spelled from the harness and the source id, so a replay rebuilds exactly what was claimed. */
+const RememberedSchema = z.strictObject({
+  version: z.literal(LISTING_RULES),
+  snapshot: SnapshotIdSchema,
+  entries: z.number().int().nonnegative(),
+  captures: z.array(
+    z.tuple([
+      HarnessSchema,
+      z.string().min(1),
+      z.string().min(1).max(MAX_ARCHIVED_PATH),
+      z.number().int().nonnegative(),
+      z.string(),
+    ]),
+  ),
+});
+
+/** The memory kept in `directory`, one gzipped file per snapshot, written whole or not at all. */
+export function listingMemory(directory: string): ListingMemory {
+  const pathOf = (snapshotId: string): string | null =>
+    SnapshotIdSchema.safeParse(snapshotId).success
+      ? join(directory, `${snapshotId}.json.gz`)
+      : null;
+  return {
+    async recall(snapshotId) {
+      const path = pathOf(snapshotId);
+      if (path === null) return null;
+      try {
+        const packed = await Bun.file(path)
+          .slice(0, MAX_REMEMBERED_BYTES + 1)
+          .arrayBuffer();
+        if (packed.byteLength > MAX_REMEMBERED_BYTES) return null;
+        const parsed = RememberedSchema.safeParse(
+          JSON.parse(
+            new TextDecoder("utf-8", { fatal: true }).decode(
+              gunzipSync(packed, { maxOutputLength: MAX_REMEMBERED_BYTES }),
+            ),
+          ),
+        );
+        if (!parsed.success || parsed.data.snapshot !== snapshotId) return null;
+        return {
+          entries: parsed.data.entries,
+          captures: parsed.data.captures.map(([harness, sourceId, path, size, modifiedAt]) => ({
+            session: sessionRef(harness, sourceId, path),
+            node: { path, type: "file", size, modifiedAt },
+          })),
+        };
+      } catch {
+        return null;
+      }
+    },
+    async keep(snapshotId, listing) {
+      const path = pathOf(snapshotId);
+      if (path === null) return;
+      const captures: z.infer<typeof RememberedSchema>["captures"] = [];
+      for (const { session, node } of listing.captures) {
+        const rebuilt = sessionRef(session.harness, session.sourceId, node.path);
+        // A claim this spelling cannot replay exactly is listed every time instead.
+        if (
+          node.type !== "file" ||
+          rebuilt.selector !== session.selector ||
+          rebuilt.primaryPath !== session.primaryPath
+        )
+          return;
+        captures.push([session.harness, session.sourceId, node.path, node.size, node.modifiedAt]);
+      }
+      const document = JSON.stringify({
+        version: LISTING_RULES,
+        snapshot: snapshotId,
+        entries: listing.entries,
+        captures,
+      });
+      if (Buffer.byteLength(document) > MAX_REMEMBERED_BYTES) return;
+      const temporary = `${path}.${crypto.randomUUID()}`;
+      try {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        // mkdir's mode reaches only a directory it creates; an existing one is narrowed here.
+        await chmod(directory, 0o700);
+        // Created exclusively and owner-only: the umask can narrow this mode, never widen it.
+        await writeFile(temporary, gzipSync(document), { mode: 0o600, flag: "wx" });
+        await rename(temporary, path);
+      } catch {
+        // The memory is an optimization, never a condition of reading the archive.
+      } finally {
+        await rm(temporary, { force: true }).catch(() => undefined);
+      }
+    },
+  };
 }
