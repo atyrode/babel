@@ -17,6 +17,8 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx, GuestDatabase, GuestHookJobs } from "@manifold/plugin-kit/server";
+import { ActionCallError } from "@manifold/plugin-kit/errors";
+import type { SqlParam, SqlStatement } from "@manifold/plugin";
 import type { SettledJob } from "@manifold/protocol";
 import {
   ACTIONS,
@@ -37,7 +39,7 @@ import { upsertSessionRows } from "./store/sessions.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
 import { PolicySchema } from "./store/coordinator.ts";
 import { insertDrain, readDrain } from "./store/drains.ts";
-import type { JobLaunch, ScheduleTiming } from "./server/conductor.ts";
+import { CONDUCTOR_SCHEDULE_ID, type JobLaunch, type ScheduleTiming } from "./server/conductor.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -49,8 +51,14 @@ class Jobs {
   statuses = 0;
   listed = 0;
   followed = 0;
-  /** The cadences this fake has been asked to register, newest last. */
-  readonly scheduled: { scheduleId: string; revision: string; machineId: string }[] = [];
+  /** The cadences this fake has been asked to register, newest last, as `schedules()` lists them. */
+  readonly scheduled: {
+    scheduleId: string;
+    revision: string;
+    machineId: string;
+    intervalMs?: number;
+    expiresAt?: number;
+  }[] = [];
 
   describe(): unknown {
     this.described += 1;
@@ -145,11 +153,19 @@ class Jobs {
     return [...this.scheduled];
   }
 
-  schedule(args: { scheduleId: string; revision: string; machineId: string }): unknown {
+  schedule(args: {
+    scheduleId: string;
+    revision: string;
+    machineId: string;
+    intervalMs?: number;
+    expiresAt?: number;
+  }): unknown {
     this.scheduled.push({
       scheduleId: args.scheduleId,
       revision: args.revision,
       machineId: args.machineId,
+      ...(args.intervalMs === undefined ? {} : { intervalMs: args.intervalMs }),
+      ...(args.expiresAt === undefined ? {} : { expiresAt: args.expiresAt }),
     });
     return {};
   }
@@ -1350,4 +1366,368 @@ test("enabling a store made before archive captures adds their columns, the labe
   expect(await db.query(`SELECT host, archive_label, archive_path FROM sessions`)).toEqual([
     { host: MACHINE, archive_label: "dev-01", archive_path: row.archive_path },
   ]);
+});
+
+/*
+  WHICH ACCOUNT A WAKE ACTS FOR (#470). Code and omp derive a keyed session's job id from the
+  posting key AND the calling principal, so a posting whose answer was lost is recovered only
+  by an ask made for the same account. A door knows its principal; an enable and a settled-job
+  hook do not, so each wake's chain is derived here: a door's from its principal, an enable's
+  fresh, a settlement's from the job that settled. These drive the plugin as the host does and
+  watch what Code is asked.
+*/
+
+/** A session as Code answers one it posted, in the shape its own result schema takes. */
+function codeJob(jobId: string): unknown {
+  return {
+    jobId,
+    machineId: MACHINE,
+    operationId: "atyrode.omp.session",
+    pluginId: "atyrode.omp",
+    installationRevision: "1",
+    artifactSha256: "a".repeat(64),
+    inputDigest: "b".repeat(64),
+    resourceBindingDigest: "c".repeat(64),
+    inputs: [],
+    state: "queued",
+    nextInputSeq: null,
+    result: null,
+    authority: {
+      origin: { kind: "action", traceId: "t1", door: null },
+      requester: "operator",
+      executor: null,
+      decision: null,
+    },
+  };
+}
+
+/**
+ * CODE, AS `ctx.actions` REACHES IT. Like Code and omp, a keyed ask returns the session its key
+ * already posted and buys nothing, and an adopt-only ask never posts. `bought` counts sessions
+ * paid for; `asked` is every posting ask, keyed or not; `onBought` runs once a session is bought
+ * and before Code's answer is returned, which is where a test closes the hook's lease.
+ */
+function code(): {
+  readonly actions: GuestCtx["actions"];
+  readonly asked: { postingKey?: string; adoptOnly?: boolean }[];
+  bought: number;
+  onBought: () => void;
+} {
+  const keyed = new Map<string, unknown>();
+  const fake = {
+    asked: [] as { postingKey?: string; adoptOnly?: boolean }[],
+    bought: 0,
+    onBought: (): void => undefined,
+    actions: {
+      call: async ({ action, input }: { action: string; input: unknown }): Promise<unknown> => {
+        await Promise.resolve();
+        if (action === "listProfiles")
+          return {
+            profiles: [
+              {
+                containerId: "ctr_workbench",
+                revision: 1,
+                selected: null,
+                machineId: null,
+                accounts: [{ provider: "anthropic", identityKey: "operator" }],
+                resolved: true,
+              },
+            ],
+          };
+        if (action !== "runSession") throw new Error(`this test asks Code nothing but posting`);
+        const ask = input as { postingKey?: string; adoptOnly?: boolean };
+        fake.asked.push({
+          ...(ask.postingKey === undefined ? {} : { postingKey: ask.postingKey }),
+          ...(ask.adoptOnly === true ? { adoptOnly: true } : {}),
+        });
+        const found = ask.postingKey === undefined ? undefined : keyed.get(ask.postingKey);
+        if (found !== undefined) return found;
+        if (ask.adoptOnly === true)
+          throw new ActionCallError(
+            "refused: atyrode.babel -> atyrode.code.runSession (code_omp_posting_unknown)",
+          );
+        fake.bought += 1;
+        const job = codeJob(`omp_${String(fake.bought)}`);
+        if (ask.postingKey !== undefined) keyed.set(ask.postingKey, job);
+        fake.onBought();
+        return job;
+      },
+    } as unknown as GuestCtx["actions"],
+  };
+  return fake;
+}
+
+/**
+ * THE TABLES A SETTLED-JOB HOOK IS SERVED, whose lease the host closes at its lifecycle bound
+ * whether the hook has returned or not (#470): after that, nothing the hook writes lands.
+ */
+function leased(lease: { closed: boolean }): GuestDatabase {
+  const open = (): void => {
+    if (lease.closed) throw new Error("the settled hook's data lease is closed");
+  };
+  const { db } = harness;
+  return {
+    pluginId: BABEL_PLUGIN_ID,
+    query: async (sql: string, params?: readonly SqlParam[]) => {
+      open();
+      return await db.query(sql, params);
+    },
+    run: async (sql: string, params?: readonly SqlParam[]) => {
+      open();
+      return await db.run(sql, params);
+    },
+    batch: async (statements: readonly SqlStatement[]) => {
+      open();
+      return await db.batch(statements);
+    },
+  } as unknown as GuestDatabase;
+}
+
+/** One wake's context, acting for `principal` where a door would, reaching Code through `actions`. */
+function wake(
+  database: GuestDatabase,
+  actions: GuestCtx["actions"],
+  principal = "operator",
+): GuestCtx {
+  return { ...context(database, jobs), principal: { id: principal }, actions } as GuestCtx;
+}
+
+/** The index a settled preparation sealed over one catalogued session, as its receipt carries it. */
+const SEALED = {
+  closure: "completed",
+  material: {
+    schema: "babel.material/1",
+    preparationId: "prep-470",
+    preparedAt: stamp(NOW),
+    machineId: MACHINE,
+    sessions: [
+      {
+        selector: "omp/s1",
+        harness: "omp",
+        sourceId: "s1",
+        captureDigest: "c".repeat(64),
+        sourceDigest: "d".repeat(64),
+        file: "0001-omp-s1.jsonl",
+        records: 12,
+        bytes: 1024,
+      },
+    ],
+  },
+};
+
+test("a door-launched explore's settlement recovers its own lost posting, and no other account's wake does", async () => {
+  // The operator's press posts the preparation; it is still running when his own cycle looks.
+  await insert(harness.db, "sessions", {
+    selector: "omp/s1",
+    host: MACHINE,
+    harness: "omp",
+    source_id: "s1",
+    title: "a session that named itself",
+    kind: "operator",
+    live: 0,
+    archive_label: "dev-01",
+    archive_path: "/home/operator/.omp/agent/sessions/s1.jsonl",
+    snapshot_id: "5".repeat(64),
+    archived_at: new Date(Date.now() - HOUR).toISOString(),
+    modified_at: new Date(Date.now() - HOUR).toISOString(),
+    size: 1000,
+    seen_at: stamp(NOW),
+  });
+  const executed: string[] = [];
+  jobs.execute = ((args: { jobId: string }): unknown => {
+    executed.push(args.jobId);
+    return {
+      jobId: args.jobId,
+      machineId: MACHINE,
+      operationId: OPERATIONS.prepare,
+      state: "queued",
+    };
+  }) as Jobs["execute"];
+  const status = jobs.status.bind(jobs);
+  jobs.status = (node: { jobId: string }): unknown =>
+    executed.includes(node.jobId)
+      ? { jobId: node.jobId, machineId: MACHINE, operationId: OPERATIONS.prepare, state: "running" }
+      : status(node);
+  const fake = code();
+  const launched = (await plugin.handlers[ACTIONS.launch]!(
+    wake(harness.db as unknown as GuestDatabase, fake.actions),
+    asLaunchRequest({
+      machineId: MACHINE,
+      preset: "read-whats-new",
+      profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+    }) as never,
+  )) as { runId: string; jobId: string };
+  expect(executed).toEqual([launched.jobId]);
+  expect(fake.asked).toEqual([]);
+  // The preparation settles; its receipt is ingested, and the hook its settlement causes posts
+  // the session — and overruns its lease once Code has bought it, before the job id is written.
+  await harness.db.run(`UPDATE runs SET closure = 'completed', payload = ? WHERE job_id = ?`, [
+    JSON.stringify(SEALED),
+    launched.jobId,
+  ]);
+  const lease = { closed: false };
+  fake.onBought = () => {
+    lease.closed = true;
+  };
+  const prepared = settled({ jobId: launched.jobId, operationId: OPERATIONS.prepare });
+  await Promise.resolve(
+    plugin.lifecycle?.onJobSettled?.(wake(leased(lease), fake.actions) as never, prepared),
+  ).catch(() => undefined);
+  fake.onBought = () => undefined;
+  expect(fake.bought).toBe(1);
+  expect(fake.asked).toEqual([{ postingKey: launched.runId }]);
+
+  // Another principal's door, a settlement nothing recorded a chain for, and a new enable each
+  // act for another account: none of them asks about this posting.
+  await plugin.handlers[ACTIONS.runs]!(
+    wake(harness.db as unknown as GuestDatabase, fake.actions, "someone-else"),
+    { limit: 25, offset: 0 } as never,
+  );
+  await plugin.lifecycle?.onJobSettled?.(
+    wake(harness.db as unknown as GuestDatabase, fake.actions) as never,
+    settled({ jobId: "job_nobody_recorded" }),
+  );
+  await plugin.lifecycle?.onEnable?.(
+    wake(harness.db as unknown as GuestDatabase, fake.actions) as never,
+  );
+  expect(fake.asked).toHaveLength(1);
+  expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = ?`, [launched.runId])).toEqual([
+    { job_id: null },
+  ]);
+
+  // The same settlement, delivered again, acts for the operator whose press posted the job: it
+  // asks under the same key and binds the session the lost post bought, buying nothing more.
+  await plugin.lifecycle?.onJobSettled?.(
+    wake(harness.db as unknown as GuestDatabase, fake.actions) as never,
+    prepared,
+  );
+  expect(fake.asked).toEqual([{ postingKey: launched.runId }, { postingKey: launched.runId }]);
+  expect(fake.bought).toBe(1);
+  expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = ?`, [launched.runId])).toEqual([
+    { job_id: "omp_1" },
+  ]);
+});
+
+/** A preparation that settled and was ingested, and its explore waiting for the next wake to post. */
+async function preparedExplore(): Promise<void> {
+  await insert(harness.db, "runs", {
+    id: "run_prep_material",
+    kind: OPERATIONS.prepare,
+    machine_id: MACHINE,
+    job_id: "job_prep_material",
+    started_at: stamp(NOW - HOUR),
+    finished_at: stamp(NOW),
+    closure: "completed",
+    records: 0,
+    payload: JSON.stringify(SEALED),
+  });
+  await insert(harness.db, "runs", {
+    id: "run_prep",
+    kind: OPERATIONS.explore,
+    machine_id: MACHINE,
+    container_id: "ctr_workbench",
+    prepare_job_id: "job_prep_material",
+    profile: JSON.stringify({ containerId: "ctr_workbench", expectedRevision: 1 }),
+    preparation: JSON.stringify({
+      preset: "read-whats-new",
+      recipes: [{ id: "triage", version: 1 }],
+    }),
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ closure: null, preparing: "job_prep_material" }),
+  });
+}
+
+test("an operator's own next door wake recovers a posting his last one lost, and another's does not", async () => {
+  const fake = code();
+  await preparedExplore();
+  const lease = { closed: false };
+  fake.onBought = () => {
+    lease.closed = true;
+  };
+  // The dispatch's tables die with it once Code has bought the session.
+  await plugin.handlers[ACTIONS.runs]!(wake(leased(lease), fake.actions), {
+    limit: 25,
+    offset: 0,
+  } as never).catch(() => undefined);
+  fake.onBought = () => undefined;
+  expect(fake.asked).toEqual([{ postingKey: "run_prep" }]);
+  const runs = async (principal: string) =>
+    await plugin.handlers[ACTIONS.runs]!(
+      wake(harness.db as unknown as GuestDatabase, fake.actions, principal),
+      { limit: 25, offset: 0 } as never,
+    );
+  await runs("someone-else");
+  expect(fake.asked).toHaveLength(1);
+  await runs("operator");
+  expect(fake.asked).toEqual([{ postingKey: "run_prep" }, { postingKey: "run_prep" }]);
+  expect(fake.bought).toBe(1);
+  expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = 'run_prep'`)).toEqual([
+    { job_id: "omp_1" },
+  ]);
+});
+
+test("the next beat recovers a posting the previous beat's wake lost, and only a beat does", async () => {
+  const fake = code();
+  // The enable registers the beat: its occurrences carry the installer's credential, a chain of
+  // their own that no door and no later enable shares.
+  await plugin.lifecycle?.onEnable?.(
+    wake(harness.db as unknown as GuestDatabase, fake.actions) as never,
+  );
+  expect(jobs.scheduled).toMatchObject([{ scheduleId: CONDUCTOR_SCHEDULE_ID, revision: "p1" }]);
+  await preparedExplore();
+  const beat = (jobId: string, revision = "p1"): SettledJob =>
+    settled({
+      jobId,
+      operationId: PRESET_OPERATIONS["keep-going"],
+      scheduleId: CONDUCTOR_SCHEDULE_ID,
+      revision,
+    });
+  // The first beat's wake posts the session and loses its lease before the job id is written.
+  const lease = { closed: false };
+  fake.onBought = () => {
+    lease.closed = true;
+  };
+  await Promise.resolve(
+    plugin.lifecycle?.onJobSettled?.(wake(leased(lease), fake.actions) as never, beat("beat_1")),
+  ).catch(() => undefined);
+  fake.onBought = () => undefined;
+  expect(fake.asked).toEqual([{ postingKey: "run_prep" }]);
+
+  // The operator's own door, a second enable, and an occurrence of a registration nobody named
+  // do not act for the beat's account.
+  await plugin.handlers[ACTIONS.runs]!(wake(harness.db as unknown as GuestDatabase, fake.actions), {
+    limit: 25,
+    offset: 0,
+  } as never);
+  await plugin.lifecycle?.onEnable?.(
+    wake(harness.db as unknown as GuestDatabase, fake.actions) as never,
+  );
+  await plugin.lifecycle?.onJobSettled?.(
+    wake(harness.db as unknown as GuestDatabase, fake.actions) as never,
+    beat("beat_old", "p0"),
+  );
+  expect(fake.asked).toHaveLength(1);
+
+  // The next beat does.
+  await plugin.lifecycle?.onJobSettled?.(
+    wake(harness.db as unknown as GuestDatabase, fake.actions) as never,
+    beat("beat_2"),
+  );
+  expect(fake.asked).toEqual([{ postingKey: "run_prep" }, { postingKey: "run_prep" }]);
+  expect(fake.bought).toBe(1);
+  expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = 'run_prep'`)).toEqual([
+    { job_id: "omp_1" },
+  ]);
+});
+
+test("enabling a store made before run chains adds the column, and every earlier run names none", async () => {
+  const { db } = harness;
+  await db.run(`ALTER TABLE runs DROP COLUMN chain`);
+  await pending();
+
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+
+  expect(await db.query(`SELECT chain FROM runs WHERE id = 'run_live'`)).toEqual([{ chain: null }]);
 });

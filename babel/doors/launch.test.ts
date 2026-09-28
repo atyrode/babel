@@ -32,7 +32,13 @@ import {
   type ProfileRow,
   ENGINE_REFUSALS,
 } from "../contract.ts";
-import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
+import {
+  conductor,
+  type JobLaunch,
+  type JobRef,
+  type JobRunState,
+  type MachineReadiness,
+} from "../server/conductor.ts";
 import { runPlan, type BabelJobs } from "../server/plan.ts";
 import {
   type CodeEngine,
@@ -50,6 +56,7 @@ import {
   DRAW_MANAGED,
   launchDoors,
   launchMachinery,
+  principalChain,
   type LaunchDeps,
   type LaunchMachinery,
 } from "./launch.ts";
@@ -166,15 +173,31 @@ class Code implements CodeEngine {
    * WHAT A SETTLE WAKE POSTS, and nothing else. A job input binds a SETTLED job's output, and
    * `prepare` is running the instant the press posts it, so the session belongs to
    * `postPrepared` — a `launch` that called this is a `launch` that would bind a job still in
-   * flight, and the unset hook says so rather than quietly answering a job id.
+   * flight, and the unset hook says so rather than quietly answering a job id. It is asked only
+   * for a session a key has not posted: like Code and omp, a keyed ask returns what its key
+   * already posted, and an adopt-only ask never posts and retires a key that posted nothing.
    */
   posting: ((request: SessionRequest) => EngineAnswer<CodeJob>) | null = null;
+  /** The session each posting key posted, and the keys a retire settled with nothing (#470). */
+  readonly keyed = new Map<string, CodeJob>();
+  readonly retired = new Set<string>();
 
   async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
+    const key = request.postingKey;
+    const found = key === undefined ? undefined : this.keyed.get(key);
+    if (found !== undefined) return await Promise.resolve({ ok: true, value: found });
+    if (key !== undefined && request.adoptOnly === true) {
+      this.retired.add(key);
+      return refusedByCode(ENGINE_REFUSALS.postingUnknown, "nothing was posted under this key");
+    }
+    if (key !== undefined && this.retired.has(key))
+      return refusedByCode(ENGINE_REFUSALS.refused, "code_posting_retired");
     if (this.posting === null) {
       throw new Error("the press must not post a session: the preparation is still running");
     }
-    return await Promise.resolve(this.posting(request));
+    const answered = this.posting(request);
+    if (answered.ok && key !== undefined) this.keyed.set(key, answered.value);
+    return await Promise.resolve(answered);
   }
 
   /** What a Stop reaches for on a Code session. */
@@ -223,6 +246,11 @@ const ctx = {
   principal: { id: "operator" },
   newId: () => `id${String((minted += 1))}`,
 } as unknown as GuestCtx;
+/**
+ * THE WAKE A SETTLE IS DELIVERED ON, as `server.ts` derives its account chain (#470): the
+ * operator's own, since his press posted the preparation whose settlement wakes it.
+ */
+const WAKE = principalChain("operator");
 
 async function dispatch(name: string, args: unknown): Promise<Record<string, unknown>> {
   const found = doors.find((entry) => entry.action.name === name);
@@ -565,7 +593,7 @@ test("reviewed limits survive the preparation wake and still govern the posted s
   });
   const runId = String(answer["runId"]);
   const prepareJobId = String(answer["jobId"]);
-  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([]);
   await sealStage("completed", prepareJobId);
   let posts = 0;
   code.posting = (request) => {
@@ -574,10 +602,10 @@ test("reviewed limits survive the preparation wake and still govern the posted s
       return refusedByCode("engine_forbidden", "the reviewed inference bounds changed");
     return stageJob();
   };
-  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([
     { runId, jobId: "job_stage_code" },
   ]);
-  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([]);
   expect(posts).toBe(1);
   expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = ?`, [runId])).toEqual([
     { job_id: "job_stage_code" },
@@ -648,16 +676,16 @@ test.each(["before-wake", "before-claim"] as const)(
     };
     try {
       if (timing === "before-wake") await activation(false, 2);
-      expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+      expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([]);
       expect(posts).toBe(0);
     } finally {
       harness.db.batch = batch;
     }
     await activation(true, 3);
-    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([
       { runId, jobId: "job_stage_code" },
     ]);
-    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([]);
     expect(posts).toBe(1);
   },
 );
@@ -679,7 +707,9 @@ test("a malformed persisted inference bound refuses before buying an unbounded s
     posts += 1;
     return stageJob();
   };
-  expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+  expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE))[0]).toHaveProperty(
+    "refused",
+  );
   expect(posts).toBe(0);
   expect(await harness.db.query(`SELECT closure FROM runs WHERE id = ?`, [runId])).toEqual([
     { closure: "failed" },
@@ -940,7 +970,7 @@ test("the material bound is the machine's measured scratch, shared by the lane's
   });
   const launch = async (runId: string, materials?: number) =>
     await machinery.startExplore(
-      { runId, jobId: `job_${runId}`, authorityId: "operator" },
+      { runId, jobId: `job_${runId}`, authorityId: "operator", chain: WAKE },
       fleet,
       code,
       {
@@ -1624,7 +1654,7 @@ test("zero autonomous weights suppress titling without blocking an explicit expl
     recorded_at: stamp(NOW),
   });
 
-  expect(await machinery.inferTitles(fleet, code, "cyc_manual")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_manual", WAKE)).toBeNull();
   expect(fleet.executed).toEqual([]);
 
   await start({
@@ -1640,7 +1670,7 @@ test("a refused titling profile leaves the batch unprepared and available after 
   await nameless("retry");
   code.checkResult = refusedByCode("engine_no_account", "no account selected");
 
-  const refused = await machinery.inferTitles(fleet, code, "cyc_1");
+  const refused = await machinery.inferTitles(fleet, code, "cyc_1", WAKE);
   expect(refused).toMatchObject({ refused: expect.stringMatching(/^engine_no_account:/u) });
   expect(fleet.executed).toEqual([]);
   expect(await harness.db.query(`SELECT id FROM runs WHERE kind = ?`, [OPERATIONS.title])).toEqual(
@@ -1649,7 +1679,7 @@ test("a refused titling profile leaves the batch unprepared and available after 
   expect(await harness.db.query(`SELECT selector FROM session_titles`)).toEqual([]);
 
   code.checkResult = { ok: true, value: null };
-  await machinery.inferTitles(fleet, code, "cyc_2");
+  await machinery.inferTitles(fleet, code, "cyc_2", WAKE);
   expect(fleet.executed).toHaveLength(1);
   expect(fleet.executed[0]?.operationId).toBe(OPERATIONS.prepare);
   expect(handed(fleet.executed[0])).toEqual(["codex/retry"]);
@@ -1666,7 +1696,7 @@ test("the untitled sessions are prepared once, as one bounded batch charged to t
   await nameless("babels-own", { kind: "agent" });
   await nameless("titled", { title: "Its own", title_provenance: "recorded" });
 
-  const posted = await machinery.inferTitles(fleet, code, "cyc_1");
+  const posted = await machinery.inferTitles(fleet, code, "cyc_1", WAKE);
 
   // ONE `prepare`, over exactly the two, and nothing posted to a model yet: a job input binds
   // a SETTLED output, so the session belongs to the wake this preparation's settlement causes.
@@ -1691,7 +1721,7 @@ test("the untitled sessions are prepared once, as one bounded batch charged to t
 
   // AND ONE AT A TIME. A second wake finds the batch still in flight and posts nothing, so a
   // cycle that fires every few seconds cannot fan the corpus out across the whole fleet.
-  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_2", WAKE)).toBeNull();
   expect(fleet.executed).toHaveLength(1);
 });
 
@@ -1714,7 +1744,7 @@ test("a deployment at its ceiling names nothing", async () => {
     expires_at: stamp(NOW + HOUR),
   });
 
-  const refused = await machinery.inferTitles(fleet, code, "cyc_1");
+  const refused = await machinery.inferTitles(fleet, code, "cyc_1", WAKE);
 
   expect(refused).toMatchObject({ refused: expect.stringContaining("daily ceiling 2.0000") });
   expect(fleet.executed).toEqual([]);
@@ -1741,14 +1771,14 @@ test("a cycle that has already committed its own allowance to reviews names noth
     });
   }
 
-  expect(await machinery.inferTitles(fleet, code, "cyc_1")).toMatchObject({
+  expect(await machinery.inferTitles(fleet, code, "cyc_1", WAKE)).toMatchObject({
     refused: expect.stringContaining("per-cycle ceiling 0.2500"),
   });
   expect(fleet.executed).toEqual([]);
 
   // The NEXT cycle has its own allowance under a daily ceiling that still has room, so the
   // lane is deferred rather than closed.
-  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toMatchObject({
+  expect(await machinery.inferTitles(fleet, code, "cyc_2", WAKE)).toMatchObject({
     jobId: expect.stringContaining("_material"),
   });
 });
@@ -1774,7 +1804,7 @@ test("a session already answered is never offered again, and a policy with no ro
     inferred_at: stamp(NOW - HOUR),
   });
 
-  expect(await machinery.inferTitles(fleet, code, "cyc_1")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_1", WAKE)).toBeNull();
   expect(fleet.executed).toEqual([]);
 
   // AND A DEPLOYMENT THAT NAMED NO PROFILE NAMES NO SESSION. There is one road to a model and
@@ -1789,7 +1819,7 @@ test("a session already answered is never offered again, and a policy with no ro
     payload: JSON.stringify({ enabled: true, perCycleCost: 0.25, dailyCost: 2, batchSize: 4 }),
     recorded_at: stamp(NOW - 60_000),
   });
-  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_2", WAKE)).toBeNull();
   expect(fleet.executed).toEqual([]);
 });
 
@@ -1863,10 +1893,12 @@ test("a settled titling preparation posts a session asking for a title per seale
     };
   };
 
-  const answers = await machinery.postPrepared(fleet, code, {
-    metered: {},
-    limits: { timeoutMs: 1, memoryBytes: 1, processes: 1, outputBytes: 1 },
-  });
+  const answers = await machinery.postPrepared(
+    fleet,
+    code,
+    { metered: {}, limits: { timeoutMs: 1, memoryBytes: 1, processes: 1, outputBytes: 1 } },
+    WAKE,
+  );
 
   expect(answers).toEqual([{ runId: "run_title_1", jobId: "job_code_title" }]);
   const prompt = posted[0]?.prompt ?? "";
@@ -1886,6 +1918,46 @@ test("a settled titling preparation posts a session asking for a title per seale
   expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = 'run_title_1'`)).toEqual([
     { job_id: "job_code_title" },
   ]);
+});
+
+test("a titling posting whose answer was lost is recovered by its own chain and nobody else's", async () => {
+  // The titling lane's session is posted by the same wake an explore's is (#342, #470), so it
+  // is keyed and recovered the same way rather than stranded with its reservation.
+  await route();
+  await nameless("a");
+  await preparedTitles(["codex/a"]);
+  let bought = 0;
+  code.posting = (request) => {
+    bought += 1;
+    return {
+      ok: true,
+      value: {
+        jobId: "job_code_title",
+        machineId: request.machineId,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "started",
+      },
+    };
+  };
+  const keyed = code.runSession.bind(code);
+  let lost = true;
+  code.runSession = async (request) => {
+    const answered = await keyed(request);
+    if (!lost) return answered;
+    lost = false;
+    return refusedByCode(ENGINE_REFUSALS.unconfirmed, "the settled hook's lease closed");
+  };
+  expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE))[0]).toHaveProperty(
+    "refused",
+  );
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, "enable:other")).toEqual([
+    { runId: "run_title_1", waiting: expect.stringContaining("account chain") },
+  ]);
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([
+    { runId: "run_title_1", jobId: "job_code_title" },
+  ]);
+  expect(bought).toBe(1);
 });
 
 test("a titling run asks the model only about sessions whose own logs recorded no title", async () => {
@@ -1912,7 +1984,7 @@ test("a titling run asks the model only about sessions whose own logs recorded n
     };
   };
 
-  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([
     { runId: "run_title_1", jobId: "job_code_title" },
   ]);
   expect(prompts[0]).toContain("codex/b — `sessions/0002-codex-b.jsonl`");
@@ -1939,7 +2011,7 @@ test("a titling run whose preparation found every title settles without a sessio
     throw new Error("no session may be bought for titles the logs already recorded");
   };
 
-  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([
     {
       runId: "run_title_1",
       settled: "every session this run sealed recorded its own title (2), so no model was asked",
@@ -1950,7 +2022,7 @@ test("a titling run whose preparation found every title settles without a sessio
   ).toEqual([{ closure: "completed", cost_usd: 0, job_id: null }]);
   // Nothing needed an answer: the titles are the catalog's, and none is offered again.
   expect(await harness.db.query(`SELECT selector FROM session_titles`)).toEqual([]);
-  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_2", WAKE)).toBeNull();
   expect(fleet.executed).toEqual([]);
 });
 
@@ -1959,10 +2031,12 @@ test("a titling preparation that failed answers its sessions rather than leaving
   await nameless("a");
   await preparedTitles(["codex/a"], "failed");
 
-  const answers = await machinery.postPrepared(fleet, code, {
-    metered: {},
-    limits: { timeoutMs: 1, memoryBytes: 1, processes: 1, outputBytes: 1 },
-  });
+  const answers = await machinery.postPrepared(
+    fleet,
+    code,
+    { metered: {}, limits: { timeoutMs: 1, memoryBytes: 1, processes: 1, outputBytes: 1 } },
+    WAKE,
+  );
 
   expect(answers).toEqual([
     { runId: "run_title_1", refused: "the preparation job_title_material closed as failed" },
@@ -1976,7 +2050,7 @@ test("a titling preparation that failed answers its sessions rather than leaving
   ]);
   // AND SO THE NEXT CYCLE ASKS FOR NOTHING. Without the row above this lane would post another
   // preparation over the same session on every wake, for ever.
-  expect(await machinery.inferTitles(fleet, code, "cyc_2")).toBeNull();
+  expect(await machinery.inferTitles(fleet, code, "cyc_2", WAKE)).toBeNull();
   expect(fleet.executed).toEqual([]);
 });
 
@@ -2045,6 +2119,7 @@ async function stageLaunch(
         jobId: "job_stage",
         materialJobId: "job_stage_material",
         authorityId: "cyc_stage",
+        chain: WAKE,
       },
       fleet,
       code,
@@ -2117,7 +2192,7 @@ test.each(["challenge", "synthesize"] as const)(
     const document = fleet.executed[0]?.input["input"];
     if (typeof document !== "string") throw new Error("the preparation has no input document");
     expect(handed(fleet.executed[0])).toEqual(["omp/s1"]);
-    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([]);
     await sealStage();
     const governor = coordinator(harness.store, () => NOW, 16);
     expect((await governor.open(NOW)).byMachine[MACHINE]).toBe(1);
@@ -2126,7 +2201,7 @@ test.each(["challenge", "synthesize"] as const)(
       prompt = request.prompt;
       return stageJob();
     };
-    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([
       { runId: "run_stage", jobId: "job_stage_code" },
     ]);
     expect((await governor.open(NOW)).byMachine[MACHINE]).toBe(1);
@@ -2142,7 +2217,7 @@ test.each(["challenge", "synthesize"] as const)(
     expect(prompt).toContain(`babel.stage = ${stage}`);
     expect(prompt).toContain("Preserve the full prior claim");
     expect(prompt).toContain("Still unverified");
-    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([]);
   },
 );
 
@@ -2173,7 +2248,7 @@ test.each(["disabled", "expired", "taken-over", "profile", "preparation", "malfo
       posts += 1;
       return stageJob();
     };
-    const result = await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+    const result = await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
     expect(result[0]).toHaveProperty("refused");
     expect(posts).toBe(0);
     expect(await harness.db.query(`SELECT closure FROM runs WHERE id = 'run_stage'`)).toEqual([
@@ -2199,7 +2274,9 @@ test("a takeover during Code posting cancels the new session without finishing t
     );
     return stageJob();
   };
-  expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+  expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE))[0]).toHaveProperty(
+    "refused",
+  );
   expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_stage_code" }]);
   expect(await harness.db.query(`SELECT finished_at FROM claims WHERE id = 'asg_stage'`)).toEqual([
     { finished_at: null },
@@ -2211,15 +2288,18 @@ test("failure retaining the posted continuation cancels it and accounts its rese
   await start();
   await sealStage();
   code.posting = stageJob;
-  const run = harness.db.run.bind(harness.db);
-  harness.db.run = async (sql, params) => {
-    if (sql.startsWith("UPDATE runs SET job_id")) throw new Error("retention unavailable");
-    return await run(sql, params);
+  const batch = harness.db.batch.bind(harness.db);
+  harness.db.batch = async (statements) => {
+    if (statements.some((statement) => statement.sql.startsWith("UPDATE runs SET job_id")))
+      throw new Error("retention unavailable");
+    return await batch(statements);
   };
   try {
-    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE))[0]).toHaveProperty(
+      "refused",
+    );
   } finally {
-    harness.db.run = run;
+    harness.db.batch = batch;
   }
   expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_stage_code" }]);
   expect(
@@ -2233,15 +2313,18 @@ test("an unconfirmed Code cancellation keeps the parent pollable and the reserva
   await sealStage();
   code.posting = stageJob;
   code.cancelSession = async () => refusedByCode("engine_unavailable", "cancellation unavailable");
-  const run = harness.db.run.bind(harness.db);
-  harness.db.run = async (sql, params) => {
-    if (sql.startsWith("UPDATE runs SET job_id")) throw new Error("retention unavailable");
-    return await run(sql, params);
+  const batch = harness.db.batch.bind(harness.db);
+  harness.db.batch = async (statements) => {
+    if (statements.some((statement) => statement.sql.startsWith("UPDATE runs SET job_id")))
+      throw new Error("retention unavailable");
+    return await batch(statements);
   };
   try {
-    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
+    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE))[0]).toHaveProperty(
+      "refused",
+    );
   } finally {
-    harness.db.run = run;
+    harness.db.batch = batch;
   }
   expect(await harness.db.query(`SELECT closure, job_id FROM runs WHERE id = 'run_stage'`)).toEqual(
     [{ closure: null, job_id: "job_stage_code" }],
@@ -2284,7 +2367,7 @@ test("multiple brief ids carry record-scoped operator steering into the prompt a
     prompt = request.prompt;
     return stageJob();
   };
-  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
   const rows = await harness.db.query<{ preparation: string }>(
     `SELECT preparation FROM runs WHERE id = 'run_stage'`,
   );
@@ -2297,7 +2380,7 @@ test("multiple brief ids carry record-scoped operator steering into the prompt a
     expect(prompt).toContain(`Check the operator concern about ${record.id}`);
 });
 
-test("overlapping preparation continuations post only one session and cannot close its bound winner", async () => {
+test("an overlapping wake asks only under its own chain, and a late first answer never stops what it bound", async () => {
   const { start } = await stageLaunch();
   await start();
   await sealStage();
@@ -2309,22 +2392,43 @@ test("overlapping preparation continuations post only one session and cannot clo
   const held = new Promise<void>((resolve) => {
     resume = resolve;
   });
-  let posts = 0;
-  code.runSession = async () => {
-    posts += 1;
-    entered();
-    if (posts === 1) await held;
+  let bought = 0;
+  code.posting = () => {
+    bought += 1;
     return stageJob();
   };
-  const first = machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  // The first ask buys the session, and its answer is held while other wakes run (#470).
+  const keyed = code.runSession.bind(code);
+  const asked: SessionRequest[] = [];
+  code.runSession = async (request) => {
+    asked.push(request);
+    const answered = await keyed(request);
+    if (asked.length === 1) {
+      entered();
+      await held;
+    }
+    return answered;
+  };
+  const first = machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
   await posting;
   try {
-    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+    // Another account's key would name another posting: it asks nothing and releases nothing.
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, "enable:other")).toEqual([
+      { runId: "run_stage", waiting: expect.stringContaining("account chain") },
+    ]);
+    expect(asked).toHaveLength(1);
+    // The posting account's own wake asks again under the same key and binds the same session.
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([
+      { runId: "run_stage", jobId: "job_stage_code" },
+    ]);
   } finally {
     resume();
-    await first;
   }
-  expect(posts).toBe(1);
+  // The late first answer finds its session already bound and leaves it alone.
+  expect(await first).toEqual([]);
+  expect(asked.map((request) => request.postingKey)).toEqual(["run_stage", "run_stage"]);
+  expect(asked[1]).toEqual(asked[0]);
+  expect(bought).toBe(1);
   expect(code.cancelled).toEqual([]);
   expect(await harness.db.query(`SELECT job_id, closure FROM runs WHERE id = 'run_stage'`)).toEqual(
     [{ job_id: "job_stage_code", closure: null }],
@@ -2377,20 +2481,33 @@ test.each(["finish-first", "parent-first"] as const)(
 );
 
 test.each(["throw", "refused"] as const)(
-  "an unconfirmed Code posting (%s) remains visible and reserved without buying another session",
+  "an unconfirmed Code posting (%s) stays reserved, and only its own chain asks again under its key",
   async (failure) => {
     const { start } = await stageLaunch();
     await start();
     await sealStage();
-    let posts = 0;
-    code.runSession = async () => {
-      posts += 1;
+    const asked: SessionRequest[] = [];
+    code.runSession = async (request) => {
+      asked.push(request);
       if (failure === "throw") throw new Error("response transport interrupted");
       return refusedByCode(ENGINE_REFUSALS.unconfirmed, "response transport interrupted");
     };
-    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
-    await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
-    expect(posts).toBe(1);
+    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE))[0]).toHaveProperty(
+      "refused",
+    );
+    // Neither another account's wake nor one with no chain asks: the key names this account's.
+    for (const chain of ["enable:other", null])
+      expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, chain)).toEqual([
+        { runId: "run_stage", waiting: expect.stringContaining("account chain") },
+      ]);
+    expect(asked).toHaveLength(1);
+    // The account's own next wake asks the identical call again, which can buy nothing new.
+    expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE))[0]).toHaveProperty(
+      "refused",
+    );
+    expect(asked).toHaveLength(2);
+    expect(asked[0]?.postingKey).toBe("run_stage");
+    expect(asked[1]).toEqual(asked[0]);
     expect(
       await harness.db.query(
         `SELECT closure, json_extract(payload, '$.posting') AS posting FROM runs WHERE id = 'run_stage'`,
@@ -2406,23 +2523,51 @@ test.each(["throw", "refused"] as const)(
   },
 );
 
-test("a definite pre-dispatch refusal closes an analysis parent instead of claiming an unknown posting", async () => {
-  const { start } = await stageLaunch();
-  await start();
-  await sealStage();
-  let posts = 0;
-  code.runSession = async () => {
-    posts += 1;
-    return refusedByCode(ENGINE_REFUSALS.refused, "the local request failed validation");
-  };
-  expect((await machinery.postPrepared(fleet, code, ANALYSIS_PLAN))[0]).toHaveProperty("refused");
-  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
-  expect(posts).toBe(1);
-  expect(await harness.db.query(`SELECT closure FROM runs WHERE id = 'run_stage'`)).toEqual([
-    { closure: "failed" },
-  ]);
-  expect((await harness.store.run("run_stage")).run?.progress?.unheard).not.toBe(true);
-});
+test.each(["unknown", "pending", "found"] as const)(
+  "a refused first post ends through a retire, and only the retire's final unknown releases it: %s",
+  async (retire) => {
+    const { start } = await stageLaunch();
+    await start();
+    await sealStage();
+    // A refusal proves only that this invocation posted nothing: another under the same key may
+    // yet land, so the posting is settled by an adopt-only retire and never closed on the word.
+    const asked: SessionRequest[] = [];
+    code.runSession = async (request) => {
+      asked.push(request);
+      if (request.adoptOnly !== true)
+        return refusedByCode(ENGINE_REFUSALS.refused, "the local request failed validation");
+      if (retire === "unknown")
+        return refusedByCode(ENGINE_REFUSALS.postingUnknown, "nothing was posted under this key");
+      if (retire === "pending")
+        return refusedByCode(ENGINE_REFUSALS.unconfirmed, "code_omp_posting_pending");
+      return stageJob();
+    };
+    await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+    expect(asked.map((request) => [request.postingKey, request.adoptOnly === true])).toEqual([
+      ["run_stage", false],
+      ["run_stage", true],
+    ]);
+    const run = await harness.db.query(
+      `SELECT closure, job_id, json_extract(payload, '$.posting') AS posting FROM runs WHERE id = 'run_stage'`,
+    );
+    const claim = await harness.db.query(
+      `SELECT job_id, finished_at IS NOT NULL AS finished, actual_cost FROM claims WHERE id = 'asg_stage'`,
+    );
+    if (retire === "unknown") {
+      expect(run).toEqual([{ closure: "failed", job_id: null, posting: null }]);
+      expect(claim).toEqual([{ job_id: "job_stage_material", finished: 1n, actual_cost: 0 }]);
+    } else if (retire === "pending") {
+      expect(run).toEqual([{ closure: null, job_id: null, posting: 1n }]);
+      expect(claim).toEqual([{ job_id: "job_stage_material", finished: 0n, actual_cost: null }]);
+    } else {
+      expect(run).toEqual([{ closure: null, job_id: "job_stage_code", posting: null }]);
+      expect(claim).toEqual([{ job_id: "job_stage_code", finished: 0n, actual_cost: null }]);
+    }
+    expect((await harness.store.run("run_stage")).run?.progress?.unheard ?? false).toBe(
+      retire === "pending",
+    );
+  },
+);
 
 test("a native titling admission refusal leaves no retained material or parent to poll", async () => {
   await route();
@@ -2433,26 +2578,37 @@ test("a native titling admission refusal leaves no retained material or parent t
   fleet.status = () => {
     throw new HostCallError("jobs.status", "job_not_started");
   };
-  expect(await machinery.inferTitles(fleet, code, "cyc_title")).toHaveProperty("refused");
+  expect(await machinery.inferTitles(fleet, code, "cyc_title", WAKE)).toHaveProperty("refused");
   expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
   expect(fleet.executed).toEqual([]);
 });
 
-test("an unresolved posting cannot be stopped or reported as closed on a later refusal", async () => {
+test("another account's Stop and wakes leave an unresolved posting held, and a disabled policy only retires it", async () => {
   const { start } = await stageLaunch();
   await start();
   await sealStage();
-  code.runSession = async () =>
-    refusedByCode(ENGINE_REFUSALS.unconfirmed, "response transport interrupted");
-  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+  const asked: SessionRequest[] = [];
+  code.runSession = async (request) => {
+    asked.push(request);
+    return refusedByCode(ENGINE_REFUSALS.unconfirmed, "response transport interrupted");
+  };
+  // Posted by an enable's wake: the operator's Stop acts for another account.
+  const enabled = "enable:earlier";
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, enabled);
   expect(
     await halt("run_stage", { operationId: OPERATIONS.prepare, jobId: "job_stage_material" }),
   ).toHaveProperty("refused");
   expect(fleet.cancelled).toEqual([]);
+  expect(asked).toHaveLength(1);
   await harness.db.run(
     `UPDATE policies SET payload = json_set(payload, '$.enabled', json('false'))`,
   );
-  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN)).toEqual([]);
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([
+    { runId: "run_stage", waiting: expect.stringContaining("account chain") },
+  ]);
+  // Its own chain's wake may no longer buy it, so it asks nothing but a retire.
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, enabled);
+  expect(asked.map((request) => request.adoptOnly === true)).toEqual([false, true]);
   expect(await harness.db.query(`SELECT closure FROM runs WHERE id = 'run_stage'`)).toEqual([
     { closure: null },
   ]);
@@ -2460,6 +2616,146 @@ test("an unresolved posting cannot be stopped or reported as closed on a later r
   expect(await harness.db.query(`SELECT finished_at FROM claims WHERE id = 'asg_stage'`)).toEqual([
     { finished_at: null },
   ]);
+});
+
+test.each(["released", "found", "pending"] as const)(
+  "the Stop of the account that posted it retires an unresolved posting: %s",
+  async (retired) => {
+    const { start } = await stageLaunch();
+    await start();
+    await sealStage();
+    // The session is bought (or not) and the answer is lost; the operator's own wake posted it.
+    code.posting = () =>
+      retired === "found"
+        ? stageJob()
+        : refusedByCode(ENGINE_REFUSALS.unconfirmed, "the request never arrived");
+    const keyed = code.runSession.bind(code);
+    const asked: SessionRequest[] = [];
+    code.runSession = async (request) => {
+      asked.push(request);
+      const answered = await keyed(request);
+      if (asked.length === 1)
+        return refusedByCode(ENGINE_REFUSALS.unconfirmed, "the settled hook's lease closed");
+      if (retired === "pending")
+        return refusedByCode(ENGINE_REFUSALS.unconfirmed, "code_omp_posting_pending");
+      return answered;
+    };
+    await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+    const stopped = await halt("run_stage", {
+      operationId: OPERATIONS.prepare,
+      jobId: "job_stage_material",
+    });
+    // The Stop asks only an adopt-only retire, which never buys.
+    expect(asked.map((request) => [request.postingKey, request.adoptOnly === true])).toEqual([
+      ["run_stage", false],
+      ["run_stage", true],
+    ]);
+    expect(fleet.cancelled).toEqual([]);
+    const run = await harness.db.query(
+      `SELECT closure, job_id, cost_usd FROM runs WHERE id = 'run_stage'`,
+    );
+    const claim = await harness.db.query(
+      `SELECT finished_at IS NOT NULL AS finished, actual_cost FROM claims WHERE id = 'asg_stage'`,
+    );
+    if (retired === "released") {
+      expect(stopped).toMatchObject({ runId: "run_stage", jobId: "", closure: "stopped" });
+      expect(code.cancelled).toEqual([]);
+      expect(run).toEqual([{ closure: "stopped", job_id: null, cost_usd: 0 }]);
+      expect(claim).toEqual([{ finished: 1n, actual_cost: 0 }]);
+    } else if (retired === "found") {
+      // The session the key bought is recorded, cancelled through Code and accounted.
+      expect(stopped).toMatchObject({ runId: "run_stage", jobId: "job_stage_code" });
+      expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_stage_code" }]);
+      expect(run).toEqual([{ closure: "stopped", job_id: "job_stage_code", cost_usd: null }]);
+      expect(claim).toEqual([{ finished: 1n, actual_cost: 0.05 }]);
+    } else {
+      expect(stopped).toHaveProperty("refused");
+      expect(code.cancelled).toEqual([]);
+      expect(run).toEqual([{ closure: null, job_id: null, cost_usd: null }]);
+      expect(claim).toEqual([{ finished: 0n, actual_cost: null }]);
+    }
+  },
+);
+
+test("a Stop that finds a session after its grant lapsed settles that grant once, itself", async () => {
+  const { start } = await stageLaunch();
+  await start();
+  await sealStage();
+  code.posting = stageJob;
+  const keyed = code.runSession.bind(code);
+  let asks = 0;
+  code.runSession = async (request) => {
+    asks += 1;
+    const answered = await keyed(request);
+    return asks === 1
+      ? refusedByCode(ENGINE_REFUSALS.unconfirmed, "the settled hook's lease closed")
+      : answered;
+  };
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+  // The grant's lease runs out before the operator stops the run: the session the retire finds
+  // can no longer be bound to it, so the grant still names the preparation.
+  await harness.db.run(`UPDATE claims SET expires_at = ? WHERE id = 'asg_stage'`, [stamp(NOW)]);
+  // Its first cancellation is only requested; the second reports what it actually spent, which
+  // is not what the grant reserved.
+  const cancel = code.cancelSession.bind(code);
+  let cancels = 0;
+  code.cancelSession = async (args) => {
+    const cancelled = await cancel(args);
+    if (!cancelled.ok) return cancelled;
+    cancels += 1;
+    if (cancels === 1) return { ok: true, value: { ...cancelled.value, state: "started" } };
+    const inference = {
+      calls: 1,
+      inputTokens: 300,
+      outputTokens: 20,
+      cachedInputTokens: 0,
+      costMicros: 20_000,
+    };
+    return {
+      ok: true,
+      value: { ...cancelled.value, result: { exitCode: null, usage: { inference } } as never },
+    };
+  };
+  // The first stop records the session the retire found and cannot close it yet; the next stop
+  // names that session, retires nothing, and closes it at its meter.
+  expect(
+    await halt("run_stage", { operationId: OPERATIONS.prepare, jobId: "job_stage_material" }),
+  ).toHaveProperty("refused");
+  expect(
+    await halt("run_stage", { operationId: OPERATIONS.explore, jobId: "job_stage_code" }),
+  ).toMatchObject({ jobId: "job_stage_code", closure: "stopped" });
+  expect(await harness.db.query(`SELECT cost_usd FROM runs WHERE id = 'run_stage'`)).toEqual([
+    { cost_usd: 0.02 },
+  ]);
+  expect(code.cancelled).toEqual([
+    { containerId: "ctr_workbench", jobId: "job_stage_code" },
+    { containerId: "ctr_workbench", jobId: "job_stage_code" },
+  ]);
+  const account = async () =>
+    await harness.db.query(
+      `SELECT finished_at IS NOT NULL AS finished, outcome, actual_cost FROM claims WHERE id = 'asg_stage'`,
+    );
+  // The stop charges the grant what the session actually spent, and only once.
+  expect(await account()).toEqual([{ finished: 1n, outcome: "skipped", actual_cost: 0.02 }]);
+  const held: Record<string, string> = {};
+  const report = await conductor({
+    store: harness.store,
+    coordinator: coordinator(harness.store, () => NOW, 16),
+    jobs: fleet,
+    engine: code,
+    machines: { repository: async () => await Promise.resolve({ ok: false, reason: "none" }) },
+    keys: {
+      get: (key: string) => held[key] ?? null,
+      set: (key: string, value: string) => {
+        held[key] = value;
+      },
+    },
+    plan: ANALYSIS_PLAN,
+    now: () => NOW + 2 * HOUR,
+  }).tick();
+  expect(report.settled.filter((claim) => claim.claimId === "asg_stage")).toEqual([]);
+  expect(await account()).toEqual([{ finished: 1n, outcome: "skipped", actual_cost: 0.02 }]);
+  expect((await coordinator(harness.store, () => NOW, 16).spend(NOW)).total).toBeCloseTo(0.02, 8);
 });
 
 test.each(["posting", "bound"] as const)(
@@ -2486,7 +2782,7 @@ test.each(["posting", "bound"] as const)(
       jobId: "job_stage_material",
     });
     await cancelling.promise;
-    const continuation = machinery.postPrepared(fleet, code, ANALYSIS_PLAN);
+    const continuation = machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
     await posting.promise;
     try {
       if (boundary === "bound") {

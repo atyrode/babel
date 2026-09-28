@@ -25,7 +25,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 12 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 13 } as const;
 
 /** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
 const RECALL_TRACE_SCHEMA: readonly string[] = [
@@ -1045,7 +1045,9 @@ export const SCHEMA_V1: readonly string[] = [
   // reconciles a job it does not own (`job_id` on such a row is Code's, posted under
   // `atyrode.omp`'s operation, which `ctx.jobs` refuses to read). `prepare_job_id` is the
   // `prepare` job whose sealed `material` output that session read, which is what makes a
-  // claim's citations checkable against the selection they were served from.
+  // claim's citations checkable against the selection they were served from. `chain` is the
+  // account chain of the wake that posted this row's native job (#470): its settlement acts for
+  // that account, so the hook that settlement wakes is handed the chain back from here.
   `CREATE TABLE runs(
      id TEXT PRIMARY KEY,
      kind TEXT NOT NULL,
@@ -1066,6 +1068,8 @@ export const SCHEMA_V1: readonly string[] = [
      records INTEGER NOT NULL DEFAULT 0,
      /* Consecutive cycles the hub could not say where this run's job is; see SCHEMA_ADDITIONS. */
      unreadable INTEGER NOT NULL DEFAULT 0,
+     /* The account chain that posted this row's native job, or NULL for none; see SCHEMA_ADDITIONS. */
+     chain TEXT,
      payload TEXT NOT NULL
    ) STRICT`,
   `CREATE INDEX runs_by_started ON runs(started_at DESC)`,
@@ -1312,6 +1316,14 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     sql: `ALTER TABLE sessions ADD COLUMN archive_path TEXT`,
   },
   ...ARCHIVE_CATALOG_SCHEMA.map(objectAddition),
+  // #470: the account chain that posted a run's native job. Nullable with no default, additive
+  // in the strictest sense: every row an earlier shape wrote reads NULL, and NULL is the truth
+  // about it — nothing recorded which account posted it, so its settlement resumes no posting.
+  {
+    object: "runs",
+    column: "chain",
+    sql: `ALTER TABLE runs ADD COLUMN chain TEXT`,
+  },
 ];
 
 /**

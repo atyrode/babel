@@ -44,7 +44,13 @@ import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import manifestJson from "../manifest.json";
 import type { Door } from "./door.ts";
 import { drainDoors } from "./drain.ts";
-import { hubRefusal, launchMachinery, type LaunchIdentity, type Started } from "./launch.ts";
+import {
+  hubRefusal,
+  launchMachinery,
+  principalChain,
+  type LaunchIdentity,
+  type Started,
+} from "./launch.ts";
 import {
   PROMPT_LIMIT,
   materialInput,
@@ -241,6 +247,8 @@ const ctx = {
   auth: { isRoot: true },
   emit: () => {},
 } as unknown as GuestCtx;
+/** The operator's account chain (#470): his press, and the wakes his drain's settlements cause. */
+const WAKE = principalChain("operator");
 
 async function dispatch(name: string, args: unknown): Promise<Record<string, unknown>> {
   const found = doors.find((entry) => entry.action.name === name);
@@ -505,6 +513,7 @@ beforeEach(async () => {
     launch: posting(store, () => fleet),
     jobs: fleet,
     engine: code,
+    chain: WAKE,
     plan: () => PLAN,
     now: () => store.now(),
   };
@@ -1336,7 +1345,7 @@ test("a bounded fan recovers a lost admission write without buying a third Code 
   fleet.refusalWord = "";
   await sealDrainJob(drainId, 0);
   await sealDrainJob(drainId, 1);
-  await machinery.postPrepared(fleet, code, PLAN);
+  await machinery.postPrepared(fleet, code, PLAN, WAKE);
   expect(code.posted.map((request) => request.inferenceLimits)).toEqual([
     inferenceLimits,
     inferenceLimits,
@@ -1346,7 +1355,7 @@ test("a bounded fan recovers a lost admission write without buying a third Code 
   expect(code.cancelled).toEqual([]);
   await settleJob(`run_${drainId}_1`, { costMicros: 0, outputTokens: 0 });
   expect((await drainTick(deps))[0]?.state).toBe("target");
-  await machinery.postPrepared(fleet, code, PLAN);
+  await machinery.postPrepared(fleet, code, PLAN, WAKE);
   expect(code.posted).toHaveLength(2);
   expect(fleet.executed).toHaveLength(2);
   expect((await readDrain(harness.store, drainId))?.jobsSettled).toBe(2);
@@ -1357,13 +1366,13 @@ test("a later wake replays reviewed limits and stops refilling at the cumulative
   const inferenceLimits = { calls: 1, outputTokens: 1000, costMicros: 75_000 };
   const drainId = String((await start({ concurrent: 1, maxJobs: 2, inferenceLimits }))["drainId"]);
   await sealDrainJob(drainId, 0);
-  await machinery.postPrepared(fleet, code, PLAN);
+  await machinery.postPrepared(fleet, code, PLAN, WAKE);
   await settleJob(`run_${drainId}_0`, { costMicros: 0, outputTokens: 0 });
 
   machinery = realLaunch();
   expect((await drainTick(deps))[0]).toMatchObject({ launched: 1, live: 1 });
   await sealDrainJob(drainId, 1);
-  await machinery.postPrepared(fleet, code, PLAN);
+  await machinery.postPrepared(fleet, code, PLAN, WAKE);
   expect(code.posted.map((request) => request.inferenceLimits)).toEqual([
     inferenceLimits,
     inferenceLimits,
@@ -1387,7 +1396,7 @@ test("a drain's first slot and its relaunch post their preparations within prepa
   deps = { ...deps, plan: planned };
   const drainId = String((await start({ concurrent: 1, maxJobs: 2 }))["drainId"]);
   await sealDrainJob(drainId, 0);
-  await machinery.postPrepared(fleet, code, PLAN);
+  await machinery.postPrepared(fleet, code, PLAN, WAKE);
   await settleJob(`run_${drainId}_0`, { costMicros: 0, outputTokens: 0 });
 
   machinery = realLaunch();
@@ -1412,17 +1421,24 @@ test("an unresolved ordinary Code admission remains held across wakes and drain 
   const drainId = String((await start({ concurrent: 2, maxJobs: 2 }))["drainId"]);
   await sealDrainJob(drainId, 0);
   await sealDrainJob(drainId, 1);
-  let attempts = 0;
+  const asked: (string | undefined)[] = [];
   const uncertain: CodeEngine = {
     ...code,
-    runSession: async () => {
-      attempts += 1;
+    runSession: async (request) => {
+      asked.push(request.postingKey);
       throw new Error("Code posting response lost");
     },
   };
-  await machinery.postPrepared(fleet, uncertain, PLAN);
-  await machinery.postPrepared(fleet, uncertain, PLAN);
-  expect(attempts).toBe(2);
+  await machinery.postPrepared(fleet, uncertain, PLAN, WAKE);
+  // The same account's next wake asks each run's key again (#470); nothing else asks at all.
+  await machinery.postPrepared(fleet, uncertain, PLAN, "enable:other");
+  await machinery.postPrepared(fleet, uncertain, PLAN, WAKE);
+  expect(asked.toSorted()).toEqual([
+    `run_${drainId}_0`,
+    `run_${drainId}_0`,
+    `run_${drainId}_1`,
+    `run_${drainId}_1`,
+  ]);
   expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 2, state: "running" });
   await halt(drainId);
   expect(code.cancelled).toEqual([]);
@@ -1433,6 +1449,43 @@ test("an unresolved ordinary Code admission remains held across wakes and drain 
   ).toEqual([{ closure: null }, { closure: null }]);
   expect(await readDrainReport(harness.store, drainId)).toBeNull();
   expect(fleet.executed).toHaveLength(2);
+});
+
+test("a lost posting whose drain was stopped is retired and never posted, and the drain then ends", async () => {
+  const machinery = realLaunch();
+  const drainId = String((await start({ concurrent: 1, maxJobs: 1 }))["drainId"]);
+  await sealDrainJob(drainId, 0);
+  // The first post throws before Code created anything, and the operator stops the drain.
+  const lost: CodeEngine = {
+    ...code,
+    runSession: async () => await Promise.reject(new Error("Code posting response lost")),
+  };
+  await machinery.postPrepared(fleet, lost, PLAN, WAKE);
+  await halt(drainId);
+  // The posting account's own next wake may no longer buy the session: it only retires the key.
+  const asked: boolean[] = [];
+  const spy: CodeEngine = {
+    ...code,
+    runSession: async (request) => {
+      asked.push(request.adoptOnly === true);
+      if (request.adoptOnly === true)
+        return {
+          ok: false,
+          code: "engine_posting_unknown",
+          refused: "engine_posting_unknown: nothing was posted under this key",
+        };
+      return await code.runSession(request);
+    },
+  };
+  await machinery.postPrepared(fleet, spy, PLAN, WAKE);
+  expect(asked).toEqual([true]);
+  expect(code.posted).toEqual([]);
+  expect(
+    await harness.db.query(`SELECT closure FROM runs WHERE id = ?`, [`run_${drainId}_0`]),
+  ).toEqual([{ closure: "failed" }]);
+  // With its only run released, the closing drain ends.
+  expect((await drainTick(deps))[0]).toMatchObject({ drainId, live: 0 });
+  expect((await readDrain(harness.store, drainId))?.state).not.toBe("closing");
 });
 
 test("a refusal Babel wrote itself ends the round, whatever words it happens to contain", async () => {
@@ -1537,7 +1590,7 @@ test("over the real launch path a drain's fan seals material, and the settle wak
     [stamp(NOW), sealedMaterial(), `job_${drainId}_0_material`],
   );
 
-  const posted = await machinery.postPrepared(fleet, deps.engine, PLAN);
+  const posted = await machinery.postPrepared(fleet, deps.engine, PLAN, WAKE);
 
   // THE SESSION IS POSTED, and the run takes CODE'S job id: that pair — the container and
   // this job — is the whole of how the conductor reconciles a job `ctx.jobs` cannot read.
@@ -1589,7 +1642,7 @@ test("over the real launch path a drain's fan seals material, and the settle wak
     stamp(NOW),
     `run_${drainId}_1`,
   ]);
-  expect(await machinery.postPrepared(fleet, deps.engine, PLAN)).toEqual([]);
+  expect(await machinery.postPrepared(fleet, deps.engine, PLAN, WAKE)).toEqual([]);
   expect(code.posted).toHaveLength(1);
 });
 
@@ -1639,7 +1692,7 @@ test("the session a wake posts quotes what the operator told Babel, and the run 
     `UPDATE runs SET closure = 'completed', finished_at = ?, payload = ? WHERE job_id = ?`,
     [stamp(NOW), sealedMaterial(), `job_${drainId}_0_material`],
   );
-  await machinery.postPrepared(fleet, deps.engine, PLAN);
+  await machinery.postPrepared(fleet, deps.engine, PLAN, WAKE);
 
   // HIS WORDS ARE IN THE PROMPT, quoted and attributed, newest first.
   const prompt = code.posted[0]?.prompt ?? "";

@@ -146,6 +146,12 @@ export interface DrainDeps {
    */
   readonly engine: CodeEngine;
   /**
+   * THE ACCOUNT CHAIN THIS WAKE ACTS FOR (#470; `principalChain` in `doors/launch.ts`), or null
+   * for a wake with none. A job this controller launches is posted under this wake's credential,
+   * so it carries this chain, and its settlement hands it back.
+   */
+  readonly chain: string | null;
+  /**
    * What a run of this operation runs under. The third parameter is the CODE PROFILE the drain
    * was started on, with Babel's ledger of what Code said it runs as (#279): the drain hands
    * its own stored profile to every job it launches, never a default re-read later.
@@ -206,11 +212,16 @@ export function drainOperation(preset: DrainPreset): OperationName {
 /**
  * WHO THE NEXT JOB IS. Derived rather than minted, for two reasons: a settled job's hook has no
  * `newId` to mint from, and a derived id makes a retried tick post the same job again instead of
- * a second one. The ordinal is the drain's own launch count, which only ever rises.
+ * a second one. The ordinal is the drain's own launch count, which only ever rises. The chain is
+ * the launching wake's, not the drain's: the job is posted under that wake's credential.
  */
-export function drainIdentity(row: DrainRow, ordinal: number): LaunchIdentity {
+export function drainIdentity(
+  row: DrainRow,
+  ordinal: number,
+  chain: string | null,
+): LaunchIdentity {
   const tail = `${row.id}_${String(ordinal)}`;
-  return { runId: `run_${tail}`, jobId: `job_${tail}`, authorityId: row.startedBy };
+  return { runId: `run_${tail}`, jobId: `job_${tail}`, authorityId: row.startedBy, chain };
 }
 
 /** What one fold wrote, and what the read of this drain's jobs could not account for. */
@@ -752,7 +763,7 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   let refused = "";
   for (let slot = holding.length; slot < row.concurrent; slot += 1) {
     if (row.knobs.maxJobs !== undefined && row.jobsLaunched + launched >= row.knobs.maxJobs) break;
-    const identity = drainIdentity(row, row.jobsLaunched + launched);
+    const identity = drainIdentity(row, row.jobsLaunched + launched, deps.chain);
     const started = SPENDING.includes(row.preset)
       ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, input, plan)
       : await deps.launch.startBeat(identity, deps.jobs, input, plan);

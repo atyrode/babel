@@ -1767,6 +1767,7 @@ test("the importable tables are derived from the migration itself", () => {
     "tokens",
     "records",
     "unreadable",
+    "chain",
     "payload",
   ]);
   expect(tables["sqlite_master"]).toBeUndefined();

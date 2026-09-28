@@ -12,6 +12,8 @@ import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/p
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
+  BeatChainSchema,
+  beatChainKey,
   DRAIN_CONCURRENT_MAX,
   INPUT_FIELD,
   MACHINE_OPERATIONS,
@@ -25,13 +27,14 @@ import {
 } from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
 import { declaredServices } from "./doors/services.ts";
-import { launchMachinery, type LaunchDeps } from "./doors/launch.ts";
+import { enableChain, launchMachinery, principalChain, type LaunchDeps } from "./doors/launch.ts";
 import type { Recipe } from "./server/engine/prompts.ts";
 import { codeEngine, type ActionsSlice } from "./server/engine/session.ts";
 import { drainTick, type DrainDeps } from "./server/drain.ts";
 import { embedder, type EmbeddingServices } from "./server/embed.ts";
 import {
   BEAT_OPERATION,
+  CONDUCTOR_SCHEDULE_ID,
   conductor,
   describeMapHost,
   SCHEDULE_LIFETIME_MS,
@@ -92,10 +95,10 @@ import manifestJson from "./manifest.json";
 /**
  * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column, table, index and
  * trigger `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
- * `2026-09-24-store-v1-archive-captures` — recorded under the same key by the enable before
+ * `2026-09-25-store-v1-transcript-maps` — recorded under the same key by the enable before
  * it — is its predecessor.
  */
-const STORE_MIGRATION = "2026-09-25-store-v1-transcript-maps";
+const STORE_MIGRATION = "2026-09-28-store-v1-run-chains";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -183,6 +186,8 @@ function loop(
   catalogPlan: RunPlan,
   mapPreparePlan: RunPlan,
   nativeDispatch: boolean,
+  // The account chain this wake acts for (#470): what the loop posts carries it.
+  chain: string | null,
   mappingDrainId?: string,
 ): Conductor {
   const engine = codeEngine(actions);
@@ -228,6 +233,7 @@ function loop(
     catalogPlan,
     mapPreparePlan,
     nativeDispatch,
+    chain,
     ...(mappingDrainId === undefined ? {} : { mappingDrainId }),
     now: () => store.now(),
   });
@@ -440,8 +446,10 @@ async function catalogCycle(
       planFor(policy, BEAT_OPERATION),
       planFor(policy, MACHINE_OPERATIONS.mapCatalog),
       planFor(policy, MACHINE_OPERATIONS.mapPrepare),
-      // The free catalog lane never enters paid dispatch, whatever authority settled it.
+      // The free catalog lane never enters paid dispatch, whatever authority settled it, and
+      // posts nothing a chain would be asked about.
       false,
+      null,
     ).tickCatalog(machineId, admission ?? undefined)),
   ];
 }
@@ -642,6 +650,40 @@ async function settledMapDrain(job: {
 }
 
 /**
+ * THE ACCOUNT CHAIN A SETTLED JOB'S HOOK ACTS FOR (#470), or null for none. The hook is handed
+ * the settled job's own credential, which is the credential of the wake that posted the job, so
+ * its chain is the one recorded when that job was posted: the beat's at its registration, for
+ * the revision the occurrence ran under; any other job's on the run rows that hold it or its
+ * preparation. A job nothing recorded a chain for — posted before chains were recorded, or by
+ * a schedule of another lane — has none, and neither has one whose rows disagree: such a wake
+ * may post, and never asks again under a key it cannot prove it posted.
+ */
+async function settledChain(job: {
+  readonly jobId: string;
+  readonly scheduleId?: string | undefined;
+  readonly revision?: string | undefined;
+}): Promise<string | null> {
+  if (job.scheduleId !== undefined) {
+    if (job.scheduleId !== CONDUCTOR_SCHEDULE_ID) return null;
+    let kept: unknown;
+    try {
+      kept = JSON.parse((await keys.get(beatChainKey(job.revision ?? ""))) ?? "null");
+    } catch {
+      return null;
+    }
+    const beat = BeatChainSchema.safeParse(kept);
+    return beat.success && beat.data.revision === job.revision ? beat.data.chain : null;
+  }
+  const rows = await store.db.query<{ chain: string | null }>(
+    `SELECT chain FROM runs WHERE job_id = ? OR prepare_job_id = ?`,
+    [job.jobId, job.jobId],
+  );
+  const chains = new Set(rows.map((row) => row.chain));
+  const [only] = chains;
+  return chains.size === 1 && only !== undefined ? only : null;
+}
+
+/**
  * The controller's dependencies over one wake's own authority (#258, #279).
  *
  * `embed` is `null` on a wake that holds no service authority, which is every background one
@@ -652,6 +694,7 @@ async function settledMapDrain(job: {
 function draining(
   jobs: BabelJobs,
   actions: ActionsSlice | undefined,
+  chain: string | null,
   services?: EmbeddingServices | undefined,
 ): DrainDeps {
   return {
@@ -660,6 +703,7 @@ function draining(
     launch: machinery,
     jobs,
     engine: codeEngine(actions),
+    chain,
     plan: planFor,
     embed: services === undefined ? null : embedder(services),
     now: () => store.now(),
@@ -686,6 +730,9 @@ async function cycle(
   jobs: BabelJobs,
   machines: MachinesSlice,
   actions: ActionsSlice | undefined,
+  // The account chain this wake acts for (#470; `principalChain` in `doors/launch.ts`): what the
+  // cycle posts is recorded under it, and a lost posting is asked again only under its own.
+  chain: string | null,
   services?: EmbeddingServices | undefined,
   // Only a hook's slice — the settled job's own authority, or the installer's at enable — can
   // post native work; a door's bridge is attenuated to that door's delegates.
@@ -704,6 +751,7 @@ async function cycle(
     planFor(policy, MACHINE_OPERATIONS.mapCatalog),
     planFor(policy, MACHINE_OPERATIONS.mapPrepare),
     nativeDispatch,
+    chain,
   ).tick();
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
@@ -740,9 +788,11 @@ async function cycle(
     the conductor is what settled that preparation and wrote the index this reads.
   */
   const engine = codeEngine(actions);
-  for (const posted of await machinery.postPrepared(jobs, engine, plan)) {
+  for (const posted of await machinery.postPrepared(jobs, engine, plan, chain)) {
     if ("refused" in posted) {
       console.warn(`${BABEL_PLUGIN_ID}: run ${posted.runId}: ${posted.refused}`);
+    } else if ("waiting" in posted) {
+      console.warn(`${BABEL_PLUGIN_ID}: run ${posted.runId}: ${posted.waiting}`);
     }
   }
   /*
@@ -752,11 +802,11 @@ async function cycle(
     conductor has drawn and dispatched, so the ceilings it is admitted against already include
     everything this cycle committed to reviewing.
   */
-  const named = await machinery.inferTitles(jobs, engine, report.cycleRunId);
+  const named = await machinery.inferTitles(jobs, engine, report.cycleRunId, chain);
   if (named !== null && "refused" in named) {
     console.warn(`${BABEL_PLUGIN_ID}: no session was named this cycle: ${named.refused}`);
   }
-  for (const report of await drainTick(draining(jobs, actions, services))) {
+  for (const report of await drainTick(draining(jobs, actions, chain, services))) {
     for (const note of report.notes) {
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
     }
@@ -798,10 +848,13 @@ async function mapDrainCycle(
     planFor(policy, MACHINE_OPERATIONS.mapCatalog),
     planFor(policy, MACHINE_OPERATIONS.mapPrepare),
     true,
+    // A mapping drain's wake is scoped by its drain, which is a chain in all but name (#470):
+    // it posts no analysis session and launches no preset, so it carries no chain of its own.
+    null,
     mappingDrainId,
   ).tickMapDrains();
   for (const note of moved.notes) console.warn(`${BABEL_PLUGIN_ID}: mapping: ${note}`);
-  for (const report of await drainTick(draining(jobs, actions), MAP_DRAIN_PRESET)) {
+  for (const report of await drainTick(draining(jobs, actions, null), MAP_DRAIN_PRESET)) {
     for (const note of report.notes) {
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
     }
@@ -866,6 +919,7 @@ const doors = babelDoors(
       draining(
         jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
         ctx.actions,
+        principalChain(ctx.principal.id),
         ctx.services,
       ),
     concurrentJobs: DRAIN_FAN,
@@ -889,6 +943,7 @@ const doors = babelDoors(
         planFor(policy, MACHINE_OPERATIONS.mapCatalog),
         planFor(policy, MACHINE_OPERATIONS.mapPrepare),
         true,
+        null,
         drainId,
       ).tickMapDrains();
       // The cadence registered above may already have launched this drain's first fan on a wake
@@ -944,6 +999,9 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
             jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
             machinesSlice(ctx.machines),
             ctx.actions,
+            // A door knows whom it serves: the chain is its principal's, the same on every
+            // click, so the operator's own next wake can finish what his last one posted (#470).
+            principalChain(ctx.principal.id),
             // THE ONE WAKE THAT HOLDS SERVICE AUTHORITY (#337). A dispatch is served
             // `ctx.services`; a hook is not, so the corpus backfill happens on the operator's
             // own ticks and nowhere else.
@@ -1044,6 +1102,9 @@ export const plugin: ServerPluginDef = {
             installer === undefined ? unauthorized(ENABLE_WITHOUT_JOBS) : jobsSlice(installer),
             unaskable(HOOK_WITHOUT_MACHINES),
             ctx.actions,
+            // The installer is not observable, so each enable is an account chain of its own:
+            // no later enable, and no door, finishes a posting this one made (#470).
+            enableChain(),
             undefined,
             installer !== undefined,
           );
@@ -1088,6 +1149,8 @@ export const plugin: ServerPluginDef = {
             jobsSlice(ctx.jobs),
             unaskable(HOOK_WITHOUT_MACHINES),
             ctx.actions,
+            // The settled job's own credential is the one that posted it: its recorded chain.
+            await settledChain(job),
             undefined,
             true,
           );
