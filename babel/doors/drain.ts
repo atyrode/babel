@@ -136,10 +136,10 @@ export interface DrainDoorDeps {
   readonly concurrentJobs: number;
   /**
    * THE MAPPING DRAIN'S FIRST FAN AND ITS OWN WAKE, under the start's own authority: the running
-   * mapping drains' dispatch (`Conductor.tickMapDrains`) and the drain's native cadence at its
-   * `map-prepare` node, refused while the route's free catalog is not admitted. The cadence is
-   * posted here, so every settlement it wakes carries what this press discharged (#469); the
-   * free catalog's cadence never refills a paid drain.
+   * mapping drains' own conductor step (`Conductor.tickMapDrains`) and the drain's native
+   * cadence at its `map-prepare` node, refused while the route's free catalog is not admitted.
+   * The cadence is posted here, so every settlement it wakes carries what this press discharged
+   * (#469); the free catalog's cadence never refills a paid drain.
    */
   startMapping?(
     ctx: Parameters<Door["handler"]>[0],

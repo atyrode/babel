@@ -977,13 +977,14 @@ class Draws {
 }
 
 /**
- * The plan a cycle runs under here, with evaluate METERED: a stall is only judgeable of a run
- * whose job carries a metered binding, and a review Code posts is one. {@link UNMETERED_PLAN}
- * is the same plan for a deployment whose jobs bind no inference service at all, which is every
- * operation THIS bundle declares (#256, #279).
+ * The plan a cycle runs under here, with `prepare` METERED: a stall is only judgeable of a run
+ * whose job carries a metered binding, and the native job a seeded review waits on here is its
+ * preparation ({@link inFlight}). {@link UNMETERED_PLAN} is the same plan for a deployment whose
+ * jobs bind no inference service at all, which is every operation THIS bundle declares (#256,
+ * #279).
  */
 const PLAN: RunPlan = {
-  metered: { [OPERATIONS.evaluate]: true },
+  metered: { [OPERATIONS.prepare]: true },
   limits: { timeoutMs: 900000, memoryBytes: 2147483648, processes: 64, outputBytes: 67108864 },
 };
 
@@ -1055,7 +1056,9 @@ const SEEDED_CYCLE = "cyc_seeded";
  * here: the open `runs` row `reconcileRuns` polls every cycle, and the claim a settlement
  * closes. Neither is what the tests below are about — the fold, the receipt, the reaper and the
  * park all begin at a job that EXISTS — and the job is put on the fleet in the state the hub
- * would report it in, because `execute` is a verb no cycle calls.
+ * would report it in, because `execute` is a verb no cycle calls. It is a native `prepare`, the
+ * one job a review's claim waits on that this hub can answer for: a run of a kind this bundle
+ * never posts is never polled.
  */
 async function inFlight(
   db: PluginDatabase,
@@ -1065,12 +1068,12 @@ async function inFlight(
   const runId = `run_${assignmentId}`;
   const jobId = `job_${assignmentId}`;
   const claimId = `clm_${assignmentId}`;
-  fleet.running(jobId, "dev-01", OPERATIONS.evaluate);
+  fleet.running(jobId, "dev-01", OPERATIONS.prepare);
   await db.batch([
     {
       sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, records, payload)
             VALUES (?, ?, 'dev-01', ?, ?, 0, '{}')`,
-      params: [runId, OPERATIONS.evaluate, jobId, new Date(clock).toISOString()],
+      params: [runId, OPERATIONS.prepare, jobId, new Date(clock).toISOString()],
     },
     {
       sql: `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
@@ -2789,6 +2792,47 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
   const third = await loop.tick();
   expect(third.settled).toEqual([]);
   expect(draws.abandoned).toHaveLength(1);
+});
+
+test("a run this hub never posted is never asked about, never counted and never rewritten", async () => {
+  // An import from the product before Babel's runs were Code sessions (#279): a kind this bundle
+  // never posts, a host NAME where a machine id goes, and a job id no hub retained. Asking about
+  // it is refused `job_owner_mismatch` on every cycle for ever, and it reads as in flight for
+  // ever; a preview held 604 of them.
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  const asked: string[] = [];
+  const status = fleet.status.bind(fleet);
+  fleet.status = (node) => {
+    asked.push(node.jobId);
+    return status(node);
+  };
+  const loop = conductor({
+    engine: NO_CODE,
+    store: openStore(db),
+    coordinator: new Draws(db) as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  await db.run(
+    `INSERT INTO runs(id, kind, machine_id, job_id, started_at, records, unreadable, payload)
+     VALUES ('run_imported', ?, 'dev-01', 'run-20260906T105230Z/challenge/job', ?, 0, 8201, '{}')`,
+    [OPERATIONS.explore, new Date(clock - 600_000).toISOString()],
+  );
+  const imported = await db.query(`SELECT * FROM runs WHERE id = 'run_imported'`);
+
+  const report = await loop.tick();
+  await loop.tickMapDrains();
+  await loop.tickCatalog(MACHINE);
+
+  expect(asked).toEqual([]);
+  expect(report.runs).toEqual({ running: 0, atModel: 0, stalled: 0 });
+  expect(report.pending).toBe(0);
+  expect(await db.query(`SELECT * FROM runs WHERE id = 'run_imported'`)).toEqual(imported);
 });
 
 test("a reap is bounded per cycle and takes the oldest ghosts first", async () => {
@@ -7672,10 +7716,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
     },
   };
   // A native wake in this fixture is the drain's own unless a test says otherwise (#469).
-  const tick = (
-    nativeDispatch = true,
-    drain: string | null = nativeDispatch ? "drn_map" : null,
-  ) => {
+  const loop = (nativeDispatch: boolean, drain: string | null) => {
     clock += 1_000;
     return conductor({
       store: f.store,
@@ -7689,8 +7730,10 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       nativeDispatch,
       ...(drain === null ? {} : { mappingDrainId: drain }),
       now: () => clock,
-    }).tick();
+    });
   };
+  const tick = (nativeDispatch = true, drain: string | null = nativeDispatch ? "drn_map" : null) =>
+    loop(nativeDispatch, drain).tick();
   const seal = () => {
     const launch = f.fleet.launched.at(-1)!;
     const input = TranscriptMapPrepareInputSchema.parse(
@@ -7769,6 +7812,8 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
     readings,
     cancelled,
     tick,
+    /** What a settled `map-prepare` job of the drain wakes: its own lane and nothing else. */
+    wake: () => loop(true, "drn_map").tickMapDrains(),
     seal,
     answer,
   };
@@ -7788,6 +7833,42 @@ test("a door's read wake draws no mapping work; the next hook wake posts it with
   await f.tick(true);
   expect(f.fleet.launched.map((launch) => launch.operationId)).toEqual([OPERATIONS.mapPrepare]);
   expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 1n }]);
+});
+
+test("a drain's own wake posts its prepared session and asks the hub about no other lane's run", async () => {
+  // A settled-job hook keeps its tables only for the host's lifecycle bound. A drain's wake that
+  // polled every open run first spent that bound before it reached the posting only that wake
+  // may make, so the wake reads its own lane, and the posting comes before anything else.
+  const f = await paidMapDeployment();
+  await f.tick();
+  const preparation = f.fleet.launched[0]!.jobId;
+  f.seal();
+  for (let n = 0; n < 32; n++) {
+    const jobId = `job_review_${String(n)}`;
+    f.fleet.running(jobId, MACHINE, OPERATIONS.prepare);
+    await f.db.run(
+      `INSERT INTO runs(id, kind, machine_id, job_id, started_at, records, payload)
+       VALUES (?, ?, ?, ?, ?, 0, '{}')`,
+      [
+        `run_review_${String(n)}`,
+        OPERATIONS.prepare,
+        MACHINE,
+        jobId,
+        new Date(clock).toISOString(),
+      ],
+    );
+  }
+  const asked: string[] = [];
+  const status = f.fleet.status.bind(f.fleet);
+  f.fleet.status = (node) => {
+    asked.push(node.jobId);
+    return status(node);
+  };
+
+  await f.wake();
+
+  expect(f.posted).toHaveLength(1);
+  expect(asked).toEqual([preparation]);
 });
 
 test("only a wake carrying the drain's authority draws, prepares or posts paid mapping", async () => {

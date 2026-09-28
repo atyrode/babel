@@ -76,7 +76,7 @@ class Jobs {
       return {
         jobId: "job_running",
         machineId: MACHINE,
-        operationId: OPERATIONS.explore,
+        operationId: OPERATIONS.prepare,
         state: "running",
         result: null,
       };
@@ -84,7 +84,7 @@ class Jobs {
     return {
       jobId: "job_live",
       machineId: MACHINE,
-      operationId: OPERATIONS.evaluate,
+      operationId: OPERATIONS.prepare,
       state: "exited",
       result: { state: "exited", exitCode: 0, reason: null, outputs: [] },
     };
@@ -250,7 +250,7 @@ function served(slice: Jobs, name: string): Jobs {
 async function watched(): Promise<void> {
   await insert(harness.db, "runs", {
     id: "run_watched",
-    kind: OPERATIONS.explore,
+    kind: OPERATIONS.prepare,
     machine_id: MACHINE,
     job_id: "job_running",
     started_at: stamp(NOW - HOUR),
@@ -263,7 +263,7 @@ function settled(over: Partial<SettledJob> = {}): SettledJob {
   return {
     jobId: "job_live",
     machineId: MACHINE,
-    operationId: OPERATIONS.evaluate,
+    operationId: OPERATIONS.prepare,
     pluginId: BABEL_PLUGIN_ID,
     state: "exited",
     exitCode: 0,
@@ -279,7 +279,7 @@ async function pending(): Promise<void> {
   const { db } = harness;
   await insert(db, "runs", {
     id: "run_live",
-    kind: OPERATIONS.evaluate,
+    kind: OPERATIONS.prepare,
     machine_id: MACHINE,
     job_id: "job_live",
     started_at: stamp(NOW - HOUR),
@@ -578,7 +578,7 @@ test("a second dispatch inside the floor is the same wake, not another cycle", a
   // third dispatch woke the loop is the second run it read back.
   await insert(harness.db, "runs", {
     id: "run_next",
-    kind: OPERATIONS.evaluate,
+    kind: OPERATIONS.prepare,
     machine_id: MACHINE,
     job_id: "job_next",
     started_at: stamp(NOW - HOUR),
@@ -1281,6 +1281,23 @@ test("a drain's cadence is never registered to end before its deadline is settle
   // Every rung the credential admits ends before the deadline has been passed by two intervals.
   const { expiries } = await drainCadence(90_000);
   expect(expiries).toEqual([]);
+});
+
+test("a settled map-prepare job wakes its drain's lane and never another lane's run", async () => {
+  // A settled-job hook keeps its tables only for the host's lifecycle bound, so a preparation's
+  // wake is not a whole cycle: the review run it would otherwise poll first stays unread, and
+  // no beat is listed or registered on it.
+  await pending();
+
+  await plugin.lifecycle?.onJobSettled?.(
+    context(harness.db as unknown as GuestDatabase, jobs) as never,
+    settled({ jobId: "job_map_prepared", operationId: OPERATIONS.mapPrepare }),
+  );
+
+  expect(jobs.statuses).toBe(0);
+  expect(jobs.listed).toBe(0);
+  expect(jobs.scheduled).toEqual([]);
+  expect(await closure()).toBeNull();
 });
 
 test("enabling a store made before archive captures adds their columns, the label map and the recency index", async () => {

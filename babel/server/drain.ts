@@ -926,11 +926,17 @@ async function tickMapDrain(
  * conductor's tick: the conductor is what settles a finished job and writes what it spent, and a
  * controller that read the runs table first would decide against last cycle's numbers.
  *
+ * `preset` narrows it to one kind of drain: a mapping drain's own wake moves its lane on and
+ * never spends another drain's fan under the credential that wake carries.
+ *
  * A drain that throws does not stop the others: they are separate operator decisions about
  * separate machines, and one unreadable row is not a reason to stop spending a window that is
  * about to reset.
  */
-export async function drainTick(deps: DrainDeps): Promise<readonly DrainReport[]> {
+export async function drainTick(
+  deps: DrainDeps,
+  preset?: DrainPreset,
+): Promise<readonly DrainReport[]> {
   let drains: readonly DrainRow[];
   try {
     drains = await activeDrains(deps.store);
@@ -949,6 +955,7 @@ export async function drainTick(deps: DrainDeps): Promise<readonly DrainReport[]
   }
   const reports: DrainReport[] = [];
   for (const row of drains) {
+    if (preset !== undefined && row.preset !== preset) continue;
     try {
       reports.push(await tickDrain(deps, row));
     } catch (error) {
