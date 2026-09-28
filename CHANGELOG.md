@@ -11,6 +11,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A release tag delivers each bundle under the runner it was verified for.** Manifold's
+  preview receiver now reads the three-word `plugin <url> <sha256>` as its hardened runner, with
+  no fallback for a bundle that does not target it; only a fourth word `--in-realm` installs in
+  the hub/page realm, as the key holder's trust choice rather than a manifest preference. The
+  next tag's `deliver` would have sent the three words for every bundle and had Code's and this
+  family's refused: both are in-realm (Code's dev loop refuses `--hardened`, and
+  `bun run verify` and `bun run dev` run Babel's without it). omp's server-only bundles are
+  verified hardened, so a blanket `--in-realm` would have downgraded them instead. The
+  dependencies job now packs omp's bundles into `deps/hardened/` and Code's into
+  `deps/in-realm/`, and `deliver` reads the runner off the path: three words for
+  `deps/hardened/`, `--in-realm` for `deps/in-realm/` and `dist/`, and a refusal for any other
+  directory. That step's shell, run against a recording `ssh` with an order mixing all three
+  directories, sends exactly that split (#477).
+
 - **A native post the hub never retained is re-posted under its id or closed, never left open.**
   An execute refused before the hub reserved it, such as `service_bindings_protocol_unsupported`
   from an older native owner, leaves the hub no request to resolve the job's node through, so
