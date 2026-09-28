@@ -20,7 +20,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   now carry a removal, applied where what it names is still there and in the same batch as
   the additions: it drops `drains.session` once, and a later enable finds nothing to do.
   Every other column of every drain row is kept, and a drain written before #279 still reads
-  `profile` as `{}`.
+  `profile` as `{}` (#483).
 
 ## [0.5.2] - 2026-09-28
 
