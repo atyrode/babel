@@ -18,7 +18,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   preference. Babel's family and its omp/Code closure are in-realm bundles — `bun run verify` and
   the `bun run dev` loop run them without `--hardened` — so the next tag's `deliver` would have had
   every bundle refused. `release.yml` now sends `plugin <url> <sha256> --in-realm`; that step's
-  shell, run against a recording `ssh`, sends the fourth word for every bundle in the order.
+  shell, run against a recording `ssh`, sends the fourth word for every bundle in the order
+  (#477).
 
 ## [0.5.1] - 2026-09-27
 
