@@ -9,6 +9,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **A drain starts again on a store created before drains named a Code profile.** #279
+  replaced `drains.session` with `profile`, but its enable-time step only added `profile`, and
+  left the old `session TEXT NOT NULL` column in place. On every store an enable before #279
+  created, `insertDrain` (which no longer writes `session`) was refused with
+  `NOT NULL constraint failed: drains.session`, so `drainStart` and `mapDrainStart` failed; a
+  fresh store, created without the column, never showed it. The enable hook's schema list can
+  now carry a removal, applied where what it names is still there and in the same batch as
+  the additions: it drops `drains.session` once, and a later enable finds nothing to do.
+  Every other column of every drain row is kept, and a drain written before #279 still reads
+  `profile` as `{}` (#483).
+
 ## [0.5.2] - 2026-09-28
 
 ### Fixed
