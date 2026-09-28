@@ -396,7 +396,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       const live: { runId: string; jobId: string; launchedAt: number }[] = [];
       let refused = "";
       for (let slot = 0; slot < Math.min(input.concurrent, input.maxJobs ?? Infinity); slot += 1) {
-        const identity = drainIdentity(row, slot);
+        const identity = drainIdentity(row, slot, deps.chain);
         const started = SPENDING.includes(input.preset)
           ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, request, plan)
           : await deps.launch.startBeat(identity, deps.jobs, request, plan);

@@ -8,6 +8,8 @@ import {
   BABEL_PLUGIN_ID,
   AnalysisWorkSchema,
   type AnalysisBriefRecord,
+  BeatChainSchema,
+  CONDUCTOR_BEAT_CHAIN_KEY,
   CONDUCTOR_CYCLE_KEY,
   CONDUCTOR_TALLY_KEY,
   INPUT_FIELD,
@@ -534,6 +536,13 @@ export interface ConductorDeps {
    * never spends a work's attempt or strands a posting on an authority it does not have.
    */
   readonly mappingDrainId?: string;
+  /**
+   * THE ACCOUNT CHAIN THIS WAKE ACTS FOR (#470; `principalChain` in `doors/launch.ts`), or
+   * absent/null for a wake with none. What this wake posts is posted under its credential, so
+   * the analysis preparations it launches and the beat it registers carry this chain, and their
+   * settlements hand it back.
+   */
+  readonly chain?: string | null;
   readonly now: () => number;
 }
 
@@ -3801,6 +3810,20 @@ export function conductor(deps: ConductorDeps): Conductor {
       notes.push(`the beat cannot be registered: ${message(error)}`);
       return { state: "absent", machines };
     }
+    // WHOSE BEAT IT IS NOW (#470). Every occurrence runs under this wake's credential, so its
+    // settlement acts for this wake's chain — written only once the hub accepted, and for this
+    // revision alone. A write that does not land leaves the revision unnamed, and a beat nobody
+    // named resumes no posting.
+    try {
+      await keys.set(
+        CONDUCTOR_BEAT_CHAIN_KEY,
+        JSON.stringify(
+          BeatChainSchema.parse({ revision: policy.version, chain: deps.chain ?? null }),
+        ),
+      );
+    } catch (error) {
+      notes.push(`the beat's account chain cannot be kept: ${message(error)}`);
+    }
     return { state: "registered", machines };
   }
 
@@ -6024,6 +6047,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           jobId,
           materialJobId: prepareJobId,
           authorityId: cycleRunId,
+          chain: deps.chain ?? null,
         };
         let started: Started;
         try {

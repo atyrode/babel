@@ -1923,6 +1923,20 @@ export const TallyReasonSchema = z.enum(TALLY_REASONS);
  */
 export const CONDUCTOR_TALLY_KEY = "conductor:tally";
 
+/**
+ * Where the conductor keeps WHICH ACCOUNT CHAIN REGISTERED THE BEAT (#470), beside the two keys
+ * above: `{ revision, chain }`, written once the hub accepted a registration. Every occurrence
+ * of a schedule carries the credential of the wake that registered it, so a beat's settlement
+ * acts for that chain — and only for the revision named here, because a registration under
+ * another wake moves it.
+ */
+export const CONDUCTOR_BEAT_CHAIN_KEY = "conductor:beat-chain";
+/** The value kept under {@link CONDUCTOR_BEAT_CHAIN_KEY}; `chain` is null for a chain-less wake. */
+export const BeatChainSchema = z.strictObject({
+  revision: z.string().min(1),
+  chain: z.string().min(1).nullable(),
+});
+
 // ---------------------------------------------------------------------------- machine operations
 
 /**

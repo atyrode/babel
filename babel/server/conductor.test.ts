@@ -33,7 +33,7 @@ import {
   type RunTrace,
 } from "../contract.ts";
 import { insertDrain, readDrain } from "../store/drains.ts";
-import { launchMachinery, type Started } from "../doors/launch.ts";
+import { launchMachinery, principalChain, type Started } from "../doors/launch.ts";
 import { drainTick, endDrain, type DrainDeps } from "./drain.ts";
 import { coordinator as governed } from "../store/coordinator.ts";
 import type {
@@ -142,6 +142,11 @@ function openDatabase(): PluginDatabase {
 }
 
 let clock = Date.parse("2026-09-12T09:00:00.000Z");
+/**
+ * THE ACCOUNT CHAIN A POSTING WAKE ACTS FOR (#470), as `server.ts` derives it. A conductor
+ * built without one is a wake with none; the analysis tests post under this one.
+ */
+const WAKE = principalChain("operator");
 
 function openStore(db: PluginDatabase): BabelStore & { touched: number } {
   const store = {
@@ -1335,7 +1340,12 @@ function sessionRead(over: {
 }
 
 class ReviewCode implements CodeEngine {
+  /**
+   * Every session Code BOUGHT. Like Code and omp, a keyed ask returns what its key already
+   * posted and buys nothing, and an adopt-only ask never posts (#470).
+   */
   readonly posted: SessionRequest[] = [];
+  readonly keyed = new Map<string, CodeJob>();
   read: SessionRead = sessionRead({ state: "started", sealed: false });
 
   async profiles(): Promise<EngineAnswer<readonly never[]>> {
@@ -1346,17 +1356,21 @@ class ReviewCode implements CodeEngine {
   }
 
   async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
+    const key = request.postingKey;
+    const found = key === undefined ? undefined : this.keyed.get(key);
+    if (found !== undefined) return await Promise.resolve({ ok: true, value: found });
+    if (request.adoptOnly === true)
+      return refusedByCode("engine_posting_unknown", "nothing was posted under this key");
     this.posted.push(request);
-    return await Promise.resolve({
-      ok: true,
-      value: {
-        jobId: "job_code_review",
-        machineId: request.machineId,
-        operationId: "atyrode.omp.session",
-        pluginId: "atyrode.omp",
-        state: "started",
-      },
-    });
+    const job: CodeJob = {
+      jobId: "job_code_review",
+      machineId: request.machineId,
+      operationId: "atyrode.omp.session",
+      pluginId: "atyrode.omp",
+      state: "started",
+    };
+    if (key !== undefined) this.keyed.set(key, job);
+    return await Promise.resolve({ ok: true, value: job });
   }
 
   async readSession(): Promise<EngineAnswer<SessionRead>> {
@@ -6128,7 +6142,7 @@ test.each(["challenge", "synthesize"] as const)(
     expect(second.requested).toEqual([]);
     expect(second.settled).toEqual([]);
     expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
-    expect(await launch.postPrepared(fleet, code, PLAN)).toEqual([
+    expect(await launch.postPrepared(fleet, code, PLAN, WAKE)).toEqual([
       { runId: requested.runId, jobId: "job_code_review" },
     ]);
     expect(code.posted[0]!.prompt).toContain(`babel.stage = ${stage}`);
@@ -6345,7 +6359,7 @@ test("an interrupted native analysis posting retains its reservation and reconci
     },
   });
   await loop.tick();
-  expect(await launch.postPrepared(fleet, code, PLAN)).toEqual([
+  expect(await launch.postPrepared(fleet, code, PLAN, WAKE)).toEqual([
     {
       runId: (
         await db.query<{ id: string }>(`SELECT id FROM runs WHERE prepare_job_id = ?`, [jobId])
@@ -6354,6 +6368,94 @@ test("an interrupted native analysis posting retains its reservation and reconci
     },
   ]);
   expect((await coordinator.open(clock)).byMachine[MACHINE]).toBe(1);
+});
+
+test("a lease lost between the post and its job id strands nothing: its own chain recovers the session and it settles once", async () => {
+  // #470's acceptance: a settled-job hook overran its lease after Code bought the session, so
+  // neither the job id nor the hook's own catch could be written, and nothing more could reach
+  // Code. The next wake of the account that posted it asks again under the run's key.
+  const { db, coordinator, fleet, code, launch, loop } = await weightedCycle("challenge");
+  const first = await loop.tick();
+  const requested = first.requested[0]!;
+  fleet.finish(requested.jobId, 0, {
+    [JOB_OUTPUT_FILES.receipt]: {
+      runId: `${requested.runId}_material`,
+      kind: "prepare",
+      machineId: MACHINE,
+      startedAt: new Date(clock).toISOString(),
+      finishedAt: new Date(clock).toISOString(),
+      closure: "completed",
+      costUsd: 0,
+      tokens: 0,
+      counts: {},
+      material: { ...materialIndex(SERVED_FILE, SERVED_DIGEST), machineId: MACHINE },
+    },
+  });
+  await loop.tick();
+  let closed = false;
+  const asked: SessionRequest[] = [];
+  const post = code.runSession.bind(code);
+  code.runSession = async (request) => {
+    if (closed) throw new Error("the hook's lease is closed");
+    asked.push(request);
+    const answered = await post(request);
+    closed = asked.length === 1;
+    return answered;
+  };
+  const cancel = code.cancelSession.bind(code);
+  code.cancelSession = async () =>
+    closed
+      ? refusedByCode<CodeJob>("engine_unavailable", "the hook's lease is closed")
+      : await cancel();
+  const { query, run, batch } = db;
+  const lease =
+    <T extends unknown[], R>(verb: (...args: T) => Promise<R>) =>
+    async (...args: T): Promise<R> => {
+      if (closed) throw new Error("the hook's lease is closed");
+      return await verb(...args);
+    };
+  db.query = lease(query) as typeof query;
+  db.run = lease(run);
+  db.batch = lease(batch);
+  // What the dying hook answers is nobody's: its host has moved on.
+  await launch.postPrepared(fleet, code, PLAN, WAKE).catch(() => undefined);
+  closed = false;
+  expect(code.posted).toHaveLength(1);
+  expect(
+    await db.query(
+      `SELECT job_id, json_extract(payload, '$.posting') AS posting FROM runs WHERE id = ?`,
+      [requested.runId],
+    ),
+  ).toEqual([{ job_id: null, posting: 1n }]);
+  // Another account's wake, and a wake with no chain, ask nothing: the key is not theirs.
+  for (const chain of ["enable:other", null])
+    expect(await launch.postPrepared(fleet, code, PLAN, chain)).toEqual([
+      { runId: requested.runId, waiting: expect.stringContaining("account chain") },
+    ]);
+  expect(asked).toHaveLength(1);
+  expect(await launch.postPrepared(fleet, code, PLAN, WAKE)).toEqual([
+    { runId: requested.runId, jobId: "job_code_review" },
+  ]);
+  // The identical call under the same key returned the session the lost post bought.
+  expect(asked).toHaveLength(2);
+  expect(asked[1]).toEqual(asked[0]);
+  expect(asked[0]?.postingKey).toBe(requested.runId);
+  expect(code.posted).toHaveLength(1);
+  code.read = sessionRead({
+    jobId: "job_code_review",
+    state: "exited",
+    usage: { input: 100, output: 40, cacheRead: 0, cacheWrite: 0, cost: 0.12 },
+    finalMessage: "```json\n{}\n```",
+  });
+  const settled = [...(await loop.tick()).settled, ...(await loop.tick()).settled];
+  expect(settled.filter((claim) => claim.claimId === requested.claimId)).toHaveLength(1);
+  expect(
+    await db.query(`SELECT job_id, actual_cost FROM claims WHERE id = ?`, [requested.claimId]),
+  ).toEqual([{ job_id: "job_code_review", actual_cost: 0.12 }]);
+  expect(await db.query(`SELECT closure FROM runs WHERE id = ?`, [requested.runId])).toEqual([
+    { closure: "completed" },
+  ]);
+  expect((await coordinator.spend(clock)).total).toBeCloseTo(0.12, 8);
 });
 
 test("a terminal Code job whose cancellation failed accounts the unchanged preparation grant exactly once", async () => {
@@ -6385,7 +6487,7 @@ test("a terminal Code job whose cancellation failed accounts the unchanged prepa
     return answered;
   };
   code.cancelSession = async () => refusedByCode("engine_unavailable", "cancellation unavailable");
-  expect((await launch.postPrepared(fleet, code, PLAN))[0]).toHaveProperty("refused");
+  expect((await launch.postPrepared(fleet, code, PLAN, WAKE))[0]).toHaveProperty("refused");
   expect(
     await db.query(`SELECT job_id, finished_at FROM claims WHERE id = ?`, [requested.claimId]),
   ).toEqual([{ job_id: requested.jobId, finished_at: null }]);
@@ -7915,6 +8017,7 @@ function mapDrainDeps(f: Awaited<ReturnType<typeof paidMapDeployment>>): DrainDe
     launch: { startExplore: refuse, startBeat: refuse },
     jobs: f.fleet,
     engine: f.engine,
+    chain: null,
     plan: () => PLAN,
     now: () => clock,
   };

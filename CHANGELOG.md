@@ -26,6 +26,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   last refreshed before #479 and which is byte-identical under both Code pins, and the gate
   passes against the new closure.
 
+- **A lost analysis or titling posting is recovered by the account that posted it, and only by
+  it (#470).** An analysis or titling session posted from a settled-job hook that overran its
+  lease was bought and never recorded: the run kept `posting unconfirmed` and its reservation
+  for good. Code and omp key a session by the posting key and the calling principal, so Babel
+  now names the account every wake acts for: a door its own principal (`principal:<id>`), each
+  enable a fresh `enable:<id>`, and a settlement the chain recorded when its job was posted — on
+  the run rows holding the job (new nullable `runs.chain`, store 1.13) or, for the beat, under
+  `conductor:beat-chain` for the revision it registered. `postPrepared` posts under the run's id
+  as Code's key, recording the chain and the prompt in the write that claims the run. A later
+  wake of that chain asks the identical call again and binds the session the lost post bought;
+  any other wake, one with no chain, and a new enable leave the run and say it waits. A refusal
+  ends through an adopt-only retire, and only its final `engine_posting_unknown` releases the
+  reservation at zero. An operator's Stop of his own posting retires it — closing at zero, or
+  recording and cancelling the session it finds — and another account's Stop keeps refusing.
+  Proved by a lease injected between the post and the job id's write (one session bought,
+  recovered by its own chain, settled once) and by each wake class driven through the plugin.
+
 ## [0.5.3] - 2026-09-28
 
 ### Fixed
