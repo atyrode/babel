@@ -33,7 +33,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   (its `map-prepare` preparations and its Code sessions), the prepared sessions posted, the
   drain's free slots refilled, the mapping drains' controller, then the cadences. It polls no
   other lane's run and draws, titles and prepares nothing else; a door's cycle and the beat's
-  settlement still run the whole loop (#PR).
+  settlement still run the whole loop (#484).
 
 - **A run this hub never posted is no longer asked about on every cycle.** A store imported
   from the product before Babel's runs became Code sessions holds open runs of a kind this
@@ -42,7 +42,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   was refused `job_owner_mismatch`, counted it in flight and incremented its silence, which
   made a door-woken cycle take about eight seconds. The loop now selects only a Code session or
   a run of one of this bundle's own native operations, so such a row is neither polled nor
-  counted, and it is left exactly as the import wrote it (#PR).
+  counted, and it is left exactly as the import wrote it (#484).
 
 ## [0.5.2] - 2026-09-28
 
