@@ -15,14 +15,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   defaults to 0; a policy written before it reads as 0. While `map` is above zero and the policy
   installs a mapping route, the conductor keeps mapping work in flight on its own, with no drain.
   Every beat, enable, and settlement of a job one of those posted draws it. It takes the map
-  weight's share of `concurrentPerMachine`, at least one slot, before reviews draw. It stops when
-  nothing is queued, when the weight goes to zero, or when the day's ceiling or
-  `mapping.dailyCost` refuses the next claim. It reuses the drains' dispatch path: `map-prepare`,
-  then the material session. Its sessions post under the same authority as the review and
-  analysis lanes. Each run records the account chain of the wake that published it, and only that
-  chain may re-ask a lost posting (#470). The admitted catalog's own cadence keeps the queue full.
-  Mapping drains remain for explicit windows. Both lanes draw ordinary claims, so neither takes
-  work the other holds. Watch lists `map` beside the other four weights.
+  weight's share of `concurrentPerMachine`, at least one slot, before reviews draw; when the bound
+  has fewer slots than weighted activities, that last slot is time-shared by weight instead, so
+  neither mapping nor review starves the other. It stops when nothing is queued, when the weight
+  goes to zero, or when the day's ceiling or `mapping.dailyCost` refuses the next claim. It reuses
+  the drains' dispatch path: `map-prepare`, then the material session. Its sessions post under the
+  same authority as the review and analysis lanes. Each run records the account chain of the wake
+  that published it, and only a wake of that chain prepares it, retries a lost preparation, posts
+  its session or re-asks a lost posting (#470). A policy writer can therefore start standing paid
+  mapping over an already-consented route without holding `mapDrainStart`'s grants, as
+  `SPEC.md` now states. The admitted catalog's own cadence keeps the queue full. Mapping drains
+  remain for explicit windows. Both lanes draw ordinary claims, so neither takes work the other
+  holds. Watch lists `map` beside the other four weights.
 
 ### Fixed
 

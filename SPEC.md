@@ -1016,24 +1016,43 @@ boundary, including after another class warms a cache.
 
 Mapping is separate from analysis and from read-only Recall. Every eligible captured session enters
 an idempotent mapping queue; unavailable authority or exhausted budgets leave a visible backlog.
-Mapping is a standing conductor activity with its own weight, `activityWeights.map`, which is zero
-by default and in every policy written before it existed. While it is positive and the policy
+Mapping is a standing conductor activity with its own weight, `activityWeights.map`, which is
+zero by default and in every policy written before it existed. While it is positive and the policy
 installs a mapping route, the conductor keeps paid generation, review and correction in flight on
-its own: every native-capable wake that is no drain's (the beat, an enable, or the settlement of a
-job one of those posted) fills the lane up to its share of the executor, which is the map weight's
-share of all the activity weights, of the per-machine bound, and at least one slot. It draws before
-the review lane, so reviews cannot crowd it out. It stops when no work is queued, when the policy
-stops weighting it, or when a ceiling (the day's, or the mapping daily cap) refuses the next claim.
-Its runs are posted under the authority the review and analysis lanes post with: each is recorded
-under the account chain of the wake that published it, its preparation's settlement acts for that
-chain, and a posting whose answer was lost is asked again only by a wake of that chain (#470). An
-operator-started mapping drain (`mapDrainStart`) maps on top of it inside an explicit window,
-keeping its fan of jobs in flight until its own target, deadline, `maxJobs` or stop, and ending
-itself when no eligible work remains. Both lanes draw ordinary coordinator claims, so neither can
-take work the other holds. The work runs through the route's explicitly configured Code profile and
-versioned recipes. The profile is the operator's choice, including its price; Babel neither chooses
-a provider nor holds its credentials. Redaction applies before material reaches the model and before
-generated prose is retained or served.
+its own: every native-capable wake that is no drain's and acts for an account chain (the beat, an
+enable, or the settlement of a job one of those posted) fills the lane up to its share of the
+executor. That share is the map weight's share of all the activity weights, of the per-machine
+bound, and at least one slot while the bound holds a slot for every positive-weight activity. When
+it does not — one slot, or fewer slots than weighted activities — that guarantee would hand
+mapping a slot every other activity never got, so the fraction of a slot the weights give mapping
+is time-shared instead: each cycle, a draw fixed by the cycle gives mapping that last slot with
+probability equal to the fraction and leaves it to the review draw otherwise, and over cycles each
+side takes the slot in proportion to its weight. The lane draws before the review lane, so reviews
+cannot crowd out its share. It stops when no work is queued, when the policy stops weighting it,
+or when a ceiling (the day's, or the mapping daily cap) refuses the next claim. Its runs are
+posted under the authority the review and analysis lanes post with. Each is recorded under the
+account chain of the wake that published it, and every later spend of the run — its native
+preparation, a retry of a post whose fate is unknown, its Code session, and a re-ask of a lost
+posting — is made only by a wake of that same chain, never another's or a chainless one, so the
+preparation's settlement acts for the chain that posted it and a posting key is only ever asked
+under the principal that used it (#470). An operator-started mapping drain (`mapDrainStart`) maps
+on top of it inside an explicit window, keeping its fan of jobs in flight until its own target,
+deadline, `maxJobs` or stop, and ending itself when no eligible work remains. Both lanes draw
+ordinary coordinator claims, so neither can take work the other holds. The work runs through the
+route's explicitly configured Code profile and versioned recipes. The profile is the operator's
+choice, including its price; Babel neither chooses a provider nor holds its credentials. Redaction
+applies before material reaches the model and before generated prose is retained or served.
+
+Weighting mapping is a delegation, and it is stated here because it is easy to miss. A policy
+writer — whoever may install a policy through `setPolicy`, which asks for `containers:write` —
+can turn an already-consented Recall mapping route into standing paid mapping by setting
+`activityWeights.map`, without personally holding the grants `mapDrainStart` asks of its presser
+at the executor's `map-prepare` node, the source owner's private mapping target and the Code
+workspace. The standing lane spends under the installer-lineage authority the beat carries,
+bounded by the installation's existing consents and the policy's own ceilings. This is the same
+trust the standing analysis activities already have, but it reaches the Recall `mapping` service
+binding rather than analysis's restic and storage bindings: installing a mapping route in a
+policy, and consenting the executor's `map-prepare` operation, are what authorize it.
 
 A mapping drain's start is admitted at the executor's `map-prepare` node, the source owner's private
 mapping target and the route's Code workspace, and posts the first fan itself. A session is posted

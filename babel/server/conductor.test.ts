@@ -8433,6 +8433,71 @@ test("a lost standing mapping posting is asked again only by a wake of the chain
   expect((await f.standingRuns()).map((run) => run.job_id)).toEqual(["map_code_1"]);
 });
 
+test("a standing preparation whose post never landed is retried only by a wake of its own chain", async () => {
+  // Wake A publishes the intent under its chain and dies before the hub takes the post. A wake
+  // of chain B posting it would have the job settle under B while the run names A: a lost
+  // session answer would then be re-asked under A's key by the wrong principal (#470).
+  const f = await paidMapDeployment();
+  await f.db.run(`DELETE FROM drains`);
+  await f.weigh({ map: 1 });
+  const execute = f.fleet.execute.bind(f.fleet);
+  const status = f.fleet.status.bind(f.fleet);
+  let posts = 0;
+  f.fleet.execute = () => {
+    posts += 1;
+    throw new HostCallError("jobs.execute", "transport unavailable");
+  };
+  f.fleet.status = (node) => {
+    if (!f.fleet.jobs.has(node.jobId)) throw new HostCallError("jobs.status", "job_not_started");
+    return status(node);
+  };
+  await f.loop(true, null, "enable:a").tick();
+  expect(posts).toBe(1);
+  f.fleet.execute = (request) => {
+    posts += 1;
+    return execute(request);
+  };
+  await f.loop(true, null, "principal:b").tick();
+  await f.loop(true, null, "principal:b").tickMapDrains();
+  await f.loop(true, null, null).tick();
+  expect(posts).toBe(1);
+  await f.loop(true, null, "enable:a").tick();
+  expect(posts).toBe(2);
+  await f.loop(true, null, "enable:a").tick();
+  expect(posts).toBe(2);
+  expect(f.fleet.launched).toHaveLength(1);
+});
+
+test("a single slot is time-shared by weight, so review and map both progress", async () => {
+  // One slot cannot hold both weighted activities. Mapping keeping it whenever it frees starves
+  // review, and the reverse starves mapping, so the slot is shared cycle by cycle.
+  const f = await paidMapDeployment();
+  await f.db.run(`DELETE FROM drains`);
+  await seed(f.db);
+  await f.planEveryCapture();
+  await f.weigh({ review: 1, map: 1 }, { batchSize: 1, concurrentPerMachine: 1 });
+  const taken = { review: 0, map: 0 };
+  for (let cycle = 0; cycle < 6; cycle += 1) {
+    await f.loop(true, null, "enable:standing").tick();
+    // Who took the slot this cycle; then the slot is freed, so the next cycle chooses again.
+    const held = await f.db.query<{ role: string }>(
+      `SELECT role FROM claims WHERE finished_at IS NULL`,
+    );
+    expect(held.length).toBeLessThanOrEqual(1);
+    for (const claim of held) taken[claim.role.startsWith("mapping:") ? "map" : "review"] += 1;
+    const at = new Date(clock).toISOString();
+    await f.db.run(
+      `UPDATE claims SET finished_at=?, outcome='completed' WHERE finished_at IS NULL`,
+      [at],
+    );
+    await f.db.run(`UPDATE runs SET closure='completed', finished_at=? WHERE closure IS NULL`, [
+      at,
+    ]);
+  }
+  expect(taken.review).toBeGreaterThan(0);
+  expect(taken.map).toBeGreaterThan(0);
+});
+
 test("a mapping drain folds its runs, stops drawing at its target and ends when it is met", async () => {
   const f = await paidMapDeployment();
   await f.db.run(

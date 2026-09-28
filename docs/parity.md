@@ -62,7 +62,8 @@ These are separate evidence boundaries inside `explore/`'s row, not capabilities
 assumed from that row alone.
 
 - **Challenge and synthesize have separate weighted dispatch.** The coordinator allocates review,
-  explore, challenge and synthesize through one claim and budget ledger. A stage retains its exact
+  explore, challenge, synthesize and map through one claim and budget ledger; map draws only
+  mapping work, in its weighted share of the executor. A stage retains its exact
   brief and fenced ownership across preparation and Code; settlement reads that stage and refuses
   unoffered durable references. Challenge writes attributed objections, which the candidate's feed
   entry and opened record expose. Synthesis connects observations from multiple known source runs

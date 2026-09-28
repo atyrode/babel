@@ -15,6 +15,7 @@
   at the depth it deserves.
 */
 
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx, GuestDatabase, GuestHookJobs } from "@manifold/plugin-kit/server";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
@@ -37,7 +38,10 @@ import { WAKES, plugin } from "./server.ts";
 import { stamp } from "./store/feedindex.ts";
 import { upsertSessionRows } from "./store/sessions.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
-import { PolicySchema } from "./store/coordinator.ts";
+import { mappingPolicy, PolicySchema } from "./store/coordinator.ts";
+import { transcriptMaps } from "./store/transcript-maps.ts";
+import { buildTranscriptMap } from "./machine/transcript-map-tree.ts";
+import { transcriptMapCaptureId } from "./transcript-map-identity.ts";
 import { insertDrain, readDrain } from "./store/drains.ts";
 import { CONDUCTOR_SCHEDULE_ID, type JobLaunch, type ScheduleTiming } from "./server/conductor.ts";
 
@@ -1314,6 +1318,141 @@ test("a settled map-prepare job wakes its drain's lane and never another lane's 
   expect(jobs.listed).toBe(0);
   expect(jobs.scheduled).toEqual([]);
   expect(await closure()).toBeNull();
+});
+
+test("a map-prepare settlement spends only for the lane that posted it, never for an orphan", async () => {
+  // Mapping is weighted and work is queued, so a wake that spent for the standing lane would
+  // reach for the executor. An ended drain's late preparation belongs to no lane: its settlement
+  // carries that drain's press credential, and must not spend it on the standing lane's work.
+  const rows = await harness.db.query<{ payload: string }>(
+    `SELECT payload FROM policies ORDER BY seq DESC LIMIT 1`,
+  );
+  const policy = PolicySchema.parse({
+    ...PolicySchema.parse(JSON.parse(rows[0]!.payload)),
+    version: "p2",
+    activityWeights: { review: 0, explore: 0, challenge: 0, synthesize: 0, map: 1 },
+    mapping: {
+      sourceMachineId: "source-machine",
+      executorMachineId: MACHINE,
+      profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+      dailyCost: 1,
+      generateRecipe: "triage",
+      reviewRecipe: "triage",
+      segmentation: { leafBytes: 1024, directBytes: 0 },
+    },
+  });
+  await insert(harness.db, "policies", {
+    version: "p2",
+    seq: 2,
+    actor_id: "operator",
+    reason: "standing mapping",
+    recorded_at: stamp(NOW),
+    payload: JSON.stringify(policy),
+  });
+  const route = mappingPolicy(policy)!;
+  const now = new Date(NOW).toISOString();
+  const digest = `sha256:${"a".repeat(64)}`;
+  const scope = {
+    digest,
+    policyDigest: digest,
+    classId: "private",
+    ceiling: 2,
+    eligibleCaptures: 1,
+    observedAt: now,
+  };
+  const identity = {
+    host: "synthetic",
+    harness: "omp" as const,
+    session: "synthetic-0",
+    snapshot: "1".repeat(64),
+    path: "/synthetic/0.jsonl",
+    capturedAt: now,
+  };
+  const capture = { id: transcriptMapCaptureId(identity), ...identity };
+  const access = { captureId: capture.id, contextDigest: digest, sensitivity: 2 };
+  const bytes = Buffer.from(`${JSON.stringify({ role: "user", text: "a".repeat(700) })}\n`);
+  const sha = (data: Uint8Array) => `sha256:${createHash("sha256").update(data).digest("hex")}`;
+  const tree = await buildTranscriptMap({
+    capture,
+    captureDigest: sha(bytes),
+    sourceDigest: sha(bytes),
+    segmentation: route.segmentation,
+    async replay(sink) {
+      sink.write(bytes);
+      await sink.close();
+    },
+    rangeDigest: async (offset, length) => sha(bytes.subarray(offset, offset + length)),
+  });
+  const maps = transcriptMaps(harness.store);
+  const machineId = route.sourceMachineId;
+  await maps.recordCatalog({
+    machineId,
+    context: scope,
+    entries: [{ capture, access }],
+    nextCursor: null,
+    now,
+  });
+  await maps.recordPlan({
+    machineId,
+    context: scope,
+    access,
+    plan: tree.header,
+    nodes: tree.nodes,
+    offset: 0,
+    nextOffset: null,
+    now,
+  });
+  await maps.ensureVersion(tree.header.id, route, now);
+  // The standing lane's own preparation, long settled, recorded under the chain that posted it.
+  await insert(harness.db, "runs", {
+    id: "run_standing",
+    kind: TRANSCRIPT_MAP_SESSION_OPERATION,
+    machine_id: MACHINE,
+    job_id: "job_standing_session",
+    prepare_job_id: "job_standing",
+    closure: "completed",
+    chain: "enable:standing",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: JSON.stringify({ standing: true }),
+  });
+  // An ended drain's run: the same account chain, but no lane's. Only the lane decides.
+  await insert(harness.db, "runs", {
+    id: "run_of_an_ended_drain",
+    kind: TRANSCRIPT_MAP_SESSION_OPERATION,
+    machine_id: MACHINE,
+    job_id: "job_ended_session",
+    prepare_job_id: "job_of_an_ended_drain",
+    closure: "stopped",
+    chain: "enable:standing",
+    started_at: stamp(NOW - HOUR),
+    records: 0,
+    payload: "{}",
+  });
+  const described: string[] = [];
+  const native = {
+    describe: (args: { machineId: string }) => {
+      described.push(args.machineId);
+      return { connected: false, operations: {}, installation: null };
+    },
+    status: () => {
+      throw new Error("this test holds no open job");
+    },
+    listRuns: () => ({ runs: [], nextCursor: null }),
+    schedules: () => [],
+    schedule: () => ({}),
+    disableSchedule: () => ({}),
+  };
+  const wake = async (jobId: string) =>
+    await plugin.lifecycle?.onJobSettled?.(
+      { ...context(harness.db as unknown as GuestDatabase, jobs, NOW), jobs: native } as never,
+      settled({ jobId, machineId: MACHINE, operationId: OPERATIONS.mapPrepare }),
+    );
+
+  await wake("job_of_an_ended_drain");
+  expect(described).toEqual([]);
+  await wake("job_standing");
+  expect(described).toEqual([MACHINE]);
 });
 
 test("enabling a store made before archive captures adds their columns, the label map and the recency index", async () => {

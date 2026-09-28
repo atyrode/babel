@@ -756,14 +756,26 @@ type MappingSlot =
   { readonly drainId: string; readonly ordinal: number } | { readonly share: number };
 
 /**
- * The standing mapping lane's slots on its executor: the map weight's share of all the activity
- * weights, of the policy's per-machine bound, and at least one while the weight is positive.
+ * The standing mapping lane's slots on its executor this cycle: the map weight's share of all
+ * the activity weights, of the policy's per-machine bound.
+ *
+ * WHILE THE BOUND HOLDS A SLOT FOR EVERY POSITIVE-WEIGHT ACTIVITY, mapping keeps at least one.
+ * When it cannot — one slot, or fewer slots than weighted activities — a slot mapping always
+ * kept would be a slot the review lane never got, and mapping would starve every other activity
+ * of it. The fraction of a slot the weights give mapping is then TIME-SHARED: this cycle adds
+ * that last slot when `coin`, a uniform draw in [0,1) fixed by the cycle, falls under the
+ * fraction, and otherwise leaves it to the review draw. Over cycles each side takes the slot
+ * in proportion to its weight.
  */
-function mappingShare(policy: Policy): number {
+function mappingShare(policy: Policy, coin: number): number {
   const weight = policy.activityWeights.map;
   if (weight <= 0) return 0;
-  const total = ACTIVITIES.reduce((sum, activity) => sum + policy.activityWeights[activity], 0);
-  return Math.max(1, Math.floor((perMachineBound(policy) * weight) / total));
+  const weighted = ACTIVITIES.filter((activity) => policy.activityWeights[activity] > 0);
+  const total = weighted.reduce((sum, activity) => sum + policy.activityWeights[activity], 0);
+  const bound = perMachineBound(policy);
+  const exact = (bound * weight) / total;
+  if (bound >= weighted.length) return Math.max(1, Math.floor(exact));
+  return Math.floor(exact) + (coin < exact - Math.floor(exact) ? 1 : 0);
 }
 
 /**
@@ -2427,13 +2439,23 @@ export function conductor(deps: ConductorDeps): Conductor {
   /**
    * WHETHER THIS WAKE MAY SPEND FOR ONE MAPPING RUN. A drain's run: only a wake carrying the
    * credential of the drain that holds it ({@link ConductorDeps.mappingDrainId}). A standing
-   * run: only a native-capable wake that is no drain's, which is the authority the review and
-   * analysis lanes post under: the beat, an enable, or the settlement of a job one of those
-   * posted. A drain's wake never spends for the standing lane, nor the reverse.
+   * run: only a native-capable wake of the ACCOUNT CHAIN RECORDED ON THE RUN when it was
+   * published (#470). Every spend of a standing run — its native preparation, a retry of one
+   * whose post is uncertain, its Code session, a re-ask of a lost posting — is made under that
+   * one chain, so the preparation's settlement, which `settledChain` hands that chain, and the
+   * session's posting key always name the principal that actually posted them. A wake of another
+   * chain, or of none, never spends for it. A drain's wake never spends for the standing lane,
+   * nor the reverse.
    */
   async function wakeHoldsRun(runId: string): Promise<boolean> {
-    if (deps.mappingDrainId === undefined)
-      return deps.nativeDispatch === true && (await standingRun(runId));
+    if (deps.mappingDrainId === undefined) {
+      if (deps.nativeDispatch !== true || deps.chain == null) return false;
+      const held = await store.db.query(
+        `SELECT 1 FROM runs WHERE id=? AND ${STANDING_RUN} AND chain=?`,
+        [runId, deps.chain],
+      );
+      return held.length > 0;
+    }
     const held = drainHoldsRun(deps.mappingDrainId, runId);
     return (await store.db.query(`SELECT 1 WHERE ${held.sql}`, held.params)).length > 0;
   }
@@ -2861,10 +2883,20 @@ export function conductor(deps: ConductorDeps): Conductor {
     refused: RefusedDraw[],
     notes: string[],
   ): Promise<number> {
-    if (deps.nativeDispatch !== true || deps.mappingDrainId !== undefined || !policy.enabled)
+    // A standing run is spent for only under the chain it records (see `wakeHoldsRun`), so a
+    // wake with no chain publishes none it could never post.
+    if (
+      deps.nativeDispatch !== true ||
+      deps.mappingDrainId !== undefined ||
+      deps.chain == null ||
+      !policy.enabled
+    )
       return 0;
     const route = mappingPolicy(policy);
-    const share = mappingShare(policy);
+    const coin =
+      Number.parseInt(createHash("sha256").update(cycleRunId).digest("hex").slice(0, 8), 16) /
+      0x1_0000_0000;
+    const share = mappingShare(policy, coin);
     if (route === null || share === 0) return 0;
     const open = await store.db.query<{ n: number }>(
       `SELECT count(*) n FROM runs WHERE closure IS NULL AND ${STANDING_RUN}`,
@@ -2947,26 +2979,15 @@ export function conductor(deps: ConductorDeps): Conductor {
     for (const run of parents) {
       const intent = mappingIntent(run.preparation);
       if (!intent) continue; // Corrupt authority is never reconstructed from current policy.
-      const payload = JSON.parse(run.payload) as {
-        posting?: boolean;
-        nativeAttempts?: number;
-        standing?: boolean;
-        postingChain?: string | null;
-      };
+      const payload = JSON.parse(run.payload) as { posting?: boolean; nativeAttempts?: number };
       if (payload.posting) {
         // A posting whose answer was lost (#470) is asked again under its own key, and only by a
         // wake of the principal that posted it, because the key names a session under that
-        // principal alone: the drain's own wake, or for a standing run a wake of the account
-        // chain that posted it (the analysis lane's rule, `resumePosting` in `doors/launch.ts`).
+        // principal alone: the drain's own wake, or for a standing run a wake of the chain
+        // recorded on it ({@link wakeHoldsRun}).
         const material = intent.material;
-        if (run.closure !== null || material === undefined || !(await wakeHoldsRun(run.id)))
-          continue;
-        const chain = deps.chain ?? null;
-        if (payload.standing === true && (chain === null || payload.postingChain !== chain))
-          notes.push(
-            `mapping ${run.id}: its Code posting is unresolved and waits for a wake of the account chain that posted it`,
-          );
-        else await resumeMappingPosting(run, { ...intent, material }, settled, notes);
+        if (run.closure === null && material !== undefined && (await wakeHoldsRun(run.id)))
+          await resumeMappingPosting(run, { ...intent, material }, settled, notes);
         continue;
       }
       if (run.closure !== null) {
@@ -3072,17 +3093,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       const fence = mappingFence(intent, run.prepare_job_id, "admission");
       const owned = await store.db.batch([
         {
-          // THE SAME WRITE RECORDS WHO ASKS (#470): the account chain this wake acts for, which
-          // alone may ask again for a standing run if the answer is lost.
-          sql: `UPDATE runs SET preparation=?,payload=json_set(payload,'$.posting',json('true'),'$.postingChain',?)
+          sql: `UPDATE runs SET preparation=?,payload=json_set(payload,'$.posting',json('true'))
             WHERE id=? AND closure IS NULL AND job_id IS NULL AND coalesce(json_extract(payload,'$.posting'),0)=0
               AND ${fence.sql} RETURNING id`,
-          params: [
-            JSON.stringify({ mapping: prepared }),
-            deps.chain ?? null,
-            run.id,
-            ...fence.params,
-          ],
+          params: [JSON.stringify({ mapping: prepared }), run.id, ...fence.params],
         },
         {
           sql: `INSERT INTO run_progress(run_id,job_id,stage,message,since,updated_at)
