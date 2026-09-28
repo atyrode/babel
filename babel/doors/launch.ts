@@ -385,13 +385,7 @@ export type Posted =
  * the proof that it posted none and never will, or why neither is known yet.
  */
 export type Retired =
-  | {
-      readonly jobId: string;
-      /** The run's grant when its lease had lapsed, so it could not follow the session. */
-      readonly lapsed: AnalysisWork["claim"] | null;
-    }
-  | { readonly released: true }
-  | { readonly refused: string };
+  { readonly jobId: string } | { readonly released: true } | { readonly refused: string };
 
 export interface LaunchMachinery {
   /**
@@ -2342,9 +2336,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       return { refused: `${runId} changed while its posting was retired` };
     await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
     store.touch();
-    // A grant whose lease lapsed cannot follow the session it paid for: it still names the
-    // preparation, and the stop settles it onto the session through the terminal transfer.
-    return { jobId, lapsed: claim !== null && (written[0]?.length ?? 0) === 0 ? claim : null };
+    return { jobId };
   }
 
   return { startExplore, startBeat, startVerify, postPrepared, retirePosting, inferTitles };
@@ -2535,8 +2527,9 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         container_id: string | null;
         posting: number | bigint | null;
         posting_chain: string | null;
+        preparation: string | null;
       }>(
-        `SELECT job_id, prepare_job_id, machine_id, kind, closure, container_id,
+        `SELECT job_id, prepare_job_id, machine_id, kind, closure, container_id, preparation,
                 json_extract(payload, '$.posting') AS posting,
                 json_extract(payload, '$.postingChain') AS posting_chain
            FROM runs WHERE id = ?`,
@@ -2588,8 +2581,6 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
             `for authority at ${job.machineId}/${job.operationId}/${job.jobId}`,
         };
       }
-      // A retired posting's grant that could not follow its session (see `Retired`).
-      let lapsed: AnalysisWork["claim"] | null = null;
       if (unresolvedPosting) {
         /*
           THE STOP OF THE ACCOUNT THAT POSTED IT RETIRES THE POSTING (#470): an adopt-only ask
@@ -2641,7 +2632,6 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
           return { runId, jobId: "", machineId, closure: "stopped" as const };
         }
         jobId = retired.jobId;
-        lapsed = retired.lapsed;
         preparing = false;
       }
       /*
@@ -2755,17 +2745,22 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
           outcome: "skipped",
         });
       }
-      if (lapsed !== null) {
-        // The original fenced grant, and only it, moves onto the session it paid for.
-        const grant = await store.db.query<{ reserved_cost: number }>(
+      // A GRANT WHOSE LEASE LAPSED COULD NOT FOLLOW ITS SESSION (#470): a retired posting's
+      // session was recorded on the run while the grant still names the preparation. Whichever
+      // stop closes the session, the run's own fenced grant, and only it, moves onto that
+      // session at its meter through the terminal transfer, never at its reservation later.
+      const grant = AnalysisWorkSchema.safeParse(documentOf(run.preparation)["analysis"]);
+      if (grant.success && !preparing && container !== "" && prepareJobId !== "") {
+        const { claim } = grant.data;
+        const held = await store.db.query<{ reserved_cost: number }>(
           `SELECT reserved_cost FROM claims
             WHERE id = ? AND run_id = ? AND fence = ? AND job_id = ? AND finished_at IS NULL`,
-          [lapsed.id, lapsed.runId, lapsed.fence, prepareJobId],
+          [claim.id, claim.runId, claim.fence, prepareJobId],
         );
-        if (grant[0] !== undefined)
+        if (held[0] !== undefined)
           await deps.coordinator.finish({
-            ...lapsed,
-            cost: cost ?? Number(grant[0].reserved_cost),
+            ...claim,
+            cost: cost ?? Number(held[0].reserved_cost),
             outcome: "skipped",
             terminalJob: { jobId, previousJobId: prepareJobId },
           });

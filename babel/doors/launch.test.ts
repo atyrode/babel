@@ -2695,11 +2695,15 @@ test("a Stop that finds a session after its grant lapsed settles that grant once
   // The grant's lease runs out before the operator stops the run: the session the retire finds
   // can no longer be bound to it, so the grant still names the preparation.
   await harness.db.run(`UPDATE claims SET expires_at = ? WHERE id = 'asg_stage'`, [stamp(NOW)]);
-  // Its cancellation reports what it actually spent, which is not what the grant reserved.
+  // Its first cancellation is only requested; the second reports what it actually spent, which
+  // is not what the grant reserved.
   const cancel = code.cancelSession.bind(code);
+  let cancels = 0;
   code.cancelSession = async (args) => {
     const cancelled = await cancel(args);
     if (!cancelled.ok) return cancelled;
+    cancels += 1;
+    if (cancels === 1) return { ok: true, value: { ...cancelled.value, state: "started" } };
     const inference = {
       calls: 1,
       inputTokens: 300,
@@ -2712,13 +2716,21 @@ test("a Stop that finds a session after its grant lapsed settles that grant once
       value: { ...cancelled.value, result: { exitCode: null, usage: { inference } } as never },
     };
   };
+  // The first stop records the session the retire found and cannot close it yet; the next stop
+  // names that session, retires nothing, and closes it at its meter.
   expect(
     await halt("run_stage", { operationId: OPERATIONS.prepare, jobId: "job_stage_material" }),
+  ).toHaveProperty("refused");
+  expect(
+    await halt("run_stage", { operationId: OPERATIONS.explore, jobId: "job_stage_code" }),
   ).toMatchObject({ jobId: "job_stage_code", closure: "stopped" });
   expect(await harness.db.query(`SELECT cost_usd FROM runs WHERE id = 'run_stage'`)).toEqual([
     { cost_usd: 0.02 },
   ]);
-  expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_stage_code" }]);
+  expect(code.cancelled).toEqual([
+    { containerId: "ctr_workbench", jobId: "job_stage_code" },
+    { containerId: "ctr_workbench", jobId: "job_stage_code" },
+  ]);
   const account = async () =>
     await harness.db.query(
       `SELECT finished_at IS NOT NULL AS finished, outcome, actual_cost FROM claims WHERE id = 'asg_stage'`,
