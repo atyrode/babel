@@ -9,6 +9,25 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **One-shot sessions seal their own transcript output and retry a statusless transient gateway
+  failure.** `CODE_REV` and `@atyrode/manifold-code` move to atyrode/code#224 (`60438074`),
+  whose omp closure is atyrode/manifold-omp#89 (`4ec5799d`); Manifold stays at `2229a2fa`.
+  A review or analysis reaches omp through a Code one-shot. At the previous closure, every
+  `atyrode.omp.session` job mounted the shared `atyrode.omp.runs` transcript location writable:
+  an open sibling could keep a completed run's output unsealed and leave Babel an
+  `output_collection_refused` result. The session now declares the location output-only
+  (atyrode/manifold-omp `plugins/atyrode.omp/manifest.json:973-975` at `4ec5799d`), so it still
+  owns the lease it writes but does not mount and hold its siblings' transcripts. A gateway
+  failure that gave no status also used to end after its first call, because its opaque
+  `gateway_unavailable` message had no retry classification; omp now projects it as 503 with a
+  retryable error id only when the failed turn produced no output
+  (atyrode/manifold-omp `plugins/workers/gateway/boundary.ts:96-112` at `4ec5799d`). There are
+  no Babel source changes; the release closure now builds that omp. The machine stamp in
+  `babel/manifest.json` follows the repacked `machine.js`, and the gate passes against the new
+  closure.
+
 ## [0.5.4] - 2026-09-28
 
 ### Added
