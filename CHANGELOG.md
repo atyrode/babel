@@ -43,6 +43,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Proved by a lease injected between the post and the job id's write (one session bought,
   recovered by its own chain, settled once) and by each wake class driven through the plugin.
 
+### Changed
+
+- **A transcript-map summary aims well under its byte ceiling.** `babel-maps-transcripts@1`
+  told the model "at most 512 UTF-8 bytes", and models wrote up to the limit and past it: on the
+  preview two of six real replies were 524 and 649 bytes, and both were refused.
+  `babel-maps-transcripts@2` asks for about two to four sentences, roughly 350 bytes, and says
+  that 512 UTF-8 bytes is a hard ceiling past which a reply is refused. The rest of the body is
+  unchanged, and the version moves with it. The cookbook directory the seed was once generated
+  from was deleted in #324, and the map recipes have lived only in
+  `babel/store/recipes.seed.json` since #441, so this entry is edited in the seed itself. A hub
+  maps under the new wording once its policy's recipes carry `@2`.
+
 ## [0.5.3] - 2026-09-28
 
 ### Fixed
