@@ -11,6 +11,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Completed model sessions release their raw transcript scratch.** The SDK and Code/omp
+  dependency closure now use Manifold's explicit temporary output lifetime for one-shot
+  sessions, rather than retaining every raw run directory in the bounded native backing.
+  The owner reclaims that scratch only after proven workload closure and durable terminal
+  publication; uncertainty retains it and closes admission. Six sequential
+  material sessions with 160 KiB payloads pass on a disposable 1 MiB backing, while the same
+  native proof without temporary lifetime fails for lack of space. Sealed transcripts remain
+  readable; persistent workspaces, credential custody and legacy directories are unchanged.
+  A compatible native owner is required, with no mounted-location fallback.
+
 - **Concurrent preparations seal their own material without waiting for sibling jobs.** All six
   output-producing native operations declare `atyrode.babel.outputs` as `outputOnly`: the owner
   still creates each named output lease, but no job mounts the shared backing directory writable.

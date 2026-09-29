@@ -53,7 +53,7 @@ jobs:
   # revision and move together (.github/workflows/manifold-plugins.yml says why). `deps:code`
   # builds the dependency closure first, because verify composes omp, then Code, then Babel.
   plugins:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@2229a2fa84905a4414ed4548fba4ec7aabc47a22
+    uses: atyrode/manifold/.github/workflows/plugins.yml@47407b58f00b1fefcde1d86f6dd6d9b06e9c1216
     with:
       # The repository IS the plugin family, so the caller directory is the checkout root, as in
       # manifold-plugins.yml. "." is not a root: the reusable workflow keys its cache on
