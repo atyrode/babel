@@ -85,9 +85,10 @@ const READ_CAPS = ["containers:read"] as const;
   THE PREPARATION'S CREDENTIAL OUTLIVES THE DOOR. The owner records the native bridge's
   attenuated caps with its job and restores exactly those caps when `onJobSettled` asks Code to
   post a session. `containers:write` at the chosen Code workspace is a required action cap,
-  not a native delegate; `services:read` at the broker and `jobs:read` for OMP's reviewed
-  session are native delegates. Without all three, OMP refuses keyed adoption before the model
-  is asked. The owner still intersects every cap with the caller's actual authority.
+  not a native delegate; `services:read` at the broker, `jobs:read` for OMP's review and
+  `jobs:input` to bind the foreign preparation's material are native delegates. Without these,
+  OMP refuses adoption or posting before the model is asked. The owner still intersects every
+  cap with the caller's actual authority.
 
   THE REMAINING CAPABILITIES ARE DELEGATES, NOT CAPS: a delegate is the ceiling this door's job
   authority may preserve, while a cap is what the caller must hold. Waking a cycle may start a

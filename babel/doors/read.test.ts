@@ -154,14 +154,15 @@ describe("the roster", () => {
     /*
       THE TWO READS A CYCLE FOLLOWS LEND NATIVE AND DEFERRED SESSION CEILINGS. The restored
       credential needs the required `containers:write` cap at Code's workspace, and delegates
-      `services:read` at the broker and `jobs:read` for OMP's review. The remaining machine,
-      location, service invocation and network delegates admit preparation. Other reads retain
-      neither a write cap nor any delegated native authority.
+      `services:read` at the broker, `jobs:read` for OMP's review and `jobs:input` for material
+      bound from the settled preparation. Machine, location, service invocation and network
+      delegates admit preparation. Other reads retain no write or native delegated authority.
     */
     const cycled = [
       "machines:read",
       "services:read",
       "jobs:read",
+      "jobs:input",
       "machines:run",
       "locations:write",
       "services:invoke",

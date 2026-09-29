@@ -104,8 +104,8 @@ import { DEFERRED_SESSION_DELEGATES, pressOperation } from "./launch.ts";
  * left running, can he stop it at all. `doors/launch.ts` says the whole of it.
  *
  * So a start requires `containers:read` and `containers:write`, and delegates `machines:read`
- * and `DEFERRED_SESSION_DELEGATES` — the host read and native posting, then broker and job-read
- * authority when a settled preparation posts its Code session.
+ * and `DEFERRED_SESSION_DELEGATES` — the host read and native posting, then broker, job-read
+ * and bound-material input authority when a settled preparation posts its Code session.
  * A stop asks `containers:write` — closing the row is a write of this plugin's own rows —
  * and carries `jobs:cancel` as a DELEGATE, the native ceiling its own job authority may reach.
  * The hub still checks consent at the effect: a cancel it will not admit is reported by name

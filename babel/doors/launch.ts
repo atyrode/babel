@@ -150,11 +150,12 @@ export const POSTING_DELEGATES = [
   "network:host",
 ] as const;
 
-/** Settled preparation must retain native broker and job-read authority when it posts Code's
- * session. Workspace write is a required action cap, not a delegable native capability. */
+/** Settled preparation must retain native broker, job-read and bound-material input authority
+ * when it posts Code's session. Workspace write is a required action cap, not a native delegate. */
 export const DEFERRED_SESSION_DELEGATES = [
   "services:read",
   "jobs:read",
+  "jobs:input",
   ...POSTING_DELEGATES,
 ] as const;
 
