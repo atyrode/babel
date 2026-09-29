@@ -71,6 +71,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   across independent current-pin builds; the real receipt CLI rejects byte, membership, role
   and symlink drift, and the complete composed gate passes with 1,385 tests.
 
+### Changed
+
+- **Historical sealed-payload recovery has a bounded, non-secret approval plan (#508).**
+  The runbook pins the retired reader, requires a coherent catalog/object set and complete
+  protected key history, and specifies offline whole-set decoding, refusal controls and sanitized
+  evidence. Public source review identifies missing backup and object-copy identifiers; no real
+  ciphertext or custody was accessed, and #112's readable-content proof remains an operator step.
+
 ## [0.5.7] - 2026-09-29
 
 ### Fixed
