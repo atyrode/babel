@@ -43,6 +43,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   posting. Door regressions cover the bare request and both mismatch refusals; native and
   Code authority remain checked where the effects occur.
 
+- **Preparation material is sealed once, not copied into the result archive (#485).** Ordinary
+  and staged preparations, titling and `map-prepare` now request disjoint deterministic leaves
+  beneath the output backing. The owner's recursive result sealer no longer collects or charges
+  the material too. Published output names, material exports, Code's bound input and `outputOnly`
+  remain unchanged; no existing archive or retained directory is reorganized.
+  A real synthetic preparation and the pinned owner's sealer charge 91,136 bytes once instead
+  of 176,640 bytes with the old nesting; the single-charge budget now succeeds. After raw-root
+  cleanup, the actual bound-input extractor still reads the sealed material with read-only
+  permissions. Constructor regressions cover ordinary, staged, titling and mapping launches.
+
 ## [0.5.7] - 2026-09-29
 
 ### Fixed

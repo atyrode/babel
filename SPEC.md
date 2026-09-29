@@ -119,6 +119,11 @@ and the digest it was served at. Every citation a run makes is checked against t
 path the material does not name, or a digest that does not match, refuses the whole answer as
 `unknown-reference`.
 
+The result and material leases have disjoint roots. Result archives contain only result
+documents; session evidence is sealed only in the material archive and is not charged a second
+time as a result. This applies to ordinary preparations, titling, staged analysis and transcript
+mapping; the exported material remains readable through the same bound input.
+
 A run holds no credential, reaches no network of Babel's, and mutates nothing. It reads the
 material, answers in one fenced block, and the session ends.
 

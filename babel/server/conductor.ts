@@ -2537,15 +2537,14 @@ export function conductor(deps: ConductorDeps): Conductor {
         machineId: intent.route.executorMachineId,
         operationId: OPERATIONS.mapPrepare,
         input: { [INPUT_FIELD]: JSON.stringify(intent.input) },
-        // The owner creates only a lease's LAST component, inside directories that already
-        // exist, so the material lease nests under the receipt lease this same request creates
-        // first: the layout an ordinary `prepare` posts (`doors/launch.ts`).
+        // The owner creates only a lease's LAST component under an existing parent. Separate
+        // leaves satisfy that rule without recursively sealing material in the result too.
         outputs: [
           { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [intent.input.runId] },
           {
             name: MATERIAL_OUTPUT,
             locationId: OUTPUT_LOCATION,
-            components: [intent.input.runId, MATERIAL_OUTPUT],
+            components: [`${intent.input.runId}_${MATERIAL_OUTPUT}`],
           },
         ],
         limits: intent.limits,

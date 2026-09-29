@@ -8499,6 +8499,15 @@ test("a door's read wake draws no mapping work; the next hook wake posts it with
   expect(await queued()).toEqual(before);
   await f.tick(true);
   expect(f.fleet.launched.map((launch) => launch.operationId)).toEqual([OPERATIONS.mapPrepare]);
+  // The owner creates only the final component; sibling leaves also prevent its recursive
+  // sealer from collecting material a second time in the result lease (#485).
+  const outputs = f.fleet.launched[0]!.outputs;
+  expect(outputs.map((output) => output.name)).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
+  for (const output of outputs) expect(output.components).toHaveLength(1);
+  const roots = outputs.map(({ locationId, components }) =>
+    JSON.stringify([locationId, ...components]),
+  );
+  expect(new Set(roots).size).toBe(outputs.length);
   expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 1n }]);
 });
 
