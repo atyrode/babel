@@ -9,7 +9,7 @@ import {
   RecordKindSchema,
   type NeighborhoodResult,
 } from "../contract.ts";
-import { BABEL_NODE, NO_SEAT, ask, openRecord, openTopic, refusal } from "./api.ts";
+import { BABEL_NODE, NO_SEAT, ask, openEntity, openRecord, refusal } from "./api.ts";
 import { RAIL_POLL_MS } from "./rail.tsx";
 
 type Status = NeighborhoodResult["facts"][number]["status"];
@@ -173,7 +173,7 @@ function NeighborhoodContents({
         type="button"
         className="babel-link"
         data-entity={id}
-        onClick={() => setNavigation(openTopic(host, id) === "no_tile" ? NO_SEAT : "")}
+        onClick={() => setNavigation(openEntity(host, id) === "no_tile" ? NO_SEAT : "")}
       >
         {node === undefined ? `${id} (not returned in this scope)` : `${node.name} · ${id}`}
       </button>

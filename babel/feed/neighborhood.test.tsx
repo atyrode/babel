@@ -234,7 +234,7 @@ describe("the shared neighbourhood projection", () => {
     await view.settle();
     expect(fake.opened.at(-1)).toEqual({
       panelId: `${FEED_PLUGIN_ID}.${PANELS.topic}`,
-      arg: { topic: LEFT },
+      arg: { topic: LEFT, entityId: LEFT },
     });
     expect(view.one(".babel-topic-name").textContent).toBe("t/Empty service");
     expect(view.one(".babel-neighborhood").textContent).toContain("empty neighbourhood");
@@ -269,6 +269,25 @@ describe("the shared neighbourhood projection", () => {
     const view = await mount(<TopicPanel host={fake.host} arg={{ topic: shapedName }} />);
     expect(view.one(".babel-topic-name").textContent).toBe(`t/${shapedName}`);
     expect(fake.to("neighborhood").map((call) => call.args)).toEqual([{ entityId: ROOT }]);
+    await view.unmount();
+  });
+
+  test("explicitly linked entity remains navigable after leaving the current topic rail", async () => {
+    const fake = fakeHost({
+      topic: () => topic({ topic: null }),
+      neighborhood: (args) =>
+        neighborhood({
+          entityId: NeighborhoodQuerySchema.parse(args).entityId,
+          nodes: [{ ...neighborhood().nodes[0]!, id: LEFT, name: "Former identity", depth: 0 }],
+        }),
+      feed: () => feed({ posts: [], total: 0 }),
+    });
+    const view = await mount(<TopicPanel host={fake.host} arg={{ topic: LEFT, entityId: LEFT }} />);
+    expect(view.one(".babel-topic-header").textContent).toContain(
+      "This linked entity is not a current rail topic",
+    );
+    expect(view.one(`[data-node="${LEFT}"]`).textContent).toContain("Former identity");
+    expect(fake.to("neighborhood").map((call) => call.args)).toEqual([{ entityId: LEFT }]);
     await view.unmount();
   });
 

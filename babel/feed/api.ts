@@ -213,6 +213,16 @@ export function openTopic(host: HostServices, topic: string): OpenPanelRefusal |
 }
 
 /**
+ * Opens a linked entity even if it is no longer a rail topic (for example a merged-away
+ * identity). The explicit entity id is not inferred from the topic string: a topic name can
+ * itself look like another entity's id.
+ */
+export function openEntity(host: HostServices, entityId: string): OpenPanelRefusal | null {
+  look({ topic: entityId });
+  return seat(host, PANELS.topic, { topic: entityId, entityId });
+}
+
+/**
  * WHAT THIS SEAT IS READING: its own leaf's argument when it was opened for something, and
  * what Home is looking at when it was not. Read from the prop on every render rather than
  * copied into state, because a leaf that changes is a prop that changes and not a remount.
