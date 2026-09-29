@@ -163,7 +163,7 @@
         "runtimeTools": ["bun", "restic", "system"],
         "executable": { "runtimeTool": "bun" },
         "locations": [
-          { "locationId": "atyrode.babel.outputs", "access": "write" },
+          { "locationId": "atyrode.babel.outputs", "access": "write", "outputOnly": true },
           { "locationId": "atyrode.babel.cache", "access": "write" }
         ],
         "outputs": ["outputs"],
@@ -203,7 +203,7 @@
         "runtimeTools": ["bun", "restic", "system"],
         "executable": { "runtimeTool": "bun" },
         "locations": [
-          { "locationId": "atyrode.babel.outputs", "access": "write" },
+          { "locationId": "atyrode.babel.outputs", "access": "write", "outputOnly": true },
           { "locationId": "atyrode.babel.cache", "access": "write" },
           { "locationId": "atyrode.babel.omp", "access": "read" },
           { "locationId": "atyrode.babel.omp-blobs", "access": "read" },
@@ -252,7 +252,7 @@
         "runtimeTools": ["bun", "restic", "system"],
         "executable": { "runtimeTool": "bun" },
         "locations": [
-          { "locationId": "atyrode.babel.outputs", "access": "write" },
+          { "locationId": "atyrode.babel.outputs", "access": "write", "outputOnly": true },
           { "locationId": "atyrode.babel.cache", "access": "write" }
         ],
         "outputs": ["outputs", "material"],
@@ -296,7 +296,7 @@
         "runtimeTools": ["bun", "restic", "system"],
         "executable": { "runtimeTool": "bun" },
         "locations": [
-          { "locationId": "atyrode.babel.outputs", "access": "write" },
+          { "locationId": "atyrode.babel.outputs", "access": "write", "outputOnly": true },
           { "locationId": "atyrode.babel.cache", "access": "write" }
         ],
         "outputs": ["outputs"],
@@ -334,7 +334,9 @@
         ],
         "runtimeTools": ["bun", "system"],
         "executable": { "runtimeTool": "bun" },
-        "locations": [{ "locationId": "atyrode.babel.outputs", "access": "write" }],
+        "locations": [
+          { "locationId": "atyrode.babel.outputs", "access": "write", "outputOnly": true }
+        ],
         "outputs": ["outputs"],
         "network": "host",
         "limits": {
@@ -372,7 +374,9 @@
         ],
         "runtimeTools": ["bun", "system"],
         "executable": { "runtimeTool": "bun" },
-        "locations": [{ "locationId": "atyrode.babel.outputs", "access": "write" }],
+        "locations": [
+          { "locationId": "atyrode.babel.outputs", "access": "write", "outputOnly": true }
+        ],
         "outputs": ["outputs", "material"],
         "exports": ["material"],
         "network": "host",
