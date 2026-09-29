@@ -405,7 +405,11 @@ export async function* analysisOffers(
       if (bytes + size > ANALYSIS_BRIEF_BYTE_LIMIT) continue;
       const brief = [...out, parsed.data];
       const sessions = await selection(await material(brief));
-      const composed = prompt.bytes(stage, brief, sessions.map((row) => string(row["selector"])));
+      const composed = prompt.bytes(
+        stage,
+        brief,
+        sessions.map((row) => string(row["selector"])),
+      );
       if (composed > prompt.limit) {
         crowded.push({ id, bytes: composed });
         continue;
@@ -554,6 +558,7 @@ export async function* analysisOffers(
     }
     if (!wants("synthesize")) return;
     for (const [id, bytes] of alone) {
+      if (paired.has(id)) continue;
       yield { missing: id, stage: "synthesize", bound: "prompt", smallest: "record", bytes };
     }
     for (const [id, bytes] of unpaired) {

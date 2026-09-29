@@ -2505,6 +2505,54 @@ test("a synthesis that fits alone but not as a pair is refused as a pair, never 
   }
 });
 
+test("synthesis does not refuse a record admitted after specific steering reduces the prompt", async () => {
+  const { db } = await deployment(stagePolicy("synthesize"));
+  await catalog(db, "omp/shared");
+  const ids = ["obs_00000001", "obs_00000002"];
+  for (const [n, id] of ids.entries()) {
+    await analysisRecord(db, id, `source_${String(n)}`, null, { claim: "an observation" });
+    await citation(db, id, "omp/shared");
+  }
+  const steering = Array.from({ length: 8 }, (_, n) => ({
+    id: `standing_${String(n)}`,
+    text: "漢".repeat(250),
+    about: "",
+    at: ago(1),
+  }));
+  steering.push({ id: "specific", text: "Keep both.", about: `record:${ids[1]}`, at: ago(1) });
+  const measure = (brief: Parameters<typeof composeAnalysisPrompt>[0]["brief"]): number =>
+    promptBytes(
+      composeAnalysisPrompt({
+        stage: "synthesize",
+        recipes: [],
+        brief,
+        sessions: [{ selector: "omp/shared", file: materialFile(0, "omp/shared") }],
+        preparationId: "prepared",
+        runId: "synthesis",
+        steering,
+      }).prompt,
+    );
+  const collect = (limit: number) =>
+    Array.fromAsync(
+      analysisOffers(db, "dev-01", 1, ["synthesize"], new Set(ids), new Map(), new Set(), {
+        limit,
+        bytes: (_stage, brief) => measure(brief),
+      }),
+    );
+  const complete = (await collect(PROMPT_LIMIT)).find((offer) => "brief" in offer);
+  if (!complete || !("brief" in complete)) throw new Error("no synthesis pair offered");
+  const aloneBytes = measure(complete.brief.filter((row) => row.id === ids[0]));
+  expect(measure(complete.brief)).toBeLessThan(aloneBytes);
+  const offered = await collect(aloneBytes - 1);
+  expect(
+    offered.map((offer) =>
+      "missing" in offer
+        ? { refused: offer.missing }
+        : { offered: offer.brief.map((row) => row.id).sort() },
+    ),
+  ).toEqual([{ offered: ids }]);
+});
+
 test("synthesis joins original runs across record pages and keeps provisional critique", async () => {
   const { db, coord } = await deployment(stagePolicy("synthesize"));
   await catalog(db, "omp/shared");
