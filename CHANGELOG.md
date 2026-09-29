@@ -9,6 +9,28 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **A draw no longer holds the hub for half a minute per review.** On the 2026-09-28 preview,
+  one conductor cycle posted its reviews about 37 s apart, and nothing else reached the hub in
+  between. Babel's `policy` and `pulse` doors timed out. A `map-catalog` job's call to Recall's
+  `mapping` operation was refused at stage `authorization` with `service_cancelled` after its
+  30 s deadline, and the omp accounts broker's calls were refused at that stage too. The time went
+  to `coordinator.draw`, which the conductor runs once per review, and it was spent before
+  anything was posted. On a copy of that store (6,231 records, 7,762 runs) one draw issued
+  14,006 statements and took 36.7 s. Of that, 22.7 s was 2,616 joins from a brief record's run
+  to its prepare receipt, and 11.8 s was two review tallies asking whether each revision is
+  superseded. The unhardened install runs Babel in-realm: `ctx.database` answers each statement
+  synchronously on the hub's thread (Manifold `packages/server/src/plugin-database.ts:192-296`
+  at `2229a2fa`). The hub's service authorization is its own synchronous check with no plugin
+  hook (`packages/server/src/job-service.ts:2056-2161`), so it waited behind the draw. Store
+  1.14 adds six partial indexes, `HISTORY_INDEX_SCHEMA`, through `SCHEMA_ADDITIONS`: on
+  `supersedes_id` for records, assessments and facts, on `job_id` and `prepare_job_id` for
+  runs, and on `job_id` for claims. No query changes its answer. On the same copy, sixteen
+  draws and claims now take 21 s in total instead of 543 s, and the longest stretch with no
+  turn of the event loop falls from 42 s to 1.4 s. The indexes are the ones #465 proposed,
+  rebased onto the current store.
+
 ## [0.5.5] - 2026-09-28
 
 ### Fixed

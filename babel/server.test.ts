@@ -1893,3 +1893,29 @@ test("enabling a store made before run chains adds the column, and every earlier
 
   expect(await db.query(`SELECT chain FROM runs WHERE id = 'run_live'`)).toEqual([{ chain: null }]);
 });
+
+test("enabling a store made before the history indexes adds every one of them", async () => {
+  const { db } = harness;
+  const indexes = [
+    "assessments_by_supersedes",
+    "claims_by_job",
+    "facts_by_supersedes",
+    "records_by_supersedes",
+    "runs_by_job",
+    "runs_by_prepare_job",
+  ];
+  for (const name of indexes) await db.run(`DROP INDEX ${name}`);
+
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+  // A second enable is the ordinary case and must find nothing missing.
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+
+  expect(
+    await db.query(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (${indexes
+        .map(() => "?")
+        .join(", ")}) ORDER BY name`,
+      indexes,
+    ),
+  ).toEqual(indexes.map((name) => ({ name })));
+});

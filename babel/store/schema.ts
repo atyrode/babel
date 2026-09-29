@@ -25,7 +25,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 13 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 14 } as const;
 
 /** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
 const RECALL_TRACE_SCHEMA: readonly string[] = [
@@ -414,6 +414,44 @@ const ARCHIVE_CATALOG_SCHEMA: readonly string[] = [
      mapped_at TEXT NOT NULL
    ) STRICT`,
   `CREATE INDEX sessions_by_modified ON sessions(modified_at DESC)`,
+];
+
+/**
+ * THE LOOKUPS A DRAW MAKES INTO ITS OWN HISTORY — spelled once and created twice, for the reason
+ * `budgets`, `drains`, `next_actions`, `run_calls` and `session_titles` are.
+ *
+ * An unhardened install runs this half in-realm, where `ctx.database` answers every statement
+ * synchronously on the hub's own thread, and a chain of awaited statements continues as
+ * microtasks: until the chain awaits something the hub actually has to wait for, the hub reads
+ * no socket. It answers no door, no owner's service authorization and no job event. The
+ * conductor draws once per review it posts. Each index below serves a question the draw, its
+ * claim or the open-slot count asks once per row of something that grows. Without it SQLite
+ * answered by scanning a table once per row:
+ *
+ * - "is this revision superseded?" (`NOT EXISTS … supersedes_id = x.id`) over records,
+ *   assessments and facts: the review tally asks it of every record behind every assessment.
+ *   The indexes are partial because almost nothing supersedes anything, and an equality on the
+ *   column is all a lookup asks, which implies `IS NOT NULL`.
+ * - "which prepare job sealed this run's material?" (`p.job_id = source.prepare_job_id`) and
+ *   "which run stands behind this claim?" (`job_id = … OR prepare_job_id = …`) over runs. The
+ *   analysis offers ask the first once per brief record, and the open-slot count asks the second
+ *   once per open claim.
+ * - "which claims does this job hold?" (`claims.job_id = ?`), asked per settlement.
+ *
+ * On a copy of the 2026-09-28 preview store (6,231 records, 7,762 runs), one draw issued 14,006
+ * statements and took 36.7 s: 22.7 s went to 2,616 receipt joins and 11.8 s to two review
+ * tallies. That draw is why the conductor posted one review about every 37 s. With these indexes
+ * the same draw takes 1.4 s. Every index is derived, and none changes what a query answers: a
+ * store that lost them answers the same, slowly.
+ */
+const HISTORY_INDEX_SCHEMA: readonly string[] = [
+  `CREATE INDEX records_by_supersedes ON records(supersedes_id) WHERE supersedes_id IS NOT NULL`,
+  `CREATE INDEX assessments_by_supersedes ON assessments(supersedes_id)
+     WHERE supersedes_id IS NOT NULL`,
+  `CREATE INDEX facts_by_supersedes ON facts(supersedes_id) WHERE supersedes_id IS NOT NULL`,
+  `CREATE INDEX runs_by_job ON runs(job_id) WHERE job_id IS NOT NULL`,
+  `CREATE INDEX runs_by_prepare_job ON runs(prepare_job_id) WHERE prepare_job_id IS NOT NULL`,
+  `CREATE INDEX claims_by_job ON claims(job_id) WHERE job_id IS NOT NULL`,
 ];
 
 /**
@@ -1074,6 +1112,8 @@ export const SCHEMA_V1: readonly string[] = [
    ) STRICT`,
   `CREATE INDEX runs_by_started ON runs(started_at DESC)`,
   `CREATE INDEX runs_by_machine ON runs(machine_id, started_at DESC)`,
+  // After runs, the last of the five tables it indexes.
+  ...HISTORY_INDEX_SCHEMA,
 
   // ---------------------------------------------------------------- the budget overlay (#260)
   BUDGETS_TABLE,
@@ -1324,6 +1364,9 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     column: "chain",
     sql: `ALTER TABLE runs ADD COLUMN chain TEXT`,
   },
+  // The lookups a draw makes into its own history, which a store this large answered by scanning
+  // a table once per row. Indexes only, derived from the same list.
+  ...HISTORY_INDEX_SCHEMA.map(objectAddition),
 ];
 
 /**
