@@ -560,14 +560,18 @@ bun install --cwd ../manifold --frozen-lockfile   # the kit resolves zod and the
 ```
 
 `MANIFOLD_REV` follows Manifold `main` and currently names
-`2229a2fa84905a4414ed4548fba4ec7aabc47a22`. At that revision the kit stamps
-`hardenedContract: 8` into repacked bundles (`packages/plugin-kit/src/pack.ts:298-304`),
-while the host retains contracts 1–8 (`packages/protocol/src/isolate.ts:826-830`).
+`47407b58f00b1fefcde1d86f6dd6d9b06e9c1216`. At that revision the kit stamps
+`hardenedContract: 9` into repacked bundles (`packages/plugin-kit/src/pack.ts:526-532`),
+while the host retains contracts 1–9 (`packages/protocol/src/isolate.ts:984-987`).
+A contract-9 web half needs a declared portable Worker entry for hardened installation
+(`packages/server/src/plugin-host.ts:2414-2419`). This family's documented delivery remains
+in-realm; its server-only OMP dependencies remain hardened. The declaration never silently
+changes which runner an installer selected.
 The reviewed bounded-result channel includes exact digest-reviewed `textFields`: string-or-null
 leaves preserve already-redacted evidence rather than refusing a redaction marker as a credential
 carrier. Ordinary agent-facing results remain mechanical-only without trusted source approval,
 and domain-owned classification/redaction remains mandatory
-(`packages/sdk/README.md:138-178`; atyrode/manifold#798 and atyrode/manifold#812).
+(`packages/sdk/README.md:223-300`; atyrode/manifold#798 and atyrode/manifold#812).
 A source pin does not prove which revision any deployed hub is running.
 
 It retains delegated `machines:read` (atyrode/manifold#740) — which four of Babel's doors
