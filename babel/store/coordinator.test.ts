@@ -21,6 +21,8 @@ import type {
 } from "@manifold/plugin-kit";
 import { SCHEMA_V1 } from "./schema.ts";
 import { analysisOffers } from "./analysis.ts";
+import { composeAnalysisPrompt } from "../server/engine/prompts.ts";
+import { PROMPT_LIMIT, promptBytes } from "../server/engine/session.ts";
 import { transcriptMaps } from "./transcript-maps.ts";
 import {
   transcriptMapCaptureId,
@@ -37,6 +39,7 @@ import {
   MAX_MATERIAL_BYTES,
   OPERATIONS,
   ROLES,
+  materialFile,
   SESSION_RECORD_COORDINATES,
   TranscriptMapNodeSchema,
   TranscriptMapPlanSchema,
@@ -1997,6 +2000,62 @@ test("analysis bounds whole records and exact source selectors without truncatin
   }
 });
 
+/*
+  A BRIEF IS CHOSEN TO FIT THE PROMPT IT IS POSTED IN. Sized by its own byte bound alone, a
+  challenge beside a recipe as long as the longest one the seed enables composed more than Code
+  takes, was prepared, and was then closed `prompt_too_large`. The records here are two bytes a
+  character, so a bound counted in characters would admit about twice what fits.
+*/
+test("a brief keeps whole records only while the prompt it is posted in fits Code's bound", async () => {
+  const policy = stagePolicy("challenge");
+  const recipe = { id: "installed", version: 1, body: "Weigh the claim. ".repeat(1_070).trim() };
+  const { db, coord } = await deployment({
+    ...policy,
+    review: { ...policy.review!, recipes: [recipe] },
+  });
+  await catalog(db, "omp/shared");
+  await analysisRecord(db, "hyp_00000001", "run_a", null, { statement: "the target" });
+  await citation(db, "hyp_00000001", "omp/shared");
+  for (let n = 1; n <= 20; n += 1) {
+    const id = `obs_${n.toString(16).padStart(8, "0")}`;
+    await analysisRecord(db, id, "run_a", "hyp_00000001", { claim: "é".repeat(300) });
+    await citation(db, id, "omp/shared");
+  }
+  // 12,000 bytes in 4,000 characters: inside the brief's own bound, and too much for the prompt
+  // even alone beside the recipe and the contract.
+  await analysisRecord(db, "hyp_00000002", "run_a", null, { statement: "漢".repeat(4_000) });
+  await citation(db, "hyp_00000002", "omp/shared");
+
+  const result = await coord.draw({ runId: "fitted" });
+  const assignment = drawn(result);
+  if (assignment.activity !== "challenge") throw new Error("wrong activity");
+  const { prompt } = composeAnalysisPrompt({
+    stage: "challenge",
+    recipes: [recipe],
+    brief: assignment.brief,
+    sessions: assignment.selectors.map((selector, ordinal) => ({
+      selector,
+      file: materialFile(ordinal, selector),
+    })),
+    preparationId: `prep-${"0".repeat(64)}`,
+    runId: `run_${assignment.id}_1`,
+    steering: [],
+  });
+  expect(promptBytes(prompt)).toBeLessThanOrEqual(PROMPT_LIMIT);
+  expect(assignment.recordId).toBe("hyp_00000001");
+  expect(assignment.brief.some((row) => row.id === "hyp_00000001")).toBe(true);
+  // The brief's own bound admits all twenty-one; the prompt is what stopped it, and every record
+  // it kept is whole.
+  expect(assignment.brief.length).toBeLessThan(21);
+  for (const row of assignment.brief.filter((record) => record.kind === "observation")) {
+    expect(row.payload).toEqual({ claim: "é".repeat(300) });
+  }
+  // A target that cannot fit even alone is refused by name, not prepared and then closed.
+  expect(result.gaps).toContainEqual(
+    expect.objectContaining({ recordId: "hyp_00000002", reason: "unsupported" }),
+  );
+});
+
 test("changed analysis inputs still obey cooldown and per-item caps", async () => {
   const { db, coord } = await deployment(
     stagePolicy("explore", { cooldownSeconds: 60, initialReviews: 1, maxItemReviews: 1 }),
@@ -2379,6 +2438,7 @@ test("a full offer stage stops independently while challenge and synthesis remai
     new Set(ids),
     new Map(),
     new Set(),
+    () => true,
     (stage) => !full.has(stage),
   );
   try {

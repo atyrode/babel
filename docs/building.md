@@ -275,10 +275,19 @@ legal-length prompt whose selectors and digests are multi-byte cannot be refused
 instead; over it, the run closes `prompt_too_large` with both figures rather than a Zod issue
 from Code's parse. The stage's schema is printed compact — indented, it was nearly two thirds
 of the schema and put a one-session explore past the bound — so an explore's prompt is about
-21,000 bytes before its recipe, and every recipe the seed ships enabled fits beside the most
-steering a run carries. A challenge or synthesis adds up to 16 sessions and a brief of up to
-16 KiB, and with a long recipe those can still pass the bound; that run closes
-`prompt_too_large` rather than posting a prompt with anything cut.
+21,000 bytes before its recipe.
+
+**AN ANALYSIS BRIEF IS CHOSEN TO FIT THAT BOUND.** When the coordinator offers a challenge or a
+synthesis, it weighs each prior record in turn and keeps it only while the prompt the run will
+be posted with still fits: the stage's recipe whole, its contract, a reference to every session
+the brief would prepare, the brief so far and the operator's remarks, composed by the same
+`composeAnalysisPrompt` that `postPrepared` posts and measured in bytes (`analysisPromptFits`).
+A record that does not fit is skipped whole, as one past the brief's own 16 KiB bound is, and a
+smaller one behind it is still weighed. An offer whose own record, or an explore whose one
+session, cannot fit even alone is a draw gap `unsupported` that says so, not a preparation that
+is paid for and then closed. The run and preparation ids are measured at the longest they can
+be, so a brief chosen to fit still fits; what can still reach `prompt_too_large` is an
+operator's explore over long recipes, or remarks recorded after the brief was chosen.
 
 **WHAT STOPS A RUN IS READ OFF THE ROW, and there are three answers.** A drain's own
 bookkeeping cannot say it: `LiveJob.jobId` is the run's DERIVED identity, and for the lane

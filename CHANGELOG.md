@@ -20,20 +20,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   output with the new declaration while a sibling writer remains. Cache and source mounts,
   material exports and archive custody are unchanged; live rollout is verified separately.
 
-- **An analysis prompt prints its stage's schema compact, so a one-session explore fits Code's
-  bound.** On the 2026-09-29 preview, an explore whose material had sealed composed a
-  54,523-byte prompt and closed `prompt_too_large` against the 45,056 bytes `runSession` takes
-  (`PROMPT_MAX_BYTES`). The stage's schema was printed indented, and the indentation was 19,151
-  of the explore schema's 29,836 bytes. `composeExplorePrompt` now prints it as compact JSON,
-  which parses to the same document: every field, constraint and description still reaches the
-  model, and the recipe, instructions, material, prior records and steering are unchanged. A
-  throwaway composition script measured an explore's prompt before its recipe at 20,967 bytes,
-  down from 40,118, and at most 42,334 bytes under any recipe the seed ships enabled with the
-  most steering a run carries. A challenge or synthesis with 16 sessions and a brief near its
-  16 KiB bound can still pass the bound beside a seed recipe, and still closes
-  `prompt_too_large` rather than posting a cut prompt; that refusal now names the recipe and the
-  brief, not the contract, as what moves. `prompts.test.ts` gains a regression for the explore
-  bound; it has not been run.
+- **Every analysis stage is offered only with a prompt Code will take whole.** On the 2026-09-29
+  preview, an explore whose material had sealed composed a 54,523-byte prompt and closed
+  `prompt_too_large` against the 45,056 bytes `runSession` takes (`PROMPT_MAX_BYTES`), after its
+  preparation had run. Two changes, neither of which cuts anything. The stage's schema is printed
+  as compact JSON: its indentation was 19,151 of the explore schema's 29,836 bytes, and the
+  compact text parses to the same document. And the coordinator now chooses a challenge's or a
+  synthesis's brief to fit: each prior record is kept, whole, only while the prompt the run will
+  be posted with still fits — the stage's recipe, contract, session references and brief and the
+  operator's remarks, composed by the one `composeAnalysisPrompt` that `postPrepared` posts and
+  counted in bytes. An offer whose own record, or an explore whose one session, cannot fit even
+  alone is a draw gap `unsupported` instead of a preparation that is paid for and closed. A
+  throwaway script drew each stage from a real store under the largest recipe the seed enables
+  with 2,000 characters of operator remarks and two-byte records: on `main` every stage composed
+  59,503 to 67,423 bytes and would close after preparation; after, the explore composed 42,379,
+  the challenge kept 10 whole records in 44,428 and the synthesis 10 in 44,632, and a 12,000-byte
+  target or three-byte remarks were refused at the draw. `prompts.test.ts` and
+  `coordinator.test.ts` gain one regression each; neither suite has been run.
 
 ## [0.5.6] - 2026-09-29
 

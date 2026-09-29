@@ -64,7 +64,9 @@ import {
   STAGES,
   SuggesterSchema,
 } from "../contract.ts";
-import { analysisOffers, type AnalysisOffer } from "./analysis.ts";
+import { analysisPromptFits } from "../server/engine/prompts.ts";
+import { PROMPT_LIMIT } from "../server/engine/session.ts";
+import { analysisOffers, operatorRemarks, type AnalysisOffer } from "./analysis.ts";
 import { transcriptMaps } from "./transcript-maps.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
@@ -2079,6 +2081,34 @@ export function coordinator(
       roleFacts(),
     ]);
     const recordsById = new Map(records.map((head) => [head.id, head]));
+    /*
+      A BRIEF IS CHOSEN TO FIT THE PROMPT IT WILL BE POSTED IN. The stage's recipe, whole, and
+      the operator's remarks are read here once, and selection asks whether each record it weighs
+      still fits beside them, the contract and the sessions the brief would prepare — so a run
+      is offered with every record it carries whole, rather than prepared, composed and closed
+      `prompt_too_large`. The recipe is the one `dispatchAnalysis` will name, shaped as
+      `server.ts`'s `cookbook()` serves it.
+    */
+    const remarks = await operatorRemarks(db);
+    const fits = (
+      stage: Stage,
+      brief: readonly AnalysisBriefRecord[],
+      selectors: readonly string[],
+    ): boolean =>
+      analysisPromptFits({
+        stage,
+        recipes: route.recipes
+          .filter((recipe) => recipe.id === route.stageRecipes[stage])
+          .map((recipe) => ({
+            id: recipe.id,
+            version: recipe.version,
+            ...(recipe.title === undefined || recipe.title === "" ? {} : { title: recipe.title }),
+            body: recipe.body,
+          })),
+        brief,
+        selectors,
+        steering: remarks,
+      });
     const eligible = new Set<string>();
     const gaps: Gap[] = [];
     const attention = new Map<string, number>();
@@ -2124,14 +2154,18 @@ export function coordinator(
       eligible,
       filed,
       new Set([...stance].filter(([, state]) => state === "working").map(([topic]) => topic)),
+      fits,
       (stage) => target !== undefined || (admitted.get(stage) ?? 0) < 64,
     )) {
       if ("missing" in offer) {
         gaps.push({
           recordId: offer.missing,
-          role: "",
+          role: offer.bound === "material" ? "" : ANALYSIS_ROLES[offer.stage],
           reason: "unsupported",
-          detail: "no archived non-agent capture fits this analysis within the material bound",
+          detail:
+            offer.bound === "material"
+              ? "no archived non-agent capture fits this analysis within the material bound"
+              : `its smallest ${offer.stage} prompt, this alone beside the recipe, contract, sessions and operator's remarks, exceeds the ${String(PROMPT_LIMIT)} bytes Code takes, and nothing in it is cut to fit`,
         });
         continue;
       }

@@ -53,6 +53,7 @@ import {
 } from "../contract.ts";
 import type { z } from "zod";
 import { standingOf, type Standing } from "./acts.ts";
+import { operatorRemarks } from "./analysis.ts";
 import { budgetChanges, DEFAULT_POLICY, type Budget, type Policy } from "./coordinator.ts";
 import {
   buildFeedIndex,
@@ -2044,13 +2045,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       Newest first, bounded. TWO THINGS READ THIS PROJECTION and a change to its shape reaches
       both: Watch renders the remarks beside the ceilings, and an exploration's prompt quotes a
       bounded selection of them to the run (`carriedSteering`, `server/engine/prompts.ts`),
-      which is what makes the table a memory rather than a log.
+      which is what makes the table a memory rather than a log. The read is `operatorRemarks`,
+      which the coordinator also asks when it chooses a brief to fit beside those remarks.
     */
-    const told = await db.query(
-      `SELECT id, text, target_kind, target_id, recorded_at FROM steering
-        WHERE actor_kind = 'operator'
-        ORDER BY recorded_at DESC, id DESC LIMIT 20`,
-    );
     const activityWeights = ActivityWeightsSchema.safeParse(payload["activityWeights"]);
     return {
       version: text(row?.["version"]),
@@ -2064,15 +2061,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       activityWeights: activityWeights.success ? activityWeights.data : DEFAULT_ACTIVITY_WEIGHTS,
       recipes,
       overlay: await overlayInForce(at, ceilings),
-      steering: told.map((entry) => ({
-        id: text(entry["id"]),
-        text: text(entry["text"]),
-        about:
-          text(entry["target_id"]) === ""
-            ? ""
-            : `${text(entry["target_kind"])}:${text(entry["target_id"])}`,
-        at: text(entry["recorded_at"]),
-      })),
+      steering: await operatorRemarks(db),
       payload,
     };
   };

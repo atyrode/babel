@@ -12,6 +12,7 @@ import {
   type AnalysisBriefRecord,
   type Stage,
 } from "../contract.ts";
+import type { StandingRemark } from "../server/engine/prompts.ts";
 
 /**
  * A SESSION A PREPARATION CAN READ (#453), as a predicate over `sessions s`: one whose row names
@@ -92,10 +93,62 @@ interface Head {
   readonly objectionTo: readonly string[];
 }
 
+/**
+ * WHAT THE OPERATOR HAS TOLD BABEL, newest first and bounded: the rows `tell` wrote. The
+ * `policy` door reads them back, and an analysis prompt quotes a selection of them
+ * (`carriedSteering`, `server/engine/prompts.ts`) — so a brief is chosen to fit beside the same
+ * remarks its prompt will carry, and there is one read for both.
+ */
+export async function operatorRemarks(db: GuestDatabase): Promise<StandingRemark[]> {
+  const told = await db.query(
+    `SELECT id, text, target_kind, target_id, recorded_at FROM steering
+      WHERE actor_kind = 'operator'
+      ORDER BY recorded_at DESC, id DESC LIMIT 20`,
+  );
+  return told.map((entry) => ({
+    id: string(entry["id"]),
+    text: string(entry["text"]),
+    about:
+      string(entry["target_id"]) === ""
+        ? ""
+        : `${string(entry["target_kind"])}:${string(entry["target_id"])}`,
+    at: string(entry["recorded_at"]),
+  }));
+}
+
+/**
+ * An offer the frontier could not make, and which bound refused it: no archived capture fits the
+ * machine's MATERIAL bound, or the PROMPT the run would be posted with cannot fit Code's bound
+ * even with only the record the offer is about.
+ */
+export interface AnalysisRefusal {
+  readonly missing: string;
+  readonly stage: Stage;
+  readonly bound: "material" | "prompt";
+}
+
+/**
+ * WHETHER A RUN OF `stage` OVER THIS BRIEF AND THESE SESSIONS WOULD BE POSTED WHOLE: its prompt,
+ * composed with the stage's recipe, its contract and the operator's remarks, fits Code's bound.
+ * The coordinator answers it (`server/engine/prompts.ts`, `analysisPromptFits`); selection only
+ * asks, once per record it weighs.
+ */
+export type AnalysisFit = (
+  stage: Stage,
+  brief: readonly AnalysisBriefRecord[],
+  selectors: readonly string[],
+) => boolean;
+
 /** Page through the entire frontier, retaining only identifiers between pages. Offers are
  * streamed so the caller can apply settlement, cooldown and caps before retaining payloads.
  * The consumer may stop each stage independently through wants, before its next offer is built.
  * Whole records are admitted, never clipped; synthesis reserves two original runs first.
+ *
+ * A record is admitted only while the prompt the run will be posted with still `fits`, measured
+ * with the sessions the brief so far would prepare. One that does not fit is skipped whole, as
+ * one over the brief's byte bound is, and a smaller one behind it is still weighed. An offer
+ * whose own record cannot fit even alone is refused by name rather than prepared and closed
+ * `prompt_too_large` after the preparation has been paid for.
  *
  * Material is offered from archived captures only, wherever they were recorded (#453): the
  * routed machine prepares them from the archive, so `machineId` bounds the material by that
@@ -109,8 +162,9 @@ export async function* analysisOffers(
   eligible: ReadonlySet<string>,
   filings: ReadonlyMap<string, { topics: readonly string[] }>,
   activeTopics: ReadonlySet<string>,
+  fits: AnalysisFit,
   wants: (stage: Stage) => boolean = () => true,
-): AsyncGenerator<AnalysisOffer | { missing: string }> {
+): AsyncGenerator<AnalysisOffer | AnalysisRefusal> {
   const bound = await materialBound(db, machineId, share);
   const sources = new Map<string, Promise<GuestSqlRow | undefined>>();
   const source = (selector: string): Promise<GuestSqlRow | undefined> => {
@@ -126,14 +180,9 @@ export async function* analysisOffers(
     sources.set(selector, pending);
     return pending;
   };
-  const offer = async (
-    stage: Stage,
-    root: string,
-    brief: readonly AnalysisBriefRecord[],
-    material: readonly string[],
-    recordId = root,
-    kind = "session",
-  ): Promise<AnalysisOffer | { missing: string }> => {
+  // The captures one preparation of this material would seal: the archived ones, in selector
+  // order, while they fit the machine's bound and the source limit.
+  const selection = async (material: readonly string[]): Promise<GuestSqlRow[]> => {
     const selected: GuestSqlRow[] = [];
     let bytes = 0;
     for (const selector of [...new Set(material)].sort()) {
@@ -145,14 +194,27 @@ export async function* analysisOffers(
       bytes += size;
       if (selected.length === ANALYSIS_SOURCE_LIMIT) break;
     }
-    if (selected.length === 0) return { missing: root };
+    return selected;
+  };
+  const offer = async (
+    stage: Stage,
+    root: string,
+    brief: readonly AnalysisBriefRecord[],
+    material: readonly string[],
+    recordId = root,
+    kind = "session",
+  ): Promise<AnalysisOffer | AnalysisRefusal> => {
+    const selected = await selection(material);
+    if (selected.length === 0) return { missing: root, stage, bound: "material" };
+    const selectors = selected.map((row) => string(row["selector"]));
+    if (!fits(stage, brief, selectors)) return { missing: recordId, stage, bound: "prompt" };
     const sorted = [...brief].sort((a, b) => a.id.localeCompare(b.id));
     return {
       stage,
       recordId,
       rootId: root,
       kind,
-      selectors: selected.map((row) => string(row["selector"])),
+      selectors,
       brief: sorted,
       fingerprint: JSON.stringify([
         machineId,
@@ -257,11 +319,50 @@ export async function* analysisOffers(
     cursor = string(page[page.length - 1]!["id"]);
   }
 
+  // What each source run was served, read once however many briefs name that run: a brief is
+  // measured once for every record it weighs, and each measure needs the material it implies.
+  const served = new Map<string, Promise<readonly string[]>>();
+  const servedTo = (runId: string): Promise<readonly string[]> => {
+    const cached = served.get(runId);
+    if (cached !== undefined) return cached;
+    const pending = db
+      .query(
+        `SELECT p.payload FROM runs source JOIN runs p ON p.job_id = source.prepare_job_id
+          WHERE source.id = ? AND p.kind = ? AND p.closure = 'completed'
+          ORDER BY p.started_at DESC LIMIT 1`,
+        [runId, OPERATIONS.prepare],
+      )
+      .then((receipts) => {
+        const receipt = object(receipts[0]?.["payload"]);
+        const parsed = MaterialIndexSchema.safeParse(receipt?.["material"]);
+        // Whichever machine sealed it: a capture reads the same from any of them.
+        return parsed.success ? parsed.data.sessions.map((entry) => entry.selector) : [];
+      });
+    served.set(runId, pending);
+    return pending;
+  };
+  const material = async (brief: readonly AnalysisBriefRecord[]): Promise<string[]> => {
+    const selectors = new Set<string>();
+    for (const record of brief) {
+      for (const selector of heads.get(record.id)!.cited) selectors.add(selector);
+      if (record.runId === null) continue;
+      for (const selector of await servedTo(record.runId)) selectors.add(selector);
+    }
+    return [...selectors];
+  };
+  /*
+    WHOLE RECORDS, IN `ids` ORDER AFTER `initial`, while the brief is within its count and byte
+    bounds AND the stage's prompt over it — with the sessions it would prepare — still fits.
+    `crowded` names the records skipped for the prompt alone, which is how an offer whose own
+    record cannot fit is told from one whose record was never there to offer.
+  */
   const bounded = async (
+    stage: Stage,
     ids: Iterable<string>,
     initial: readonly AnalysisBriefRecord[] = [],
-  ): Promise<AnalysisBriefRecord[]> => {
+  ): Promise<{ brief: AnalysisBriefRecord[]; crowded: string[] }> => {
     const out = [...initial];
+    const crowded: string[] = [];
     const seen = new Set(initial.map((row) => row.id));
     let bytes = encoder.encode(JSON.stringify(initial)).byteLength;
     for (const id of ids) {
@@ -284,30 +385,16 @@ export async function* analysisOffers(
       if (!parsed.success) continue;
       const size = encoder.encode(JSON.stringify(parsed.data)).byteLength + (out.length ? 1 : 0);
       if (bytes + size > ANALYSIS_BRIEF_BYTE_LIMIT) continue;
+      const brief = [...out, parsed.data];
+      const sessions = await selection(await material(brief));
+      if (!fits(stage, brief, sessions.map((row) => string(row["selector"])))) {
+        crowded.push(id);
+        continue;
+      }
       out.push(parsed.data);
       bytes += size;
     }
-    return out;
-  };
-  const material = async (brief: readonly AnalysisBriefRecord[]): Promise<string[]> => {
-    const selectors = new Set<string>();
-    const runs = new Set<string>();
-    for (const record of brief) {
-      for (const selector of heads.get(record.id)!.cited) selectors.add(selector);
-      if (record.runId === null || runs.has(record.runId)) continue;
-      runs.add(record.runId);
-      const receipts = await db.query(
-        `SELECT p.payload FROM runs source JOIN runs p ON p.job_id = source.prepare_job_id
-          WHERE source.id = ? AND p.kind = ? AND p.closure = 'completed'
-          ORDER BY p.started_at DESC LIMIT 1`,
-        [record.runId, OPERATIONS.prepare],
-      );
-      const receipt = object(receipts[0]?.["payload"]);
-      const parsed = MaterialIndexSchema.safeParse(receipt?.["material"]);
-      // Whichever machine sealed it: a capture reads the same from any of them.
-      if (parsed.success) for (const entry of parsed.data.sessions) selectors.add(entry.selector);
-    }
-    return [...selectors];
+    return { brief: out, crowded };
   };
   const related = new Map<string, string[]>();
   for (const head of heads.values()) {
@@ -327,8 +414,13 @@ export async function* analysisOffers(
           Number(heads.get(b)!.objectionTo.length > 0) -
             Number(heads.get(a)!.objectionTo.length > 0) || a.localeCompare(b),
       );
-      const brief = await bounded([target.id, ...relatedIds]);
-      if (!brief.some((record) => record.id === target.id)) continue;
+      const { brief, crowded } = await bounded("challenge", [target.id, ...relatedIds]);
+      if (!brief.some((record) => record.id === target.id)) {
+        if (crowded.includes(target.id)) {
+          yield { missing: target.id, stage: "challenge", bound: "prompt" };
+        }
+        continue;
+      }
       yield await offer(
         "challenge",
         target.root,
@@ -367,12 +459,20 @@ export async function* analysisOffers(
         const anchor = pending.values().next().value!;
         pending.delete(anchor);
         let pair: AnalysisBriefRecord[] = [];
+        // Whether a pair with this anchor was refused for the prompt alone: then no synthesis
+        // of it can be posted whole, and that is said rather than passed over.
+        let crowded = false;
         for (const partner of group) {
           if (heads.get(partner)!.runId === heads.get(anchor)!.runId) continue;
-          pair = await bounded([anchor, partner]);
+          const tried = await bounded("synthesize", [anchor, partner]);
+          pair = tried.brief;
+          crowded ||= tried.crowded.length > 0;
           if (pair.length === 2) break;
         }
-        if (pair.length !== 2) continue;
+        if (pair.length !== 2) {
+          if (crowded) yield { missing: anchor, stage: "synthesize", bound: "prompt" };
+          continue;
+        }
         // Reserve two original runs before adding target context and both forms of critique.
         // Each subsequent window includes unoffered observations, not the same first 24 forever.
         const parents = [...new Set(pair.map((row) => heads.get(row.id)!.parent))].filter(
@@ -380,14 +480,14 @@ export async function* analysisOffers(
         );
         let brief = pair;
         for (const parent of parents) {
-          brief = await bounded([parent], brief);
+          brief = (await bounded("synthesize", [parent], brief)).brief;
           if (!brief.some((row) => row.id === parent)) continue;
           const objections = (related.get(parent) ?? []).filter((id) =>
             heads.get(id)!.objectionTo.includes(parent),
           );
-          brief = await bounded(objections, brief);
+          brief = (await bounded("synthesize", objections, brief)).brief;
         }
-        brief = await bounded(pending, brief);
+        brief = (await bounded("synthesize", pending, brief)).brief;
         for (const row of brief) pending.delete(row.id);
         const signature = brief
           .map((row) => row.id)

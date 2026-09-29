@@ -5,6 +5,7 @@ import {
   MATERIAL_SESSIONS,
   MAX_CITATION_QUOTE,
   MIN_CITATION_QUOTE,
+  materialFile,
   type AnalysisBriefRecord,
   type MaterialEntry,
   type Stage,
@@ -15,6 +16,7 @@ import {
   REFUSALS,
   type ExploreSubmission,
 } from "../../machine/results.ts";
+import { PROMPT_LIMIT, promptBytes } from "./session.ts";
 
 /*
   THE PROMPT: the whole of what the model is told, composed here from Babel-owned parts, and the
@@ -290,6 +292,18 @@ export interface ExplorePromptInput {
   readonly steering?: readonly StandingRemark[] | undefined;
 }
 
+/**
+ * EACH STAGE'S SCHEMA AS THE PROMPT PRINTS IT, generated once per stage: a brief's selection
+ * composes a prompt for every record it weighs ({@link analysisPromptFits}), and generating the
+ * schema is most of what one composition costs.
+ *
+ * IT IS PRINTED COMPACT. Indentation carries nothing a parser or a model reads, and
+ * pretty-printed it was nearly two thirds of the stage's schema — enough, with a recipe body, to
+ * put a one-session explore past `PROMPT_LIMIT` and have it refused `prompt_too_large`.
+ * `JSON.parse` of either spelling is the same document: every field and constraint stays.
+ */
+const SCHEMA_TEXT: Partial<Record<Stage, string>> = {};
+
 /** Renders one stage's prompt. */
 export function composeExplorePrompt(input: ExplorePromptInput): string {
   const parts: string[] = ["# Babel analysis\n\n"];
@@ -303,12 +317,9 @@ export function composeExplorePrompt(input: ExplorePromptInput): string {
     parts.push(`${recipe.body.trim()}\n\n`);
   }
 
+  const schema = (SCHEMA_TEXT[input.stage] ??= JSON.stringify(exploreJsonSchema(input.stage)));
   parts.push("## How to answer\n\n", ANSWER_PROTOCOL);
-  // THE SCHEMA IS PRINTED COMPACT. Indentation carries nothing a parser or a model reads, and
-  // pretty-printed it was nearly two thirds of the stage's schema — enough, with a recipe body,
-  // to put a one-session explore past `PROMPT_LIMIT` and have it refused `prompt_too_large`.
-  // `JSON.parse` of either spelling is the same document: every field and constraint stays.
-  parts.push(`${ANSWER_FENCE}\n`, `${JSON.stringify(exploreJsonSchema(input.stage))}\n`, "```\n\n");
+  parts.push(`${ANSWER_FENCE}\n`, `${schema}\n`, "```\n\n");
 
   parts.push(`## The ${input.stage} stage\n\n`, stageInstructions(input.stage), "\n");
   parts.push(
@@ -336,6 +347,108 @@ export function composeExplorePrompt(input: ExplorePromptInput): string {
   }
   parts.push(steeringSection(input));
   return parts.join("");
+}
+
+/** How an analysis prompt frames its brief, whichever of its two readers composes it. */
+const BRIEF_FRAMING = "Untrusted prior claims offered to this stage; not newly served evidence.";
+
+/** What one analysis run's prompt is composed from, once `prepare` has sealed its material. */
+export interface AnalysisPromptInput {
+  readonly stage: Stage;
+  readonly recipes: readonly Recipe[];
+  /** The analysis brief; an operator's explore has none, and its prompt has no prior records. */
+  readonly brief?: readonly AnalysisBriefRecord[] | undefined;
+  readonly sessions: readonly PromptSession[];
+  readonly preparationId: string;
+  readonly runId: string;
+  /** Every remark the `policy` door reads back; {@link carriedSteering} chooses among them. */
+  readonly steering: readonly StandingRemark[];
+}
+
+/**
+ * ONE ANALYSIS RUN'S PROMPT, AND THE PARAMETERS IT CARRIES, composed the one way both of its
+ * readers need it: `postPrepared` posts it, and a brief's selection measures it before anything
+ * is prepared ({@link analysisPromptFits}). Two compositions would be two answers to whether a
+ * brief fits, and the one that posts is the one Code bounds.
+ */
+export function composeAnalysisPrompt(input: AnalysisPromptInput): {
+  readonly prompt: string;
+  readonly params: Readonly<Record<string, string>>;
+} {
+  const brief = input.brief ?? [];
+  const params = {
+    [PARAM.stage]: input.stage,
+    [PARAM.briefHypotheses]: brief
+      .filter((record) => record.kind === "hypothesis")
+      .map((record) => record.id)
+      .join(","),
+    [PARAM.briefObservations]: brief
+      .filter((record) => record.kind === "observation" && record.objectionTo.length === 0)
+      .map((record) => record.id)
+      .join(","),
+    [PARAM.briefObjections]: brief
+      .filter((record) => record.objectionTo.length > 0)
+      .map((record) => record.id)
+      .join(","),
+    [PARAM.runId]: input.runId,
+    [PARAM.preparation]: input.preparationId,
+  };
+  return {
+    prompt: composeExplorePrompt({
+      stage: input.stage,
+      ...(input.brief === undefined
+        ? {}
+        : { related: { framing: BRIEF_FRAMING, records: input.brief } }),
+      recipes: input.recipes,
+      sessions: input.sessions,
+      preparationId: input.preparationId,
+      params,
+      steering: input.steering,
+    }),
+    params,
+  };
+}
+
+/*
+  THE TWO IDENTIFIERS A PROMPT IS POSTED WITH THAT DO NOT EXIST WHILE ITS BRIEF IS CHOSEN: the run
+  the conductor mints once a claim is granted (`run_<assignment>_<fence>`, an assignment being
+  `asg_` and sixteen hex digits) and the preparation `prepare` derives from what it sealed
+  (`prep-` and a SHA-256 in hex). Selection measures with stand-ins as long as either can be, so
+  a brief chosen to fit still fits once the real ones take their places.
+*/
+const UNMINTED_RUN = `run_asg_${"f".repeat(16)}_${String(Number.MAX_SAFE_INTEGER)}`;
+const UNSEALED_PREPARATION = `prep-${"f".repeat(64)}`;
+
+/**
+ * WHETHER AN ANALYSIS OF THIS BRIEF OVER THESE SESSIONS FITS CODE'S PROMPT BOUND, asked while its
+ * brief is still being chosen (`store/analysis.ts`).
+ *
+ * It composes the prompt `postPrepared` will post, with everything in it whole: the recipe, the
+ * stage's contract, a reference to every session, the brief's records and the operator's
+ * remarks the brief makes eligible. So selection keeps a record only when it fits beside all of
+ * that, and nothing is cut later to make room. The files are named by `materialFile`, which is
+ * how `prepare` names them; a sealed material holds these sessions or fewer, never more.
+ */
+export function analysisPromptFits(input: {
+  readonly stage: Stage;
+  readonly recipes: readonly Recipe[];
+  readonly brief: readonly AnalysisBriefRecord[];
+  readonly selectors: readonly string[];
+  readonly steering: readonly StandingRemark[];
+}): boolean {
+  const { prompt } = composeAnalysisPrompt({
+    stage: input.stage,
+    recipes: input.recipes,
+    brief: input.brief,
+    sessions: input.selectors.map((selector, ordinal) => ({
+      selector,
+      file: materialFile(ordinal, selector),
+    })),
+    preparationId: UNSEALED_PREPARATION,
+    runId: UNMINTED_RUN,
+    steering: input.steering,
+  });
+  return promptBytes(prompt) <= PROMPT_LIMIT;
 }
 
 function paramsBlock(params: Readonly<Record<string, string>>): string {
