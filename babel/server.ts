@@ -1064,7 +1064,11 @@ export const plugin: ServerPluginDef = {
         // append-only table whose triggers could not be added would append by convention. A
         // removal is asked the same question and is due on the other answer, in the same batch.
         const pending: SqlStatement[] = [];
+        const createdObjects = new Set<string>();
         for (const addition of SCHEMA_ADDITIONS) {
+          // Whole-table additions already create the current shape. Later column steps are
+          // for pre-existing tables, not for the stale database view before this batch.
+          if (addition.column !== undefined && createdObjects.has(addition.object)) continue;
           const held =
             addition.column === undefined
               ? await database.query<{ n: number }>(
@@ -1076,7 +1080,12 @@ export const plugin: ServerPluginDef = {
                   [addition.object, addition.column],
                 );
           const present = Number(held[0]?.n ?? 0) > 0;
-          if (present === (addition.removes === true)) pending.push({ sql: addition.sql });
+          if (present === (addition.removes === true)) {
+            pending.push({ sql: addition.sql });
+            if (addition.column === undefined && !addition.removes) {
+              createdObjects.add(addition.object);
+            }
+          }
         }
         if (pending.length > 0) await database.batch(pending);
       }
