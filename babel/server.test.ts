@@ -774,6 +774,95 @@ test("enabling a store made before the trace adds run_calls, triggers and all", 
   ]);
 });
 
+test.each(["missing tables", "older columns"] as const)(
+  "enable upgrades %s atomically and keeps records through another enable",
+  async (shape) => {
+    const { db } = harness;
+    if (shape === "missing tables") {
+      await db.run(`DROP TABLE drains`);
+      await db.run(`DROP TABLE run_progress`);
+      await db.run(`DROP TABLE transcript_map_captures`);
+    } else {
+      await db.run(`ALTER TABLE drains DROP COLUMN profile`);
+      await db.run(`ALTER TABLE run_progress DROP COLUMN models`);
+      await db.run(`ALTER TABLE transcript_map_captures DROP COLUMN source_machine_id`);
+    }
+    await insert(db, "sessions", {
+      selector: "omp/retained",
+      host: MACHINE,
+      harness: "omp",
+      source_id: "retained",
+      title: "retained across an additive upgrade",
+      seen_at: stamp(NOW),
+    });
+    async function historicalRows(): Promise<void> {
+      await insert(db, "drains", {
+        id: "drn_retained",
+        machine_id: MACHINE,
+        preset: "keep-going",
+        concurrent: 1,
+        target: "{}",
+        started_at: stamp(NOW - HOUR),
+        started_by: "operator",
+        finished_at: stamp(NOW),
+        state: "stopped",
+        jobs_settled: 7,
+      });
+      await insert(db, "run_progress", {
+        run_id: "run_retained",
+        job_id: "job_retained",
+        since: stamp(NOW),
+        updated_at: stamp(NOW),
+        calls: 12,
+      });
+      await insert(db, "transcript_map_captures", {
+        id: "capture_retained",
+        host: MACHINE,
+        harness: "omp",
+        session: "retained",
+        captured_at: stamp(NOW),
+        payload: '{"historical":true}',
+      });
+    }
+    if (shape === "older columns") await historicalRows();
+    await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+    if (shape === "missing tables") await historicalRows();
+    const profile = JSON.stringify({ containerId: "ctr_workbench", expectedRevision: 1 });
+    const models = JSON.stringify(["synthetic/model"]);
+    await db.run(`UPDATE drains SET profile = ? WHERE id = 'drn_retained'`, [profile]);
+    await db.run(`UPDATE run_progress SET models = ? WHERE run_id = 'run_retained'`, [models]);
+    await insert(db, "transcript_map_captures", {
+      id: "capture_owned",
+      host: MACHINE,
+      harness: "omp",
+      session: "owned",
+      captured_at: stamp(NOW),
+      payload: "{}",
+      source_machine_id: MACHINE,
+    });
+    await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+    expect(
+      await db.query(`SELECT profile, jobs_settled FROM drains WHERE id = 'drn_retained'`),
+    ).toEqual([{ profile, jobs_settled: 7n }]);
+    expect(
+      await db.query(`SELECT models, calls FROM run_progress WHERE run_id = 'run_retained'`),
+    ).toEqual([{ models, calls: 12n }]);
+    expect(
+      await db.query(
+        `SELECT source_machine_id, payload FROM transcript_map_captures WHERE id = 'capture_retained'`,
+      ),
+    ).toEqual([{ source_machine_id: "", payload: '{"historical":true}' }]);
+    expect(
+      await db.query(
+        `SELECT source_machine_id FROM transcript_map_captures WHERE id = 'capture_owned'`,
+      ),
+    ).toEqual([{ source_machine_id: MACHINE }]);
+    expect(await db.query(`SELECT title FROM sessions WHERE selector = 'omp/retained'`)).toEqual([
+      { title: "retained across an additive upgrade" },
+    ]);
+  },
+);
+
 test("enabling a store made before drains named a profile drops the session column, and a drain starts", async () => {
   const { db } = harness;
   /*

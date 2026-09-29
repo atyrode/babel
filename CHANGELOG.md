@@ -11,6 +11,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **An older store can acquire whole tables without adding their columns twice (#486).**
+  Enable accounts for tables queued in its one atomic upgrade batch; column steps still run
+  for tables that already existed. Fresh transcript-map tables include their owner column,
+  while historical unowned captures stay unowned. Real SQLite regressions retain drain,
+  progress, capture and session records across repeated enable. A disposable consumer smoke
+  also confirms that a refused upgrade rolls back every queued table and writes no schema marker.
+
 - **A pending-run pass no longer commits one silence count per job.** The conductor batches
   its observed increments and resets before reaping, even when a later reconciliation fails,
   and reuses the cycle's captured policy. A disposable 502-run smoke commits counts in

@@ -575,7 +575,7 @@ export const SESSION_INDEX_SCHEMA: readonly string[] = [
    )`,
 ];
 
-// Applied after table creation in both paths, including upgrades that create map tables now.
+// Existing draft captures gain an explicit owner column; unknown owners remain unknown.
 const TRANSCRIPT_MAP_OWNER_COLUMN = `ALTER TABLE transcript_map_captures ADD COLUMN source_machine_id TEXT NOT NULL DEFAULT ''`;
 
 /**
@@ -586,7 +586,8 @@ const TRANSCRIPT_MAP_OWNER_COLUMN = `ALTER TABLE transcript_map_captures ADD COL
 const TRANSCRIPT_MAP_SCHEMA: readonly string[] = [
   `CREATE TABLE transcript_map_captures(
      id TEXT PRIMARY KEY, host TEXT NOT NULL, harness TEXT NOT NULL, session TEXT NOT NULL,
-     captured_at TEXT NOT NULL, payload TEXT NOT NULL
+     captured_at TEXT NOT NULL, payload TEXT NOT NULL,
+     source_machine_id TEXT NOT NULL DEFAULT ''
    ) STRICT`,
   `CREATE TABLE transcript_map_contexts(
      machine_id TEXT NOT NULL, class_id TEXT NOT NULL, digest TEXT NOT NULL,
@@ -1163,7 +1164,6 @@ export const SCHEMA_V1: readonly string[] = [
   ...CORPUS_INDEX_SCHEMA,
   ...RECALL_TRACE_SCHEMA,
   ...TRANSCRIPT_MAP_SCHEMA,
-  TRANSCRIPT_MAP_OWNER_COLUMN,
   ...TRANSCRIPT_MAP_READ_SCHEMA,
 
   // ---------------------------------------------------------------- a drain (#258)
@@ -1195,6 +1195,10 @@ export const SCHEMA_V1: readonly string[] = [
  * NAME and only where the thing is absent, and that is the pattern the next additive shape
  * follows. A MAJOR bump over data that already exists is the other mechanism, and it is the
  * engine's migration ledger, not this list.
+ *
+ * Whole-table additions create the current shape, including every added column and excluding
+ * every retired one. Enable skips later column steps for objects it is creating in the same
+ * atomic batch; those steps upgrade only tables that already existed before planning.
  *
  * AN ADDITION NAMES ANY SCHEMA OBJECT, not only a table: SQLite gives every table, index and
  * trigger in one database a name of its own, so `sqlite_master` answers for all three by name
