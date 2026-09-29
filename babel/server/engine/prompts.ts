@@ -304,11 +304,11 @@ export function composeExplorePrompt(input: ExplorePromptInput): string {
   }
 
   parts.push("## How to answer\n\n", ANSWER_PROTOCOL);
-  parts.push(
-    `${ANSWER_FENCE}\n`,
-    `${JSON.stringify(exploreJsonSchema(input.stage), null, 2)}\n`,
-    "```\n\n",
-  );
+  // THE SCHEMA IS PRINTED COMPACT. Indentation carries nothing a parser or a model reads, and
+  // pretty-printed it was nearly two thirds of the stage's schema — enough, with a recipe body,
+  // to put a one-session explore past `PROMPT_LIMIT` and have it refused `prompt_too_large`.
+  // `JSON.parse` of either spelling is the same document: every field and constraint stays.
+  parts.push(`${ANSWER_FENCE}\n`, `${JSON.stringify(exploreJsonSchema(input.stage))}\n`, "```\n\n");
 
   parts.push(`## The ${input.stage} stage\n\n`, stageInstructions(input.stage), "\n");
   parts.push(

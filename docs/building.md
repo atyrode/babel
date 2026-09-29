@@ -267,15 +267,18 @@ material's own index and posts the session. The prompt is the better half of tha
 built there, it carries the real file names, record counts and the digests a citation has to
 copy, instead of the layout the press could only guess.
 
-**THE PROMPT IS BOUNDED IN BYTES, AND FITS.** `runSession` takes a prompt of
+**THE PROMPT IS BOUNDED IN BYTES.** `runSession` takes a prompt of
 `PROMPT_MAX_BYTES` — omp's own constant, re-exported by Code, and the hub's real ceiling,
 since a prompt is carried in the 64 KiB job-input map, which counts ENCODED bytes.
 `postPrepared` measures against it with a `TextEncoder` rather than a character count, so a
 legal-length prompt whose selectors and digests are multi-byte cannot be refused at admission
 instead; over it, the run closes `prompt_too_large` with both figures rather than a Zod issue
-from Code's parse. Babel's composed explore prompt is about 33,700 bytes and fits with room
-to spare; the guard stays because a longer contract, a bigger selection or a corpus of
-non-ASCII selectors is how it would stop fitting.
+from Code's parse. The stage's schema is printed compact — indented, it was nearly two thirds
+of the schema and put a one-session explore past the bound — so an explore's prompt is about
+21,000 bytes before its recipe, and every recipe the seed ships enabled fits beside the most
+steering a run carries. A challenge or synthesis adds up to 16 sessions and a brief of up to
+16 KiB, and with a long recipe those can still pass the bound; that run closes
+`prompt_too_large` rather than posting a prompt with anything cut.
 
 **WHAT STOPS A RUN IS READ OFF THE ROW, and there are three answers.** A drain's own
 bookkeeping cannot say it: `LiveJob.jobId` is the run's DERIVED identity, and for the lane

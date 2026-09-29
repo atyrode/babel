@@ -20,6 +20,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   output with the new declaration while a sibling writer remains. Cache and source mounts,
   material exports and archive custody are unchanged; live rollout is verified separately.
 
+- **An analysis prompt prints its stage's schema compact, so a one-session explore fits Code's
+  bound.** On the 2026-09-29 preview, an explore whose material had sealed composed a
+  54,523-byte prompt and closed `prompt_too_large` against the 45,056 bytes `runSession` takes
+  (`PROMPT_MAX_BYTES`). The stage's schema was printed indented, and the indentation was 19,151
+  of the explore schema's 29,836 bytes. `composeExplorePrompt` now prints it as compact JSON,
+  which parses to the same document: every field, constraint and description still reaches the
+  model, and the recipe, instructions, material, prior records and steering are unchanged. A
+  throwaway composition script measured an explore's prompt before its recipe at 20,967 bytes,
+  down from 40,118, and at most 42,334 bytes under any recipe the seed ships enabled with the
+  most steering a run carries. A challenge or synthesis with 16 sessions and a brief near its
+  16 KiB bound can still pass the bound beside a seed recipe, and still closes
+  `prompt_too_large` rather than posting a cut prompt; that refusal now names the recipe and the
+  brief, not the contract, as what moves. `prompts.test.ts` gains a regression for the explore
+  bound; it has not been run.
+
 ## [0.5.6] - 2026-09-29
 
 ### Fixed

@@ -2171,9 +2171,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         CODE BOUNDS A SESSION'S PROMPT IN BYTES, and the bound is the hub's own: a prompt is
         carried in the 64 KiB job-input map, which counts ENCODED bytes — so a character
         check would pass a prompt of legal length whose selectors and digests are multi-byte
-        and have it refused at admission instead. Babel's composed prompt fits with room to
-        spare; this stays because a longer contract, a bigger selection or a corpus of
-        non-ASCII selectors is how it would stop fitting.
+        and have it refused at admission instead. An explore fits under every recipe the seed
+        enables; a challenge or synthesis whose brief nears its bound beside a long recipe may
+        not, and neither may a corpus of non-ASCII selectors.
 
         Measured here, against CODE'S OWN published number, the run closes with both figures
         on it; left to Code's parse it closes with a Zod issue inside a sentence about a door
@@ -2186,9 +2186,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         if (bytes > PROMPT_LIMIT) {
           const reason =
             `prompt_too_large: this run's prompt is ${String(bytes)} bytes and ` +
-            `${CODE_PLUGIN_ID}.runSession takes ${String(PROMPT_LIMIT)}. The analysis contract ` +
-            `and the stage's schema are most of it, so what moves is Code's bound or the ` +
-            `contract itself — not this selection.`;
+            `${CODE_PLUGIN_ID}.runSession takes ${String(PROMPT_LIMIT)}. It carries the ` +
+            `recipe, the brief and the stage's contract whole, so what moves is Code's bound, ` +
+            `the recipe or the brief's bound; nothing in it is cut to fit.`;
           posted.push(...(await close(run, at, reason)));
           continue;
         }

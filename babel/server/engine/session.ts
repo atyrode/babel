@@ -157,10 +157,10 @@ export function materialInput(prepareJobId: string): { readonly inputs: Material
  * omp's own constant, re-exported by Code, and `SessionRunInputSchema.prompt` is omp's schema
  * by import — so there is one number and this reads it.
  *
- * `postPrepared` measures against it and refuses by name. Babel's composed prompt fits today
- * with room to spare; the guard stays because a longer contract, a bigger selection or a
- * corpus of non-ASCII selectors is how it would stop fitting, and a run that discovered that
- * inside Code's parse would report a Zod issue instead of the two figures.
+ * `postPrepared` measures against it and refuses by name. An explore's composed prompt fits under
+ * every recipe the seed enables; a challenge or synthesis whose brief nears its bound beside a
+ * long recipe may not, and neither may a corpus of non-ASCII selectors — and a run that
+ * discovered that inside Code's parse would report a Zod issue instead of the two figures.
  */
 export const PROMPT_LIMIT: number = PROMPT_MAX_BYTES;
 

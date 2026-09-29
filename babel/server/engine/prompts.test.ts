@@ -7,7 +7,7 @@ import {
   type AnalysisBriefRecord,
   type MaterialEntry,
 } from "../../contract.ts";
-import { REFUSALS, refusalCode } from "../../machine/results.ts";
+import { exploreJsonSchema, REFUSALS, refusalCode } from "../../machine/results.ts";
 import {
   ANSWER_FENCE,
   PARAM,
@@ -18,6 +18,7 @@ import {
   readExploreAnswer,
   type StandingRemark,
 } from "./prompts.ts";
+import { PROMPT_LIMIT, promptBytes } from "./session.ts";
 
 /*
   THE PROMPT AND THE ANSWER, held to the promises the prompt makes.
@@ -375,4 +376,54 @@ test("a remark too long for the budget is skipped, never cut in half", () => {
   expect(carried.map((remark) => remark.id)).toEqual(["stg_0001"]);
   expect(omitted).toBe(1);
   expect(promptWith([essay, STANDING])).not.toContain("xxxx");
+});
+
+/*
+  THE COMPOSED PROMPT FITS CODE'S BOUND, AND FITS WHOLE.
+
+  A one-session explore on a preview hub composed 54,523 bytes and was closed `prompt_too_large`
+  against Code's 45,056: the stage's schema, pretty-printed, was most of it. This composes one at
+  the bounds the conductor offers an explore — one session, an empty brief (`store/analysis.ts`)
+  and as much steering as a run carries — under each recipe the seed ships enabled, and holds it
+  to Code's own number. Fitting is half of it: a prompt that fit by cutting the recipe or the
+  schema would be a different method and a different contract.
+*/
+test("an explore under each shipped recipe fits Code's bound with its recipe and schema whole", async () => {
+  const file = Bun.file(new URL("../../store/recipes.seed.json", import.meta.url));
+  const seed = (await file.json()) as {
+    recipes: { id: string; version: number; title: string; body: string; enabled: boolean }[];
+  };
+  const selector = "omp/019a2b3c-7c1d-7e2a-9b3f-4d5e6f708192";
+  const steering = Array.from({ length: STEERING_BOUND.remarks }, (_, index) =>
+    told(
+      `stg_${String(index).padStart(4, "0")}`,
+      "r".repeat(STEERING_BOUND.characters / STEERING_BOUND.remarks),
+      "2026-09-29T00:00:00Z",
+    ),
+  );
+  for (const recipe of seed.recipes.filter((entry) => entry.enabled)) {
+    const prompt = composeExplorePrompt({
+      stage: "explore",
+      recipes: [recipe],
+      sessions: [{ selector, file: materialFile(0, selector) }],
+      preparationId: "f".repeat(64),
+      params: {
+        [PARAM.stage]: "explore",
+        [PARAM.briefHypotheses]: "",
+        [PARAM.briefObservations]: "",
+        [PARAM.briefObjections]: "",
+        [PARAM.runId]: "run_4a0c2f7e9b1d3c5e_0",
+        [PARAM.preparation]: "f".repeat(64),
+      },
+      steering,
+    });
+
+    expect(promptBytes(prompt)).toBeLessThanOrEqual(PROMPT_LIMIT);
+    expect(prompt).toContain(recipe.body.trim());
+    // The schema is the prompt's last `json` fenced block, which is the one `answerOf` reads.
+    const printed = answerOf(prompt);
+    expect("json" in printed ? (JSON.parse(printed.json) as unknown) : printed).toEqual(
+      exploreJsonSchema("explore"),
+    );
+  }
 });
