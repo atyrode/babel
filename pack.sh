@@ -8,7 +8,8 @@
 #
 #   1. `bun build babel/machine/main.ts` → babel/machine.js, one bundled file
 #      (git ignores it; `--machine` leaves it in place for `dev`, a pack deletes it after).
-#   2. `bun scripts/stamp-machine.ts` writes its sha256 into BOTH platform artifacts of
+#   2. `bun scripts/stamp-machine.ts` canonicalizes only SDK module path comments Bun emits,
+#      then writes the resulting sha256 into BOTH platform artifacts of
 #      manifest.json — a `raw` artifact is its own entry, so `sha256` and `entrySha256` are the
 #      same digest (manifold packages/plugin-kit/src/artifacts.ts, the `format === "raw"`
 #      branch) — and writes `machine.tools` from runtime-tools.json, the pins that script
@@ -29,7 +30,7 @@ BASELINE=babel
 
 build_machine() {
   bun build "$BASELINE/machine/main.ts" --target bun --outfile "$BASELINE/machine.js" >/dev/null
-  bun scripts/stamp-machine.ts "$BASELINE"
+  bun scripts/stamp-machine.ts "$BASELINE" "$MANIFOLD"
 }
 
 # The inner loop (`bun run dev`) packs the tree itself on every save, so it needs the built half

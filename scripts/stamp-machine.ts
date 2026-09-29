@@ -11,14 +11,15 @@
   bytes it actually downloaded, and never from this file or a release page.
 
   The committed manifest carries the last stamp, so whoever moves the machine half or the pinned
-  bun sees the digests move in the diff. That is the point of stamping rather than generating.
+  bun sees the digests move in the diff. Bun's SDK module path labels are canonicalized first.
 
-  Usage: bun scripts/stamp-machine.ts <plugin directory>
+  Usage: bun scripts/stamp-machine.ts <plugin directory> <SDK directory>
 */
 import { join } from "node:path";
 import { PluginManifestSchema } from "@manifold/protocol";
 import { format, resolveConfig } from "prettier";
 import runtime from "../runtime-tools.json";
+import { normalizeSdkModuleComments } from "./normalize-machine.ts";
 
 /** The owner's reviewed native closure. A managed tool is a dynamically linked binary — bun
  *  wants `runtime-tools.json`'s measured interpreter — and a job sandbox carries no libc, so an
@@ -36,8 +37,9 @@ interface StampTarget {
 }
 
 const directory = process.argv[2];
-if (process.argv.length !== 3 || directory === undefined) {
-  throw new Error("Usage: bun scripts/stamp-machine.ts <plugin directory>");
+const sdkDirectory = process.argv[3];
+if (process.argv.length !== 4 || directory === undefined || sdkDirectory === undefined) {
+  throw new Error("Usage: bun scripts/stamp-machine.ts <plugin directory> <SDK directory>");
 }
 // The half that will run on the machine is the half this checkout's tests ran: `bun test` packs
 // the tree and executes the packed member with the LOCAL bun (test/bundle.test.ts), while the
@@ -59,7 +61,11 @@ if (PluginManifestSchema.parse(raw).machine === undefined) {
 }
 const target = raw as StampTarget;
 
-const machine = await Bun.file(join(directory, "machine.js")).arrayBuffer();
+const machineFile = join(directory, "machine.js");
+const built = await Bun.file(machineFile).text();
+const normalized = normalizeSdkModuleComments(built, sdkDirectory, process.cwd());
+const machine = Buffer.from(normalized, "utf8");
+if (normalized !== built) await Bun.write(machineFile, machine);
 const sha256 = new Bun.CryptoHasher("sha256").update(machine).digest("hex");
 for (const artifact of Object.values(target.machine.artifacts)) {
   // A `raw` artifact IS its own entry, so the two digests are one digest.

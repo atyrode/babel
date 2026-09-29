@@ -97,15 +97,19 @@ bun /job/artifact <operation> --input /inputs/input --out /outputs/outputs
 ```
 
 — which is literally the `argv` every operation declares. `pack.sh` builds that half with
-`bun build --target bun` into `babel/machine.js`, and `scripts/stamp-machine.ts` stamps
-its sha256 into **both** platform artifacts of the manifest (a `raw` artifact is its own entry,
-so `sha256` and `entrySha256` are one digest) along with the `machine.tools` pins below, then
-packs
-it as a `bundleFile` member of the baseline's bundle. The file itself is never committed —
-`.gitignore` has it, a pack deletes it afterwards, `bun run dev` keeps it (`./pack.sh --machine`)
-because the inner loop re-packs on every save. The committed manifest carries the **last stamp**,
-so a change to the machine half shows up as a moved hash in the diff; `test/bundle.test.ts` runs
-the packed member through the argv the manifest declares and checks the receipt it leaves.
+`bun build --target bun` into `babel/machine.js`. Bun's standalone module-path comments for
+the pinned SDK otherwise depend on whether the sibling is physical or reached by symlink;
+`scripts/stamp-machine.ts` canonicalizes only those parsed comments, never JavaScript strings,
+before stamping the resulting sha256 into **both** platform artifacts of the manifest (a `raw`
+artifact is its own entry, so `sha256` and `entrySha256` are one digest) along with the
+`machine.tools` pins below. It then packs the half as a `bundleFile` member of the baseline's
+bundle. The file itself is never committed — `.gitignore` has it, a pack deletes it afterwards,
+`bun run dev` keeps it (`./pack.sh --machine`) because the inner loop re-packs on every save.
+The committed manifest carries the **last stamp**, so a change to the machine half shows up as
+a moved hash in the diff. After `bun run pack`, `bun run verify` refuses a manifest that differs
+from the committed one, rather than silently accepting a local or CI restamp. Commit the stamp
+alongside a genuine machine change. `test/bundle.test.ts` runs the packed member through the
+argv its manifest declares and checks the receipt it leaves.
 
 The one-shot operations are `catalog`, `archive`, `prepare` and `verify`; Recall adds a persistent
 native instance service. Each takes ONE input document — a JSON string materialized at
