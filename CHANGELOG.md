@@ -11,6 +11,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
+  Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary
+  preview/coordinate files use private creation before publication. An isolated synthetic
+  archive test fails on the old file modes and observes first creation, warm reuse, rebuild
+  and failed-rename cleanup without changing the runner's umask or reading a real archive.
+
 - **An older store can acquire whole tables without adding their columns twice (#486).**
   Enable accounts for tables queued in its one atomic upgrade batch; column steps still run
   for tables that already existed. Fresh transcript-map tables include their owner column,

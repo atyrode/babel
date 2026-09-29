@@ -1,4 +1,4 @@
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { z } from "zod";
@@ -240,10 +240,13 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
       const temporary = `${slot}.${crypto.randomUUID()}.records`;
       let writer: Bun.FileSink;
       try {
-        ensured ??= mkdir(dir, { recursive: true });
+        ensured ??= mkdir(dir, { recursive: true, mode: 0o700 });
         await ensured;
+        // Precreate privately; the path-backed sink still owns and closes its descriptor.
+        await writeFile(temporary, "", { mode: 0o600, flag: "wx" });
         writer = Bun.file(temporary).writer();
       } catch {
+        await rm(temporary, { force: true }).catch(() => undefined);
         return null;
       }
       /** Once a write has failed, nothing more is attempted and no entry is committed: the
@@ -294,7 +297,10 @@ export function readingCache(dir: string, about: ReadingContext): ReadingCache {
               report: reading.report,
             };
             // The document is renamed last, so it is only ever seen beside a complete stream.
-            await Bun.write(staged, JSON.stringify(document) + "\n");
+            await writeFile(staged, JSON.stringify(document) + "\n", {
+              mode: 0o600,
+              flag: "wx",
+            });
             await rename(staged, `${slot}.json`);
           } catch {
             await discard();

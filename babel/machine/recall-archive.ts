@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { z } from "zod";
 import { join } from "node:path";
@@ -194,7 +194,7 @@ export async function createRecallArchive(options: {
     const path = `${reading.stream}.recall-metadata.json`;
     const temporary = `${path}.${crypto.randomUUID()}`;
     try {
-      await Bun.write(temporary, document, { mode: 0o600 });
+      await writeFile(temporary, document, { mode: 0o600, flag: "wx" });
       await rename(temporary, path);
     } catch {
       // Metadata is a rebuildable optimization, never a condition of source eligibility.
@@ -897,7 +897,7 @@ export async function createRecallArchive(options: {
             await chmod(staging, 0o700);
             const token = crypto.randomUUID();
             const path = join(staging, token);
-            const writer = Bun.file(path).writer();
+            let writer: Bun.FileSink | undefined;
             const reader = recallRecordReader({
               harness: entry.session.harness,
               anchor: target.record,
@@ -906,6 +906,10 @@ export async function createRecallArchive(options: {
             let bytes = 0;
             let ended = false;
             try {
+              // Keep FileSink's descriptor ownership, but never let it create a public file.
+              await writeFile(path, "", { mode: 0o600, flag: "wx" });
+              const sink = Bun.file(path).writer();
+              writer = sink;
               await verify(
                 entry,
                 reading,
@@ -915,11 +919,11 @@ export async function createRecallArchive(options: {
                       typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
                     if (bytes > previewByteLimit - stagedBytes.get(classId)!)
                       throw new Refused("fetch-bound");
-                    writer.write(chunk);
+                    sink.write(chunk);
                     reader.sink.write(chunk);
                   },
                   close: async () => {
-                    await writer.end();
+                    await sink.end();
                     ended = true;
                     await reader.sink.close();
                   },
@@ -964,7 +968,7 @@ export async function createRecallArchive(options: {
               };
             } catch (error) {
               try {
-                if (!ended) await writer.end();
+                if (!ended) await writer?.end();
               } catch {
                 // Always unlink an unpublished widening, even when its writer failed.
               } finally {

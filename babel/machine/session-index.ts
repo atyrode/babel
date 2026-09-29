@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { chmod, lstat, mkdir } from "node:fs/promises";
+import { chmod, lstat, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -307,18 +307,19 @@ export async function sessionIndex(dir: string, context: ReadingContext): Promis
     if (!(await lstat(privateDir)).isDirectory()) throw new SessionIndexError("unavailable");
     await chmod(privateDir, 0o700);
     const path = join(privateDir, "tokens.sqlite");
-    const file = await lstat(path).catch((error: unknown) => {
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
-        return null;
+    await writeFile(path, "", { mode: 0o600, flag: "wx" }).catch((error: unknown) => {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST")
+        return;
       throw error;
     });
-    if (file !== null && !file.isFile()) throw new SessionIndexError("unavailable");
+    if (!(await lstat(path)).isFile()) throw new SessionIndexError("unavailable");
+    // SQLite gives journals, WAL and SHM the main database's mode at their creation.
+    await chmod(path, 0o600);
     db = new Database(path, { create: true, strict: true });
     db.exec(
       `PRAGMA busy_timeout = ${BUSY_MS}; PRAGMA foreign_keys = ON; PRAGMA cache_size = -2048; PRAGMA temp_store = FILE`,
     );
     db.exec("PRAGMA journal_mode = WAL");
-    await chmod(path, 0o600);
     const version = (): number =>
       db!.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
     if (version() === 0) {
