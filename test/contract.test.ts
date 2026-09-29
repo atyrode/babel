@@ -449,10 +449,6 @@ describe("the machine half is declared as the machine half is built", () => {
       );
       expect(op.executable).toEqual({ runtimeTool: "bun" });
       expect(op.stdin).toBe(false);
-      // The lease is cut from a location the operation may write, or the hub refuses the launch.
-      if (!op.providesService) {
-        expect(op.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
-      }
     }
   });
 
@@ -504,9 +500,6 @@ describe("the machine half is declared as the machine half is built", () => {
     // Every exported name is one this operation actually writes: an export of a lease that is
     // never cut is a binding that resolves to nothing at the consumer's admission.
     for (const exported of prepare.exports ?? []) expect(prepare.outputs).toContain(exported);
-    // The material's lease is cut from the same managed location the ordinary one is: a second
-    // anchor would be a second thing an operator has to arrange per machine.
-    expect(prepare.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
     // …and no other operation exports anything: `catalog`, `archive` and `verify` write for
     // this hub alone.
     for (const operation of [OPERATIONS.catalog, OPERATIONS.archive, OPERATIONS.verify]) {

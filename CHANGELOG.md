@@ -9,6 +9,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concurrent preparations seal their own material without waiting for sibling jobs.** All six
+  output-producing native operations declare `atyrode.babel.outputs` as `outputOnly`: the owner
+  still creates each named output lease, but no job mounts the shared backing directory writable.
+  On the 2026-09-29 preview, overlapping preparations had exited with `output_collection_refused`,
+  leaving analysis runs with no readable material (#501). A disposable probe of the pinned
+  owner's output store reproduces the refusal with the shared mount and seals every declared
+  output with the new declaration while a sibling writer remains. Cache and source mounts,
+  material exports and archive custody are unchanged; live rollout is verified separately.
+
 ## [0.5.6] - 2026-09-29
 
 ### Fixed

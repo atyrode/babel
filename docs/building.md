@@ -190,6 +190,13 @@ and `prepare` 512 MiB, so a scratch big enough for a material above 64 MiB refus
 The order is the bundle first, then the scratch: before raising it, confirm every operation
 installed on that machine that writes it declares more.
 
+Every output-producing Babel operation declares that backing location with `outputOnly: true`.
+The owner resolves it to create the job's named output leases but does not mount the shared
+directory into the job or retain it as a broad writer (atyrode/manifold at `2229a2fa`,
+`packages/agent/src/job-owner.ts:2555-2560,2630-2634`). The operation writes only its own
+`/outputs/outputs` and, when declared, `/outputs/material`; a live sibling therefore cannot
+hold its completed material unsealed. Cache and source locations remain ordinary mounts.
+
 ### What runs a model, and why it is not this bundle
 
 Until 2026-09-13 `explore` and `evaluate` launched `code engine`; #284 briefly replaced that
