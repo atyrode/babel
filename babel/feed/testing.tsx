@@ -342,6 +342,11 @@ export function topics(overrides: Partial<TopicsResult> = {}): TopicsResult {
         posts: 42,
         awaiting: 3,
         latestAt: "2026-09-12T08:00:00Z",
+        recentActivity: {
+          since: "2026-09-06T00:00:00.000Z",
+          days: [0, 1, 2, 0, 3, 1, 4],
+          unknownDates: 0,
+        },
         interest: {
           state: "working",
           reason: "the rewrite",
@@ -357,6 +362,11 @@ export function topics(overrides: Partial<TopicsResult> = {}): TopicsResult {
         posts: 7,
         awaiting: 0,
         latestAt: "2026-09-11T08:00:00Z",
+        recentActivity: {
+          since: "2026-09-06T00:00:00.000Z",
+          days: [0, 0, 1, 0, 0, 0, 0],
+          unknownDates: 1,
+        },
         interest: { state: "", reason: "", at: "", by: "" },
       },
     ],

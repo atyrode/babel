@@ -1905,6 +1905,11 @@ record, recorded as a comment Babel's next review of the record must answer.
 topic page is the feed narrowed to one entity, the rail lists entities with active lifecycle first,
 and a record filed under nothing is in the feed as _unfiled_ rather than hidden.
 
+The rail plots seven UTC days of recorded creation and reception activity for currently filed
+posts, from oldest to newest. Older events contribute no bar; an event without a usable date is
+counted as unknown rather than as a quiet day. This is a navigation signal, not a measure of
+topic merit or a reason to spend.
+
 **Comments are the conversation under a post.** A reviewer's contribution prose, a refinement, the
 operator's reason in his own words, his question, and the answer to a question are all comments,
 threaded by what they relate to and shown newest-first under the record's depths. Rulings are the

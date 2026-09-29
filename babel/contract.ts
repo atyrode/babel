@@ -1139,6 +1139,20 @@ export const TopicRowSchema = z.strictObject({
   posts: z.number().int(),
   awaiting: z.number().int(),
   latestAt: z.string(),
+  /** UTC calendar days, oldest first; recorded post/reception activity in currently filed topics. */
+  recentActivity: z.strictObject({
+    since: z.string(),
+    days: z.tuple([
+      z.number().int().nonnegative(),
+      z.number().int().nonnegative(),
+      z.number().int().nonnegative(),
+      z.number().int().nonnegative(),
+      z.number().int().nonnegative(),
+      z.number().int().nonnegative(),
+      z.number().int().nonnegative(),
+    ]),
+    unknownDates: z.number().int().nonnegative(),
+  }),
   interest: z.strictObject({
     state: InterestStateSchema.or(z.literal("")),
     reason: z.string(),

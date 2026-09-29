@@ -708,6 +708,22 @@
   color: var(--babel-accent);
 }
 
+.plugin-atyrode_babel_feed .babel-topic-trend {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  gap: 4px;
+  height: 16px;
+  margin-left: auto;
+}
+
+.plugin-atyrode_babel_feed .babel-topic-trend > span {
+  width: 4px;
+  flex: 0 0 4px;
+  background: var(--babel-accent);
+  opacity: 0.7;
+}
+
 .plugin-atyrode_babel_feed .babel-topic-count,
 .plugin-atyrode_babel_feed .babel-topic-group-count {
   color: var(--babel-ink-faint);

@@ -195,6 +195,11 @@ export const TOPICS: TopicsResult = {
       posts: 128,
       awaiting: 4,
       latestAt: "2026-09-12T08:30:00.000Z",
+      recentActivity: {
+        since: "2026-09-06T00:00:00.000Z",
+        days: [0, 0, 1, 0, 3, 1, 2],
+        unknownDates: 0,
+      },
       interest: { state: "working", reason: "", at: "2026-09-01T00:00:00.000Z", by: "operator" },
     },
     {
@@ -205,6 +210,11 @@ export const TOPICS: TopicsResult = {
       posts: 61,
       awaiting: 0,
       latestAt: "2026-09-11T20:00:00.000Z",
+      recentActivity: {
+        since: "2026-09-06T00:00:00.000Z",
+        days: [0, 1, 0, 0, 0, 0, 0],
+        unknownDates: 0,
+      },
       interest: { state: "watching", reason: "", at: "2026-09-01T00:00:00.000Z", by: "operator" },
     },
   ],

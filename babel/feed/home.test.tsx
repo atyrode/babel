@@ -581,6 +581,20 @@ describe("the rail", () => {
     await view.unmount();
   });
 
+  test("topic trends show seven dated activity bins without treating unknown dates as zero", async () => {
+    const view = await mount(<HomePanel host={hub().host} />);
+    const trend = view.one('[data-topic="ent_0000beef"] .babel-topic-trend');
+    expect(trend.getAttribute("aria-label")).toMatch(/0, 1, 2, 0, 3, 1, 4/);
+    const bars = view.all('[data-topic="ent_0000beef"] .babel-topic-trend > span');
+    expect(bars.map((bar) => parseInt((bar as HTMLElement).style.height, 10) || 0)).toEqual([
+      0, 4, 8, 0, 12, 4, 16,
+    ]);
+    expect(
+      view.one('[data-topic="ent_0000cafe"] .babel-topic-trend').getAttribute("aria-label"),
+    ).toMatch(/\b1 event\b.*\bunknown dates\b/);
+    await view.unmount();
+  });
+
   test("what is filed under nothing is a filter over the feed, not a topic", async () => {
     const fake = hub();
     const view = await mount(<HomePanel host={fake.host} />);
