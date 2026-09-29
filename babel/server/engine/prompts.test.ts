@@ -14,6 +14,7 @@ import {
   STEERING_BOUND,
   answerOf,
   carriedSteering,
+  composeAnalysisPrompt,
   composeExplorePrompt,
   readExploreAnswer,
   type StandingRemark,
@@ -383,43 +384,45 @@ test("a remark too long for the budget is skipped, never cut in half", () => {
 
   A one-session explore on a preview hub composed 54,523 bytes and was closed `prompt_too_large`
   against Code's 45,056: the stage's schema, pretty-printed, was most of it. This composes one at
-  the bounds the conductor offers an explore — one session, an empty brief (`store/analysis.ts`)
-  and as much steering as a run carries — under each recipe the seed ships enabled, and holds it
-  to Code's own number. Fitting is half of it: a prompt that fit by cutting the recipe or the
-  schema would be a different method and a different contract.
+  the bounds the conductor offers an explore — one session and an empty brief
+  (`store/analysis.ts`) — under each recipe the seed ships enabled, beside the most bytes the
+  operator's remarks can be: the bound counts `String.length`, so a three-byte character costs
+  one of its 2,000 units and a four-byte one two, and 2,000 three-byte characters are the worst.
+  Fitting is half of it: a prompt that fit by cutting the recipe, a remark or the schema would be
+  a different method, a different memory and a different contract.
 */
-test("an explore under each shipped recipe fits Code's bound with its recipe and schema whole", async () => {
+test("an explore under each shipped recipe fits Code's bound with every remark, recipe and schema whole", async () => {
   const file = Bun.file(new URL("../../store/recipes.seed.json", import.meta.url));
   const seed = (await file.json()) as {
     recipes: { id: string; version: number; title: string; body: string; enabled: boolean }[];
   };
   const selector = "omp/019a2b3c-7c1d-7e2a-9b3f-4d5e6f708192";
-  const steering = Array.from({ length: STEERING_BOUND.remarks }, (_, index) =>
+  // Twenty remarks, as many as the `policy` door reads back: the eight newest fill the budget in
+  // three-byte characters, and the rest are left out, which the prompt says in a sentence.
+  const steering = Array.from({ length: 20 }, (_, index) =>
     told(
-      `stg_${String(index).padStart(4, "0")}`,
-      "r".repeat(STEERING_BOUND.characters / STEERING_BOUND.remarks),
-      "2026-09-29T00:00:00Z",
+      `stg_${index.toString(16).padStart(16, "0")}`,
+      String.fromCodePoint(0x4e00 + index).repeat(
+        STEERING_BOUND.characters / STEERING_BOUND.remarks,
+      ),
+      `2026-09-29T00:00:${String(59 - index).padStart(2, "0")}.000000000Z`,
     ),
   );
   for (const recipe of seed.recipes.filter((entry) => entry.enabled)) {
-    const prompt = composeExplorePrompt({
+    const { prompt } = composeAnalysisPrompt({
       stage: "explore",
       recipes: [recipe],
       sessions: [{ selector, file: materialFile(0, selector) }],
-      preparationId: "f".repeat(64),
-      params: {
-        [PARAM.stage]: "explore",
-        [PARAM.briefHypotheses]: "",
-        [PARAM.briefObservations]: "",
-        [PARAM.briefObjections]: "",
-        [PARAM.runId]: "run_4a0c2f7e9b1d3c5e_0",
-        [PARAM.preparation]: "f".repeat(64),
-      },
+      preparationId: `prep-${"f".repeat(64)}`,
+      runId: `run_asg_${"f".repeat(16)}_1`,
       steering,
     });
 
     expect(promptBytes(prompt)).toBeLessThanOrEqual(PROMPT_LIMIT);
     expect(prompt).toContain(recipe.body.trim());
+    for (const remark of steering.slice(0, STEERING_BOUND.remarks)) {
+      expect(prompt).toContain(`"${remark.text}"`);
+    }
     // The schema is the prompt's last `json` fenced block, which is the one `answerOf` reads.
     const printed = answerOf(prompt);
     expect("json" in printed ? (JSON.parse(printed.json) as unknown) : printed).toEqual(

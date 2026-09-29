@@ -118,37 +118,46 @@ export async function operatorRemarks(db: GuestDatabase): Promise<StandingRemark
 
 /**
  * An offer the frontier could not make, and which bound refused it: no archived capture fits the
- * machine's MATERIAL bound, or the PROMPT the run would be posted with cannot fit Code's bound
- * even with only the record the offer is about.
+ * machine's MATERIAL bound, or the PROMPT the run would be posted with cannot fit Code's bound.
+ * A prompt refusal says what its smallest form was and what that measured, because the two have
+ * different remedies: a `record` did not fit even alone — an explore's one session with no
+ * brief, or a challenge's target — and a `pair` is a synthesis whose record fits alone while no
+ * two-run pair it belongs to does, which is the least a synthesis is.
  */
-export interface AnalysisRefusal {
-  readonly missing: string;
-  readonly stage: Stage;
-  readonly bound: "material" | "prompt";
-}
+export type AnalysisRefusal =
+  | { readonly missing: string; readonly stage: Stage; readonly bound: "material" }
+  | {
+      readonly missing: string;
+      readonly stage: Stage;
+      readonly bound: "prompt";
+      readonly smallest: "record" | "pair";
+      /** The encoded bytes that smallest prompt measured. */
+      readonly bytes: number;
+    };
 
 /**
- * WHETHER A RUN OF `stage` OVER THIS BRIEF AND THESE SESSIONS WOULD BE POSTED WHOLE: its prompt,
- * composed with the stage's recipe, its contract and the operator's remarks, fits Code's bound.
- * The coordinator answers it (`server/engine/prompts.ts`, `analysisPromptFits`); selection only
- * asks, once per record it weighs.
+ * WHAT A RUN OF `stage` OVER THIS BRIEF AND THESE SESSIONS WOULD BE POSTED WITH, measured: the
+ * prompt's encoded bytes, composed with the stage's recipe, its contract and the operator's
+ * remarks, and the most bytes Code takes. The coordinator supplies both
+ * (`server/engine/prompts.ts`, `analysisPromptBytes`); selection only asks, once per record it
+ * weighs.
  */
-export type AnalysisFit = (
-  stage: Stage,
-  brief: readonly AnalysisBriefRecord[],
-  selectors: readonly string[],
-) => boolean;
+export interface PromptBound {
+  readonly limit: number;
+  bytes(stage: Stage, brief: readonly AnalysisBriefRecord[], selectors: readonly string[]): number;
+}
 
 /** Page through the entire frontier, retaining only identifiers between pages. Offers are
  * streamed so the caller can apply settlement, cooldown and caps before retaining payloads.
  * The consumer may stop each stage independently through wants, before its next offer is built.
  * Whole records are admitted, never clipped; synthesis reserves two original runs first.
  *
- * A record is admitted only while the prompt the run will be posted with still `fits`, measured
- * with the sessions the brief so far would prepare. One that does not fit is skipped whole, as
- * one over the brief's byte bound is, and a smaller one behind it is still weighed. An offer
- * whose own record cannot fit even alone is refused by name rather than prepared and closed
- * `prompt_too_large` after the preparation has been paid for.
+ * A record is admitted only while the prompt the run will be posted with still fits the
+ * `prompt` bound, measured with the sessions the brief so far would prepare. One that does not
+ * fit is skipped whole, as one over the brief's byte bound is, and a smaller one behind it is
+ * still weighed. An offer whose smallest form cannot fit is refused with that form and its
+ * measure ({@link AnalysisRefusal}) rather than prepared and closed `prompt_too_large` after the
+ * preparation has been paid for.
  *
  * Material is offered from archived captures only, wherever they were recorded (#453): the
  * routed machine prepares them from the archive, so `machineId` bounds the material by that
@@ -162,7 +171,7 @@ export async function* analysisOffers(
   eligible: ReadonlySet<string>,
   filings: ReadonlyMap<string, { topics: readonly string[] }>,
   activeTopics: ReadonlySet<string>,
-  fits: AnalysisFit,
+  prompt: PromptBound,
   wants: (stage: Stage) => boolean = () => true,
 ): AsyncGenerator<AnalysisOffer | AnalysisRefusal> {
   const bound = await materialBound(db, machineId, share);
@@ -207,7 +216,12 @@ export async function* analysisOffers(
     const selected = await selection(material);
     if (selected.length === 0) return { missing: root, stage, bound: "material" };
     const selectors = selected.map((row) => string(row["selector"]));
-    if (!fits(stage, brief, selectors)) return { missing: recordId, stage, bound: "prompt" };
+    // A challenge's or synthesis's brief was chosen by `bounded` against this same measure, so
+    // this refuses only an explore: its smallest prompt is its one session and no brief.
+    const bytes = prompt.bytes(stage, brief, selectors);
+    if (bytes > prompt.limit) {
+      return { missing: recordId, stage, bound: "prompt", smallest: "record", bytes };
+    }
     const sorted = [...brief].sort((a, b) => a.id.localeCompare(b.id));
     return {
       stage,
@@ -353,16 +367,20 @@ export async function* analysisOffers(
   /*
     WHOLE RECORDS, IN `ids` ORDER AFTER `initial`, while the brief is within its count and byte
     bounds AND the stage's prompt over it — with the sessions it would prepare — still fits.
-    `crowded` names the records skipped for the prompt alone, which is how an offer whose own
-    record cannot fit is told from one whose record was never there to offer.
+    `crowded` names the records skipped for the prompt alone, each with the bytes the prompt
+    measured with it, which is how an offer whose smallest form cannot fit is told from one whose
+    record was never there to offer, and what it is refused with.
   */
   const bounded = async (
     stage: Stage,
     ids: Iterable<string>,
     initial: readonly AnalysisBriefRecord[] = [],
-  ): Promise<{ brief: AnalysisBriefRecord[]; crowded: string[] }> => {
+  ): Promise<{
+    brief: AnalysisBriefRecord[];
+    crowded: { readonly id: string; readonly bytes: number }[];
+  }> => {
     const out = [...initial];
-    const crowded: string[] = [];
+    const crowded: { readonly id: string; readonly bytes: number }[] = [];
     const seen = new Set(initial.map((row) => row.id));
     let bytes = encoder.encode(JSON.stringify(initial)).byteLength;
     for (const id of ids) {
@@ -387,8 +405,9 @@ export async function* analysisOffers(
       if (bytes + size > ANALYSIS_BRIEF_BYTE_LIMIT) continue;
       const brief = [...out, parsed.data];
       const sessions = await selection(await material(brief));
-      if (!fits(stage, brief, sessions.map((row) => string(row["selector"])))) {
-        crowded.push(id);
+      const composed = prompt.bytes(stage, brief, sessions.map((row) => string(row["selector"])));
+      if (composed > prompt.limit) {
+        crowded.push({ id, bytes: composed });
         continue;
       }
       out.push(parsed.data);
@@ -416,8 +435,15 @@ export async function* analysisOffers(
       );
       const { brief, crowded } = await bounded("challenge", [target.id, ...relatedIds]);
       if (!brief.some((record) => record.id === target.id)) {
-        if (crowded.includes(target.id)) {
-          yield { missing: target.id, stage: "challenge", bound: "prompt" };
+        const alone = crowded.find((entry) => entry.id === target.id);
+        if (alone !== undefined) {
+          yield {
+            missing: target.id,
+            stage: "challenge",
+            bound: "prompt",
+            smallest: "record",
+            bytes: alone.bytes,
+          };
         }
         continue;
       }
@@ -451,6 +477,16 @@ export async function* analysisOffers(
       }
     }
     const seen = new Set<string>();
+    /*
+      A SYNTHESIS IS AT LEAST TWO OBSERVATIONS FROM TWO RUNS, so a record that fits alone can
+      still have no synthesis that fits: every pair it is in outgrows the bound. That is told
+      apart from a record too large alone, and both are said once, after every group has been
+      tried — a record may pair in one group and not in another, and only one that pairs in
+      none is refused. `unpaired` keeps the smallest pair each one measured.
+    */
+    const alone = new Map<string, number>();
+    const unpaired = new Map<string, number>();
+    const paired = new Set<string>();
     synthesize: for (const [key, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
       if (new Set(group.map((id) => heads.get(id)!.runId)).size < 2) continue;
       const pending = new Set(group);
@@ -459,20 +495,21 @@ export async function* analysisOffers(
         const anchor = pending.values().next().value!;
         pending.delete(anchor);
         let pair: AnalysisBriefRecord[] = [];
-        // Whether a pair with this anchor was refused for the prompt alone: then no synthesis
-        // of it can be posted whole, and that is said rather than passed over.
-        let crowded = false;
         for (const partner of group) {
           if (heads.get(partner)!.runId === heads.get(anchor)!.runId) continue;
           const tried = await bounded("synthesize", [anchor, partner]);
           pair = tried.brief;
-          crowded ||= tried.crowded.length > 0;
           if (pair.length === 2) break;
+          const own = tried.crowded.find((entry) => entry.id === anchor);
+          if (own !== undefined) {
+            alone.set(anchor, own.bytes);
+            break;
+          }
+          for (const entry of tried.crowded) {
+            unpaired.set(anchor, Math.min(unpaired.get(anchor) ?? entry.bytes, entry.bytes));
+          }
         }
-        if (pair.length !== 2) {
-          if (crowded) yield { missing: anchor, stage: "synthesize", bound: "prompt" };
-          continue;
-        }
+        if (pair.length !== 2) continue;
         // Reserve two original runs before adding target context and both forms of critique.
         // Each subsequent window includes unoffered observations, not the same first 24 forever.
         const parents = [...new Set(pair.map((row) => heads.get(row.id)!.parent))].filter(
@@ -488,7 +525,10 @@ export async function* analysisOffers(
           brief = (await bounded("synthesize", objections, brief)).brief;
         }
         brief = (await bounded("synthesize", pending, brief)).brief;
-        for (const row of brief) pending.delete(row.id);
+        for (const row of brief) {
+          pending.delete(row.id);
+          paired.add(row.id);
+        }
         const signature = brief
           .map((row) => row.id)
           .sort()
@@ -511,6 +551,14 @@ export async function* analysisOffers(
           target.kind,
         );
       }
+    }
+    if (!wants("synthesize")) return;
+    for (const [id, bytes] of alone) {
+      yield { missing: id, stage: "synthesize", bound: "prompt", smallest: "record", bytes };
+    }
+    for (const [id, bytes] of unpaired) {
+      if (paired.has(id)) continue;
+      yield { missing: id, stage: "synthesize", bound: "prompt", smallest: "pair", bytes };
     }
   }
 }

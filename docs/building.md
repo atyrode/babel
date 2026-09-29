@@ -273,21 +273,27 @@ since a prompt is carried in the 64 KiB job-input map, which counts ENCODED byte
 `postPrepared` measures against it with a `TextEncoder` rather than a character count, so a
 legal-length prompt whose selectors and digests are multi-byte cannot be refused at admission
 instead; over it, the run closes `prompt_too_large` with both figures rather than a Zod issue
-from Code's parse. The stage's schema is printed compact — indented, it was nearly two thirds
-of the schema and put a one-session explore past the bound — so an explore's prompt is about
-21,000 bytes before its recipe.
+from Code's parse. The stage's schema is printed compact, and each subschema it uses more than
+once — the evidence citation above all — is written once under `$defs` and referenced, by zod's
+own `reused: "ref"`; resolving every `$ref` gives back the inline document. So an explore's
+prompt is about 17,900 bytes before its recipe, and under every recipe the seed enables it fits
+beside the most the operator's remarks can be: 2,000 characters of three-byte text, 6,000 bytes,
+since the remarks' bound counts UTF-16 units and a four-byte character counts two.
 
 **AN ANALYSIS BRIEF IS CHOSEN TO FIT THAT BOUND.** When the coordinator offers a challenge or a
 synthesis, it weighs each prior record in turn and keeps it only while the prompt the run will
 be posted with still fits: the stage's recipe whole, its contract, a reference to every session
 the brief would prepare, the brief so far and the operator's remarks, composed by the same
-`composeAnalysisPrompt` that `postPrepared` posts and measured in bytes (`analysisPromptFits`).
+`composeAnalysisPrompt` that `postPrepared` posts and measured in bytes (`analysisPromptBytes`).
 A record that does not fit is skipped whole, as one past the brief's own 16 KiB bound is, and a
-smaller one behind it is still weighed. An offer whose own record, or an explore whose one
-session, cannot fit even alone is a draw gap `unsupported` that says so, not a preparation that
-is paid for and then closed. The run and preparation ids are measured at the longest they can
-be, so a brief chosen to fit still fits; what can still reach `prompt_too_large` is an
-operator's explore over long recipes, or remarks recorded after the brief was chosen.
+smaller one behind it is still weighed. An offer whose smallest prompt cannot fit is a draw gap
+`unsupported` carrying that prompt's bytes and Code's, not a preparation that is paid for and
+then closed — and it says which smallest: an explore's one session with no brief, a
+challenge's target alone, a synthesis observation alone, or, for an observation that fits
+alone, the smallest two-run pair it is in, which is the least a synthesis is. The run and
+preparation ids are measured at the longest they can be, so a brief chosen to fit still fits;
+what can still reach `prompt_too_large` is an operator's explore over several recipes, or
+remarks recorded after the brief was chosen.
 
 **WHAT STOPS A RUN IS READ OFF THE ROW, and there are three answers.** A drain's own
 bookkeeping cannot say it: `LiveJob.jobId` is the run's DERIVED identity, and for the lane

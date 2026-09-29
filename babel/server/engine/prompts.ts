@@ -16,7 +16,7 @@ import {
   REFUSALS,
   type ExploreSubmission,
 } from "../../machine/results.ts";
-import { PROMPT_LIMIT, promptBytes } from "./session.ts";
+import { promptBytes } from "./session.ts";
 
 /*
   THE PROMPT: the whole of what the model is told, composed here from Babel-owned parts, and the
@@ -294,13 +294,14 @@ export interface ExplorePromptInput {
 
 /**
  * EACH STAGE'S SCHEMA AS THE PROMPT PRINTS IT, generated once per stage: a brief's selection
- * composes a prompt for every record it weighs ({@link analysisPromptFits}), and generating the
+ * composes a prompt for every record it weighs ({@link analysisPromptBytes}), and generating the
  * schema is most of what one composition costs.
  *
- * IT IS PRINTED COMPACT. Indentation carries nothing a parser or a model reads, and
- * pretty-printed it was nearly two thirds of the stage's schema — enough, with a recipe body, to
- * put a one-session explore past `PROMPT_LIMIT` and have it refused `prompt_too_large`.
- * `JSON.parse` of either spelling is the same document: every field and constraint stays.
+ * IT IS PRINTED COMPACT, and each shared subschema once (`exploreJsonSchema`, `$defs`).
+ * Indentation carries nothing a parser or a model reads, and pretty-printed it was nearly two
+ * thirds of the stage's schema — enough, with a recipe body, to put a one-session explore past
+ * `PROMPT_LIMIT` and have it refused `prompt_too_large`. `JSON.parse` of either spelling is the
+ * same document: every field and constraint stays.
  */
 const SCHEMA_TEXT: Partial<Record<Stage, string>> = {};
 
@@ -368,7 +369,7 @@ export interface AnalysisPromptInput {
 /**
  * ONE ANALYSIS RUN'S PROMPT, AND THE PARAMETERS IT CARRIES, composed the one way both of its
  * readers need it: `postPrepared` posts it, and a brief's selection measures it before anything
- * is prepared ({@link analysisPromptFits}). Two compositions would be two answers to whether a
+ * is prepared ({@link analysisPromptBytes}). Two compositions would be two answers to whether a
  * brief fits, and the one that posts is the one Code bounds.
  */
 export function composeAnalysisPrompt(input: AnalysisPromptInput): {
@@ -420,8 +421,9 @@ const UNMINTED_RUN = `run_asg_${"f".repeat(16)}_${String(Number.MAX_SAFE_INTEGER
 const UNSEALED_PREPARATION = `prep-${"f".repeat(64)}`;
 
 /**
- * WHETHER AN ANALYSIS OF THIS BRIEF OVER THESE SESSIONS FITS CODE'S PROMPT BOUND, asked while its
- * brief is still being chosen (`store/analysis.ts`).
+ * WHAT AN ANALYSIS OF THIS BRIEF OVER THESE SESSIONS WOULD BE POSTED WITH, IN ENCODED BYTES,
+ * asked while its brief is still being chosen (`store/analysis.ts`) and held there to
+ * `PROMPT_LIMIT`.
  *
  * It composes the prompt `postPrepared` will post, with everything in it whole: the recipe, the
  * stage's contract, a reference to every session, the brief's records and the operator's
@@ -429,13 +431,13 @@ const UNSEALED_PREPARATION = `prep-${"f".repeat(64)}`;
  * that, and nothing is cut later to make room. The files are named by `materialFile`, which is
  * how `prepare` names them; a sealed material holds these sessions or fewer, never more.
  */
-export function analysisPromptFits(input: {
+export function analysisPromptBytes(input: {
   readonly stage: Stage;
   readonly recipes: readonly Recipe[];
   readonly brief: readonly AnalysisBriefRecord[];
   readonly selectors: readonly string[];
   readonly steering: readonly StandingRemark[];
-}): boolean {
+}): number {
   const { prompt } = composeAnalysisPrompt({
     stage: input.stage,
     recipes: input.recipes,
@@ -448,7 +450,7 @@ export function analysisPromptFits(input: {
     runId: UNMINTED_RUN,
     steering: input.steering,
   });
-  return promptBytes(prompt) <= PROMPT_LIMIT;
+  return promptBytes(prompt);
 }
 
 function paramsBlock(params: Readonly<Record<string, string>>): string {

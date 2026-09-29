@@ -157,7 +157,7 @@ export function materialInput(prepareJobId: string): { readonly inputs: Material
  * omp's own constant, re-exported by Code, and `SessionRunInputSchema.prompt` is omp's schema
  * by import — so there is one number and this reads it.
  *
- * An analysis brief is chosen against it (`analysisPromptFits`, `server/engine/prompts.ts`):
+ * An analysis brief is chosen against it (`analysisPromptBytes`, `server/engine/prompts.ts`):
  * whole records are kept only while the prompt they would be posted in still fits. And
  * `postPrepared` measures against it again and refuses by name, because an operator's explore
  * is chosen by no one and remarks can arrive after a brief was — and a run that discovered that

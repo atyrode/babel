@@ -23,20 +23,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - **Every analysis stage is offered only with a prompt Code will take whole.** On the 2026-09-29
   preview, an explore whose material had sealed composed a 54,523-byte prompt and closed
   `prompt_too_large` against the 45,056 bytes `runSession` takes (`PROMPT_MAX_BYTES`), after its
-  preparation had run. Two changes, neither of which cuts anything. The stage's schema is printed
-  as compact JSON: its indentation was 19,151 of the explore schema's 29,836 bytes, and the
-  compact text parses to the same document. And the coordinator now chooses a challenge's or a
-  synthesis's brief to fit: each prior record is kept, whole, only while the prompt the run will
-  be posted with still fits — the stage's recipe, contract, session references and brief and the
-  operator's remarks, composed by the one `composeAnalysisPrompt` that `postPrepared` posts and
-  counted in bytes. An offer whose own record, or an explore whose one session, cannot fit even
-  alone is a draw gap `unsupported` instead of a preparation that is paid for and closed. A
-  throwaway script drew each stage from a real store under the largest recipe the seed enables
-  with 2,000 characters of operator remarks and two-byte records: on `main` every stage composed
-  59,503 to 67,423 bytes and would close after preparation; after, the explore composed 42,379,
-  the challenge kept 10 whole records in 44,428 and the synthesis 10 in 44,632, and a 12,000-byte
-  target or three-byte remarks were refused at the draw. `prompts.test.ts` and
-  `coordinator.test.ts` gain one regression each; neither suite has been run.
+  preparation had run. Three changes, none of which cuts anything. The stage's schema is printed
+  as compact JSON — its indentation was 19,151 of the explore schema's 29,836 bytes — and each
+  subschema it repeats, the evidence citation above all, is written once under `$defs` by zod's
+  own `reused: "ref"`; resolving every `$ref` gives back the inline document, and the explore
+  schema is 7,610 bytes. The coordinator now chooses a challenge's or a synthesis's brief to fit:
+  each prior record is kept, whole, only while the prompt the run will be posted with still fits
+  — the stage's recipe, contract, session references and brief and the operator's remarks,
+  composed by the one `composeAnalysisPrompt` that `postPrepared` posts and counted in bytes.
+  And an offer whose smallest prompt cannot fit is a draw gap `unsupported` carrying both
+  figures, instead of a preparation that is paid for and closed; the gap says whether that was
+  the record alone or, for a synthesis observation that fits alone, the smallest two-run pair
+  it is in. Under every recipe the seed enables, an explore now fits beside the most bytes the
+  operator's remarks can be — 2,000 three-byte characters, 6,000 bytes, since the bound counts
+  UTF-16 units — at 43,580 bytes at most. A throwaway script drew each stage from a real store
+  under the largest enabled recipe with those remarks and two-byte records: on `main` every stage
+  composed 64,623 to 71,423 bytes and would close after preparation; now the explore composes
+  43,304, the challenge keeps 6 whole records in 44,328 and the synthesis 8 in 44,652, and a
+  15,000-byte target and a pair of 4.8 KB observations are refused at the draw as a record and
+  as a pair. `prompts.test.ts` and `coordinator.test.ts` gain regressions; no suite has been run
+  here.
 
 ## [0.5.6] - 2026-09-29
 

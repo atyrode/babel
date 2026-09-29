@@ -64,9 +64,14 @@ import {
   STAGES,
   SuggesterSchema,
 } from "../contract.ts";
-import { analysisPromptFits } from "../server/engine/prompts.ts";
+import { analysisPromptBytes } from "../server/engine/prompts.ts";
 import { PROMPT_LIMIT } from "../server/engine/session.ts";
-import { analysisOffers, operatorRemarks, type AnalysisOffer } from "./analysis.ts";
+import {
+  analysisOffers,
+  operatorRemarks,
+  type AnalysisOffer,
+  type PromptBound,
+} from "./analysis.ts";
 import { transcriptMaps } from "./transcript-maps.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
@@ -2090,25 +2095,24 @@ export function coordinator(
       `server.ts`'s `cookbook()` serves it.
     */
     const remarks = await operatorRemarks(db);
-    const fits = (
-      stage: Stage,
-      brief: readonly AnalysisBriefRecord[],
-      selectors: readonly string[],
-    ): boolean =>
-      analysisPromptFits({
-        stage,
-        recipes: route.recipes
-          .filter((recipe) => recipe.id === route.stageRecipes[stage])
-          .map((recipe) => ({
-            id: recipe.id,
-            version: recipe.version,
-            ...(recipe.title === undefined || recipe.title === "" ? {} : { title: recipe.title }),
-            body: recipe.body,
-          })),
-        brief,
-        selectors,
-        steering: remarks,
-      });
+    const prompt: PromptBound = {
+      limit: PROMPT_LIMIT,
+      bytes: (stage, brief, selectors) =>
+        analysisPromptBytes({
+          stage,
+          recipes: route.recipes
+            .filter((recipe) => recipe.id === route.stageRecipes[stage])
+            .map((recipe) => ({
+              id: recipe.id,
+              version: recipe.version,
+              ...(recipe.title === undefined || recipe.title === "" ? {} : { title: recipe.title }),
+              body: recipe.body,
+            })),
+          brief,
+          selectors,
+          steering: remarks,
+        }),
+    };
     const eligible = new Set<string>();
     const gaps: Gap[] = [];
     const attention = new Map<string, number>();
@@ -2154,18 +2158,32 @@ export function coordinator(
       eligible,
       filed,
       new Set([...stance].filter(([, state]) => state === "working").map(([topic]) => topic)),
-      fits,
+      prompt,
       (stage) => target !== undefined || (admitted.get(stage) ?? 0) < 64,
     )) {
       if ("missing" in offer) {
+        if (offer.bound === "material") {
+          gaps.push({
+            recordId: offer.missing,
+            role: "",
+            reason: "unsupported",
+            detail: "no archived non-agent capture fits this analysis within the material bound",
+          });
+          continue;
+        }
+        // THE SMALLEST PROMPT THIS OFFER HAS, AND WHY IT IS THE SMALLEST, with both figures —
+        // what `prompt_too_large` would have said after a paid preparation.
+        const smallest =
+          offer.smallest === "pair"
+            ? "this observation fits alone, but the prompt of the smallest synthesis it is in — two observations from two runs —"
+            : offer.stage === "explore"
+              ? "this session's explore prompt, with no brief,"
+              : `the ${offer.stage} prompt with this record alone as its brief`;
         gaps.push({
           recordId: offer.missing,
-          role: offer.bound === "material" ? "" : ANALYSIS_ROLES[offer.stage],
+          role: ANALYSIS_ROLES[offer.stage],
           reason: "unsupported",
-          detail:
-            offer.bound === "material"
-              ? "no archived non-agent capture fits this analysis within the material bound"
-              : `its smallest ${offer.stage} prompt, this alone beside the recipe, contract, sessions and operator's remarks, exceeds the ${String(PROMPT_LIMIT)} bytes Code takes, and nothing in it is cut to fit`,
+          detail: `${smallest} is ${String(offer.bytes)} bytes with its recipe, contract and the operator's remarks whole, and Code takes ${String(PROMPT_LIMIT)}; nothing is cut to fit`,
         });
         continue;
       }

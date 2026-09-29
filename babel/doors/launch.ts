@@ -1632,7 +1632,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     // and the same call says which ones, so the receipt records what the run was told.
     //
     // The composition is the one the coordinator measured the brief against when it chose it
-    // (`analysisPromptFits`), so a brief chosen to fit is posted whole.
+    // (`analysisPromptBytes`), so a brief chosen to fit is posted whole.
     const told = (await store.policy()).steering;
     const { prompt, params } = composeAnalysisPrompt({
       stage: analysis?.stage ?? "explore",
@@ -2150,7 +2150,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         check would pass a prompt of legal length whose selectors and digests are multi-byte
         and have it refused at admission instead. An analysis brief is chosen to fit this
         bound (`store/analysis.ts`), measured by the same composition; what can still pass it
-        is an operator's explore over a long recipe, or remarks the operator added after the
+        is an operator's explore over several recipes, or remarks the operator added after the
         brief was chosen.
 
         Measured here, against CODE'S OWN published number, the run closes with both figures

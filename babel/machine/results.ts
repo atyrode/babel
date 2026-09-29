@@ -528,9 +528,21 @@ const exploreSchemas: Record<Stage, z.ZodType> = {
   synthesize: exploreSchema("synthesize"),
 };
 
-/** The JSON Schema the submit tool is registered with for one stage. */
+/**
+ * THE JSON SCHEMA ONE STAGE'S ANSWER IS HELD TO, as its prompt prints it.
+ *
+ * A subschema the stage uses in more than one place — the evidence citation above all, which an
+ * explore's answer can carry in seven — is written ONCE under `$defs` and referenced from each,
+ * by the generator's own `reused: "ref"`. Every constraint, default and description is still in
+ * the document, and resolving each `$ref` gives back the inline one; written inline, the repeats
+ * cost an analysis prompt room it needs for its recipe, its brief and the operator's remarks.
+ */
 export function exploreJsonSchema(stage: Stage): unknown {
-  return z.toJSONSchema(exploreSchemas[stage], { io: "input", target: "draft-2020-12" });
+  return z.toJSONSchema(exploreSchemas[stage], {
+    io: "input",
+    target: "draft-2020-12",
+    reused: "ref",
+  });
 }
 
 /*

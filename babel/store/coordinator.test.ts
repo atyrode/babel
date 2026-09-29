@@ -2021,9 +2021,9 @@ test("a brief keeps whole records only while the prompt it is posted in fits Cod
     await analysisRecord(db, id, "run_a", "hyp_00000001", { claim: "é".repeat(300) });
     await citation(db, id, "omp/shared");
   }
-  // 12,000 bytes in 4,000 characters: inside the brief's own bound, and too much for the prompt
+  // 15,000 bytes in 5,000 characters: inside the brief's own bound, and too much for the prompt
   // even alone beside the recipe and the contract.
-  await analysisRecord(db, "hyp_00000002", "run_a", null, { statement: "漢".repeat(4_000) });
+  await analysisRecord(db, "hyp_00000002", "run_a", null, { statement: "漢".repeat(5_000) });
   await citation(db, "hyp_00000002", "omp/shared");
 
   const result = await coord.draw({ runId: "fitted" });
@@ -2438,7 +2438,7 @@ test("a full offer stage stops independently while challenge and synthesis remai
     new Set(ids),
     new Map(),
     new Set(),
-    () => true,
+    { limit: Number.POSITIVE_INFINITY, bytes: () => 0 },
     (stage) => !full.has(stage),
   );
   try {
@@ -2461,6 +2461,47 @@ test("a full offer stage stops independently while challenge and synthesis remai
     expect((await offers.next()).done).toBe(true);
   } finally {
     await offers.return(undefined);
+  }
+});
+
+/*
+  A SYNTHESIS IS AT LEAST TWO OBSERVATIONS FROM TWO RUNS, so what cannot fit is said as the
+  smallest thing that could not: an observation too large even alone, or one that fits alone
+  while every two-run pair it is in does not. Telling an operator the second is the first sends
+  him to shrink a record that is not the problem. The measure here is the brief's own bytes, so
+  the arithmetic is visible; the real one composes the whole prompt around it.
+*/
+test("a synthesis that fits alone but not as a pair is refused as a pair, never as its record", async () => {
+  const { db } = await deployment(stagePolicy("synthesize"));
+  await catalog(db, "omp/shared");
+  const ids = ["obs_00000001", "obs_00000002", "obs_00000003"];
+  for (const [n, id] of ids.entries()) {
+    await analysisRecord(db, id, `source_${String(n)}`, null, {
+      claim: "x".repeat(n === 2 ? 2_000 : 400),
+    });
+    await citation(db, id, "omp/shared");
+  }
+  const measure = (brief: readonly unknown[]): number =>
+    new TextEncoder().encode(JSON.stringify(brief)).byteLength;
+  const yielded = await Array.fromAsync(
+    analysisOffers(db, "dev-01", 1, ["synthesize"], new Set(ids), new Map(), new Set(), {
+      limit: 800,
+      bytes: (_stage, brief) => measure(brief),
+    }),
+  );
+
+  // Each 400-character observation fits alone and no two of them do; the 2,000-character one
+  // does not fit even alone. Nothing is offered, and each is refused once, as what it is.
+  expect(
+    yielded.map((offer) => ("smallest" in offer ? [offer.missing, offer.smallest] : offer)),
+  ).toEqual([
+    ["obs_00000003", "record"],
+    ["obs_00000001", "pair"],
+    ["obs_00000002", "pair"],
+  ]);
+  for (const offer of yielded) {
+    if (!("smallest" in offer)) throw new Error("an offer was made");
+    expect(offer.bytes).toBeGreaterThan(800);
   }
 });
 
