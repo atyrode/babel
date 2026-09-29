@@ -750,6 +750,13 @@ addressed from dev-01, where `docker:` delivery copies the bundle into the hub's
 reads the owner key from its volume, so the key never appears in argv, output or this repository.
 Against another hub, pass `--owner-key-file <path>` and `--deliver path`.
 
+Recall cache permissions are checked by `babel/machine/recall-archive.test.ts` in a child
+process with a permissive umask and isolated HOME/XDG/temp roots. It uses a synthetic archive
+to inspect files during first indexing, warm reuse and rebuild, including SQLite databases,
+reading streams, listing/metadata sidecars and transient previews. A failed metadata
+replacement must leave no staged file and cannot make Recall refuse a rebuildable reading.
+This proves private file creation on the pinned Bun; it is not a live-archive custody check.
+
 ### Running optional judgement
 
 `bun babel/jev/tools/seed-questions.ts policy` renders the versioned question literals and response

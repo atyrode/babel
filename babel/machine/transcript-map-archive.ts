@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   RECALL_MAX_PAYLOAD_BYTES,
@@ -140,8 +140,12 @@ export function transcriptMapArchive(options: {
     directory ??= await mkdtemp(join(options.temporaryDir, "babel-transcript-maps-"));
     const owned = join(directory, crypto.randomUUID());
     await mkdir(owned, { mode: 0o700 });
-    const db = new Database(join(owned, "coordinates.sqlite"));
+    let db: Database | undefined;
     try {
+      const path = join(owned, "coordinates.sqlite");
+      // SQLite's rollback journal inherits this mode, independently of the process umask.
+      await writeFile(path, "", { mode: 0o600, flag: "wx" });
+      db = new Database(path);
       db.exec(
         `PRAGMA page_size = 4096; PRAGMA max_page_count = ${Math.floor(RECALL_MAX_SERVED_BYTES / 4 / 4096)}`,
       );
@@ -185,7 +189,7 @@ export function transcriptMapArchive(options: {
       kept.set(entry.capture.id, value);
       return value;
     } catch (error) {
-      db.close();
+      db?.close();
       await rm(owned, { recursive: true, force: true });
       if (
         error !== null &&
