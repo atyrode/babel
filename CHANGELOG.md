@@ -11,6 +11,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Babel's completed jobs release their raw output scratch too.** Catalog, archive,
+  preparation, verification and both mapping operations now use the explicit per-job temporary
+  lifetime for `atyrode.babel.outputs`, at location revision `3`. The compatible native owner
+  collects outputs and durably publishes the terminal result before reclaiming roots whose
+  workload is proven empty; sealed receipts and material remain readable. The composed bundle
+  gate checks the new declaration; the runbook separately requires a deployed-lifetime check.
+  Cache, archive custody, source mounts and legacy directories are unchanged.
+
 - **Completed model sessions release their raw transcript scratch.** The SDK and Code/omp
   dependency closure now use Manifold's explicit temporary output lifetime for one-shot
   sessions, rather than retaining every raw run directory in the bounded native backing.

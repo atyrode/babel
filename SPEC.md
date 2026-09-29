@@ -122,6 +122,12 @@ path the material does not name, or a digest that does not match, refuses the wh
 A run holds no credential, reaches no network of Babel's, and mutates nothing. It reads the
 material, answers in one fenced block, and the session ends.
 
+The machine half's output backing is disposable, per-job scratch, not a retained archive or
+workspace. Manifold reclaims it only after proven workload closure and durable publication of
+the terminal result; consumers read the separately sealed receipts and material by name, never
+by reopening a raw output path. Archive originals, the hub's store, the machine's cache and
+legacy retained directories are outside that disposal.
+
 ### 2.8 Manifold plugin boundary
 
 Babel is a plugin family and holds exactly what a plugin holds. Its server half answers doors and

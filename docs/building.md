@@ -176,13 +176,14 @@ architecture can own the interpreter of Babel's own machine half.
 worker the `runtime` anchor is the named-output tmpfs `execution.outputBytes` sizes: 1 MiB by
 default, at most 1 GiB, in whole 4 KiB pages (atyrode/manifold at `7b5fe301`,
 `infra/native/module.nix:263-264,276-277`). Every job that cuts a lease from it shares it:
-`catalog`, `archive`, `prepare` and `verify` write `atyrode.babel.outputs` there, and
-`atyrode.omp.session` writes its own lease and extracts a bound material into it. The runtime
+`catalog`, `archive`, `prepare`, `verify`, `map-catalog` and `map-prepare` write
+`atyrode.babel.outputs` there, and `atyrode.omp.session` writes its own lease and extracts a
+bound material into it. The runtime
 refuses a job whose `limits.outputBytes` is below that capacity, `bounded-output-storage-required`,
 and charges the whole capacity before stdout and stderr
 (`packages/agent/src/job-linux.ts:440-453,804`). So the rule is that every operation writing the
 scratch declares `outputBytes` strictly above it, and the difference is that job's stdio. Babel's
-four declare 1 GiB, Manifold's per-job ceiling (`packages/protocol/src/jobs.ts:86`) and the omp
+six declare 1 GiB, Manifold's per-job ceiling (`packages/protocol/src/jobs.ts:86`) and the omp
 session's own declaration; the scratch is `RUNTIME_SCRATCH_BYTES` (`contract.ts`), 768 MiB with
 `outputInodes` 10000, which leaves each of them 256 MiB of stdio, and `test/contract.test.ts` holds
 every runtime-writing operation above it. Until this, `scan`, `archive` and `verify` declared 64 MiB
@@ -191,11 +192,24 @@ The order is the bundle first, then the scratch: before raising it, confirm ever
 installed on that machine that writes it declares more.
 
 Every output-producing Babel operation declares that backing location with `outputOnly: true`.
-The owner resolves it to create the job's named output leases but does not mount the shared
-directory into the job or retain it as a broad writer (atyrode/manifold at `2229a2fa`,
-`packages/agent/src/job-owner.ts:2555-2560,2630-2634`). The operation writes only its own
+The owner uses that declaration only to create named output leases, never as a broad writable
+mount (atyrode/manifold at `2229a2fa`, `packages/agent/src/job-owner.ts:2555-2560,2630-2634`).
+The operation writes only its own
 `/outputs/outputs` and, when declared, `/outputs/material`; a live sibling therefore cannot
 hold its completed material unsealed. Cache and source locations remain ordinary mounts.
+
+`atyrode.babel.outputs` is also `temporary: true`, location revision `3`. This requires native
+owner RPC 43: the declaration is an unmanaged `runtime` directory, every use is a
+write/output-only lease, and no operation mounts it, uses it as a working directory or writes
+it through a nested invocation (atyrode/manifold at `47407b58`,
+`packages/agent/src/job-locations.ts:95-137`; `docs/CONTRACTS.md:4534-4589`). Its components are
+logical output paths inside an exclusive root for that job, not a shared retained directory.
+The owner collects all named outputs, publishes the terminal result durably, and disposes of
+only that job's raw roots once the workload tree is proven empty. Sealed receipts and exported
+material remain readable and bindable; cleanup never touches them, another job's roots, the
+cache, archive custody or legacy retained directories. Unproven workload closure or a cleanup
+failure keeps admission closed rather than guessing that disposal is safe. This is a lifetime
+bound, not a larger quota or permission to clear an exhausted backing by hand.
 
 ### What runs a model, and why it is not this bundle
 
