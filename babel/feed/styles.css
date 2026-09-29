@@ -725,6 +725,7 @@
 }
 
 .plugin-atyrode_babel_feed .babel-topic-count,
+.plugin-atyrode_babel_feed .babel-topic-undated,
 .plugin-atyrode_babel_feed .babel-topic-group-count {
   color: var(--babel-ink-faint);
   font-variant-numeric: tabular-nums;

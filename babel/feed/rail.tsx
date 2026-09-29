@@ -92,6 +92,7 @@ function TopicLink({
             />
           ))}
         </span>
+        {unknownDates > 0 && <span className="babel-topic-undated">{unknownDates} undated</span>}
         <span className="babel-topic-count">{topic.posts.toLocaleString()}</span>
       </button>
     </li>

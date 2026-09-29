@@ -605,6 +605,8 @@ describe("the rail", () => {
     expect(
       view.one('[data-topic="ent_0000cafe"] .babel-topic-trend').getAttribute("aria-label"),
     ).toMatch(/\b1 event\b.*\bunknown dates\b/);
+    expect(view.one('[data-topic="ent_0000cafe"] .babel-topic-undated').textContent).toContain("1");
+    expect(view.all('[data-topic="ent_0000beef"] .babel-topic-undated')).toHaveLength(0);
     await view.unmount();
   });
 
