@@ -25,6 +25,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [0.5.8] - 2026-09-30
 
+### Added
+
+- **Historical citations can acquire separately attributed, archived source facts (#431).**
+  An owner-requested bounded native job checks exact tagged captures and raw or normalized
+  citation positions, records quote-free, verified, moved, absent and unavailable outcomes, and
+  stores mandatory-redacted new excerpts in an append-only owner-readable ledger. It never
+  rewrites imported claims, notes, rankings or rulings; retries preserve earlier attempts.
+  Real synthetic restic and SQLite regressions cover stale sources, restart and idempotent
+  sealed-output ingestion. Actual imported-corpus coverage remains an operator step.
+
 ### Fixed
 
 - **The plugin closure follows Manifold's credential-bound lifecycle metadata.** The SDK and

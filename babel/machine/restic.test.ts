@@ -224,6 +224,23 @@ test("dumpTo refuses before forwarding an over-bound chunk and settles both pipe
   });
 }, 15_000);
 
+test("an exact-source dump stops the child when its byte ceiling is crossed", async () => {
+  await withDumpChild(async (streaming) => {
+    let forwarded = 0;
+    await expect(
+      streaming.dumpTo(
+        "latest",
+        "/session.jsonl",
+        (chunk) => {
+          forwarded += chunk.byteLength;
+        },
+        { maxBytes: 0, stopOnBound: true },
+      ),
+    ).rejects.toMatchObject({ kind: "refused" });
+    expect(forwarded).toBe(0);
+  });
+}, 15_000);
+
 test("dumpTo stops forwarding after a sink rejection and settles before preserving the error", async () => {
   await withDumpChild(async (streaming, exited) => {
     const failure = new Error("synthetic sink failure");
@@ -457,5 +474,22 @@ test("a failed listing visitor stops forwarding but drains and settles both chil
     ).rejects.toBe(failure);
     expect(called).toBe(1);
     expect(readFileSync(exited, "utf8")).toBe("settled");
+  });
+}, 30_000);
+
+test("an opt-in archive listing ceiling terminates before traversing the rest", async () => {
+  await withListingChild(async (repo) => {
+    let visited = 0;
+    await expect(
+      repo.lsTo(
+        "a".repeat(64),
+        () => {
+          visited++;
+        },
+        [],
+        { maxEntries: 10 },
+      ),
+    ).rejects.toMatchObject({ kind: "refused" });
+    expect(visited).toBe(10);
   });
 }, 30_000);

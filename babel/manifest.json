@@ -25,7 +25,7 @@
       "reason": "a Babel run is a Code session: Code owns the profile (model, thinking level, account) and posts the omp job through its runSession door, which Babel calls with ctx.actions.call"
     }
   },
-  "dataVersion": { "major": 1, "minor": 14 },
+  "dataVersion": { "major": 1, "minor": 15 },
   "database": { "maxBytes": 1073741824 },
   "purges": ["storage"],
   "contributes": {
@@ -294,6 +294,46 @@
           "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic",
           "BABEL_VERIFY_SCRATCH_DIR": "/home/job/.cache/verify"
         },
+        "runtimeTools": ["bun", "restic", "system"],
+        "executable": { "runtimeTool": "bun" },
+        "locations": [
+          { "locationId": "atyrode.babel.outputs", "access": "write", "outputOnly": true },
+          { "locationId": "atyrode.babel.cache", "access": "write" }
+        ],
+        "outputs": ["outputs"],
+        "network": "host",
+        "limits": {
+          "timeoutMs": 3600000,
+          "memoryBytes": 1073741824,
+          "processes": 64,
+          "outputBytes": 1073741824
+        },
+        "stdin": false
+      },
+      "atyrode.babel.citation-backfill": {
+        "argv": [
+          { "literal": "/job/artifact" },
+          { "literal": "citationBackfill" },
+          { "literal": "--input" },
+          { "literal": "/inputs/input" },
+          { "literal": "--out" },
+          { "literal": "/outputs/outputs" }
+        ],
+        "input": { "input": { "type": "string", "required": true, "maxLength": 65536 } },
+        "inputFiles": {
+          "input": { "input": "input" },
+          "restic": {
+            "literal": "{\"url\":\"\",\"bearer\":\"\"}",
+            "jsonValues": [
+              { "path": ["url"], "serviceId": "atyrode.babel.restic", "value": "url" },
+              { "path": ["bearer"], "serviceId": "atyrode.babel.restic", "value": "bearer" }
+            ]
+          }
+        },
+        "services": [
+          { "serviceId": "atyrode.babel.restic", "revision": "1", "operationIds": ["storage"] }
+        ],
+        "environment": { "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic" },
         "runtimeTools": ["bun", "restic", "system"],
         "executable": { "runtimeTool": "bun" },
         "locations": [

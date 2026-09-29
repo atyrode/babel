@@ -836,6 +836,7 @@ test("the doors that ask a machine what it can run are lent that read, and no ot
     [ACTIONS.setPolicy]: true,
     [ACTIONS.drainStart]: true,
     [ACTIONS.verify]: true,
+    [ACTIONS.citationBackfill]: true,
     [ACTIONS.importLedger]: true,
     [ACTIONS.rehostSessions]: true,
     [ACTIONS.previewRecall]: true,

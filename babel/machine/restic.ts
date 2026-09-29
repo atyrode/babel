@@ -353,9 +353,15 @@ export interface Listing {
 }
 
 export interface DumpOptions {
-  /** The most bytes retained or forwarded. A file past it is refused, but its rejected
-   *  remainder is drained: this bound does not limit remote transport cost. */
+  /** The most bytes retained or forwarded. By default the rejected remainder drains so a
+   *  restic exit failure is retained; exact-source readers may stop the child immediately. */
   readonly maxBytes?: number;
+  readonly stopOnBound?: boolean;
+}
+
+export interface ListingOptions {
+  /** Opt-in bound over parsed nodes: promptly terminate the child at the first excess node. */
+  readonly maxEntries?: number;
 }
 
 export interface RestoreOptions {
@@ -411,6 +417,7 @@ export interface Repo {
     snapshotId: string,
     sink: (entry: ArchivedEntry) => void | Promise<void>,
     paths?: readonly string[],
+    options?: ListingOptions,
   ): Promise<void>;
   /** One archived file's bytes, straight out of the snapshot: nothing is written to a disk, so
    *  a session can be proved recoverable without a target directory or a cleanup. */
@@ -720,13 +727,20 @@ class ResticRepo implements Repo {
     snapshotId: string,
     sink: (entry: ArchivedEntry) => void | Promise<void>,
     paths: readonly string[] = [],
+    options: ListingOptions = {},
   ): Promise<void> {
+    if (
+      options.maxEntries !== undefined &&
+      (!Number.isSafeInteger(options.maxEntries) || options.maxEntries < 1)
+    )
+      throw new ResticError("refused", "listing entry bound must be a positive integer");
     const within = paths.map(pathArgument);
     const args = resticArgv("ls", ["--json", "--", snapshotArgument(snapshotId), ...within]);
     const child = this.#spawn(args);
     const tail = new Tail();
     let failed = false;
     let failure: unknown;
+    let visited = 0;
     const settle = async (consume: () => Promise<void>): Promise<void> => {
       try {
         await consume();
@@ -741,6 +755,15 @@ class ResticRepo implements Repo {
           if (failed) continue;
           const node = parseNode(line);
           if (node === null) continue;
+          if (options.maxEntries !== undefined && ++visited > options.maxEntries) {
+            failed = true;
+            failure = new ResticError(
+              "refused",
+              "snapshot listing exceeded the requested entry bound",
+            );
+            child.kill();
+            continue;
+          }
           try {
             await sink(node);
           } catch (error) {
@@ -797,8 +820,8 @@ class ResticRepo implements Repo {
     let over = false;
     let sinkFailed = false;
     let sinkError: unknown;
-    // Only pipe failures require termination. A bound or sink refusal still drains both
-    // streams, preserving restic's own outcome and leaving no child blocked on its output.
+    // Ordinary readers preserve the child's own outcome. Exact-source readers opt into
+    // stopping a too-large child rather than draining arbitrary remaining transcript bytes.
     const settleStream = async (consume: () => Promise<void>): Promise<void> => {
       try {
         await consume();
@@ -812,6 +835,7 @@ class ResticRepo implements Repo {
         for await (const chunk of child.stdout as unknown as AsyncIterable<Uint8Array>) {
           bytes += chunk.byteLength;
           if (bytes > bound) {
+            if (!over && options.stopOnBound) child.kill();
             over = true;
             continue;
           }
@@ -834,6 +858,9 @@ class ResticRepo implements Repo {
       if (result.status === "rejected") throw result.reason;
     }
     if (sinkFailed) throw sinkError;
+    if (over && options.stopOnBound) {
+      throw new ResticError("refused", `restic dump exceeded the ${bound} byte bound`);
+    }
     const code = await child.exited;
     if (code !== 0) {
       throw new ResticError("exit", `restic dump failed (exit ${code})`, code, tail.toString());

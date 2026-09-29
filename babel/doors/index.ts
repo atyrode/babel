@@ -3,6 +3,7 @@ import type { TranscriptMapCatalogAdmission } from "../contract.ts";
 
 import type { BabelStore } from "../store/store.ts";
 import { actDoors } from "./acts.ts";
+import { citationFactDoors } from "./citation-facts.ts";
 import type { Door } from "./door.ts";
 import { drainDoors, type DrainDoorDeps } from "./drain.ts";
 import { exportDoors } from "./export.ts";
@@ -69,6 +70,7 @@ export function babelDoors(
     ...readDoors(store),
     ...searchDoors(store),
     ...recallDoors(store),
+    ...citationFactDoors(store, deps),
     ...transcriptMapDoors(store),
     reviewReadingsDoor(readings),
     ...actDoors(store, concurrentJobs, deps.jobs),

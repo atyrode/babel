@@ -85,30 +85,36 @@ export async function capturesOf(
   repo: Pick<Repo, "lsTo">,
   snapshot: Pick<Snapshot, "id" | "paths">,
   visit: ListingVisitor,
+  options: { readonly maxEntries?: number } = {},
 ): Promise<void> {
   const roots = new Set(snapshot.paths.map((path) => path.replace(/\/+$/, "") || "/"));
   const directories = new Set<string>();
   const deferred: ArchivedEntry[] = [];
-  await repo.lsTo(snapshot.id, (node) => {
-    visit.entry();
-    if (node.path.length > MAX_ARCHIVED_PATH) return;
-    if (node.type === "dir") {
-      directories.add(node.path);
-      return;
-    }
-    if (node.type !== "file") return;
-    let asked = false;
-    const session = claim(
-      node.path,
-      () => {
-        asked = true;
-        return false;
-      },
-      roots,
-    );
-    if (asked) deferred.push(node);
-    else if (session !== null) visit.capture(session, node);
-  });
+  await repo.lsTo(
+    snapshot.id,
+    (node) => {
+      visit.entry();
+      if (node.path.length > MAX_ARCHIVED_PATH) return;
+      if (node.type === "dir") {
+        directories.add(node.path);
+        return;
+      }
+      if (node.type !== "file") return;
+      let asked = false;
+      const session = claim(
+        node.path,
+        () => {
+          asked = true;
+          return false;
+        },
+        roots,
+      );
+      if (asked) deferred.push(node);
+      else if (session !== null) visit.capture(session, node);
+    },
+    [],
+    options,
+  );
   for (const node of deferred) {
     const session = claim(node.path, (path) => directories.has(path), roots);
     if (session !== null) visit.capture(session, node);

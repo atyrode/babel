@@ -1222,6 +1222,32 @@ Installing a mapping route and admitting its free catalog spend nothing either: 
 weight, or a mapping drain the operator starts, does. Activation, the source disclosure route and
 the producing Code profile remain separately authorized configuration.
 
+#### 6.3.3 Historical citation facts
+
+An owner may plan a bounded backfill directly from the immutable citation positions in every
+record revision. The plan reports missing, available and unavailable positions without reading
+the archive; each explicit `citationBackfill` request retains its exact task page before posting
+one native job. Jobs read only tagged captures from the bound restic repository, with no model,
+local-session fallback or newest-snapshot substitution. An explicitly retained snapshot prefix
+must resolve uniquely; when none was retained, identical digest-verified copies at the same
+archived path select a stable snapshot by id, never by recency. The cited raw capture digest
+is checked before any fact is available.
+Legacy locators use physical raw lines, byte offsets and bare per-record SHA-256; their historical
+classified-event source digest is recorded but cannot be compared to today's normalized-record
+digest. Modern locators require that normalized source digest as well.
+
+The result is a separate append-only `citation_facts` ledger keyed to record revision, payload
+field, ordinal and native attempt. It never edits the submitted citation, note, claim, ranking or
+review history. A missing quote stays `unquoted`, not an inferred quotation from its note. A
+matched original quote is checked separately from a newly fetched, mandatory-redacted excerpt;
+the latter is at most 4 KiB and carries exact archived source, coordinates, reading and disclosure
+version as **new untrusted evidence**, not as text the historical author submitted. Missing,
+ambiguous and invalid historical provenance remain explicit unavailable results. Only the owner
+reads excerpt pages; the aggregate coverage report contains counts and reasons, not text.
+Replaying a retained attempt writes no duplicate, and an explicit retry leaves prior unavailable
+attempts intact. The local synthetic archive and store tests prove these paths, not coverage of
+the deployment's imported corpus; that requires an owner-run archive backfill and measured report.
+
 ### 6.4 Deterministic preflight
 
 Before material reaches a model, likely secrets and high-risk data, malformed or truncated
