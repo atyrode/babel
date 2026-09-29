@@ -133,6 +133,15 @@ class Fleet implements BabelJobs {
   }
 }
 
+/** Fresh sibling leaves need no parent creation and cannot seal or charge each other's files. */
+function expectDisjointLeaves(outputs: JobLaunch["outputs"]): void {
+  for (const output of outputs) expect(output.components).toHaveLength(1);
+  const roots = outputs.map(({ locationId, components }) =>
+    JSON.stringify([locationId, ...components]),
+  );
+  expect(new Set(roots).size).toBe(outputs.length);
+}
+
 /** A Code refusal, in the shape `codeEngine` folds every refusal onto. */
 function refusedByCode<T>(code: string, detail: string): EngineAnswer<T> {
   return { ok: false, code: code as never, refused: `${code}: ${detail}` };
@@ -471,6 +480,7 @@ test("an explore seals its material and records the intent; the session waits fo
   const sealed = fleet.executed[0]!;
   expect(sealed.operationId).toBe(OPERATIONS.prepare);
   expect(sealed.outputs.map((output) => output.name)).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
+  expectDisjointLeaves(sealed.outputs);
   // It is handed the capture, by snapshot and path, and nothing it would have to discover.
   expect(handed(sealed)).toEqual(["omp/s1"]);
   expect(JSON.parse(String(sealed.input["input"]))["captures"]).toEqual([
@@ -1641,6 +1651,7 @@ test("the untitled sessions are prepared once, as one bounded batch charged to t
   // a SETTLED output, so the session belongs to the wake this preparation's settlement causes.
   expect(fleet.executed).toHaveLength(1);
   expect(fleet.executed[0]?.operationId).toBe(OPERATIONS.prepare);
+  expectDisjointLeaves(fleet.executed[0]!.outputs);
   expect(JSON.parse(String(fleet.executed[0]?.input?.["input"] ?? "null"))).toMatchObject({
     machineId: MACHINE,
   });
@@ -2128,6 +2139,7 @@ test.each(["challenge", "synthesize"] as const)(
       new Date(NOW - 30 * 24 * HOUR).toISOString(),
     ]);
     expect(await start()).toEqual({ runId: "run_stage", jobId: "job_stage_material" });
+    expectDisjointLeaves(fleet.executed[0]!.outputs);
     const document = fleet.executed[0]?.input["input"];
     if (typeof document !== "string") throw new Error("the preparation has no input document");
     expect(handed(fleet.executed[0])).toEqual(["omp/s1"]);

@@ -1135,12 +1135,14 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         machineId: route.machineId,
         operationId: OPERATIONS.prepare,
         input: built.input,
+        // Each lease is a fresh leaf under the existing backing, never inside the other:
+        // sealing the result must not recursively collect and charge the material too.
         outputs: [
           { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [prepareJobId] },
           {
             name: MATERIAL_OUTPUT,
             locationId: OUTPUT_LOCATION,
-            components: [prepareJobId, MATERIAL_OUTPUT],
+            components: [`${prepareJobId}_${MATERIAL_OUTPUT}`],
           },
         ],
         limits: deps.plan(policy, OPERATIONS.prepare).limits,
@@ -1397,12 +1399,13 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         machineId: input.machineId,
         operationId: OPERATIONS.prepare,
         input: built.input,
+        // Disjoint leaves need no undeclared parent and keep material out of the result archive.
         outputs: [
           { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [prepareJobId] },
           {
             name: MATERIAL_OUTPUT,
             locationId: OUTPUT_LOCATION,
-            components: [prepareJobId, MATERIAL_OUTPUT],
+            components: [`${prepareJobId}_${MATERIAL_OUTPUT}`],
           },
         ],
         limits: plan.limits,

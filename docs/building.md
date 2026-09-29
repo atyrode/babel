@@ -205,6 +205,13 @@ The operation writes only its own
 `/outputs/outputs` and, when declared, `/outputs/material`; a live sibling therefore cannot
 hold its completed material unsealed. Cache and source locations remain ordinary mounts.
 
+`prepare` (including titling and staged analysis) and `map-prepare` request disjoint,
+deterministic single-component leaves for their result and material leases. The owner creates
+only the final component under an existing parent; neither lease relies on the other to create
+its parent. The recursive sealer therefore includes result documents only in `outputs`, and
+material files only in `material`, without charging the material twice. Published output names,
+the material export and Code's read-only `/inputs/material` binding are unchanged.
+
 `atyrode.babel.outputs` is also `temporary: true`, location revision `3`. This requires native
 owner RPC 43: the declaration is an unmanaged `runtime` directory, every use is a
 write/output-only lease, and no operation mounts it, uses it as a working directory or writes
