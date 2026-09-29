@@ -274,9 +274,9 @@ the order is the point:
    the raw bytes touch no disk and the material costs no second read of a 240 MB log. A capture
    the machine has already read is replayed from its managed cache without contacting the
    archive;
-4. the **prompt**, composed around `/inputs/material` — no tool block at all, because Babel
-   runs no session and holds no tools in one. The answering protocol is a fenced ` ```json `
-   block in the session's final message, with the stage's JSON Schema printed above it;
+4. the **prompt**, composed around `/inputs/material` — analysis still submits a fenced
+   ` ```json ` block in the session's final message, with the stage's JSON Schema printed
+   above it. Drawn reviews may instead use the governed action channel described below;
 5. the **session** — `atyrode.code.runSession`, and a `runs` row that records Code's job id,
    the container that answered and the `prepare` job whose material it read.
 
@@ -293,12 +293,13 @@ selection, not as a whole-corpus digest per run.
 delivered only to the plugin that STARTED the job and `ctx.jobs` verbs are bound to the calling
 plugin's id, so Code's job — posted under `atyrode.omp`'s own operation — is never Babel's to
 poll or be woken by. `server/conductor.ts` splits every run whose `container_id` is non-null
-onto `code.readSession({containerId, jobId})`: a finished one has its final message read for the
-answer, its citations checked against the material index, its receipt written with the model and
-the usage (one call; the tokens and cost as omp counted them) and its claim settled — and a
-REFUSED submission settles too, at the cost, because the model answered and the deployment paid
-for it. A read Code refuses is recorded on the run as its note and retried once; twice in a row
-closes the run and releases its claim, on the same bound the claim reaper uses.
+onto `code.readSession({containerId, jobId})`: a finished text-mode run has its final message
+read for the answer and its citations checked against the material index. Typed reviews already
+committed their actions, so settlement reads their durable marker instead. Both retain the model,
+usage and native ending, and settle the claim; a REFUSED submission settles at its cost too,
+because the model answered and the deployment paid for it. An unreadable legacy text review
+closes after two refused reads. Analysis, mapping and typed reviews retain their reservation
+through silence; a transport refusal is not proof the paid job ended.
 Observed silence increments and successful-read resets are committed in batches of at most 250
 statements before reaping, including when a later reconciliation throws. The pass uses the
 cycle's captured policy rather than reading it again for every pending run; disabled and scoped
@@ -435,6 +436,74 @@ actual spend into a second reservation charge. The recovery and concurrency regr
 `babel/server/conductor.test.ts`. The `launch` door is the one place a draw is refused, with
 `draw_managed` (`doors/launch.ts`): an operator-picked record must not bypass the shared claim,
 cadence and budget the policy governs that lane by.
+
+**A DRAWN REVIEW SUBMITS TYPED ACTIONS WHERE THE RUNTIME CAN CARRY THEM (#315).** The policy's
+`review.agentId` names an existing registered Agent the operator already authorized; nothing
+here registers one, mints a credential or widens a grant. With it set, `dispatchReviews`
+persists the run row with its pinned submission intent BEFORE any session is posted, creates a
+bounded Run through the optional `core.access.createRun` edge (`server/engine/session.ts`,
+`createReviewRun`: the one own capability `atyrode.babel:review`, the one tool
+`atyrode.babel.reviewAction`, target `manifold://`, reach `node`, no delegation, a lifetime no
+longer than the claim's lease) and checks the Run's copied tool approval against the receipt
+projection `REVIEW_ACTION_RESULT_PROJECTION` digest in `contract.ts` — the same comparison
+`scripts/recall-profile.ts` makes for Recall — then posts the Code session with
+`agentTools: { runId }` and no `postingKey`. At Code pin
+`498b39ae285114ecb87b9d4d203136f9141d016e`,
+[plugins/package.json:17](https://github.com/atyrode/code/blob/498b39ae285114ecb87b9d4d203136f9141d016e/plugins/package.json#L17)
+pins OMP `f5b9d09c5929943dea246e415875f18e0a68bddb`;
+[plugins/atyrode.omp/execution.ts:1032–1034](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/atyrode.omp/execution.ts#L1032-L1034)
+refuses that pair because native Run binding uses a fresh session id. Code's
+[plugins/code/session.ts:277–350](https://github.com/atyrode/code/blob/498b39ae285114ecb87b9d4d203136f9141d016e/plugins/code/session.ts#L277-L350)
+carries the tool selection, reviews it through OMP and checks the returned Run identity before
+retaining provenance. The session's
+tool calls reach `babel/doors/review-actions.ts`, whose handler takes the actor from
+`ctx.agentRun` — the host's authenticated Run provenance, contract 6+ — and never from an
+argument, and `babel/store/review-actions.ts` commits each accepted action, its receipt and the
+run's `reviewSubmission` state in one `batch` guarded by the live claim fence, the unchanged
+persisted intent and the absence of a Stop. Retrying a key returns its receipt; a changed payload
+under a used key is refused; the last of 32 accepted calls is reserved for the `complete` marker.
+
+The fallback is pinned, not inferred: no `review.agentId`, an absent callable-tool channel or
+definitively refused/unapproved Run admission selects text before any model is posted. OMP's
+two named pre-effect capability refusals also permit a fresh text intent: at the OMP pin above,
+[plugins/atyrode.omp/execution.ts:704–752](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/atyrode.omp/execution.ts#L704-L752)
+raises `agent_tools_runtime_unsupported` or `agent_tools_mode_unsupported` during preparation,
+before execution at lines 1086–1087. Babel closes the unused tool intent at zero only if no
+action was accepted and no Stop intervened. It never repins that tool run. Other post-dispatch
+errors are not absence evidence: Code can refuse a job AFTER posting while checking or retaining
+its provenance
+([plugins/code/session.ts:336–349](https://github.com/atyrode/code/blob/498b39ae285114ecb87b9d4d203136f9141d016e/plugins/code/session.ts#L336-L349)).
+
+`reviewVerdict` never runs over a tools-mode transcript, so a prose summary cannot replay
+committed actions. Unacknowledged Run creation and tool-mode posting are recorded on the run
+(`reviewAdmission`, `reviewSubmission.reason`), hold their claim and reservation through
+expiry and are never posted again. Watch's Stop fences further actions even without a confirmed
+job; it does not claim that an unknown native job was cancelled or release its reservation.
+The current pinned Code/OMP channel does not offer keyed recovery for tool sessions, so an
+unconfirmed post cannot be declared complete merely from its accepted actions. Babel does not
+bypass the native owner to recover it.
+
+Settlement reads the durable state rather than the transcript: `completed` needs the marker,
+the still-bound claim, no Stop and a successful native exit; otherwise accepted work remains
+`partial` (or `pending` if none was accepted). The terminal receipt and native call trace commit
+together; a later wake repairs interrupted claim accounting without replaying an action. A
+terminal result with no known spend charges the claim's reservation, never an invented zero.
+Jev is not on this path at all: ordinary agents can submit the same actions when it is absent,
+disabled, unavailable or unfunded.
+
+Operator prerequisites, none of which Babel performs: a sponsor holding `agents:delegate` and
+`atyrode.babel:review` at the target, an existing Agent whose grant approves that capability and
+`atyrode.babel.reviewAction` at the current projection digest, and a machine whose OMP installation
+supports the `agentTools` runtime. Manifold pin
+`47407b58f00b1fefcde1d86f6dd6d9b06e9c1216` enforces Run admission in
+[packages/server/src/auth.ts:2228–2352](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/packages/server/src/auth.ts#L2228-L2352)
+and native binding in lines 2508–2554; neither step
+replaces the model's explicit policy acknowledgement. Definitive absence selects identified
+text fallback; uncertain admission remains visible and held instead.
+**OPERATOR STEP**: live installation and rendered native-session transitions remain unexercised
+here. The regression sources cover temporary-database store/door boundaries and conductor
+settlement with simulated Code responses. They are not provider-compliance evidence; optional
+paid samples remain separate work under #264's shared ledger.
 
 **`archive` is declared, and `restic` is a closure like the others.** restic is half of why the
 operation waited: upstream's whole Linux distribution is bare bzip2 —

@@ -77,6 +77,8 @@ import {
 import {
   describeHost,
   describeMapHost,
+  callStatement,
+  sessionCall,
   type InferenceUsage,
   type JobLaunch,
   type RunPlan,
@@ -2957,10 +2959,14 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         posting: number | bigint | null;
         posting_chain: string | null;
         preparation: string | null;
+        submission_mode: string | null;
+        admission_state: string | null;
       }>(
         `SELECT job_id, prepare_job_id, machine_id, kind, closure, container_id, preparation,
                 json_extract(payload, '$.posting') AS posting,
-                json_extract(payload, '$.postingChain') AS posting_chain
+                json_extract(payload, '$.postingChain') AS posting_chain,
+                json_extract(payload, '$.reviewSubmission.mode') AS submission_mode,
+                json_extract(payload, '$.reviewAdmission.state') AS admission_state
            FROM runs WHERE id = ?`,
         [runId],
       );
@@ -2981,6 +2987,35 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       let preparing = jobId === "" && prepareJobId !== "";
       const postingRefusal = `${runId} has an unresolved Code posting; its job may be live, so Stop cannot safely release the reservation`;
       const unresolvedPosting = jobId === "" && Number(run.posting) === 1;
+      const unknownAdmission =
+        run.admission_state === "unknown" || run.admission_state === "creating";
+      if ((run.submission_mode === "tools" || unknownAdmission) && jobId === "" && !preparing) {
+        if (job !== undefined) {
+          return { refused: `${runId} has no confirmed job; omit the job to fence submission` };
+        }
+        const pending = unknownAdmission
+          ? "Stop requested; generic Run admission is unconfirmed. No model was launched and its reservation remains held."
+          : "Stop requested; the typed posting is unconfirmed. Further actions are fenced and its reservation remains held.";
+        const fenced = await store.db.run(
+          `UPDATE runs SET payload = json_set(payload, '$.stopRequested', json('true'),
+                   ?, ?, '$.stopReason', ?, '$.stoppedBy', ?)
+            WHERE id = ? AND closure IS NULL AND job_id IS NULL
+              AND (json_extract(payload, '$.reviewSubmission.mode') = 'tools'
+                   OR json_extract(payload, '$.reviewAdmission.state') IN ('creating','unknown'))`,
+          [
+            unknownAdmission ? "$.reviewAdmission.reason" : "$.reviewSubmission.reason",
+            pending,
+            reason,
+            ctx.principal.id,
+            runId,
+          ],
+        );
+        if (fenced.changes === 0) {
+          return { refused: `${runId} changed before submission was fenced; read the run again` };
+        }
+        store.touch();
+        return { runId, jobId: "", machineId, closure: "stopping" as const };
+      }
       // Only the account that posted it can ask Code about it (#470): under any other principal
       // the run's key names another posting, whose "nothing was posted" says nothing of this one.
       if (unresolvedPosting && run.posting_chain !== principalChain(ctx.principal.id))
@@ -2988,6 +3023,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       if (machineId === "" || (jobId === "" && !preparing)) {
         return { refused: `${runId} has no job on a machine to stop` };
       }
+      if (job === undefined) return { refused: `${runId} requires its confirmed job to cancel` };
       // The caller was admitted at the node it POSTED; the row says which job this run is. A
       // request that authorized one job and named another is refused rather than reconciled.
       const node = preparing
@@ -3009,6 +3045,18 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
             `${runId} is ${machineId}/${node.operationId}/${node.jobId} and this stop asks ` +
             `for authority at ${job.machineId}/${job.operationId}/${job.jobId}`,
         };
+      }
+      if (run.submission_mode === "tools") {
+        const fenced = await store.db.run(
+          `UPDATE runs SET payload = json_set(payload, '$.stopRequested', json('true'),
+                   '$.stopReason', ?, '$.stoppedBy', ?)
+            WHERE id = ? AND closure IS NULL AND job_id = ? AND machine_id = ?
+              AND json_extract(payload, '$.reviewSubmission.mode') = 'tools'`,
+          [reason, ctx.principal.id, runId, jobId, machineId],
+        );
+        if (fenced.changes === 0) {
+          return { refused: `${runId} changed before submission was fenced; read the run again` };
+        }
       }
       if (unresolvedPosting) {
         /*
@@ -3120,35 +3168,55 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       // Close only after cancellation is terminal. A missing Code meter is unknown spend,
       // not a free run: keep the run's cost null and charge each claim's reservation.
       const at = new Date(deps.now()).toISOString();
-      const closed = await store.db.run(
-        // `AND closure IS NULL` for the same reason the read above refuses a closed run: two
-        // stops, or a stop racing the run's own ending, write the first closure and not the
-        // second. For a PREPARING run this write is the whole stop: it is the row the posting
-        // wake reads, so once it is closed no session can be posted for it.
-        `UPDATE runs SET closure = 'stopped', finished_at = ?, payload = ?, cost_usd = ?, tokens = ?
+      const closed = await store.db.batch([
+        {
+          // A Stop racing another settlement writes neither a second closure nor a trace.
+          // A failed trace insert rolls back the closure, retaining the run for reconciliation.
+          sql: `UPDATE runs SET closure = 'stopped', finished_at = ?,
+            payload = CASE WHEN json_extract(payload, '$.reviewSubmission.mode') = 'tools'
+                           THEN json_patch(payload, ?2) ELSE ?2 END,
+            cost_usd = ?, tokens = ?
           WHERE id = ? AND closure IS NULL
             AND (NOT ? OR (job_id IS NULL AND COALESCE(json_extract(payload, '$.posting'), 0) = 0))
-            AND job_id IS ? AND machine_id IS ? AND container_id IS ? AND kind = ?`,
-        [
-          at,
-          JSON.stringify({
-            closure: "stopped",
-            stoppedBy: ctx.principal.id,
-            reason,
-            stoppedAt: at,
-            ...(inference === null ? {} : { inference }),
-          }),
-          cost,
-          inference === null ? null : inference.inputTokens + inference.outputTokens,
-          runId,
-          preparing ? 1 : 0,
-          jobId === "" ? null : jobId,
-          run.machine_id,
-          run.container_id,
-          run.kind,
-        ],
-      );
-      if (closed.changes === 0) {
+            AND job_id IS ? AND machine_id IS ? AND container_id IS ? AND kind = ?
+          RETURNING id`,
+          params: [
+            at,
+            JSON.stringify({
+              closure: "stopped",
+              stoppedBy: ctx.principal.id,
+              reason,
+              stoppedAt: at,
+              ...(inference === null ? {} : { inference }),
+            }),
+            cost,
+            inference === null ? null : inference.inputTokens + inference.outputTokens,
+            runId,
+            preparing ? 1 : 0,
+            jobId === "" ? null : jobId,
+            run.machine_id,
+            run.container_id,
+            run.kind,
+          ],
+        },
+        ...(run.submission_mode === "tools"
+          ? [
+              callStatement(
+                sessionCall({
+                  runId,
+                  at: deps.now(),
+                  machineId,
+                  session: null,
+                  inference,
+                  closure: "stopped",
+                  reason,
+                }),
+                { sql: "changes()=1", params: [] },
+              ),
+            ]
+          : []),
+      ]);
+      if ((closed[0]?.length ?? 0) === 0) {
         return {
           refused: preparing
             ? postingRefusal

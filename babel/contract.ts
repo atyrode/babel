@@ -370,6 +370,25 @@ const bounded = (max: number) => z.string().trim().min(1).max(max);
 
 // ---------------------------------------------------------------------------- doors (baseline)
 
+export const REVIEW_ACTION_CAP = "atyrode.babel:review";
+/** Only bounded receipt identifiers and scalar status; no submitted prose or evidence. */
+export const REVIEW_ACTION_RESULT_PROJECTION = {
+  kind: "projected-json" as const,
+  fields: [
+    ["key"],
+    ["kind"],
+    ["runId"],
+    ["sequence"],
+    ["recordedAt"],
+    ["assessmentId"],
+    ["proposalId"],
+    ["supersedes"],
+    ["completed"],
+  ],
+  maxArrayItems: 1,
+  maxResultBytes: 4096,
+};
+
 /** LOCAL action names, as `defineServerAction` takes them; the roster prefixes the plugin id. */
 export const ACTIONS = {
   // reading
@@ -414,6 +433,8 @@ export const ACTIONS = {
   regenerateMap: "regenerateMap",
   previewRecall: "previewRecall",
   installRecall: "installRecall",
+  // Governed run-authored review work; never an operator ruling.
+  reviewAction: "reviewAction",
   // the operator's acts
   rule: "rule",
   /**
@@ -822,6 +843,53 @@ export const RecordPeelPostSchema = FeedPostSchema.extend({
   kind: z.union([PostKindSchema, RecordKindSchema]),
 });
 
+/** Durable submission state, independent of a native session's terminal state. */
+export const ReviewSubmissionSchema = z.discriminatedUnion("mode", [
+  z.strictObject({
+    mode: z.literal("text"),
+    state: z.enum(["pending", "completed"]),
+    actions: z.number().int().min(0).max(32),
+    reason: z.string().optional(),
+  }),
+  z.strictObject({
+    mode: z.literal("tools"),
+    state: z.enum(["pending", "partial", "completed"]),
+    actions: z.number().int().min(0).max(32),
+    agentRunId: z.string().min(1),
+    agentId: z.string().min(1),
+    complete: z.boolean(),
+    reason: z.string().optional(),
+  }),
+]);
+export type ReviewSubmission = z.infer<typeof ReviewSubmissionSchema>;
+
+/** A committed action remains visible without claiming the whole review completed. */
+export function reviewSubmissionLabel(submission: ReviewSubmission): string {
+  const status =
+    submission.state === "completed"
+      ? "Completed review"
+      : submission.state === "partial"
+        ? "Partial review"
+        : "Review not submitted";
+  return submission.mode === "text"
+    ? `${status} · validated text`
+    : `${status} · ${String(submission.actions)} durable ${submission.actions === 1 ? "action" : "actions"} · typed actions`;
+}
+
+/** Immutable acknowledgement of one accepted action, not native review completion. */
+export const ReviewActionReceiptSchema = z.strictObject({
+  key: z.string(),
+  kind: z.enum(["assessment", "refinement", "complete"]),
+  runId: z.string(),
+  sequence: z.number().int().min(1).max(32),
+  recordedAt: z.string(),
+  assessmentId: z.string().optional(),
+  proposalId: z.string().optional(),
+  supersedes: z.string().optional(),
+  completed: z.boolean(),
+});
+export type ReviewActionReceipt = z.infer<typeof ReviewActionReceiptSchema>;
+
 /** The peel (§8.6): five depths, the first three free of identifiers. */
 export const RecordPeelSchema = z.strictObject({
   post: RecordPeelPostSchema,
@@ -886,6 +954,9 @@ export const RecordPeelSchema = z.strictObject({
     }),
   ),
   reception: z.strictObject({
+    reviewRuns: z
+      .array(z.strictObject({ runId: z.string(), submission: ReviewSubmissionSchema }))
+      .optional(),
     byRole: z.array(
       z.strictObject({
         role: RoleSchema,
@@ -3392,7 +3463,7 @@ export const CitationFactPageResultSchema = z.strictObject({
  */
 export const StopInputSchema = z.strictObject({
   runId: z.string().min(1).max(200),
-  job: JobRefSchema,
+  job: JobRefSchema.optional(),
   reason: z.string().max(2000).default(""),
 });
 
@@ -3400,7 +3471,7 @@ export const StopResultSchema = z.strictObject({
   runId: z.string(),
   jobId: z.string(),
   machineId: z.string(),
-  closure: z.literal("stopped"),
+  closure: z.enum(["stopped", "stopping"]),
 });
 
 /**
@@ -3554,6 +3625,11 @@ export const RunRowSchema = z.strictObject({
   finishedAt: z.string(),
   costUsd: z.number().nullable(),
   records: z.number().int(),
+  reviewSubmission: ReviewSubmissionSchema.nullable().optional(),
+  /** No model was launched; generic Run admission was not acknowledged and is not retried. */
+  reviewAdmission: z
+    .strictObject({ state: z.enum(["creating", "unknown"]), reason: z.string() })
+    .optional(),
   freshness: z.enum(["fresh", "recent", "lost", "ended"]),
   lastWord: z.string(),
   /** What the run has spent, from the hub's own meter when it has one; null before it has. */

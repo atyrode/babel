@@ -43,6 +43,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { GuestDatabase, GuestSqlParam, GuestSqlRow } from "@manifold/plugin-kit";
 import type { SqlStatement } from "@manifold/plugin";
+import { supersededReviewProposalSql } from "./schema.ts";
 import type {
   AnalysisBriefRecord,
   AnalysisRole,
@@ -189,6 +190,8 @@ export function leaseFloor(batchSize: number): number {
 export const ReviewDispatchSchema = z.strictObject({
   machineId: z.string().trim().min(1).max(128),
   profile: CodeProfileSchema,
+  /** Existing, authorized Agent for governed review tools; absent pins validated text. */
+  agentId: z.string().trim().min(1).max(128).optional(),
   roleRecipes: z.record(z.enum(ROLES), z.string().trim().min(1).max(200)),
   stageRecipes: z.partialRecord(z.enum(STAGES), z.string().trim().min(1).max(200)).default({}),
   recipes: z.array(PolicyRecipeSchema).min(1).max(32),
@@ -981,12 +984,15 @@ interface MappingCandidate {
 
 type WorkCandidate = Candidate | AnalysisCandidate | MappingCandidate;
 
-/** An unanswered review posting belongs to its original claim even after its lease expires. */
+/** An unresolved review admission or posting retains its original claim and machine slot. */
 const REVIEW_POSTING_CLAIM = `c.job_id IS NULL AND r.kind = '${OPERATIONS.evaluate}'
   AND r.authority_kind = 'conductor' AND r.authority_id = c.run_id
   AND json_extract(r.preparation, '$.review.assignmentId') = c.id
   AND json_extract(r.preparation, '$.review.fence') = c.fence
-  AND json_extract(r.payload, '$.posting') = 1 AND r.closure IS NULL`;
+  AND (json_extract(r.payload, '$.posting') = 1
+    OR json_extract(r.payload, '$.reviewSubmission.mode') = 'tools'
+    OR json_extract(r.payload, '$.reviewAdmission.state') IN ('creating','unknown'))
+  AND r.closure IS NULL`;
 
 /**
  * A closed native preparation is not a closed parent; expiry is not job termination.
@@ -998,7 +1004,10 @@ const REVIEW_POSTING_CLAIM = `c.job_id IS NULL AND r.kind = '${OPERATIONS.evalua
  */
 const RUNNING_CLAIM = `(EXISTS (
   SELECT 1 FROM runs live
-   WHERE (live.job_id = c.job_id OR live.prepare_job_id = c.job_id)
+   WHERE (live.job_id = c.job_id OR live.prepare_job_id = c.job_id OR
+     (live.authority_kind = 'conductor' AND live.authority_id = c.run_id
+       AND json_extract(live.preparation, '$.review.assignmentId') = c.id
+       AND json_extract(live.preparation, '$.review.fence') = c.fence))
      AND live.closure IS NULL
 ) OR ((c.role LIKE 'analysis:%' OR c.role LIKE 'mapping:%') AND c.job_id IS NOT NULL
   AND COALESCE(c.outcome, '') <> 'withdrawn' AND NOT EXISTS (
@@ -1373,7 +1382,7 @@ export function coordinator(
                 ROW_NUMBER() OVER (PARTITION BY r.root_id
                                    ORDER BY r.seq DESC, r.created_at DESC, r.id DESC) AS rn
            FROM records r
-       ) WHERE rn = 1`,
+       ) WHERE rn = 1 AND NOT ${supersededReviewProposalSql("id")}`,
       "root_id",
     );
     return rows.map((row) => ({
@@ -1505,6 +1514,7 @@ export function coordinator(
       `WITH heads AS (
          SELECT r.id AS id, r.root_id AS root_id FROM records r
           WHERE NOT EXISTS (SELECT 1 FROM records later WHERE later.supersedes_id = r.id)
+            AND NOT ${supersededReviewProposalSql("r.id")}
        )
        SELECT h.root_id AS root, a.role AS role,
               COUNT(*) AS reviews,

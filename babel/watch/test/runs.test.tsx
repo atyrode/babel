@@ -220,17 +220,77 @@ test("a job nobody has confirmed lately shows its last reading, not a running cl
   expect(root.textContent).toContain("1 in flight, 0 at the model, 1 not confirmed lately");
 });
 
-test("stop asks the door for that run and says what stopping means", async () => {
-  const base = Date.now();
+test("stopping a review does not relabel its accepted actions as completed work", async () => {
+  const at = new Date(Date.now() - 30_000).toISOString();
+  let stopped = false;
   const fake = fakeHost(
     watchDoors({
       runs: () =>
         runsResult([
           runRow({
-            id: "run_live",
+            id: "run_partial",
+            kind: OPERATIONS.evaluate,
+            state: stopped ? "stopped" : "running",
+            startedAt: at,
+            finishedAt: stopped ? new Date().toISOString() : "",
+            lastWord: at,
+            reviewSubmission: {
+              mode: "tools",
+              state: "partial",
+              actions: 2,
+              agentRunId: "native-review",
+              agentId: "reviewer",
+              complete: false,
+            },
+          }),
+        ]),
+      stop: () => {
+        stopped = true;
+        return {
+          runId: "run_partial",
+          jobId: "job_1",
+          machineId: "m-dev-01",
+          closure: "stopped",
+        };
+      },
+    }),
+    MACHINES,
+  );
+  const root = await mount(<Watch host={fake.host} />);
+  await settle();
+  expect(root.querySelector(".plugin-atyrode_babel_watch__live-row")?.textContent).toContain(
+    "Partial review",
+  );
+  await click(root.querySelector("[data-action='atyrode.babel.stop']"));
+  await settle();
+  expect(root.querySelector(".plugin-atyrode_babel_watch__live-row")).toBeNull();
+  expect(root.textContent).toContain("Partial review");
+  expect(root.textContent).toContain("2 durable actions");
+  expect(root.textContent).not.toContain("Completed review");
+});
+
+test("an unknown typed posting can fence submission without pretending its job stopped", async () => {
+  const at = new Date(Date.now() - 30_000).toISOString();
+  const fake = fakeHost(
+    watchDoors({
+      runs: () =>
+        runsResult([
+          runRow({
+            id: "run_unknown",
+            kind: OPERATIONS.evaluate,
             state: "running",
-            startedAt: new Date(base - 30_000).toISOString(),
-            lastWord: new Date(base - 1_000).toISOString(),
+            jobId: "",
+            prepareJobId: "",
+            startedAt: at,
+            lastWord: at,
+            reviewSubmission: {
+              mode: "tools",
+              state: "pending",
+              actions: 0,
+              agentRunId: "native-review",
+              agentId: "reviewer",
+              complete: false,
+            },
           }),
         ]),
     }),
@@ -238,22 +298,11 @@ test("stop asks the door for that run and says what stopping means", async () =>
   );
   const root = await mount(<Watch host={fake.host} />);
   await settle();
-
   await click(root.querySelector("[data-action='atyrode.babel.stop']"));
   await settle();
-
-  // The node travels with the request: `stop` holds `jobs:cancel` at the run's own job.
-  expect(fake.callsTo(ACTIONS.stop).at(-1)?.args).toEqual({
-    runId: "run_live",
-    reason: "",
-    job: {
-      kind: "job",
-      machineId: "m-dev-01",
-      operationId: OPERATIONS.explore,
-      jobId: "job_1",
-    },
-  });
-  expect(root.textContent).toContain("Asked run_live to stop; it stops at its next safe point.");
+  expect(root.textContent).toContain("its reservation remains held");
+  expect(root.querySelector(".plugin-atyrode_babel_watch__live-row")).not.toBeNull();
+  expect(root.textContent).not.toContain("Stopped run_unknown");
 });
 
 test("a run nothing has been heard from keeps its row and loses only the mark", async () => {

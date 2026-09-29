@@ -1,5 +1,10 @@
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import {
+  CreateRunRequestSchema,
+  CreateRunResultSchema,
+  actionResultProjectionDigest,
+} from "@manifold/protocol";
+import {
   CODE_PLUGIN_ID,
   PROMPT_MAX_BYTES,
   actionSchemas,
@@ -8,8 +13,12 @@ import {
   type CodeAction,
 } from "@atyrode/manifold-code";
 import {
+  ACTIONS,
+  BABEL_PLUGIN_ID,
   ENGINE_REFUSALS,
   MATERIAL_OUTPUT,
+  REVIEW_ACTION_CAP,
+  REVIEW_ACTION_RESULT_PROJECTION,
   type CodeProfile,
   type EngineRefusalCode,
   type ProfileRow,
@@ -58,7 +67,12 @@ export type EngineCode = EngineRefusalCode;
 /** What the engine answered, or the named refusal — never an exception across this boundary. */
 export type EngineAnswer<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly code: EngineCode; readonly refused: string };
+  | {
+      readonly ok: false;
+      readonly code: EngineCode;
+      readonly refused: string;
+      readonly noToolSession?: true;
+    };
 
 /** The Code job a posted session runs as: omp's own one-shot, under omp's plugin id. */
 export interface CodeJob {
@@ -180,6 +194,8 @@ export interface SessionRequest {
   readonly prepareJobId?: string | undefined;
   readonly inferenceLimits?: ActionInput<"runSession">["inferenceLimits"];
   readonly isolation?: ActionInput<"runSession">["isolation"];
+  /** A pre-existing governed Run; never combined with the text posting/recovery channel. */
+  readonly agentTools?: ActionInput<"runSession">["agentTools"];
   /**
    * THE POSTING'S OWN NAME (#470). Code and omp derive the session's job id from it, so a post
    * whose answer was lost can be asked again under the same key and returns the session it
@@ -198,6 +214,11 @@ export interface SessionRequest {
 export interface CodeEngine {
   /** Every saved Code profile, as Watch's Start section offers them. */
   profiles(): Promise<EngineAnswer<readonly ProfileRow[]>>;
+  /** Absent only on runtimes without the governed callable-tool channel. */
+  createReviewRun?(request: {
+    agentId: string;
+    lifetimeMs: number;
+  }): Promise<EngineAnswer<{ runId: string; agentId: string }>>;
   /** One session, posted by Code as an omp job. */
   runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>>;
   /** Where a posted session is, and what its transcript yielded. */
@@ -263,6 +284,11 @@ const REFUSAL_SENTENCE = /^([a-z_]+): ([\s\S]*)$/;
 /** Code's own token, wherever the host's detail carried it through. */
 const CODE_TOKEN = /\bcode_[a-z0-9_]+\b/;
 
+// These core.access refusals are raised before admitRun's transaction. An unknown error or
+// malformed reply may follow creation, and must never be treated as permission to create again.
+const RUN_ADMISSION_REFUSALS =
+  /\b(?:agent_unavailable|agent_disabled|agent_retired|grant_expired|tool_exceeds_grant|cap_exceeds_grant|target_exceeds_grant|reach_exceeds_grant|lifetime_exceeds_grant|delegation_exceeds_grant|sponsor_authority_unavailable|use_create_child_run)\b/;
+
 /**
  * Babel's side of Code's doors.
  *
@@ -295,6 +321,17 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
       const detail = matched[2] ?? "";
       const token = CODE_TOKEN.exec(detail)?.[0] ?? "";
       const known = CODE_TOKENS[token];
+      if (
+        door === "runSession" &&
+        (token === "code_omp_agent_tools_runtime_unsupported" ||
+          token === "code_omp_agent_tools_mode_unsupported")
+      )
+        return {
+          ok: false,
+          code: ENGINE_REFUSALS.unavailable,
+          refused: `${ENGINE_REFUSALS.unavailable}: ${detail}`,
+          noToolSession: true,
+        };
       const uncertain = door === "runSession" && matched[1] === "refused" && known === undefined;
       return refuse(uncertain ? ENGINE_REFUSALS.unconfirmed : (known ?? host), detail);
     }
@@ -419,8 +456,99 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
 
     checkProfile,
 
+    createReviewRun: async ({ agentId, lifetimeMs }) => {
+      if (actions === undefined) return refuse(ENGINE_REFUSALS.unavailable, ENGINE_WITHOUT_ACTIONS);
+      const request = CreateRunRequestSchema.safeParse({
+        agentId,
+        caps: [REVIEW_ACTION_CAP],
+        tools: [`${BABEL_PLUGIN_ID}.${ACTIONS.reviewAction}`],
+        target: "manifold://",
+        reach: "node",
+        lifetimeMs: Math.min(lifetimeMs, 3_600_000),
+        delegation: { maxDepth: 0, maxDescendants: 0 },
+      });
+      if (!request.success)
+        return refuse(
+          ENGINE_REFUSALS.refused,
+          "review Run lease or Agent is outside the admission bounds",
+        );
+      let answer: unknown;
+      try {
+        answer = await actions.call({
+          plugin: "core.access",
+          action: "createRun",
+          input: request.data,
+        });
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        const known =
+          error instanceof ActionCallError ||
+          (error instanceof Error && error.name === "ActionCallRefused");
+        const matched = known ? REFUSAL_SENTENCE.exec(text) : null;
+        const early = matched === null ? undefined : HOST_CLASSES[matched[1] ?? ""];
+        if (early !== undefined && matched?.[1] !== "refused")
+          return refuse(early, "governed review Run admission was refused before dispatch");
+        if (matched?.[1] === "refused" && RUN_ADMISSION_REFUSALS.test(matched[2] ?? ""))
+          return refuse(
+            ENGINE_REFUSALS.forbidden,
+            "the existing Agent grant does not admit this review Run",
+          );
+        // Do not retain an arbitrary error message: admission replies can carry credentials.
+        return refuse(
+          ENGINE_REFUSALS.unconfirmed,
+          "governed review Run creation is unresolved; no model session was posted",
+        );
+      }
+      const parsed = CreateRunResultSchema.safeParse(answer);
+      if (!parsed.success)
+        return refuse(
+          ENGINE_REFUSALS.unconfirmed,
+          "governed review Run creation returned an unconfirmed result",
+        );
+      const run = parsed.data.run;
+      if (
+        run.agentId !== agentId ||
+        run.session !== null ||
+        run.target !== "manifold://" ||
+        run.reach !== "node" ||
+        run.parentRunId !== null ||
+        run.caps.length !== 1 ||
+        run.caps[0] !== REVIEW_ACTION_CAP ||
+        run.tools?.length !== 1 ||
+        run.tools[0]?.door !== `${BABEL_PLUGIN_ID}.${ACTIONS.reviewAction}` ||
+        run.maxDepth !== 0 ||
+        run.maxDescendants !== 0 ||
+        run.expiresAt - run.createdAt > request.data.lifetimeMs! ||
+        !["pending_policy", "active"].includes(run.state)
+      )
+        return refuse(
+          ENGINE_REFUSALS.unconfirmed,
+          "governed review Run did not confirm the requested scope",
+        );
+      if (
+        run.tools![0]!.contractDigest !==
+          (await actionResultProjectionDigest(REVIEW_ACTION_RESULT_PROJECTION)) ||
+        (run.tools![0]!.maxResultBytes !== undefined &&
+          run.tools![0]!.maxResultBytes! < REVIEW_ACTION_RESULT_PROJECTION.maxResultBytes)
+      )
+        return refuse(
+          ENGINE_REFUSALS.forbidden,
+          "the Agent has not approved this review receipt publication",
+        );
+      // Only non-secret lineage leaves this boundary; never forward a credential or a model.
+      return { ok: true, value: { runId: run.id, agentId: run.agentId } };
+    },
+
     // Guard every posting path, including conductor reviews and prepared explorations.
     runSession: async (request: SessionRequest): Promise<EngineAnswer<CodeJob>> => {
+      if (
+        request.agentTools !== undefined &&
+        (request.postingKey !== undefined || request.adoptOnly === true)
+      )
+        return refuse(
+          ENGINE_REFUSALS.refused,
+          "tool sessions cannot use keyed posting or recovery",
+        );
       // A keyed call is answered from what its key posted before anything is composed, so a
       // profile that moved since must not hide the session it names; Code checks the profile
       // itself before a keyed call posts anything new.
@@ -428,7 +556,7 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
         const may = await checkProfile(request.profile);
         if (!may.ok) return may;
       }
-      return await call("runSession", {
+      const answered = await call("runSession", {
         containerId: request.profile.containerId,
         machineId: request.machineId,
         expectedRevision: request.profile.expectedRevision,
@@ -438,9 +566,16 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
           ? {}
           : { inferenceLimits: request.inferenceLimits }),
         ...(request.isolation === undefined ? {} : { isolation: request.isolation }),
+        ...(request.agentTools === undefined ? {} : { agentTools: request.agentTools }),
         ...(request.postingKey === undefined ? {} : { postingKey: request.postingKey }),
         ...(request.adoptOnly === true ? { adoptOnly: true } : {}),
       });
+      // Code can refuse after OMP has executed (for example, a provenance write or result
+      // consistency check). Without keyed recovery, only the named pre-effect tool refusals
+      // prove that another mode is safe. Never turn a post-effect refusal into a free redraw.
+      if (request.agentTools !== undefined && !answered.ok && answered.noToolSession !== true)
+        return { ...answered, code: ENGINE_REFUSALS.unconfirmed };
+      return answered;
     },
 
     readSession: async (args: {

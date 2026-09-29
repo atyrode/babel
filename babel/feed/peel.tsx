@@ -1,7 +1,7 @@
 import { useState, type ReactElement, type ReactNode } from "react";
 import type { HostServices } from "@manifold/plugin";
 import { Chip, Cluster, Disclosure, Stack } from "@manifold/ui";
-import { ACTIONS, FeedPostSchema } from "../contract.ts";
+import { ACTIONS, FeedPostSchema, reviewSubmissionLabel } from "../contract.ts";
 import {
   ask,
   NO_SEAT,
@@ -423,7 +423,7 @@ export function Peel({
           )}
           {post.kind === "question" ? (
             <RowAnswer host={host} id={post.id} onActed={onActed} />
-          ) : post.kind === "observation" ? null : (
+          ) : post.kind === "observation" || peel.claim.standing === "superseded" ? null : (
             <RuleActs host={host} id={post.id} acts={POST_ACTS} onActed={onActed} />
           )}
           {/* WHAT A RUN PROPOSED BE DONE, under the ruling and never above it: the record's
@@ -570,11 +570,17 @@ export function Peel({
       <Depth index={3} title="The reception" open={open} onToggle={toggle}>
         <Stack gap="var(--babel-space-3)">
           <JevPosition host={host} id={post.id} detail />
+          {(peel.reception.reviewRuns ?? []).map(({ runId, submission }) => (
+            <p key={runId} className="babel-note">
+              {reviewSubmissionLabel(submission)}
+              {submission.reason ? ` — ${submission.reason}` : ""}
+            </p>
+          ))}
           {peel.reception.contested && (
             <p className="babel-contested-note">Babel&apos;s reviewers are split on this.</p>
           )}
           {peel.reception.byRole.length === 0 ? (
-            <p className="babel-note">No reviewer has assessed this revision.</p>
+            <p className="babel-note">No reception vote is recorded for this revision.</p>
           ) : (
             <table className="babel-roles">
               <thead>

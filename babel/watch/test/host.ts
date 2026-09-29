@@ -1,6 +1,6 @@
 import type { HostServices } from "@manifold/plugin";
 import type { ActionOutcome, MachineSummary } from "@manifold/protocol";
-import { ACTIONS, OPERATIONS, door, type ActionName } from "../../contract.ts";
+import { ACTIONS, OPERATIONS, StopInputSchema, door, type ActionName } from "../../contract.ts";
 import type {
   CycleReport,
   DrainStatus,
@@ -388,7 +388,16 @@ export function watchDoors(answers: {
         }))
       )(args),
     [door(ACTIONS.launch)]: (args) => (answers.launch ?? (() => ({ asked: true })))(args),
-    [door(ACTIONS.stop)]: (args) => (answers.stop ?? (() => ({ asked: true })))(args),
+    [door(ACTIONS.stop)]: (args) => {
+      if (answers.stop !== undefined) return answers.stop(args);
+      const request = StopInputSchema.parse(args);
+      return {
+        runId: request.runId,
+        jobId: request.job?.jobId ?? "",
+        machineId: request.job?.machineId ?? "",
+        closure: request.job === undefined ? "stopping" : "stopped",
+      };
+    },
     [door(ACTIONS.drainStatus)]: (args) => (answers.drainStatus ?? (() => ({ drains: [] })))(args),
     [door(ACTIONS.profiles)]: (args) =>
       (answers.profiles ?? (() => ({ profiles: PROFILES, unavailable: "" })))(args),

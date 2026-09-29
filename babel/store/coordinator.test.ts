@@ -875,6 +875,42 @@ test("a takeover fences the stale holder and keeps its reservation charged", asy
   expect(spend.byRun["run_b"]).toBeCloseTo(0.01, 10);
 });
 
+test("an unacknowledged review posting occupies its machine and cannot be taken over after expiry", async () => {
+  const { db, coord, assignment } = await oneAssignment();
+  const granted = await coord.claim({ assignment, runId: "cycle_review", now: NOW });
+  if (granted.outcome !== "granted") throw new Error(granted.refusal.detail);
+  await db.run(
+    `INSERT INTO runs(id,kind,machine_id,authority_kind,authority_id,preparation,started_at,records,payload)
+      VALUES ('pending-review','evaluate','review-machine','conductor','cycle_review',?,?,0,?)`,
+    [
+      JSON.stringify({ review: { assignmentId: assignment.id, fence: granted.claim.fence } }),
+      new Date(NOW).toISOString(),
+      JSON.stringify({
+        posting: true,
+        reviewSubmission: {
+          mode: "tools",
+          state: "pending",
+          actions: 0,
+          complete: false,
+          agentRunId: "agent-run",
+          agentId: "reviewer",
+        },
+      }),
+    ],
+  );
+  const expired = granted.claim.expiresAt + DAY;
+  expect(await coord.open(expired)).toEqual({ total: 1, byMachine: { "review-machine": 1 } });
+  expect((await coord.claim({ assignment, runId: "new-cycle", now: expired })).outcome).toBe(
+    "refused",
+  );
+  expect(
+    await db.query(`SELECT fence,finished_at,actual_cost FROM claims WHERE id=?`, [assignment.id]),
+  ).toEqual([{ fence: 1n, finished_at: null, actual_cost: null }]);
+  const draw = await coord.draw({ runId: "new-cycle", now: expired, seed: 3n });
+  if (draw.outcome === "assignment") expect(draw.assignment.id).not.toBe(assignment.id);
+  else expect(draw.outcome).toBe("gap");
+});
+
 test("a finish reconciles the reservation, reports an overrun, and accepts only the identical retry", async () => {
   const { coord, assignment } = await oneAssignment();
   const granted = await coord.claim({ assignment, runId: "run_a", now: NOW });

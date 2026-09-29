@@ -567,6 +567,50 @@ the review assignment and run, the model and recipe versions, and what was consu
 one assignment do not mint extra votes. A run cannot boost an alternative it has just authored. A
 changed opinion is a linked correction retaining its predecessor.
 
+**A review submits durable actions, not one document.** Where the runtime exposes a governed
+callable tool channel, a review run submits self-contained assessment and refinement actions
+through one bounded Babel tool. Each action passes the same shape, evidence, provenance and
+scope acceptance that a text submission passes, and either commits whole — its rows, its
+receipt and the run's submission state in one transaction — or writes nothing. An invalid action
+refuses only itself: previously accepted actions remain valid history, never an invisible
+rollback. The per-action transaction is the boundary; there is no review-wide staging
+transaction. A completion marker names exactly the active accepted actions and requires an
+active assessment or explicit skip of the assigned record; refinements alone are insufficient. The run is
+shown as _partial_ until its native session settles successfully with that marker, and a
+successful tool call is never completion of the whole review. A final prose message may
+summarize but is not a submission channel.
+
+The actor, run, stage and granted scope of an action are bound from the host's authenticated
+Run provenance and the intent Babel persisted before posting, never from actor fields a model
+supplies. A stale, expired, taken-over or stopped claim refuses every later action; a lost
+acknowledgement or duplicate delivery of one action returns its original receipt and writes
+nothing again; a changed payload under a used key is refused. Corrections append or supersede
+— a corrected assessment retains its predecessor, a corrected proposal is a new revision of it,
+and a proposal withdrawn by correction becomes historical and cannot be ruled on — never a
+rewrite. Calls and payloads are capped.
+
+These are agent assessments and proposals, not operator rulings: no review tool grants a run
+accept/reject/refine authority, an arbitrary store write, a repository mutation or a credential.
+Tool capability is separate from Jev availability: an absent, disabled or unfunded judgement
+neither blocks a review nor fabricates one. A run's submission mode is pinned before any model
+is launched. Where no authenticated, authorized tool channel exists — no configured Agent, an
+unapproved receipt publication, a runtime that refuses the tool selection before anything is
+posted — the run keeps the validated text submission, identified as such; a text answer never
+replays actions already committed through tools, and an unconfirmed tool posting is neither
+retried nor bought again.
+
+Native settlement, not a tool receipt or a final prose summary, decides whether a review
+completed. Its action history and partial state remain readable after interruption. Unknown
+posting and unreadable native sessions retain their reservation; Stop fences further actions
+without claiming an unconfirmed job ended. A later named pre-execution refusal proving no
+session was posted releases a stopped, unused intent at zero without starting a text fallback.
+Terminal typed run closure and its native call trace commit atomically, including through Stop.
+Where the native owner reports a terminal job but no cost, accounting charges the reserved
+allowance rather than inventing zero spend.
+Tool schemas constrain generation but do not guarantee a provider calls the tool, calls it
+once, or satisfies the role's semantic rules. Missing and invalid calls remain explicit
+incomplete work, not fabricated assessments.
+
 **Coverage is a first-class result, not an inference from score.** Distinguish **never reviewed**,
 **reviewed at this revision**, and **needs re-review**, with blocked or not-applicable reasons
 visible. A vote can satisfy a reception review but cannot stand in for evidence checking or

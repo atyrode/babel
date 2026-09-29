@@ -1,5 +1,5 @@
 import { Cluster, Stack } from "@manifold/ui";
-import { ACTIONS, RUN_STAGES, door } from "../contract.ts";
+import { ACTIONS, RUN_STAGES, door, reviewSubmissionLabel } from "../contract.ts";
 import {
   FALLBACK_NOTE,
   FRESHNESS_NOTE,
@@ -103,6 +103,17 @@ function LiveTable({
                       {RUN_KIND_LABELS[run.kind] ?? run.kind}
                     </span>
                   </Cluster>
+                  {run.reviewSubmission !== undefined && run.reviewSubmission !== null && (
+                    <p className="plugin-atyrode_babel_watch__muted">
+                      {reviewSubmissionLabel(run.reviewSubmission)}
+                      {run.reviewSubmission.reason ? ` — ${run.reviewSubmission.reason}` : ""}
+                    </p>
+                  )}
+                  {run.reviewAdmission !== undefined && (
+                    <p className="plugin-atyrode_babel_watch__muted">
+                      Review admission unconfirmed · no model launched. {run.reviewAdmission.reason}
+                    </p>
+                  )}
                 </td>
                 <td className="plugin-atyrode_babel_watch__stage">
                   {progress === null ? (
@@ -210,6 +221,12 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
                       {RUN_KIND_LABELS[run.kind] ?? run.kind}
                     </span>
                   </Cluster>
+                  {run.reviewSubmission !== undefined && run.reviewSubmission !== null && (
+                    <p className="plugin-atyrode_babel_watch__muted">
+                      {reviewSubmissionLabel(run.reviewSubmission)}
+                      {run.reviewSubmission.reason ? ` — ${run.reviewSubmission.reason}` : ""}
+                    </p>
+                  )}
                 </td>
                 <td className="plugin-atyrode_babel_watch__mono">
                   {run.recipe === "" ? "—" : run.recipe}

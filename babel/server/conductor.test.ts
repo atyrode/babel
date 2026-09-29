@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import { HostCallError } from "@manifold/plugin-kit/errors";
+import type { GuestCtx } from "@manifold/plugin-kit/server";
 import {
+  ACTIONS,
   BABEL_PLUGIN_ID,
   BeatChainSchema,
   beatChainKey,
@@ -43,7 +45,9 @@ import {
   readDrain,
   reserveDirectLaunch,
 } from "../store/drains.ts";
-import { launchMachinery, principalChain, type Started } from "../doors/launch.ts";
+import { reviewAction, reviewActionStatus } from "../store/review-actions.ts";
+import { ReviewActionInputSchema } from "../machine/results.ts";
+import { launchDoors, launchMachinery, principalChain, type Started } from "../doors/launch.ts";
 import { drainTick, endDrain, type DrainDeps } from "./drain.ts";
 import { liveDrainCapacity, type DrainAdmission } from "./drain-admission.ts";
 import { coordinator as governed } from "../store/coordinator.ts";
@@ -4197,6 +4201,688 @@ test("a stale review completion retains usage without writing or settling the ne
       [ASSIGNMENT.id],
     ),
   ).toEqual([{ id: ASSIGNMENT.id, fence: 2n, job_id: "job_code_review_new", finished_at: null }]);
+});
+
+class GovernedReviewCode extends ReviewCode {
+  admission: EngineAnswer<{ runId: string; agentId: string }> = {
+    ok: true,
+    value: { runId: "agent-run-review", agentId: "reviewer" },
+  };
+  admissions = 0;
+  attempts = 0;
+  beforePost?: (request: SessionRequest) => Promise<void>;
+  answer?: EngineAnswer<CodeJob>;
+
+  async createReviewRun(): Promise<EngineAnswer<{ runId: string; agentId: string }>> {
+    this.admissions += 1;
+    return this.admission;
+  }
+
+  override async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
+    this.attempts += 1;
+    await this.beforePost?.(request);
+    return this.answer ?? (await super.runSession(request));
+  }
+}
+
+async function governedReviewFixture(agent = true) {
+  const db = openDatabase();
+  await seed(db);
+  const store = openReadStore(db, () => clock);
+  const draws = new Draws(db);
+  draws.review = { ...ROUTE, ...(agent ? { agentId: "reviewer" } : {}) };
+  draws.pending = [{ ...ASSIGNMENT }];
+  draws.batchSize = 1;
+  const code = new GovernedReviewCode();
+  const wake = (chain = "enable:typed-review") =>
+    conductor({
+      engine: code,
+      store,
+      coordinator: draws as unknown as Coordinator,
+      jobs: new Fleet(),
+      machines: new Folders(),
+      keys: new Keys(),
+      plan: PLAN,
+      now: () => clock,
+      chain,
+    });
+  const loop = wake();
+  const runId = `run_${ASSIGNMENT.id}_1`;
+  const actor = { runId: "agent-run-review", agentId: "reviewer" };
+  const submit = (input: unknown) =>
+    reviewAction(store, actor, ReviewActionInputSchema.parse(input));
+  const stop = async (jobId?: string) => {
+    const door = launchDoors(store, {
+      coordinator: draws as unknown as Coordinator,
+      jobs: () => new Fleet(),
+      engine: () => code,
+      cookbook: async () => ({}),
+      plan: () => PLAN,
+      now: () => clock,
+    }).find((entry) => entry.action.name === ACTIONS.stop)!;
+    return await door.handler(
+      { principal: { id: "operator" } } as unknown as GuestCtx,
+      door.action.input.parse({
+        runId,
+        reason: "Stop the review",
+        ...(jobId === undefined
+          ? {}
+          : { job: { kind: "job", jobId, machineId: MACHINE, operationId: OPERATIONS.evaluate } }),
+      }) as never,
+    );
+  };
+  return { db, store, draws, code, loop, wake, runId, submit, stop };
+}
+
+test("ordinary review without Jev commits before posting acknowledgement and survives interruption without text replay", async () => {
+  const f = await governedReviewFixture();
+  const action = { key: "assessment", kind: "assessment", result: { vote: "support" } };
+  let receipt: unknown;
+  f.code.beforePost = async (request) => {
+    expect(request.postingKey).toBeUndefined();
+    expect(await f.db.query(`SELECT job_id FROM runs WHERE id=?`, [f.runId])).toEqual([
+      { job_id: null },
+    ]);
+    receipt = await f.submit(action);
+  };
+  await f.loop.tick();
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    mode: "tools",
+    state: "partial",
+    actions: 1,
+  });
+  f.code.read = sessionRead({
+    state: "interrupted",
+    jobId: "job_code_review",
+    finalMessage: '```json\n{"vote":"oppose"}\n```',
+    inference: SESSION_METER,
+  });
+  await f.loop.tick();
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    state: "partial",
+    complete: false,
+  });
+  expect(await f.db.query(`SELECT vote FROM assessments WHERE run_id=?`, [f.runId])).toEqual([
+    { vote: "support" },
+  ]);
+  expect(receipt).toEqual(await f.submit(action));
+  expect(
+    await f.db.query(`SELECT count(*) n FROM review_actions WHERE run_id=?`, [f.runId]),
+  ).toEqual([{ n: 1n }]);
+  expect(f.draws.finished).toMatchObject([{ outcome: "failed", cost: 0.41 }]);
+});
+
+test.each([
+  { marker: false, state: "exited", expected: "partial" },
+  { marker: true, state: "interrupted", expected: "partial" },
+  { marker: true, state: "exited", expected: "completed" },
+] as const)(
+  "completion needs both durable marker=$marker and native success=$state",
+  async ({ marker, state, expected }) => {
+    const f = await governedReviewFixture();
+    await f.loop.tick();
+    await f.submit({ key: "vote", kind: "assessment", result: { vote: "support" } });
+    if (marker) await f.submit({ key: "done", kind: "complete", actions: ["vote"] });
+    // No final message or even sealed transcript is needed; the native owner's exit is evidence.
+    f.code.read = sessionRead({
+      state,
+      jobId: "job_code_review",
+      sealed: false,
+      inference: SESSION_METER,
+    });
+    await f.loop.tick();
+    expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+      state: expected,
+      actions: 1,
+    });
+    expect(await f.db.query(`SELECT vote FROM assessments WHERE run_id=?`, [f.runId])).toEqual([
+      { vote: "support" },
+    ]);
+    await f.loop.tick();
+    expect(
+      await f.db.query(`SELECT count(*) n FROM assessments WHERE run_id=?`, [f.runId]),
+    ).toEqual([{ n: 1n }]);
+  },
+);
+
+test("a typed review's marker does not survive revoked claim authority as completion", async () => {
+  const f = await governedReviewFixture();
+  await f.loop.tick();
+  await f.submit({ key: "vote", kind: "assessment", result: { vote: "support" } });
+  await f.submit({ key: "done", kind: "complete", actions: ["vote"] });
+  await f.db.run(`UPDATE claims SET fence=2,run_id='new-cycle',job_id='new-job' WHERE id=?`, [
+    ASSIGNMENT.id,
+  ]);
+  f.code.read = sessionRead({
+    state: "exited",
+    jobId: "job_code_review",
+    sealed: false,
+    inference: SESSION_METER,
+  });
+  await f.loop.tick();
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    state: "partial",
+    complete: true,
+    actions: 1,
+  });
+  expect(
+    await f.db.query(`SELECT finished_at,actual_cost FROM claims WHERE id=?`, [ASSIGNMENT.id]),
+  ).toEqual([{ finished_at: null, actual_cost: null }]);
+  expect(await f.db.query(`SELECT cost_usd FROM runs WHERE id=?`, [f.runId])).toEqual([
+    { cost_usd: 0.41 },
+  ]);
+  expect(await f.db.query(`SELECT vote FROM assessments WHERE run_id=?`, [f.runId])).toEqual([
+    { vote: "support" },
+  ]);
+});
+
+test("a typed review without a terminal meter charges its reservation, not a free interruption", async () => {
+  const f = await governedReviewFixture();
+  await f.loop.tick();
+  await f.submit({ key: "vote", kind: "assessment", result: { vote: "support" } });
+  f.code.read = sessionRead({ state: "interrupted", jobId: "job_code_review", sealed: false });
+  await f.loop.tick();
+  expect(await f.db.query(`SELECT cost_usd FROM runs WHERE id=?`, [f.runId])).toEqual([
+    { cost_usd: null },
+  ]);
+  expect(f.draws.finished).toMatchObject([{ outcome: "failed", cost: ASSIGNMENT.reservedCost }]);
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    state: "partial",
+    actions: 1,
+  });
+});
+
+test("typed terminal state and its trace commit together before claim-accounting recovery", async () => {
+  const f = await governedReviewFixture();
+  await f.loop.tick();
+  await f.submit({ key: "vote", kind: "assessment", result: { vote: "support" } });
+  await f.submit({ key: "done", kind: "complete", actions: ["vote"] });
+  f.code.read = sessionRead({
+    state: "exited",
+    jobId: "job_code_review",
+    inference: SESSION_METER,
+  });
+  const finish = f.draws.finish.bind(f.draws);
+  f.draws.finish = async () => {
+    throw new Error("synthetic lost claim-accounting acknowledgement");
+  };
+  await expect(f.loop.tick()).rejects.toThrow("synthetic lost claim-accounting acknowledgement");
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    state: "completed",
+    complete: true,
+  });
+  expect(
+    await f.db.query(`SELECT closure,cost_micros FROM run_calls WHERE run_id=?`, [f.runId]),
+  ).toEqual([{ closure: "completed", cost_micros: 410000n }]);
+  f.draws.finish = finish;
+  await f.loop.tick();
+  await f.loop.tick();
+  expect(f.draws.finished).toMatchObject([{ outcome: "completed", cost: 0.41 }]);
+  expect(f.draws.finished).toHaveLength(1);
+  expect(await f.db.query(`SELECT count(*) n FROM assessments WHERE run_id=?`, [f.runId])).toEqual([
+    { n: 1n },
+  ]);
+});
+
+test("a failing typed terminal trace write leaves the accepted actions open for reconciliation", async () => {
+  const f = await governedReviewFixture();
+  await f.loop.tick();
+  await f.submit({ key: "vote", kind: "assessment", result: { vote: "support" } });
+  await f.submit({ key: "done", kind: "complete", actions: ["vote"] });
+  f.code.read = sessionRead({
+    state: "exited",
+    jobId: "job_code_review",
+    inference: SESSION_METER,
+  });
+  await f.db.run(`CREATE TRIGGER reject_typed_trace BEFORE INSERT ON run_calls
+    BEGIN SELECT RAISE(ABORT,'synthetic trace failure'); END`);
+  await expect(f.loop.tick()).rejects.toThrow("synthetic trace failure");
+  expect(await f.db.query(`SELECT closure FROM runs WHERE id=?`, [f.runId])).toEqual([
+    { closure: null },
+  ]);
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    state: "partial",
+    complete: true,
+  });
+  await f.db.run(`DROP TRIGGER reject_typed_trace`);
+  await f.loop.tick();
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    state: "completed",
+    actions: 1,
+  });
+  expect(await f.db.query(`SELECT count(*) n FROM run_calls WHERE run_id=?`, [f.runId])).toEqual([
+    { n: 1n },
+  ]);
+});
+
+test.each(["stop", "conductor"] as const)(
+  "%s wins terminal typed cancellation with one native trace and one charge",
+  async (winner) => {
+    const f = await governedReviewFixture();
+    await f.loop.tick();
+    const action = { key: "vote", kind: "assessment", result: { vote: "support" } };
+    const receipt = await f.submit(action);
+    await f.submit({ key: "done", kind: "complete", actions: ["vote"] });
+    f.code.read = sessionRead({
+      state: "cancelled",
+      jobId: "job_code_review",
+      inference: SESSION_METER,
+    });
+    f.code.cancelSession = async () => {
+      if (winner === "conductor") await f.loop.tick();
+      return { ok: true, value: { ...f.code.read.job, machineId: MACHINE } };
+    };
+    const stopped = await f.stop("job_code_review");
+    if (winner === "stop") expect(stopped).toMatchObject({ closure: "stopped" });
+    else expect(stopped).toHaveProperty("refused");
+    await f.loop.tick();
+    await f.loop.tick();
+    expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+      state: "partial",
+      complete: true,
+      actions: 1,
+    });
+    const trace = await readRunTrace(f.db, f.runId);
+    expect(trace?.calls).toMatchObject([
+      { closure: "stopped", costMicros: 410000, inputTokens: 20000, outputTokens: 1500 },
+    ]);
+    expect(trace?.calls).toHaveLength(1);
+    expect(f.draws.finished).toMatchObject([{ cost: 0.41 }]);
+    expect(f.draws.finished).toHaveLength(1);
+    expect(await f.submit(action)).toEqual(receipt);
+    expect(await f.db.query(`SELECT vote FROM assessments WHERE run_id=?`, [f.runId])).toEqual([
+      { vote: "support" },
+    ]);
+    expect(await f.stop("job_code_review")).toHaveProperty("refused");
+  },
+);
+
+test("typed Stop keeps closure and native trace atomic through trace and accounting failures", async () => {
+  const f = await governedReviewFixture();
+  await f.loop.tick();
+  await f.submit({ key: "vote", kind: "assessment", result: { vote: "support" } });
+  f.code.read = sessionRead({
+    state: "cancelled",
+    jobId: "job_code_review",
+    inference: SESSION_METER,
+  });
+  f.code.cancelSession = async () => ({
+    ok: true,
+    value: { ...f.code.read.job, machineId: MACHINE },
+  });
+  await f.db.run(`CREATE TRIGGER reject_stop_trace BEFORE INSERT ON run_calls
+    BEGIN SELECT RAISE(ABORT,'synthetic stop trace failure'); END`);
+  await expect(f.stop("job_code_review")).rejects.toThrow("synthetic stop trace failure");
+  expect(await f.db.query(`SELECT closure,cost_usd FROM runs WHERE id=?`, [f.runId])).toEqual([
+    { closure: null, cost_usd: null },
+  ]);
+  expect(await f.db.query(`SELECT seq FROM run_calls WHERE run_id=?`, [f.runId])).toEqual([]);
+  expect(f.draws.finished).toEqual([]);
+  await f.db.run(`DROP TRIGGER reject_stop_trace`);
+  const finish = f.draws.finish.bind(f.draws);
+  f.draws.finish = async () => {
+    throw new Error("synthetic stop accounting failure");
+  };
+  await expect(f.stop("job_code_review")).rejects.toThrow("synthetic stop accounting failure");
+  expect(await f.db.query(`SELECT closure,cost_usd FROM runs WHERE id=?`, [f.runId])).toEqual([
+    { closure: "stopped", cost_usd: 0.41 },
+  ]);
+  expect((await readRunTrace(f.db, f.runId))?.calls).toMatchObject([
+    { closure: "stopped", costMicros: 410000 },
+  ]);
+  f.draws.finish = finish;
+  await f.loop.tick();
+  await f.loop.tick();
+  expect(f.draws.finished).toMatchObject([{ cost: 0.41 }]);
+  expect(f.draws.finished).toHaveLength(1);
+  expect((await readRunTrace(f.db, f.runId))?.calls).toHaveLength(1);
+  expect(await f.db.query(`SELECT vote FROM assessments WHERE run_id=?`, [f.runId])).toEqual([
+    { vote: "support" },
+  ]);
+});
+
+test("native spend settles an unchanged typed claim whose lease expired before binding", async () => {
+  const f = await governedReviewFixture();
+  const grantedAt = clock;
+  f.code.beforePost = async () => {
+    await f.submit({ key: "vote", kind: "assessment", result: { vote: "support" } });
+    clock += POLICY.leaseSeconds * 2_000;
+  };
+  const governor = governed(f.store, () => clock, 16);
+  await f.loop.tick();
+  expect(
+    await f.db.query(`SELECT job_id,finished_at FROM claims WHERE id=?`, [ASSIGNMENT.id]),
+  ).toEqual([{ job_id: "job_code_review", finished_at: null }]);
+  f.draws.enabled = false;
+  f.code.read = sessionRead({
+    state: "interrupted",
+    jobId: "job_code_review",
+    inference: SESSION_METER,
+  });
+  await f.loop.tick();
+  expect(f.draws.finished).toMatchObject([{ outcome: "failed", cost: 0.41 }]);
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    state: "partial",
+    actions: 1,
+  });
+  await f.loop.tick();
+  expect(f.draws.finished).toHaveLength(1);
+  expect(await governor.spend(grantedAt)).toMatchObject({ total: 0.41 });
+});
+
+test.each(["no-agent", "tool-unavailable", "tool-forbidden"] as const)(
+  "%s pins validated ordinary text without requiring optional judgment",
+  async (mode) => {
+    const f = await governedReviewFixture(mode !== "no-agent");
+    f.code.admission = refusedByCode(
+      mode === "tool-forbidden" ? "engine_forbidden" : "engine_unavailable",
+      "no authorized tool channel",
+    );
+    await f.loop.tick();
+    expect(f.code.admissions).toBe(mode === "no-agent" ? 0 : 1);
+    expect(f.code.posted[0]?.agentTools).toBeUndefined();
+    expect(f.code.posted[0]?.postingKey).toBe(f.runId);
+    expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+      mode: "text",
+      state: "pending",
+    });
+    f.code.read = sessionRead({
+      state: "exited",
+      jobId: "job_code_review",
+      finalMessage: '```json\n{"vote":"support"}\n```',
+    });
+    await f.loop.tick();
+    expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+      mode: "text",
+      state: "completed",
+    });
+    expect(await f.db.query(`SELECT vote FROM assessments WHERE run_id=?`, [f.runId])).toEqual([
+      { vote: "support" },
+    ]);
+  },
+);
+
+test("an unconfirmed tool post keeps accepted work, the expired claim and its reservation without another post", async () => {
+  const f = await governedReviewFixture();
+  f.code.beforePost = async () => {
+    await f.submit({ kind: "assessment", key: "vote", result: { vote: "support" } });
+  };
+  f.code.answer = refusedByCode("engine_unconfirmed", "posting acknowledgement lost");
+  await f.loop.tick();
+  clock += POLICY.leaseSeconds * 4_000;
+  f.draws.enabled = false;
+  await f.loop.tick();
+  await f.loop.tick();
+  expect(f.code.attempts).toBe(1);
+  expect(f.code.admissions).toBe(1);
+  expect(
+    await f.db.query(`SELECT job_id,finished_at,actual_cost FROM claims WHERE id=?`, [
+      ASSIGNMENT.id,
+    ]),
+  ).toEqual([{ job_id: null, finished_at: null, actual_cost: null }]);
+  expect(await governed(f.store, () => clock, 16).open(clock)).toEqual({
+    total: 1,
+    byMachine: { [MACHINE]: 1 },
+  });
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    mode: "tools",
+    state: "partial",
+    actions: 1,
+    reason: "engine_unconfirmed: posting acknowledgement lost",
+  });
+});
+
+test("unknown generic Run creation never posts a model or repeats creation after the claim expires", async () => {
+  const f = await governedReviewFixture();
+  f.code.admission = refusedByCode("engine_unconfirmed", "generic creation unknown");
+  await f.loop.tick();
+  clock += POLICY.leaseSeconds * 4_000;
+  f.draws.enabled = false;
+  await f.loop.tick();
+  expect(f.code.admissions).toBe(1);
+  expect(f.code.attempts).toBe(0);
+  expect(await reviewActionStatus(f.store, f.runId)).toBeNull();
+  expect(await f.db.query(`SELECT closure FROM runs WHERE id=?`, [f.runId])).toEqual([
+    { closure: null },
+  ]);
+  expect(await governed(f.store, () => clock, 16).open(clock)).toEqual({
+    total: 1,
+    byMachine: { [MACHINE]: 1 },
+  });
+});
+
+test("a proven unsupported native tool runtime gets a new text intent, never a repinned tool run", async () => {
+  const f = await governedReviewFixture();
+  f.code.answer = {
+    ok: false,
+    code: "engine_unavailable",
+    refused: "native tool runtime unsupported",
+    noToolSession: true,
+  };
+  f.code.beforePost = async (request) => {
+    if (request.agentTools === undefined) delete f.code.answer;
+  };
+  await f.loop.tick();
+  expect(f.code.attempts).toBe(2);
+  expect(f.code.posted[0]?.postingKey).toBe(`${f.runId}_text`);
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    mode: "tools",
+    state: "pending",
+    actions: 0,
+  });
+  expect(await f.db.query(`SELECT closure,cost_usd FROM runs WHERE id=?`, [f.runId])).toEqual([
+    { closure: "failed", cost_usd: 0 },
+  ]);
+  expect(await reviewActionStatus(f.store, `${f.runId}_text`)).toMatchObject({
+    mode: "text",
+    state: "pending",
+  });
+  await expect(
+    f.submit({ kind: "assessment", key: "late", result: { vote: "support" } }),
+  ).rejects.toThrow();
+});
+
+test("a typed fallback's lost acknowledgement recovers only its original keyed text session and chain", async () => {
+  const f = await governedReviewFixture();
+  f.code.answer = {
+    ok: false,
+    code: "engine_unavailable",
+    refused: "native tool runtime unsupported",
+    noToolSession: true,
+  };
+  f.code.beforePost = async (request) => {
+    if (request.agentTools === undefined) delete f.code.answer;
+  };
+  const post = f.code.runSession.bind(f.code);
+  let lost = false;
+  f.code.runSession = async (request) => {
+    const answer = await post(request);
+    if (request.agentTools === undefined && !lost) {
+      lost = true;
+      return refusedByCode("engine_unconfirmed", "text acknowledgement lost");
+    }
+    return answer;
+  };
+  await f.loop.tick();
+  f.draws.enabled = false;
+  await f.wake("enable:another-account").tick();
+  expect(f.code.attempts).toBe(2);
+  expect(
+    await f.db.query(`SELECT job_id,finished_at FROM claims WHERE id=?`, [ASSIGNMENT.id]),
+  ).toEqual([{ job_id: null, finished_at: null }]);
+  await f.wake().tick();
+  expect(f.code.posted).toHaveLength(1);
+  expect(f.code.posted[0]?.postingKey).toBe(`${f.runId}_text`);
+  expect(
+    await f.db.query(`SELECT id,job_id,closure FROM runs WHERE id IN (?,?) ORDER BY id`, [
+      f.runId,
+      `${f.runId}_text`,
+    ]),
+  ).toEqual([
+    { id: f.runId, job_id: null, closure: "failed" },
+    { id: `${f.runId}_text`, job_id: "job_code_review", closure: null },
+  ]);
+  expect(
+    await f.db.query(`SELECT job_id,actual_cost FROM claims WHERE id=?`, [ASSIGNMENT.id]),
+  ).toEqual([{ job_id: "job_code_review", actual_cost: null }]);
+});
+
+test("expiry during governed admission closes unused work at zero without posting either mode", async () => {
+  const f = await governedReviewFixture();
+  f.code.createReviewRun = async () => {
+    clock += POLICY.leaseSeconds * 2_000;
+    return { ok: true, value: { runId: "agent-run-review", agentId: "reviewer" } };
+  };
+  await f.loop.tick();
+  expect(f.code.attempts).toBe(0);
+  expect(await f.db.query(`SELECT closure,cost_usd FROM runs WHERE id=?`, [f.runId])).toEqual([
+    { closure: "failed", cost_usd: 0 },
+  ]);
+  expect(
+    await f.db.query(`SELECT outcome,actual_cost FROM claims WHERE id=?`, [ASSIGNMENT.id]),
+  ).toEqual([{ outcome: "failed", actual_cost: 0 }]);
+});
+
+test.each([true, false])(
+  "Stop racing a tool post releases only a proven unused intent (proof=%p)",
+  async (provenUnused) => {
+    const f = await governedReviewFixture();
+    f.code.beforePost = async () => {
+      expect(await f.stop()).toMatchObject({ closure: "stopping" });
+    };
+    f.code.answer = provenUnused
+      ? {
+          ok: false,
+          code: "engine_unavailable",
+          refused: "native tool runtime unsupported",
+          noToolSession: true,
+        }
+      : refusedByCode("engine_unconfirmed", "posting acknowledgement lost");
+    await f.loop.tick();
+    f.draws.enabled = false;
+    clock += POLICY.leaseSeconds * 4_000;
+    await f.loop.tick();
+    await f.loop.tick();
+    expect(f.code.attempts).toBe(1);
+    expect(
+      await f.db.query(`SELECT id,closure,cost_usd FROM runs WHERE id IN (?,?)`, [
+        f.runId,
+        `${f.runId}_text`,
+      ]),
+    ).toEqual([
+      { id: f.runId, closure: provenUnused ? "stopped" : null, cost_usd: provenUnused ? 0 : null },
+    ]);
+    expect(await governed(f.store, () => clock, 16).open(clock)).toEqual(
+      provenUnused ? { total: 0, byMachine: {} } : { total: 1, byMachine: { [MACHINE]: 1 } },
+    );
+    expect(await f.db.query(`SELECT actual_cost FROM claims WHERE id=?`, [ASSIGNMENT.id])).toEqual([
+      { actual_cost: provenUnused ? 0 : null },
+    ]);
+    if (provenUnused) {
+      expect(
+        await f.db.query(`SELECT outcome,actual_cost FROM claims WHERE id=?`, [ASSIGNMENT.id]),
+      ).toEqual([{ outcome: "failed", actual_cost: 0 }]);
+      expect(await f.db.query(`SELECT run_id FROM run_progress WHERE run_id=?`, [f.runId])).toEqual(
+        [],
+      );
+    } else expect(f.draws.finished).toEqual([]);
+    await expect(
+      f.submit({ key: "late", kind: "assessment", result: { vote: "support" } }),
+    ).rejects.toThrow();
+  },
+);
+
+test("a fallback refusal arriving after an accepted tool action cannot replay it as text", async () => {
+  const f = await governedReviewFixture();
+  f.code.beforePost = async () => {
+    await f.submit({ key: "vote", kind: "assessment", result: { vote: "support" } });
+  };
+  f.code.answer = {
+    ok: false,
+    code: "engine_unavailable",
+    refused: "native tool runtime unsupported",
+    noToolSession: true,
+  };
+  await f.loop.tick();
+  expect(f.code.attempts).toBe(1);
+  expect(
+    await f.db.query(`SELECT id,closure FROM runs WHERE id IN (?,?)`, [f.runId, `${f.runId}_text`]),
+  ).toEqual([{ id: f.runId, closure: null }]);
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    mode: "tools",
+    state: "partial",
+    actions: 1,
+  });
+  expect(await f.db.query(`SELECT vote FROM assessments WHERE run_id=?`, [f.runId])).toEqual([
+    { vote: "support" },
+  ]);
+  expect(f.draws.finished).toEqual([]);
+});
+
+test("a stop during generic creation posts nothing, and a stop during posting cancels the late acknowledgement", async () => {
+  const creation = await governedReviewFixture();
+  creation.code.createReviewRun = async () => {
+    await creation.db.run(
+      `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true')) WHERE id=?`,
+      [creation.runId],
+    );
+    return { ok: true, value: { runId: "agent-run-review", agentId: "reviewer" } };
+  };
+  await creation.loop.tick();
+  expect(creation.code.attempts).toBe(0);
+  expect(await creation.db.query(`SELECT closure FROM runs WHERE id=?`, [creation.runId])).toEqual([
+    { closure: "stopped" },
+  ]);
+  expect(
+    await creation.db.query(`SELECT outcome,actual_cost FROM claims WHERE id=?`, [ASSIGNMENT.id]),
+  ).toEqual([{ outcome: "failed", actual_cost: 0 }]);
+
+  const posting = await governedReviewFixture();
+  let cancelled = 0;
+  posting.code.cancelSession = async () => {
+    cancelled += 1;
+    return { ok: true, value: posting.code.read.job };
+  };
+  posting.code.beforePost = async () => {
+    await posting.db.run(
+      `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true')) WHERE id=?`,
+      [posting.runId],
+    );
+  };
+  await posting.loop.tick();
+  expect(posting.code.attempts).toBe(1);
+  expect(cancelled).toBe(1);
+  expect(await posting.db.query(`SELECT job_id FROM runs WHERE id=?`, [posting.runId])).toEqual([
+    { job_id: "job_code_review" },
+  ]);
+});
+
+test("an unconfirmed tool post stays tool mode: terminal prose never submits and a stale claim never settles", async () => {
+  const f = await governedReviewFixture();
+  f.code.answer = refusedByCode("engine_unconfirmed", "posting acknowledgement lost");
+  await f.loop.tick();
+  // The lost post did run; an operator or a later recovery binds its known job to the run.
+  await f.db.run(
+    `UPDATE runs SET job_id='job_code_review',payload=json_set(payload,'$.posting',json('false')) WHERE id=?`,
+    [f.runId],
+  );
+  await f.db.run(`UPDATE claims SET job_id='job_code_review' WHERE id=?`, [ASSIGNMENT.id]);
+  f.code.read = sessionRead({
+    state: "exited",
+    jobId: "job_code_review",
+    inference: SESSION_METER,
+    finalMessage: '```json\n{"vote":"support"}\n```',
+  });
+  await f.loop.tick();
+  expect(await f.db.query(`SELECT count(*) n FROM assessments WHERE run_id=?`, [f.runId])).toEqual([
+    { n: 0n },
+  ]);
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    mode: "tools",
+    state: "pending",
+    actions: 0,
+  });
+  expect(f.draws.finished).toMatchObject([{ outcome: "failed", cost: 0.41 }]);
 });
 
 // ---------------------------------------------------------------------- the park and the pulse

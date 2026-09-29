@@ -43,6 +43,7 @@ import {
   type PostKind,
 } from "../contract.ts";
 import { standingOf } from "./acts.ts";
+import { supersededReviewProposalSql } from "./schema.ts";
 import {
   controversialRank,
   establishedOf,
@@ -247,6 +248,7 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
        JOIN (SELECT root_id, MAX(seq) AS head_seq FROM records GROUP BY root_id) h
          ON h.root_id = r.root_id AND h.head_seq = r.seq
       WHERE r.kind IN (${POST_KIND_LIST})
+        AND NOT ${supersededReviewProposalSql("r.id")}
       ORDER BY r.id`,
     [],
     (row) => {
@@ -549,8 +551,9 @@ async function readFilings(
   const byRecord = new Map<string, Map<string, { at: string; written: number; filed: boolean }>>();
   await scan<SqlRow>(
     db,
-    `SELECT record_id, entity_id, withdrawn, created_at, rowid AS written FROM filings
-      ORDER BY rowid`,
+    `SELECT f.record_id, f.entity_id, f.withdrawn, f.created_at, f.rowid AS written FROM filings f
+      WHERE NOT EXISTS (SELECT 1 FROM filings later WHERE later.supersedes_id = f.id)
+      ORDER BY f.rowid`,
     [],
     (row) => {
       const entityId = text(row["entity_id"]);

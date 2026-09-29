@@ -10,6 +10,7 @@ import {
 import {
   acceptReviewResult,
   contributionRefusal,
+  parseReviewResult,
   REFUSALS,
   ResultRefusal,
   refusalReason,
@@ -17,6 +18,8 @@ import {
   shapeReviewResult,
   type Contribution,
   type ReviewResult,
+  type ReviewActionInput,
+  type ReviewSelf,
 } from "../../machine/results.ts";
 import type { ReviewAssignment } from "../../store/coordinator.ts";
 import { ANSWER_FENCE, answerOf, type Recipe } from "./prompts.ts";
@@ -203,6 +206,7 @@ export function composeReviewPrompt(input: {
   readonly preparation: ReviewPreparation;
   readonly recipe: Recipe;
   readonly projection: ReviewProjection;
+  readonly submissionMode?: "text" | "tools";
 }): string {
   const { assignment, preparation, recipe, projection } = input;
   const params: Record<string, string> = {
@@ -219,8 +223,12 @@ export function composeReviewPrompt(input: {
     `### ${recipe.title ?? recipe.id} (id ${recipe.id}, version ${String(recipe.version)})\n\n`,
     `${recipe.body.trim()}\n\n`,
     "## How to answer\n\n",
-    "Return exactly one final JSON document in the last fenced block shown below. The document must match this role's schema. A bare answer is valid; do not invent prose, evidence, criteria, alternatives or work merely to fill fields. If the shown material cannot support this role's judgement, set `skip` to the reason.\n\n",
-    `${ANSWER_FENCE}\n${JSON.stringify(reviewJsonSchema(assignment.role), null, 2)}\n\`\`\`\n\n`,
+    input.submissionMode === "tools"
+      ? "First read manifold_policy and explicitly acknowledge its exact revision through manifold_ack_policy; neither Babel nor the runtime acknowledges it for you. Submit self-contained work through the governed reviewAction tool, whose authoritative schema is supplied by the host. Use kind assessment for this role's judgement and kind refinement for each proposed replacement; do not embed refinements in assessments. Each accepted action is durable even if this session is interrupted. Keep its key and receipt: an identical retry returns the same receipt, while a correction needs a new key and supersedes the prior active key of the same kind. There may be only one active assessment. Completion requires that assessment or an explicit skip; refinements alone do not review the assigned record. Finish by calling reviewAction with kind complete and exactly the active accepted action keys (excluding superseded keys). A final prose summary is not a submission or completion. Make at most 32 accepted calls including complete, each no more than 32768 bytes. A bare vote is valid for reception; if the shown material cannot support this role's judgement, submit an assessment with skip and its reason. Published tool schemas constrain arguments, not whether you submit or finish; an unfinished review remains partial.\n\n"
+      : "Return exactly one final JSON document in the last fenced block shown below. The document must match this role's schema. A bare answer is valid; do not invent prose, evidence, criteria, alternatives or work merely to fill fields. If the shown material cannot support this role's judgement, set `skip` to the reason.\n\n",
+    input.submissionMode === "tools"
+      ? ""
+      : `${ANSWER_FENCE}\n${JSON.stringify(reviewJsonSchema(assignment.role), null, 2)}\n\`\`\`\n\n`,
     "## Your role\n\n",
     `${ROLE_QUESTION[assignment.role]}\n\n${ROLE_RULES[assignment.role]}\n\n`,
     preparation.refinementDepth < preparation.maxRefinementDepth
@@ -446,6 +454,38 @@ export function reviewVerdict(
   };
 }
 
+/** Strict per-action validation: no text extraction and no salvage of an invalid contribution. */
+export function validateReviewAction(
+  preparation: ReviewPreparation,
+  action: Exclude<ReviewActionInput, { kind: "complete" }>,
+  target: unknown,
+  self?: ReviewSelf,
+): ReviewResult {
+  const result = parseReviewResult(
+    preparation.role,
+    action.kind === "assessment" ? action.result : { contributions: [action.contribution] },
+    self,
+  );
+  if (
+    action.kind === "assessment" &&
+    result.contributions.some((contribution) => contribution.kind === "refinement")
+  ) {
+    throw new ResultRefusal(
+      REFUSALS.authority,
+      "submit each refinement through a refinement action, not inside an assessment",
+    );
+  }
+  const served: Locator[] = [];
+  locators(target, served);
+  for (const [index, contribution] of result.contributions.entries()) {
+    const reason = contributionReason(preparation.role, contribution, index, target, served);
+    if (reason !== "") throw new ResultRefusal(REFUSALS.schema, reason);
+  }
+  const reason = wholeReviewReason(result, preparation, served);
+  if (reason !== "") throw new ResultRefusal(REFUSALS.schema, reason);
+  return result;
+}
+
 /** A refusal of one contribution, in the validator's own sentence and nothing besides it. */
 function contributionReason(
   role: Role,
@@ -619,7 +659,9 @@ export function reviewRows(
   result: ReviewResult,
   runId: string,
   at: string,
+  action?: { readonly key: string; readonly supersedesAssessmentId?: string },
 ): Readonly<Record<string, readonly ReviewRow[]>> {
+  const identity = action === undefined ? runId : `${runId}|action|${action.key}`;
   const rows: Record<string, ReviewRow[]> = {
     [JOB_OUTPUT_FILES.assessments]: [],
     [JOB_OUTPUT_FILES.records]: [],
@@ -629,7 +671,7 @@ export function reviewRows(
     [JOB_OUTPUT_FILES.steeringReplies]: [],
   };
   rows[JOB_OUTPUT_FILES.assessments]?.push({
-    id: mintId("asm", runId, `${preparation.revisionId}|${preparation.role}`),
+    id: mintId("asm", identity, `${preparation.revisionId}|${preparation.role}`),
     record_id: preparation.recordId,
     revision_id: preparation.revisionId,
     run_id: runId,
@@ -637,7 +679,7 @@ export function reviewRows(
     vote: result.vote === "" ? null : result.vote,
     lane: preparation.lane,
     claim_id: preparation.assignmentId,
-    supersedes_id: null,
+    supersedes_id: action?.supersedesAssessmentId ?? null,
     payload: JSON.stringify({
       ...result,
       blinded: preparation.blinded,
@@ -671,7 +713,7 @@ export function reviewRows(
       replacement: contribution.would_change,
       sourceRole: preparation.role,
     };
-    const proposalId = mintId("pro", runId, `refinement|${String(index)}|${path}`);
+    const proposalId = mintId("pro", identity, `refinement|${String(index)}|${path}`);
     rows[JOB_OUTPUT_FILES.records]?.push(
       proposalRow(
         proposalId,
@@ -702,7 +744,7 @@ export function reviewRows(
   if (preparation.role === "filing") {
     if (result.filing !== null) {
       rows[JOB_OUTPUT_FILES.filings]?.push({
-        id: mintId("fil", runId, `${preparation.recordId}|${result.filing.entity}`),
+        id: mintId("fil", identity, `${preparation.recordId}|${result.filing.entity}`),
         record_id: preparation.recordId,
         entity_id: result.filing.entity,
         rationale: result.filing.rationale,
@@ -715,7 +757,7 @@ export function reviewRows(
       });
     } else if (result.noTopic !== null) {
       rows[JOB_OUTPUT_FILES.filings]?.push({
-        id: mintId("fil", runId, `${preparation.recordId}|`),
+        id: mintId("fil", identity, `${preparation.recordId}|`),
         record_id: preparation.recordId,
         entity_id: "",
         rationale: result.noTopic.reason,
@@ -730,7 +772,7 @@ export function reviewRows(
       rows[JOB_OUTPUT_FILES.steeringReplies]?.push({
         id: mintId(
           "str",
-          runId,
+          identity,
           `${result.noChange.ask_id}|${String(result.noChange.reason.length)}`,
         ),
         root_id: result.noChange.ask_id,
@@ -746,7 +788,7 @@ export function reviewRows(
     } else if (result.topic !== null) {
       const topic = result.topic;
       const ref = `topic/${topic.operation}/${topic.identity === "" ? topic.targets.join("+") : topic.identity}`;
-      const proposalId = mintId("pro", runId, ref);
+      const proposalId = mintId("pro", identity, ref);
       const title =
         topic.operation === "create"
           ? `Create the topic ${topic.name}`
@@ -777,7 +819,7 @@ export function reviewRows(
       );
       rows[JOB_OUTPUT_FILES.edges]?.push(edgeRow(proposalId, preparation, runId, at));
       rows[JOB_OUTPUT_FILES.plans]?.push({
-        id: mintId("pln", runId, `topic|${proposalId}|${topic.operation}`),
+        id: mintId("pln", identity, `topic|${proposalId}|${topic.operation}`),
         kind: "topic",
         subject_kind: "proposal",
         subject_id: proposalId,
@@ -821,7 +863,7 @@ export function reviewRows(
           : result.retire !== null
             ? "Retire this candidate"
             : `Promote an observation to a fact about ${result.promote?.entity ?? ""}`;
-    const proposalId = mintId("pro", runId, `backlog/${operation}/${preparation.recordId}`);
+    const proposalId = mintId("pro", identity, `backlog/${operation}/${preparation.recordId}`);
     rows[JOB_OUTPUT_FILES.records]?.push(
       proposalRow(
         proposalId,
@@ -849,7 +891,7 @@ export function reviewRows(
       promote: "promoted",
     };
     rows[JOB_OUTPUT_FILES.plans]?.push({
-      id: mintId("pln", runId, `backlog|${proposalId}|${operation}`),
+      id: mintId("pln", identity, `backlog|${proposalId}|${operation}`),
       kind: "backlog",
       subject_kind: "proposal",
       subject_id: proposalId,
