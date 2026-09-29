@@ -991,3 +991,27 @@
 .plugin-atyrode_babel_feed .babel-jev-position[data-standing="contested"] strong {
   color: var(--babel-warn-ink);
 }
+
+.plugin-atyrode_babel_feed .babel-duplicate-intent,
+.plugin-atyrode_babel_feed .babel-duplicate-effect,
+.plugin-atyrode_babel_feed .babel-duplicate-draft,
+.plugin-atyrode_babel_feed .babel-duplicate-saved {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plugin-atyrode_babel_feed .babel-duplicate-members,
+.plugin-atyrode_babel_feed .babel-duplicate-evidence {
+  display: grid;
+  gap: var(--babel-space-2);
+  padding-inline-start: var(--babel-space-4);
+}
+
+.plugin-atyrode_babel_feed .babel-duplicate-effect [data-exists="true"] {
+  color: var(--babel-ink-muted);
+}
+
+.plugin-atyrode_babel_feed .babel-duplicate-action[data-state="refused"] {
+  border-inline-start: 2px solid var(--babel-warn-ink);
+  padding-inline-start: var(--babel-space-2);
+}

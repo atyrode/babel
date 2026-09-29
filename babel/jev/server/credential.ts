@@ -28,7 +28,7 @@ import { JEV_SERVICE_ID } from "../../contract.ts";
   nowhere else. A projected operation discloses strictly less in both directions: fixed leaves in,
   fixed leaf paths out, rather than a body and a stream.
 
-  WHAT THE PART DECLARES is the four names below and `services:invoke` in its manifest. What the
+  WHAT THE PART DECLARES is the service vocabulary below and `services:invoke` in its manifest. What the
   OPERATOR installs is the policy behind them: the origin, the credential reference, the question
   literals the bank supplies, the response projection and the prices. That split is the point —
   the part holds no value, and a policy is revisioned and consented, so a question's wording or a
@@ -77,13 +77,12 @@ export const JEV_SERVICE = {
   /**
    * The operations the part may name. A policy may declare more; the part calls these.
    *
-   * `pair` is a SECOND operation rather than a second question on the first, because the first
-   * carries ONE state and a relation is asked of two. `bun babel/jev/tools/seed-questions.ts
-   * policy` prints the literals and the projection for both; a deployment whose policy declares
-   * only `judge` reaches nothing here — the host refuses an operation the policy does not
-   * declare, which lands in `askJev`'s one absence like every other.
+   * `pair` carries two states for contradiction and supersession; `duplicate` carries the same
+   * input shape under its own same-claim question and projection. An existing pair policy must
+   * not silently stand in for the duplicate policy. `bun babel/jev/tools/seed-questions.ts
+   * policy` prints the literals for all three; an undeclared operation is the usual absence.
    */
-  operations: { judge: "judge", pair: "pair" },
+  operations: { judge: "judge", pair: "pair", duplicate: "duplicate" },
   /** Jev's own word for the material a question is asked of, and the one field a caller fills. */
   stateField: "state",
   /**

@@ -34,6 +34,9 @@ import {
   UNHEARD_AFTER_MS,
   ARCHIVE_LABELS_REPORTED,
   NextActionSchema,
+  DuplicateIntentSchema,
+  REFINEMENT_KEY,
+  RefinementSchema,
   REPOSITORY_PROVENANCES,
   ROLES,
   RULINGS,
@@ -1008,6 +1011,23 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
 
     const repository = await repositoryOf(id);
     const challenges = (await readChallenges(db, id)).get(id);
+    const plan = await planOf(id);
+    let proposalIntent: RecordPeel["proposalIntent"];
+    if (kind === "proposal") {
+      if (RefinementSchema.safeParse(payload[REFINEMENT_KEY]).success) {
+        proposalIntent = { kind: "record-refinement" };
+      } else if (plan?.kind === "backlog") {
+        proposalIntent = { kind: "backlog", operation: plan.operation };
+      } else if (
+        plan?.kind === "topic" &&
+        (plan.operation === "create" ||
+          plan.operation === "split" ||
+          plan.operation === "merge" ||
+          plan.operation === "retire")
+      ) {
+        proposalIntent = { kind: "topic", operation: plan.operation };
+      }
+    }
     return {
       post: { ...post, challenges: challenges?.summary ?? { objections: 0, distinctRuns: 0 } },
       claim: { statement: claimOf(kind, payload, text(row["title"])), standing, act },
@@ -1019,7 +1039,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       reception: await receptionOf(id),
       machinery: await machineryOf(row, payload, repository),
       related: await relatedOf(id, text(row["run_id"]), text(row["supersedes_id"])),
-      plan: await planOf(id),
+      plan,
+      ...(proposalIntent === undefined ? {} : { proposalIntent }),
       nextActions: await nextActionsOf(id),
     };
   };
@@ -1044,9 +1065,14 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    */
   const corroborationOf = async (id: string): Promise<RecordPeel["corroboration"]> => {
     const row = await one(
-      `SELECT COUNT(*) AS supports, COUNT(DISTINCT r.run_id) AS runs
+      `SELECT CASE WHEN MAX(e.kind = 'corroborates') = 1
+                   THEN COUNT(DISTINCT r.id) ELSE COUNT(*) END AS supports,
+              CASE WHEN MAX(e.kind = 'corroborates') = 1
+                   THEN COUNT(DISTINCT NULLIF(r.run_id, ''))
+                   ELSE COUNT(DISTINCT r.run_id) END AS runs
          FROM edges e JOIN records r ON r.id = e.to_id
-        WHERE e.from_id = ? AND e.kind IN ('consolidates','addresses')`,
+        WHERE e.from_id = ? AND (e.kind IN ('consolidates','addresses')
+          OR (e.kind = 'corroborates' AND e.to_kind = r.kind))`,
       [id],
     );
     return { supports: count(row?.["supports"]), distinctRuns: count(row?.["runs"]) };
@@ -1073,7 +1099,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   const nextActionsOf = async (id: string): Promise<RecordPeel["nextActions"]> => {
     const proposed = await db.query(
       `SELECT id, kind, summary, proposed_by_id,
-              COALESCE(json_extract(payload, '$.rationale'), '') AS rationale, created_at
+              COALESCE(json_extract(payload, '$.rationale'), '') AS rationale, created_at,
+              json_extract(payload, '$.intent') AS intent
          FROM next_actions
         WHERE record_id = ?
           AND NOT EXISTS (SELECT 1 FROM next_actions s
@@ -1114,6 +1141,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       if (!kind.success) continue;
       const of = text(row["id"]);
       const entries = history[of] ?? [];
+      const intent = DuplicateIntentSchema.safeParse(
+        row["intent"] === null ? undefined : JSON.parse(text(row["intent"])),
+      );
       out.push({
         id: of,
         kind: kind.data,
@@ -1123,6 +1153,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         at: text(row["created_at"]),
         standing: entries[0]?.decision ?? "proposed",
         history: entries,
+        ...(intent.success ? { intent: intent.data } : {}),
       });
     }
     return out;

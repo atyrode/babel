@@ -2,12 +2,12 @@
   "id": "atyrode.babel.jev",
   "version": "0.1.0",
   "title": "Jev",
-  "description": "Typed judgement over Babel records, as an independently optional part. It holds no store or panel and only reading and judgement-service authority. It reaches the baseline through doors: voters propose next actions for operator delivery, and cached current readings may prioritize the shared review draw through an authenticated ephemeral handoff. Missing or disabled readings retain baseline selection; funding is unknown. Jev cannot rule, change feed rank, withhold work or launch a session.",
+  "description": "Optional typed judgement over Babel records: per-record voters, pair relations and bounded duplicate-cluster proposals. Free plans precede explicit paid judgement. It holds no store, panel or write authority. Suggestions return for separate operator delivery; cached current readings may prioritize the shared review draw through an authenticated ephemeral handoff. Missing or disabled readings retain baseline selection; funding is unknown. Jev cannot rule, apply links, change feed rank, withhold work or launch a session.",
   "capabilities": ["containers:read", "services:invoke"],
   "dependencies": {
     "atyrode.babel": {
       "type": "required",
-      "reason": "every record it judges and every assessment it writes is read and written through babel's doors"
+      "reason": "every candidate, immutable revision and provenance is read through Babel's doors; suggestions return to the caller and Jev writes nothing"
     }
   },
   "contributes": {

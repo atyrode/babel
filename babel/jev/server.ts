@@ -1,12 +1,13 @@
 import { defineServerPlugin, type ServerPluginDef } from "@manifold/plugin-kit/server";
 import { PluginManifestSchema } from "@manifold/protocol";
 import manifestJson from "./manifest.json";
+import { DUPLICATE_ACTIONS, DUPLICATE_HANDLERS } from "./duplicates/doors.ts";
 import { PAIR_ACTIONS, PAIR_HANDLERS } from "./pairs/doors.ts";
 import { SWEEP_ACTIONS, SWEEP_HANDLERS } from "./sweep/doors.ts";
 import { refreshReviewReadingsAction, REVIEW_READING_HANDLERS } from "./review-readings.ts";
 
 /*
-  THE SERVER HALF OF atyrode.babel.jev, AND THE THREE DOORS ITS PASSES ARE DRIVEN THROUGH.
+  THE SERVER HALF OF atyrode.babel.jev, AND THE READ-ONLY DOORS ITS PASSES ARE DRIVEN THROUGH.
 
   Jev is a part: typed judgement over the records the baseline holds, enabled and removed on its
   own. Babel never depends on it: without current cached advice its draw is unchanged. A sweep
@@ -23,6 +24,12 @@ import { refreshReviewReadingsAction, REVIEW_READING_HANDLERS } from "./review-r
   operation, `pair`: the per-record `judge` operation carries one state and projects the
   per-record leaves, so asking it about two records would send half a pair and read a relation
   off a projection that never names one (`pairs/ask.ts`).
+
+  DUPLICATES (#359) HAVE THEIR OWN FREE PLAN AND EXPLICIT JUDGEMENT. The baseline's read door
+  supplies retained, live, unruly candidates and their immutable provenance. The part rereads
+  their exact ids and fingerprints before paying, then returns one advisory suggestion per
+  completely supported connected cluster. Its `duplicate` service operation cannot be confused
+  with either existing policy. No part of this pass submits or applies a suggestion.
 
   IT HOLDS TWO AUTHORITIES, AND EACH ARRIVED WITH THE CHILD THAT SPENDS IT. `services:invoke` is
   the judgement call. The key Jev is reached with is the operator's; the part names the service
@@ -61,7 +68,7 @@ import { refreshReviewReadingsAction, REVIEW_READING_HANDLERS } from "./review-r
   rather than on a capability — and the missing piece is a host mechanism that admits that one
   write without the rest, open upstream as atyrode/manifold#770. So NOTHING IN THIS BUNDLE CALLS
   IT: `screen/pass.ts` hands each suggestion to a caller-supplied function, and `sweep/sweep.ts`
-  and `pairs/pass.ts` hand the resulting rows back to whoever knocked.
+  and `pairs/pass.ts` and `duplicates/pass.ts` hand the resulting rows back to whoever knocked.
   `test/part-ceiling.test.ts` holds the refusal the part would meet if it tried.
 
   WHAT #432 CHANGED ABOUT THAT ROW, and it is the pair door's own requirement rather than a
@@ -155,11 +162,17 @@ export {
   type PairProposal,
   type PairSearch,
 } from "./pairs/propose.ts";
+export { duplicates, duplicatesPlan, type DuplicateDeps } from "./duplicates/pass.ts";
 
 export const plugin: ServerPluginDef = {
   manifest: PluginManifestSchema.parse(manifestJson),
-  actions: [...SWEEP_ACTIONS, ...PAIR_ACTIONS, refreshReviewReadingsAction],
-  handlers: { ...SWEEP_HANDLERS, ...PAIR_HANDLERS, ...REVIEW_READING_HANDLERS },
+  actions: [...SWEEP_ACTIONS, ...PAIR_ACTIONS, ...DUPLICATE_ACTIONS, refreshReviewReadingsAction],
+  handlers: {
+    ...SWEEP_HANDLERS,
+    ...PAIR_HANDLERS,
+    ...DUPLICATE_HANDLERS,
+    ...REVIEW_READING_HANDLERS,
+  },
 };
 
 export default plugin;

@@ -292,6 +292,14 @@ suggested by one or more findings, or by the candidate beside it. It contains:
 
 A proposal is not an issue, document or instruction and has no external side effect.
 
+The broad proposal category does not identify an operation. Its declared topic plan distinguishes
+create, split, merge and retire; its refinement payload identifies a record refinement. An
+unspecified historical proposal stays a generic improvement, never classified from its title.
+Duplicate-record maintenance instead carries the typed `merge-duplicate-records` intent on an
+ordinary next-action suggestion. It is not a topic merge. Intent, projection destination and
+execution authorization are separate: rendering an issue, operator note or agent brief grants no
+authority to publish, edit a repository or launch work.
+
 ### 4.6 Output projections
 
 A proposal can be rendered for a destination: a sanitized issue draft, a cross-system improvement
@@ -527,6 +535,43 @@ The caller supplies measured confidence cuts; an unstated cut is uncalibrated an
 judgement on its own. Contradictions propose beside both records without choosing a winner;
 supersession proposes only beside the stale one. Suggestions distinguish the counterpart and the
 independent relation, so neither arrival order nor a second counterpart can erase another finding.
+
+**Duplicate clusters have an explicit operator-only link action.** A free retained-corpus plan
+pages at most 24 eligible live records, including imported records, or snapshots an explicitly
+named bounded set. It reports the candidate-pair ceiling and an upper bound on new suggestions,
+not a detection count. Every member carries its exact revision, content/provenance fingerprint,
+original run and source-session identities. The operator explicitly supplies a confidence cut and
+a budget of at most 64 pair judgements. This is a bounded cohort, not an exhaustive all-pairs
+survey; unknown or conflicting pair evidence cannot silently become a duplicate relationship.
+
+Jev returns one advisory typed intent per detected cluster: exact members, pair evidence, a
+proposed representative and an independence audit. Records, distinct known runs and distinct
+known source sessions are different counts, with missing provenance stated separately. Repeating
+a record within one run is not independent corroboration; neither a model confidence nor an
+edge weight is stored as support. The caller inspects the exact suggestion count and contents
+before submitting through the existing allow-listed suggestion door. Jev holds no store,
+record-writing, edge-writing or ruling authority.
+
+Provenance follows parented observations as well as outgoing support edges, with cycles visited
+once and shared source sessions counted once. Attaching a child observation or adding its
+citation changes the ancestor's fingerprint and invalidates a held preview, including inside the
+atomic application guard.
+
+The ordinary next-action accept/decline ledger remains inert. Separately, the authenticated owner
+previews the exact directed `corroborates` links from the proposed representative to the other
+members and explicitly confirms their application. The apply door revalidates every member's
+fingerprint, revision, provenance and eligibility inside the atomic write; a stale or refused
+request leaves the graph unchanged. Existing links are identified before confirmation and never
+duplicated. Application appends an attributable immutable receipt and preserves every original
+record, disposition and history. Repeating the same confirmed request returns that durable result,
+not new links or a fresh operator attribution. Corrections retain prior evidence rather than
+deleting it. Support remains derived from typed links and original run identities, never a stored
+score.
+
+Absent, disabled or unfunded Jev contributes no duplicate section, suggestions or paid work.
+Baseline door shapes, rankings and conductor pace do not depend on it. Completed suggestions and
+application receipts remain readable even if Jev is removed. No live corpus sweep or inference is
+implied by installing these source changes.
 
 Learning from operator feedback preserves its meaning and scope. "Not now," "wrong problem," and
 "right problem, wrong remedy" are different reasons, not one negative signal. An opened card, a

@@ -32,6 +32,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   definitive refusal, lost answers, Stop/restart and late terminal receipts. Live throughput
   acceptance remains separate from these isolated data-path proofs.
 
+### Added
+
+- **Duplicate clusters have a separate, explicit operator link action (#359).** A free bounded
+  retained-corpus plan and optional Jev judgement produce one typed suggestion per cluster, with
+  exact member fingerprints, pair evidence, a representative and distinct-run/source accounting.
+  Feed previews the precise corroboration links before confirmation; the owner-only apply door
+  rechecks members and existing links atomically, preserves every original record, and returns
+  the same durable receipt on repetition. Generic next-action acceptance remains ledger-only,
+  topic plans and record refinements keep their own intent, and projection grants no execution
+  authority. Provenance snapshots include parented observations as well as support edges, so a
+  newly attached child citation invalidates held previews and racing applications without
+  inflating shared-source support. Deterministic fixtures cover stale and malicious inputs,
+  partial provenance, transactional refusal, replay, optional fallback and rendered confirmation
+  states. A disposable real-store door smoke traced two child sources across two same-run
+  hypotheses, refused a non-owner, applied one link and replayed its receipt while preserving
+  all four original records. No paid corpus sweep or deployment is implied.
+
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain
   and bind the recovered session atomically. Uncertain posts hold their reservation and machine

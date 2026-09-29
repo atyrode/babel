@@ -87,6 +87,7 @@ export function suggestDoors(store: ActsStore): readonly Door[] {
               summary: args.summary,
               rationale: args.rationale,
               basis: args.basis,
+              intent: args.intent,
             },
             ctx.principal.id,
           );

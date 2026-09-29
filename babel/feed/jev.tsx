@@ -15,6 +15,7 @@ import {
   type Swept,
 } from "../contract.ts";
 import { refusal } from "./api.ts";
+import { JevDuplicates } from "./duplicates.tsx";
 
 // Readings belong to this browser connection, not to Babel's store or rankings. A reload loses
 // them; delivered suggestions remain durable. Never share a reading across hub connections.
@@ -107,8 +108,18 @@ export function JevPosition({
   );
 }
 
+/** Both optional readers disappear when their free plan says the service is unavailable. */
+export function JevSweep({ host }: { host: HostServices }): ReactElement {
+  return (
+    <>
+      <JevCorpusSweep host={host} />
+      <JevDuplicates host={host} />
+    </>
+  );
+}
+
 /** No read spends. Only the explicit sweep press invokes Jev; delivery is another explicit act. */
-export function JevSweep({ host }: { host: HostServices }): ReactElement | null {
+function JevCorpusSweep({ host }: { host: HostServices }): ReactElement | null {
   const value = readings(host);
   const [running, setRunning] = useState(false);
   const [submitting, setSubmitting] = useState(false);

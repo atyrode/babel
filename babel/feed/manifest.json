@@ -11,7 +11,7 @@
     },
     "atyrode.babel.jev": {
       "type": "optional",
-      "reason": "explicit corpus judgement and independent voter readings, absent without Jev"
+      "reason": "explicit bounded duplicate judgement and corpus voter readings; no model work on open, no authority to apply"
     }
   },
   "contributes": {

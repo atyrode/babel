@@ -25,7 +25,9 @@ export const FEED_PLUGIN_ID = "atyrode.babel.feed";
 export const WATCH_PLUGIN_ID = "atyrode.babel.watch";
 /**
  * The optional judgement part. The baseline authenticates its ephemeral reading handoff by
- * this name, but never calls or imports the part. Removing it leaves the ordinary draw intact.
+ * this name, but never calls or imports the part. Feed may ask its advisory doors, hiding that
+ * surface when it cannot answer. Removing it leaves the ordinary draw intact and grants no
+ * execution authority.
  */
 export const JEV_PLUGIN_ID = "atyrode.babel.jev";
 
@@ -436,6 +438,11 @@ export const ACTIONS = {
    */
   suggest: "suggest",
   suggestions: "suggestions",
+  /** Bounded retained-corpus snapshots; no judgement or write. */
+  duplicatePlan: "duplicatePlan",
+  /** Owner-only exact link preview and separately confirmed graph application. */
+  duplicatePreview: "duplicatePreview",
+  duplicateApply: "duplicateApply",
   /**
    * RENDERING A RECORD FOR A DESTINATION (§4.6): a sanitized issue draft, an agent brief, or an
    * operator note. The answer is a filename and its text — a file the operator takes. There is
@@ -700,6 +707,105 @@ export type FeedResult = z.infer<typeof FeedResultSchema>;
 
 // ---------------------------------------------------------------------------- the record
 
+/**
+ * Duplicate-record maintenance is a typed intent carried by an ordinary suggestion, not a
+ * sixth destination or a topic merge. None of these documents is execution authority.
+ */
+export const DUPLICATE_CLUSTER_MEMBERS = 24;
+export const DUPLICATE_JUDGEMENTS = 64;
+export const DUPLICATE_QUESTION = "duplicate";
+export const DuplicateMemberSchema = z.strictObject({
+  recordId: RecordIdSchema,
+  revision: z.number().int().nonnegative(),
+  fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  kind: RecordKindSchema,
+  runId: z.string(),
+  sourceIds: z.array(z.string().min(1)).max(512),
+  /** Distinct cited session identities that could not be resolved, never counted as sources. */
+  unresolvedSources: z.number().int().nonnegative(),
+});
+export type DuplicateMember = z.infer<typeof DuplicateMemberSchema>;
+export const DuplicateIntentSchema = z.strictObject({
+  kind: z.literal("merge-duplicate-records"),
+  representative: RecordIdSchema,
+  members: z.array(DuplicateMemberSchema).min(2).max(DUPLICATE_CLUSTER_MEMBERS),
+  pairs: z
+    .array(z.strictObject({ a: RecordIdSchema, b: RecordIdSchema, evidence: bounded(2000) }))
+    .min(1)
+    .max((DUPLICATE_CLUSTER_MEMBERS * (DUPLICATE_CLUSTER_MEMBERS - 1)) / 2),
+  audit: z.strictObject({
+    records: z.number().int().nonnegative(),
+    distinctRuns: z.number().int().nonnegative(),
+    distinctSources: z.number().int().nonnegative(),
+    missingRuns: z.number().int().nonnegative(),
+    /** Members with no known sources or with at least one unresolved source citation. */
+    missingSources: z.number().int().nonnegative(),
+  }),
+});
+export type DuplicateIntent = z.infer<typeof DuplicateIntentSchema>;
+
+/** Inferred only from declared plans/refinement payloads, never from titles or prose. */
+export const ProposalIntentSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("generic-improvement") }),
+  z.strictObject({ kind: z.literal("record-refinement") }),
+  z.strictObject({
+    kind: z.literal("topic"),
+    operation: z.enum(["create", "split", "merge", "retire"]),
+  }),
+  z.strictObject({ kind: z.literal("backlog"), operation: z.string() }),
+]);
+
+export const DuplicatePlanInputSchema = z.strictObject({
+  after: z.string().max(100).default(""),
+  limit: z.number().int().min(1).max(DUPLICATE_CLUSTER_MEMBERS).default(DUPLICATE_CLUSTER_MEMBERS),
+  ids: z.array(RecordIdSchema).max(DUPLICATE_CLUSTER_MEMBERS).default([]),
+});
+export type DuplicatePlanInput = z.infer<typeof DuplicatePlanInputSchema>;
+export const DuplicatePlanSchema = z.strictObject({
+  candidates: z
+    .array(DuplicateMemberSchema.extend({ title: z.string(), claim: z.string() }))
+    .max(DUPLICATE_CLUSTER_MEMBERS),
+  eligible: z.number().int().nonnegative(),
+  continuation: z.string(),
+  maxPairs: z.number().int().nonnegative(),
+  newSuggestionsUpperBound: z.number().int().nonnegative(),
+});
+export type DuplicatePlan = z.infer<typeof DuplicatePlanSchema>;
+export const DuplicatePreviewInputSchema = z.strictObject({
+  nextActionId: z.string().regex(/^nxt_[0-9a-f]{8,64}$/),
+});
+const DuplicateLinkSchema = z.strictObject({
+  fromId: RecordIdSchema,
+  toId: RecordIdSchema,
+  kind: z.literal("corroborates"),
+});
+export const DuplicateAppliedSchema = z.strictObject({
+  nextActionId: z.string(),
+  recordId: RecordIdSchema,
+  operatorId: z.string(),
+  at: z.string(),
+  links: z.array(DuplicateLinkSchema).max(DUPLICATE_CLUSTER_MEMBERS - 1),
+});
+export type DuplicateApplied = z.infer<typeof DuplicateAppliedSchema>;
+export const DuplicatePreviewSchema = z.strictObject({
+  nextActionId: z.string(),
+  recordId: RecordIdSchema,
+  intent: DuplicateIntentSchema,
+  fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  links: z
+    .array(DuplicateLinkSchema.extend({ exists: z.boolean() }))
+    .max(DUPLICATE_CLUSTER_MEMBERS - 1),
+  state: z.enum(["ready", "applied", "refused"]),
+  reason: z.string(),
+  application: DuplicateAppliedSchema.nullable(),
+});
+export type DuplicatePreview = z.infer<typeof DuplicatePreviewSchema>;
+export const DuplicateApplyInputSchema = DuplicatePreviewInputSchema.extend({
+  fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  confirm: z.literal(true),
+});
+export type DuplicateApplyInput = z.infer<typeof DuplicateApplyInputSchema>;
+
 export const RecordQuerySchema = z.strictObject({ id: RecordIdSchema });
 
 /**
@@ -803,6 +909,8 @@ export const RecordPeelSchema = z.strictObject({
   plan: z
     .strictObject({ kind: z.enum(["topic", "backlog"]), operation: z.string(), state: z.string() })
     .nullable(),
+  /** Absent on old/unspecified proposals; absence never implies a topic operation. */
+  proposalIntent: ProposalIntentSchema.optional(),
   /**
    * WHAT A RUN PROPOSED BE DONE ABOUT THIS RECORD, and what the operator answered (#340).
    *
@@ -821,6 +929,7 @@ export const RecordPeelSchema = z.strictObject({
       kind: NextActionSchema,
       summary: z.string(),
       rationale: z.string(),
+      intent: DuplicateIntentSchema.optional(),
       /** The run that proposed it, which is what makes an acceptance rate readable by lens. */
       proposedBy: z.string(),
       at: z.string(),
@@ -1349,7 +1458,10 @@ export const SuggestInputSchema = z.strictObject({
    * lie. Empty is a suggester whose rules carry no version, and for it this changes nothing.
    */
   basis: z.string().max(64).default(""),
+  /** Advisory only. Applying it requires the separate authenticated preview/apply doors. */
+  intent: DuplicateIntentSchema.optional(),
 });
+export type SuggestInput = z.infer<typeof SuggestInputSchema>;
 
 export const SuggestedSchema = z.strictObject({
   id: z.string(),
@@ -1475,6 +1587,8 @@ export const JEV_ACTIONS = {
    * hand back what a caller may deliver. Reads and spends; writes nothing, like the two above.
    */
   pairs: "pairs",
+  duplicatesPlan: "duplicatesPlan",
+  duplicates: "duplicates",
 } as const;
 export type JevActionName = (typeof JEV_ACTIONS)[keyof typeof JEV_ACTIONS];
 
@@ -1827,6 +1941,28 @@ export const PairsReportSchema = z.strictObject({
   stopped: z.string(),
 });
 export type PairsReport = z.infer<typeof PairsReportSchema>;
+
+// Duplicate-cluster planning is free. Judgement is bounded and explicit; delivery is separate.
+export const DuplicateSweepPlanSchema = z.strictObject({
+  plan: DuplicatePlanSchema.nullable(),
+  silent: z.string(),
+});
+export type DuplicateSweepPlan = z.infer<typeof DuplicateSweepPlanSchema>;
+export const DuplicateSweepInputSchema = z.strictObject({
+  members: z.array(DuplicateMemberSchema).min(2).max(DUPLICATE_CLUSTER_MEMBERS),
+  cut: z.number().min(0).max(1),
+  judgements: z.number().int().min(1).max(DUPLICATE_JUDGEMENTS).default(DUPLICATE_JUDGEMENTS),
+});
+export type DuplicateSweepInput = z.infer<typeof DuplicateSweepInputSchema>;
+export const DuplicateSweepReportSchema = z.strictObject({
+  candidates: z.number().int().nonnegative(),
+  attempted: z.number().int().nonnegative(),
+  judged: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  suggestions: z.array(SuggestInputSchema).max(Math.floor(DUPLICATE_CLUSTER_MEMBERS / 2)),
+  stopped: z.string(),
+});
+export type DuplicateSweepReport = z.infer<typeof DuplicateSweepReportSchema>;
 
 // ------------------------------------------------------------------- what a draw answers
 

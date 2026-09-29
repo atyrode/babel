@@ -6,6 +6,7 @@ import { actDoors } from "./acts.ts";
 import { citationFactDoors } from "./citation-facts.ts";
 import type { Door } from "./door.ts";
 import { drainDoors, type DrainDoorDeps } from "./drain.ts";
+import { duplicateDoors } from "./duplicates.ts";
 import { exportDoors } from "./export.ts";
 import { launchDoors, mapCatalogDoor, type LaunchDeps } from "./launch.ts";
 import { readDoors } from "./read.ts";
@@ -75,6 +76,7 @@ export function babelDoors(
     reviewReadingsDoor(readings),
     ...actDoors(store, concurrentJobs, deps.jobs),
     ...suggestDoors(store),
+    ...duplicateDoors(store),
     ...exportDoors(store),
     ...launchDoors(store, deps),
     mapCatalogDoor(deps.coordinator, advanceCatalog),

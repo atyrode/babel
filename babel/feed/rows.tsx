@@ -215,7 +215,7 @@ export interface Acted {
  * budget is one line of claim and at most three facts (§8.6), so a proposal is never offered
  * where the record it is about has not been read.
  */
-export type ActedKind = RuleAct | "answer" | "decide";
+export type ActedKind = RuleAct | "answer" | "decide" | "duplicateApply";
 
 export interface ActedHandler {
   (act: ActedKind, done: string, message: string): void;
