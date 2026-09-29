@@ -891,10 +891,12 @@ preparation there and a posted session through Code.
 >    shows profiles rather than a refusal sentence.
 > 4. **The pinned Code takes Babel's prompt.** `runSession` bounds a prompt at `PROMPT_MAX_BYTES` —
 >    omp's own constant, re-exported by Code, counted in encoded bytes — and Babel's composed explore
->    prompt is about 33,700, so it fits with room to spare. A selection far larger than the presets',
->    or a corpus of non-ASCII selectors, is how that stops being true. **Success:** no run in the
->    drain closes `prompt_too_large`; if one does, the row carries both figures, and what moves is
->    Code's bound or the analysis contract, never a narrower window.
+>    prompt is about 17,900 bytes before its recipes, so a drain naming one recipe the seed enables
+>    fits beside any remarks the operator can record. A drain naming several recipes, or none (which
+>    is every recipe the hub holds), or a corpus of non-ASCII selectors, is how that stops being
+>    true. **Success:** no run in the drain closes `prompt_too_large`; if one does, the row carries
+>    both figures, and what moves is Code's bound or the recipes the drain names, never a narrower
+>    window.
 > 5. **The drain's machine reads the archive.** Every job the drain posts prepares from archived
 >    captures on that machine, so an archive it cannot read refuses every one of them whole.
 >    **Success:** the machine meets §6, its newest `catalog` receipt settled `completed` with

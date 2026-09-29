@@ -20,6 +20,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   output with the new declaration while a sibling writer remains. Cache and source mounts,
   material exports and archive custody are unchanged; live rollout is verified separately.
 
+- **Analysis prompts fit Code's bound without cutting their contents.** An explore on the
+  2026-09-29 preview closed `prompt_too_large` after preparing material: its 54,523-byte prompt
+  exceeded the 45,056 bytes `runSession` accepts. Stage schemas now use compact JSON and zod's
+  shared `$defs`; resolving those references reproduces the previous schema exactly. Challenge
+  and synthesis choose fewer whole records when necessary, using the same prompt composer and
+  byte count as launch. A record or minimum synthesis pair that cannot fit produces an
+  `unsupported` draw gap before preparation, with the actual size and bound. Recipes, schemas
+  and carried remarks are preserved whole. Reproductions under every enabled seed recipe and
+  maximal multibyte remarks fit all three stages; the largest explore is 43,580 bytes. Focused
+  prompt, selection and result-schema regressions pass, including oversized records and pairs.
+
 ## [0.5.6] - 2026-09-29
 
 ### Fixed

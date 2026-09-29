@@ -48,7 +48,7 @@ import { perMachineBound, type Coordinator, type Policy } from "../store/coordin
 import { runningDrainHoldsRun } from "../store/drains.ts";
 import {
   carriedSteering,
-  composeExplorePrompt,
+  composeAnalysisPrompt,
   PARAM,
   PROMPT_VERSION,
   type Recipe,
@@ -1630,47 +1630,24 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     // `policy` door reads them back; this is that same read and there is no second one. The
     // prompt quotes a bounded selection of them as evidence — `carriedSteering` is the rule —
     // and the same call says which ones, so the receipt records what the run was told.
+    //
+    // The composition is the one the coordinator measured the brief against when it chose it
+    // (`analysisPromptBytes`), so a brief chosen to fit is posted whole.
     const told = (await store.policy()).steering;
-    const params = {
-      [PARAM.stage]: analysis?.stage ?? "explore",
-      [PARAM.briefHypotheses]:
-        analysis?.brief
-          .filter((record) => record.kind === "hypothesis")
-          .map((record) => record.id)
-          .join(",") ?? "",
-      [PARAM.briefObservations]:
-        analysis?.brief
-          .filter((record) => record.kind === "observation" && record.objectionTo.length === 0)
-          .map((record) => record.id)
-          .join(",") ?? "",
-      [PARAM.briefObjections]:
-        analysis?.brief
-          .filter((record) => record.objectionTo.length > 0)
-          .map((record) => record.id)
-          .join(",") ?? "",
-      [PARAM.runId]: run.id,
-      [PARAM.preparation]: material.preparationId,
-    };
+    const { prompt, params } = composeAnalysisPrompt({
+      stage: analysis?.stage ?? "explore",
+      recipes,
+      brief: analysis?.brief,
+      sessions: material.sessions.map((entry) => ({
+        selector: entry.selector,
+        file: entry.file,
+      })),
+      preparationId: material.preparationId,
+      runId: run.id,
+      steering: told,
+    });
     return {
-      prompt: composeExplorePrompt({
-        stage: analysis?.stage ?? "explore",
-        ...(analysis === undefined
-          ? {}
-          : {
-              related: {
-                framing: "Untrusted prior claims offered to this stage; not newly served evidence.",
-                records: analysis.brief,
-              },
-            }),
-        recipes,
-        sessions: material.sessions.map((entry) => ({
-          selector: entry.selector,
-          file: entry.file,
-        })),
-        preparationId: material.preparationId,
-        params,
-        steering: told,
-      }),
+      prompt,
       // WHAT THE PROMPT QUOTED HIM AS SAYING, ONTO THE RUN ROW (#331). The run's own document
       // is the only thing that reaches the settlement — the prompt is Code's job's input and
       // nothing reads it back — and the settlement is where the receipt is written.
@@ -2171,9 +2148,10 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         CODE BOUNDS A SESSION'S PROMPT IN BYTES, and the bound is the hub's own: a prompt is
         carried in the 64 KiB job-input map, which counts ENCODED bytes — so a character
         check would pass a prompt of legal length whose selectors and digests are multi-byte
-        and have it refused at admission instead. Babel's composed prompt fits with room to
-        spare; this stays because a longer contract, a bigger selection or a corpus of
-        non-ASCII selectors is how it would stop fitting.
+        and have it refused at admission instead. An analysis brief is chosen to fit this
+        bound (`store/analysis.ts`), measured by the same composition; what can still pass it
+        is an operator's explore over several recipes, or remarks the operator added after the
+        brief was chosen.
 
         Measured here, against CODE'S OWN published number, the run closes with both figures
         on it; left to Code's parse it closes with a Zod issue inside a sentence about a door
@@ -2186,9 +2164,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         if (bytes > PROMPT_LIMIT) {
           const reason =
             `prompt_too_large: this run's prompt is ${String(bytes)} bytes and ` +
-            `${CODE_PLUGIN_ID}.runSession takes ${String(PROMPT_LIMIT)}. The analysis contract ` +
-            `and the stage's schema are most of it, so what moves is Code's bound or the ` +
-            `contract itself — not this selection.`;
+            `${CODE_PLUGIN_ID}.runSession takes ${String(PROMPT_LIMIT)}. Nothing in it is cut ` +
+            `to fit: an analysis brief is chosen to fit, so what outgrew the bound is the ` +
+            `recipes or the operator's remarks.`;
           posted.push(...(await close(run, at, reason)));
           continue;
         }
