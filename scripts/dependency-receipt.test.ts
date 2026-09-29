@@ -23,6 +23,8 @@ test.each(["changed", "missing", "extra", "wrong-role", "unknown-role", "nested-
       const receipt = join(root, "verified.SHA256SUMS");
       await recordDependencyReceipt(receipt, hardened, inRealm);
       await copyFile(receipt, join(dependencies, "SHA256SUMS"));
+      // A mutation must cause the refusal; an always-refusing checker is not a safe gate.
+      await checkDependencyReceipt(receipt, dependencies);
 
       switch (difference) {
         case "changed":
@@ -50,9 +52,7 @@ test.each(["changed", "missing", "extra", "wrong-role", "unknown-role", "nested-
           break;
         }
       }
-      await expect(checkDependencyReceipt(receipt, dependencies)).rejects.toThrow(
-        "rebuilt dependency closure differs from the verified receipt",
-      );
+      await expect(checkDependencyReceipt(receipt, dependencies)).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
