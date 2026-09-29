@@ -318,29 +318,71 @@ test("a policy installed whose credential the machine does not hold is not the s
   expect(amber.services[0]?.reason).toContain("not allowed for this origin");
 });
 
-test("an install swaps on the revision it previewed and leaves every other policy alone", async () => {
+test.each([
+  [ORIGIN, false],
+  ["http://127.0.0.1:7811", true],
+  ["http://[::1]:7811", true],
+] as const)(
+  "an install from %s swaps the previewed revision and preserves unrelated policies",
+  async (origin, allowLoopbackHttp) => {
+    const fleet = hub({ read: { configuration: { revision: REVISION, policies: [FOREIGN] } } });
+    const args = {
+      machineId: MACHINE,
+      origins: [{ serviceId: RESTIC_SERVICE.serviceId, origin }],
+    };
+    const preview = (await answer(ACTIONS.previewServices, fleet.ctx, args)) as unknown as {
+      previewDigest: string;
+    };
+    const installed = (await answer(ACTIONS.installServices, fleet.ctx, {
+      ...args,
+      expectedRevision: REVISION,
+      previewDigest: preview.previewDigest,
+    })) as unknown as { machineId: string; revision: string | null; services: unknown[] };
+    expect(fleet.configures).toEqual([
+      {
+        machineId: MACHINE,
+        expectedRevision: REVISION,
+        policies: [FOREIGN, { ...resticPolicy(), origin, allowLoopbackHttp }],
+      },
+    ]);
+    expect(installed.machineId).toBe(MACHINE);
+    expect(installed.revision).toBe(MOVED);
+    expect(installed.services).toEqual([
+      { serviceId: FOREIGN.serviceId, revision: FOREIGN.revision },
+      { serviceId: RESTIC_SERVICE.serviceId, revision: RESTIC_SERVICE.revision },
+    ]);
+  },
+);
+
+test.each([
+  "http://localhost:7811",
+  "http://store.example",
+  "http://127.0.0.2:7811",
+  "ftp://127.0.0.1:7811",
+  "http://127.0.0.1:7811/storage",
+  "https://store.example/",
+  "https://store.example?query=1",
+  "https://store.example#fragment",
+  "https://synthetic:never-a-real-secret@store.example",
+])("an unsupported origin is previewed as uncomposable and never installed: %s", async (origin) => {
   const fleet = hub({ read: { configuration: { revision: REVISION, policies: [FOREIGN] } } });
   const args = {
     machineId: MACHINE,
-    origins: [{ serviceId: RESTIC_SERVICE.serviceId, origin: ORIGIN }],
+    origins: [{ serviceId: RESTIC_SERVICE.serviceId, origin }],
   };
   const preview = (await answer(ACTIONS.previewServices, fleet.ctx, args)) as unknown as {
     previewDigest: string;
+    services: { reason: string }[];
   };
-  const installed = (await answer(ACTIONS.installServices, fleet.ctx, {
+  expect(preview.services[0]?.reason).toContain(RESTIC_SERVICE.serviceId);
+  expect(JSON.stringify(preview)).not.toContain("never-a-real-secret");
+  const refused = await refusal(ACTIONS.installServices, fleet.ctx, {
     ...args,
     expectedRevision: REVISION,
     previewDigest: preview.previewDigest,
-  })) as unknown as { machineId: string; revision: string | null; services: unknown[] };
-  expect(fleet.configures).toEqual([
-    { machineId: MACHINE, expectedRevision: REVISION, policies: [FOREIGN, resticPolicy()] },
-  ]);
-  expect(installed.machineId).toBe(MACHINE);
-  expect(installed.revision).toBe(MOVED);
-  expect(installed.services).toEqual([
-    { serviceId: FOREIGN.serviceId, revision: FOREIGN.revision },
-    { serviceId: RESTIC_SERVICE.serviceId, revision: RESTIC_SERVICE.revision },
-  ]);
+  });
+  expect(refused).toContain(RESTIC_SERVICE.serviceId);
+  expect(fleet.configures).toEqual([]);
 });
 
 test("a preview composed against a configuration that has since moved is refused, naming both", async () => {

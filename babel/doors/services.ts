@@ -197,18 +197,33 @@ export function composePolicy(declared: DeclaredService, origin: string): Compos
   if (origin === "") {
     return { policy: null, reason: `name the endpoint ${declared.serviceId} may reach` };
   }
-  return {
-    policy: ServicePolicySchema.parse({
-      serviceId: declared.serviceId,
-      revision: declared.revision,
-      origin,
-      allowLoopbackHttp: false,
-      credential: { ref: known.credential.ref, header: known.header, prefix: known.prefix },
-      maxConcurrent: known.maxConcurrent,
-      operations,
-    }),
-    reason: "",
-  };
+  // Match Manifold's ServicePolicySchema (47407b58, packages/protocol/src/services.ts:662-670).
+  // Names such as localhost are not loopback authority, and HTTPS keeps its existing digest.
+  const url = URL.canParse(origin) ? new URL(origin) : null;
+  const allowLoopbackHttp =
+    url?.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]");
+  const composed =
+    url === null
+      ? null
+      : ServicePolicySchema.safeParse({
+          serviceId: declared.serviceId,
+          revision: declared.revision,
+          origin,
+          allowLoopbackHttp,
+          credential: { ref: known.credential.ref, header: known.header, prefix: known.prefix },
+          maxConcurrent: known.maxConcurrent,
+          operations,
+        });
+  if (composed === null || !composed.success) {
+    return {
+      policy: null,
+      // Do not echo the rejected URL: it may contain credentials.
+      reason:
+        `${declared.serviceId} needs an https origin, or http on 127.0.0.1 or [::1], ` +
+        `with no path, query, fragment or credentials`,
+    };
+  }
+  return { policy: composed.data, reason: "" };
 }
 
 // ---------------------------------------------------------------------------- the preview

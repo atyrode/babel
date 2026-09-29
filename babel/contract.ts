@@ -2519,10 +2519,9 @@ export const RunStateSchema = z.enum(RUN_STATES);
 
 /**
  * WHICH OPERATION A PRESET BECOMES. It is here rather than beside the door's plan table because
- * the panel needs it too: `launch` declares `machines:run` at the operation node its arguments
- * name, so the caller has to build that node — the machine it picked and the operation its
- * preset runs — before it can knock. Two tables would be two answers to the same question, and
- * the one the panel held would be the one nobody checked.
+ * the panel needs it too: a supplied operation node must name the machine and operation its
+ * preset runs. Two tables would be two answers to the same question, and the one the panel
+ * held would be the one nobody checked.
  */
 export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> = {
   "read-whats-new": OPERATIONS.explore,
@@ -2611,19 +2610,19 @@ export const LaunchInputSchema = z.strictObject({
 export type LaunchInput = z.infer<typeof LaunchInputSchema>;
 
 /**
- * What the `launch` door takes: the request above, plus the OPERATION NODE it is asked at.
+ * What the `launch` door takes: the request above, optionally naming its OPERATION NODE.
  *
- * `launch` declares `machines:run`, which is governed: the engine grants it at a node and never
- * at a workspace, and the door's `requirements` name `operation` as the argument path the node
- * is read from — the host walks it through the RAW arguments and refuses `invalid authority
- * target` before the handler is entered. So the node is a field of the request rather than
- * something the door assembles: a reference the handler built would be a reference nobody
- * authorized the caller to name.
+ * No governed requirement is discharged at this input node: Babel's own jobs are authorized
+ * when posted, and Code owns the model session's operation. A request without a node uses the
+ * preset's own operation; one that supplies a different machine or operation is refused by
+ * the door rather than silently redirected.
  *
  * There is no dry preview beside it: what a run would cost is a composition's, and a
  * composition is Code's to make.
  */
-export const LaunchRequestSchema = LaunchInputSchema.extend({ operation: OperationRefSchema });
+export const LaunchRequestSchema = LaunchInputSchema.extend({
+  operation: OperationRefSchema.optional(),
+});
 export type LaunchRequest = z.infer<typeof LaunchRequestSchema>;
 
 /**
@@ -2636,9 +2635,9 @@ export type LaunchRequest = z.infer<typeof LaunchRequestSchema>;
  * revision the operator was shown.
  *
  * THE NODE IS DERIVED AND NEVER SUPPLIED. It is made of the two fields above it, and a caller
- * that assembled it itself and named the wrong operation for its preset would be refused
- * `invalid authority target` before the handler ran — a refusal that reads like a missing
- * grant. Deriving it here is the same reason {@link PRESET_OPERATIONS} is in this file at all.
+ * that assembled it itself and named the wrong operation for its preset would be refused by the
+ * door for asking at a node the request is not about. Deriving it here is the same reason
+ * {@link PRESET_OPERATIONS} is in this file at all.
  */
 export function asLaunchRequest(input: z.input<typeof LaunchInputSchema>): LaunchRequest {
   return LaunchRequestSchema.parse({
@@ -2696,8 +2695,8 @@ export const VerifyInputSchema = z.strictObject({
 });
 export type VerifyInput = z.infer<typeof VerifyInputSchema>;
 
-/** The request as the door takes it: the above plus the OPERATION NODE it is authorized at,
- *  for the reason {@link LaunchRequestSchema} carries one. */
+/** The verification request names the operation node it targets; the door refuses a node that
+ *  disagrees with the requested machine or Babel's verification operation. */
 export const VerifyRequestSchema = VerifyInputSchema.extend({ operation: OperationRefSchema });
 
 /**
@@ -4164,9 +4163,9 @@ export const DrainStartInputSchema = z.strictObject({
   agentSessions: z.boolean().optional(),
 });
 /**
- * What the `drain.start` door takes: the request above plus the OPERATION NODE it is authorized
- * at, for the reason `LaunchRequestSchema` carries one — `machines:run` is granted at a node and
- * the host walks the declared target through the raw arguments before the handler is entered.
+ * A drain start names the operation node its fan targets. The door refuses a node that
+ * disagrees with the requested machine or preset; native posting authority is discharged
+ * at the effect, under the door's delegates.
  */
 export const DrainStartRequestSchema = DrainStartInputSchema.extend({
   operation: OperationRefSchema,

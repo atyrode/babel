@@ -9,6 +9,40 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **A pending-run pass no longer commits one silence count per job.** The conductor batches
+  its observed increments and resets before reaping, even when a later reconciliation fails,
+  and reuses the cycle's captured policy. A disposable 502-run smoke commits counts in
+  250/250/2 statements with one policy read; a late Code interruption preserves earlier
+  observations, and a scoped catalog wake leaves other lanes untouched. Overlapping wakes
+  discard superseded observations before each batch, so a slow pass cannot undo a later
+  successful read; regressions cover pauses during a later read and between count batches.
+  The history indexes already delivered by #499 remain unchanged.
+
+- **Starting a drain carries every ceiling its native preparation needs.** `drainStart` now
+  shares the existing posting delegates for machine execution, location writes, storage
+  invocation and host networking. The other five posting-capable doors retain their powers;
+  unrelated read doors gain none. Door regressions exercise native admission, while the owner
+  still checks the caller's authority and version-bound consent at the actual effect.
+
+- **Retiring an old drain's required session column keeps its history.** Enable preserves the
+  old choice in the retained knobs before dropping the obsolete column, without inventing a
+  Code profile. Synthetic legacy-store regressions preserve historical values, start a new
+  drain through its door and enable again without changing the migrated rows. Fresh stores
+  are unchanged; a value discarded by a previous upgrade cannot be recovered by this one.
+
+- **Storage policy composition accepts the owner's numeric-loopback HTTP contract.** IPv4
+  `127.0.0.1` and IPv6 `[::1]` origins opt in to loopback HTTP; HTTPS retains its previous
+  policy shape. Unsupported and malformed origins produce a non-echoing refusal instead of
+  escaping as a URL exception. Preview/install regressions and a standalone composition
+  smoke cover both loopbacks, HTTPS and refused origins without writing a configuration.
+
+- **A launch can omit the redundant operation node.** The preset determines the operation,
+  while an explicitly supplied node for another machine or operation is still refused before
+  posting. Door regressions cover the bare request and both mismatch refusals; native and
+  Code authority remain checked where the effects occur.
+
 ## [0.5.7] - 2026-09-29
 
 ### Fixed

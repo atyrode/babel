@@ -311,7 +311,8 @@ by procedure:
 
 > **OPERATOR STEP — install the storage service on a machine (per machine, by the hub's owner).**
 > **Prerequisites:** the deployment's storage document is served by the operator's own store over
-> HTTPS, and that store's token is placed on the machine as a service credential
+> HTTPS, or an exact numeric-loopback HTTP origin on `127.0.0.1` or `[::1]`, and that store's
+> token is placed on the machine as a service credential
 > (`serviceCredentials.babel-restic`, sourced from a file the machine holds — the nix shape is in
 > `docs/building.md`). The store is the operator's; Babel ships none and generates none. **Nothing
 > anywhere accepts the token's value through a screen**: Manifold has no path for a person to

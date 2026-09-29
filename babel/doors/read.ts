@@ -40,6 +40,7 @@ import {
 } from "../contract.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
+import { POSTING_DELEGATES } from "./launch.ts";
 import { defineServerAction, type GuestStorage } from "@manifold/plugin-kit/server";
 
 /** Reading is a read of the plugin's own rows; the caller needs the workspace it asked about. */
@@ -89,14 +90,7 @@ const READ_CAPS = ["containers:read"] as const;
   location and service target. `locations:read` is deliberately absent: every operation this
   cycle schedules or executes writes its declared locations; none reads one.
 */
-const WAKING_DELEGATES = [
-  "jobs:read",
-  "machines:read",
-  "machines:run",
-  "locations:write",
-  "services:invoke",
-  "network:host",
-] as const;
+const WAKING_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
 
 /** `pulse` and `topics` are asked without arguments; a strict empty object says so on the wire. */
 const NoQuerySchema = z.strictObject({});

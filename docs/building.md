@@ -79,6 +79,13 @@ manifest and served as `ctx.database`. Three consequences worth knowing before r
   purge deletes `data.db` with its `-wal` and `-shm`. `bun run verify` asserts both halves of
   that: the file exists once the doors have answered, and is gone after the purge.
 
+An older `drains.session` column is retired in that same atomic enable batch: its historical
+choice moves into `knobs.session` before the obsolete required column is dropped. Existing
+knobs are retained; malformed or non-object knobs are kept under `legacyKnobs`. This preserves
+history, not runnable authority: an old model/account choice is never invented into a Code
+profile. Fresh stores already have the final shape, and repeated enables leave it alone. A
+store that previously dropped the column cannot recover its contents from this migration.
+
 ## The machine half: one bundled file, no pinned engine, two tools the machine provides
 
 A run is a **job on an enrolled machine** (manifold `docs/PLUGINS.md` §8), and the baseline's
@@ -224,6 +231,10 @@ Code's generator, and Babel posts the run through Code's `runSession` door. Babe
 a session and never launches omp, so this bundle pins no engine, binds no model service,
 declares no `explore` or `evaluate` operation and installs no price table.
 
+`launch` derives the operation from its preset. A caller may omit the `operation` node; if it
+supplies one, its machine and operation must agree with the request before any posting occurs.
+Native consent is still checked at the actual job effect, not inferred from an optional field.
+
 **A BABEL RUN IS A CODE SESSION, IN FIVE STEPS.** `doors/launch.ts` does them in this order and
 the order is the point:
 
@@ -265,6 +276,15 @@ the usage (one call; the tokens and cost as omp counted them) and its claim sett
 REFUSED submission settles too, at the cost, because the model answered and the deployment paid
 for it. A read Code refuses is recorded on the run as its note and retried once; twice in a row
 closes the run and releases its claim, on the same bound the claim reaper uses.
+Observed silence increments and successful-read resets are committed in batches of at most 250
+statements before reaping, including when a later reconciliation throws. The pass uses the
+cycle's captured policy rather than reading it again for every pending run; disabled and scoped
+wakes retain the same persisted observations without renewing disabled authority.
+Overlapping wakes share only the identities of their in-flight observations through the
+store's database proxy. Each batch drops observations superseded by a later read, including a
+successful read whose count was already zero; a slow earlier wake cannot restore its stale
+silence streak. Counts remain durable rows, not process memory. A refused database write is
+still a failure, and its uncommitted observations are not reported as persisted.
 
 **THE MATERIAL IS A BOUND JOB INPUT (ADR 0044, atyrode/manifold#592).** `materialInput()`
 returns `inputs: [{ name: "material", from: { jobId: <the prepare job>, output: "material" } }]`
@@ -451,6 +471,14 @@ with no configuration yet):
 }
 ```
 
+The composer leaves HTTPS policies at `allowLoopbackHttp: false`. Exact numeric-loopback HTTP
+origins such as `http://127.0.0.1:8080` and `http://[::1]:8080` compose with it enabled.
+`localhost`, non-loopback HTTP, credentials, paths, queries, fragments and noncanonical origins
+are refused without echoing a potentially secret-bearing URL. This is the pinned owner's
+contract, not a broader network exception: atyrode/manifold at
+`47407b58f00b1fefcde1d86f6dd6d9b06e9c1216`,
+`packages/protocol/src/services.ts:662-670`.
+
 The `credential.ref` is the store's own token, held by the owner and attached to the upstream
 request by it; the job never sees it, and it is a machine-side declaration like any other:
 
@@ -476,8 +504,11 @@ needs are `services:invoke` at
 `network:host` every host-network operation needs at
 `manifold://machine/<machine>/operation/<operation>`, once each for `atyrode.babel.catalog`,
 `atyrode.babel.prepare` and `atyrode.babel.verify`, and for `atyrode.babel.archive` on a machine
-that collects. Neither is a manifest capability: both are governed, so they are consented per
-node against the exact artifact revision (`packages/protocol/src/capabilities.ts:92-103`).
+that collects. Both must fit the manifest and the posting door's delegated ceiling, and both
+still require governed consent at their exact targets. The ceiling grants no consent of its own:
+atyrode/manifold at `47407b58f00b1fefcde1d86f6dd6d9b06e9c1216`,
+`packages/plugin/src/assemble.ts:761-775` and
+`packages/server/src/job-service.ts:4487-4516`.
 
 `git` no longer runs in any job. It was `scan`'s, to fingerprint a workspace a job could not see
 anyway (#254); repository identity is the hub's own question, asked of the machine a session's
@@ -517,11 +548,15 @@ A **drain** is the one operation that spends a chosen account's remaining usage 
 before it resets, and stops itself (#258; `docs/runbook.md` §11 is the procedure). It is three
 doors of the baseline and one section of Watch:
 
-| Door          | Authority                                                                     | What it does                                                                                                                                                                                                                                                                     |
-| ------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `drainStart`  | `containers:read`, delegating `machines:read` and `machines:run`              | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts the first fan of jobs through the same launch path the operator's own button uses, and writes the `drains` row.                                                                                 |
-| `drainStatus` | `containers:read`, delegating `jobs:read`, `machines:read` and `machines:run` | What is draining: jobs live, jobs at the model, tokens and cost a minute over the last three minutes, spend against target, ETA against deadline, refusals by reason, the account. A cycle follows it: the delegates let it read a running job back and relaunch a settled slot. |
-| `drainStop`   | `containers:write`, delegating `jobs:cancel`                                  | Cancels every job the drain holds, and marks the row `closing` — or `stopped`, when it holds none.                                                                                                                                                                               |
+The shared posting delegates are `machines:run`, `locations:write`, `services:invoke` and
+`network:host`. They cover native execution, output/cache locations and the bound archive
+service; the owner still checks the caller's authority and consent at each effect.
+
+| Door          | Authority                                                                                   | What it does                                                                                                                                                                                                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `drainStart`  | `containers:read`, delegating `machines:read` and the shared posting delegates              | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts the first fan of jobs through the same launch path the operator's own button uses, and writes the `drains` row.                                                                                 |
+| `drainStatus` | `containers:read`, delegating `jobs:read`, `machines:read` and the shared posting delegates | What is draining: jobs live, jobs at the model, tokens and cost a minute over the last three minutes, spend against target, ETA against deadline, refusals by reason, the account. A cycle follows it: the delegates let it read a running job back and relaunch a settled slot. |
+| `drainStop`   | `containers:write`, delegating `jobs:cancel`                                                | Cancels every job the drain holds, and marks the row `closing` — or `stopped`, when it holds none.                                                                                                                                                                               |
 
 Four things are worth knowing before reading `server/drain.ts`:
 
