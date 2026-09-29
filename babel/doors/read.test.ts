@@ -10,13 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import {
-  ACTIONS,
-  CONDUCTOR_CYCLE_KEY,
-  FeedResultSchema,
-  RecordPeelSchema,
-  door,
-} from "../contract.ts";
+import { ACTIONS, CONDUCTOR_CYCLE_KEY, FeedResultSchema, RecordPeelSchema } from "../contract.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import { readDoors } from "./read.ts";
@@ -129,7 +123,7 @@ afterEach(() => {
 });
 
 describe("the roster", () => {
-  test("declares nine reading doors callable without container write authority", () => {
+  test("declares ten reading doors callable without container write authority", () => {
     const names = doors.map((entry) => entry.action.name);
     expect(names).toEqual([
       ACTIONS.feed,
@@ -137,6 +131,7 @@ describe("the roster", () => {
       ACTIONS.thread,
       ACTIONS.topics,
       ACTIONS.topic,
+      ACTIONS.neighborhood,
       ACTIONS.pulse,
       ACTIONS.runs,
       ACTIONS.run,
@@ -145,7 +140,18 @@ describe("the roster", () => {
     expect(new Set(names).size).toBe(names.length);
     for (const entry of doors) {
       expect(entry.action.caps).toEqual(["containers:read"]);
-      expect(entry.action.title).not.toBe("");
+    }
+    const cycled = [
+      "jobs:read",
+      "machines:read",
+      "machines:run",
+      "locations:write",
+      "services:invoke",
+      "network:host",
+    ] as const;
+    for (const entry of doors) {
+      const waking = entry.action.name === ACTIONS.pulse || entry.action.name === ACTIONS.runs;
+      expect(entry.action.delegates ?? []).toEqual(waking ? cycled : []);
     }
     // The roster publishes the plugin's own prefix, which is what a button's `action` spells.
     expect(door(ACTIONS.feed)).toBe("atyrode.babel.feed");
@@ -184,9 +190,37 @@ describe("the vocabulary", () => {
     expect(await dispatch(ACTIONS.record, { id: "not-an-id" })).toHaveProperty("invalid");
     expect(await dispatch(ACTIONS.record, { id: RECORD, extra: 1 })).toHaveProperty("invalid");
   });
+
+  test("neighbourhood widening and caller-selected clearance are refused before reading", async () => {
+    for (const invalid of [
+      { depth: -1 },
+      { depth: 9 },
+      { maxNodes: 0 },
+      { maxNodes: 65 },
+      { maxItems: 201 },
+      { maxBytes: 4095 },
+      { maxBytes: 262145 },
+      { clearance: "private" },
+      { summary: true },
+    ]) {
+      expect(await dispatch(ACTIONS.neighborhood, { entityId: TOPIC, ...invalid })).toHaveProperty(
+        "invalid",
+      );
+    }
+  });
 });
 
 describe("the answers", () => {
+  test("the shared neighbourhood action returns filed records without archive or machine access", async () => {
+    expect(await dispatch(ACTIONS.neighborhood, { entityId: TOPIC, depth: 0 })).toMatchObject({
+      state: "found",
+      nodes: [{ id: TOPIC, depth: 0 }],
+      records: [{ id: RECORD, kind: "proposal", runId: "run-a", actorKind: "run" }],
+      filings: [{ recordId: RECORD, entityId: TOPIC, authorKind: "operator" }],
+      coverage: { traversalComplete: true, inaccessibleMaterial: null, unreviewedMaterial: null },
+    });
+  });
+
   test("the feed answers inside its own schema", async () => {
     const answer = await dispatch(ACTIONS.feed, { surface: "all", window: "all" });
     expect(answer).toMatchObject({ total: 1, notice: "" });

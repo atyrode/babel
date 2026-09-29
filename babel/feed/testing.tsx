@@ -15,6 +15,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { HostServices, OpenPanelOutcome, OpenPanelRequest } from "@manifold/plugin";
 import type { ActionOutcome, MachineSummary } from "@manifold/protocol";
+import type { NeighborhoodResult } from "../contract.ts";
 import {
   look,
   type FeedPost,
@@ -513,6 +514,48 @@ export function thread(overrides: Partial<ThreadResult> = {}): ThreadResult {
       },
     ],
     total: 3,
+    ...overrides,
+  };
+}
+
+export function neighborhood(overrides: Partial<NeighborhoodResult> = {}): NeighborhoodResult {
+  return {
+    entityId: "ent_0000beef",
+    state: "found",
+    limits: { depth: 2, maxNodes: 32, maxItems: 100, maxBytes: 65_536 },
+    nodes: [
+      {
+        id: "ent_0000beef",
+        name: "babel",
+        kind: "project",
+        canonicalId: "babel",
+        createdBy: "p1",
+        createdAt: "2026-09-10T00:00:00Z",
+        depth: 0,
+      },
+    ],
+    facts: [],
+    records: [],
+    filings: [],
+    questions: [],
+    answers: [],
+    links: [],
+    sources: [],
+    coverage: {
+      scope: "stored-linked-material",
+      traversalComplete: true,
+      recordsComplete: true,
+      truncated: false,
+      reasons: [],
+      visitedNodes: 1,
+      returnedItems: 0,
+      omittedItems: 0,
+      omittedNodesAtLeast: 0,
+      unavailableEntities: 0,
+      inaccessibleMaterial: null,
+      unreviewedMaterial: null,
+      resultBytes: 900,
+    },
     ...overrides,
   };
 }

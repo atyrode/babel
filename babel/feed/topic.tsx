@@ -18,6 +18,7 @@ import {
   type TopicRow,
 } from "./api.ts";
 import { EMPTY_QUERY, FeedListing } from "./home.tsx";
+import { Neighborhood } from "./neighborhood.tsx";
 import { INTEREST_LABEL, INTEREST_MEANS, RAIL_POLL_MS } from "./rail.tsx";
 
 /*
@@ -110,6 +111,7 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
 
   const row = read.value?.topic ?? null;
   const proposed = read.value?.proposed ?? [];
+  const entityId = row?.id;
 
   return (
     <FeedListing
@@ -160,6 +162,9 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
             )}
             <Coverage host={host} topic={row} rows={read.value?.coverage ?? []} />
             {row !== null && <AskBabel host={host} topic={row} />}
+            {entityId !== undefined && (
+              <Neighborhood key={entityId} host={host} entityId={entityId} />
+            )}
           </Stack>
         </header>
       }

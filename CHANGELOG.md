@@ -116,6 +116,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Real synthetic restic and SQLite regressions cover stale sources, restart and idempotent
   sealed-output ingestion. Actual imported-corpus coverage remains an operator step.
 
+### Added
+
+- **A Topic opens its stored neighbourhood without inventing a second hierarchy (#224).**
+  Agents and the browser share one bounded, read-only projection. The panel links every returned
+  entity, including zero-post entities, shows the direction and depth of containment without
+  unfolding cycles or shared descendants again, and keeps contradictions and other relations
+  separate. Facts, filed records, questions and answers retain their authority, dates, statuses
+  and provenance; records open in the existing peel/peek surface. Current catalog locators are
+  explicitly not historical citation proof, and raw notes/payloads never become archive quotes.
+  Coverage distinguishes missing, empty, unavailable and depth/node/item/byte-limited reads from
+  a complete project inventory. Rendered interaction regressions cover navigation, refreshes,
+  stale/disputed material, omissions and record opening without another browser walk; preview
+  interaction remains a separate verification boundary.
+
+### Fixed
+
 - **Citation evidence stays unavailable when a competing capture cannot be checked.** An
   unreadable or oversized candidate cannot be silently discarded after a readable match.
   Snapshot discovery enforces its 2,048-entry cap and 1 MiB UTF-8-byte object bound while

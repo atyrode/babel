@@ -1015,3 +1015,62 @@
   border-inline-start: 2px solid var(--babel-warn-ink);
   padding-inline-start: var(--babel-space-2);
 }
+
+/* A bounded read stays separate from the topic's independently sorted feed. */
+.plugin-atyrode_babel_feed .babel-neighborhood {
+  padding: var(--babel-space-4);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius-sm);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.plugin-atyrode_babel_feed .babel-neighborhood h2,
+.plugin-atyrode_babel_feed .babel-neighborhood h3,
+.plugin-atyrode_babel_feed .babel-neighborhood h4,
+.plugin-atyrode_babel_feed .babel-neighborhood p {
+  margin: 0 0 var(--babel-space-2);
+}
+
+.plugin-atyrode_babel_feed .babel-neighborhood-list {
+  display: grid;
+  gap: var(--babel-space-3);
+  margin: 0 0 var(--babel-space-3);
+  padding-left: var(--babel-space-5);
+}
+
+.plugin-atyrode_babel_feed .babel-neighborhood-list > li {
+  min-width: 0;
+}
+
+.plugin-atyrode_babel_feed .babel-neighborhood-coverage {
+  padding: var(--babel-space-3);
+  border-left: 3px solid var(--babel-info);
+  background: var(--babel-bg-raised);
+}
+
+.plugin-atyrode_babel_feed .babel-neighborhood-provenance {
+  color: var(--babel-ink-muted);
+  font-size: 0.78rem;
+}
+
+.plugin-atyrode_babel_feed .babel-neighborhood-status[data-state="stale"],
+.plugin-atyrode_babel_feed .babel-neighborhood-status[data-state="disputed"] {
+  color: var(--babel-warn-ink);
+}
+
+.plugin-atyrode_babel_feed .babel-neighborhood-payload {
+  margin: 0;
+  padding: var(--babel-space-2);
+  background: var(--babel-bg-raised);
+  font-family: var(--babel-font-mono);
+  font-size: 0.76rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.plugin-atyrode_babel_feed .babel-neighborhood button:focus-visible {
+  outline: 2px solid var(--babel-accent);
+  outline-offset: 2px;
+}
