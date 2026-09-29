@@ -395,14 +395,30 @@ against the configured repository left one `babel-store` snapshot (host `dev-01`
 `PRAGMA integrity_check` (`ok`) and held 462 `assessments` rows, and the restored copy was then
 deleted. That proves the path, not the schedule.
 
-> **OPERATOR STEP — arm the store backup (not executed here).**
+**Exercised on dev-01, 2026-09-29:** the user timer was `enabled`, `active` and `waiting`.
+Its last scheduled trigger was `03:41:12 UTC`; the service finished at `03:41:23 UTC` with
+`Result=success` and `ExecMainStatus=0`. The next trigger was scheduled for
+`2026-09-30 03:38:41 UTC`. Lock-free `restic snapshots` against the deployment's existing
+repository listed snapshot
+`7ef70c205685417a8bd4a7f0c77055fbf43196578d2d03fd8bd873a4ce350ee5`, dated
+`2026-09-29T03:41:12.556163438Z`, with host `dev-01`, exactly the tag `babel-store` and the
+database path above. At `16:31:29 UTC`, a lock-free `restic dump` of that scheduled snapshot
+restored **529,522,688 bytes** into a mode-0600 file inside a mode-0700 scratch directory.
+An independent `sqlite3 -readonly` invocation returned `ok` for `PRAGMA integrity_check`.
+The scratch directory and restored file were removed, and their absence was verified. No live
+store file, container, archive snapshot or service configuration was changed. This proves a
+scheduled backup and its scratch restore, not replacement of the running hub's store.
+
+> **OPERATOR STEP — arm the store backup on a new deployment.**
 > **Prerequisites:** an authorized apply of dotfiles at or after `b8a9a1f` on dev-01; the storage
 > document the archive timer uses is placed there (the timer is conditioned on it).
 > **Success:** `systemctl --user list-timers babel-store-backup.timer` lists the timer, and after
 > its first run `restic snapshots --no-lock --tag babel-store` shows a new snapshot from `dev-01`.
 
-> **OPERATOR STEP — restore the store from its backup (not executed).**
-> **Prerequisites:** custody (§3); the hub's Manifold container stopped, so nothing holds the file.
+> **OPERATOR STEP — replace the live store from its backup (not executed).**
+> **Prerequisites:** custody (§3) and case-specific authorization for live replacement; the hub's
+> Manifold container stopped, so nothing holds the file. A scratch-only integrity drill needs
+> neither stopping the container nor replacing its store.
 > **Procedure:** pick a snapshot from `restic snapshots --no-lock --tag babel-store`, then
 > `restic dump --no-lock <snapshot-id> /manifold-dev/plugins/atyrode.babel/data.db` into a file in
 > a mode-0700 directory; `PRAGMA integrity_check` on it must answer `ok`. Put it in place of
