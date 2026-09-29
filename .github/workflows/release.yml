@@ -62,13 +62,16 @@ jobs:
       prepare-command: |
         bun run deps:tests
         bun run deps:code
+        # Persist into the gate's later verify step; pack clears dist before verification.
+        # The normal pack/verify path uploads dist, unlike pack-verify-command.
+        echo 'BABEL_DEPENDENCY_RECEIPT=dist/dependency-closure.SHA256SUMS' >> "$GITHUB_ENV"
 
   # Babel requires Code, and Code requires omp (docs/building.md "Code is a second pin"): a
-  # preview that receives Babel alone refuses composition. This job builds the exact dependency
-  # bundles the gate verified against - Code at CODE_REV, omp at the pin Code names -
-  # through the same `deps:code` the gate runs, in the same sibling layout the reusable workflow
-  # lays out, and hands them to `deliver` so the preview receives the closure in order. omp's
-  # bundles go to `deps/hardened/` and Code's to `deps/in-realm/`: the directory is the runner
+  # preview that receives Babel alone refuses composition. This job rebuilds the dependency
+  # bundles independently - Code at CODE_REV, omp at the pin Code names - through the same
+  # `deps:code` the gate runs, in the same sibling layout the reusable workflow lays out.
+  # `deliver` requires its bytes and membership to match the gate's receipt before attachment.
+  # omp's bundles go to `deps/hardened/` and Code's to `deps/in-realm/`: the directory is the runner
   # each owner verifies its bundles under, and `deliver` reads it off the path.
   dependencies:
     runs-on: ubuntu-latest
@@ -166,6 +169,9 @@ jobs:
         with:
           name: dependency-plugins
           path: deps
+
+      - name: Require the dependency closure verified by the plugin gate
+        run: bun caller/scripts/dependency-receipt.ts check dist/dependency-closure.SHA256SUMS deps
 
       - name: Attach the bundles to the release
         env:

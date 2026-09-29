@@ -811,6 +811,46 @@ explicit fourth word `--in-realm` — the directory each dependency was packed i
 Between releases a preview gets a build through `bun run dev --deliver`, and the sha256 that
 counts is the one CI prints. A tag is permanent: a bad one stays and the next patch follows it.
 
+**The independently rebuilt dependencies must match the gate's verified closure before any
+bundle is attached or installed.** The release gate uses the supported `prepare-command` hook
+to set `BABEL_DEPENDENCY_RECEIPT` through `GITHUB_ENV`; after the SDK verifier succeeds,
+`bun run verify` records the dependency bundles' actual SHA-256 digests into that receipt under
+`dist/`. Ordinary verification records nothing unless that variable is explicitly set. The
+[pinned Manifold workflow](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/.github/workflows/plugins.yml#L93-L132)
+runs preparation before the normal pack/verify steps and uploads their `dist/` as the existing
+`manifold-plugins` artifact. Its alternate `pack-verify-command` suppresses that upload and is
+not used here.
+
+`scripts/dependency-receipt.ts` records one digest per role-relative bundle path, sorted by
+path: omp under `hardened/`, Code under `in-realm/`. The delivery check hashes every dependency
+bundle in the downloaded rebuilt artifact, including unexpected directories; missing, extra,
+changed or role-moved bundles fail before release attachment and before any receiver call.
+An artifact's own checksum file is not evidence that its bytes match the gate. The separate
+dependency build, published checksum files, dependency-first ordering and exact source-pin
+checks remain in place; nothing switches to externally published dependency bundles.
+
+The reproducibility repair arrives through Code
+[`498b39a`](https://github.com/atyrode/code/blob/498b39ae285114ecb87b9d4d203136f9141d016e/package.json#L17-L19),
+which pins OMP `f5b9d09`. Its
+[`plugins/workers/build.ts:497-508`](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/workers/build.ts#L497-L508)
+keeps syntax and whitespace optimization but disables Bun 1.4.2's unstable identifier
+minification. Independent builds of these exact merged pins matched all three OMP and four
+Code bundles; the composed verifier's receipt accepted that second closure and refused
+changed bytes, a missing or extra bundle, a moved role and a hidden symlink. That is source
+and disposable-consumer evidence, not an enabled native installation or preview receipt.
+
+The receipt CLI can also compare disposable closures directly:
+
+```sh
+bun scripts/dependency-receipt.ts record "$receipt" "$verified_omp_dist" "$verified_code_dist"
+bun scripts/dependency-receipt.ts check "$receipt" "$rebuilt_deps"
+```
+
+The rebuilt directory must contain the two role directories described above. Matching a
+release gate's closure is required for delivery, but it proves only agreement between those
+builds, not long-term reproducibility from the same pins. A same-input mismatch still needs
+its upstream build cause repaired; the receipt makes it a delivery refusal, not a repair.
+
 The sha256 is over an artifact's exact bytes, and Bun writes every bundled module's path as a
 comment, so a hash reproduces only from the layout above with the same Bun. The pins are what
 `engine.plugins.install` demands; `dist/SHA256SUMS` is what carries them.
