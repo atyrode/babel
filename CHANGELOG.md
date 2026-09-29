@@ -60,6 +60,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   cleanup, the actual bound-input extractor still reads the sealed material with read-only
   permissions. Constructor regressions cover ordinary, staged, titling and mapping launches.
 
+- **A release refuses rebuilt dependencies that differ from the plugin gate's verified
+  closure (#482).** After successful verification, the release gate records the actual
+  dependency digests and their hardened/in-realm roles in its existing bundle artifact.
+  Delivery hashes the independently rebuilt closure and rejects changed, missing, extra or
+  role-moved bundles before attaching assets or contacting the preview receiver. Source-pin
+  checks, dependency-first ordering and published checksums stay intact; the receipt requires
+  agreement with this gate, not a claim of long-term same-pin reproducibility. The Code pin
+  brings the upstream OMP identifier-minification repair. All seven dependency bundles match
+  across independent current-pin builds; the real receipt CLI rejects byte, membership, role
+  and symlink drift, and the complete composed gate passes with 1,385 tests.
+
 ## [0.5.7] - 2026-09-29
 
 ### Fixed
