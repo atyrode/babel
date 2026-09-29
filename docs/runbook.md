@@ -686,6 +686,117 @@ never through argv, a log line, an error string, shell history or an ordinary te
 plugin holds this by construction (§4). An operator using `restic` by hand holds it by discipline:
 `RESTIC_PASSWORD_FILE`, never `--password-command` with the value inline, and never `echo`.
 
+### 8.1 Historical sealed-payload recovery: bounded plan for #112
+
+**Planning only; no recovery has been run.** The retired Phase B deployment reportedly committed
+two records and two sealed objects on 2026-09-01 (#112). That public count and the old source do
+not identify a consistent backup, prove current key custody or establish that either payload
+opens. This procedure concerns historical ciphertext only, not today's plaintext hub, the
+session archive, the retired publisher or a new key-distribution mechanism.
+
+The reader is the immutable Babel
+[v0.4.0 commit `e95d45ec`](https://github.com/atyrode/babel/tree/e95d45ec36fa9bb393650447fd8bf5ff00aa90a0).
+Its [catalog migration](https://github.com/atyrode/babel/blob/e95d45ec36fa9bb393650447fd8bf5ff00aa90a0/internal/sharedcatalog/migrations/0003_phase_b_records.sql#L49-L105)
+declares the committed `analysis_runs.record_count` closure and immutable `analysis_records`
+rows with `object_key`, `key_id`, `ciphertext_size` and sealed-byte `object_digest`. Its
+[object reader](https://github.com/atyrode/babel/blob/e95d45ec36fa9bb393650447fd8bf5ff00aa90a0/internal/sharedcatalog/objectstore.go#L107-L130)
+fetches by key, checks the SHA-256 digest, then authenticates and opens the JSON envelope with
+record kind/id and field `payload` as associated data. The
+[envelope reader](https://github.com/atyrode/babel/blob/e95d45ec36fa9bb393650447fd8bf5ff00aa90a0/internal/envelope/envelope.go#L325-L357)
+requires version 1, AES-256-GCM, a known 32-byte key, and the authenticated nonce/ciphertext.
+The [fleet reader](https://github.com/atyrode/babel/blob/e95d45ec36fa9bb393650447fd8bf5ff00aa90a0/internal/fleet/fleet.go#L239-L324)
+validates JSON and decodes frontier/link/disposition kinds; other kinds keep producer-owned
+JSON and require their own matching decoder before they can count as schema-valid. The earlier
+link/disposition decoding discrepancy was fixed at ancestor
+[`675f2c4`](https://github.com/atyrode/babel/commit/675f2c4cbaedf23f74ee2498f6aec502072ce616);
+use this pinned reader, not an earlier build or generic AES arithmetic. Its fleet listing
+**continues** on per-record failures: an empty error from the listing is not recovery success.
+
+**Input selection before approval.** The historical catalog/object custodian must identify the
+exact immutable catalog backup id, its timestamp and migration/schema level, the matching
+object-copy/export id and capture boundary, and the committed deployment/run ids and period being
+proved. Enumerate _every_ committed row in each selected run and _every_ referenced object;
+confirm `record_count` equals the enumerated row count, object keys are unique, and the selected
+object copy contains each exact referenced sealed byte string. Count pending runs and any
+historical runs outside the selected backup separately as **excluded/unverified**, never as
+recovered. The public two-record claim is a proposed first set, **not** a verified selection or
+permission to silently drop a third row. None of the backup/export/run identifiers, compatible
+schema levels, actual byte totals or complete coverage can be established from public source and
+#112; the custody owner must supply non-secret identifiers privately when necessary. If the
+copies are not mutually consistent, stop and seek a new selection rather than combining eras.
+
+**Proposed execution envelope (requires separate approval).** The accountable executor is the
+custody operator (the recommended #112 option A), on a freshly provisioned offline disposable
+target, not the original machine or a production hub. Permit reads of only the selected catalog
+backup and exact object copy, plus a _read-only_ protected delivery of the **existing complete**
+`babel-custody` ring. The dotfiles
+[custody declaration at `f2a4749`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L55-L80)
+is a source reference, not proof of current placement: clan owns the encrypted ring, declares
+mode 0600 for placement (same source,
+[lines 108–113](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L108-L113)),
+and historically exposed it through its protected file. The executor must confirm the
+currently supported **operator-controlled protected read-only interface** and full unchanged
+key-id history _before_ starting; no agent
+copies the ring or calls `clan vars generate`, and no replacement/rotation repairs a missing id.
+Allow writes only inside the disposable target for restored catalog/object **copies** and
+sanitized counters. Deny network egress, production endpoints, publisher services, credential
+export, original-source writes and repository/key mutation. Isolate HOME, all XDG dirs,
+repository selection and environment from the operator's normal session; pass no secret in argv,
+logs, shell history or an ordinary temporary file. Proposed ceilings: **2 CPUs, 4 GiB RAM,
+4 GiB total scratch, 64 MiB per object and one hour**. If the coherent selected set cannot fit
+or exceeds either bound, stop _before_ copying/decrypting and request a newly bounded approval;
+never trim records to fit.
+
+> **OPERATOR STEP — isolated historical proof (not executed).**
+>
+> 1. Obtain explicit approval of the selection and execution envelope above with named backup
+>    and object-copy ids, byte/row counts, executor, date window, protected ring interface and
+>    target. Prepare a fresh no-egress disposable target and a read-only mount of the selected
+>    immutable copies. Start a private local catalog instance from the **copy** at its recorded
+>    schema level, with no connection string or inherited credential pointing outside the target.
+>    Do not run an old Babel publisher or restore into any production database.
+> 2. Before opening content, check closure of every selected committed run: enumerate its rows,
+>    match `record_count`, ensure exactly one copied object at each referenced key and match each
+>    recorded `ciphertext_size` and `object_digest` over sealed bytes. Preflight all referenced
+>    key ids against the custody owner's full _unchanged_ ring by id/count, without displaying
+>    key bytes or fingerprints. Refuse a missing, conflicting or malformed key, incomplete row
+>    set, unsupported schema, missing/oversize/corrupt object or exceeded bound; account for
+>    every row even on refusal.
+> 3. Load the owner-placed ring via the pinned
+>    [config loader](https://github.com/atyrode/babel/blob/e95d45ec36fa9bb393650447fd8bf5ff00aa90a0/internal/config/payloadkeys.go#L131-L165)
+>    in isolated XDG configuration, use its `Material` with `envelope.RingFrom`, and zero the
+>    caller's decoded copies. Use the pinned Go `sharedcatalog.OpenRecord` with a **read-only
+>    local-copy ObjectStore** (`Put` refused, `Get` from the selected copy only). Route each
+>    opened row through the pinned `fleet.Reader.Open` kind decoder (including link/disposition
+>    routing), not a renderer that skips errors. For preparation, receipt, context, complaint
+>    and evaluation, the fleet reader checks only JSON: require a matching producer-owned schema
+>    decoder, or report these rows unverified and refuse a full-set pass. Keep plaintext in
+>    process memory only; check schema and record identity, then discard it. Record expected,
+>    digest-verified, authenticated, schema-valid and failed counts by key id; **every** selected
+>    row must be schema-valid for a full-set pass. Do not print plaintext, ciphertext or recovered
+>    transcript/record text, and do not write a decrypted cache.
+> 4. On separately disposable **copies**, remove one selected historical key from an in-memory
+>    test ring and flip a byte of one selected sealed object (one control at a time). Require an
+>    identifiable unknown-key refusal and digest/authentication refusal, unchanged pristine
+>    copies and zero false successes. The rest of the selected set remains countable. If no
+>    selected historical key/object exists, the proof cannot pass by vacuity.
+> 5. Shut down the local catalog, destroy the target and protected mounts by the custody owner's
+>    approved cleanup method, and confirm they are gone. Record date, host, pinned reader
+>    revision, non-secret backup/object-copy identifiers, selection/period and exclusions,
+>    isolation and bounds, aggregate counts and both refusals, any failures and cleanup result
+>    in #112 **without** bodies, credential material or private identifiers. Retain per-key
+>    counts in protected evidence if their ids are private; summarize coverage publicly without
+>    disclosing those ids. An incomplete cleanup or omitted row is a failure, not a passed drill.
+
+**Approval packet, not approval:** name the custody operator; supply the exact coherent
+catalog-backup id/time/schema and object-export id/coverage, selected complete committed-run
+closure with rows/bytes/ids and exclusions, confirmed full historical key-id availability via
+clan's existing protected interface, target/one-hour resource envelope and no-egress read/write
+allowlist, then explicitly authorize _only_ the isolated proof and two copy-only refusal
+controls above. Absent these inputs, this is a plan for #508, not readiness or readable-content
+evidence for #112. All live selections, custody checks, proof and cleanup remain **OPERATOR
+STEP**; preserve the existing password, complete ring and ciphertext regardless of outcome.
+
 ---
 
 ## 9. Reading what Babel holds
