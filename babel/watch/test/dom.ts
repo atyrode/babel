@@ -11,7 +11,10 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 // Once per process: the feed's harness registers the same DOM, one `bun test` over the whole
 // family evaluates both, and a second registration throws.
 if (!GlobalRegistrator.isRegistered) {
+  // Keep native-service consumers independent of when a panel first registers its DOM.
+  const transport = { fetch, Headers, Request, Response, FormData, AbortController, AbortSignal };
   GlobalRegistrator.register();
+  Object.assign(globalThis, transport);
   /** React's own flag, which no lib.dom type declares; the harness asserts nothing about it. */
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 }

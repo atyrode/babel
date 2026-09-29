@@ -27,6 +27,48 @@
 
 export const STORE_DATA_VERSION = { major: 1, minor: 17 } as const;
 
+/** Named allocation intentions share this store, but never replace an active policy. */
+const ALLOCATION_PLAN_SCHEMA: readonly string[] = [
+  `CREATE TABLE allocation_plans(
+     version TEXT PRIMARY KEY,
+     seq INTEGER NOT NULL UNIQUE,
+     actor_id TEXT NOT NULL,
+     reason TEXT NOT NULL,
+     policy_version TEXT NOT NULL,
+     payload TEXT NOT NULL,
+     recorded_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE TRIGGER allocation_plans_immutable BEFORE UPDATE ON allocation_plans BEGIN
+     SELECT RAISE(ABORT, 'an allocation version is never edited');
+   END`,
+  `CREATE TRIGGER allocation_plans_kept BEFORE DELETE ON allocation_plans BEGIN
+     SELECT RAISE(ABORT, 'an allocation version is never deleted');
+   END`,
+  // A fixed-size derivation clock fences mutable attribution/configuration without copying
+  // every producer into every preview. Inserts are fenced by the tables' row watermarks.
+  `CREATE TABLE allocation_basis_clock(
+     id INTEGER PRIMARY KEY CHECK(id = 1),
+     revision INTEGER NOT NULL
+   ) STRICT`,
+  ...[
+    ["runs", "UPDATE OF id, kind, preparation"],
+    ["runs", "DELETE"],
+    ["plans", "UPDATE OF subject_id"],
+    ["plans", "DELETE"],
+    ["policies", "UPDATE"],
+    ["policies", "DELETE"],
+  ].map(
+    ([
+      table,
+      event,
+    ]) => `CREATE TRIGGER allocation_basis_${table}_${event!.startsWith("UPDATE") ? "updated" : "deleted"}
+    AFTER ${event} ON ${table} BEGIN
+      INSERT INTO allocation_basis_clock(id, revision) VALUES(1, 1)
+      ON CONFLICT(id) DO UPDATE SET revision = revision + 1;
+    END`,
+  ),
+];
+
 /** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
 const RECALL_TRACE_SCHEMA: readonly string[] = [
   `CREATE TABLE recall_requests(
@@ -1340,6 +1382,7 @@ export const SCHEMA_V1: readonly string[] = [
   ...TRANSCRIPT_MAP_READ_SCHEMA,
   ...CITATION_FACT_SCHEMA,
   ...DUPLICATE_SCHEMA,
+  ...ALLOCATION_PLAN_SCHEMA,
 
   // ---------------------------------------------------------------- a drain (#258)
   // No index, and now for one reason rather than two: a deployment accumulates drains at the
@@ -1519,6 +1562,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   ...TRANSCRIPT_MAP_READ_SCHEMA.map(objectAddition),
   ...CITATION_FACT_SCHEMA.map(objectAddition),
   ...DUPLICATE_SCHEMA.map(objectAddition),
+  ...ALLOCATION_PLAN_SCHEMA.map(objectAddition),
   // #169: the models that have answered a running job, JSON, in the order it first heard from
   // each. A column and not a table, because the table above already arrives by addition for a
   // store created before #261 — and an addition keyed only on the table's name would have left

@@ -597,3 +597,93 @@
 .plugin-atyrode_babel_watch__drain-unobserved summary {
   cursor: pointer;
 }
+
+/* Allocation is a proposal beside the ceilings, never another launch form. */
+.plugin-atyrode_babel_watch__allocation {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plugin-atyrode_babel_watch__allocation h3,
+.plugin-atyrode_babel_watch__allocation p {
+  margin: 0;
+}
+
+.plugin-atyrode_babel_watch__allocation [role="status"]:empty {
+  display: none;
+}
+
+.plugin-atyrode_babel_watch__allocation-slices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: var(--babel-space-3);
+}
+
+.plugin-atyrode_babel_watch__allocation-slice {
+  min-width: 0;
+  padding: var(--babel-space-3);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius-sm);
+  background: var(--babel-bg-raised);
+}
+
+.plugin-atyrode_babel_watch__allocation-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--babel-space-2);
+  margin: 0;
+}
+
+.plugin-atyrode_babel_watch__allocation-figures dt {
+  color: var(--babel-ink-muted);
+  font-size: 0.8rem;
+}
+
+.plugin-atyrode_babel_watch__allocation-figures dd {
+  margin: 0;
+  font-family: var(--babel-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-atyrode_babel_watch__allocation-save {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--babel-space-3);
+}
+
+.plugin-atyrode_babel_watch__allocation-save label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--babel-space-1);
+}
+
+.plugin-atyrode_babel_watch__allocation .plugin-atyrode_babel_watch__field {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.plugin-atyrode_babel_watch__allocation textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+.plugin-atyrode_babel_watch__allocation pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.plugin-atyrode_babel_watch__allocation summary {
+  cursor: pointer;
+  color: var(--babel-accent-ink);
+}
+
+.plugin-atyrode_babel_watch__allocation :is(button, input, textarea, summary):focus-visible {
+  outline: 2px solid var(--babel-accent);
+  outline-offset: 3px;
+}
+
+.plugin-atyrode_babel_watch__allocation :is(button, input, textarea):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

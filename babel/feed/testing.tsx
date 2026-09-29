@@ -7,7 +7,10 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
   a fake host and the fixtures, and the three arrive together.
 */
 if (!GlobalRegistrator.isRegistered) {
+  // Panel registration must not replace the native transport used by HTTP/native-service tests.
+  const transport = { fetch, Headers, Request, Response, FormData, AbortController, AbortSignal };
   GlobalRegistrator.register();
+  Object.assign(globalThis, transport);
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 }
 

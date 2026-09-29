@@ -385,6 +385,8 @@ export const ACTIONS = {
   policy: "policy",
   /** Authenticated optional-part publication into a bounded ephemeral advisory inbox. */
   reviewReadings: "reviewReadings",
+  previewAllocation: "previewAllocation",
+  allocationVersion: "allocationVersion",
   /**
    * RETRIEVING OVER THE CORPUS BY WHAT A RECORD SAYS (#337).
    *
@@ -428,6 +430,7 @@ export const ACTIONS = {
   unfile: "unfile",
   tell: "tell",
   setPolicy: "setPolicy",
+  saveAllocation: "saveAllocation",
   /** The two acts of #260: a bounded exception to the standing policy, and its early end. */
   setBudget: "setBudget",
   clearBudget: "clearBudget",
@@ -3729,6 +3732,165 @@ export const PolicyResultSchema = z.strictObject({
   ),
   payload: z.record(z.string(), z.unknown()),
 });
+
+/** Allocation intent is arithmetic over existing authority, never a scheduler setting (#225). */
+export const ALLOCATION_ALGORITHM = "operator-acceptance-7d-v1";
+export const ALLOCATION_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+export const ALLOCATION_MIN_SAMPLE = 8;
+export const ALLOCATION_MAX_DAMPING = 0.25;
+export const ALLOCATION_PRIOR_SAMPLE = 32;
+/** Bounds stay below the host's 4 MiB query/result limit and the store's 1 GiB ceiling. */
+export const ALLOCATION_MAX_PROVENANCE = 64;
+export const ALLOCATION_MAX_PROVENANCE_BYTES = 1024;
+export const ALLOCATION_MAX_POLICY_BYTES = 512 * 1024;
+export const ALLOCATION_MAX_PLAN_BYTES = 1024 * 1024;
+export const ALLOCATION_MAX_SAVED_BYTES = 16 * 1024 * 1024;
+export const ALLOCATION_EXCLUSIONS = [
+  "counted",
+  "administrative",
+  "not-decided",
+  "no-operator",
+  "no-producing-activity",
+  "outside-window",
+] as const;
+const allocationFraction = z.number().min(0).max(1);
+export const AllocationEditSchema = z.strictObject({
+  activity: ActivitySchema,
+  fraction: allocationFraction,
+});
+const allocationEdits = z
+  .array(AllocationEditSchema)
+  .max(ACTIVITIES.length)
+  .refine(
+    (edits) => new Set(edits.map((edit) => edit.activity)).size === edits.length,
+    "An activity may be edited only once.",
+  );
+export const AllocationBasisSchema = z.strictObject({
+  at: z.string().datetime(),
+  digest: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export const AllocationPreviewInputSchema = z.strictObject({
+  basis: AllocationBasisSchema.optional(),
+  edits: allocationEdits.default([]),
+});
+export type AllocationPreviewInput = z.infer<typeof AllocationPreviewInputSchema>;
+export const AllocationSnapshotSchema = z.strictObject({
+  at: z.string().datetime(),
+  cutoff: z.string().datetime(),
+  lookbackMs: z.literal(ALLOCATION_LOOKBACK_MS),
+  policyVersion: z.string(),
+  policySeq: z.number().int().nonnegative(),
+  /** The unmodified configuration, including caps/focus; not an authority-bearing submission. */
+  policy: z.record(z.string(), z.unknown()),
+  /** SQLite row watermarks fence edits arriving between snapshot and save. */
+  watermark: z.string(),
+  /** Complete arithmetic inputs, aggregated in SQLite; never derived from the examples below. */
+  outcomes: z
+    .array(
+      z.strictObject({
+        activity: ActivitySchema,
+        accepted: z.number().int().nonnegative(),
+        rejected: z.number().int().nonnegative(),
+      }),
+    )
+    .length(ACTIVITIES.length),
+  coverage: z.strictObject({
+    complete: z.literal(true),
+    historicalRulings: z.number().int().nonnegative(),
+    windowRulings: z.number().int().nonnegative(),
+    futureRulings: z.number().int().nonnegative(),
+    invalidTimestampRulings: z.number().int().nonnegative(),
+    candidateRoots: z.number().int().nonnegative(),
+    supersededRulings: z.number().int().nonnegative(),
+    exclusions: z
+      .array(
+        z.strictObject({
+          reason: z.enum(ALLOCATION_EXCLUSIONS),
+          roots: z.number().int().nonnegative(),
+        }),
+      )
+      .max(ALLOCATION_EXCLUSIONS.length),
+    provenanceLimit: z.literal(ALLOCATION_MAX_PROVENANCE),
+    provenanceReturned: z.number().int().min(0).max(ALLOCATION_MAX_PROVENANCE),
+    provenanceOmitted: z.number().int().nonnegative(),
+  }),
+  /** Bounded provenance examples only; coverage and outcomes include every eligible root. */
+  feedback: z
+    .array(
+      z.strictObject({
+        rootId: z.string(),
+        recordId: z.string(),
+        rulingId: z.string(),
+        decision: RulingSchema,
+        at: z.string(),
+        operatorId: z.string(),
+        runId: z.string().nullable(),
+        activity: ActivitySchema.nullable(),
+        attribution: z.string().nullable(),
+        excluded: z.enum(ALLOCATION_EXCLUSIONS),
+        supersededDecisions: z.number().int().nonnegative(),
+      }),
+    )
+    .max(ALLOCATION_MAX_PROVENANCE),
+  inventories: z.array(
+    z.strictObject({
+      key: z.string(),
+      count: z.number().int().nonnegative().nullable(),
+      source: z.string(),
+      meaning: z.string(),
+    }),
+  ),
+});
+export type AllocationSnapshot = z.infer<typeof AllocationSnapshotSchema>;
+export const AllocationPreviewSchema = z.strictObject({
+  algorithm: z.literal(ALLOCATION_ALGORITHM),
+  basis: AllocationBasisSchema,
+  snapshot: AllocationSnapshotSchema,
+  edits: allocationEdits,
+  minimumSample: z.literal(ALLOCATION_MIN_SAMPLE),
+  priorSample: z.literal(ALLOCATION_PRIOR_SAMPLE),
+  maximumDamping: z.literal(ALLOCATION_MAX_DAMPING),
+  discretionaryFraction: allocationFraction,
+  unallocatedFraction: allocationFraction,
+  slices: z.array(
+    z.strictObject({
+      activity: ActivitySchema,
+      enabled: z.boolean(),
+      baseline: allocationFraction,
+      protected: allocationFraction,
+      proposed: allocationFraction,
+      displacement: z.number().min(-1).max(1),
+      accepted: z.number().int().nonnegative(),
+      rejected: z.number().int().nonnegative(),
+      sample: z.number().int().nonnegative(),
+      rate: allocationFraction.nullable(),
+      damping: allocationFraction,
+      evidence: z.enum(["disabled", "missing", "sparse", "sufficient"]),
+    }),
+  ),
+  caveats: z.array(z.string()),
+});
+export type AllocationPreview = z.infer<typeof AllocationPreviewSchema>;
+export const SaveAllocationInputSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120),
+  reason: z.string().trim().min(1).max(2000),
+  basis: AllocationBasisSchema,
+  edits: allocationEdits.default([]),
+});
+export type SaveAllocationInput = z.infer<typeof SaveAllocationInputSchema>;
+export const AllocationVersionSchema = z.strictObject({
+  version: z.string(),
+  seq: z.number().int().positive(),
+  actorId: z.string(),
+  reason: z.string(),
+  recordedAt: z.string(),
+  plan: AllocationPreviewSchema,
+});
+export type AllocationVersion = z.infer<typeof AllocationVersionSchema>;
+export const AllocationVersionInputSchema = z.strictObject({
+  version: z.string().trim().min(1).max(120).optional(),
+});
+export const AllocationVersionResultSchema = AllocationVersionSchema.nullable();
 
 // ---------------------------------------------------------------- the secret preflight (#339)
 

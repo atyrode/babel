@@ -1018,6 +1018,68 @@ only from baseline inputs: advice cannot change activity shares or lane reservat
 when the caller supplies no seed. There is one random stream, not a second draw. Receipts contain
 no reading payload and do not promise replay after the transient inputs expire.
 
+**Allocation planning is a versioned intention, not a policy installation.** The owner's
+`previewAllocation` door computes spend fractions over the closed activity vocabulary in
+`babel/contract.ts`: review, explore, challenge, synthesize and map. For an enabled policy the
+baseline is its normalized relative weights, not a measured conversion from invocation counts to
+spend. A globally disabled or never-configured policy authorizes no allocation: every duty,
+baseline and proposed fraction is zero and the whole budget remains unallocated, even if default
+weights are positive. No per-activity cost model exists, and the scheduler continues to use its
+configured activity weights and mapping slot weights; it does not consume saved allocation intentions.
+
+The value signal is the operator's recorded acceptance or rejection of an improvement proposal
+within the inclusive rolling seven-day window ending at computation time. Administrative topic,
+backlog and duplicate rulings, agent assessments and pending/deferred/reopened work are not value
+outcomes. One logical proposal root counts once: a later changed decision replaces its earlier
+decision, while repeating the same answer on another revision neither adds a sample nor renews
+its timestamp. The bounded provenance examples identify the exact judged revision and producing
+run. A run's recorded activity must support attribution; absent or ambiguous provenance earns no
+credit. Acceptance indicates a choice, not verified implementation or success.
+
+The conservative minimum is eight attributable decided roots per activity, with at least two
+sufficiently sampled activities that have a discretionary remainder. Missing and sparse duties
+retain their individual baselines. Among sufficiently sampled duties only, each discretionary
+baseline is multiplied by `0.5 + acceptance rate`, normalized over that group's original
+remainder, then mixed back toward baseline with damping
+`0.25 × minimum sample / (minimum sample + 32)`. Counts, denominator, cutoff, excluded decisions
+and attribution accompany the result. Recorded inventories and reception gaps are shown as inputs,
+never scored: self-generated backlog cannot earn allocation. Unobserved eligible workload is
+unknown, not zero, and a local catalogue count does not claim archive completeness.
+
+All eligible outcomes and exclusions are counted in SQLite before the snapshot crosses the
+door. Only roots with a ruling in the seven-day window need their older decision streak examined,
+so a repeated old acceptance cannot renew its timestamp. Replay uses complete per-activity
+accepted/rejected totals, never a truncated list's denominator. At most 64 provenance examples,
+each with at most 1 KiB of source identifiers, are retained; omitted and oversized examples remain
+counted and their omission is explicit. Coverage separately summarizes historical, in-window,
+future and invalid-timestamp rulings, deduplication and per-reason exclusions. A quiet window
+therefore carries no historical proposal bodies or growing producer inventory.
+
+Policy snapshots are capped at 512 KiB and complete plans at 1 MiB, below the host's query/result
+limit. Saved version payloads and metadata have a cumulative 16 MiB allowance within the existing
+1 GiB store ceiling. Oversized configuration or full saved-plan capacity is an explicit refusal,
+not a truncated calculation or automatic deletion of an earlier version. Fixed-size row
+watermarks and a derived revision clock for mutable run attribution/configuration preserve atomic
+stale refusal without copying all producers into each version.
+
+The explore activity's baseline and review's configured coverage, random-exploration and discovery
+reservations are protected in absolute fraction terms while the policy is enabled. A zero-weight
+duty remains zero; a disabled or all-zero policy leaves the budget unallocated. An owner edit pins
+named fractions and renormalizes only remaining permitted shares, refusing an edit that violates a
+floor or enables a duty. A named zero/unallocated intention can still be saved and read.
+Seven days is a feedback age limit, not a waiting period, a budget duration or a recalculation
+cadence. Recalculation is on request and applies nothing.
+
+`saveAllocation` requires the owner's named version, reason and unchanged preview basis.
+`allocationVersion` reads that version, or the newest saved version, with its immutable input
+snapshot, edits, computation time and algorithm version. The append-only `allocation_plans` table
+uses the existing hub database and version/provenance convention, not a second store. Saving is an
+optimistic compare-and-swap against the preview inputs and current policy: moved inputs or an
+already-used name are refused. It writes no `policies` row and changes neither the active policy
+version nor claim fencing. Preview and save start no job, call no model, reserve no spending and
+change no ceiling, cap, focus, disclosure, enabled duty or settings authority. Future authorized
+work may identify a saved intention; accepting it is not execution authorization.
+
 ## 6. Processing pipeline
 
 ### 6.1 Archive publication and reading
@@ -1697,6 +1759,28 @@ existing Recipes surface unchanged. A refresh replaces the browser-connection-lo
 there is no durable position store, ranking change, scheduling input or baseline dependency.
 This funding disclosure does not change the acceptance contract of other optional Jev features.
 
+**Allocation proposal** sits beside the ceilings, not among the launch controls. The owner asks
+for a no-spend preview and sees its dated rolling seven-day basis, per-activity accepted and
+rejected denominator, missing/sparse evidence and damping, baseline, protected and discretionary
+shares, proposed spend fraction and displaced percentage points. The expandable basis keeps the
+backend's eligibility/exclusion counts, superseded decisions, exact record/ruling/operator/run
+provenance, counted inventories and gaps, and unchanged policy snapshot inspectable. Null
+inventories and missing acceptance denominators read as unknown, never zero.
+
+Each enabled slice accepts a total fraction between its protected floor and one. Pinning sends
+the existing basis and all prior pins to `previewAllocation`; only the baseline computes the
+permitted remainder. Refusals leave the last successful figures visible and typed values
+unapplied. Unpreviewed values cannot be saved. The owner can unpin one slice, refresh the basis
+while keeping pins, or explicitly request a fresh preview without edits. Ordinary Watch polls
+never replace a draft; changing principal or container discards its sensitive local state.
+
+A name and reason save the preview to the immutable allocation-version destination, not to policy
+settings. Saved versions are read by name or latest, including the original basis and pins rather
+than a recomputation against today's evidence. Stale inputs, duplicate names, unavailable doors
+and owner refusals are displayed, not reinterpreted as empty data or accepted changes. There are
+no duty/policy toggles or apply controls in this section. Spend fractions are not invocation
+fractions or a cost guarantee: the scheduler still uses its existing weights, and neither preview
+nor save authorizes execution (§5.8).
 ### 8.4 Stored data, stateless workers, and one interaction surface
 
 Storage is the product. Everything Babel knows lives in the store (§9); a surface reads and
