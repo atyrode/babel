@@ -683,6 +683,7 @@ test(
       return openRepo(restic.config);
     };
     const need = [OMP, ROLLOUT].reduce((sum, selector) => sum + catalogued.get(selector)!.size, 0);
+    const raw = need + 512 * 5 + (1 << 20);
     const full = await run(
       [OMP, ROLLOUT],
       {},
@@ -692,12 +693,20 @@ test(
       },
     );
     expect(full.receipt.closure).toBe("failed");
-    // Both figures: what the material needs, and what the lease has free.
-    expect(full.receipt.reason).toBe(
-      `material_storage_insufficient: 2 captures need ${String(need + 512 * 5 + (1 << 20))} ` +
-        `bytes of material and the material lease has 4096 free`,
-    );
+    expect(full.receipt.reason).toStartWith("material_storage_insufficient: ");
     expect(full.receipt.outputCapacity).toEqual({ bytes: 1 << 20, free: 4096 });
+
+    // One raw copy fits, but the ustar archive must coexist with it during native sealing.
+    // The old single-copy guard would fetch these captures instead of refusing here.
+    const free = raw + Math.floor(raw / 2);
+    const transient = await run(
+      [OMP, ROLLOUT],
+      {},
+      { archive, capacity: async () => ({ bytes: 768 * 1024 * 1024, free }) },
+    );
+    expect(transient.receipt.closure).toBe("failed");
+    expect(transient.receipt.reason).toStartWith("material_storage_insufficient: ");
+    expect(transient.receipt.outputCapacity?.free).toBeGreaterThan(raw);
 
     // Past what one material may hold at all, whatever the lease has free.
     const [group] = offer([OMP]);
@@ -710,7 +719,18 @@ test(
     );
     expect(huge.receipt.reason).toStartWith("material_bound: ");
 
-    for (const refused of [full, huge]) {
+    // With no capacity report, the declared scratch minus headroom still cannot hold two
+    // copies of a 400 MiB material, even though the separate fetch ceiling permits 448 MiB.
+    const unmeasured = await run(
+      [],
+      {
+        captures: [{ ...group!, sessions: [{ ...group!.sessions[0]!, size: 400 * 1024 * 1024 }] }],
+      },
+      { archive, capacity: async () => null },
+    );
+    expect(unmeasured.receipt.reason).toStartWith("material_storage_insufficient: ");
+
+    for (const refused of [full, transient, huge, unmeasured]) {
       expect(refused.receipt.counts["fetched"]).toBe(0);
       expect(refused.rows).toEqual([]);
     }

@@ -11,6 +11,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Preparation leaves scratch for both raw material and its native archive.** Machine-reported
+  capacity and lane concurrency now bound each catalogued selection for two simultaneous copies;
+  an unmeasured machine uses the declared scratch size, while Recall keeps its separate fetch
+  ceiling. A native preflight refuses insufficient free space before fetching. Synthetic titling
+  selection and no-fetch preflight regressions cover the two-copy boundary.
+
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary
   preview/coordinate files use private creation before publication. An isolated synthetic

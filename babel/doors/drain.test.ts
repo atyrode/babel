@@ -1273,8 +1273,8 @@ async function sealDrainJob(drainId: string, ordinal: number): Promise<void> {
 }
 
 test("a drain bounds each material to its fan's share of the machine's measured scratch", async () => {
-  // The machine's newest receipt measured room for 5000 catalogued bytes past the headroom: one
-  // material alone would hold all five 1000-byte captures, and a fan of two holds two apiece.
+  // The newest receipt measured 5000 bytes past headroom. Raw and sealed material coexist:
+  // a fan of two has room for one 1000-byte capture per preparation, not two.
   await insert(harness.db, "runs", {
     id: "run_catalog_earlier",
     kind: PRESET_OPERATIONS["keep-going"],
@@ -1297,11 +1297,11 @@ test("a drain bounds each material to its fan's share of the machine's measured 
 
   // The door's own first fan…
   const drainId = String((await start({ concurrent: 2 }))["drainId"]);
-  expect(fleet.executed.map(handed)).toEqual([2, 2]);
+  expect(fleet.executed.map(handed)).toEqual([1, 1]);
   // …and the fan a later tick refills.
   await harness.db.run(`UPDATE drains SET live = '[]' WHERE id = ?`, [drainId]);
   await drainTick(deps);
-  expect(fleet.executed.map(handed)).toEqual([2, 2, 2, 2]);
+  expect(fleet.executed.map(handed)).toEqual([1, 1, 1, 1]);
 });
 
 test("a bounded fan recovers a lost admission write without buying a third Code job", async () => {

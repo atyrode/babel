@@ -916,16 +916,37 @@ test("the material bound is the machine's measured scratch, shared by the lane's
       { ...ANALYSIS_PLAN, ...(materials === undefined ? {} : { materials }) },
     );
 
-  // One material alone may hold the 10 MiB: the 4 MiB capture and the small one both fit.
+  // One material alone may use half of the 10 MiB: the 4 MiB capture and the small one fit.
   expect(await launch("run_one")).toHaveProperty("jobId");
   expect(handed(fleet.executed[0])).toEqual(["omp/four", "omp/s1"]);
-  // A fan of three shares it at ⌊10 MiB / 3⌋ each: the 4 MiB capture is left out and counted.
+  // A fan of three shares it at ⌊10 MiB / (3 × 2)⌋ each: the 4 MiB capture is left out.
   expect(await launch("run_fan", 3)).toHaveProperty("jobId");
   expect(handed(fleet.executed[1])).toEqual(["omp/s1"]);
   const fan = await harness.db.query<{ preparation: string }>(
     `SELECT preparation FROM runs WHERE id = 'run_fan'`,
   );
   expect(JSON.parse(String(fan[0]?.preparation))).toMatchObject({ selected: 1, overBound: 1 });
+});
+
+test("without a capacity report, source selection keeps smaller captures within declared scratch", async () => {
+  await archived("omp/over-scratch", {
+    size: 400 * 1024 * 1024,
+    modified_at: new Date(NOW - 1000).toISOString(),
+  });
+
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  expect(answer["refused"]).toBeUndefined();
+  expect(handed(fleet.executed[0])).toEqual(["omp/s1"]);
+  const runs = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE kind = ?`,
+    [OPERATIONS.prepare],
+  );
+  expect(JSON.parse(runs[0]!.preparation)).toMatchObject({ selected: 1, overBound: 1 });
 });
 
 test("the selection stops at the bytes one preparation may seal, and says how many it left", async () => {
@@ -977,7 +998,6 @@ test("a window offering nothing the lease can hold is refused by name, not as an
 
   const refused = String(answer["refused"]);
   expect(refused).toStartWith("material_too_large:");
-  expect(refused).toContain(`${String(MAX_MATERIAL_BYTES / (1024 * 1024))} MiB`);
   expect(refused).not.toContain("holds no session");
   expect(fleet.executed).toEqual([]);
 });
@@ -1673,6 +1693,46 @@ test("the untitled sessions are prepared once, as one bounded batch charged to t
   // cycle that fires every few seconds cannot fan the corpus out across the whole fleet.
   expect(await machinery.inferTitles(fleet, code, "cyc_2", WAKE)).toBeNull();
   expect(fleet.executed).toHaveLength(1);
+});
+
+test("two-wide titling skips oversized captures but keeps smaller ones within raw and sealed scratch", async () => {
+  await route();
+  await insert(harness.db, "policies", {
+    version: "two-wide",
+    seq: 3,
+    actor_id: "operator",
+    reason: "two materials may share this machine",
+    payload: JSON.stringify({ ...ROUTED, concurrentPerMachine: 2 }),
+    recorded_at: stamp(NOW),
+  });
+  await insert(harness.db, "runs", {
+    id: "run_capacity",
+    kind: BEAT,
+    machine_id: MACHINE,
+    job_id: "job_capacity",
+    started_at: stamp(NOW - HOUR),
+    finished_at: stamp(NOW - HOUR),
+    closure: "completed",
+    records: 0,
+    payload: JSON.stringify({
+      closure: "completed",
+      outputCapacity: { bytes: 768 * 1024 * 1024, free: 768 * 1024 * 1024 },
+    }),
+  });
+  await nameless("large", { size: 200 * 1024 * 1024, modified_at: stamp(NOW - 1000) });
+  await nameless("medium", { size: 150 * 1024 * 1024, modified_at: stamp(NOW - 2000) });
+  await nameless("small", { size: 24 * 1024 * 1024, modified_at: stamp(NOW - 3000) });
+
+  expect(await machinery.inferTitles(fleet, code, "cyc_two_wide", WAKE)).toHaveProperty("jobId");
+  expect(fleet.executed).toHaveLength(1);
+  expect(handed(fleet.executed[0])).toEqual(["codex/medium", "codex/small"]);
+  const titles = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE kind = ?`,
+    [OPERATIONS.title],
+  );
+  expect(JSON.parse(titles[0]!.preparation)).toMatchObject({
+    titles: { selectors: ["codex/medium", "codex/small"] },
+  });
 });
 
 test("a deployment at its ceiling names nothing", async () => {

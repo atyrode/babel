@@ -140,14 +140,22 @@ import { defineDoor, type Door } from "./door.ts";
   refused every posting `authority_or_consent_refused` however privileged the caller was.
 */
 
-/** A dry act on this plugin's own rows plus one call onto Code, which reads containers. */
-const LAUNCH_CAPS = ["containers:read"] as const;
+/** A launch reads Babel's rows and must retain the caller's Code-workspace write authority. */
+const LAUNCH_CAPS = ["containers:read", "containers:write"] as const;
 /** Every native requirement shared by Babel's catalog, preparation and verification jobs. */
 export const POSTING_DELEGATES = [
   "machines:run",
   "locations:write",
   "services:invoke",
   "network:host",
+] as const;
+
+/** Settled preparation must retain native broker and job-read authority when it posts Code's
+ * session. Workspace write is a required action cap, not a delegable native capability. */
+export const DEFERRED_SESSION_DELEGATES = [
+  "services:read",
+  "jobs:read",
+  ...POSTING_DELEGATES,
 ] as const;
 
 /**
@@ -178,7 +186,9 @@ export const POSTING_DELEGATES = [
  * caller's capabilities and requires version-bound consent at the operation, location and service
  * targets, so it lends nothing the caller does not hold.
  */
-const LAUNCH_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
+const LAUNCH_DELEGATES = ["machines:read", ...DEFERRED_SESSION_DELEGATES] as const;
+/** Verification has no deferred Code session and keeps only its own native capabilities. */
+const VERIFY_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
 
 /** Reading Code's saved profiles is a read of containers and nothing else. */
 const PROFILES_CAPS = ["containers:read"] as const;
@@ -2761,7 +2771,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       name: ACTIONS.verify,
       title: "Verify the archive on a machine",
       caps: VERIFY_CAPS,
-      delegates: LAUNCH_DELEGATES,
+      delegates: VERIFY_DELEGATES,
       input: VerifyRequestSchema,
       result: VerifyResultSchema,
     }),

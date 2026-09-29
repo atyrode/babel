@@ -354,19 +354,23 @@ the account spending afterwards.
 **AND THE SELECTION'S BOUND IS UNDER THE MACHINE'S, WITH ROOM.** The machine has two bounds.
 The leases are written into the runtime scratch. And `outputBytes` is the AGGREGATE the owner
 seals against — stdout, stderr and both of `prepare`'s leases come out of one running budget,
-and each lease is a ustar archive carrying 512 bytes of header and padding per member.
+and each lease is a ustar archive carrying 512 bytes of header and padding per member. The
+raw material files remain in scratch while the native sealer writes their ustar archive, so a
+material transiently needs two copies of its selected/normalized bytes.
 `MAX_MATERIAL_BYTES` is 448 MiB, 64 MiB under the 512 MiB `inputBytes` the omp session extracts
-the material into, and it is the ceiling rather than the bound: the scratch is shared by every
-job on the machine, so the hub bounds a material at
-`min(MAX_MATERIAL_BYTES, ⌊(C − MATERIAL_HEADROOM_BYTES) / k⌋)`. `C` is the scratch capacity the
-machine last measured, the `outputCapacity` on its newest `catalog` or `prepare` receipt (the
-ceiling alone until one reports); `MATERIAL_HEADROOM_BYTES` is 64 MiB; `k` is how many materials
+the material into; it remains Recall's independent fetch ceiling, not a general 32 MiB cap.
+The hub bounds catalogued source bytes at
+`min(MAX_MATERIAL_BYTES, ⌊(C − MATERIAL_HEADROOM_BYTES) / (k × MATERIAL_SCRATCH_COPIES)⌋)`.
+`C` is the scratch capacity the machine last measured, the `outputCapacity` on its newest
+`catalog` or `prepare` receipt; with no report it uses the declared 768 MiB runtime scratch.
+`MATERIAL_HEADROOM_BYTES` is 64 MiB; `MATERIAL_SCRATCH_COPIES` is 2; `k` is how many materials
 the lane may hold at once — 1 for an operator's launch, `concurrentPerMachine` for the
-conductor's lanes, and the drain's own `concurrent` for a drain fan. On dev-01's 768 MiB scratch
-a two-wide lane bounds each material at 352 MiB. `prepare` measures its own lease as well and
-refuses `material_storage_insufficient`, naming both figures, before it fetches anything: a
-selection admitted at exactly a bound would fill it and fail after the full read, which is the
-failure the pre-post check exists to move.
+conductor's lanes, and the drain's own `concurrent` for a drain fan. On a 768 MiB scratch a
+two-wide lane bounds each material at 176 MiB (one at 352 MiB). `prepare` also compares twice
+its raw material need, including archive/document overhead, against its own measured free
+space and refuses `material_storage_insufficient`, naming the raw, sealed and free figures,
+before fetching any named capture. Content queries use the same doubled free-space budget
+when limiting which matches they can seal.
 
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.

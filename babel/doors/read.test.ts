@@ -129,7 +129,7 @@ afterEach(() => {
 });
 
 describe("the roster", () => {
-  test("declares the nine reading doors, once each, read-only", () => {
+  test("declares nine reading doors, with write authority only for cycle-starting reads", () => {
     const names = doors.map((entry) => entry.action.name);
     expect(names).toEqual([
       ACTIONS.feed,
@@ -144,20 +144,24 @@ describe("the roster", () => {
     ]);
     expect(new Set(names).size).toBe(names.length);
     for (const entry of doors) {
-      expect(entry.action.caps).toEqual(["containers:read"]);
+      expect(entry.action.caps).toEqual(
+        entry.action.name === ACTIONS.pulse || entry.action.name === ACTIONS.runs
+          ? ["containers:read", "containers:write"]
+          : ["containers:read"],
+      );
       expect(entry.action.title).not.toBe("");
     }
     /*
-      THE TWO READS A CYCLE FOLLOWS ARE LENT WHAT THAT CYCLE SPENDS, and the other seven are lent
-      nothing. `jobs:read` is the ingestion behind a wake; `machines:read` describes the host;
-      and `machines:run`, `locations:write`, `services:invoke` and `network:host` are every
-      requirement `catalog` and `prepare` declare when a cycle schedules or executes them.
-      None is a cap: a reader asking for his own pulse holds `containers:read` and is asked for
-      nothing else, which the loop above has just pinned.
+      THE TWO READS A CYCLE FOLLOWS LEND NATIVE AND DEFERRED SESSION CEILINGS. The restored
+      credential needs the required `containers:write` cap at Code's workspace, and delegates
+      `services:read` at the broker and `jobs:read` for OMP's review. The remaining machine,
+      location, service invocation and network delegates admit preparation. Other reads retain
+      neither a write cap nor any delegated native authority.
     */
     const cycled = [
-      "jobs:read",
       "machines:read",
+      "services:read",
+      "jobs:read",
       "machines:run",
       "locations:write",
       "services:invoke",

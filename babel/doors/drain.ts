@@ -44,7 +44,7 @@ import {
 import type { BabelStore } from "../store/store.ts";
 import { mappingPolicy, type Coordinator } from "../store/coordinator.ts";
 import { defineDoor, type Door } from "./door.ts";
-import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
+import { DEFERRED_SESSION_DELEGATES, pressOperation } from "./launch.ts";
 
 /*
   THE THREE DOORS A DRAIN IS RUN THROUGH: start one, read one, end one (#258).
@@ -64,8 +64,8 @@ import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
   not name it would be refused `job_capability_absent:machines:read` at the first slot and report
   "launched nothing" about a machine nobody ever asked. The posting that follows is Babel's own
   `prepare` or its beat, discharged at `engine.jobs.execute` against the same bridge, so the start
-  carries all of `POSTING_DELEGATES`: machine execution, location writes, the bound storage
-  service and its host network. `doors/read.ts` carries the reasoning.
+  carries every native posting requirement plus the Code-workspace and broker authority its
+  settled preparation needs to post its session. `doors/read.ts` carries the reasoning.
 
   WHY `drain.stop` IS GOVERNED AT THE OPERATION NODE AND NOT AT A JOB. A drain holds several jobs
   and a declared requirement resolves to exactly ONE node (`plugin-host.ts` parses one
@@ -75,12 +75,11 @@ import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
   cancelling every job of this drain needs — and asking for it by name is honest about the
   breadth instead of borrowing it one job at a time.
 
-  WHY `drain.status` IS A DRY READ THAT STILL CARRIES DELEGATES. It answers what is draining,
-  under `containers:read`, asking no machine anything: the panel polls it every five seconds while
-  the operator watches, and requiring version-bound consent at a node merely to READ a burn rate
-  is the interface unable to say what it is doing. Everything it reports comes from this plugin's
-  own tables — the drain row, the runs the drain launched, and the conductor's fold of where each
-  of them is.
+  WHY `drain.status` REPORTS A DRY READ EVEN THOUGH IT WAKES WORK. Its response reports what
+  is draining from this plugin's own tables — the drain row, its runs and the conductor's fold
+  of each run's progress. The panel polls it every five seconds. Its cycle can also post Code
+  work, so dispatch requires `containers:write` alongside `containers:read`; neither cap asks
+  for version-bound governed consent merely to report the burn rate.
 
   BUT IT IS ONE OF THE DOORS A CYCLE FOLLOWS (`server.ts`'s `WAKES`), and that is what the
   delegates are for: the dispatcher attenuates `ctx.jobs` to what the door declared, so a cycle
@@ -89,9 +88,10 @@ import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
   never happens. The same cycle describes a machine to keep its beat registered, then schedules
   or executes `catalog` and `prepare`: their manifest declarations require `machines:read`,
   `machines:run`, `locations:write`, `services:invoke` and `network:host`. `pulse`, `runs` and
-  `launch` carry the same cycle ceiling (`doors/read.ts` and `doors/launch.ts`). It widens
-  nothing: each delegate is intersected with the caller's capabilities and the plugin's install
-  grant, and the caller still needs only `containers:read`.
+  `launch` carry the same cycle ceiling (`doors/read.ts` and `doors/launch.ts`). A deferred
+  Code session also needs the caller's `containers:write` as a required cap, not a delegate;
+  delegates remain intersected with caller authority and the plugin's install grant.
+
 */
 
 /**
@@ -103,26 +103,25 @@ import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
  * consent required" and the operator never hears `engine_pending` — nor, on a drain v0.3.0
  * left running, can he stop it at all. `doors/launch.ts` says the whole of it.
  *
- * So a start asks `containers:read` and carries `machines:read` and `POSTING_DELEGATES` —
- * the read the launch path makes before it posts, and every requirement of that posting.
+ * So a start requires `containers:read` and `containers:write`, and delegates `machines:read`
+ * and `DEFERRED_SESSION_DELEGATES` — the host read and native posting, then broker and job-read
+ * authority when a settled preparation posts its Code session.
  * A stop asks `containers:write` — closing the row is a write of this plugin's own rows —
  * and carries `jobs:cancel` as a DELEGATE, the native ceiling its own job authority may reach.
  * The hub still checks consent at the effect: a cancel it will not admit is reported by name
  * rather than assumed. The governed requirements return with the node they are discharged at,
  * which is Code's operation, once its door posts the job.
  */
-const START_CAPS = ["containers:read"] as const;
-const START_DELEGATES = ["machines:read", ...POSTING_DELEGATES] as const;
+const START_CAPS = ["containers:read", "containers:write"] as const;
+const START_DELEGATES = ["machines:read", ...DEFERRED_SESSION_DELEGATES] as const;
 
 const STOP_CAPS = ["containers:write"] as const;
 const STOP_DELEGATES = ["jobs:cancel"] as const;
 
-/** A dry read of this plugin's own tables; it asks no machine anything. */
-const STATUS_CAPS = ["containers:read"] as const;
-/** …but a cycle follows it, and a cycle that cannot read a job, describe a machine or register
- *  its declared operation requirements folds nothing, keeps no cadence and relaunches nothing;
- *  see above. */
-const STATUS_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
+/** A status read follows a cycle that can relaunch a settled drain slot, so it must retain the
+ * caller's Code-workspace write authority as well as the native posting delegates. */
+const STATUS_CAPS = ["containers:read", "containers:write"] as const;
+const STATUS_DELEGATES = ["machines:read", ...DEFERRED_SESSION_DELEGATES] as const;
 
 /** Every act of a drain is news on this plugin's own node, as `doors/acts.ts` explains. */
 const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;

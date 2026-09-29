@@ -40,14 +40,14 @@ import {
 } from "../contract.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
-import { POSTING_DELEGATES } from "./launch.ts";
+import { DEFERRED_SESSION_DELEGATES } from "./launch.ts";
 import { defineServerAction, type GuestStorage } from "@manifold/plugin-kit/server";
 
 /** Reading is a read of the plugin's own rows; the caller needs the workspace it asked about. */
 const READ_CAPS = ["containers:read"] as const;
 
 /*
-  THE TWO READS THAT WAKE THE LOOP CARRY SIX NATIVE CEILINGS, AND NONE IS A SECOND PERMISSION.
+  THE TWO READS THAT WAKE THE LOOP CARRY NATIVE AND DEFERRED-SESSION CEILINGS.
 
   `pulse` and `runs` are the doors a cycle follows (server.ts's `WAKES`), and the half of a cycle
   that matters when no settlement arrived — a hook that overran, a hub restarted mid-run — is
@@ -82,15 +82,22 @@ const READ_CAPS = ["containers:read"] as const;
   `machines:run` is what each schedule or execute is discharged against; without it each is
   refused `job_capability_absent:machines:run` whatever the caller held.
 
-  ALL SIX ARE DELEGATES, NOT CAPS: a delegate is the native ceiling this door's job authority may
-  reach, while a cap is what the caller must hold. The caller is unchanged — it still needs only
-  `containers:read`, and a reader asking for his own pulse is not asking a machine anything —
-  while the ceiling remains intersected with the CALLER's capabilities and the plugin's install
-  grant. The engine still requires the operator's version-bound consent at each operation,
-  location and service target. `locations:read` is deliberately absent: every operation this
-  cycle schedules or executes writes its declared locations; none reads one.
+  THE PREPARATION'S CREDENTIAL OUTLIVES THE DOOR. The owner records the native bridge's
+  attenuated caps with its job and restores exactly those caps when `onJobSettled` asks Code to
+  post a session. `containers:write` at the chosen Code workspace is a required action cap,
+  not a native delegate; `services:read` at the broker and `jobs:read` for OMP's reviewed
+  session are native delegates. Without all three, OMP refuses keyed adoption before the model
+  is asked. The owner still intersects every cap with the caller's actual authority.
+
+  THE REMAINING CAPABILITIES ARE DELEGATES, NOT CAPS: a delegate is the ceiling this door's job
+  authority may preserve, while a cap is what the caller must hold. Waking a cycle may start a
+  Code session, so `pulse` and `runs` require both container read and write; the other reading
+  doors remain read-only. The engine still requires the operator's version-bound consent at each
+  operation, location and service target. `locations:read` is deliberately absent: every
+  operation this cycle schedules or executes writes its declared locations; none reads one.
 */
-const WAKING_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
+const WAKING_CAPS = ["containers:read", "containers:write"] as const;
+const WAKING_DELEGATES = ["machines:read", ...DEFERRED_SESSION_DELEGATES] as const;
 
 /** `pulse` and `topics` are asked without arguments; a strict empty object says so on the wire. */
 const NoQuerySchema = z.strictObject({});
@@ -187,7 +194,7 @@ export function readDoors(store: BabelStore): readonly Door[] {
       defineServerAction({
         name: ACTIONS.pulse,
         title: "Read what Babel did today",
-        caps: READ_CAPS,
+        caps: WAKING_CAPS,
         delegates: WAKING_DELEGATES,
         input: NoQuerySchema,
         result: PulseResultSchema,
@@ -201,7 +208,7 @@ export function readDoors(store: BabelStore): readonly Door[] {
       defineServerAction({
         name: ACTIONS.runs,
         title: "Read the runs",
-        caps: READ_CAPS,
+        caps: WAKING_CAPS,
         delegates: WAKING_DELEGATES,
         input: RunsQuerySchema,
         result: RunsResultSchema,

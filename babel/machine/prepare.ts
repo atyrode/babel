@@ -71,15 +71,18 @@ import { z } from "zod";
 import {
   ArchiveLabelSchema,
   CaptureInstantSchema,
+  MATERIAL_HEADROOM_BYTES,
   MATERIAL_SCHEMA,
   MATERIAL_RETRIEVAL,
   MaterialRetrievalSchema,
+  MATERIAL_SCRATCH_COPIES,
   MAX_MATERIAL_BYTES,
   PREFLIGHT_SCHEMA,
   PREPARE_REFUSALS,
   RECALL_MAX_HITS,
   RECALL_MAX_RESULT_BYTES,
   RUN_STAGES,
+  RUNTIME_SCRATCH_BYTES,
   materialFile,
   termsQuery,
   type MaterialEntry,
@@ -366,7 +369,8 @@ function unavailable(error: unknown): unknown {
 /**
  * WHAT ONE MATERIAL NEEDS OF THE LEASE, before anything is fetched: the catalogued bytes, one
  * 512-byte member per session and for the index, the retrieval sidecar and the receipt, and a
- * MiB of room for the documents themselves.
+ * MiB of room for the documents themselves. The scratch must also hold the sealed ustar archive
+ * while these raw files still exist; the capacity guard reserves both copies.
  */
 function materialNeed(bytes: number, sessions: number): number {
   return bytes + 512 * (sessions + 3) + (1 << 20);
@@ -441,6 +445,7 @@ export async function prepare(
     message: "checking the captures the hub selected",
   });
   const capacity = await deps.capacity();
+  const free = capacity?.free ?? RUNTIME_SCRATCH_BYTES - MATERIAL_HEADROOM_BYTES;
 
   /** The archive, opened once and only when something must be read out of it. */
   let opened: Promise<PrepareRepo> | null = null;
@@ -529,11 +534,14 @@ export async function prepare(
               `the ${String(MAX_MATERIAL_BYTES)} one material holds`,
           );
         }
-        if (capacity !== null && need > capacity.free) {
+        if (need * MATERIAL_SCRATCH_COPIES > free) {
           throw new Refused(
             PREPARE_REFUSALS.storage,
-            `${String(offered.length)} captures need ${String(need)} bytes of material and ` +
-              `the material lease has ${String(capacity.free)} free`,
+            `${String(offered.length)} captures need ${String(need)} bytes of raw material and ` +
+              `${String(need * MATERIAL_SCRATCH_COPIES)} bytes with its sealed archive; ` +
+              (capacity === null
+                ? `the unmeasured scratch allowance is ${String(free)} bytes`
+                : `the material lease has ${String(free)} free`),
           );
         }
       }
@@ -582,7 +590,7 @@ export async function prepare(
 
       let chosen: readonly Capture[] = offered;
       if (input.query !== undefined && retrieval !== undefined && repositoryDir !== null) {
-        const room = Math.min(MAX_MATERIAL_BYTES, capacity?.free ?? MAX_MATERIAL_BYTES);
+        const room = Math.min(MAX_MATERIAL_BYTES, Math.floor(free / MATERIAL_SCRATCH_COPIES));
         queried = await contentSelection(
           eligible,
           input.query,
