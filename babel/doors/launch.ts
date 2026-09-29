@@ -142,6 +142,14 @@ import { defineDoor, type Door } from "./door.ts";
 
 /** A dry act on this plugin's own rows plus one call onto Code, which reads containers. */
 const LAUNCH_CAPS = ["containers:read"] as const;
+/** Every native requirement shared by Babel's catalog, preparation and verification jobs. */
+export const POSTING_DELEGATES = [
+  "machines:run",
+  "locations:write",
+  "services:invoke",
+  "network:host",
+] as const;
+
 /**
  * The native ceiling the jobs this door posts inherit: reading them back, their declared
  * locations and services, the host network they declare, and the read that says whether the
@@ -170,14 +178,7 @@ const LAUNCH_CAPS = ["containers:read"] as const;
  * caller's capabilities and requires version-bound consent at the operation, location and service
  * targets, so it lends nothing the caller does not hold.
  */
-const LAUNCH_DELEGATES = [
-  "jobs:read",
-  "locations:write",
-  "machines:read",
-  "machines:run",
-  "services:invoke",
-  "network:host",
-] as const;
+const LAUNCH_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
 
 /** Reading Code's saved profiles is a read of containers and nothing else. */
 const PROFILES_CAPS = ["containers:read"] as const;
@@ -2447,19 +2448,17 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
     }),
     async (ctx, input) => {
       const preset = PRESET_PLANS[input.preset];
-      // The `operation` field is what a governed requirement WOULD be discharged at, and this is
-      // the only place that can say the node is the one this request is actually about. A request
-      // whose two halves disagree is answered as itself rather than folded into a later refusal:
-      // the operator fixes a mismatched node, and hears nothing about it if a broader sentence
-      // covers it.
+      // No requirement is discharged at the optional input node: the preset determines the
+      // posting. A supplied node still has to agree with that machine and operation.
+      const node = input.operation;
       if (
-        input.operation.machineId !== input.machineId ||
-        input.operation.operationId !== preset.operationId
+        node !== undefined &&
+        (node.machineId !== input.machineId || node.operationId !== preset.operationId)
       ) {
         return {
           refused:
             `this launch names ${input.machineId}/${preset.operationId} and asks for authority ` +
-            `at ${input.operation.machineId}/${input.operation.operationId}`,
+            `at ${node.machineId}/${node.operationId}`,
         };
       }
       const inForce = await deps.coordinator.policy();
@@ -2764,10 +2763,8 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       result: VerifyResultSchema,
     }),
     async (ctx, input) => {
-      // The node this request is authorized at has to be the node it is about, for the reason
-      // `launch` states: the host discharges the requirement against the raw arguments, so a
-      // request whose two halves disagree is answered as itself rather than folded into a
-      // later refusal.
+      // Like launch, a supplied node must agree with the requested machine and operation;
+      // posting authority is discharged at the effect.
       if (
         input.operation.machineId !== input.machineId ||
         input.operation.operationId !== MACHINE_OPERATIONS.verify

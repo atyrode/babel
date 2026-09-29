@@ -25,6 +25,7 @@ import {
   ACTIONS,
   asLaunchRequest,
   BABEL_PLUGIN_ID,
+  MACHINE_OPERATIONS,
   MAP_DRAIN_PRESET,
   OPERATIONS,
   PRESET_OPERATIONS,
@@ -42,9 +43,8 @@ import { mappingPolicy, PolicySchema } from "./store/coordinator.ts";
 import { transcriptMaps } from "./store/transcript-maps.ts";
 import { buildTranscriptMap } from "./machine/transcript-map-tree.ts";
 import { transcriptMapCaptureId } from "./transcript-map-identity.ts";
-import { insertDrain, readDrain } from "./store/drains.ts";
+import { insertDrain } from "./store/drains.ts";
 import { CONDUCTOR_SCHEDULE_ID, type JobLaunch, type ScheduleTiming } from "./server/conductor.ts";
-import manifestJson from "./manifest.json";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -71,7 +71,10 @@ class Jobs {
     this.described += 1;
     return {
       connected: true,
-      operations: { [PRESET_OPERATIONS["keep-going"]]: { ready: true, reason: null } },
+      operations: {
+        [PRESET_OPERATIONS["keep-going"]]: { ready: true, reason: null },
+        [MACHINE_OPERATIONS.verify]: { ready: true, reason: null },
+      },
       installation: {
         revision: "rev-7",
         artifactSha256: "a".repeat(64),
@@ -139,7 +142,7 @@ class Jobs {
     return { runs: [], nextCursor: null };
   }
 
-  execute(): unknown {
+  execute(_launch: JobLaunch): unknown {
     throw new Error("this test starts no job");
   }
 
@@ -230,34 +233,29 @@ function context(
 }
 
 /**
- * `JobService.schedule` builds its request then runs `reauthorizeDeferred`, which asks every
- * requirement `operationRequirements` derives from the operation (Manifold 2229a2fa,
- * `packages/server/src/job-service.ts:2748-2791`, `4360-4481`). The native bridge is a ceiling,
- * so a pulse can reach a schedule only when its own action lends every one of these words.
- *
- * This fake used to model only the first requirement, `machines:run`, and thereby said a
- * door-woken cycle registered an operation whose write locations, service binding and host
- * network the bridge had silently discarded.
+ * The native bridge checks every declared requirement when executing or scheduling a job.
+ * Read those requirements from the posted operation, so this boundary cannot silently admit
+ * a drain or verification that the real host refuses for its locations, service or network.
  */
-const BEAT = manifestJson.machine.operations[OPERATIONS.catalog];
-const BEAT_SCHEDULE_CAPS = [
-  "machines:run",
-  ...BEAT.locations.map((location) => `locations:${location.access}`),
-  ...(BEAT.services ?? []).flatMap((binding) => binding.operationIds.map(() => "services:invoke")),
-  ...(BEAT.network === "host" ? ["network:host"] : []),
-];
+function postingRequires(operationId: string): readonly string[] {
+  const operation = plugin.manifest.machine?.operations[operationId];
+  if (operation === undefined) throw new Error(`the manifest declares no ${operationId}`);
+  return [
+    "machines:run",
+    ...operation.locations.map((location) => `locations:${location.access}`),
+    ...(operation.services ?? []).flatMap((binding) =>
+      binding.operationIds.map(() => "services:invoke"),
+    ),
+    ...(operation.network === "host" ? ["network:host"] : []),
+  ];
+}
 
-/**
- * What the bridge asks of each job verb before it is served. `schedule` needs every capability
- * its operation declares, not merely the first `machines:run` requirement.
- */
+/** Requirements of verbs that do not post an operation. */
 const VERB_CAPS: Record<string, readonly string[]> = {
   status: ["jobs:read"],
   follow: ["jobs:read"],
   listRuns: ["jobs:read"],
   describe: ["machines:read"],
-  execute: ["machines:run"],
-  schedule: BEAT_SCHEDULE_CAPS,
 };
 
 /**
@@ -275,6 +273,17 @@ function served(slice: Jobs, name: string): Jobs {
   const reach: readonly string[] = [...(action.caps ?? []), ...(action.delegates ?? [])];
   return new Proxy(slice, {
     get(target, key, receiver) {
+      if (key === "execute" || key === "schedule") {
+        const verb = Reflect.get(target, key, receiver) as (args: unknown) => unknown;
+        return (args: { operationId: string }): unknown => {
+          const missing = postingRequires(args.operationId).find((cap) => !reach.includes(cap));
+          if (missing !== undefined) {
+            target.refused.push(`job_capability_absent:${missing}`);
+            throw new Error(`job_capability_absent:${missing}`);
+          }
+          return verb.call(target, args);
+        };
+      }
       const caps = typeof key === "string" ? VERB_CAPS[key] : undefined;
       const missing = caps?.find((cap) => !reach.includes(cap));
       if (missing !== undefined) {
@@ -502,32 +511,24 @@ test("every door a cycle follows can read a job, and the drain's own read folds 
   expect(progress[0]?.cost_usd).toBeCloseTo(0.09, 6);
 });
 
-test("the cycle behind a read describes a machine, so the loop keeps its own cadence", async () => {
-  /*
-    THE BEAT THAT WAS NEVER REGISTERED (atyrode/manifold#739, #740). The loop has no clock: its
-    cadence is one `engine.jobs.schedule` of the beat, on the machine the policy routes its work
-    to, and it is registered only once that machine has said it can run it — one
-    `engine.jobs.describe`, a read that moved off `machines:run` and onto `machines:read`
-    (atyrode/manifold#736). The bridge a dispatch is served is the door's own caps plus its
-    delegates, and `machines:read` could not be delegated at all until #740, so every describe
-    behind a read was refused `job_capability_absent:machines:read` however privileged the
-    caller: `reconcileSchedule` noted that the beat could not be registered and registered
-    nothing, and Babel beat for exactly as long as somebody kept pressing something. The
-    schedule itself is then discharged against `machines:run`, which no wake carried either
-    (#448): on the integrated preview every cycle logged `the beat cannot be registered:
-    job_capability_absent:machines:run`.
-  */
-  await pending();
-  const ctx = context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.pulse));
+test.each([ACTIONS.pulse, ACTIONS.runs, ACTIONS.drainStatus])(
+  "the cycle behind %s registers the beat under its declared authority",
+  async (name) => {
+    // A schedule checks locations, service invocation and host network as well as machine
+    // execution. The door's own bridge must carry them before the cadence can be registered.
+    await pending();
+    const ctx = context(harness.db as unknown as GuestDatabase, served(jobs, name));
+    const action = plugin.actions.find((entry) => entry.name === name)!;
 
-  await plugin.handlers[ACTIONS.pulse]?.(ctx, {} as never);
+    await plugin.handlers[name]?.(ctx, action.input.parse({}) as never);
 
-  expect(jobs.described).toBeGreaterThan(0);
-  expect(jobs.refused).toEqual([]);
-  expect(jobs.scheduled).toMatchObject([
-    { scheduleId: `${BABEL_PLUGIN_ID}.conductor`, machineId: MACHINE },
-  ]);
-});
+    expect(jobs.described).toBeGreaterThan(0);
+    expect(jobs.refused).toEqual([]);
+    expect(jobs.scheduled).toMatchObject([
+      { scheduleId: `${BABEL_PLUGIN_ID}.conductor`, machineId: MACHINE },
+    ]);
+  },
+);
 
 test("the doors that ask a machine what it can run are lent that read, and no others are", () => {
   /*
@@ -570,39 +571,40 @@ test("the doors that ask a machine what it can run are lent that read, and no ot
   }
 });
 
-test("the doors whose wake or press starts Babel's own jobs are lent machines:run, and no others are", () => {
-  /*
-    WHO POSTS, AND THEREFORE WHO IS LENT IT (#448). `engine.jobs.execute` and `schedule` discharge
-    `machines:run` against the dispatch's attenuated bridge, so a door that starts work without it
-    is refused `authority_or_consent_refused` however privileged its caller — on the integrated
-    preview the beat never registered and no explicit explore, drain slot or analysis stage was
-    ever admitted. The cycle behind every wake registers the beat, posts analysis preparations and
-    relaunches a drain's settled slot; `launch`, `drainStart` and `verify` post on their own
-    account. Nothing else starts anything, and it is a delegate everywhere, never a cap the
-    caller is asked to hold — except the two mapping starts (#223), which are governed at the
-    exact nodes they post to: the executor's operation and the source owner's private mapping
-    target, which a delegate alone would never discharge.
-  */
-  const posts: Record<string, true> = {
-    ...WAKES,
-    [ACTIONS.drainStart]: true,
-    [ACTIONS.verify]: true,
-  };
-  const governed: Record<string, true> = {
-    [ACTIONS.startMapCatalog]: true,
-    [ACTIONS.mapDrainStart]: true,
-  };
-  for (const action of plugin.actions) {
-    expect({ door: action.name, runs: (action.delegates ?? []).includes("machines:run") }).toEqual({
-      door: action.name,
-      runs: Object.hasOwn(posts, action.name),
+test.each([
+  {
+    name: ACTIONS.launch,
+    operationId: PRESET_OPERATIONS["keep-going"],
+    args: { machineId: MACHINE, preset: "keep-going", minutes: 5 },
+  },
+  {
+    name: ACTIONS.verify,
+    operationId: MACHINE_OPERATIONS.verify,
+    args: {
+      machineId: MACHINE,
+      operation: { kind: "operation", machineId: MACHINE, operationId: MACHINE_OPERATIONS.verify },
+    },
+  },
+])(
+  "$name posts and records its job under the door's own ceiling",
+  async ({ name, operationId, args }) => {
+    jobs.execute = (launch: JobLaunch): unknown => ({
+      ...launch,
+      state: "queued",
+      result: null,
     });
-    if (Object.hasOwn(governed, action.name)) {
-      expect(action.caps).toContain("machines:run");
-      expect(action.requirements).toContainEqual({ cap: "machines:run", target: ["operation"] });
-    } else expect(action.caps).not.toContain("machines:run");
-  }
-});
+    const ctx = context(harness.db as unknown as GuestDatabase, served(jobs, name));
+    const action = plugin.actions.find((entry) => entry.name === name)!;
+    const answer = await plugin.handlers[name]?.(ctx, action.input.parse(args) as never);
+
+    expect(answer).toMatchObject({ runId: "run_000001", jobId: "job_000001", machineId: MACHINE });
+    expect(jobs.refused).toEqual([]);
+    expect(await harness.db.query(`SELECT kind, machine_id, job_id FROM runs`)).toEqual([
+      { kind: operationId, machine_id: MACHINE, job_id: "job_000001" },
+    ]);
+  },
+);
+
 test("a second dispatch inside the floor is the same wake, not another cycle", async () => {
   await pending();
   const at = (clock += HOUR);
@@ -833,37 +835,87 @@ test("enabling a store made before drains named a profile drops the session colu
     jobs_launched: 3n,
     jobs_settled: 3n,
   };
+  const session = { model: "claude-sonnet-4-5", account: "synthetic-account" };
+  await insert(db, "drains", { ...older, session: JSON.stringify(session) });
+  // These legacy columns were plain TEXT, without JSON constraints. Preserve opaque values
+  // too rather than silently dropping the only record of an older drain's choice.
   await insert(db, "drains", {
     ...older,
-    session: JSON.stringify({ model: "claude-sonnet-4-5", account: "operator" }),
+    id: "drn_opaque",
+    knobs: "{legacy-not-json",
+    session: "legacy-unstructured-choice",
   });
 
   await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
   // A second enable is the ordinary case and must find nothing left to add or take away.
   await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
 
-  // A drain starts, through the writer both start doors use (`drainStart`, `mapDrainStart`).
-  const profile = { containerId: "ctr_workbench", expectedRevision: 1 };
-  await insertDrain(harness.store, {
-    id: "drn_after",
+  // Start through the real door and its attenuated native bridge, not just the SQL writer.
+  jobs.execute = (launch: JobLaunch): unknown => ({
+    ...launch,
+    state: "queued",
+    result: null,
+  });
+  const ctx = {
+    ...context(db as unknown as GuestDatabase, served(jobs, ACTIONS.drainStart)),
+    actions: {
+      call: async ({ action }: { action: string }) => {
+        if (action !== "listProfiles") throw new Error(`unexpected Code action ${action}`);
+        return await Promise.resolve({
+          profiles: [
+            {
+              containerId: "ctr_workbench",
+              revision: 1,
+              selected: {
+                model: "anthropic/claude-sonnet-4-5",
+                thinking: "high",
+                capability: 4,
+                advisor: "review",
+              },
+              machineId: MACHINE,
+              accounts: [{ provider: "anthropic", identityKey: "synthetic-account" }],
+              resolved: true,
+            },
+          ],
+        });
+      },
+    },
+    emit: () => {},
+  } as unknown as GuestCtx;
+  const action = plugin.actions.find((entry) => entry.name === ACTIONS.drainStart)!;
+  const request = action.input.parse({
     machineId: MACHINE,
-    preset: MAP_DRAIN_PRESET,
-    profile: { profile, model: "synthetic", thinking: "low", accounts: [], resolved: true },
-    knobs: { recipes: [] },
+    preset: "keep-going",
+    profile: { containerId: "ctr_workbench", expectedRevision: 1 },
     concurrent: 1,
-    target: { deadline: new Date(NOW + HOUR).toISOString() },
-    startedBy: "operator",
+    maxJobs: 1,
+    minutes: 5,
+    target: {},
+    reason: "a synthetic legacy-store start",
+    operation: {
+      kind: "operation",
+      machineId: MACHINE,
+      operationId: PRESET_OPERATIONS["keep-going"],
+    },
   });
-  expect(await readDrain(harness.store, "drn_after")).toMatchObject({
-    state: "running",
-    profile: { profile },
-  });
+  const answer = await plugin.handlers[ACTIONS.drainStart]?.(ctx, request as never);
+  expect(answer).toMatchObject({ machineId: MACHINE, preset: "keep-going", launched: 1 });
+  expect(jobs.refused).toEqual([]);
+  expect(await db.query(`SELECT state, jobs_launched FROM drains WHERE state = 'running'`)).toEqual(
+    [{ state: "running", jobs_launched: 1n }],
+  );
 
-  // And the drain the store already held keeps every column but the one taken away, naming no
-  // profile — the truth about a drain started before there was one to name.
+  // The old account choice remains historical evidence, not an invented Code profile.
   expect(await db.query(`SELECT * FROM drains WHERE id = 'drn_older'`)).toEqual([
-    { ...older, profile: "{}" },
+    { ...older, profile: "{}", knobs: JSON.stringify({ recipes: ["triage"], session }) },
   ]);
+  const opaque = await db.query<{ knobs: string }>(
+    `SELECT knobs FROM drains WHERE id = 'drn_opaque'`,
+  );
+  expect(JSON.parse(opaque[0]!.knobs)).toEqual({
+    legacyKnobs: "{legacy-not-json",
+    session: "legacy-unstructured-choice",
+  });
 });
 
 test("mapping-only methods are unavailable to ordinary exploration", async () => {

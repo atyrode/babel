@@ -44,7 +44,7 @@ import {
 import type { BabelStore } from "../store/store.ts";
 import { mappingPolicy, type Coordinator } from "../store/coordinator.ts";
 import { defineDoor, type Door } from "./door.ts";
-import { pressOperation } from "./launch.ts";
+import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
 
 /*
   THE THREE DOORS A DRAIN IS RUN THROUGH: start one, read one, end one (#258).
@@ -64,7 +64,8 @@ import { pressOperation } from "./launch.ts";
   not name it would be refused `job_capability_absent:machines:read` at the first slot and report
   "launched nothing" about a machine nobody ever asked. The posting that follows is Babel's own
   `prepare` or its beat, discharged at `engine.jobs.execute` against the same bridge, so the start
-  carries `machines:run` too (#448). `doors/read.ts` carries the reasoning.
+  carries all of `POSTING_DELEGATES`: machine execution, location writes, the bound storage
+  service and its host network. `doors/read.ts` carries the reasoning.
 
   WHY `drain.stop` IS GOVERNED AT THE OPERATION NODE AND NOT AT A JOB. A drain holds several jobs
   and a declared requirement resolves to exactly ONE node (`plugin-host.ts` parses one
@@ -102,16 +103,16 @@ import { pressOperation } from "./launch.ts";
  * consent required" and the operator never hears `engine_pending` — nor, on a drain v0.3.0
  * left running, can he stop it at all. `doors/launch.ts` says the whole of it.
  *
- * So a start asks `containers:read` and carries `machines:read` and `machines:run` as
- * DELEGATES — the read the launch path makes before it posts, and the posting — and a stop asks `containers:write`
- * — closing the row is a write of this plugin's own rows — and carries `jobs:cancel` as a
- * DELEGATE, the native ceiling its own job authority may reach. The hub still checks consent
- * at the effect: a cancel it will not admit is reported by name rather than assumed. The
- * governed requirements return with the node they are discharged at, which is Code's
- * operation, once its door posts the job.
+ * So a start asks `containers:read` and carries `machines:read` and `POSTING_DELEGATES` —
+ * the read the launch path makes before it posts, and every requirement of that posting.
+ * A stop asks `containers:write` — closing the row is a write of this plugin's own rows —
+ * and carries `jobs:cancel` as a DELEGATE, the native ceiling its own job authority may reach.
+ * The hub still checks consent at the effect: a cancel it will not admit is reported by name
+ * rather than assumed. The governed requirements return with the node they are discharged at,
+ * which is Code's operation, once its door posts the job.
  */
 const START_CAPS = ["containers:read"] as const;
-const START_DELEGATES = ["machines:read", "machines:run"] as const;
+const START_DELEGATES = ["machines:read", ...POSTING_DELEGATES] as const;
 
 const STOP_CAPS = ["containers:write"] as const;
 const STOP_DELEGATES = ["jobs:cancel"] as const;
@@ -121,14 +122,7 @@ const STATUS_CAPS = ["containers:read"] as const;
 /** …but a cycle follows it, and a cycle that cannot read a job, describe a machine or register
  *  its declared operation requirements folds nothing, keeps no cadence and relaunches nothing;
  *  see above. */
-const STATUS_DELEGATES = [
-  "jobs:read",
-  "machines:read",
-  "machines:run",
-  "locations:write",
-  "services:invoke",
-  "network:host",
-] as const;
+const STATUS_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
 
 /** Every act of a drain is news on this plugin's own node, as `doors/acts.ts` explains. */
 const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;
@@ -289,9 +283,8 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         };
       }
       const operationId = DRAIN_OPERATIONS[input.preset];
-      // The host discharged `machines:run` at the node in the ARGUMENTS, so this is the only
-      // place that can say the node is the one the request is about; a request whose two halves
-      // disagree is refused rather than reconciled (`doors/launch.ts` says the whole of it).
+      // The node must agree with the request even though native authority is discharged at
+      // posting rather than at this input node.
       if (
         input.operation.machineId !== input.machineId ||
         input.operation.operationId !== operationId

@@ -1294,14 +1294,20 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     column: "profile",
     sql: `ALTER TABLE drains ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'`,
   },
-  // #279's other half: the column `profile` REPLACED. It held the `SessionChoice` the operator
-  // typed, NOT NULL with no default, and the addition above gave it a successor without taking
-  // it away — so on every store an enable before #279 created, a drain start, whose writer
-  // names only `profile`, was refused by a column nothing writes any more, while a fresh store,
-  // created without it, never could show it. What it held names a model and an account of
-  // Babel's own, which no Code session spends, so nothing a drain can still use goes with it.
-  // No index, trigger or CHECK ever named it, which is what lets SQLite drop it in place and
-  // keep every other column of every row.
+  // #279's other half: the column `profile` REPLACED was NOT NULL with no default, so it
+  // refused every later drain insert. Keep its historical account choice in the row's knobs
+  // before dropping it. Both entries ask about the same column before the enable's atomic
+  // batch, so they run together once; fresh stores already have the final shape.
+  {
+    object: "drains",
+    column: "session",
+    removes: true,
+    sql: `UPDATE drains SET knobs = json_set(
+      CASE WHEN NOT json_valid(knobs) THEN json_object('legacyKnobs', knobs)
+           WHEN json_type(knobs) = 'object' THEN knobs
+           ELSE json_object('legacyKnobs', json(knobs)) END,
+      '$.session', CASE WHEN json_valid(session) THEN json(session) ELSE session END)`,
+  },
   {
     object: "drains",
     column: "session",

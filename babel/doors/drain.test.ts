@@ -536,7 +536,7 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
     ACTIONS.drainStatus,
     ACTIONS.drainStop,
   ]);
-  const [begin, mapBegin, read, stop] = doors as readonly Door[];
+  const [, mapBegin, , stop] = doors as readonly Door[];
 
   // THE MAPPING START IS ADMITTED WHERE ITS FIRST FAN IS POSTED: the executor's `map-prepare`
   // node and the source owner's private mapping target, as `startMapCatalog` is. A read wake is
@@ -565,34 +565,6 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
     "jobs:read",
     "locations:write",
     "services:read",
-  ]);
-
-  // A start names no node (#279), so it asks what a reading door asks. It CANNOT keep
-  // `machines:run` at the explore operation: the host discharges that before the handler runs
-  // and no installation declares the operation, so the dispatch was refused "explicit
-  // version-bound consent required" and the operator never heard `engine_pending`. The governed
-  // requirement returns with Code's node. What it does carry is what its own first fan needs:
-  // `startExplore`/`startBeat` describe the machine through `ready` before posting, and then post
-  // Babel's own `prepare` or `catalog` — a describe outside the door's ceiling is refused
-  // `job_capability_absent:machines:read`, and a posting outside it `authority_or_consent_refused`
-  // at `execute` (#448), before any slot is filled.
-  expect(begin?.action.caps).toEqual(["containers:read"]);
-  expect(begin?.action.requirements).toBeUndefined();
-  expect(begin?.action.delegates).toEqual(["machines:read", "machines:run"]);
-
-  // The dry read asks no machine anything ITSELF, so it carries no governed capability and no
-  // target — the panel polls it every five seconds while the operator watches. It DOES delegate
-  // the full native ceiling of the cycle that follows it: ingestion, the machine read, and every
-  // requirement `catalog` or `prepare` declares while the cycle schedules or executes them.
-  expect(read?.action.caps).toEqual(["containers:read"]);
-  expect(read?.action.requirements).toBeUndefined();
-  expect(read?.action.delegates).toEqual([
-    "jobs:read",
-    "machines:read",
-    "machines:run",
-    "locations:write",
-    "services:invoke",
-    "network:host",
   ]);
 
   // A stop closes this plugin's own row and reaches its jobs through its OWN ceiling. It

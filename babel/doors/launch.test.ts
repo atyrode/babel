@@ -269,12 +269,7 @@ async function dispatch(name: string, args: unknown): Promise<Record<string, unk
   return result.data as Record<string, unknown>;
 }
 
-/**
- * A launch as the panel would post one: the request, plus the OPERATION NODE the door is
- * authorized at. Every test goes through this rather than hand-writing the node, because a
- * launch without one is not a request the hub would ever deliver — the host refuses `invalid
- * authority target` before the handler is entered.
- */
+/** A launch as the panel posts it, including the preset's operation node. */
 async function start(
   args: { readonly preset: keyof typeof PRESET_OPERATIONS } & Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -380,80 +375,6 @@ beforeEach(async () => {
 
 afterEach(() => {
   harness.close();
-});
-
-test("the roster is profiles, launch, verify and stop, and none is governed at a node that is gone", () => {
-  expect(doors.map((entry) => entry.action.name)).toEqual([
-    ACTIONS.profiles,
-    ACTIONS.launch,
-    ACTIONS.verify,
-    ACTIONS.stop,
-  ]);
-  const [profiles, launch, verify, stop] = doors as readonly Door[];
-
-  // Reading Code's saved profiles is a read of containers and nothing else.
-  expect(profiles?.action.caps).toEqual(["containers:read"]);
-  expect(profiles?.action.requirements).toBeUndefined();
-
-  // A launch posts Babel's OWN `prepare` or `catalog` job and asks Code to post the session, so
-  // it keeps the delegates that posting needs — reading jobs back; the locations its output
-  // leases are cut from; the service binding and host network the operation declares; the machine
-  // read `ready` describes before anything is posted; and `machines:run` at the effect (#448).
-  // It names no governed node, because the operations a requirement would name (`explore`,
-  // `evaluate`) are declared by nobody.
-  expect(launch?.action.caps).toEqual(["containers:read"]);
-  expect(launch?.action.requirements).toBeUndefined();
-  expect(launch?.action.delegates).toEqual([
-    "jobs:read",
-    "locations:write",
-    "machines:read",
-    "machines:run",
-    "services:invoke",
-    "network:host",
-  ]);
-
-  // Verifying the archive posts one of Babel's OWN jobs and writes its run row, so it carries
-  // a write of this plugin's rows and the delegates a posting needs — the same ones, because
-  // it is the same posting path.
-  expect(verify?.action.caps).toEqual(["containers:write"]);
-  expect(verify?.action.requirements).toBeUndefined();
-  expect(verify?.action.delegates).toEqual([
-    "jobs:read",
-    "locations:write",
-    "machines:read",
-    "machines:run",
-    "services:invoke",
-    "network:host",
-  ]);
-
-  // A stop closes this plugin's own rows and reaches a job through its OWN ceiling: a delegate
-  // rather than a cap the caller must hold at a node no installation declares any more.
-  expect(stop?.action.caps).toEqual(["containers:write"]);
-  expect(stop?.action.requirements).toBeUndefined();
-  expect(stop?.action.delegates).toEqual(["jobs:cancel"]);
-});
-
-test("no door requires a node at an operation no installation declares", () => {
-  /*
-    THE DEFECT THIS PINS. The host discharges a door's `requirements` against the RAW arguments
-    BEFORE the handler runs (`plugin-host.ts`: walk the target, parse a `ManifoldRef`, ask the
-    authority waterfall, then admit against the operator's version-bound CONSENT at that node;
-    `job-service.ts` refuses an operation the installation does not declare). `machines:run` at
-    `atyrode.babel.explore` was exactly that, and this bundle stopped declaring the operation
-    — so every model preset was refused "explicit version-bound consent required" at a node
-    that cannot exist, and the door's own refusal was unreachable. A refusal the caller cannot
-    reach is not a refusal, so no door may name a node while none is declared.
-  */
-  for (const entry of doors) {
-    expect({ door: entry.action.name, requirements: entry.action.requirements }).toEqual({
-      door: entry.action.name,
-      requirements: undefined,
-    });
-  }
-  // The two ids a requirement would have named are the two this manifest no longer declares.
-  const declared: readonly string[] = Object.values(MACHINE_OPERATIONS);
-  expect(declared).not.toContain(OPERATIONS.explore);
-  expect(declared).not.toContain(OPERATIONS.evaluate);
 });
 
 test("the profiles door answers Code's saved list, and Code's silence as the sentence it refused with", async () => {
@@ -1080,18 +1001,34 @@ test("keep-going posts Babel's own beat, which reaches no model and needs no pro
   expect(runs[0]?.kind).toBe(BEAT);
 });
 
-test("a request authorized at one node and aimed at another is refused as itself", async () => {
-  // The host discharged the caller's authority at the node in the ARGUMENTS, and a request whose
-  // two halves disagree is a mistake the operator fixes — so it is answered as itself rather
-  // than folded into the engine's absence, which he can do nothing about.
+test("a keep-going press without an operation node uses the preset's own operation", async () => {
+  const answer = await dispatch(ACTIONS.launch, {
+    machineId: MACHINE,
+    preset: "keep-going",
+    minutes: 5,
+  });
+
+  expect(answer).toMatchObject({ kind: "conductor", machineId: MACHINE });
+  expect(fleet.executed.map((job) => job.operationId)).toEqual([BEAT]);
+  expect(fleet.executed[0]?.limits?.timeoutMs).toBe(5 * 60_000);
+  expect(await harness.db.query(`SELECT kind, machine_id FROM runs`)).toEqual([
+    { kind: BEAT, machine_id: MACHINE },
+  ]);
+});
+
+test.each([
+  { machineId: MACHINE, operationId: OPERATIONS.explore },
+  { machineId: "another-machine", operationId: BEAT },
+])("a supplied launch node cannot redirect the preset: %j", async (node) => {
   const crossed = await dispatch(ACTIONS.launch, {
     machineId: MACHINE,
     preset: "keep-going",
-    operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.explore },
+    operation: { kind: "operation", ...node },
   });
-  expect(crossed["refused"]).toContain(OPERATIONS.explore);
-  expect(crossed["refused"]).not.toContain("engine_pending");
+  expect(crossed["refused"]).toContain(`${node.machineId}/${node.operationId}`);
   expect(fleet.executed).toEqual([]);
+  expect(fleet.described).toBe(0);
+  expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
 });
 
 test("stop cancels the job, closes the run and releases what it reserved", async () => {

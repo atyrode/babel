@@ -4901,6 +4901,183 @@ test("a read Code refuses is recorded on the run, retried once, and then closed 
   expect(code.asked).toHaveLength(2);
 });
 
+test("a failed pending pass preserves every observed silence and reset across count batches", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  // More than one count batch, all before the Code read that interrupts the pass. These are
+  // native preparations the hub can poll, not imported model runs excluded from reconciliation.
+  const native = Array.from({ length: 251 }, (_unused, index) => ({
+    id: `run_silent_${String(index).padStart(3, "0")}`,
+    unreadable: index % 4,
+  }));
+  await db.batch(
+    native.map(({ id, unreadable }) => ({
+      sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, unreadable, payload)
+            VALUES (?, ?, 'dev-01', ?, ?, ?, '{}')`,
+      params: [id, OPERATIONS.prepare, `job_${id}`, new Date(clock - 1).toISOString(), unreadable],
+    })),
+  );
+  const closed = await sessionInFlight(db);
+  const recovered = await anotherSession(db, "recovered");
+  const interrupted = await anotherSession(db, "interrupted");
+  await db.batch([
+    {
+      sql: `UPDATE runs SET unreadable = 1 WHERE id = ?`,
+      params: [closed.runId],
+    },
+    {
+      sql: `UPDATE runs SET unreadable = 5, started_at = ? WHERE id = ?`,
+      params: [new Date(clock + 1).toISOString(), recovered.runId],
+    },
+    {
+      sql: `UPDATE runs SET unreadable = 9, started_at = ? WHERE id = ?`,
+      params: [new Date(clock + 2).toISOString(), interrupted.runId],
+    },
+  ]);
+  const replies: Record<string, SessionRead> = {
+    [recovered.jobId]: sessionRead({
+      jobId: recovered.jobId,
+      state: "started",
+      sealed: false,
+    }),
+  };
+  const code = codeReplying(replies);
+  const read = code.readSession;
+  code.readSession = async (request) => {
+    if (request.jobId === interrupted.jobId) throw new Error("session transport interrupted");
+    return await read(request);
+  };
+
+  await expect(wakeOn(store, draws, code).tick()).rejects.toThrow("session transport interrupted");
+  expect(
+    await db.query(
+      `SELECT id, unreadable, closure FROM runs WHERE id LIKE 'run_silent_%' ORDER BY id`,
+    ),
+  ).toEqual(
+    native.map(({ id, unreadable }) => ({ id, unreadable: BigInt(unreadable + 1), closure: null })),
+  );
+  expect(
+    await db.query(
+      `SELECT id, unreadable, closure FROM runs WHERE container_id = 'ctr_workbench' ORDER BY id`,
+    ),
+  ).toEqual([
+    { id: closed.runId, unreadable: 2n, closure: "failed" },
+    { id: interrupted.runId, unreadable: 9n, closure: null },
+    { id: recovered.runId, unreadable: 0n, closure: null },
+  ]);
+  expect(
+    await db.query(`SELECT outcome, actual_cost FROM claims WHERE id = ?`, [closed.claimId]),
+  ).toEqual([{ outcome: "abandoned", actual_cost: ASSIGNMENT.reservedCost }]);
+
+  // The next wake starts from the persisted counts, including after disablement. A successful
+  // read clears the interrupted run's old streak; the already-settled run stays settled.
+  draws.enabled = false;
+  replies[interrupted.jobId] = sessionRead({
+    jobId: interrupted.jobId,
+    state: "started",
+    sealed: false,
+  });
+  code.readSession = read;
+  await wakeOn(store, draws, code).tick();
+  expect(
+    await db.query(
+      `SELECT id, unreadable, closure FROM runs WHERE id LIKE 'run_silent_%' ORDER BY id`,
+    ),
+  ).toEqual(
+    native.map(({ id, unreadable }) => ({ id, unreadable: BigInt(unreadable + 2), closure: null })),
+  );
+  expect(
+    await db.query(
+      `SELECT id, unreadable, closure FROM runs WHERE container_id = 'ctr_workbench' ORDER BY id`,
+    ),
+  ).toEqual([
+    { id: closed.runId, unreadable: 2n, closure: "failed" },
+    { id: interrupted.runId, unreadable: 0n, closure: null },
+    { id: recovered.runId, unreadable: 0n, closure: null },
+  ]);
+});
+
+test.each(["later-read", "earlier-batch"] as const)(
+  "a newer successful read survives an older silence flush paused at %s",
+  async (pauseAt) => {
+    const db = openDatabase();
+    await seed(db);
+    const store = openStore(db);
+    const draws = new Draws(db);
+    draws.enabled = false;
+    // Put the subject beyond the first count batch, so a read arriving between batches
+    // must invalidate a statement that the older pass has not submitted yet.
+    await db.batch(
+      Array.from({ length: 251 }, (_unused, index) => ({
+        sql: `INSERT INTO runs(id, kind, machine_id, job_id, started_at, payload)
+              VALUES (?, ?, 'dev-01', ?, ?, '{}')`,
+        params: [
+          `run_overlap_${index}`,
+          OPERATIONS.prepare,
+          `job_overlap_${index}`,
+          new Date(clock - 1).toISOString(),
+        ],
+      })),
+    );
+    const subject = await sessionInFlight(db);
+    const later = await anotherSession(db, "overlap_later", "overlap@example.test");
+    await db.run(`UPDATE runs SET started_at = ? WHERE id = ?`, [
+      new Date(clock + 1).toISOString(),
+      later.runId,
+    ]);
+    const readable = {
+      [subject.jobId]: sessionRead({ jobId: subject.jobId, state: "started", sealed: false }),
+      [later.jobId]: sessionRead({ jobId: later.jobId, state: "started", sealed: false }),
+    };
+    const paused = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const older = codeReplying({ [later.jobId]: readable[later.jobId]! });
+    const readOlder = older.readSession;
+    older.readSession = async (request) => {
+      if (pauseAt === "later-read" && request.jobId === later.jobId) {
+        paused.resolve();
+        await resume.promise;
+      }
+      return await readOlder(request);
+    };
+    const submit = db.batch;
+    let heldBatch = false;
+    db.batch = async (statements) => {
+      const result = await submit(statements);
+      if (
+        pauseAt === "earlier-batch" &&
+        !heldBatch &&
+        statements.some((statement) => statement.sql.startsWith("UPDATE runs SET unreadable"))
+      ) {
+        heldBatch = true;
+        paused.resolve();
+        await resume.promise;
+      }
+      return result;
+    };
+    const pending = wakeOn(store, draws, older).tick();
+    try {
+      await paused.promise;
+      await wakeOn(store, draws, codeReplying(readable)).tick();
+    } finally {
+      resume.resolve();
+      await pending;
+    }
+    expect(
+      await db.query(`SELECT unreadable, closure FROM runs WHERE id = ?`, [subject.runId]),
+    ).toEqual([{ unreadable: 0n, closure: null }]);
+
+    // The next isolated refusal is the first in a new streak, not grounds to close a
+    // session that the intervening wake successfully read.
+    await wakeOn(store, draws, codeReplying({ [later.jobId]: readable[later.jobId]! })).tick();
+    expect(
+      await db.query(`SELECT unreadable, closure FROM runs WHERE id = ?`, [subject.runId]),
+    ).toEqual([{ unreadable: 1n, closure: null }]);
+  },
+);
+
 // ------------------------------------------- the rows one answer becomes (records.ts)
 
 /** The conductor one wake builds, as `server.ts` builds it: a new one per tick. */

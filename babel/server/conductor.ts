@@ -906,6 +906,16 @@ const WORKSPACES_PER_TICK = 64;
  */
 const STATEMENTS_PER_BATCH = 250;
 
+interface SilenceObservation {
+  readonly runId: string;
+  readonly statement: SqlStatement | null;
+}
+
+// Every wake shares server.ts's database proxy. Keep only in-flight observation identities
+// here, never counts: a later successful read must supersede an older pass's queued increment,
+// including when the later read already saw zero. Separate stores must not share this state.
+const SILENCES_BY_DATABASE = new WeakMap<PluginDatabase, Map<string, SilenceObservation>>();
+
 /** One `?` per word of the hub's closed reason vocabulary, for the marker predicate below. */
 const HUB_REASON_HOLES = MACHINE_REPOSITORY_REASONS.map(() => "?").join(", ");
 
@@ -2246,6 +2256,9 @@ function mappingIntent(preparation: string | null): TranscriptMapRun | null {
 
 export function conductor(deps: ConductorDeps): Conductor {
   const { store, coordinator, jobs, machines, keys, plan, engine } = deps;
+  const heldSilences = SILENCES_BY_DATABASE.get(store.db);
+  const newestSilences = heldSilences ?? new Map<string, SilenceObservation>();
+  if (heldSilences === undefined) SILENCES_BY_DATABASE.set(store.db, newestSilences);
   let cycle = 0;
   let catalogAdmission: TranscriptMapCatalogAdmission | undefined;
 
@@ -3947,12 +3960,53 @@ export function conductor(deps: ConductorDeps): Conductor {
    * this one" was reset before it could ever be read a second time and the reaper's bound
    * could not fire. A run that answers is set back to zero, which is what makes the count
    * CONSECUTIVE rather than cumulative.
+   *
+   * The pending pass owns these statements and flushes them in bounded batches in its
+   * `finally`, before the reaper reads them. One autocommit per silent run otherwise means one
+   * fsync per run; a later reconciliation failure must not lose the counts already observed.
    */
-  async function silence(runId: string, held: number, seen: boolean): Promise<number> {
+  function silence(
+    silences: SilenceObservation[],
+    runId: string,
+    held: number,
+    seen: boolean,
+  ): number {
     const next = seen ? 0 : held + 1;
-    if (next !== held)
-      await store.db.run(`UPDATE runs SET unreadable = ? WHERE id = ?`, [next, runId]);
+    const observation: SilenceObservation = {
+      runId,
+      statement:
+        next === held
+          ? null
+          : { sql: `UPDATE runs SET unreadable = ? WHERE id = ?`, params: [next, runId] },
+    };
+    newestSilences.set(runId, observation);
+    silences.push(observation);
     return next;
+  }
+  async function writeSilences(silences: readonly SilenceObservation[]): Promise<void> {
+    try {
+      for (let from = 0; from < silences.length; from += STATEMENTS_PER_BATCH) {
+        const statements: SqlStatement[] = [];
+        const end = Math.min(from + STATEMENTS_PER_BATCH, silences.length);
+        // Filter at submission, not before the first await: another wake can observe a
+        // later batch's runs while this pass waits for an earlier batch to finish.
+        for (let index = from; index < end; index += 1) {
+          const observation = silences[index]!;
+          if (newestSilences.get(observation.runId) !== observation) continue;
+          newestSilences.delete(observation.runId);
+          if (observation.statement !== null) statements.push(observation.statement);
+        }
+        if (statements.length > 0) await store.db.batch(statements);
+      }
+    } catch (error) {
+      // A closed data lease must not retain identities for batches it could not submit,
+      // nor remove a newer observation owned by another wake.
+      for (const observation of silences) {
+        if (newestSilences.get(observation.runId) === observation)
+          newestSilences.delete(observation.runId);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -5279,6 +5333,7 @@ export function conductor(deps: ConductorDeps): Conductor {
   async function reconcileSession(
     at: number,
     run: PendingRun,
+    silences: SilenceObservation[],
     ingested: IngestedRun[],
     settled: SettledClaim[],
     notes: string[],
@@ -5303,7 +5358,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
     const answered = await engine.readSession({ containerId, jobId: run.job_id });
     if (!answered.ok) {
-      const silent = await silence(run.id, Number(run.unreadable), false);
+      const silent = silence(silences, run.id, Number(run.unreadable), false);
       const note = `session ${run.job_id} in ${containerId} cannot be read: ${answered.refused}`;
       notes.push(note);
       const analysis = AnalysisWorkSchema.safeParse(preparationOf(run.preparation)?.["analysis"]);
@@ -5331,7 +5386,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
       return { inFlight: false };
     }
-    await silence(run.id, Number(run.unreadable), true);
+    silence(silences, run.id, Number(run.unreadable), true);
     /*
       Code owns the replay ring. Babel consumes only the activity snapshot Code returns,
       never inferring model work from the presence of a running job.
@@ -5632,9 +5687,11 @@ export function conductor(deps: ConductorDeps): Conductor {
     );
   }
 
-  /** Keep the same reservation through native preparation and its Code continuation. */
-  async function renewAnalysis(jobId: string, at: number): Promise<void> {
-    const policy = (await coordinator.policy(at)).policy;
+  /**
+   * Keep the same reservation through native preparation and its Code continuation, using the
+   * policy the cycle already read at `at` rather than reading it again for every pending run.
+   */
+  async function renewAnalysis(jobId: string, at: number, policy: Policy): Promise<void> {
     if (!policy.enabled) return;
     const parents = await store.db.query<{ id: string; preparation: string | null }>(
       `SELECT id, preparation FROM runs WHERE closure IS NULL AND (job_id = ? OR prepare_job_id = ?)`,
@@ -5686,6 +5743,7 @@ export function conductor(deps: ConductorDeps): Conductor {
    */
   async function reconcileRuns(
     at: number,
+    policy: Policy,
     machineIds: readonly string[],
     ingested: IngestedRun[],
     settled: SettledClaim[],
@@ -5715,110 +5773,123 @@ export function conductor(deps: ConductorDeps): Conductor {
     let inFlight = 0;
     let atModel = 0;
     let stalled = 0;
+    const silences: SilenceObservation[] = [];
     // The count of silent cycles is on the row now, so nothing is pruned here: a run that is
     // no longer waited on is not selected, and one that answers is set back to zero in place.
-    for (const run of pending) {
-      if (run.kind !== OPERATIONS.mapCatalog) await renewAnalysis(run.job_id, at);
-      // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
-      // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it
-      // answers nothing useful at best; Code is asked instead, through the door that owns it.
-      if (
-        run.kind !== OPERATIONS.mapCatalog &&
-        run.container_id !== null &&
-        run.container_id !== ""
-      ) {
-        const reconciled = await reconcileSession(at, run, ingested, settled, notes, refusals);
-        if (reconciled.inFlight) {
-          inFlight += 1;
-          if (reconciled.stage === RUN_STAGES.atModel) atModel += 1;
-          if (reconciled.stalled === true) stalled += 1;
-        }
-        continue;
-      }
-      let state: JobRunState | null = null;
-      try {
-        state = await jobs.status({
-          kind: "job",
-          machineId: run.machine_id,
-          operationId: run.kind,
-          jobId: run.job_id,
-        });
-      } catch (error) {
-        notes.push(`job ${run.job_id} cannot be read: ${message(error)}`);
+    try {
+      for (const run of pending) {
+        if (run.kind !== OPERATIONS.mapCatalog) await renewAnalysis(run.job_id, at, policy);
+        // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
+        // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it
+        // answers nothing useful at best; Code is asked instead, through the door that owns it.
         if (
-          scope?.lane === "catalog" &&
-          scope.machineId === run.machine_id &&
-          run.kind === OPERATIONS.mapCatalog &&
-          neverRetained(error)
+          run.kind !== OPERATIONS.mapCatalog &&
+          run.container_id !== null &&
+          run.container_id !== ""
         ) {
-          const intent = catalogIntent(run.preparation);
-          if (intent) await postCatalog(run.id, run.job_id, intent, notes);
-        }
-        // Retrying a preparation is a new spend: only a wake carrying the run's lane does it
-        // (`postMappingNative` asks). Any other wake leaves the intent untouched for that one
-        // (#469).
-        if (
-          (deps.mappingDrainId !== undefined || deps.nativeDispatch === true) &&
-          run.kind === OPERATIONS.mapPrepare &&
-          neverRetained(error)
-        ) {
-          const parents = await store.db.query<{ id: string; preparation: string }>(
-            `SELECT id,preparation FROM runs WHERE prepare_job_id=? AND closure IS NULL AND job_id IS NULL`,
-            [run.job_id],
+          const reconciled = await reconcileSession(
+            at,
+            run,
+            silences,
+            ingested,
+            settled,
+            notes,
+            refusals,
           );
-          for (const parent of parents) {
-            const intent = mappingIntent(parent.preparation);
-            if (intent !== null)
-              await postMappingNative(parent.id, run.job_id, intent, settled, notes);
+          if (reconciled.inFlight) {
+            inFlight += 1;
+            if (reconciled.stage === RUN_STAGES.atModel) atModel += 1;
+            if (reconciled.stalled === true) stalled += 1;
+          }
+          continue;
+        }
+        let state: JobRunState | null = null;
+        try {
+          state = await jobs.status({
+            kind: "job",
+            machineId: run.machine_id,
+            operationId: run.kind,
+            jobId: run.job_id,
+          });
+        } catch (error) {
+          notes.push(`job ${run.job_id} cannot be read: ${message(error)}`);
+          if (
+            scope?.lane === "catalog" &&
+            scope.machineId === run.machine_id &&
+            run.kind === OPERATIONS.mapCatalog &&
+            neverRetained(error)
+          ) {
+            const intent = catalogIntent(run.preparation);
+            if (intent) await postCatalog(run.id, run.job_id, intent, notes);
+          }
+          // Retrying a preparation is a new spend: only a wake carrying the run's lane does it
+          // (`postMappingNative` asks). Any other wake leaves the intent untouched for that one
+          // (#469).
+          if (
+            (deps.mappingDrainId !== undefined || deps.nativeDispatch === true) &&
+            run.kind === OPERATIONS.mapPrepare &&
+            neverRetained(error)
+          ) {
+            const parents = await store.db.query<{ id: string; preparation: string }>(
+              `SELECT id,preparation FROM runs WHERE prepare_job_id=? AND closure IS NULL AND job_id IS NULL`,
+              [run.job_id],
+            );
+            for (const parent of parents) {
+              const intent = mappingIntent(parent.preparation);
+              if (intent !== null)
+                await postMappingNative(parent.id, run.job_id, intent, settled, notes);
+            }
           }
         }
+        // A status the hub cannot answer — it threw, or it does not know this job — leaves the run
+        // in flight for this cycle and is remembered: a machine that vanished would otherwise keep
+        // its claims "running" for ever, and the reaper below counts the cycles.
+        if (state === null) {
+          silence(silences, run.id, Number(run.unreadable), false);
+          inFlight += 1;
+          continue;
+        }
+        silence(silences, run.id, Number(run.unreadable), true);
+        if (TERMINAL_STATES[state.state] !== true) {
+          inFlight += 1;
+          const folded = await foldRun(at, run, notes);
+          if (folded.stage === RUN_STAGES.atModel) atModel += 1;
+          if (folded.stalled) stalled += 1;
+          continue;
+        }
+        // THE LAST READ OF THE FOLD, taken before the settlement deletes it. Which models
+        // answered is not in `state.result` — the hub's `usage.inference` is five numbers and no
+        // name — so this row is the only place it was ever written, and the receipt is the only
+        // place it can survive (#169).
+        const heard = await store.db.query<{ models: string }>(
+          `SELECT models FROM run_progress WHERE run_id = ?`,
+          [run.id],
+        );
+        await settle(
+          at,
+          {
+            runId: run.id,
+            jobId: run.job_id,
+            machineId: run.machine_id,
+            operationId: run.kind,
+            outputs: state.result?.outputs ?? [],
+            closure: closureOf(state),
+            reason: nativeReason(state),
+            inference: state.result?.usage?.inference ?? null,
+            models: modelList(heard[0]?.models),
+          },
+          ingested,
+          settled,
+          notes,
+          refusals,
+        );
+        // The receipt is the record now. A settled run keeps no in-flight row: the panel reads a
+        // finished run's spend off the run itself, and a `run_progress` row left behind would be
+        // a second, staler answer to the same question.
+        await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
       }
-      // A status the hub cannot answer — it threw, or it does not know this job — leaves the run
-      // in flight for this cycle and is remembered: a machine that vanished would otherwise keep
-      // its claims "running" for ever, and the reaper below counts the cycles.
-      if (state === null) {
-        await silence(run.id, Number(run.unreadable), false);
-        inFlight += 1;
-        continue;
-      }
-      await silence(run.id, Number(run.unreadable), true);
-      if (TERMINAL_STATES[state.state] !== true) {
-        inFlight += 1;
-        const folded = await foldRun(at, run, notes);
-        if (folded.stage === RUN_STAGES.atModel) atModel += 1;
-        if (folded.stalled) stalled += 1;
-        continue;
-      }
-      // THE LAST READ OF THE FOLD, taken before the settlement deletes it. Which models
-      // answered is not in `state.result` — the hub's `usage.inference` is five numbers and no
-      // name — so this row is the only place it was ever written, and the receipt is the only
-      // place it can survive (#169).
-      const heard = await store.db.query<{ models: string }>(
-        `SELECT models FROM run_progress WHERE run_id = ?`,
-        [run.id],
-      );
-      await settle(
-        at,
-        {
-          runId: run.id,
-          jobId: run.job_id,
-          machineId: run.machine_id,
-          operationId: run.kind,
-          outputs: state.result?.outputs ?? [],
-          closure: closureOf(state),
-          reason: nativeReason(state),
-          inference: state.result?.usage?.inference ?? null,
-          models: modelList(heard[0]?.models),
-        },
-        ingested,
-        settled,
-        notes,
-        refusals,
-      );
-      // The receipt is the record now. A settled run keeps no in-flight row: the panel reads a
-      // finished run's spend off the run itself, and a `run_progress` row left behind would be
-      // a second, staler answer to the same question.
-      await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+    } finally {
+      await writeSilences(silences);
     }
     // THE BEAT'S OWN RUNS, asked of the machines this cycle is entitled to ask about — ids, as
     // {@link beatMachines} explains. It used to be every distinct `sessions.host`, which on an
@@ -6618,6 +6689,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       const notes: string[] = [];
       await reconcileRuns(
         at,
+        policy,
         [],
         [],
         [],
@@ -6647,6 +6719,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       // opened — the full tick's own order.
       await reconcileRuns(
         at,
+        policy,
         [],
         [],
         settled,
@@ -6685,7 +6758,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       const gapsByReason: Counter<TallyReason> = new Map();
       // Reconcile earned completion even after disablement, but never renew disabled authority.
       if (!policy.enabled)
-        await reconcileRuns(at, schedule.machines, ingested, settled, notes, refusals);
+        await reconcileRuns(at, policy, schedule.machines, ingested, settled, notes, refusals);
 
       if (!policy.enabled) {
         await catalogReceipts(policy, at, notes);
@@ -6718,6 +6791,7 @@ export function conductor(deps: ConductorDeps): Conductor {
 
       const reconciled = await reconcileRuns(
         at,
+        policy,
         schedule.machines,
         ingested,
         settled,
