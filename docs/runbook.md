@@ -423,8 +423,9 @@ is too. None is a Babel command; each is the hub owner's or the machine's declar
    bundle and needs no binding; `system` is the reviewed native closure the pinned bun is
    dynamically linked against; `restic` is the owner's, by name, and every Babel operation asks
    for it. No Babel operation names `development` since `scan` retired.
-3. **Its runtime scratch is a dedicated bounded tmpfs**, sized below, since every named-output
-   lease is cut from it.
+3. **Its native owner supports RPC 43, and its runtime scratch is a dedicated bounded tmpfs.**
+   Babel's `atyrode.babel.outputs` declaration is temporary at location revision `3`; it requires
+   the owner's per-job output lifetime, not a mounted-location fallback (`docs/building.md`).
 4. **The `atyrode.babel.restic` service is installed on it** for the existing repository, and the
    job install carries that policy's fingerprint (§4). A machine that collects needs a storage
    document that may write; one that only analyses may carry a read-only object-store key.
@@ -509,8 +510,9 @@ changes its pin, so admission refuses `anchors_revision_changed` until a new rev
 > and the second reports `snapshotsParented` equal to its `snapshots`.
 
 **Item 3's runtime scratch has one size.** Every operation that writes the `runtime` anchor —
-Babel's `catalog`, `archive`, `prepare` and `verify`, and `atyrode.omp.session` — declares
-`outputBytes` 1 GiB. The runtime refuses a job whose `outputBytes` is below the scratch's
+Babel's `catalog`, `archive`, `prepare`, `verify`, `map-catalog` and `map-prepare`, and
+`atyrode.omp.session` — declares `outputBytes` 1 GiB. The runtime refuses a job whose `outputBytes`
+is below the scratch's
 capacity (`bounded-output-storage-required`) and gives stdout and stderr only what is above it
 (`docs/building.md`, the machine half). So the scratch is 768 MiB (`RUNTIME_SCRATCH_BYTES`),
 which leaves each of them 256 MiB of stdio, and never the full 1 GiB, which would leave none. The
@@ -518,8 +520,27 @@ hub bounds each material by the capacity the machine last measured, divided amon
 a lane may hold at once (`docs/building.md`). dev-01's scratch is 768 MiB: dotfiles #711
 (`46ae639`, merged 2026-09-24), which the operator reports active.
 
+Temporary output lifetime does not change that capacity. After proven workload closure and
+durable terminal publication, the owner reclaims only the job's raw output roots. Sealed
+receipts and material remain available through their output references. Cache, archive
+originals and pre-existing retained directories are not swept; an uncertain closure or cleanup
+failure closes admission rather than authorizing deletion or an automatic reopen.
+
+> **OPERATOR STEP — verify temporary output lifetime on a deployment.**
+> **Prerequisites:** the active native owner supports RPC 43, the installed Babel artifact and
+> output location revision `3` have their reviewed deployment (§6), and a bounded workload is
+> authorized on that machine.
+> **Procedure:** run ordinary catalog and overlapping preparation jobs. Read their sealed
+> receipts and exported material after they settle. Observe only the temporary namespace named
+> by the owner's protected scratch record; let the workload finish naturally, without removing
+> directories or forcing an owner restart.
+> **Success:** the namespace's raw roots return to the pre-run baseline after the workload
+> settles, while sealed receipts and material remain readable. Repeated completed jobs do not
+> accumulate raw roots. Record the host, date, revision and observed counts; a source pin or a
+> green gate alone is not this deployment proof.
+
 > **OPERATOR STEP — size a native machine's runtime scratch (not executed here).**
-> **Prerequisites:** the hub runs a Babel bundle whose four runtime-writing operations declare
+> **Prerequisites:** the hub runs a Babel bundle whose six runtime-writing operations declare
 > 1 GiB; an older one's `scan`, `archive` and `verify` declared 64 MiB and are refused on any
 > larger scratch. Every other operation installed for that machine that writes the `runtime`
 > anchor declares more than 768 MiB.
