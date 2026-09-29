@@ -1910,6 +1910,11 @@ posts, from oldest to newest. Older events contribute no bar; an event without a
 counted as unknown rather than as a quiet day. This is a navigation signal, not a measure of
 topic merit or a reason to spend.
 
+Enter on a focused Home row opens a following record pane; `j`/`k` then move the actual pane
+with the selection, without opening a new tile per row. Opening a record by its claim still pins
+a separate pane to that record, so inspecting two records side by side does not silently replace
+either one.
+
 **Comments are the conversation under a post.** A reviewer's contribution prose, a refinement, the
 operator's reason in his own words, his question, and the answer to a question are all comments,
 threaded by what they relate to and shown newest-first under the record's depths. Rulings are the

@@ -9,6 +9,7 @@ import {
   ask,
   look,
   openRecord,
+  openPeek,
   openTopic,
   refusal,
   useNow,
@@ -375,7 +376,7 @@ export function FeedListing({
           event.target.closest("a, button, summary") !== null;
         if (inControl) return;
         event.preventDefault();
-        openRecordHere(focused.id);
+        if (openPeek(host, focused.id) === "no_tile") setToast({ said: NO_SEAT, reopens: "" });
         return;
       }
       // `a` answers, and the rulings press the row's own control rather than posting: a

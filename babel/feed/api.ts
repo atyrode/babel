@@ -206,6 +206,12 @@ export function openRecord(host: HostServices, recordId: string): OpenPanelRefus
   return seat(host, PANELS.record, { recordId });
 }
 
+/** Enter opens one following pane, so j/k move the actual record beside the list. */
+export function openPeek(host: HostServices, recordId: string): OpenPanelRefusal | null {
+  look({ recordId });
+  return seat(host, PANELS.record, {});
+}
+
 /** OPENS A TOPIC: the same gesture, the other panel. */
 export function openTopic(host: HostServices, topic: string): OpenPanelRefusal | null {
   look({ topic });

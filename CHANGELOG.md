@@ -239,6 +239,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Selection makes no provider invocation, funding remains unknown, and service effects,
   repository reads, policy shares, eligibility, claims and cache freshness fences are unchanged.
 
+- **Home's Enter peek follows the keyboard walk (#248).** Enter now opens a following
+  record pane, so `j`/`k` update its rendered record rather than moving only an unseen
+  selection; pointer-opened record panes remain pinned. A rendered Home-plus-Record
+  regression reproduced the stale pane before this fix and passes after it; preview visual
+  acceptance remains pending.
+
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary
   preview/coordinate files use private creation before publication. An isolated synthetic
