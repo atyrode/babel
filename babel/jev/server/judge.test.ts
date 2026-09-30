@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { InstanceServiceDescription, ServiceReply } from "@manifold/protocol";
 import { JEV_CALL_CAP_BYTES, JEV_SERVICE, type JevServices } from "./credential.ts";
-import { JevAnswers, judge, requestFor, type JevRequest } from "./judge.ts";
+import { cachedJudge, JevAnswers, judge, requestFor, type JevRequest } from "./judge.ts";
 
 /*
   WHAT IS PROVED HERE IS THE CALL COUNT, NOT THE CACHE.
@@ -230,4 +230,22 @@ test("the server half's own store is where an answer already paid for lives", as
   expect(await judge(hosted.services, requestFor("proposal", text))).toEqual({ gate: 1 });
   expect(await judge(hosted.services, requestFor("proposal", text))).toEqual({ gate: 1 });
   expect(hosted.asks).toHaveLength(1);
+});
+
+test("cache-only lookup reuses the paid namespace and never fills a changed-basis miss", async () => {
+  const answers = new JevAnswers();
+  const hosted = host();
+  const request = requestFor("hypothesis", "a current review candidate");
+  expect(cachedJudge(request, "r7", answers)).toBeUndefined();
+  await judge(hosted.services, request, answers);
+  expect(cachedJudge(request, "r7", answers)).toEqual({ gate: 1 });
+  for (const changed of [
+    { ...request, text: `${request.text} revised` },
+    { ...request, bankVersion: request.bankVersion + 1 },
+    { ...request, documentVersion: request.documentVersion + 1 },
+    requestFor("finding", request.text),
+  ])
+    expect(cachedJudge(changed, "r7", answers)).toBeUndefined();
+  expect(cachedJudge(request, "r8", answers)).toBeUndefined();
+  expect(hosted.asks).toEqual([request.text]);
 });

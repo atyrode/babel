@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { JobLimitsSchema } from "@manifold/protocol";
+import { JobLimitsSchema, type PluginRoster } from "@manifold/protocol";
 import { actionSchemas } from "@atyrode/manifold-code";
 
 /*
@@ -23,10 +23,8 @@ export const BABEL_PLUGIN_ID = "atyrode.babel";
 export const FEED_PLUGIN_ID = "atyrode.babel.feed";
 export const WATCH_PLUGIN_ID = "atyrode.babel.watch";
 /**
- * The optional judgement part. It is named here because every id of the family is, and because
- * `test/contract.test.ts` pins its manifest to this name — not because anything of the baseline
- * calls it: no door, no panel and no cycle of Babel's names this plugin, which is what makes the
- * part removable.
+ * The optional judgement part. The baseline authenticates its ephemeral reading handoff by
+ * this name, but never calls or imports the part. Removing it leaves the ordinary draw intact.
  */
 export const JEV_PLUGIN_ID = "atyrode.babel.jev";
 
@@ -381,6 +379,8 @@ export const ACTIONS = {
   runs: "runs",
   run: "run",
   policy: "policy",
+  /** Authenticated optional-part publication into a bounded ephemeral advisory inbox. */
+  reviewReadings: "reviewReadings",
   /**
    * RETRIEVING OVER THE CORPUS BY WHAT A RECORD SAYS (#337).
    *
@@ -1461,6 +1461,8 @@ export const JEV_ACTIONS = {
   sweepPlan: "sweepPlan",
   /** One bounded pass: judge, screen, and hand back what a caller may deliver. */
   sweep: "sweep",
+  /** Refresh named current records from the process memo only; never buy a judgement. */
+  refreshReviewReadings: "refreshReviewReadings",
   /**
    * ONE BOUNDED PASS OVER THE PAIRS OF NAMED ANCHORS (#357, #358): propose, judge, detect, and
    * hand back what a caller may deliver. Reads and spends; writes nothing, like the two above.
@@ -1505,6 +1507,92 @@ export const RecordPositionSchema = z.strictObject({
   heard: z.number().int().nonnegative(),
 });
 export type RecordPosition = z.infer<typeof RecordPositionSchema>;
+
+/** Shared handoff vocabulary, not a dependency from the baseline onto the optional part. */
+export const JEV_SERVICE_ID = "atyrode.babel.jev.typesafe";
+export const REVIEW_READINGS_HELD = 256;
+export const REVIEW_READINGS_TTL_MS = 5 * 60 * 1000;
+const readingDigest = z.string().regex(/^[a-f0-9]{64}$/);
+export const ReviewReadingSchema = z
+  .strictObject({
+    recordId: RecordIdSchema,
+    revision: z.number().int().nonnegative(),
+    kind: RecordKindSchema,
+    textDigest: readingDigest,
+    requestKey: readingDigest,
+    bankVersion: z.number().int().nonnegative(),
+    documentVersion: z.number().int().nonnegative(),
+    standing: z.enum(STANDINGS),
+    tally: z.number().int().min(-256).max(256).nullable(),
+    heard: z.number().int().min(0).max(256),
+    roster: z.number().int().min(0).max(256),
+  })
+  .refine(
+    (reading) =>
+      reading.heard <= reading.roster &&
+      (reading.tally === null || Math.abs(reading.tally) <= reading.heard),
+    { message: "a tally cannot exceed the voters heard" },
+  );
+export type ReviewReading = z.infer<typeof ReviewReadingSchema>;
+export const ReviewReadingPublicationSchema = z.strictObject({
+  providerRevision: z.string().min(1).max(256),
+  policyRevision: z.string().min(1).max(256),
+  records: z.array(RecordIdSchema).max(REVIEW_READINGS_HELD),
+  readings: z.array(ReviewReadingSchema).max(REVIEW_READINGS_HELD),
+});
+export type ReviewReadingPublication = z.infer<typeof ReviewReadingPublicationSchema>;
+export const RefreshReviewReadingsInputSchema = z.strictObject({
+  records: z.array(RecordIdSchema).max(REVIEW_READINGS_HELD),
+});
+export const ReviewReadingsInputSchema = z.union([
+  RefreshReviewReadingsInputSchema,
+  z.strictObject({ publish: ReviewReadingPublicationSchema }),
+]);
+export const ReviewReadingsResultSchema = z.strictObject({
+  records: z
+    .array(
+      z.strictObject({
+        recordId: RecordIdSchema,
+        revision: z.number().int().nonnegative(),
+        kind: RecordKindSchema,
+        text: z.string(),
+      }),
+    )
+    .max(REVIEW_READINGS_HELD),
+  accepted: z.number().int().nonnegative(),
+  reason: z.string(),
+  funding: z.literal("unknown"),
+});
+export const ReviewSelectionSchema = z.strictObject({
+  mode: z.enum(["cached-advisory", "lane-age"]),
+  reason: z.enum([
+    "cached-current",
+    "missing-reading",
+    "no-numeric-reading",
+    "readings-expired",
+    "provider-unavailable",
+    "provider-changed",
+    "policy-changed",
+    "metadata-unavailable",
+    "uniform-exploration",
+    "work-lane",
+  ]),
+  funding: z.literal("unknown"),
+  considered: z.number().int().nonnegative(),
+  missing: z.number().int().nonnegative(),
+  providerRevision: z.string(),
+  policyRevision: z.string(),
+  readingDigest: readingDigest.optional(),
+});
+export type ReviewSelection = z.infer<typeof ReviewSelectionSchema>;
+
+/** Installed bytes and enablement epoch fence a transient provider handoff. Unknown is absent. */
+export function reviewReadingProviderRevision(roster: PluginRoster): string | null {
+  const provider = roster.find((row) => row.manifest.id === JEV_PLUGIN_ID);
+  if (!provider?.enabled || provider.held || !provider.install || provider.install.refusal)
+    return null;
+  return `${provider.install.sha256}/${String(provider.install.installedAt)}/${String(provider.changedAt ?? 0)}`;
+}
 
 /**
  * WHAT A SWEEP WOULD COST, PER RECORD KIND AND IN TOTAL, before a record is judged.

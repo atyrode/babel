@@ -59,6 +59,7 @@ import {
   type BabelJobs,
 } from "./server/plan.ts";
 import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
+import { ReviewReadings, type ReadingMetadata } from "./server/review-readings.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { ensureTerms } from "./store/corpus.ts";
 import { activeDrains, deadlineOf, readDrain, type DrainRow } from "./store/drains.ts";
@@ -107,18 +108,21 @@ const SCHEMA_KEY = "schema";
 const SENTINEL_TABLE = "records";
 
 /**
- * WHAT A CALL'S OWN CONTEXT SERVES THIS PLUGIN: its tables and its keys, for the length of it.
+ * WHAT A CALL'S OWN CONTEXT SERVES THIS PLUGIN: its tables, keys and optional reading metadata.
  *
- * Both are per-call for the same reason (a hardened row's handles are closed once the request
- * has answered), so both are resolved through the same `AsyncLocalStorage` rather than captured
- * for the process. In-realm the engine's handles are the same objects every time and the store
- * and the loop below never notice the difference.
+ * These handles belong to this call (a hardened row closes them once the request has answered),
+ * so they are resolved through `AsyncLocalStorage`, not captured for a later wake. Only tables
+ * and keys have an enable fallback; reading metadata always comes from the current wake.
  */
-type Bound = { readonly database: GuestDatabase; readonly storage: GuestStorage };
+type Bound = {
+  readonly database: GuestDatabase;
+  readonly storage: GuestStorage;
+  readonly readingMetadata?: ReadingMetadata;
+};
 
 const dispatched = new AsyncLocalStorage<Bound>();
-/** What the enable hook was given: what a lifecycle hook and a schedule read through. */
-let enabled: Bound | undefined;
+/** Only the enabled store and keys may outlive a call, never its metadata authority. */
+let enabled: Pick<Bound, "database" | "storage"> | undefined;
 
 function bound(): Bound {
   const held = dispatched.getStore() ?? enabled;
@@ -168,7 +172,13 @@ const CONCURRENT_JOBS = jobCeiling(manifest);
  * took `null` as "unbounded" would let one machine be asked for any number of jobs at once.
  */
 const DRAIN_FAN = CONCURRENT_JOBS ?? DRAIN_CONCURRENT_MAX;
-const coordinated = coordinator(store, () => store.now(), CONCURRENT_JOBS);
+const reviewReadings = new ReviewReadings(store, () => store.now());
+const coordinated = coordinator(
+  store,
+  () => store.now(),
+  CONCURRENT_JOBS,
+  async () => await reviewReadings.snapshot(dispatched.getStore()?.readingMetadata),
+);
 
 /**
  * WHAT A RUN OF AN OPERATION RUNS UNDER: its declared limits, and whether the owner may meter
@@ -1167,6 +1177,7 @@ const doors = babelDoors(
       admission.route.executorMachineId,
       admission,
     ),
+  reviewReadings,
 );
 
 /**
@@ -1186,28 +1197,38 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
   handlers[name] = async (ctx, args) => {
     const served = ctx.database;
     if (served === undefined) return await handler(ctx, args);
-    return await dispatched.run({ database: served, storage: ctx.storage }, async () => {
-      const produced = await handler(ctx, args);
-      const at = ctx.now();
-      const refused =
-        produced !== null && typeof produced === "object" && Object.hasOwn(produced, "refused");
-      if (wakes && !refused) {
-        const observing = Object.hasOwn(READ_WAKES, name);
-        if (!observing || at - observedAt >= WAKE_FLOOR_MS) {
-          if (observing) observedAt = at;
-          try {
-            const jobs = jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive));
-            const machines = machinesSlice(ctx.machines);
-            const chain = principalChain(ctx.principal.id);
-            if (observing) await observeCycle(jobs, machines, ctx.actions, chain, ctx.services);
-            else await cycle(jobs, machines, ctx.actions, chain, ctx.services);
-          } catch (error) {
-            console.warn(`${BABEL_PLUGIN_ID}: the cycle after ${name} failed: ${message(error)}`);
+    return await dispatched.run(
+      {
+        database: served,
+        storage: ctx.storage,
+        readingMetadata: {
+          host: ctx.host,
+          services: { listInstances: (input) => ctx.services.listInstances(input) },
+        },
+      },
+      async () => {
+        const produced = await handler(ctx, args);
+        const at = ctx.now();
+        const refused =
+          produced !== null && typeof produced === "object" && Object.hasOwn(produced, "refused");
+        if (wakes && !refused) {
+          const observing = Object.hasOwn(READ_WAKES, name);
+          if (!observing || at - observedAt >= WAKE_FLOOR_MS) {
+            if (observing) observedAt = at;
+            try {
+              const jobs = jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive));
+              const machines = machinesSlice(ctx.machines);
+              const chain = principalChain(ctx.principal.id);
+              if (observing) await observeCycle(jobs, machines, ctx.actions, chain, ctx.services);
+              else await cycle(jobs, machines, ctx.actions, chain, ctx.services);
+            } catch (error) {
+              console.warn(`${BABEL_PLUGIN_ID}: the cycle after ${name} failed: ${message(error)}`);
+            }
           }
         }
-      }
-      return produced;
-    });
+        return produced;
+      },
+    );
   };
 }
 
@@ -1296,23 +1317,33 @@ export const plugin: ServerPluginDef = {
         none, and then the cycle runs against a slice that refuses every verb and records the
         refusal: what it can still do is the store's own half of the work.
 
-        No hook is served a MACHINES slice either way — `machines.repository` is a dispatch's to
-        ask — so the folders this cycle would have identified are left for a cycle a door wakes.
+        Hooks may read roster and service metadata under their own credential, but have no
+        service effects or repository reads. The folders this cycle would have identified
+        are left for a cycle a door wakes.
       */
       const installer = ctx.jobs;
       try {
-        await dispatched.run({ database, storage: ctx.storage }, async () => {
-          await cycle(
-            installer === undefined ? unauthorized(ENABLE_WITHOUT_JOBS) : jobsSlice(installer),
-            unaskable(HOOK_WITHOUT_MACHINES),
-            ctx.actions,
-            // The installer is not observable, so each enable is an account chain of its own:
-            // no later enable, and no door, finishes a posting this one made (#470).
-            enableChain(),
-            undefined,
-            installer !== undefined,
-          );
-        });
+        await dispatched.run(
+          {
+            database,
+            storage: ctx.storage,
+            ...(ctx.host === undefined || ctx.services === undefined
+              ? {}
+              : { readingMetadata: { host: ctx.host, services: ctx.services } }),
+          },
+          async () => {
+            await cycle(
+              installer === undefined ? unauthorized(ENABLE_WITHOUT_JOBS) : jobsSlice(installer),
+              unaskable(HOOK_WITHOUT_MACHINES),
+              ctx.actions,
+              // The installer is not observable, so each enable is an account chain of its own:
+              // no later enable, and no door, finishes a posting this one made (#470).
+              enableChain(),
+              undefined,
+              installer !== undefined,
+            );
+          },
+        );
       } catch (error) {
         console.warn(`${BABEL_PLUGIN_ID}: the cycle at enable failed: ${message(error)}`);
       }
@@ -1338,43 +1369,52 @@ export const plugin: ServerPluginDef = {
       if (database === undefined) {
         throw new Error(`${BABEL_PLUGIN_ID}: a settled job was served without the plugin's tables`);
       }
-      await dispatched.run({ database, storage: ctx.storage }, async () => {
-        if (job.operationId === MACHINE_OPERATIONS.mapCatalog) {
-          // The free lane: it carries no paid authority, so it never refills a paid drain.
-          for (const note of await catalogCycle(jobsSlice(ctx.jobs), job.machineId))
-            console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);
-        } else if (job.operationId === MACHINE_OPERATIONS.mapPrepare) {
-          // A `map-prepare` job is a drain's preparation or cadence, posted under that drain's
-          // credential and woken for that drain alone, or a preparation of the standing lane,
-          // woken under the chain it was posted with (#469, #470).
-          await mapDrainCycle(jobsSlice(ctx.jobs), ctx.actions, job);
-        } else if (job.scheduleId?.startsWith(DRAIN_SCHEDULE_PREFIX)) {
-          const jobs = jobsSlice(ctx.jobs);
-          const own = (await activeDrains(store)).find(
-            (row) =>
-              row.preset !== MAP_DRAIN_PRESET &&
-              row.machineId === job.machineId &&
-              job.operationId === BEAT_OPERATION &&
-              ordinaryDrainWakeId(row.id) === job.scheduleId,
-          );
-          if (own === undefined) {
-            for (const note of await ordinaryDrainWakes(jobs))
-              console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
+      await dispatched.run(
+        {
+          database,
+          storage: ctx.storage,
+          ...(ctx.host === undefined || ctx.services === undefined
+            ? {}
+            : { readingMetadata: { host: ctx.host, services: ctx.services } }),
+        },
+        async () => {
+          if (job.operationId === MACHINE_OPERATIONS.mapCatalog) {
+            // The free lane: it carries no paid authority, so it never refills a paid drain.
+            for (const note of await catalogCycle(jobsSlice(ctx.jobs), job.machineId))
+              console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);
+          } else if (job.operationId === MACHINE_OPERATIONS.mapPrepare) {
+            // A `map-prepare` job is a drain's preparation or cadence, posted under that drain's
+            // credential and woken for that drain alone, or a preparation of the standing lane,
+            // woken under the chain it was posted with (#469, #470).
+            await mapDrainCycle(jobsSlice(ctx.jobs), ctx.actions, job);
+          } else if (job.scheduleId?.startsWith(DRAIN_SCHEDULE_PREFIX)) {
+            const jobs = jobsSlice(ctx.jobs);
+            const own = (await activeDrains(store)).find(
+              (row) =>
+                row.preset !== MAP_DRAIN_PRESET &&
+                row.machineId === job.machineId &&
+                job.operationId === BEAT_OPERATION &&
+                ordinaryDrainWakeId(row.id) === job.scheduleId,
+            );
+            if (own === undefined) {
+              for (const note of await ordinaryDrainWakes(jobs))
+                console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
+            } else {
+              await ordinaryDrainCycle(jobs, ctx.actions, own);
+            }
           } else {
-            await ordinaryDrainCycle(jobs, ctx.actions, own);
+            await cycle(
+              jobsSlice(ctx.jobs),
+              unaskable(HOOK_WITHOUT_MACHINES),
+              ctx.actions,
+              // The settled job's own credential is the one that posted it: its recorded chain.
+              await settledChain(job),
+              undefined,
+              true,
+            );
           }
-        } else {
-          await cycle(
-            jobsSlice(ctx.jobs),
-            unaskable(HOOK_WITHOUT_MACHINES),
-            ctx.actions,
-            // The settled job's own credential is the one that posted it: its recorded chain.
-            await settledChain(job),
-            undefined,
-            true,
-          );
-        }
-      });
+        },
+      );
     },
   },
 };

@@ -1,5 +1,6 @@
 import type { GuestServices } from "@manifold/plugin-kit/server";
 import type { ServiceInput } from "@manifold/protocol";
+import { JEV_SERVICE_ID } from "../../contract.ts";
 
 /*
   THE PART'S ONE CALL OUT, AND THE KEY IS NEVER IN IT.
@@ -33,14 +34,10 @@ import type { ServiceInput } from "@manifold/protocol";
   the part holds no value, and a policy is revisioned and consented, so a question's wording or a
   price is an operator's decision with an audit trail rather than a release of this repository.
 
-  AND ABSENCE IS ONE PATH. `askJev` answers `null` for every reason Jev cannot answer: no service
-  bound, one bound but unconfigured, disabled, starting, unavailable, its credential revoked, the
-  upstream refusing — which is what "out of credits" is — an input this part will not pay to
-  send, or an answer that is not a document. There is exactly one of them in the type, so a
-  caller has exactly one branch, and the branch it takes when the operator never installed
-  anything is the branch it takes when the account runs dry. Nothing here throws, so no cycle can
-  refuse because of Jev, and nothing is called at all when there is no binding: the size check is
-  the first statement, the roster read the second, and the invocation behind both.
+  ABSENCE IS ONE PATH. A missing binding, unready service, refused invocation or unreadable
+  answer returns null. Readiness does not reveal credit: an answer already in the current-policy
+  memo is reusable without an invocation even when funding is unknown. Only a cold invocation
+  can observe an upstream refusal; neither the paid path nor a cache-only consumer probes credit.
 
   THE TWO BOUNDS THE CEILINGS DO NOT GIVE (#369) are both here, because both are properties of
   THE CALL rather than of a budget. Per-cycle and per-day ceilings in micro-dollars meter what a
@@ -74,7 +71,7 @@ import type { ServiceInput } from "@manifold/protocol";
  * holds and injects the value into the request. Nothing in this family ever holds the other half.
  */
 export const JEV_SERVICE = {
-  serviceId: "atyrode.babel.jev.typesafe",
+  serviceId: JEV_SERVICE_ID,
   credentialRef: "typesafe-api",
   origin: "https://api.typesafe.ai",
   /**
@@ -99,7 +96,9 @@ export const JEV_SERVICE = {
 } as const;
 
 /** Pin a pass to a ready policy without invoking it. Guest RPCs need only be awaitable. */
-export async function jevPolicyRevision(services: JevServices): Promise<string | null> {
+export async function jevPolicyRevision(
+  services: Pick<JevServices, "listInstances">,
+): Promise<string | null> {
   try {
     const roster = await services.listInstances({});
     const bound = roster.services.find((service) => service.serviceId === JEV_SERVICE.serviceId);
@@ -171,6 +170,11 @@ export interface JevAnswerStore {
   set(key: string, answer: JevAnswer): void;
 }
 
+/** The paid and cache-only paths must name the same answer under the same service policy. */
+export function memoKey(key: string, revision: string): string {
+  return `${key}/${revision}`;
+}
+
 /**
  * ONE CALL'S MEMO: the store, and the caller's own statement of what determines the answer.
  *
@@ -189,10 +193,8 @@ export interface JevMemo {
 /**
  * Jev's answer, or `null` because Jev cannot answer.
  *
- * The caller's whole obligation is the one branch: `null` means do exactly what Babel does
- * without this part installed. It is never an error, never a refusal, and never distinguishes an
- * empty credit balance from an absent service, because a caller that branched on the difference
- * would be a caller whose behaviour changes when the operator's card expires.
+ * `null` means use the baseline behavior. A warm current-policy memo returns an existing
+ * answer without learning whether a new call would be funded.
  */
 export async function askJev(
   services: JevServices,
@@ -220,14 +222,13 @@ export async function askJev(
     if (memo?.expectedRevision !== undefined && memo.expectedRevision !== configuration.revision) {
       return null;
     }
-    // THE MEMO IS BEHIND THE BINDING CHECK, so a warm store cannot make an unbound, disabled or
-    // dry part answer — the fallback stays the same single path with a full cache as with none —
-    // and IN FRONT OF THE INVOCATION, which is the only statement here that spends anything.
+    // The memo is behind readiness and ahead of the only spending statement. Readiness says
+    // nothing about funds, so a retained current-policy answer is not a credit observation.
     // The revision joins the caller's key because the policy is what carries the wording, the
     // model and the projection: two identical questions asked under two revisions are two
     // questions. The key is fixed-length hex, so the pair cannot alias whatever a revision is.
     const answers = memo?.answers;
-    const held = memo === undefined ? "" : `${memo.key}/${configuration.revision}`;
+    const held = memo === undefined ? "" : memoKey(memo.key, configuration.revision);
     const remembered = answers?.get(held);
     if (remembered !== undefined) return remembered;
     const reply = await services.invokeInstance({

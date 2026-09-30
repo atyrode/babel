@@ -53,6 +53,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   a bounded exploration then wrote four accepted records, while a synthesis copying prior
   paths was refused. The answer and citation suites retain strict provenance and parsing.
 
+- **Automatic review wakes consume cached advice under their own authority (#361).** Enable
+  and job settlement bind only that callback's optional read-only roster/service metadata.
+  Missing or denied metadata keeps the exact baseline draw with a reason; withdrawn provider
+  visibility invalidates the handoff. No earlier dispatch or wake lends its handles to another.
+  Selection makes no provider invocation, funding remains unknown, and service effects,
+  repository reads, policy shares, eligibility, claims and cache freshness fences are unchanged.
+
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary
   preview/coordinate files use private creation before publication. An isolated synthetic
@@ -228,6 +235,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 ## [0.5.4] - 2026-09-28
 
 ### Added
+
+- **The shared review draw can use cached current Jev advice without spending (#361).**
+  Sweeps and a cache-only refresh publish through an authenticated, one-way ephemeral handoff.
+  Its bounded, five-minute inbox is fenced by current text/revision, installed provider bytes
+  and service policy. Advisory priority stays inside the existing review lanes; exploration
+  remains uniform and no eligible record is vetoed. Missing, disabled, stale or inaccessible
+  readings preserve the original draw, claims and budgets. Advice no longer changes the
+  implicit seed for activity/lane reservations, and expiry is checked after metadata awaits.
+  Review preparations and receipts retain only reasons, provenance digests and unknown funding,
+  never the cached opinion. Cache-only doors use existing native service delegates without
+  widening either manifest or caller permission. No credit probe, inference budget, feed rank,
+  ruling, durable assessment store or Jev capability was added.
+  Lifecycle consumption in this release remained baseline-only because its host pin lacked
+  read-only hook metadata; automatic wake support is added under Unreleased.
 
 - **Mapping is a standing, weighted activity.** A policy's `activityWeights` gains `map`, which
   defaults to 0; a policy written before it reads as 0. While `map` is above zero and the policy

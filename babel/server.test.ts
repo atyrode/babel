@@ -3,11 +3,10 @@
 
   `defineServerPlugin` is inert when the module is not an isolate's entry, so the definition
   this file imports is exactly the one a hub loads — the same doors, the same lifecycle, the
-  same store facade over `ctx.database`. What it asserts is the wiring and nothing the slices
-  already own: that a cycle follows the doors an operator watches and no others, that the one
-  wake a background half gets is honoured for this plugin's jobs and ignored for anybody else's,
-  and that the cycle behind either of them reaches the store through the handle that call was
-  given.
+  same store facade over `ctx.database`. These regressions follow the consumer-visible store
+  changes and review dispatches behind the host's wakes: only the doors an operator watches
+  run a cycle, this plugin's settled jobs are ingested, and automatic reviews use only the
+  current callback's metadata authority.
 
   A settled job with no sealed output is enough to prove ingestion ran: the run row moves from
   open to closed and the claim it held is released, which is the whole of what settlement does
@@ -16,21 +15,32 @@
 */
 
 import { createHash } from "node:crypto";
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import type { GuestCtx, GuestDatabase, GuestHookJobs } from "@manifold/plugin-kit/server";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import type {
+  GuestCtx,
+  GuestDatabase,
+  GuestHookJobs,
+  GuestJobSettledCtx,
+} from "@manifold/plugin-kit/server";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import type { SqlParam, SqlStatement } from "@manifold/plugin";
-import type { SettledJob } from "@manifold/protocol";
+import { PluginManifestSchema, type PluginRoster, type SettledJob } from "@manifold/protocol";
+import { actionSchemas } from "@atyrode/manifold-code";
 import {
   ACTIONS,
   asLaunchRequest,
   BABEL_PLUGIN_ID,
+  JEV_PLUGIN_ID,
+  JEV_SERVICE_ID,
   MACHINE_OPERATIONS,
   MAP_DRAIN_PRESET,
   OPERATIONS,
   PRESET_OPERATIONS,
   RECALL_SERVICE_ID,
   RUN_STAGES,
+  ReviewReadingsInputSchema,
+  ReviewReadingsResultSchema,
+  reviewReadingProviderRevision,
   SessionRowSchema,
   TRANSCRIPT_MAP_SERVICE_OPERATION,
   TRANSCRIPT_MAP_SESSION_OPERATION,
@@ -39,7 +49,7 @@ import { WAKES, plugin } from "./server.ts";
 import { stamp } from "./store/feedindex.ts";
 import { upsertSessionRows } from "./store/sessions.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
-import { mappingPolicy, PolicySchema } from "./store/coordinator.ts";
+import { coordinator, mappingPolicy, PolicySchema } from "./store/coordinator.ts";
 import { transcriptMaps } from "./store/transcript-maps.ts";
 import { buildTranscriptMap } from "./machine/transcript-map-tree.ts";
 import { transcriptMapCaptureId } from "./transcript-map-identity.ts";
@@ -50,6 +60,9 @@ import {
   type JobLaunch,
   type ScheduleTiming,
 } from "./server/conductor.ts";
+import type { ReadingMetadata } from "./server/review-readings.ts";
+import { reviewPreparation } from "./server/engine/review.ts";
+import jevManifest from "./jev/manifest.json";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -453,6 +466,264 @@ test("a settled job served without the plugin's tables fails by name rather than
     plugin.lifecycle?.onJobSettled?.(context(undefined, jobs) as never, settled()),
   ).rejects.toThrow(/without the plugin's tables/);
 });
+
+test.each(["onEnable", "onJobSettled"] as const)(
+  "%s selects cached advice automatically without retaining another wake's authority",
+  async (hook) => {
+    const database = harness.db as unknown as GuestDatabase;
+    const dispatch = context(database, jobs);
+    const fake = code();
+    const actions: GuestCtx["actions"] = {
+      call: async (request) => {
+        if (request.action === "readSession") {
+          const input = actionSchemas.readSession.input.parse(request.input);
+          return {
+            job: codeJob(input.jobId),
+            session: null,
+            silence: "omp_session_running",
+          };
+        }
+        if (request.action === "followSession") throw new Error("queued fixture has no activity");
+        return await fake.actions.call(request);
+      },
+    };
+    const roster: PluginRoster = [
+      {
+        manifest: PluginManifestSchema.parse(jevManifest),
+        enabled: true,
+        source: "plugin",
+        actions: [],
+        changedAt: 1,
+        install: {
+          sha256: "a".repeat(64),
+          source: "synthetic",
+          grantedCaps: ["containers:read", "services:invoke"],
+          installedBy: "operator",
+          installedAt: 1,
+        },
+      },
+    ];
+    let staleReads = 0;
+    let invocations = 0;
+    function metadata() {
+      let open = true;
+      const authorize = () => {
+        if (!open) {
+          staleReads += 1;
+          throw new Error("this callback's metadata lease has ended");
+        }
+      };
+      const slice: ReadingMetadata = {
+        host: {
+          enabled: async () => {
+            authorize();
+            return true;
+          },
+          roster: async () => {
+            authorize();
+            return roster;
+          },
+        },
+        services: {
+          listInstances: async () => {
+            authorize();
+            return {
+              defaultOwner: null,
+              services: [
+                {
+                  serviceId: JEV_SERVICE_ID,
+                  defaultOwner: null,
+                  owner: { machineId: "synthetic", name: "synthetic", online: true },
+                  connected: true,
+                  state: "ready",
+                  configuration: {
+                    revision: hook,
+                    pluginId: JEV_PLUGIN_ID,
+                    enabled: true,
+                    policySha256: "b".repeat(64),
+                  },
+                  reason: null,
+                },
+              ],
+            };
+          },
+        },
+      };
+      return {
+        slice,
+        close: () => {
+          open = false;
+        },
+      };
+    }
+    const records = [
+      { id: "hyp_36100001", statement: "Oldest claim", age: 3 * HOUR },
+      { id: "hyp_36100002", statement: "Another older claim", age: 2 * HOUR },
+      { id: "hyp_36100003", statement: "Newest cached-backed claim", age: HOUR },
+    ];
+    const favored = records[2]!;
+    setSystemTime(new Date(NOW));
+    try {
+      for (const record of records)
+        await insert(harness.db, "records", {
+          id: record.id,
+          kind: "hypothesis",
+          root_id: record.id,
+          seq: 0,
+          actor_kind: "run",
+          actor_id: "seed",
+          title: record.statement,
+          created_at: stamp(NOW - record.age),
+          payload: JSON.stringify({ statement: record.statement }),
+        });
+      const publisher = metadata();
+      const published = ReviewReadingsResultSchema.parse(
+        await plugin.handlers[ACTIONS.reviewReadings]!(
+          {
+            ...dispatch,
+            callerPlugin: JEV_PLUGIN_ID,
+            host: publisher.slice.host,
+            services: {
+              ...dispatch.services,
+              ...publisher.slice.services,
+              invokeInstance: async () => {
+                invocations += 1;
+                throw new Error("cached selection must never invoke a provider");
+              },
+            },
+          },
+          ReviewReadingsInputSchema.parse({
+            publish: {
+              providerRevision: reviewReadingProviderRevision(roster),
+              policyRevision: hook,
+              records: records.map((record) => record.id),
+              readings: [
+                {
+                  recordId: favored.id,
+                  revision: 0,
+                  kind: "hypothesis",
+                  textDigest: createHash("sha256").update(favored.statement).digest("hex"),
+                  requestKey: "c".repeat(64),
+                  bankVersion: 1,
+                  documentVersion: 1,
+                  standing: "backed",
+                  tally: 1,
+                  heard: 1,
+                  roster: 1,
+                },
+              ],
+            },
+          }) as never,
+        ),
+      );
+      expect(published.accepted).toBe(1);
+      publisher.close();
+
+      const policy = (await coordinator(harness.store, () => NOW, null).policy()).policy;
+      const states = ["current", "absent"] as const;
+      for (const [index, state] of states.entries()) {
+        const at = NOW + index * 31_000;
+        setSystemTime(new Date(at));
+        harness.at(at);
+        // Keep earlier jobs/claims live. Each policy opens one additional slot, so the real
+        // conductor posts exactly one new review without resetting any earned state.
+        await insert(harness.db, "policies", {
+          version: `advice-${String(index)}`,
+          seq: index + 2,
+          actor_id: "operator",
+          reason: "one more synthetic review slot",
+          recorded_at: stamp(at),
+          payload: JSON.stringify({
+            ...policy,
+            coverageShare: 1 - 2e-9,
+            discoveryShare: 1e-9,
+            explorationShare: 1e-9,
+            filingShare: 0,
+            backlogShare: 0,
+            batchSize: index + 1,
+            perCycleCost: 100,
+            dailyCost: 1000,
+          }),
+        });
+        // The same real coordinator and live claims, but no advisory input and no supplied
+        // seed. Each lifecycle wake constructs one conductor and its first cycle.
+        const baseline = await coordinator(harness.store, () => at, null).draw({
+          runId: `cyc_${String(at)}_1`,
+          machines: [MACHINE],
+          now: at,
+        });
+        if (baseline.outcome !== "assignment" || baseline.assignment.activity !== "review")
+          throw new Error("fixture must retain eligible review work");
+        const expected = baseline.assignment;
+        const lease = metadata();
+        const ctx: GuestJobSettledCtx = {
+          pluginId: BABEL_PLUGIN_ID,
+          database,
+          storage: dispatch.storage,
+          emit: dispatch.emit,
+          jobs: dispatch.jobs,
+          actions,
+          now: () => at,
+          ...(state === "absent" ? {} : lease.slice),
+        };
+        try {
+          if (hook === "onEnable") await plugin.lifecycle!.onEnable!(ctx);
+          else await plugin.lifecycle!.onJobSettled!(ctx, settled());
+        } finally {
+          lease.close();
+        }
+        const rows = await harness.db.query<{ preparation: string; job_id: string }>(
+          "SELECT preparation, job_id FROM runs WHERE authority_id = ?",
+          [`cyc_${String(at)}_1`],
+        );
+        expect(rows).toHaveLength(1);
+        const preparation = reviewPreparation(JSON.parse(rows[0]!.preparation));
+        if (preparation === null) throw new Error("automatic review must retain its preparation");
+        expect(preparation.seed).toBe(expected.seed);
+        expect(preparation.lane).toBe(expected.lane);
+        if (state === "current") {
+          expect(expected.recordId).not.toBe(favored.id);
+          expect(preparation.recordId).toBe(favored.id);
+          expect(preparation.reviewSelection).toMatchObject({
+            mode: "cached-advisory",
+            reason: "cached-current",
+            funding: "unknown",
+          });
+        } else {
+          expect(preparation).toMatchObject({
+            assignmentId: expected.id,
+            recordId: expected.recordId,
+            revisionId: expected.recordId,
+            rootId: expected.rootId,
+            kind: expected.kind,
+            role: expected.role,
+            lane: expected.lane,
+            policyVersion: expected.policyVersion,
+            ordinal: expected.ordinal,
+            seed: expected.seed,
+            inputDigest: expected.inputDigest,
+          });
+          expect(preparation.reviewSelection).toMatchObject({
+            mode: "lane-age",
+            reason: "metadata-unavailable",
+          });
+        }
+        const claims = await harness.db.query<{ id: string; reserved_cost: number }>(
+          "SELECT id, reserved_cost FROM claims WHERE job_id = ? AND outcome IS NULL",
+          [rows[0]!.job_id],
+        );
+        expect(claims).toEqual([
+          { id: preparation.assignmentId, reserved_cost: expected.reservedCost },
+        ]);
+        expect(staleReads).toBe(0);
+        expect(invocations).toBe(0);
+      }
+      expect(await harness.db.query("SELECT id FROM assessments")).toEqual([]);
+    } finally {
+      setSystemTime();
+    }
+  },
+);
 
 test("the doors an operator watches run a cycle; the ones he reads with do not", async () => {
   await pending();

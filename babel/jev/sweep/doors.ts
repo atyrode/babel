@@ -2,6 +2,7 @@ import { defineServerAction, type ServerHandler } from "@manifold/plugin-kit/ser
 import { JEV_ACTIONS, SweepInputSchema, SweepPlanSchema, SweptSchema } from "../../contract.ts";
 import { sweep, sweepPlan } from "./sweep.ts";
 import { jevPolicyRevision } from "../server/credential.ts";
+import { refreshReviewReadings } from "../review-readings.ts";
 
 /*
   THE DRIVER OF THE SWEEP (#356), AND THE ONLY NEW SURFACE.
@@ -62,9 +63,20 @@ export const SWEEP_HANDLERS: Readonly<Record<string, ServerHandler>> = {
   },
   [JEV_ACTIONS.sweep]: async (ctx, args: unknown) => {
     const parsed = SweepInputSchema.parse(args);
-    return await sweep(
+    const result = await sweep(
       { actions: ctx.actions, services: ctx.services },
       { limit: parsed.limit, kinds: parsed.kinds, after: parsed.after },
     );
+    if (result.positions.length > 0) {
+      await refreshReviewReadings(
+        {
+          host: ctx.host,
+          actions: ctx.actions,
+          services: { listInstances: (input) => ctx.services.listInstances(input) },
+        },
+        result.positions.map((position) => position.recordId),
+      );
+    }
+    return result;
   },
 };

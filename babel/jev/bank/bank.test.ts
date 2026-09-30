@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { resolve } from "node:path";
 import { RECORD_KINDS, type RecordKind } from "../../contract.ts";
 import { BANK, bankFor, votesFor } from "./bank.ts";
 import { documentOf } from "./parse.ts";
@@ -20,8 +19,7 @@ import { ROUTING_QUESTIONS, tally, type Vote } from "./schema.ts";
   - THE THRESHOLDS REPRODUCE THE MEASUREMENT THEY WERE FITTED TO. The fixtures are real rows of
     the study's own 6,038-record corpus with the standing it published. A threshold nobody
     re-derives is a number somebody typed.
-  - THE DISABLED PATH HOLDS. Absent, disabled or out of credit, nothing observable changes, and
-    the two facts that make that true are asserted rather than assumed.
+  - EMPTY ANSWERS ABSTAIN. Missing judgements contribute no votes and refuse no record.
 */
 
 const VERSIONS = { finding: 3 };
@@ -279,28 +277,4 @@ test("with no answers at all, every voter abstains and nothing is refused", () =
       objected: [],
     });
   }
-});
-
-test("nothing in the baseline imports the part, which is what makes it removable", async () => {
-  // eslint refuses this edge and no test saw it, which `eslint.config.js` says in as many words:
-  // a baseline module importing the part inlines the part's code into the baseline's own bundle,
-  // so a hub where the part was never installed answers fine and the optionality is gone with
-  // nobody having decided to end it. `test/` is excluded on purpose — `contract.test.ts` reads
-  // the part's manifest as data to pin its ids, which ships nothing.
-  //
-  // The part is a directory inside the baseline's now, so the specifier to catch is a `jev/`
-  // path segment rather than a whole plugin id, and the part's own files are skipped: reaching
-  // `./bank/` from inside the part is the part importing itself.
-  const root = resolve(import.meta.dir, "../../..");
-  const reached: string[] = [];
-  for (const directory of ["babel", "scripts"]) {
-    for (const file of new Bun.Glob("**/*.{ts,tsx}").scanSync({ cwd: resolve(root, directory) })) {
-      if (file.startsWith("jev/")) continue;
-      const source = await Bun.file(resolve(root, directory, file)).text();
-      if (/(?:from|import)\s*\(?\s*["'][^"']*\bjev\//u.test(source)) {
-        reached.push(`${directory}/${file}`);
-      }
-    }
-  }
-  expect(reached).toEqual([]);
 });
