@@ -622,8 +622,11 @@ async function indexDuty(
  * A CLOSING DRAIN IS FOLDED AND NOTHING ELSE. Its ending is already recorded and its targets are
  * already answered; what is left is the receipts of the jobs it was holding when it closed, and
  * the tick that folds the last of them is the one that records the end.
+ *
+ * A reader's `refill=false` tick folds live progress and may finish a drain already closing;
+ * it leaves target/deadline admission and every new job to a write-authorized native wake.
  */
-async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
+async function tickDrain(deps: DrainDeps, row: DrainRow, refill: boolean): Promise<DrainReport> {
   const at = deps.now();
   const folded = await foldDrain(deps.store, row, await reconcileLive(deps.store, row.live), at);
   row = folded.row;
@@ -671,6 +674,17 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       notes: [...notes, ...left],
     };
   }
+
+  if (!refill)
+    return {
+      drainId: row.id,
+      launched: 0,
+      settled: seen.settled.length,
+      live: seen.holding.length,
+      state: row.state,
+      reason: row.reason,
+      notes,
+    };
 
   const met = targetMet(row.target, spent);
   if (met !== "") {
@@ -938,8 +952,10 @@ async function tickMapDrain(
  * conductor's tick: the conductor is what settles a finished job and writes what it spent, and a
  * controller that read the runs table first would decide against last cycle's numbers.
  *
- * `preset` narrows it to one kind of drain: a mapping drain's own wake moves its lane on and
- * never spends another drain's fan under the credential that wake carries.
+ * `preset` narrows it to one kind of drain; `drainId` narrows a native cadence to the one
+ * ordinary drain whose starting credential it carries. Neither wake spends another drain's fan.
+ *
+ * `refill=false` is the read-only status wake: never post a new slot under a panel caller.
  *
  * A drain that throws does not stop the others: they are separate operator decisions about
  * separate machines, and one unreadable row is not a reason to stop spending a window that is
@@ -948,6 +964,8 @@ async function tickMapDrain(
 export async function drainTick(
   deps: DrainDeps,
   preset?: DrainPreset,
+  refill = true,
+  drainId?: string,
 ): Promise<readonly DrainReport[]> {
   let drains: readonly DrainRow[];
   try {
@@ -968,8 +986,9 @@ export async function drainTick(
   const reports: DrainReport[] = [];
   for (const row of drains) {
     if (preset !== undefined && row.preset !== preset) continue;
+    if (drainId !== undefined && row.id !== drainId) continue;
     try {
-      reports.push(await tickDrain(deps, row));
+      reports.push(await tickDrain(deps, row, refill));
     } catch (error) {
       const detail = `this drain could not be moved on: ${message(error)}`;
       /*

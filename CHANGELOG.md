@@ -9,7 +9,70 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-09-30
+
 ### Fixed
+
+- **The plugin closure follows Manifold's credential-bound lifecycle metadata.** The SDK and
+  both workflow refs move to `0701320`, with Code `4bae10b` and OMP `f67e4f1` on the same
+  revision. It supplies the optional hook metadata and physical-core inventory needed by
+  subsequent Babel consumers, without granting services or changing policy. Code's native
+  and browser gate passed with matching local dependency fingerprints; Babel's composed gate
+  checks the whole closure. Source pins are not native deployment or preview acceptance.
+
+- **Preparation conservatively budgets raw and sealed material together.** Machine-reported
+  capacity and lane concurrency now bound each catalogued selection for two simultaneous copies;
+  an unmeasured machine uses the declared scratch size, while Recall keeps its separate fetch
+  ceiling. A native preflight refuses insufficient free space before fetching. Synthetic titling
+  selection and no-fetch preflight regressions cover the two-copy boundary.
+
+- **Prepared sessions keep the authority of their posting wake.** The policy writer and launch
+  carry Code-workspace read/write and native material-binding authority into the preparation's
+  settlement; read-only pulse, runs and drain status fold progress without starting work.
+  Lost-posting recovery and the read-only part ceiling are covered by the server and part tests.
+
+- **Ordinary drains continue without a weighted conductor beat.** Each start installs a bounded
+  native catalog cadence under its own write authority before spending its first fan, so completed
+  Code sessions refill slots and close at their target or deadline even when every standing weight
+  is zero. Read-only status remains observational; a real server-hook regression covers refill,
+  terminal closure and cadence cleanup.
+
+- **The conductor renews its beat after a plugin replacement.** Each native registration has a
+  fresh policy-scoped revision rather than reusing the policy version against Manifold's retained
+  immutable schedule history. A same-policy replacement regression rejects the old collision;
+  dev-01 registered and completed a new beat, then accepted a review after a version-only policy
+  rollover lifted its documented failure-streak park. The native artifact did not change.
+
+- **Long selectors no longer invalidate sealed preparation outputs.** Material filenames now
+  reserve the native ustar component limit for the ordinal and extension before shortening the
+  selector; its exact identity remains in the material index. A boundary regression covers
+  ordinal uniqueness, and preview title preparations sealed bounded multi-session material.
+
+- **Analysis final answers favor complete JSON and exact served citations.** The last
+  instruction asks for a fenced answer below 12,000 characters with at most four substantive
+  items and lists this run's short index filenames instead of copying old source paths from
+  prior records. Three preview explorations reproduced 16,384-character clipped answers;
+  a bounded exploration then wrote four accepted records, while a synthesis copying prior
+  paths was refused. The answer and citation suites retain strict provenance and parsing.
+
+- **Automatic review wakes consume cached advice under their own authority (#361).** Enable
+  and job settlement bind only that callback's optional read-only roster/service metadata.
+  Missing or denied metadata keeps the exact baseline draw with a reason; withdrawn provider
+  visibility invalidates the handoff. No earlier dispatch or wake lends its handles to another.
+  Selection makes no provider invocation, funding remains unknown, and service effects,
+  repository reads, policy shares, eligibility, claims and cache freshness fences are unchanged.
+
+- **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
+  Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary
+  preview/coordinate files use private creation before publication. An isolated synthetic
+  archive test fails on the old file modes and observes first creation, warm reuse, rebuild
+  and failed-rename cleanup without changing the runner's umask or reading a real archive.
+
+- **A machine-half stamp is independent of the SDK checkout's path (#467).** Packing
+  canonicalizes only Bun-generated Manifold module labels, so physical and symlinked siblings
+  yield identical bundle bytes and both platform digests. The existing verify gate now refuses
+  a committed stamp that disagrees with the canonical pack; a deliberate bad-stamp exercise
+  fails before bundle installation and the unchanged packed machine still executes its guest.
 
 - **An older store can acquire whole tables without adding their columns twice (#486).**
   Enable accounts for tables queued in its one atomic upgrade batch; column steps still run
@@ -59,6 +122,25 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   of 176,640 bytes with the old nesting; the single-charge budget now succeeds. After raw-root
   cleanup, the actual bound-input extractor still reads the sealed material with read-only
   permissions. Constructor regressions cover ordinary, staged, titling and mapping launches.
+
+- **A release refuses rebuilt dependencies that differ from the plugin gate's verified
+  closure (#482).** After successful verification, the release gate records the actual
+  dependency digests and their hardened/in-realm roles in its existing bundle artifact.
+  Delivery hashes the independently rebuilt closure and rejects changed, missing, extra or
+  role-moved bundles before attaching assets or contacting the preview receiver. Source-pin
+  checks, dependency-first ordering and published checksums stay intact; the receipt requires
+  agreement with this gate, not a claim of long-term same-pin reproducibility. The Code pin
+  brings the upstream OMP identifier-minification repair. All seven dependency bundles match
+  across independent current-pin builds; the real receipt CLI rejects byte, membership, role
+  and symlink drift, and the complete composed gate passes with 1,385 tests.
+
+### Changed
+
+- **Historical sealed-payload recovery has a bounded, non-secret approval plan (#508).**
+  The runbook pins the retired reader, requires a coherent catalog/object set and complete
+  protected key history, and specifies offline whole-set decoding, refusal controls and sanitized
+  evidence. Public source review identifies missing backup and object-copy identifiers; no real
+  ciphertext or custody was accessed, and #112's readable-content proof remains an operator step.
 
 ## [0.5.7] - 2026-09-29
 
@@ -155,6 +237,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 ## [0.5.4] - 2026-09-28
 
 ### Added
+
+- **The shared review draw can use cached current Jev advice without spending (#361).**
+  Sweeps and a cache-only refresh publish through an authenticated, one-way ephemeral handoff.
+  Its bounded, five-minute inbox is fenced by current text/revision, installed provider bytes
+  and service policy. Advisory priority stays inside the existing review lanes; exploration
+  remains uniform and no eligible record is vetoed. Missing, disabled, stale or inaccessible
+  readings preserve the original draw, claims and budgets. Advice no longer changes the
+  implicit seed for activity/lane reservations, and expiry is checked after metadata awaits.
+  Review preparations and receipts retain only reasons, provenance digests and unknown funding,
+  never the cached opinion. Cache-only doors use existing native service delegates without
+  widening either manifest or caller permission. No credit probe, inference budget, feed rank,
+  ruling, durable assessment store or Jev capability was added.
+  Lifecycle consumption in this release remained baseline-only because its host pin lacked
+  read-only hook metadata; automatic wake support is added under Unreleased.
 
 - **Mapping is a standing, weighted activity.** A policy's `activityWeights` gains `map`, which
   defaults to 0; a policy written before it reads as 0. While `map` is above zero and the policy
@@ -5685,7 +5781,8 @@ storage configuration yet — repository selection is per-invocation
   (ea65a45…85fe13f), replaced in 8636960 and a879067. SPEC.md and README.md
   rewritten around the restic model (5b8d593).
 
-[Unreleased]: https://github.com/atyrode/babel/compare/v0.5.7...HEAD
+[Unreleased]: https://github.com/atyrode/babel/compare/v0.5.8...HEAD
+[0.5.8]: https://github.com/atyrode/babel/releases/tag/v0.5.8
 [0.5.7]: https://github.com/atyrode/babel/releases/tag/v0.5.7
 [0.5.6]: https://github.com/atyrode/babel/releases/tag/v0.5.6
 [0.5.5]: https://github.com/atyrode/babel/releases/tag/v0.5.5

@@ -4,6 +4,7 @@ import { BANK, bankFor } from "../bank/bank.ts";
 import {
   askJev,
   JEV_SERVICE,
+  memoKey,
   type JevAnswer,
   type JevAnswerStore,
   type JevOperationId,
@@ -193,6 +194,19 @@ export class JevAnswers implements JevAnswerStore {
  * store.
  */
 const HELD = new JevAnswers();
+
+/**
+ * A current-basis answer already held by this process, or undefined: missing includes eviction,
+ * a restart and never judged. No service handle is accepted, so this cannot invoke a provider.
+ * The caller must fence the policy revision with free readiness reads before and after a batch.
+ */
+export function cachedJudge(
+  request: JevRequest,
+  policyRevision: string,
+  answers: Pick<JevAnswerStore, "get"> = HELD,
+): JevAnswer | undefined {
+  return answers.get(memoKey(requestKey(request), policyRevision));
+}
 
 /**
  * Jev's judgement of one record, or `null` because Jev did not judge it.

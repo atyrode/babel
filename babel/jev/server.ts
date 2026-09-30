@@ -3,17 +3,16 @@ import { PluginManifestSchema } from "@manifold/protocol";
 import manifestJson from "./manifest.json";
 import { PAIR_ACTIONS, PAIR_HANDLERS } from "./pairs/doors.ts";
 import { SWEEP_ACTIONS, SWEEP_HANDLERS } from "./sweep/doors.ts";
+import { refreshReviewReadingsAction, REVIEW_READING_HANDLERS } from "./review-readings.ts";
 
 /*
   THE SERVER HALF OF atyrode.babel.jev, AND THE THREE DOORS ITS PASSES ARE DRIVEN THROUGH.
 
   Jev is a part: typed judgement over the records the baseline holds, enabled and removed on its
-  own. The whole design constraint is that Babel never depends on it — absent, disabled or out of
-  credit, every baseline door, panel and conductor path answers exactly as it does today. The
-  sweep changed only the part's OWN roster: nothing inside it can wake itself — it has no cycle,
-  no job and no lifecycle hook — so a driver asks one door what a bounded pass would cost, then
-  asks the other to run one. Neither writes; every suggestion comes back to the caller for
-  delivery, which leaves the baseline unaware of the part and keeps the dependency edge one-way.
+  own. Babel never depends on it: without current cached advice its draw is unchanged. A sweep
+  may buy judgements and then publish cached positions through the baseline's authenticated
+  ephemeral handoff. The cache-only refresh door can renew that advice without invoking Jev.
+  Neither writes durable state; funding remains unknown. The dependency edge stays one-way.
 
   THE THIRD DOOR IS `pairs` (#357, #358), and it is the same shape one unit up: a relation
   between two records is not a property of either, so it cannot ride the per-record sweep. Its
@@ -72,7 +71,7 @@ import { SWEEP_ACTIONS, SWEEP_HANDLERS } from "./sweep/doors.ts";
   optional `subject`, the counterpart's record id, and it joins that uniqueness key. Empty is the
   default and every existing row and caller keeps the behaviour it had.
 
-  The id and the three door names are spelled once in the family's vocabulary
+  The id and the door names are spelled once in the family's vocabulary
   (`JEV_PLUGIN_ID` and `JEV_ACTIONS`, `babel/contract.ts`) and `test/contract.test.ts` pins the
   manifest and service id to that vocabulary. A part may import that one baseline module
   (`docs/building.md`); every other reach into Babel is a door.
@@ -159,8 +158,8 @@ export {
 
 export const plugin: ServerPluginDef = {
   manifest: PluginManifestSchema.parse(manifestJson),
-  actions: [...SWEEP_ACTIONS, ...PAIR_ACTIONS],
-  handlers: { ...SWEEP_HANDLERS, ...PAIR_HANDLERS },
+  actions: [...SWEEP_ACTIONS, ...PAIR_ACTIONS, refreshReviewReadingsAction],
+  handlers: { ...SWEEP_HANDLERS, ...PAIR_HANDLERS, ...REVIEW_READING_HANDLERS },
 };
 
 export default plugin;

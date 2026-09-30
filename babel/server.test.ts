@@ -3,11 +3,10 @@
 
   `defineServerPlugin` is inert when the module is not an isolate's entry, so the definition
   this file imports is exactly the one a hub loads — the same doors, the same lifecycle, the
-  same store facade over `ctx.database`. What it asserts is the wiring and nothing the slices
-  already own: that a cycle follows the doors an operator watches and no others, that the one
-  wake a background half gets is honoured for this plugin's jobs and ignored for anybody else's,
-  and that the cycle behind either of them reaches the store through the handle that call was
-  given.
+  same store facade over `ctx.database`. These regressions follow the consumer-visible store
+  changes and review dispatches behind the host's wakes: only the doors an operator watches
+  run a cycle, this plugin's settled jobs are ingested, and automatic reviews use only the
+  current callback's metadata authority.
 
   A settled job with no sealed output is enough to prove ingestion ran: the run row moves from
   open to closed and the claim it held is released, which is the whole of what settlement does
@@ -16,21 +15,32 @@
 */
 
 import { createHash } from "node:crypto";
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import type { GuestCtx, GuestDatabase, GuestHookJobs } from "@manifold/plugin-kit/server";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import type {
+  GuestCtx,
+  GuestDatabase,
+  GuestHookJobs,
+  GuestJobSettledCtx,
+} from "@manifold/plugin-kit/server";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import type { SqlParam, SqlStatement } from "@manifold/plugin";
-import type { SettledJob } from "@manifold/protocol";
+import { PluginManifestSchema, type PluginRoster, type SettledJob } from "@manifold/protocol";
+import { actionSchemas } from "@atyrode/manifold-code";
 import {
   ACTIONS,
   asLaunchRequest,
   BABEL_PLUGIN_ID,
+  JEV_PLUGIN_ID,
+  JEV_SERVICE_ID,
   MACHINE_OPERATIONS,
   MAP_DRAIN_PRESET,
   OPERATIONS,
   PRESET_OPERATIONS,
   RECALL_SERVICE_ID,
   RUN_STAGES,
+  ReviewReadingsInputSchema,
+  ReviewReadingsResultSchema,
+  reviewReadingProviderRevision,
   SessionRowSchema,
   TRANSCRIPT_MAP_SERVICE_OPERATION,
   TRANSCRIPT_MAP_SESSION_OPERATION,
@@ -39,12 +49,20 @@ import { WAKES, plugin } from "./server.ts";
 import { stamp } from "./store/feedindex.ts";
 import { upsertSessionRows } from "./store/sessions.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
-import { mappingPolicy, PolicySchema } from "./store/coordinator.ts";
+import { coordinator, mappingPolicy, PolicySchema } from "./store/coordinator.ts";
 import { transcriptMaps } from "./store/transcript-maps.ts";
 import { buildTranscriptMap } from "./machine/transcript-map-tree.ts";
 import { transcriptMapCaptureId } from "./transcript-map-identity.ts";
 import { insertDrain } from "./store/drains.ts";
-import { CONDUCTOR_SCHEDULE_ID, type JobLaunch, type ScheduleTiming } from "./server/conductor.ts";
+import {
+  BEAT_OPERATION,
+  CONDUCTOR_SCHEDULE_ID,
+  type JobLaunch,
+  type ScheduleTiming,
+} from "./server/conductor.ts";
+import type { ReadingMetadata } from "./server/review-readings.ts";
+import { reviewPreparation } from "./server/engine/review.ts";
+import jevManifest from "./jev/manifest.json";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -449,6 +467,264 @@ test("a settled job served without the plugin's tables fails by name rather than
   ).rejects.toThrow(/without the plugin's tables/);
 });
 
+test.each(["onEnable", "onJobSettled"] as const)(
+  "%s selects cached advice automatically without retaining another wake's authority",
+  async (hook) => {
+    const database = harness.db as unknown as GuestDatabase;
+    const dispatch = context(database, jobs);
+    const fake = code();
+    const actions: GuestCtx["actions"] = {
+      call: async (request) => {
+        if (request.action === "readSession") {
+          const input = actionSchemas.readSession.input.parse(request.input);
+          return {
+            job: codeJob(input.jobId),
+            session: null,
+            silence: "omp_session_running",
+          };
+        }
+        if (request.action === "followSession") throw new Error("queued fixture has no activity");
+        return await fake.actions.call(request);
+      },
+    };
+    const roster: PluginRoster = [
+      {
+        manifest: PluginManifestSchema.parse(jevManifest),
+        enabled: true,
+        source: "plugin",
+        actions: [],
+        changedAt: 1,
+        install: {
+          sha256: "a".repeat(64),
+          source: "synthetic",
+          grantedCaps: ["containers:read", "services:invoke"],
+          installedBy: "operator",
+          installedAt: 1,
+        },
+      },
+    ];
+    let staleReads = 0;
+    let invocations = 0;
+    function metadata() {
+      let open = true;
+      const authorize = () => {
+        if (!open) {
+          staleReads += 1;
+          throw new Error("this callback's metadata lease has ended");
+        }
+      };
+      const slice: ReadingMetadata = {
+        host: {
+          enabled: async () => {
+            authorize();
+            return true;
+          },
+          roster: async () => {
+            authorize();
+            return roster;
+          },
+        },
+        services: {
+          listInstances: async () => {
+            authorize();
+            return {
+              defaultOwner: null,
+              services: [
+                {
+                  serviceId: JEV_SERVICE_ID,
+                  defaultOwner: null,
+                  owner: { machineId: "synthetic", name: "synthetic", online: true },
+                  connected: true,
+                  state: "ready",
+                  configuration: {
+                    revision: hook,
+                    pluginId: JEV_PLUGIN_ID,
+                    enabled: true,
+                    policySha256: "b".repeat(64),
+                  },
+                  reason: null,
+                },
+              ],
+            };
+          },
+        },
+      };
+      return {
+        slice,
+        close: () => {
+          open = false;
+        },
+      };
+    }
+    const records = [
+      { id: "hyp_36100001", statement: "Oldest claim", age: 3 * HOUR },
+      { id: "hyp_36100002", statement: "Another older claim", age: 2 * HOUR },
+      { id: "hyp_36100003", statement: "Newest cached-backed claim", age: HOUR },
+    ];
+    const favored = records[2]!;
+    setSystemTime(new Date(NOW));
+    try {
+      for (const record of records)
+        await insert(harness.db, "records", {
+          id: record.id,
+          kind: "hypothesis",
+          root_id: record.id,
+          seq: 0,
+          actor_kind: "run",
+          actor_id: "seed",
+          title: record.statement,
+          created_at: stamp(NOW - record.age),
+          payload: JSON.stringify({ statement: record.statement }),
+        });
+      const publisher = metadata();
+      const published = ReviewReadingsResultSchema.parse(
+        await plugin.handlers[ACTIONS.reviewReadings]!(
+          {
+            ...dispatch,
+            callerPlugin: JEV_PLUGIN_ID,
+            host: publisher.slice.host,
+            services: {
+              ...dispatch.services,
+              ...publisher.slice.services,
+              invokeInstance: async () => {
+                invocations += 1;
+                throw new Error("cached selection must never invoke a provider");
+              },
+            },
+          },
+          ReviewReadingsInputSchema.parse({
+            publish: {
+              providerRevision: reviewReadingProviderRevision(roster),
+              policyRevision: hook,
+              records: records.map((record) => record.id),
+              readings: [
+                {
+                  recordId: favored.id,
+                  revision: 0,
+                  kind: "hypothesis",
+                  textDigest: createHash("sha256").update(favored.statement).digest("hex"),
+                  requestKey: "c".repeat(64),
+                  bankVersion: 1,
+                  documentVersion: 1,
+                  standing: "backed",
+                  tally: 1,
+                  heard: 1,
+                  roster: 1,
+                },
+              ],
+            },
+          }) as never,
+        ),
+      );
+      expect(published.accepted).toBe(1);
+      publisher.close();
+
+      const policy = (await coordinator(harness.store, () => NOW, null).policy()).policy;
+      const states = ["current", "absent"] as const;
+      for (const [index, state] of states.entries()) {
+        const at = NOW + index * 31_000;
+        setSystemTime(new Date(at));
+        harness.at(at);
+        // Keep earlier jobs/claims live. Each policy opens one additional slot, so the real
+        // conductor posts exactly one new review without resetting any earned state.
+        await insert(harness.db, "policies", {
+          version: `advice-${String(index)}`,
+          seq: index + 2,
+          actor_id: "operator",
+          reason: "one more synthetic review slot",
+          recorded_at: stamp(at),
+          payload: JSON.stringify({
+            ...policy,
+            coverageShare: 1 - 2e-9,
+            discoveryShare: 1e-9,
+            explorationShare: 1e-9,
+            filingShare: 0,
+            backlogShare: 0,
+            batchSize: index + 1,
+            perCycleCost: 100,
+            dailyCost: 1000,
+          }),
+        });
+        // The same real coordinator and live claims, but no advisory input and no supplied
+        // seed. Each lifecycle wake constructs one conductor and its first cycle.
+        const baseline = await coordinator(harness.store, () => at, null).draw({
+          runId: `cyc_${String(at)}_1`,
+          machines: [MACHINE],
+          now: at,
+        });
+        if (baseline.outcome !== "assignment" || baseline.assignment.activity !== "review")
+          throw new Error("fixture must retain eligible review work");
+        const expected = baseline.assignment;
+        const lease = metadata();
+        const ctx: GuestJobSettledCtx = {
+          pluginId: BABEL_PLUGIN_ID,
+          database,
+          storage: dispatch.storage,
+          emit: dispatch.emit,
+          jobs: dispatch.jobs,
+          actions,
+          now: () => at,
+          ...(state === "absent" ? {} : lease.slice),
+        };
+        try {
+          if (hook === "onEnable") await plugin.lifecycle!.onEnable!(ctx);
+          else await plugin.lifecycle!.onJobSettled!(ctx, settled());
+        } finally {
+          lease.close();
+        }
+        const rows = await harness.db.query<{ preparation: string; job_id: string }>(
+          "SELECT preparation, job_id FROM runs WHERE authority_id = ?",
+          [`cyc_${String(at)}_1`],
+        );
+        expect(rows).toHaveLength(1);
+        const preparation = reviewPreparation(JSON.parse(rows[0]!.preparation));
+        if (preparation === null) throw new Error("automatic review must retain its preparation");
+        expect(preparation.seed).toBe(expected.seed);
+        expect(preparation.lane).toBe(expected.lane);
+        if (state === "current") {
+          expect(expected.recordId).not.toBe(favored.id);
+          expect(preparation.recordId).toBe(favored.id);
+          expect(preparation.reviewSelection).toMatchObject({
+            mode: "cached-advisory",
+            reason: "cached-current",
+            funding: "unknown",
+          });
+        } else {
+          expect(preparation).toMatchObject({
+            assignmentId: expected.id,
+            recordId: expected.recordId,
+            revisionId: expected.recordId,
+            rootId: expected.rootId,
+            kind: expected.kind,
+            role: expected.role,
+            lane: expected.lane,
+            policyVersion: expected.policyVersion,
+            ordinal: expected.ordinal,
+            seed: expected.seed,
+            inputDigest: expected.inputDigest,
+          });
+          expect(preparation.reviewSelection).toMatchObject({
+            mode: "lane-age",
+            reason: "metadata-unavailable",
+          });
+        }
+        const claims = await harness.db.query<{ id: string; reserved_cost: number }>(
+          "SELECT id, reserved_cost FROM claims WHERE job_id = ? AND outcome IS NULL",
+          [rows[0]!.job_id],
+        );
+        expect(claims).toEqual([
+          { id: preparation.assignmentId, reserved_cost: expected.reservedCost },
+        ]);
+        expect(staleReads).toBe(0);
+        expect(invocations).toBe(0);
+      }
+      expect(await harness.db.query("SELECT id FROM assessments")).toEqual([]);
+    } finally {
+      setSystemTime();
+    }
+  },
+);
+
 test("the doors an operator watches run a cycle; the ones he reads with do not", async () => {
   await pending();
   const ctx = context(harness.db as unknown as GuestDatabase, jobs);
@@ -470,15 +746,11 @@ test("the doors an operator watches run a cycle; the ones he reads with do not",
   expect(await closure()).toBe("completed");
 });
 
-test("every door a cycle follows can read a job, and the drain's own read folds a running one", async () => {
+test("every observation can read a job, and the drain's own read folds a running one", async () => {
   /*
-    THE WAKE THAT WAS BLIND (the review of #285, finding 1). `drainStatus` is in `WAKES` so the
-    panel's poll folds where the running jobs are — that is the whole reason it is there, since a
-    settlement's hook is served no `follow` and cannot fold a job that has not finished. But the
-    slice a dispatch is served is attenuated to what its door declared, and a door without
-    `jobs:read` is served one that refuses every job read: the cycle behind it settled nothing and
-    folded nothing, and since `woke` is one floor shared by the `runs` and `drainStatus` pollers,
-    roughly every other period's cycle was the blind one.
+    `drainStatus` is in `WAKES` so the panel's poll folds where the running jobs are. Its
+    read-only caller must not inherit posting authority merely to follow the live journal;
+    a native beat or write-authorized press can refill the fan on its own wake.
   */
   expect(Object.keys(WAKES)).toContain(ACTIONS.drainStatus);
   for (const name of Object.keys(WAKES)) {
@@ -492,9 +764,9 @@ test("every door a cycle follows can read a job, and the drain's own read folds 
 
   const answer = await plugin.handlers[ACTIONS.drainStatus]?.(ctx, { limit: 10 } as never);
 
-  // The door's own answer is unchanged — it reads this plugin's tables — and the cycle behind it
-  // did the two things a dispatch-woken cycle is for: it settled what had finished…
+  // Its read-only observation settles what finished without registering or posting work.
   expect(answer).toMatchObject({ drains: [] });
+  expect(jobs.scheduled).toEqual([]);
   expect(await closure()).toBe("completed");
   // …and it folded where the job still running is, which is what makes tokens-a-minute move at
   // all while an operator watches a drain.
@@ -512,42 +784,56 @@ test("every door a cycle follows can read a job, and the drain's own read folds 
 });
 
 test.each([ACTIONS.pulse, ACTIONS.runs, ACTIONS.drainStatus])(
-  "the cycle behind %s registers the beat under its declared authority",
+  "the read-only observation behind %s never registers a beat under a reader's authority",
   async (name) => {
-    // A schedule checks locations, service invocation and host network as well as machine
-    // execution. The door's own bridge must carry them before the cadence can be registered.
     await pending();
     const ctx = context(harness.db as unknown as GuestDatabase, served(jobs, name));
     const action = plugin.actions.find((entry) => entry.name === name)!;
 
     await plugin.handlers[name]?.(ctx, action.input.parse({}) as never);
 
-    expect(jobs.described).toBeGreaterThan(0);
+    expect(action.caps).toEqual(["containers:read"]);
     expect(jobs.refused).toEqual([]);
-    expect(jobs.scheduled).toMatchObject([
-      { scheduleId: `${BABEL_PLUGIN_ID}.conductor`, machineId: MACHINE },
-    ]);
+    expect(jobs.described).toBe(0);
+    expect(jobs.scheduled).toEqual([]);
+    expect(await closure()).toBe("completed");
   },
 );
 
+test("an accepted policy installation registers the beat under write authority even after a read poll", async () => {
+  await pending();
+  await plugin.handlers[ACTIONS.pulse]?.(
+    context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.pulse)),
+    {} as never,
+  );
+  expect(jobs.scheduled).toEqual([]);
+  const rows = await harness.db.query<{ payload: string }>(
+    `SELECT payload FROM policies WHERE version='p1'`,
+  );
+  const policy = PolicySchema.parse({ ...JSON.parse(rows[0]!.payload), version: "p2" });
+  const ctx = {
+    ...context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.setPolicy)),
+    emit: () => undefined,
+  } as GuestCtx;
+  const answer = await plugin.handlers[ACTIONS.setPolicy]?.(ctx, {
+    policy,
+    reason: "enable cadence",
+  } as never);
+  expect(answer).toMatchObject({ version: "p2" });
+  expect(jobs.refused).toEqual([]);
+  expect(jobs.scheduled).toMatchObject([{ scheduleId: CONDUCTOR_SCHEDULE_ID, machineId: MACHINE }]);
+});
+
 test("the doors that ask a machine what it can run are lent that read, and no others are", () => {
   /*
-    WHO ASKS, AND THEREFORE WHO IS LENT IT. Every door a cycle follows asks: the conductor
-    describes a machine to register the beat on it. `drainStart` asks on its own account too — it
-    posts the fan's first slot through `launchMachinery`, and `ready` describes before it posts.
-    `verify` asks for the same reason: it posts one of Babel's own jobs (#338) through the same
-    path, and a verification aimed at a machine with no Babel on it should be refused at the
-    press rather than by a job that never starts. The crossing's two owner-only doors ask for a
-    different reason: `importLedger` and `rehostSessions` write a session's machine column, and a
-    column carrying a name the hub does not know is provenance nothing can read back, so each
-    checks the id against the hub before writing it (#312). Recall's owner setup describes
-    the native service candidate and rechecks it on installation, and the two mapping starts
-    describe the route's hosts before admitting it. Nothing else asks a machine anything: reading
-    a feed, ruling on a record and stopping a run stay inside this plugin's own tables and job
-    nodes.
+    The write wakes describe a machine to register a beat. `drainStart` describes before it
+    posts the first slot, `verify` before its own job, and owner crossing validates each host.
+    Recall's owner setup and the mapping starts describe their targets. A read-only observation
+    does not describe a host, schedule a beat or post new work.
   */
   const asks: Record<string, true> = {
-    ...WAKES,
+    [ACTIONS.launch]: true,
+    [ACTIONS.setPolicy]: true,
     [ACTIONS.drainStart]: true,
     [ACTIONS.verify]: true,
     [ACTIONS.importLedger]: true,
@@ -661,7 +947,7 @@ test("enabling registers the beat with the slice the installer's credential rest
   // rather than waiting for a dispatch or a settlement to notice there is none. The rest of
   // the cycle ran under the same authority: the run the hub was waiting on is closed.
   expect(jobs.scheduled).toMatchObject([
-    { scheduleId: `${BABEL_PLUGIN_ID}.conductor`, revision: "p1", machineId: MACHINE },
+    { scheduleId: `${BABEL_PLUGIN_ID}.conductor`, machineId: MACHINE },
   ]);
   expect(jobs.statuses).toBe(1);
   expect(await closure()).toBe("completed");
@@ -1005,6 +1291,121 @@ test("enabling a store made before drains named a profile drops the session colu
     legacyKnobs: "{legacy-not-json",
     session: "legacy-unstructured-choice",
   });
+});
+
+test("an ordinary drain keeps refilling and ends without a weighted beat or panel write authority", async () => {
+  const stored = await harness.db.query<{ payload: string }>(
+    `SELECT payload FROM policies WHERE version='p1'`,
+  );
+  const standing = PolicySchema.parse(JSON.parse(stored[0]!.payload));
+  await insert(harness.db, "policies", {
+    version: "p2",
+    seq: 2,
+    actor_id: "operator",
+    reason: "only the drain spends",
+    payload: JSON.stringify({
+      ...standing,
+      version: "p2",
+      activityWeights: Object.fromEntries(
+        Object.keys(standing.activityWeights).map((activity) => [activity, 0]),
+      ),
+    }),
+    recorded_at: stamp(NOW),
+  });
+  jobs.execute = (launch: JobLaunch): unknown => ({ ...launch, state: "queued", result: null });
+  const started = {
+    ...context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.drainStart)),
+    actions: {
+      call: async ({ action }: { action: string }) => {
+        if (action !== "listProfiles") throw new Error(`unexpected Code action ${action}`);
+        return await Promise.resolve({
+          profiles: [
+            {
+              containerId: "ctr_workbench",
+              revision: 1,
+              selected: {
+                model: "synthetic/model",
+                thinking: "low",
+                capability: 4,
+                advisor: "review",
+              },
+              machineId: MACHINE,
+              accounts: [{ provider: "synthetic", identityKey: "test-account" }],
+              resolved: true,
+            },
+          ],
+        });
+      },
+    },
+    emit: () => {},
+  } as unknown as GuestCtx;
+  const action = plugin.actions.find((entry) => entry.name === ACTIONS.drainStart)!;
+  const request = action.input.parse({
+    machineId: MACHINE,
+    preset: "keep-going",
+    profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+    concurrent: 1,
+    maxJobs: 2,
+    minutes: 5,
+    target: { deadline: new Date(Date.now() + 24 * HOUR).toISOString() },
+    reason: "synthetic autonomous continuation",
+    operation: { kind: "operation", machineId: MACHINE, operationId: BEAT_OPERATION },
+  });
+  const answer = await plugin.handlers[ACTIONS.drainStart]?.(started, request as never);
+  expect(answer).toMatchObject({ launched: 1 });
+  const drainId = (answer as { drainId: string }).drainId;
+  const wake = jobs.scheduled.find((row) => row.scheduleId !== CONDUCTOR_SCHEDULE_ID);
+  expect(wake).toBeDefined();
+  expect(jobs.scheduled.some((row) => row.scheduleId === CONDUCTOR_SCHEDULE_ID)).toBe(false);
+  const first = await harness.db.query<{ id: string }>(
+    `SELECT id FROM runs WHERE id LIKE ? ORDER BY started_at LIMIT 1`,
+    [`run_${drainId}_%`],
+  );
+  await harness.db.run(`UPDATE runs SET closure='completed', finished_at=? WHERE id=?`, [
+    stamp(clock),
+    first[0]!.id,
+  ]);
+
+  // A read-only status may fold closure but may not buy the next job.
+  await plugin.handlers[ACTIONS.drainStatus]?.(
+    context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.drainStatus)),
+    { drainId } as never,
+  );
+  expect(await harness.db.query(`SELECT jobs_launched FROM drains WHERE id=?`, [drainId])).toEqual([
+    { jobs_launched: 1n },
+  ]);
+  expect(jobs.refused).toEqual([]);
+
+  // The cadence was registered by the start, not by that read; it can refill and stop unaided.
+  const cadenceJob = settled({
+    jobId: "job_drain_cadence",
+    operationId: BEAT_OPERATION,
+    scheduleId: wake!.scheduleId,
+    revision: wake!.revision,
+  });
+  await plugin.lifecycle?.onJobSettled?.(
+    context(harness.db as unknown as GuestDatabase, jobs) as never,
+    cadenceJob,
+  );
+  expect(
+    await harness.db.query(`SELECT state, jobs_launched FROM drains WHERE id=?`, [drainId]),
+  ).toEqual([{ state: "running", jobs_launched: 2n }]);
+  const second = await harness.db.query<{ id: string }>(
+    `SELECT id FROM runs WHERE id LIKE ? ORDER BY started_at DESC LIMIT 1`,
+    [`run_${drainId}_%`],
+  );
+  await harness.db.run(`UPDATE runs SET closure='completed', finished_at=? WHERE id=?`, [
+    stamp(clock),
+    second[0]!.id,
+  ]);
+  await plugin.lifecycle?.onJobSettled?.(
+    context(harness.db as unknown as GuestDatabase, jobs) as never,
+    cadenceJob,
+  );
+  expect(
+    await harness.db.query(`SELECT state, jobs_launched FROM drains WHERE id=?`, [drainId]),
+  ).toEqual([{ state: "target", jobs_launched: 2n }]);
+  expect(jobs.scheduled.some((row) => row.scheduleId === wake!.scheduleId)).toBe(false);
 });
 
 test("mapping-only methods are unavailable to ordinary exploration", async () => {
@@ -1941,28 +2342,34 @@ async function preparedExplore(): Promise<void> {
   });
 }
 
-test("an operator's own next door wake recovers a posting his last one lost, and another's does not", async () => {
+test("a lost posting is recovered only by the operator's next write wake, not a read or another account", async () => {
   const fake = code();
   await preparedExplore();
+  const rows = await harness.db.query<{ payload: string }>(
+    `SELECT payload FROM policies WHERE version='p1'`,
+  );
+  const policy = PolicySchema.parse(JSON.parse(rows[0]!.payload));
+  const install = async (principal: string, version: string, database: GuestDatabase) =>
+    await plugin.handlers[ACTIONS.setPolicy]!(
+      { ...wake(database, fake.actions, principal), emit: () => undefined } as GuestCtx,
+      { policy: { ...policy, version }, reason: "retain an owned posting" } as never,
+    );
   const lease = { closed: false };
   fake.onBought = () => {
     lease.closed = true;
   };
   // The dispatch's tables die with it once Code has bought the session.
-  await plugin.handlers[ACTIONS.runs]!(wake(leased(lease), fake.actions), {
-    limit: 25,
-    offset: 0,
-  } as never).catch(() => undefined);
+  await install("operator", "p2", leased(lease)).catch(() => undefined);
   fake.onBought = () => undefined;
   expect(fake.asked).toEqual([{ postingKey: "run_prep" }]);
-  const runs = async (principal: string) =>
-    await plugin.handlers[ACTIONS.runs]!(
-      wake(harness.db as unknown as GuestDatabase, fake.actions, principal),
-      { limit: 25, offset: 0 } as never,
-    );
-  await runs("someone-else");
+  await plugin.handlers[ACTIONS.runs]!(wake(harness.db as unknown as GuestDatabase, fake.actions), {
+    limit: 25,
+    offset: 0,
+  } as never);
   expect(fake.asked).toHaveLength(1);
-  await runs("operator");
+  await install("someone-else", "p3", harness.db as unknown as GuestDatabase);
+  expect(fake.asked).toHaveLength(1);
+  await install("operator", "p4", harness.db as unknown as GuestDatabase);
   expect(fake.asked).toEqual([{ postingKey: "run_prep" }, { postingKey: "run_prep" }]);
   expect(fake.bought).toBe(1);
   expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = 'run_prep'`)).toEqual([
@@ -1977,9 +2384,9 @@ test("the next beat recovers a posting the previous beat's wake lost, and only a
   await plugin.lifecycle?.onEnable?.(
     wake(harness.db as unknown as GuestDatabase, fake.actions) as never,
   );
-  expect(jobs.scheduled).toMatchObject([{ scheduleId: CONDUCTOR_SCHEDULE_ID, revision: "p1" }]);
+  expect(jobs.scheduled).toMatchObject([{ scheduleId: CONDUCTOR_SCHEDULE_ID }]);
   await preparedExplore();
-  const beat = (jobId: string, revision = "p1"): SettledJob =>
+  const beat = (jobId: string, revision = jobs.scheduled[0]!.revision): SettledJob =>
     settled({
       jobId,
       operationId: PRESET_OPERATIONS["keep-going"],

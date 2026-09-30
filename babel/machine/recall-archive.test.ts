@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { chmod, mkdtemp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, open, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -12,6 +12,7 @@ import {
   RecallRequestSchema,
   RecallResultSchema,
   SESSION_RECORD_COORDINATES,
+  TranscriptMapSegmentationSchema,
   type RecallLocator,
   type RecallPolicy,
   type RecallRequest,
@@ -1089,6 +1090,246 @@ async function listedFixture(
     await rm(home, { recursive: true, force: true });
   }
 }
+
+const PRIVATE_CACHE_TEST =
+  "Recall cache files stay owner-only through reuse and rebuild under child umask 000";
+
+test(
+  PRIVATE_CACHE_TEST,
+  async () => {
+    if (process.env["BABEL_RECALL_PRIVATE_CACHE_CHILD"] !== "1") {
+      const home = await mkdtemp(join(tmpdir(), "babel-recall-private-child-"));
+      const originalUmask = process.umask();
+      try {
+        const env = {
+          HOME: home,
+          XDG_CACHE_HOME: join(home, "xdg-cache"),
+          XDG_CONFIG_HOME: join(home, "xdg-config"),
+          XDG_DATA_HOME: join(home, "xdg-data"),
+          XDG_STATE_HOME: join(home, "xdg-state"),
+          XDG_RUNTIME_DIR: join(home, "xdg-runtime"),
+          XDG_CONFIG_DIRS: join(home, "xdg-config-dirs"),
+          XDG_DATA_DIRS: join(home, "xdg-data-dirs"),
+          TMPDIR: join(home, "tmp"),
+          TMP: join(home, "tmp"),
+          TEMP: join(home, "tmp"),
+          PATH: "",
+          BABEL_RECALL_PRIVATE_CACHE_CHILD: "1",
+        };
+        for (const path of new Set(Object.values(env).filter((value) => value.startsWith(home))))
+          await mkdir(path, { recursive: true, mode: 0o700 });
+        // No inherited credentials, repository selection, HOME/XDG state or project .env.
+        // The child uses only listedFixture's in-memory synthetic Repo.
+        const child = Bun.spawn(
+          [
+            process.execPath,
+            "test",
+            import.meta.path,
+            "--test-name-pattern",
+            `^${PRIVATE_CACHE_TEST}$`,
+          ],
+          {
+            cwd: home,
+            env,
+            stdin: "ignore",
+            stdout: "pipe",
+            stderr: "pipe",
+            timeout: TIMEOUT - 10_000,
+            killSignal: "SIGKILL",
+          },
+        );
+        try {
+          const [exitCode, stdout, stderr] = await Promise.all([
+            child.exited,
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+          ]);
+          expect({ exitCode, failure: exitCode === 0 ? "" : stdout + stderr }).toEqual({
+            exitCode: 0,
+            failure: "",
+          });
+        } finally {
+          child.kill();
+          await child.exited;
+        }
+        expect(process.umask()).toBe(originalUmask);
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+      return;
+    }
+
+    // Changing umask is process-global: this branch runs only in the isolated child.
+    process.umask(0o000);
+    expect(process.umask()).toBe(0o000);
+    const policy: RecallPolicy = { ...POLICY, mappingClassId: "private" };
+    await listedFixture(
+      async ({ archive, cacheDir, repo, home }) => {
+        const dumped = spyOn(repo, "dumpTo");
+        const listed = spyOn(repo, "lsTo");
+        const input = search({ query: "unmatched", filter: { workspace: "/archived/work" } });
+        const inspect = async (phase: string): Promise<string[]> => {
+          const files: { path: string; mode: number }[] = [];
+          for (const path of (await readdir(home, { recursive: true })).sort()) {
+            const file = await stat(join(home, path));
+            if (file.isFile()) files.push({ path, mode: file.mode & 0o777 });
+          }
+          // Check every generated file, including SQLite WAL/SHM/journals if present.
+          expect({ phase, unsafe: files.filter((file) => (file.mode & 0o077) !== 0) }).toEqual({
+            phase,
+            unsafe: [],
+          });
+          return files.map((file) => file.path);
+        };
+        const cold = await archive.execute("public", input);
+        expect(cold.refusal).toBeNull();
+        expect(cold.coverage).toEqual({ eligible: 1, indexed: 1, complete: true, overBound: 0 });
+        expect(cold.cost.fetchedBytes).toBe(Buffer.byteLength(SOURCE));
+        expect(cold.cost.indexedFiles).toBe(1);
+        const matched = await archive.execute("public", search({ maxFetchBytes: 0 }));
+        const locator = matched.hits[0]?.locator;
+        if (locator === undefined) throw new Error("missing synthetic locator");
+        const preview = await archive.execute("public", request({ kind: "preview", locator }));
+        expect(preview.refusal).toBeNull();
+        expect(preview.preview?.servedBytes).toBe(Buffer.byteLength(SOURCE));
+        const inventory = await archive.executeMap("public", {
+          kind: "map-inventory",
+          maxCaptures: 1,
+        });
+        const capture = inventory.entries[0]?.capture;
+        if (capture === undefined) throw new Error("missing synthetic map capture");
+        const plan = await archive.executeMap(
+          "private",
+          {
+            kind: "map-plan",
+            capture,
+            segmentation: TranscriptMapSegmentationSchema.parse({}),
+            offset: 0,
+            maxNodes: 128,
+          },
+          true,
+        );
+        expect(plan.refusal).toBeNull();
+        expect(plan.plan?.header.source.sourceDigest).toBe(locator.sourceDigest);
+        const created = await inspect("first creation with active preview and map");
+        for (const suffix of [
+          ".records",
+          ".recall-metadata.json",
+          ".json.gz",
+          "tokens.sqlite",
+          "coordinates.sqlite",
+        ])
+          expect(created.some((path) => path.endsWith(suffix))).toBe(true);
+        expect(
+          created.some((path) => path.endsWith(".json") && !path.endsWith(".recall-metadata.json")),
+        ).toBe(true);
+        expect(
+          created.some(
+            (path) => path.startsWith("babel-recall-widening-") && !path.endsWith(".json"),
+          ),
+        ).toBe(true);
+        const sidecar = created.find((path) => path.endsWith(".recall-metadata.json"))!;
+        const database = created.find((path) => path.endsWith("tokens.sqlite"))!;
+        const path = join(home, sidecar);
+        const retained = await Bun.file(path).text();
+        const warm = await archive.execute("public", input);
+        expect(warm.refusal).toBeNull();
+        expect(warm.cost).toMatchObject({ fetchedBytes: 0, replayedBytes: 0, indexedFiles: 0 });
+        expect(dumped).toHaveBeenCalledTimes(1);
+        expect(listed).toHaveBeenCalledTimes(1);
+        await archive.close();
+        expect(
+          (await readdir(home)).filter(
+            (name) =>
+              name.startsWith("babel-recall-widening-") ||
+              name.startsWith("babel-transcript-maps-"),
+          ),
+        ).toEqual([]);
+
+        for (const phase of ["restart", "replace malformed sidecar", "rebuild index"]) {
+          if (phase === "replace malformed sidecar") {
+            await writeFile(path, "{");
+            await chmod(path, 0o666);
+          }
+          if (phase === "rebuild index")
+            await rm(dirname(join(home, database)), { recursive: true });
+          // An open old inode must stay intact when rebuilt metadata is atomically published.
+          const previous = await open(path, "r");
+          const previousBytes = await previous.readFile("utf8");
+          const reopened = await createRecallArchive({
+            repo,
+            cacheDir,
+            policy,
+            temporaryDir: home,
+          });
+          try {
+            const result = await reopened.execute("public", input);
+            expect(result.refusal).toBeNull();
+            expect(result.coverage).toEqual(cold.coverage);
+            expect(result.cost.fetchedBytes).toBe(0);
+            expect(result.cost.replayedBytes).toBe(
+              phase === "restart" ? 0 : Buffer.byteLength(SOURCE),
+            );
+            expect(result.cost.indexedFiles).toBe(phase === "rebuild index" ? 1 : 0);
+            expect(await Bun.file(path).text()).toBe(retained);
+            if (phase !== "restart")
+              expect((await stat(path)).ino).not.toBe((await previous.stat()).ino);
+            const oldBytes = Buffer.alloc(Buffer.byteLength(previousBytes));
+            await previous.read(oldBytes, 0, oldBytes.length, 0);
+            expect(oldBytes.toString()).toBe(previousBytes);
+            await inspect(phase);
+            expect(dumped).toHaveBeenCalledTimes(1);
+            expect(listed).toHaveBeenCalledTimes(1);
+          } finally {
+            await previous.close();
+            await reopened.close();
+          }
+        }
+
+        await rm(path);
+        // Existing safe seam: a nonempty directory rejects rename even when tests run as root.
+        await mkdir(path);
+        await writeFile(join(path, "unowned"), "must remain", { mode: 0o600, flag: "wx" });
+        for (const rebuild of [false, true]) {
+          if (rebuild) await rm(dirname(join(home, database)), { recursive: true });
+          const reopened = await createRecallArchive({
+            repo,
+            cacheDir,
+            policy,
+            temporaryDir: home,
+          });
+          try {
+            const result = await reopened.execute(
+              "public",
+              search({ maxFetchBytes: 0, filter: { workspace: "/archived/work" } }),
+            );
+            expect(result.refusal).toBeNull();
+            expect(result.coverage).toEqual(cold.coverage);
+            expect(result.matches).toBe(1);
+            expect(result.hits[0]?.workspace).toBe("/archived/work");
+            expect(result.cost.fetchedBytes).toBe(0);
+            expect(result.cost.indexedFiles).toBe(rebuild ? 1 : 0);
+            expect(await Bun.file(join(path, "unowned")).text()).toBe("must remain");
+            expect(
+              (await readdir(home, { recursive: true })).filter((name) =>
+                name.startsWith(`${sidecar}.`),
+              ),
+            ).toEqual([]);
+            await inspect(
+              rebuild ? "failed sidecar rename after rebuild" : "failed sidecar rename",
+            );
+            expect(dumped).toHaveBeenCalledTimes(1);
+            expect(listed).toHaveBeenCalledTimes(1);
+          } finally {
+            await reopened.close();
+          }
+        }
+      },
+      { policy },
+    );
+  },
+  TIMEOUT,
+);
 
 test(
   "widening reserves class bytes, reclaims completed staging and never decrements it twice",

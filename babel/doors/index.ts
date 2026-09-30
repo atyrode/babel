@@ -14,6 +14,8 @@ import { searchDoors } from "./search.ts";
 import { serviceDoors, type DeclaredService } from "./services.ts";
 import { suggestDoors } from "./suggest.ts";
 import { transcriptMapDoors } from "./transcript-maps.ts";
+import { reviewReadingsDoor } from "./review-readings.ts";
+import { ReviewReadings } from "../server/review-readings.ts";
 
 /*
   EVERY DOOR OF THE BASELINE, in one list. The kit takes a plugin's actions and its handlers as
@@ -59,6 +61,7 @@ export function babelDoors(
     ctx: GuestCtx,
     admission: TranscriptMapCatalogAdmission,
   ) => Promise<readonly string[]>,
+  readings: ReviewReadings = new ReviewReadings(store, () => store.now()),
 ): BabelDoors {
   const actions: ServerActionDef[] = [];
   const handlers: Record<string, ServerHandler> = {};
@@ -67,6 +70,7 @@ export function babelDoors(
     ...searchDoors(store),
     ...recallDoors(store),
     ...transcriptMapDoors(store),
+    reviewReadingsDoor(readings),
     ...actDoors(store, concurrentJobs, deps.jobs),
     ...suggestDoors(store),
     ...exportDoors(store),

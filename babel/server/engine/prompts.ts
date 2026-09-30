@@ -57,7 +57,7 @@ import { promptBytes } from "./session.ts";
 
 /** The job and prompt this module composes, recorded in every receipt (§7). */
 export const JOB_VERSION = 3;
-export const PROMPT_VERSION = "babel.analysis-prompt/4";
+export const PROMPT_VERSION = "babel.analysis-prompt/7";
 
 // ---------------------------------------------------------------------------- the answer
 
@@ -347,6 +347,25 @@ export function composeExplorePrompt(input: ExplorePromptInput): string {
     parts.push("\n");
   }
   parts.push(steeringSection(input));
+  parts.push(
+    "## Final answer budget\n\n",
+    "The session receipt retains only 16,384 characters of your last message. Return only one " +
+      "complete ```json fenced result under 12,000 characters including both fences, with no " +
+      "introduction or trailing prose. Select at most four substantive items across candidates, " +
+      "observations, objections, consolidations, questions and next_actions. Prioritize the best " +
+      "supported claims; leave other arrays empty and omit absent optional fields rather than " +
+      "shortening an evidence locator or digest. Finish the JSON and close the fence.\n",
+  );
+  if (input.sessions.length > 0) {
+    parts.push(
+      "The only admissible evidence `path` values for this run are these exact `file` basenames " +
+        "from its material index: ",
+      input.sessions.map((session) => JSON.stringify(session.file)).join(", "),
+      ". Copy each `sourceDigest` from that same index. Prior records carry locators from other " +
+        "preparations; their original source paths are not served here. Never copy their paths or " +
+        "digests into your result. If you cannot verify a locator in this index, omit the claim.\n",
+    );
+  }
   return parts.join("");
 }
 
@@ -586,6 +605,9 @@ const ANSWER_PROTOCOL =
   "shape, the refs within the result, the recipes cited, and every evidence locator against what " +
   "this run was served — and a refusal is recorded with its reason and costs the deployment the " +
   "run. There is no second chance after the session ends, so check the block before you finish.\n\n" +
+  "The session receipt retains only a bounded final message. Keep your entire final message under " +
+  "12,000 characters, including both fences. Select fewer complete, supported items rather than " +
+  "cutting a JSON object short; finish the JSON and close the fence before ending.\n\n" +
   "Emit only what the material supports. An empty object is a valid result when there is nothing " +
   "to report, and it is a better answer than one padded to look productive.\n\n";
 
@@ -617,7 +639,7 @@ Gradings are coarse on purpose: "confidence" and "impact" are "low", "moderate" 
 
 `;
 
-const INSTRUCTIONS_EVIDENCE = `Evidence is a locator plus a note, and the locator must name bytes this run was served. Those bytes are in the material and nowhere else: "path" is the session's own file as \`${MATERIAL_INDEX}\` names it (\`${MATERIAL_SESSIONS}/<file>\`), "line" is the 1-based line of the record you read in that file, "byte_offset" is 0 unless you can state a real offset within it, and "digest" is that entry's "sourceDigest", copied from the index unchanged. The "note" says in one sentence what those bytes show.
+const INSTRUCTIONS_EVIDENCE = `Evidence is a locator plus a note, and the locator must name bytes this run was served. Those bytes are in the material and nowhere else: "path" is the exact "file" basename copied from \`${MATERIAL_INDEX}\` (the shortest accepted spelling; read it at \`${MATERIAL_SESSIONS}/<file>\`), "line" is the 1-based line of the record you read in that file, "byte_offset" is 0 unless you can state a real offset within it, and "digest" is that entry's "sourceDigest", copied from the index unchanged. The "note" says in one sentence what those bytes show.
 
 "quote" is the span of that record which supports the claim, copied from what you read and not retyped from memory: at least ${String(MIN_CITATION_QUOTE)} characters, at most ${String(MAX_CITATION_QUOTE)}, and the shortest span that actually carries the point. Babel looks for it in the bytes at the line you named and records what it found on the claim itself — found there, found at another line of that session, or found nowhere in it. None of those three refuses the claim; all three are readable by whoever reads the record afterwards, so a quote you are not sure of is better left out than approximated. Omit "quote" when the claim rests on the shape of a record rather than on words in it.
 

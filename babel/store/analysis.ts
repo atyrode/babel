@@ -6,9 +6,11 @@ import {
   AnalysisBriefRecordSchema,
   CHALLENGE_RELATION,
   MATERIAL_HEADROOM_BYTES,
+  MATERIAL_SCRATCH_COPIES,
   MaterialIndexSchema,
   MAX_MATERIAL_BYTES,
   OPERATIONS,
+  RUNTIME_SCRATCH_BYTES,
   type AnalysisBriefRecord,
   type Stage,
 } from "../contract.ts";
@@ -28,15 +30,16 @@ export const ARCHIVED_CAPTURE =
 
 /**
  * THE MOST CATALOGUED BYTES ONE PREPARATION ON `machineId` MAY SEAL (#453):
- * `min(MAX_MATERIAL_BYTES, ⌊(capacity − MATERIAL_HEADROOM_BYTES) / share⌋)`.
+ * `min(MAX_MATERIAL_BYTES, ⌊(capacity − MATERIAL_HEADROOM_BYTES) / (share × MATERIAL_SCRATCH_COPIES)⌋)`.
  *
  * `capacity` is the named-output scratch the machine's newest `catalog` or `prepare` receipt
  * measured (`outputCapacity.bytes`; no other kind reports one), so the bound follows the machine
  * rather than a constant. `share` is how many materials the lane asking may hold on that machine
  * at once — one for an operator's launch, the per-machine bound for the conductor's lanes, the
- * fan for a drain — because concurrent preparations and the sessions that bind them share the
- * one scratch. A machine that never reported a capacity is bounded by `MAX_MATERIAL_BYTES`, and
- * `prepare` still refuses a lease its own measurement says will not fit, before fetching.
+ * fan for a drain. A native seal needs a second copy of each material beside its raw files, so
+ * both copies count against the same scratch. Until a machine reports capacity, use its declared
+ * runtime scratch size; `prepare` still refuses a lease its own free-space measurement says will
+ * not fit, before fetching.
  */
 export async function materialBound(
   db: GuestDatabase,
@@ -50,8 +53,11 @@ export async function materialBound(
     [machineId],
   );
   const capacity = reported[0]?.["bytes"];
-  if (capacity === undefined || capacity === null) return MAX_MATERIAL_BYTES;
-  const shared = Math.floor((Number(capacity) - MATERIAL_HEADROOM_BYTES) / Math.max(1, share));
+  const available =
+    capacity === undefined || capacity === null ? RUNTIME_SCRATCH_BYTES : Number(capacity);
+  const shared = Math.floor(
+    (available - MATERIAL_HEADROOM_BYTES) / (Math.max(1, share) * MATERIAL_SCRATCH_COPIES),
+  );
   return Math.max(0, Math.min(MAX_MATERIAL_BYTES, shared));
 }
 

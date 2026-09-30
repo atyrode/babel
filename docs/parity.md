@@ -90,6 +90,27 @@ assumed from that row alone.
   far has been synthetic, so "Babel's reviewers vote" is proven against fixtures and not against
   a hub. That is an evidence boundary, not a defect, and `docs/runbook.md` states it.
 
+  The same draw now accepts optional cached Jev advice (#361), published by the authenticated
+  part through an ephemeral baseline inbox (`babel/server/review-readings.ts`). It is not a
+  second review pool: coverage/discovery add advisory priority and weighted review applies a
+  bounded positive multiplier, while exploration stays uniform. Missing, disabled, stale or
+  unavailable readings keep the original lane/age draw. The inbox is limited to 256 readings
+  for five minutes, fenced by record text/revision, provider installation and service policy;
+  it creates no durable assessments and changes no eligibility, claim or budget rule. A sweep
+  publishes its cached positions and `refreshReviewReadings` can refresh named cached records
+  without invoking Jev. Existing service delegates preserve the non-root caller ceiling;
+  missing service-operation authority remains absence rather than a grant. Funding is explicitly
+  unknown, including on a warm cache hit; no credit probe or inference allowance was added.
+  Selection reasons and digests travel in the existing review preparation receipt, never a
+  standing/tally/heard/roster copy or the blinded prompt. Implicit seeds preserve baseline
+  activity/lane entropy, and TTL is rechecked after metadata awaits.
+  Enable and job-settlement wakes use the same cache through their own optional read-only
+  roster/service metadata. The host rechecks the installer's or settled job's current credential
+  on each read; no dispatch or prior wake's handles are retained for another callback. Missing
+  or denied metadata keeps the exact baseline selection with a reason, while withdrawn provider
+  visibility invalidates the handoff. These hooks gain no service effects or repository reads.
+  Live review and provider-operation evidence remains subject to the operational boundary above.
+
 ## What this document is for
 
 It is the evidence that deleting the Go tree lost nothing silently. A capability that is absent

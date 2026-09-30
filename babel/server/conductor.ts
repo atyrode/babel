@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { MACHINE_REPOSITORY_REASONS } from "@manifold/protocol";
 import type { PluginDatabase, SqlParam, SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
@@ -518,11 +518,10 @@ export interface ConductorDeps {
   readonly catalogPlan?: RunPlan;
   readonly mapPreparePlan?: RunPlan;
   /**
-   * WHETHER THIS WAKE CAN POST NATIVE WORK. True only for a slice carrying a credential a native
-   * post can be admitted under: a settled job's own authority, or the installer's at enable. A
-   * door's bridge is attenuated to that door's caps and delegates, and the doors a cycle follows
-   * delegate no `machines:run`, so mapping — whose first step is a native preparation — is not
-   * drawn there: the claim would spend the work's bounded attempt on an admission refusal.
+   * WHETHER THIS WAKE CAN POST NATIVE MAPPING WORK. True for a settled job's own authority or
+   * the installer's at enable. Door bridges are attenuated to each action's caps and delegates;
+   * even a write-authorized door leaves mapping preparation to a native wake, where the route's
+   * installation and consent are established without spending a claim on a weaker admission.
    */
   readonly nativeDispatch?: boolean;
   /**
@@ -688,6 +687,8 @@ export interface TickReport {
 
 export interface Conductor {
   tick(): Promise<TickReport>;
+  /** Fold unfinished jobs under a reader's authority; never schedule or launch new work. */
+  observe(): Promise<readonly string[]>;
   /** Free catalog continuation under admission for this machine, never ordinary scan authority. */
   tickCatalog(
     machineId: string,
@@ -704,7 +705,7 @@ export interface Conductor {
 
 // ---------------------------------------------------------------------------- constants
 
-/** The loop's one schedule. Its revision is the policy version, so a policy change re-registers. */
+/** The loop's one schedule; each registration gets a new revision under its policy. */
 export const CONDUCTOR_SCHEDULE_ID = `${BABEL_PLUGIN_ID}.conductor`;
 /**
  * The beat: cheap, model-free, useful, and its settlement is what wakes the hub. It is the
@@ -4059,9 +4060,12 @@ export function conductor(deps: ConductorDeps): Conductor {
       return { state: registered.length === 0 ? "absent" : "unregistered", machines };
     }
     const intervalMs = Math.max(1, policy.cadenceSeconds) * 1000;
+    // Manifold retains disabled revisions forever. Reusing a policy version after an installer
+    // change or expiry collides with the previous schedule's different immutable job request.
+    const revisionPrefix = `${createHash("sha256").update(policy.version).digest("hex").slice(0, 16)}.`;
     const current = registered.find(
       (row) =>
-        row.revision === policy.version &&
+        row.revision.startsWith(revisionPrefix) &&
         row.intervalMs === intervalMs &&
         row.expiresAt - at > intervalMs,
     );
@@ -4094,9 +4098,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       return { state: "kept", machines };
     }
     const installation = described.readiness.installation;
+    const revision = `${revisionPrefix}${randomUUID()}`;
     try {
       await jobs.schedule({
-        jobId: `${CONDUCTOR_SCHEDULE_ID}.${policy.version}`,
+        jobId: `${CONDUCTOR_SCHEDULE_ID}.${revision}`,
         machineId: routed,
         operationId: BEAT_OPERATION,
         // The beat's input is fixed at registration, so it carries no run id: the machine half
@@ -4114,7 +4119,7 @@ export function conductor(deps: ConductorDeps): Conductor {
               artifactSha256: installation.artifactSha256,
             }),
         scheduleId: CONDUCTOR_SCHEDULE_ID,
-        revision: policy.version,
+        revision,
         firstNominalAt: at + intervalMs,
         intervalMs,
         deadlineMs: intervalMs,
@@ -4131,10 +4136,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     // named resumes no posting.
     try {
       await keys.set(
-        beatChainKey(policy.version),
-        JSON.stringify(
-          BeatChainSchema.parse({ revision: policy.version, chain: deps.chain ?? null }),
-        ),
+        beatChainKey(revision),
+        JSON.stringify(BeatChainSchema.parse({ revision, chain: deps.chain ?? null })),
       );
     } catch (error) {
       notes.push(`the beat's account chain cannot be kept: ${message(error)}`);
@@ -6791,6 +6794,11 @@ export function conductor(deps: ConductorDeps): Conductor {
         ordinal: assignment.ordinal,
         seed: assignment.seed,
         inputDigest: assignment.inputDigest,
+        ...(assignment.reviewSelection === undefined
+          ? {}
+          : {
+              reviewSelection: assignment.reviewSelection,
+            }),
         refinementDepth,
         maxRefinementDepth: route.maxRefinementDepth ?? 2,
         blinded: true,
@@ -7006,7 +7014,16 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
   }
 
+  async function observe(): Promise<readonly string[]> {
+    const at = deps.now();
+    const policy = (await coordinator.policy(at)).policy;
+    const notes: string[] = [];
+    await reconcileRuns(at, policy, [], [], [], notes, { paid: new Map(), free: new Map() });
+    return notes;
+  }
   return {
+    observe,
+
     async tickCatalog(
       machineId: string,
       admission?: TranscriptMapCatalogAdmission,

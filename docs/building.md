@@ -97,15 +97,19 @@ bun /job/artifact <operation> --input /inputs/input --out /outputs/outputs
 ```
 
 — which is literally the `argv` every operation declares. `pack.sh` builds that half with
-`bun build --target bun` into `babel/machine.js`, and `scripts/stamp-machine.ts` stamps
-its sha256 into **both** platform artifacts of the manifest (a `raw` artifact is its own entry,
-so `sha256` and `entrySha256` are one digest) along with the `machine.tools` pins below, then
-packs
-it as a `bundleFile` member of the baseline's bundle. The file itself is never committed —
-`.gitignore` has it, a pack deletes it afterwards, `bun run dev` keeps it (`./pack.sh --machine`)
-because the inner loop re-packs on every save. The committed manifest carries the **last stamp**,
-so a change to the machine half shows up as a moved hash in the diff; `test/bundle.test.ts` runs
-the packed member through the argv the manifest declares and checks the receipt it leaves.
+`bun build --target bun` into `babel/machine.js`. Bun's standalone module-path comments for
+the pinned SDK otherwise depend on whether the sibling is physical or reached by symlink;
+`scripts/stamp-machine.ts` canonicalizes only those parsed comments, never JavaScript strings,
+before stamping the resulting sha256 into **both** platform artifacts of the manifest (a `raw`
+artifact is its own entry, so `sha256` and `entrySha256` are one digest) along with the
+`machine.tools` pins below. It then packs the half as a `bundleFile` member of the baseline's
+bundle. The file itself is never committed — `.gitignore` has it, a pack deletes it afterwards,
+`bun run dev` keeps it (`./pack.sh --machine`) because the inner loop re-packs on every save.
+The committed manifest carries the **last stamp**, so a change to the machine half shows up as
+a moved hash in the diff. After `bun run pack`, `bun run verify` refuses a manifest that differs
+from the committed one, rather than silently accepting a local or CI restamp. Commit the stamp
+alongside a genuine machine change. `test/bundle.test.ts` runs the packed member through the
+argv its manifest declares and checks the receipt it leaves.
 
 The one-shot operations are `catalog`, `archive`, `prepare` and `verify`; Recall adds a persistent
 native instance service. Each takes ONE input document — a JSON string materialized at
@@ -347,22 +351,60 @@ preparing, whose `atyrode.babel.prepare` job is cancelled — and whose ROW IS C
 races the seal loses. A stop that left the row open would be the operator pressing stop and
 the account spending afterwards.
 
+**AN ORDINARY DRAIN CARRIES ITS OWN CONTINUATION.** A Code session's settlement wakes Code,
+not Babel; with every activity weight at zero the conductor has no beat of its own. Before
+posting its first fan, `drainStart` therefore registers a per-drain native `catalog` cadence
+under the start's delegated write authority. The cadence folds Code receipts, refills only
+while the drain still admits work, and remains through the deadline until its last job is
+folded; an ended drain loses its cadence. A credential that cannot keep that schedule past
+the deadline and settlement margin refuses the start before any job spends. Read-only
+`drainStatus` may fold progress, but cannot schedule or launch; a missed panel poll no longer
+strands the drain. The server-hook regression starts a drain with all standing weights zero,
+observes its first closure through read-only status, then sees the native cadence refill,
+close at `maxJobs` and unregister itself.
+
 **AND THE SELECTION'S BOUND IS UNDER THE MACHINE'S, WITH ROOM.** The machine has two bounds.
-The leases are written into the runtime scratch. And `outputBytes` is the AGGREGATE the owner
-seals against — stdout, stderr and both of `prepare`'s leases come out of one running budget,
-and each lease is a ustar archive carrying 512 bytes of header and padding per member.
+Raw leases are written into runtime scratch, while the native collector writes their sealed
+ustar archives to the owner's state-backed output store; it removes raw files only after
+publication ([Manifold `job-runtime.ts:163-167` at `47407b58`](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/packages/agent/src/job-runtime.ts#L163-L167),
+[`job-runtime.ts:220-225`](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/packages/agent/src/job-runtime.ts#L220-L225),
+[`module.nix:45-53,115-119`](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/infra/native/module.nix#L45-L53)).
+`outputBytes` bounds the output collection across leases, headers, stdout and
+stderr. Babel deliberately charges both raw and sealed bytes against the measured runtime
+capacity when admitting a selection, although the sealed copy is on another backing volume:
+this conservative bound leaves room for overlapping material and keeps its native preflight
+below the owner's aggregate output limit.
 `MAX_MATERIAL_BYTES` is 448 MiB, 64 MiB under the 512 MiB `inputBytes` the omp session extracts
-the material into, and it is the ceiling rather than the bound: the scratch is shared by every
-job on the machine, so the hub bounds a material at
-`min(MAX_MATERIAL_BYTES, ⌊(C − MATERIAL_HEADROOM_BYTES) / k⌋)`. `C` is the scratch capacity the
-machine last measured, the `outputCapacity` on its newest `catalog` or `prepare` receipt (the
-ceiling alone until one reports); `MATERIAL_HEADROOM_BYTES` is 64 MiB; `k` is how many materials
+the material into; it remains Recall's independent fetch ceiling, not a general 32 MiB cap.
+The hub bounds catalogued source bytes at
+`min(MAX_MATERIAL_BYTES, ⌊(C − MATERIAL_HEADROOM_BYTES) / (k × MATERIAL_SCRATCH_COPIES)⌋)`.
+`C` is the scratch capacity the machine last measured, the `outputCapacity` on its newest
+`catalog` or `prepare` receipt; with no report it uses the declared 768 MiB runtime scratch.
+`MATERIAL_HEADROOM_BYTES` is 64 MiB; `MATERIAL_SCRATCH_COPIES` is 2; `k` is how many materials
 the lane may hold at once — 1 for an operator's launch, `concurrentPerMachine` for the
-conductor's lanes, and the drain's own `concurrent` for a drain fan. On dev-01's 768 MiB scratch
-a two-wide lane bounds each material at 352 MiB. `prepare` measures its own lease as well and
-refuses `material_storage_insufficient`, naming both figures, before it fetches anything: a
-selection admitted at exactly a bound would fill it and fail after the full read, which is the
-failure the pre-post check exists to move.
+conductor's lanes, and the drain's own `concurrent` for a drain fan. On a 768 MiB scratch a
+two-wide lane bounds each material at 176 MiB (one at 352 MiB). `prepare` also compares twice
+its raw material need, including archive/document overhead, against its own measured free
+space and refuses `material_storage_insufficient`, naming the raw, sealed and free figures,
+before fetching any named capture. Content queries use the same doubled free-space budget
+when limiting which matches they can seal.
+
+The native output collector seals POSIX ustar without long-name extensions
+([Manifold job-outputs.ts:73–89 at 47407b58](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/packages/agent/src/job-outputs.ts#L73-L89)).
+Each material file's basename is therefore at most 100 bytes: `materialFile` reserves its
+ordinal and extension before clipping the sanitized selector, while the index keeps the exact
+selector for provenance. An overlong basename formerly refused the entire output collection
+even when the selected material fitted both scratch and output-byte ceilings.
+
+Code's pinned OMP receipt retains at most 16,384 characters of the final assistant message
+([OMP `plugins/api/session.ts:5-6,164-170` at `f5b9d09c5929943dea246e415875f18e0a68bddb`](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/api/session.ts#L164-L170)).
+The analysis prompt ends with a complete fenced-result budget under 12,000 characters, including
+its fences, and at most four substantive items. An earlier reminder before the material did
+not keep three real exploration results from losing their closing JSON delimiter at this limit.
+For citations it recommends the exact `file` basename from the material index, an already
+admitted spelling (`babel/server/engine/citations.ts:78-106`) that avoids retyping long paths.
+The terminal prompt lists each selected basename after any prior records and warns that their
+original source paths are not this run's evidence; admission still checks the index exactly.
 
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.
@@ -557,13 +599,16 @@ doors of the baseline and one section of Watch:
 
 The shared posting delegates are `machines:run`, `locations:write`, `services:invoke` and
 `network:host`. They cover native execution, output/cache locations and the bound archive
-service; the owner still checks the caller's authority and consent at each effect.
+service; the owner still checks the caller's authority and consent at each effect. A deferred
+Code session also needs the write wake's `containers:read` and `containers:write` caps plus
+`services:read`, `jobs:read` and `jobs:input` delegates for broker observation and material
+binding; a read-only status poll never acquires that authority.
 
-| Door          | Authority                                                                                   | What it does                                                                                                                                                                                                                                                                     |
-| ------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `drainStart`  | `containers:read`, delegating `machines:read` and the shared posting delegates              | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts the first fan of jobs through the same launch path the operator's own button uses, and writes the `drains` row.                                                                                 |
-| `drainStatus` | `containers:read`, delegating `jobs:read`, `machines:read` and the shared posting delegates | What is draining: jobs live, jobs at the model, tokens and cost a minute over the last three minutes, spend against target, ETA against deadline, refusals by reason, the account. A cycle follows it: the delegates let it read a running job back and relaunch a settled slot. |
-| `drainStop`   | `containers:write`, delegating `jobs:cancel`                                                | Cancels every job the drain holds, and marks the row `closing` — or `stopped`, when it holds none.                                                                                                                                                                               |
+| Door          | Authority                                                                         | What it does                                                                                                                                                                                 |
+| ------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `drainStart`  | `containers:read`, `containers:write`, with native and deferred-session delegates | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts its first jobs through the ordinary launch path and records the drain.                                      |
+| `drainStatus` | `containers:read`, delegating `jobs:read` and `services:read`                     | Reads live jobs, model progress, burn rate, spend, ETA and refusals. Its post-read observation folds progress but never refills a slot; the beat or a write-authorized settlement does that. |
+| `drainStop`   | `containers:write`, delegating `jobs:cancel`                                      | Cancels each job the drain holds and marks it `closing`, or `stopped` when none remain.                                                                                                      |
 
 Four things are worth knowing before reading `server/drain.ts`:
 
@@ -616,13 +661,15 @@ bun install --cwd ../manifold --frozen-lockfile   # the kit resolves zod and the
 ```
 
 `MANIFOLD_REV` follows Manifold `main` and currently names
-`47407b58f00b1fefcde1d86f6dd6d9b06e9c1216`. At that revision the kit stamps
-`hardenedContract: 9` into repacked bundles (`packages/plugin-kit/src/pack.ts:526-532`),
-while the host retains contracts 1–9 (`packages/protocol/src/isolate.ts:984-987`).
-A contract-9 web half needs a declared portable Worker entry for hardened installation
-(`packages/server/src/plugin-host.ts:2414-2419`). This family's documented delivery remains
-in-realm; its server-only OMP dependencies remain hardened. The declaration never silently
-changes which runner an installer selected.
+`070132088e30f10266e43a52074bc58f16c051fe`. At that revision the kit stamps
+`hardenedContract: 11` into repacked bundles (`packages/plugin-kit/src/pack.ts:526-532`),
+while the host retains contracts 1–11 (`packages/protocol/src/isolate.ts:985-993`).
+The added contracts carry optional physical-core inventory and credential-bound read-only
+lifecycle metadata, omitting their new fields for older packed guests. A contract-9-or-newer
+web half needs a declared portable Worker entry for hardened installation
+(`packages/server/src/plugin-host.ts:569-580,2422-2425`). This family's documented delivery
+remains in-realm; its server-only OMP dependencies remain hardened. The declaration never
+silently changes which runner an installer selected.
 The reviewed bounded-result channel includes exact digest-reviewed `textFields`: string-or-null
 leaves preserve already-redacted evidence rather than refusing a redaction marker as a credential
 carrier. Ordinary agent-facing results remain mechanical-only without trusted source approval,
@@ -750,6 +797,13 @@ addressed from dev-01, where `docker:` delivery copies the bundle into the hub's
 reads the owner key from its volume, so the key never appears in argv, output or this repository.
 Against another hub, pass `--owner-key-file <path>` and `--deliver path`.
 
+Recall cache permissions are checked by `babel/machine/recall-archive.test.ts` in a child
+process with a permissive umask and isolated HOME/XDG/temp roots. It uses a synthetic archive
+to inspect files during first indexing, warm reuse and rebuild, including SQLite databases,
+reading streams, listing/metadata sidecars and transient previews. A failed metadata
+replacement must leave no staged file and cannot make Recall refuse a rebuildable reading.
+This proves private file creation on the pinned Bun; it is not a live-archive custody check.
+
 ### Running optional judgement
 
 `bun babel/jev/tools/seed-questions.ts policy` renders the versioned question literals and response
@@ -810,6 +864,49 @@ hardened, take it, while Code's and this family's, verified and developed in-rea
 explicit fourth word `--in-realm` — the directory each dependency was packed into says which.
 Between releases a preview gets a build through `bun run dev --deliver`, and the sha256 that
 counts is the one CI prints. A tag is permanent: a bad one stays and the next patch follows it.
+
+**The independently rebuilt dependencies must match the gate's verified closure before any
+bundle is attached or installed.** The release gate uses the supported `prepare-command` hook
+to set `BABEL_DEPENDENCY_RECEIPT` through `GITHUB_ENV`; after the SDK verifier succeeds,
+`bun run verify` records the dependency bundles' actual SHA-256 digests into that receipt under
+`dist/`. Ordinary verification records nothing unless that variable is explicitly set. The
+[pinned Manifold workflow](https://github.com/atyrode/manifold/blob/070132088e30f10266e43a52074bc58f16c051fe/.github/workflows/plugins.yml#L93-L132)
+runs preparation before the normal pack/verify steps and uploads their `dist/` as the existing
+`manifold-plugins` artifact. Its alternate `pack-verify-command` suppresses that upload and is
+not used here.
+
+`scripts/dependency-receipt.ts` records one digest per role-relative bundle path, sorted by
+path: omp under `hardened/`, Code under `in-realm/`. The delivery check hashes every dependency
+bundle in the downloaded rebuilt artifact, including unexpected directories; missing, extra,
+changed or role-moved bundles fail before release attachment and before any receiver call.
+An artifact's own checksum file is not evidence that its bytes match the gate. The separate
+dependency build, published checksum files, dependency-first ordering and exact source-pin
+checks remain in place; nothing switches to externally published dependency bundles.
+
+The current closure arrives through Code
+[`4bae10b`](https://github.com/atyrode/code/blob/4bae10b04f5c1cbad6f63d4c9785a2d732ffb3b4/package.json#L17-L19),
+which pins OMP `f67e4f1`. Its
+[`plugins/workers/build.ts:497-508`](https://github.com/atyrode/manifold-omp/blob/f67e4f14fd0835d51ce0c5d54adeb8c43ec369f9/plugins/workers/build.ts#L497-L508)
+keeps whitespace compaction without optional syntax or identifier minification. The
+[Code native/browser gate](https://github.com/atyrode/code/actions/runs/36668035946) passed,
+and all three OMP and four Code fingerprints matched the local build. This conservative
+configuration is not an identified compiler-cause repair;
+[manifold-omp#94](https://github.com/atyrode/manifold-omp/issues/94) retains that investigation.
+The composed verifier's receipt still refuses changed bytes, a missing or extra bundle, a moved
+role and a hidden symlink. Neither matching source builds nor disposable consumer proof is an
+enabled native installation or preview receipt.
+
+The receipt CLI can also compare disposable closures directly:
+
+```sh
+bun scripts/dependency-receipt.ts record "$receipt" "$verified_omp_dist" "$verified_code_dist"
+bun scripts/dependency-receipt.ts check "$receipt" "$rebuilt_deps"
+```
+
+The rebuilt directory must contain the two role directories described above. Matching a
+release gate's closure is required for delivery, but it proves only agreement between those
+builds, not long-term reproducibility from the same pins. A same-input mismatch still needs
+its upstream build cause repaired; the receipt makes it a delivery refusal, not a repair.
 
 The sha256 is over an artifact's exact bytes, and Bun writes every bundled module's path as a
 comment, so a hash reproduces only from the layout above with the same Bun. The pins are what

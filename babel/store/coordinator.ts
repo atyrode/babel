@@ -39,6 +39,7 @@
     so every role its kind can carry is an obligation, rather than one a recipe activated.
 */
 
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { GuestDatabase, GuestSqlParam, GuestSqlRow } from "@manifold/plugin-kit";
 import type {
@@ -47,6 +48,8 @@ import type {
   GapReason,
   INTEREST_STATES,
   Stage,
+  ReviewReading,
+  ReviewSelection,
   StopReason,
   TranscriptMapPolicy,
   TranscriptMapRole,
@@ -74,6 +77,7 @@ import {
   type PromptBound,
 } from "./analysis.ts";
 import { transcriptMaps } from "./transcript-maps.ts";
+import type { ReviewReadingSnapshot } from "../server/review-readings.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
 export interface CoordinatorStore {
@@ -587,6 +591,7 @@ export interface ReviewAssignment extends AssignmentBase {
   readonly activity: "review";
   readonly role: Role;
   readonly lane: Lane;
+  readonly reviewSelection?: ReviewSelection;
 }
 
 export interface AnalysisAssignment extends AssignmentBase {
@@ -943,6 +948,7 @@ interface Candidate {
    *  since June. */
   readonly deferredAt: number;
   readonly topics: readonly string[];
+  readonly advisory?: ReviewReading;
 }
 
 interface AnalysisCandidate extends AnalysisOffer {
@@ -1107,6 +1113,7 @@ export function coordinator(
   store: CoordinatorStore,
   now: () => number,
   concurrentJobs: number | null,
+  reviewReadings?: () => Promise<ReviewReadingSnapshot | undefined>,
 ): Coordinator {
   const db = store.db;
 
@@ -1563,7 +1570,11 @@ export function coordinator(
   async function buildCandidates(
     policy: Policy,
     moment: number,
-  ): Promise<{ candidates: Candidate[]; gaps: Gap[] }> {
+  ): Promise<{
+    candidates: Candidate[];
+    gaps: Gap[];
+    readings: ReviewReadingSnapshot | undefined;
+  }> {
     const [records, status, ruling, filed, stance, reviews, claims] = await Promise.all([
       heads(),
       statuses(),
@@ -1828,6 +1839,23 @@ export function coordinator(
     }
 
     sortCandidates(candidates);
+    const readings = await reviewReadings?.();
+    if (readings !== undefined) {
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index]!;
+        if (work(candidate)) continue;
+        const reading = readings.readings.get(candidate.head.id);
+        if (reading === undefined || reading.kind !== candidate.head.kind) continue;
+        // A signed share of the admitted panel is advisory priority, never eligibility.
+        // The weighted lane keeps every weight positive, between half and twice baseline.
+        const priority = (reading.tally ?? 0) / Math.max(1, reading.roster);
+        candidates[index] = {
+          ...candidate,
+          advisory: reading,
+          weight: candidate.weight * 2 ** priority,
+        };
+      }
+    }
     gaps.sort((a, b) =>
       a.recordId === b.recordId
         ? a.role === b.role
@@ -1835,7 +1863,7 @@ export function coordinator(
           : a.role.localeCompare(b.role)
         : a.recordId.localeCompare(b.recordId),
     );
-    return { candidates, gaps };
+    return { candidates, gaps, readings };
   }
 
   /**
@@ -1975,6 +2003,14 @@ export function coordinator(
     return null;
   }
 
+  /** Ties, unknown and answered zero keep the old lane/age order. */
+  function reviewBefore(candidate: Candidate, best: Candidate): boolean {
+    const priority =
+      (candidate.advisory?.tally ?? 0) / Math.max(1, candidate.advisory?.roster ?? 0);
+    const previous = (best.advisory?.tally ?? 0) / Math.max(1, best.advisory?.roster ?? 0);
+    return priority > previous || (priority === previous && candidate.dueAt < best.dueAt);
+  }
+
   /**
    * One candidate from one lane. Coverage and discovery are deterministic — the oldest due and
    * the oldest untouched — because a reservation whose target was chosen at random would not
@@ -2002,14 +2038,14 @@ export function coordinator(
         for (const candidate of candidates) {
           if (work(candidate) || candidate.revisit || !candidate.initial) continue;
           if (contended(candidate)) continue;
-          if (best === null || candidate.dueAt < best.dueAt) best = candidate;
+          if (best === null || reviewBefore(candidate, best)) best = candidate;
         }
         return best;
       case "discovery":
         for (const candidate of candidates) {
           if (work(candidate) || candidate.revisit || !candidate.untouched) continue;
           if (contended(candidate)) continue;
-          if (best === null || candidate.dueAt < best.dueAt) best = candidate;
+          if (best === null || reviewBefore(candidate, best)) best = candidate;
         }
         return best;
       case "filing":
@@ -2401,7 +2437,11 @@ export function coordinator(
     const [review, analysis, mapping] = await Promise.all([
       !mappingOnly && policy.activityWeights.review > 0
         ? buildCandidates(policy, moment)
-        : Promise.resolve({ candidates: [] as Candidate[], gaps: [] as Gap[] }),
+        : Promise.resolve({
+            candidates: [] as Candidate[],
+            gaps: [] as Gap[],
+            readings: undefined,
+          }),
       !mappingOnly
         ? buildAnalysis(policy, moment)
         : Promise.resolve({ candidates: [] as AnalysisCandidate[], gaps: [] as Gap[] }),
@@ -2428,15 +2468,26 @@ export function coordinator(
       };
     }
 
-    const inputDigest = digest([
+    // Advice is provenance, not entropy for the shared activity and lane reservations.
+    // Keep the ordinary stream (and number of random draws) even without an explicit seed.
+    const baselineDigest = digest([
       ...candidates.map(
         (candidate) => `${candidate.head.id}:${candidate.role}:${String(candidate.ordinal)}`,
       ),
       ...mapping.map((candidate) => `${candidate.work.id}:${String(candidate.work.attempt)}`),
       ...analysis.candidates.map((candidate) => `${candidate.role}:${candidate.fingerprint}`),
     ]);
+    const advisoryInputs = candidates.flatMap((candidate) =>
+      typeof candidate.advisory?.tally !== "number"
+        ? []
+        : [
+            `${candidate.head.id}:${candidate.role}:${candidate.advisory.requestKey}:${review.readings?.policyRevision ?? ""}:${String(candidate.advisory.tally)}:${String(candidate.advisory.roster)}`,
+          ],
+    );
+    const inputDigest =
+      advisoryInputs.length === 0 ? baselineDigest : digest([baselineDigest, ...advisoryInputs]);
     const seed =
-      request.seed ?? BigInt(`0x${digest([request.runId, String(moment), inputDigest])}`);
+      request.seed ?? BigInt(`0x${digest([request.runId, String(moment), baselineDigest])}`);
 
     // THE PICK IS THE FIRST ELIGIBLE ASSIGNMENT NOBODY IS HOLDING rather than the single
     // top-ranked one (#233). Ranking still decides the order this walks; what changed is that a
@@ -2601,10 +2652,66 @@ export function coordinator(
               activity: "review",
               role: chosen.role,
               kind: chosen.head.kind,
+              ...(review.readings === undefined
+                ? {}
+                : {
+                    reviewSelection: selectionReason(
+                      chosen,
+                      sampled.lane,
+                      review.readings,
+                      candidates,
+                    ),
+                  }),
               lane:
                 chosen.lane ?? (chosen.role === "challenge" ? "challenge" : (sampled.lane as Lane)),
             };
     return { outcome: "assignment", assignment, gaps };
+  }
+
+  function selectionReason(
+    chosen: Candidate,
+    lane: Lane | "mapping",
+    snapshot: ReviewReadingSnapshot,
+    candidates: readonly Candidate[],
+  ): ReviewSelection {
+    const eligible = new Set(candidates.filter((row) => !work(row)).map((row) => row.head.id));
+    const measured = new Set(
+      candidates.filter((row) => typeof row.advisory?.tally === "number").map((row) => row.head.id),
+    );
+    const reason =
+      snapshot.reason !== "cached-current"
+        ? snapshot.reason
+        : work(chosen)
+          ? "work-lane"
+          : lane === "exploration"
+            ? "uniform-exploration"
+            : chosen.advisory === undefined
+              ? "missing-reading"
+              : chosen.advisory.tally === null
+                ? "no-numeric-reading"
+                : "cached-current";
+    return {
+      mode:
+        snapshot.reason === "cached-current" &&
+        measured.size > 0 &&
+        !work(chosen) &&
+        lane !== "exploration"
+          ? "cached-advisory"
+          : "lane-age",
+      reason,
+      funding: "unknown",
+      considered: measured.size,
+      missing: eligible.size - measured.size,
+      providerRevision: snapshot.providerRevision,
+      policyRevision: snapshot.policyRevision,
+      ...(chosen.advisory === undefined
+        ? {}
+        : {
+            readingDigest: createHash("sha256")
+              .update(JSON.stringify(chosen.advisory))
+              .digest("hex"),
+          }),
+    };
   }
 
   // -------------------------------------------------------------------------- claims

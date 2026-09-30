@@ -44,7 +44,7 @@ import {
 import type { BabelStore } from "../store/store.ts";
 import { mappingPolicy, type Coordinator } from "../store/coordinator.ts";
 import { defineDoor, type Door } from "./door.ts";
-import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
+import { DEFERRED_SESSION_DELEGATES, pressOperation } from "./launch.ts";
 
 /*
   THE THREE DOORS A DRAIN IS RUN THROUGH: start one, read one, end one (#258).
@@ -64,8 +64,8 @@ import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
   not name it would be refused `job_capability_absent:machines:read` at the first slot and report
   "launched nothing" about a machine nobody ever asked. The posting that follows is Babel's own
   `prepare` or its beat, discharged at `engine.jobs.execute` against the same bridge, so the start
-  carries all of `POSTING_DELEGATES`: machine execution, location writes, the bound storage
-  service and its host network. `doors/read.ts` carries the reasoning.
+  carries every native posting requirement plus the Code-workspace and broker authority its
+  settled preparation needs to post its session. `doors/launch.ts` carries the posting ceiling.
 
   WHY `drain.stop` IS GOVERNED AT THE OPERATION NODE AND NOT AT A JOB. A drain holds several jobs
   and a declared requirement resolves to exactly ONE node (`plugin-host.ts` parses one
@@ -75,23 +75,10 @@ import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
   cancelling every job of this drain needs — and asking for it by name is honest about the
   breadth instead of borrowing it one job at a time.
 
-  WHY `drain.status` IS A DRY READ THAT STILL CARRIES DELEGATES. It answers what is draining,
-  under `containers:read`, asking no machine anything: the panel polls it every five seconds while
-  the operator watches, and requiring version-bound consent at a node merely to READ a burn rate
-  is the interface unable to say what it is doing. Everything it reports comes from this plugin's
-  own tables — the drain row, the runs the drain launched, and the conductor's fold of where each
-  of them is.
-
-  BUT IT IS ONE OF THE DOORS A CYCLE FOLLOWS (`server.ts`'s `WAKES`), and that is what the
-  delegates are for: the dispatcher attenuates `ctx.jobs` to what the door declared, so a cycle
-  behind a door with no `jobs:read` cannot read back a single job — every `jobs.status` in
-  `reconcileRuns` refuses, nothing settles, and the `run_progress` fold this wake EXISTS for
-  never happens. The same cycle describes a machine to keep its beat registered, then schedules
-  or executes `catalog` and `prepare`: their manifest declarations require `machines:read`,
-  `machines:run`, `locations:write`, `services:invoke` and `network:host`. `pulse`, `runs` and
-  `launch` carry the same cycle ceiling (`doors/read.ts` and `doors/launch.ts`). It widens
-  nothing: each delegate is intersected with the caller's capabilities and the plugin's install
-  grant, and the caller still needs only `containers:read`.
+  `drain.status` is a read of this plugin's own tables and stays callable by read-only panels.
+  Its post-dispatch wake folds the running jobs' progress, but does not refill a slot or post
+  Code work. An ordinary drain installs its own write-authorized native cadence before the first
+  fan; that cadence refills the drain even if the standing policy weights every activity at zero.
 */
 
 /**
@@ -103,26 +90,24 @@ import { POSTING_DELEGATES, pressOperation } from "./launch.ts";
  * consent required" and the operator never hears `engine_pending` — nor, on a drain v0.3.0
  * left running, can he stop it at all. `doors/launch.ts` says the whole of it.
  *
- * So a start asks `containers:read` and carries `machines:read` and `POSTING_DELEGATES` —
- * the read the launch path makes before it posts, and every requirement of that posting.
+ * So a start requires `containers:read` and `containers:write`, and delegates `machines:read`
+ * and `DEFERRED_SESSION_DELEGATES` — the host read and native posting, then broker, job-read
+ * and bound-material input authority when a settled preparation posts its Code session.
  * A stop asks `containers:write` — closing the row is a write of this plugin's own rows —
  * and carries `jobs:cancel` as a DELEGATE, the native ceiling its own job authority may reach.
  * The hub still checks consent at the effect: a cancel it will not admit is reported by name
  * rather than assumed. The governed requirements return with the node they are discharged at,
  * which is Code's operation, once its door posts the job.
  */
-const START_CAPS = ["containers:read"] as const;
-const START_DELEGATES = ["machines:read", ...POSTING_DELEGATES] as const;
+const START_CAPS = ["containers:read", "containers:write"] as const;
+const START_DELEGATES = ["machines:read", ...DEFERRED_SESSION_DELEGATES] as const;
 
 const STOP_CAPS = ["containers:write"] as const;
 const STOP_DELEGATES = ["jobs:cancel"] as const;
 
-/** A dry read of this plugin's own tables; it asks no machine anything. */
+/** A status poll folds running jobs without acquiring write authority over a Code workspace. */
 const STATUS_CAPS = ["containers:read"] as const;
-/** …but a cycle follows it, and a cycle that cannot read a job, describe a machine or register
- *  its declared operation requirements folds nothing, keeps no cadence and relaunches nothing;
- *  see above. */
-const STATUS_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
+const STATUS_DELEGATES = ["jobs:read", "services:read"] as const;
 
 /** Every act of a drain is news on this plugin's own node, as `doors/acts.ts` explains. */
 const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;
@@ -135,6 +120,13 @@ export interface DrainDoorDeps {
   deps(ctx: Parameters<Door["handler"]>[0]): DrainDeps;
   /** The manifest's `concurrentJobs`: the most jobs of one operation a machine runs at once. */
   readonly concurrentJobs: number;
+  /** Register an ordinary drain's native wake under this press, before its first fan. */
+  startOrdinary(
+    ctx: Parameters<Door["handler"]>[0],
+    row: DrainRow,
+  ): Promise<{ readonly ok: boolean; readonly notes: readonly string[] }>;
+  /** Release a cadence when the first fan could not post any job. */
+  stopOrdinary(ctx: Parameters<Door["handler"]>[0]): Promise<void>;
   /**
    * THE MAPPING DRAIN'S FIRST FAN AND ITS OWN WAKE, under the start's own authority: the running
    * mapping drains' own conductor step (`Conductor.tickMapDrains`) and the drain's native
@@ -386,6 +378,11 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       const row = await readDrain(store, drainId);
       if (row === null) return { refused: `the drain row for ${drainId} was not written` };
       const deps = doorDepsAtStart;
+      const cadence = await doorDeps.startOrdinary(ctx, row);
+      if (!cadence.ok) {
+        await endDrain(deps, row, "failed", cadence.notes.join("; "), []);
+        return { refused: `this drain has no native continuation: ${cadence.notes.join("; ")}` };
+      }
       // The fan holds `concurrent` materials on the machine at once: each is bounded to that
       // share of its scratch, as every later tick's are (#453).
       const plan = {
@@ -410,6 +407,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       }
       if (live.length === 0) {
         await endDrain(deps, row, "failed", `nothing could be launched: ${refused}`, []);
+        await doorDeps.stopOrdinary(ctx);
         return { refused: `this drain launched nothing: ${refused}` };
       }
       store.touch();

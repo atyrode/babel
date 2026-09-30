@@ -23,11 +23,11 @@
     "pack": "./pack.sh",
     "deps:code": "bun scripts/prepare-code.ts",
     "deps:tests": "sh scripts/prepare-test-tools.sh",
-    "verify": "bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/verify.ts\" .integration/code/plugins/.integration/omp/plugins/dist/*.manifold-plugin.json .integration/code/plugins/dist/*.manifold-plugin.json dist/*.manifold-plugin.json",
+    "verify": "git diff --quiet HEAD -- babel/manifest.json || { printf '%s\\n' 'Machine stamp differs from the committed manifest; run bun run pack and commit the resulting stamp.' >&2; exit 1; }; bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/verify.ts\" .integration/code/plugins/.integration/omp/plugins/dist/*.manifold-plugin.json .integration/code/plugins/dist/*.manifold-plugin.json dist/*.manifold-plugin.json && if [ -n \"${BABEL_DEPENDENCY_RECEIPT:-}\" ]; then bun scripts/dependency-receipt.ts record \"$BABEL_DEPENDENCY_RECEIPT\" .integration/code/plugins/.integration/omp/plugins/dist .integration/code/plugins/dist; fi",
     "dev": "./pack.sh --machine && bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/dev.ts\" babel"
   },
   "dependencies": {
-    "@atyrode/manifold-code": "github:atyrode/code#f7eae082275851ac2668d214adf622b32038a96b",
+    "@atyrode/manifold-code": "github:atyrode/code#4bae10b04f5c1cbad6f63d4c9785a2d732ffb3b4",
     "zod": "4.4.3"
   },
   "devDependencies": {
