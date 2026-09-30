@@ -156,21 +156,40 @@ test("a quiet window preserves the configured baseline and reports unknown eligi
 test("the exact seven-day boundary is inclusive and one nanosecond beyond either endpoint is excluded", async () => {
   const store = await fixture();
   const cutoff = NOW - ALLOCATION_LOOKBACK_MS;
+  const offset = (at: number, fraction: string) =>
+    `${new Date(at + 2 * 60 * 60 * 1000).toISOString().slice(0, 19)}.${fraction}+02:00`;
+  const negativeOffset = (at: number, fraction: string) =>
+    `${new Date(at - 5 * 60 * 60 * 1000).toISOString().slice(0, 19)}.${fraction}-05:00`;
   for (const [id, at] of [
     ["boundary", stamp(cutoff)],
     ["before", stamp(cutoff - 1000).replace("000000000Z", "999999999Z")],
     ["now", stamp(NOW)],
     ["future", stamp(NOW).replace("000000000Z", "000000001Z")],
+    ["offset-boundary", offset(cutoff, "000000000")],
+    ["offset-before", offset(cutoff - 1000, "999999999")],
+    ["offset-now", offset(NOW, "000000000")],
+    ["offset-future", offset(NOW, "000000001")],
+    ["negative-boundary", negativeOffset(cutoff, "000000000")],
+    ["negative-future", negativeOffset(NOW, "000000001")],
+    ["offset-short", offset(NOW - 1000, "1")],
   ]) {
     await proposal(store, id!);
     await ruling(store, id!, "accept", at!);
   }
   const plan = await preview(store);
-  expect(slice(plan, "challenge").sample).toBe(2);
+  expect(slice(plan, "challenge").sample).toBe(6);
   expect(
     plan.snapshot.feedback.filter((row) => row.excluded === "counted").map((row) => row.rootId),
-  ).toEqual(["boundary", "now"]);
-  expect(plan.snapshot.coverage.futureRulings).toBe(1);
+  ).toEqual([
+    "boundary",
+    "negative-boundary",
+    "now",
+    "offset-boundary",
+    "offset-now",
+    "offset-short",
+  ]);
+  expect(plan.snapshot.coverage.historicalRulings).toBe(2);
+  expect(plan.snapshot.coverage.futureRulings).toBe(3);
 });
 
 test("repeated answers and revised records count once without renewing an expired answer", async () => {

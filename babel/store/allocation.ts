@@ -31,13 +31,24 @@ import { DEFAULT_POLICY, PolicySchema } from "./coordinator.ts";
  * All snapshot inputs are selected by ONE statement. The same watermark is a predicate on the
  * INSERT, so an intervening decision, inventory change, policy or other save cannot be lost.
  */
-// UTC nanoseconds remain text-comparable. Non-UTC imported timestamps normalize through
-// SQLite's parser; invalid timestamps are counted as unobserved, never as rejected proposals.
+// UTC nanoseconds remain text-comparable. SQLite normalizes an offset's whole second, while
+// its %f discards sub-millisecond precision: preserve the original fractional digits across
+// the whole-minute timezone shift so a future ruling cannot enter at the inclusive upper edge.
+// Invalid timestamps are counted as unobserved, never as rejected proposals.
+const DECISION_FRACTION_SQL = `CASE
+  WHEN instr(substr(d.recorded_at, 21), '+') > 0 THEN
+    substr(substr(d.recorded_at, 21), 1, instr(substr(d.recorded_at, 21), '+') - 1)
+  WHEN instr(substr(d.recorded_at, 21), '-') > 0 THEN
+    substr(substr(d.recorded_at, 21), 1, instr(substr(d.recorded_at, 21), '-') - 1)
+  ELSE rtrim(substr(d.recorded_at, 21), 'Zz') END`;
 const DECISION_TIME_SQL = `CASE WHEN julianday(d.recorded_at) IS NULL THEN NULL
   WHEN substr(d.recorded_at, -1) = 'Z' AND substr(d.recorded_at, 20, 1) = '.'
     THEN substr(d.recorded_at, 1, 19) || '.' ||
       substr(substr(d.recorded_at, 21, length(d.recorded_at) - 21) || '000000000', 1, 9) || 'Z'
-  ELSE strftime('%Y-%m-%dT%H:%M:%f', d.recorded_at) || '000000Z' END`;
+  ELSE strftime('%Y-%m-%dT%H:%M:%S', d.recorded_at) || '.' ||
+    CASE WHEN substr(d.recorded_at, 20, 1) = '.'
+      THEN substr((${DECISION_FRACTION_SQL}) || '000000000', 1, 9)
+      ELSE '000000000' END || 'Z' END`;
 const WATERMARK_SQL = `SELECT json_object(
   'policy', (SELECT coalesce(max(seq), 0) FROM policies),
   'plans', (SELECT coalesce(max(seq), 0) FROM allocation_plans),
