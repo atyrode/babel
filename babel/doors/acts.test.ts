@@ -514,6 +514,44 @@ test("the crossing is owner-only, hub-checked and idempotent by (table, id)", as
   ).toMatchObject({ table: "run_calls", inserted: 1 });
 });
 
+test("the crossing checks every neighbourhood source route before writing a mixed chunk", async () => {
+  const machineId = "05df7eaa-efd8-4d9c-bb0c-334706555c77";
+  const owner = openHarness("alex", true, [machineId]);
+  await migrate(owner.store);
+  await owner.store.db.run(
+    `INSERT INTO transcript_map_captures(id,host,harness,session,captured_at,payload)
+     VALUES('tmcap_import506','','','','2026-03-01T09:00:00.000Z','{}')`,
+  );
+  const known = {
+    machine_id: machineId,
+    query_key: "known-source-route",
+    capture_id: "tmcap_import506",
+    revision: 1,
+  };
+  const chunk = {
+    source: "synthetic-neighbourhood.db",
+    table: "transcript_map_neighborhood_heads",
+    rows: [
+      known,
+      { ...known, machine_id: "absent-source-route", query_key: "unknown-source-route" },
+    ],
+  };
+  expect(await refusal(owner, ACTIONS.importLedger, chunk)).toContain("absent-source-route");
+  expect(
+    await owner.store.db.query("SELECT machine_id FROM transcript_map_neighborhood_heads"),
+  ).toEqual([]);
+  expect(await owner.store.db.query("SELECT table_name FROM imports")).toEqual([]);
+  expect(await knock(owner, ACTIONS.importLedger, { ...chunk, rows: [known] })).toMatchObject({
+    inserted: 1,
+    skipped: 0,
+  });
+  expect(
+    await owner.store.db.query(
+      "SELECT machine_id,query_key FROM transcript_map_neighborhood_heads",
+    ),
+  ).toEqual([{ machine_id: machineId, query_key: known.query_key }]);
+});
+
 test("a re-host moves a catalogued corpus onto an id the hub knows, and refuses one it does not", async () => {
   const machineId = "05df7eaa-efd8-4d9c-bb0c-334706555c77";
   const owner = openHarness("alex", true, [machineId]);
