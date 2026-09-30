@@ -30,7 +30,7 @@
       "reason": "an explicitly configured existing Agent admits a bounded review tool Run under the caller's authority; absent or refused admission retains validated text review"
     }
   },
-  "dataVersion": { "major": 1, "minor": 18 },
+  "dataVersion": { "major": 1, "minor": 19 },
   "database": { "maxBytes": 1073741824 },
   "purges": ["storage"],
   "contributes": {

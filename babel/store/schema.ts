@@ -25,7 +25,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 18 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 19 } as const;
 
 /** Named allocation intentions share this store, but never replace an active policy. */
 const ALLOCATION_PLAN_SCHEMA: readonly string[] = [

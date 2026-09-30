@@ -3044,15 +3044,20 @@ test("a batch every slot of which a dead job holds is drawn into the same cycle 
     ["clm_dead_3", "abandoned"],
     ["clm_dead_4", "abandoned"],
   ]);
-  // Reaping frees a slot before drawing in this same cycle. The new claim stays reserved:
-  // an unavailable Code cannot confirm retirement of its durable posting key.
+  // Reaping frees capacity before drawing in this cycle. Without a Code profile the new draw
+  // is refused before posting; its abandoned claim conservatively charges its reservation.
   expect(reaping.stop?.reason).not.toBe("batch");
   expect(reaping.pulse.tick.gaps["batch"]).toBeUndefined();
   expect(draws.draws).toBe(1);
-  expect(reaping.settled).toHaveLength(4);
   expect(
-    await db.query(`SELECT job_id, finished_at FROM claims WHERE id=?`, [ASSIGNMENT.id]),
-  ).toEqual([{ job_id: null, finished_at: null }]);
+    reaping.settled.some((row) => row.claimId === ASSIGNMENT.id && row.outcome === "abandoned"),
+  ).toBe(true);
+  expect(
+    await db.query(
+      `SELECT job_id, reserved_cost, actual_cost, finished_at IS NOT NULL AS finished FROM claims WHERE id=?`,
+      [ASSIGNMENT.id],
+    ),
+  ).toEqual([{ job_id: null, reserved_cost: 0.1, actual_cost: 0.1, finished: 1n }]);
   clock = started;
 });
 
