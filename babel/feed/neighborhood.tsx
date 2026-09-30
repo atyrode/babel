@@ -8,6 +8,8 @@ import {
   RecordIdSchema,
   RecordKindSchema,
   type NeighborhoodResult,
+  type NeighborhoodSummary,
+  type NeighborhoodSourceResult,
 } from "../contract.ts";
 import { BABEL_NODE, NO_SEAT, ask, openEntity, openRecord, refusal } from "./api.ts";
 import { RAIL_POLL_MS } from "./rail.tsx";
@@ -168,6 +170,200 @@ function Coverage({ result }: { result: NeighborhoodResult }): ReactElement {
   );
 }
 
+function NavigationSummary({
+  host,
+  summary,
+}: {
+  host: HostServices;
+  summary: NeighborhoodSummary;
+}): ReactElement {
+  const [sources, setSources] = useState<NeighborhoodSourceResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failure, setFailure] = useState("");
+  const [navigation, setNavigation] = useState("");
+  const [offset, setOffset] = useState(0);
+  const source = summary.source;
+  async function openSources(next: number): Promise<void> {
+    if (!source) return;
+    setOffset(next);
+    setSources(null);
+    setFailure("");
+    setLoading(true);
+    try {
+      setSources(
+        await ask(host, ACTIONS.neighborhoodSource, {
+          sourceId: source.id,
+          offset: next,
+        }),
+      );
+    } catch (error) {
+      setFailure(refusal(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+  return (
+    <section aria-label="Generated navigation summaries">
+      <h3>Generated navigation summaries</h3>
+      <p>
+        <strong>Inference for navigation, not evidence or authoritative facts.</strong> Summarizing
+        creates no entities or relationships. Reads never authorize generation or paid work.
+      </p>
+      <p role="status">
+        {summary.state === "stale"
+          ? "Outdated or withheld summary: source revisions, inputs or review changed."
+          : summary.state === "available"
+            ? "Generated summary available for this bounded revision."
+            : summary.state === "bounded"
+              ? "Summary omitted to preserve the response byte bound."
+              : summary.state === "unavailable"
+                ? "Summary unavailable. Stored records remain readable below."
+                : "No generated summary for this scope yet. Stored records remain readable below."}
+      </p>
+      {source && (
+        <>
+          <p>
+            Hub-record source revision <code>{source.revision}</code> · captured {source.capturedAt}{" "}
+            · {source.disputed} disputed inputs · {source.stale} stale/replaced inputs ·{" "}
+            {source.redactions} mandatory redactions.
+          </p>
+          <p>
+            Summary input scope: {source.coverage.scope}; depth {source.query.depth},{" "}
+            {source.query.maxNodes} nodes, {source.query.maxItems} items, {source.query.maxBytes}{" "}
+            bytes.{" "}
+            {source.coverage.recordsComplete
+              ? "All eligible stored rows in this bounded scope."
+              : "Incomplete source coverage — not a whole-project summary."}{" "}
+            {source.coverage.omittedItems} omitted material rows; at least{" "}
+            {source.coverage.omittedNodesAtLeast} omitted frontier nodes;{" "}
+            {source.coverage.unavailableEntities} unavailable entities. Limits reached:{" "}
+            {source.coverage.reasons.join(", ") || "none"}.
+          </p>
+        </>
+      )}
+      {summary.coverage && (
+        <p>
+          Mapping coverage:{" "}
+          {summary.coverage.partial ? "incomplete" : "complete for the supplied snapshot"} ·{" "}
+          {summary.coverage.summarizedBytes} summarized bytes · {summary.coverage.unmappedBytes}{" "}
+          unmapped bytes · {summary.coverage.gapBytes} gap bytes · {summary.omittedViews} additional
+          summary views omitted.
+        </p>
+      )}
+      {summary.producer && (
+        <p className="babel-neighborhood-provenance">
+          Version {summary.versionId} · producing contract {summary.producer.contractDigest} ·{" "}
+          configured source route {summary.producer.sourceMachineId} · executor{" "}
+          {summary.producer.executorMachineId} · profile {summary.producer.profile.containerId}@
+          {summary.producer.profile.expectedRevision}
+        </p>
+      )}
+      {summary.views.map((view) => (
+        <article key={view.summary.id}>
+          <h4>
+            Navigation inference · records {view.node.span.firstRecord}–{view.node.span.lastRecord}
+          </h4>
+          <p>{view.summary.text}</p>
+          <p className="babel-neighborhood-provenance">
+            Summary {view.summary.id} · run {view.summary.runId} · recipe {view.summary.recipeId}@
+            {view.summary.recipeVersion} · {view.summary.createdAt} · span digest{" "}
+            {view.node.span.digest}
+          </p>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={() => void openSources(view.node.span.firstRecord - 1)}
+          >
+            Open exact source records {view.node.span.firstRecord}–{view.node.span.lastRecord}
+          </button>
+        </article>
+      ))}
+      {loading && <p role="status">Reading exact retained source rows…</p>}
+      {failure && (
+        <div role="status">
+          <p>Source read unavailable: {failure}</p>
+          <button type="button" onClick={() => void openSources(offset)}>
+            Retry exact source read
+          </button>
+        </div>
+      )}
+      {sources && (
+        <section aria-label="Exact summary source records">
+          <h4>Exact retained source records</h4>
+          <p>
+            Mandatory-redacted stored rows, not generated prose or archive quotations. Revision
+            digests identify the original rows, including status and attribution; catalog locators
+            remain current-catalog metadata, not historical citation proof. Opening a record or
+            entity below opens its current panel; the exact historical input is displayed here.
+          </p>
+          {sources.source === null && <p role="status">This source snapshot is unavailable.</p>}
+          {sources.rows.map((row) => (
+            <div key={row.record}>
+              <p>
+                Source record {row.record} · {row.source.kind} · {row.source.id} · revision{" "}
+                <code>{row.source.revision}</code>
+              </p>
+              {(row.source.kind === "records" || row.source.kind === "questions") &&
+                RecordIdSchema.safeParse(row.source.id).success && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setNavigation(openRecord(host, row.source.id) === "no_tile" ? NO_SEAT : "")
+                    }
+                  >
+                    Open record {row.source.id}
+                  </button>
+                )}
+              {row.source.kind === "nodes" && EntityIdSchema.safeParse(row.source.id).success && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setNavigation(
+                      openEntity(host, row.source.id, source?.query.entityId) === "no_tile"
+                        ? NO_SEAT
+                        : "",
+                    )
+                  }
+                >
+                  Open entity {row.source.id}
+                </button>
+              )}
+              <Payload json={JSON.stringify(row.source.value)} />
+            </div>
+          ))}
+          {sources.omittedRecords > 0 && (
+            <p role="status">
+              {sources.omittedRecords} source records omitted whole by this page's byte bound.
+            </p>
+          )}
+          {navigation && <p role="status">{navigation}</p>}
+          {offset > 0 && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => void openSources(Math.max(0, offset - 16))}
+            >
+              Previous source records
+            </button>
+          )}
+          {sources.nextOffset !== null && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => void openSources(sources.nextOffset!)}
+            >
+              Next source records
+            </button>
+          )}
+          <button type="button" onClick={() => setSources(null)}>
+            Close exact source records
+          </button>
+        </section>
+      )}
+    </section>
+  );
+}
+
 function NeighborhoodContents({
   host,
   result,
@@ -270,6 +466,11 @@ function NeighborhoodContents({
   return (
     <Stack gap="var(--babel-space-3)">
       <Coverage result={result} />
+      <NavigationSummary
+        key={result.summary.source?.id ?? result.summary.state}
+        host={host}
+        summary={result.summary}
+      />
       {navigation !== "" && <p role="status">{navigation}</p>}
       {result.state === "missing" ? (
         <p className="babel-neighborhood-missing">

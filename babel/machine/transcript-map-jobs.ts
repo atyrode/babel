@@ -11,19 +11,21 @@ import {
   TRANSCRIPT_MAP_NATIVE_PAGE_NODES,
   TRANSCRIPT_MAP_MAX_PAGE_BYTES,
   TranscriptMapCatalogInputSchema,
-  TranscriptMapPrepareInputSchema,
+  NavigationMapPrepareInputSchema,
   TranscriptMapNativeReplySchema,
   ReceiptSchema,
   type TranscriptMapNativeRequest,
   type TranscriptMapNativeResult,
   type TranscriptMapCatalogInput,
   type TranscriptMapPrepareInput,
+  type NavigationMapPrepareInput,
   type TranscriptMapCatalogWakeInput,
   type TranscriptMapDrainWakeInput,
   type Receipt,
 } from "../contract.ts";
 import type { MaterialSink, OutputSink } from "./output.ts";
 import { PREFLIGHT_DETECTORS, secretScan } from "./preflight.ts";
+import { transcriptMapPlanId, transcriptMapNodeId } from "../transcript-map-identity.ts";
 
 export type TranscriptMapClient = (
   request: TranscriptMapNativeRequest,
@@ -222,15 +224,35 @@ async function validateNode(input: TranscriptMapPrepareInput, client: Transcript
 }
 
 export async function mapPrepare(
-  input: TranscriptMapPrepareInput,
+  input: NavigationMapPrepareInput,
   out: OutputSink,
   material: MaterialSink,
-  client: TranscriptMapClient,
+  client?: TranscriptMapClient,
 ): Promise<Receipt> {
   const startedAt = new Date().toISOString();
   try {
-    const parsed = TranscriptMapPrepareInputSchema.parse(input);
-    const { node, ...authorized } = await validateNode(parsed, client);
+    const parsed = NavigationMapPrepareInputSchema.parse(input);
+    const supplied = "node" in parsed;
+    if (!supplied && !client) fail();
+    const { node, ...authorized } = supplied
+      ? { node: parsed.node, context: null, access: null }
+      : await validateNode(parsed, client!);
+    if (
+      supplied &&
+      (node.planId !== transcriptMapPlanId(parsed.source, parsed.segmentation) ||
+        node.id !== parsed.nodeId ||
+        node.id !==
+          transcriptMapNodeId(
+            node.planId,
+            node.level,
+            node.ordinal,
+            node.span,
+            node.children,
+            node.gap,
+          ) ||
+        (node.children.length === 0) !== (parsed.text !== null))
+    )
+      fail();
     if (
       node.gap ||
       (parsed.mode !== "generate" && !parsed.baseSummary) ||
@@ -264,11 +286,15 @@ export async function mapPrepare(
       ? { ...parsed.baseSummary, text: clean(parsed.baseSummary.text) }
       : null;
     const feedback = parsed.feedback === undefined ? null : clean(parsed.feedback);
-    let text: string | null = null;
-    if (node.children.length === 0) {
-      const preview = await client({ kind: "map-preview", source: parsed.source, span: node.span });
+    let text: string | null = supplied ? parsed.text : null;
+    if (!supplied && node.children.length === 0) {
+      const preview = await client!({
+        kind: "map-preview",
+        source: parsed.source,
+        span: node.span,
+      });
       if (
-        preview.context?.digest !== authorized.context.digest ||
+        preview.context?.digest !== authorized.context?.digest ||
         !preview.preview ||
         preview.preview.bytes !== node.span.byteLength ||
         preview.preview.sourceDigest !== parsed.source.sourceDigest ||
@@ -280,7 +306,7 @@ export async function mapPrepare(
         const parts: string[] = [];
         let offset = 0;
         while (offset < handle.bytes) {
-          const response = await client({
+          const response = await client!({
             kind: "map-page",
             previewId: handle.previewId,
             offset,
@@ -302,13 +328,15 @@ export async function mapPrepare(
         }
         text = parts.join("");
         if (sha(text) !== node.span.digest) fail();
-        for (const record of text.split("\n"))
-          if (record) {
-            if (scan.redact(record, ++line) !== record) fail();
-          }
       } finally {
-        await client({ kind: "map-release", previewId: handle.previewId }).catch(() => undefined);
+        await client!({ kind: "map-release", previewId: handle.previewId }).catch(() => undefined);
       }
+    }
+    if (text !== null) {
+      if (Buffer.byteLength(text) !== node.span.byteLength || sha(text) !== node.span.digest)
+        fail();
+      for (const record of text.split("\n"))
+        if (record && scan.redact(record, ++line) !== record) fail();
     }
     // Parents see only the ordered child summaries and explicit gaps, never an ancestor's
     // full raw span. Span/source metadata is navigation identity, not supplied source bytes.

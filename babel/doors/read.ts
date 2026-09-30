@@ -27,6 +27,8 @@ import {
   FeedResultSchema,
   NeighborhoodQuerySchema,
   NeighborhoodResultSchema,
+  NeighborhoodSourceQuerySchema,
+  NeighborhoodSourceResultSchema,
   PolicyQuerySchema,
   PolicyResultSchema,
   PulseResultSchema,
@@ -44,6 +46,7 @@ import {
 } from "../contract.ts";
 import type { BabelStore } from "../store/store.ts";
 import { recipeRecords } from "../store/recipe-records.ts";
+import { transcriptMaps } from "../store/transcript-maps.ts";
 import { defineDoor, type Door } from "./door.ts";
 import { defineServerAction, type GuestStorage } from "@manifold/plugin-kit/server";
 
@@ -160,6 +163,17 @@ export function readDoors(store: BabelStore): readonly Door[] {
         result: NeighborhoodResultSchema,
       }),
       async (_ctx, query) => await store.neighborhood(query),
+    ),
+
+    defineDoor(
+      defineServerAction({
+        name: ACTIONS.neighborhoodSource,
+        title: "Read exact neighbourhood summary inputs",
+        caps: READ_CAPS,
+        input: NeighborhoodSourceQuerySchema,
+        result: NeighborhoodSourceResultSchema,
+      }),
+      async (_ctx, query) => await transcriptMaps(store).neighborhoodSource(query),
     ),
 
     defineDoor(

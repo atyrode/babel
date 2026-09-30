@@ -9,6 +9,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+- **Neighbourhoods gain generated navigation summaries over their own stored records (#506).**
+  Explicit bounded policy targets reuse transcript-map segmentation, versioned provenance, coverage,
+  served-only review/corrections and the existing authorized mapping queue, profile and budget fences.
+  Agent and Topic reads label inference separately from facts, expose disputed/stale and incomplete
+  inputs, invalidate currentness on source changes, and open exact retained source/revision pages.
+  Missing or unavailable summaries preserve records-only reads; byte ceilings never evict facts for
+  prose. Consumer and conductor regressions cover generation from sealed hub-record material,
+  exact source history, revision races, review rejection/correction and bounded fallback. This grants
+  no live inference spend, archive access or deployment authority.
+
 - **Native admission shares one physical occupancy fence across direct and standing mapping
   work (#258, #526).** A typed direct pre-admission refusal, confirmed by authoritative
   `job_not_started` for every recorded native attempt, closes the intent and reservation once.

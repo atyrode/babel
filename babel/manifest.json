@@ -30,7 +30,7 @@
       "reason": "an explicitly configured existing Agent admits a bounded review tool Run under the caller's authority; absent or refused admission retains validated text review"
     }
   },
-  "dataVersion": { "major": 1, "minor": 19 },
+  "dataVersion": { "major": 1, "minor": 20 },
   "database": { "maxBytes": 1073741824 },
   "purges": ["storage"],
   "contributes": {
@@ -50,20 +50,20 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "de53d1ac4de651ff36fdceb94e6a56b38abd3ba3dab1261ac27e17bbd1bc4d1d",
+        "sha256": "2ac932281441241a518061dd2ecfe9c0a9216174d88a964973858eb9222a0959",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "de53d1ac4de651ff36fdceb94e6a56b38abd3ba3dab1261ac27e17bbd1bc4d1d",
+        "entrySha256": "2ac932281441241a518061dd2ecfe9c0a9216174d88a964973858eb9222a0959",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "de53d1ac4de651ff36fdceb94e6a56b38abd3ba3dab1261ac27e17bbd1bc4d1d",
+        "sha256": "2ac932281441241a518061dd2ecfe9c0a9216174d88a964973858eb9222a0959",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "de53d1ac4de651ff36fdceb94e6a56b38abd3ba3dab1261ac27e17bbd1bc4d1d",
+        "entrySha256": "2ac932281441241a518061dd2ecfe9c0a9216174d88a964973858eb9222a0959",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1

@@ -31,6 +31,9 @@ import {
   type TranscriptMapJobReceipt,
   type TranscriptMapServiceBinding,
   TranscriptMapPrepareInputSchema,
+  NavigationMapPrepareInputSchema,
+  NeighborhoodQuerySchema,
+  NeighborhoodSourceRecordSchema,
   TRANSCRIPT_MAP_SESSION_OPERATION,
   MAP_DRAIN_PRESET,
   type TranscriptMapModelResult,
@@ -74,6 +77,7 @@ import { resolveRedaction } from "../machine/prepare.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import { transcriptMapCaptureId } from "../transcript-map-identity.ts";
 import { buildTranscriptMap } from "../machine/transcript-map-tree.ts";
+import { mapPrepare } from "../machine/transcript-map-jobs.ts";
 import { transcriptMaps } from "../store/transcript-maps.ts";
 import { openStore as openReadStore, type BabelStore } from "../store/store.ts";
 import type { Assignment, Coordinator, Fence, Policy } from "../store/coordinator.ts";
@@ -9895,6 +9899,107 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
     answer,
   };
 }
+
+test("neighbourhood records use the claimed mapping lane, actual sealed material and budget fences, then become visibly stale", async () => {
+  const f = await paidMapDeployment();
+  const query = NeighborhoodQuerySchema.parse({ entityId: "ent_00005060" });
+  await f.db.run(
+    `INSERT INTO entities(id,kind,name,canonical_id,created_by,created_at)
+    VALUES(?,'project','Synthetic neighborhood',?,'operator',?)`,
+    [query.entityId, query.entityId, new Date(clock).toISOString()],
+  );
+  await f.db.run(
+    `INSERT INTO facts(id,entity_id,predicate,value,valid_from,observed_at,authority_kind,authority_id,recorded_at)
+    VALUES('fact-map-owner',?,'owner','Synthetic owner',?,?,'operator','operator',?)`,
+    [
+      query.entityId,
+      new Date(clock).toISOString(),
+      new Date(clock).toISOString(),
+      new Date(clock).toISOString(),
+    ],
+  );
+  await f.db.run(
+    `INSERT INTO fact_status(id,fact_id,seq,status,actor_id,reason,recorded_at)
+    VALUES('fact-map-dispute','fact-map-owner',1,'disputed','reviewer','Ownership contested',?)`,
+    [new Date(clock).toISOString()],
+  );
+  await f.db.run("UPDATE transcript_map_contexts SET mapping=0");
+  await f.db.run(
+    `UPDATE policies SET payload=json_set(payload,'$.mapping.neighborhoods',json(?),
+    '$.mapping.segmentation.leafBytes',8192,'$.mapping.segmentation.directBytes',4096)`,
+    [JSON.stringify([query])],
+  );
+  expect((await f.maps.neighborhood(query)).summary.state).toBe("missing");
+  await f.tick(false);
+  expect(f.posted).toEqual([]);
+  expect(f.fleet.launched).toEqual([]);
+  await f.wake();
+  const launch = f.fleet.launched[0]!;
+  const input = NavigationMapPrepareInputSchema.parse(
+    JSON.parse(String(launch.input[INPUT_FIELD])),
+  );
+  expect("node" in input).toBe(true);
+  let document = "";
+  const receipt = await mapPrepare(
+    input,
+    {
+      write: async () => {
+        throw new Error("A navigation summary cannot write ledger rows.");
+      },
+      receipt: async () => {},
+    },
+    {
+      session: async () => {
+        throw new Error("Hub-record navigation has no archive session.");
+      },
+      index: async () => {
+        throw new Error("Hub-record navigation has no archive index.");
+      },
+      document: async (_file, text) => {
+        document = text;
+      },
+    },
+  );
+  const material = JSON.parse(document);
+  const rows = String(material.text)
+    .trimEnd()
+    .split("\n")
+    .map((line) => NeighborhoodSourceRecordSchema.parse(JSON.parse(line)));
+  const owner = rows.find((row) => row.id === "fact-map-owner")!;
+  expect(owner.value.status).toMatchObject({ state: "disputed", reason: "Ownership contested" });
+  f.fleet.finish(launch.jobId, 0, { [JOB_OUTPUT_FILES.receipt]: receipt });
+  await f.wake();
+  expect(f.posted[0]?.isolation).toMatchObject({
+    mode: "material-only",
+    sha256: createHash("sha256").update(document).digest("hex"),
+    bytes: Buffer.byteLength(document),
+  });
+  f.answer({
+    kind: "summary",
+    text: `The stored owner ${String(owner.value.value)} is disputed. Consult ${owner.id}, revision ${owner.revision}, before acting.`,
+  });
+  await f.wake();
+  const result = await f.maps.neighborhood(query);
+  expect(result.summary).toMatchObject({
+    state: "available",
+    source: { disputed: 1 },
+    coverage: { partial: false, stale: false },
+  });
+  expect(result.summary.views[0]?.summary.text).toContain("Synthetic owner is disputed");
+  expect(await f.db.query("SELECT actual_cost FROM claims WHERE role='mapping:generate'")).toEqual([
+    { actual_cost: 0.02 },
+  ]);
+  await f.db.run(
+    `INSERT INTO fact_status(id,fact_id,seq,status,actor_id,reason,recorded_at)
+    VALUES('fact-map-stale','fact-map-owner',2,'stale','reviewer','Ownership changed',?)`,
+    [new Date(clock).toISOString()],
+  );
+  expect((await f.maps.neighborhood(query)).summary.state).toBe("stale");
+  await f.db.run(`UPDATE policies SET payload=json_set(payload,'$.mapping.dailyCost',0)`);
+  await f.wake();
+  expect(f.posted).toHaveLength(1);
+  expect(f.fleet.launched).toHaveLength(1);
+});
 
 test.each(["acknowledged", "lost-answer"] as const)(
   "a stopped mapping preparation holds its core and claim until native settlement: %s",
