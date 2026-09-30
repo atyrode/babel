@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { MACHINE_REPOSITORY_REASONS } from "@manifold/protocol";
 import type { PluginDatabase, SqlParam, SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
@@ -704,7 +704,7 @@ export interface Conductor {
 
 // ---------------------------------------------------------------------------- constants
 
-/** The loop's one schedule. Its revision is the policy version, so a policy change re-registers. */
+/** The loop's one schedule; each registration gets a new revision under its policy. */
 export const CONDUCTOR_SCHEDULE_ID = `${BABEL_PLUGIN_ID}.conductor`;
 /**
  * The beat: cheap, model-free, useful, and its settlement is what wakes the hub. It is the
@@ -4051,9 +4051,12 @@ export function conductor(deps: ConductorDeps): Conductor {
       return { state: registered.length === 0 ? "absent" : "unregistered", machines };
     }
     const intervalMs = Math.max(1, policy.cadenceSeconds) * 1000;
+    // Manifold retains disabled revisions forever. Reusing a policy version after an installer
+    // change or expiry collides with the previous schedule's different immutable job request.
+    const revisionPrefix = `${createHash("sha256").update(policy.version).digest("hex").slice(0, 16)}.`;
     const current = registered.find(
       (row) =>
-        row.revision === policy.version &&
+        row.revision.startsWith(revisionPrefix) &&
         row.intervalMs === intervalMs &&
         row.expiresAt - at > intervalMs,
     );
@@ -4086,9 +4089,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       return { state: "kept", machines };
     }
     const installation = described.readiness.installation;
+    const revision = `${revisionPrefix}${randomUUID()}`;
     try {
       await jobs.schedule({
-        jobId: `${CONDUCTOR_SCHEDULE_ID}.${policy.version}`,
+        jobId: `${CONDUCTOR_SCHEDULE_ID}.${revision}`,
         machineId: routed,
         operationId: BEAT_OPERATION,
         // The beat's input is fixed at registration, so it carries no run id: the machine half
@@ -4106,7 +4110,7 @@ export function conductor(deps: ConductorDeps): Conductor {
               artifactSha256: installation.artifactSha256,
             }),
         scheduleId: CONDUCTOR_SCHEDULE_ID,
-        revision: policy.version,
+        revision,
         firstNominalAt: at + intervalMs,
         intervalMs,
         deadlineMs: intervalMs,
@@ -4123,10 +4127,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     // named resumes no posting.
     try {
       await keys.set(
-        beatChainKey(policy.version),
-        JSON.stringify(
-          BeatChainSchema.parse({ revision: policy.version, chain: deps.chain ?? null }),
-        ),
+        beatChainKey(revision),
+        JSON.stringify(BeatChainSchema.parse({ revision, chain: deps.chain ?? null })),
       );
     } catch (error) {
       notes.push(`the beat's account chain cannot be kept: ${message(error)}`);

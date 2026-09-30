@@ -28,6 +28,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   is zero. Read-only status remains observational; a real server-hook regression covers refill,
   terminal closure and cadence cleanup.
 
+- **The conductor renews its beat after a plugin replacement.** Each native registration has a
+  fresh policy-scoped revision rather than reusing the policy version against Manifold's retained
+  immutable schedule history. A same-policy replacement regression rejects the old collision;
+  dev-01 registered and completed a new beat, then accepted a review after a version-only policy
+  rollover lifted its documented failure-streak park. The native artifact did not change.
+
 - **Long selectors no longer invalidate sealed preparation outputs.** Material filenames now
   reserve the native ustar component limit for the ordinal and extension before shortening the
   selector; its exact identity remains in the material index. A boundary regression covers

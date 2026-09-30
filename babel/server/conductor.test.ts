@@ -2009,7 +2009,6 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
   const registered = fleet.scheduled[0];
   expect(registered).toMatchObject({
     scheduleId: CONDUCTOR_SCHEDULE_ID,
-    revision: "pol_1",
     operationId: BEAT_OPERATION,
     machineId: MACHINE,
     intervalMs: 900_000,
@@ -2037,7 +2036,9 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
   const idle = await loop.tick();
   expect(idle.enabled).toBe(false);
   expect(idle.schedule).toBe("unregistered");
-  expect(fleet.disabled).toEqual([{ scheduleId: CONDUCTOR_SCHEDULE_ID, revision: "pol_1" }]);
+  expect(fleet.disabled).toEqual([
+    { scheduleId: CONDUCTOR_SCHEDULE_ID, revision: registered!.revision },
+  ]);
   expect(idle.requested).toEqual([]);
   expect(idle.ingested).toEqual([]);
   expect(idle.settled).toEqual([]);
@@ -2527,13 +2528,64 @@ test("a new policy version re-registers the beat instead of leaving two firing",
   });
 
   await loop.tick();
+  const earlier = fleet.scheduled[0]!.revision;
   draws.version = "pol_2";
   const report = await loop.tick();
 
   expect(report.schedule).toBe("registered");
-  expect(fleet.disabled).toEqual([{ scheduleId: CONDUCTOR_SCHEDULE_ID, revision: "pol_1" }]);
-  expect(fleet.scheduled.map((row) => row.revision)).toEqual(["pol_1", "pol_2"]);
+  expect(fleet.disabled).toEqual([{ scheduleId: CONDUCTOR_SCHEDULE_ID, revision: earlier }]);
+  expect(fleet.scheduled[1]!.revision).not.toBe(earlier);
   expect(fleet.schedules()).toHaveLength(1);
+});
+
+test("a new installer can replace the same policy beat without colliding with its durable revision", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.review = ROUTE;
+  const keys = new Keys();
+  let now = clock;
+  const jobs: JobsSlice = {
+    ...hookWoken(fleet),
+    schedule(args) {
+      // Manifold keeps disabled revisions: a different request cannot reuse their identity
+      // even when that registration no longer appears in the active schedule list.
+      if (
+        fleet.scheduled.some(
+          (row) => row.scheduleId === args.scheduleId && row.revision === args.revision,
+        )
+      )
+        throw new Error("schedule-revision-conflict");
+      return fleet.schedule(args);
+    },
+  };
+  const wake = (chain: string) =>
+    conductor({
+      engine: NO_CODE,
+      store: openStore(db),
+      coordinator: draws as unknown as Coordinator,
+      jobs,
+      machines: new Folders(),
+      keys,
+      plan: PLAN,
+      chain,
+      now: () => now,
+    });
+
+  expect((await wake("enable:earlier").tick()).schedule).toBe("registered");
+  const earlier = fleet.scheduled[0]!.revision;
+  fleet.registered = []; // Only the active list is empty; immutable history remains.
+  now += 1;
+  expect((await wake("principal:replacement").tick()).schedule).toBe("registered");
+  const replacement = fleet.scheduled[1]!.revision;
+  expect(replacement).not.toBe(earlier);
+  expect(BeatChainSchema.parse(JSON.parse(keys.held[beatChainKey(earlier)] ?? "null")).chain).toBe(
+    "enable:earlier",
+  );
+  expect(
+    BeatChainSchema.parse(JSON.parse(keys.held[beatChainKey(replacement)] ?? "null")).chain,
+  ).toBe("principal:replacement");
 });
 
 test("an output the hub cannot read closes its run instead of being retried for ever", async () => {
@@ -6939,7 +6991,7 @@ test("a delayed beat-chain write for an older registration never replaces a newe
   let release!: () => void;
   const held = new Promise<void>((resolve) => (release = resolve));
   keys.set = async (key: string, value: string) => {
-    if (key === beatChainKey(POLICY.version)) {
+    if (key === beatChainKey(fleet.scheduled[0]?.revision ?? "")) {
       paused();
       await held;
     }
@@ -6968,8 +7020,8 @@ test("a delayed beat-chain write for an older registration never replaces a newe
   await first;
   const chainOf = (revision: string) =>
     BeatChainSchema.parse(JSON.parse(keys.held[beatChainKey(revision)] ?? "null")).chain;
-  expect(chainOf("pol_moved")).toBe("principal:operator");
-  expect(chainOf(POLICY.version)).toBe("enable:earlier");
+  expect(chainOf(fleet.scheduled[1]!.revision)).toBe("principal:operator");
+  expect(chainOf(fleet.scheduled[0]!.revision)).toBe("enable:earlier");
 });
 
 test("a terminal Code job whose cancellation failed accounts the unchanged preparation grant exactly once", async () => {
@@ -7080,7 +7132,9 @@ test("withdrawing all activity stops the beat but retains a silent preparation",
   await db.run(`UPDATE claims SET expires_at = ?`, [new Date(clock - 1).toISOString()]);
   const withdrawn = await loop.tick();
   expect(withdrawn.schedule).toBe("unregistered");
-  expect(fleet.disabled).toEqual([{ scheduleId: CONDUCTOR_SCHEDULE_ID, revision: POLICY.version }]);
+  expect(fleet.disabled).toEqual([
+    { scheduleId: CONDUCTOR_SCHEDULE_ID, revision: fleet.scheduled[0]!.revision },
+  ]);
   expect(withdrawn.requested).toEqual([]);
   expect((await loop.tick()).schedule).toBe("absent");
   expect(
