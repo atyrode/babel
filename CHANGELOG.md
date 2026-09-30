@@ -180,19 +180,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   fetch disclosed unavailable rather than empty and Retry recovered. Synthetic records were
   used; no deployed archive or shared preview was accessed.
 
-- **Watch proposes a budget split without granting permission to spend (#225).** Its owner-only
-  allocation section reads the deterministic seven-day acceptance basis, counted and unknown
-  inventories, protected floors, sparse damping and displaced shares. Pinning a fraction asks
-  the baseline to renormalize the permitted remainder while retaining earlier pins; stale or
-  impossible edits stay refused. Named versions retain their reason and replayable basis, and
-  reading one never installs policy or launches work. Stage-less runs remain unattributed,
-  future-dated rulings stay outside the arithmetic, and a globally disabled policy allocates
-  nothing. Rendered regressions cover multiple pins, refusals and unavailable states. A
-  disposable real-store door smoke counted sixteen outcomes, pinned and saved a share, replayed
-  the saved basis exactly and refused a stale save without creating work or changing policy.
-  An isolated actual Watch preview exercised editing, pinning and saving a share with no spend,
-  provider or deployment.
-
 - **A drawn review can submit durable typed actions instead of one final document (#315).**
   With `review.agentId` naming an already-authorized Agent, the conductor pins the submission
   mode before any session is posted, admits a bounded Run through the optional `core.access`
@@ -220,15 +207,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   The terminal facts and fallback receipt were explicitly synthetic fixtures; live Code
   settlement and real-provider compliance remain separately unverified.
 
-### Added
-
-- **The topics rail shows seven days of recorded activity (#248).** Small four-pixel-scale
-  bars count post creation, reviewer events and operator feedback for currently filed topics, while unknown dates
-  remain explicit instead of looking like quiet days. Explicitly tracked empty entities remain
-  navigable with their actual zero post count, and Watch can select them for exploration.
-  Real SQLite and rendered interaction regressions cover the UTC boundary, withdrawn filings,
-  seven-bin display and empty-target selection; preview-hub visual acceptance remains pending.
-
 ### Fixed
 
 - **Citation evidence stays unavailable when a competing capture cannot be checked.** An
@@ -243,8 +221,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   actual imported-corpus operation and measured coverage remain separate, unperformed acceptance.
 
 ## [0.5.8] - 2026-09-30
-
-### Added
 
 ### Fixed
 
