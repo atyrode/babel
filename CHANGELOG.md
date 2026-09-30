@@ -16,6 +16,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Real-store regressions and a two-store, fresh-process crash/recovery smoke prove one synthetic
   purchase, one accepted assessment and one settlement at its recorded cost.
 
+- **Review retirement and terminal accounting survive interrupted wakes (#490).** A refused
+  review remains adopt-only across restart, and an unreadable adopted session retains its claim
+  and machine slot until terminal evidence arrives. Contributions, receipt and the original
+  claim's metered charge commit together; a late settlement cannot overwrite the closed receipt.
+  Real-store regressions cover interrupted retirement, overlapping settlement, lost commit
+  answers and the eventual terminal meter.
+
 ## [0.5.8] - 2026-09-30
 
 ### Fixed

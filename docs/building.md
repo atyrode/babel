@@ -412,9 +412,15 @@ They are not in `MACHINE_OPERATIONS`, which is what the machine half implements 
 `manifest.json` declares. A DRAWN review (`review-backlog`, `file-and-tidy`) is a third thing
 again, and the conductor owns it: `dispatchReviews` (`server/conductor.ts`) draws an assignment
 from the coordinator, claims it under a fence, refuses a projection that leaks withheld review
-state, composes the review prompt around that blinded projection and posts it as a Code session,
-then binds the claim to Code's job id and writes the `runs` row — every cycle the policy enables
-and the loop is not parked. The `launch` door is the one place a draw is refused, with
+state, and composes the review prompt around that blinded projection. Before asking Code it writes
+the `runs` intent with the exact prompt, profile, original claim fence and account chain. Code's
+posting key is the run id; adoption binds the returned job and publishes it in one database batch.
+Only the original non-null chain recovers an unanswered posting, while a refusal, expired grant or
+disabled policy resumes through adopt-only retirement. Its claim and machine slot stay held until
+Code returns a session to settle or confirms the retired key posted nothing. Review contributions,
+receipt and original claim charge also share one commit, so an interrupted settlement cannot turn
+actual spend into a second reservation charge. The recovery and concurrency regressions are in
+`babel/server/conductor.test.ts`. The `launch` door is the one place a draw is refused, with
 `draw_managed` (`doors/launch.ts`): an operator-picked record must not bypass the shared claim,
 cadence and budget the policy governs that lane by.
 

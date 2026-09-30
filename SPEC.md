@@ -829,12 +829,16 @@ request and run-id posting key before calling Code. A later wake may ask for tha
 under the original non-null account chain, never another account's, a fresh enable's or a chainless
 wake's; it recovers the existing session rather than purchasing a replacement. A chainless initial
 review may complete on its originating call, but no later wake can recover it.
-Recovery rechecks the original claim, fence, lease and policy before it may post. If they no longer
-admit work, it can only retire the key through an adopt-only ask. Only Code's final
-`engine_posting_unknown` releases the claim at zero cost; a refusal or lost answer alone does not.
-A recovered job is recorded together with its claim binding, and a late job no longer admitted is
-recorded for accounting and stopped by its own chain. Neither timeout nor lease expiry releases
-an unresolved posting's reservation or concurrency slot.
+
+For drawn reviews, a refusal commits the posting to adopt-only retirement before asking Code again.
+Lease expiry, policy replacement or disablement, and a recorded stop likewise allow only retirement,
+never a fresh purchase. An unresolved retire holds the original reservation and machine slot across
+restarts; only Code's final unknown releases them at zero. A retire that finds a session keeps
+its original claim and cancels it when admission no longer holds, then accounts its terminal
+meter without accepting a stopped review's contributions. Direct-review contributions, terminal
+receipt and fenced claim charge commit together, so a lost commit answer or overlapping
+settlement cannot charge the reservation again or overwrite a successful receipt. The stored
+receipt and claim closure `completed` projects as public run state `finished`.
 
 Admission is bounded by recorded spend plus outstanding reservations, across concurrent runs,
 through shared claims with a fence rather than a per-process budget copy. These are admission
@@ -1603,9 +1607,10 @@ records, not a place where knowledge accumulated.
 receipt's cost when the job exited, at the full reservation when it did not, because a job that
 died mid-flight may have spent all of it. A grant proven never posted can finish at zero cost.
 Expired orphan claims are abandoned by the cycle's own reaper, oldest first and a bounded number
-per cycle, before the cycle asks what it may draw. A retained analysis or keyed review intent is not an orphan:
-an unconfirmed native or Code posting keeps its reservation and concurrency slot until its
-outcome is known, even if the lease expires.
+per cycle, before the cycle asks what it may draw. A retained analysis or keyed review intent is
+not an orphan: an unconfirmed native or Code posting keeps its reservation and concurrency slot
+until its outcome is known, even if the lease expires. An adopted review whose session cannot yet
+be read likewise keeps its original slot; unreadability is not terminal evidence.
 
 Invariants:
 
