@@ -184,12 +184,13 @@ export const NO_SEAT = "There is nowhere to open it: this view holds no tile of 
 
 /**
  * Asks the host for a seat of this plugin's own, carrying the argument the panel in it reads
- * off `PanelProps.arg`. Answers the refusal when there was one, and null when the tile is
- * there — `placed` is not this plugin's business: a second press on the same record is the
- * same tile focused, which is the host's promise and not a state to mirror here.
+ * off `PanelProps.arg` when pinned. An argument-free following seat matches a pane the reader
+ * placed by hand; an empty object does not. Answers the refusal when there was one, and null
+ * when the tile is there — the host focuses an existing matching seat.
  */
-function seat(host: HostServices, panel: string, arg: PanelArg): OpenPanelRefusal | null {
-  const outcome = host.openPanel({ panelId: `${FEED_PLUGIN_ID}.${panel}`, arg });
+function seat(host: HostServices, panel: string, arg?: PanelArg): OpenPanelRefusal | null {
+  const panelId = `${FEED_PLUGIN_ID}.${panel}`;
+  const outcome = host.openPanel(arg === undefined ? { panelId } : { panelId, arg });
   return outcome.ok ? null : outcome.refused;
 }
 
@@ -209,7 +210,7 @@ export function openRecord(host: HostServices, recordId: string): OpenPanelRefus
 /** Enter opens one following pane, so j/k move the actual record beside the list. */
 export function openPeek(host: HostServices, recordId: string): OpenPanelRefusal | null {
   look({ recordId });
-  return seat(host, PANELS.record, {});
+  return seat(host, PANELS.record);
 }
 
 /** OPENS A TOPIC: the same gesture, the other panel. */

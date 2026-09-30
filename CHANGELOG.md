@@ -97,12 +97,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 - **Home's Enter peek follows the keyboard walk (#248).** Enter now opens a following
   record pane, so `j`/`k` update its rendered record rather than moving only an unseen
-  selection; pointer-opened record panes remain pinned. Unmodified primary presses on row
-  buttons now transfer focus at activation, not before mouseup: folding the previous row's
-  actions can no longer move the claim out from under a click. Canceled presses open nothing;
-  modified gestures, inputs and keyboard focus retain their native behaviour. Actual Chromium
-  hit-testing observed the same claim on pointerdown and mouseup, exactly one new tile write,
-  and immediate `j`/`k` movement in the following pane while the pointer-opened pane stayed pinned.
+  selection; an existing argument-free Record pane is reused, while pointer-opened panes
+  remain pinned. Unmodified primary presses on row buttons transfer focus at activation,
+  not before mouseup: folding the previous row's actions can no longer move the claim out
+  from under a click. Canceled presses open nothing; modified gestures, inputs and keyboard
+  focus retain their native behaviour. Actual Chromium hit-testing observed the same claim
+  on pointerdown and mouseup, exactly one new tile write, and immediate `j`/`k` movement
+  in the following pane while the pointer-opened pane stayed pinned. The real SDK layout
+  algebra additionally proves Enter reuses a hand-placed argument-free pane.
 
 - **Feed's sentence stays on one line, and Watch preserves typed minutes (#248).** The
   sentence scrolls horizontally on narrow tiles, with shared anchored popovers that escape

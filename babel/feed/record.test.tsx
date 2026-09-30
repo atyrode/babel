@@ -1,4 +1,4 @@
-import "../watch/test/dom.ts";
+import "./dom.ts";
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { forgetSelection, look } from "./api.ts";

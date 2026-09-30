@@ -1,3 +1,4 @@
+import "../babel/feed/dom.ts";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { HostServices } from "@manifold/plugin";
 import { resetPolledResources } from "@manifold/plugin/hooks";

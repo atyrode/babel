@@ -1,6 +1,7 @@
-import "../watch/test/dom.ts";
+import "./dom.ts";
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
-import type { OpenPanelOutcome, OpenPanelRequest } from "@manifold/plugin";
+import { openedPanel, type OpenPanelOutcome, type OpenPanelRequest } from "@manifold/plugin";
+import type { TileLayout } from "@manifold/protocol";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { act } from "react";
 import { forgetSelection, looking, type TopicRow } from "./api.ts";
@@ -575,11 +576,54 @@ describe("the seats", () => {
     const view = await mount(<HomePanel host={fake.host} />);
     await view.key("j");
     await view.key("Enter");
-    expect(fake.opened).toEqual([{ panelId: "atyrode.babel.feed.record", arg: {} }]);
     expect(looking().recordId).toBe("pro_0000000a");
     await view.key("j");
     expect(looking().recordId).toBe("fnd_0000000b");
     expect(fake.opened).toHaveLength(1);
+    await view.unmount();
+  });
+
+  test("↵ reuses a hand-placed following Record pane", async () => {
+    const layout: TileLayout = {
+      root: {
+        id: "root",
+        dir: "row",
+        ratios: [0.5, 0.5],
+        children: ["home", "following"],
+        ref: null,
+      },
+      home: {
+        id: "home",
+        dir: null,
+        ratios: [],
+        children: [],
+        ref: { kind: "panel", panelId: "atyrode.babel.feed.home" },
+      },
+      following: {
+        id: "following",
+        dir: null,
+        ratios: [],
+        children: [],
+        ref: { kind: "panel", panelId: "atyrode.babel.feed.record" },
+      },
+    };
+    const openings: OpenPanelOutcome[] = [];
+    const fake = hub({}, (request) => {
+      const opening = openedPanel(layout, request.panelId, request.arg, "home");
+      const outcome: OpenPanelOutcome =
+        opening === null
+          ? { ok: false, refused: "no_tile" }
+          : { ok: true, tileId: opening.tileId, placed: opening.placed };
+      openings.push(outcome);
+      return outcome;
+    });
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.key("j");
+    await view.key("Enter");
+    expect(openings).toEqual([{ ok: true, tileId: "following", placed: false }]);
+    expect(looking().recordId).toBe("pro_0000000a");
+    await view.key("j");
+    expect(looking().recordId).toBe("fnd_0000000b");
     await view.unmount();
   });
 
@@ -699,7 +743,9 @@ describe("the rail", () => {
       expect(view.one(`[data-topic="${row.id}"] .babel-topic-count`).textContent).toBe("2");
     }
     expect(view.all('[data-topic="ent_0000beef"] .babel-topic-undated')).toHaveLength(0);
-    expect(view.one('[data-topic="ent_0000cafe"] .babel-topic-undated').textContent).toMatch(/\b2\b/);
+    expect(view.one('[data-topic="ent_0000cafe"] .babel-topic-undated').textContent).toMatch(
+      /\b2\b/,
+    );
     await view.unmount();
   });
 

@@ -1,4 +1,4 @@
-import "../watch/test/dom.ts";
+import "./dom.ts";
 
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
