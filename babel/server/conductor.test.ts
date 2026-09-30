@@ -3113,7 +3113,7 @@ test.each([false, true])(
         },
       ]);
       expect((await f.store.run(runId)).run).toMatchObject({
-        state: expired ? "failed" : "completed",
+        state: expired ? "failed" : "finished",
         costUsd: 0.12,
       });
       expect(
