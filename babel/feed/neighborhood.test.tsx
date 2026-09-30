@@ -312,10 +312,7 @@ describe("the shared neighbourhood projection", () => {
       feed: () => feed({ posts: [], total: 0 }),
     });
     const view = await mount(
-      <TopicPanel
-        host={fake.host}
-        arg={{ topic: LEFT, entityId: LEFT, returnToEntityId: ROOT }}
-      />,
+      <TopicPanel host={fake.host} arg={{ topic: LEFT, entityId: LEFT, returnToEntityId: ROOT }} />,
     );
     expect(view.one(".babel-neighborhood-missing").textContent).toContain(LEFT);
     expect(view.one('[aria-label="Neighbourhood back navigation"]').textContent).toContain(

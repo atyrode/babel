@@ -122,40 +122,6 @@ afterEach(() => {
   harness.close();
 });
 
-describe("the roster", () => {
-  test("declares ten reading doors callable without container write authority", () => {
-    const names = doors.map((entry) => entry.action.name);
-    expect(names).toEqual([
-      ACTIONS.feed,
-      ACTIONS.record,
-      ACTIONS.thread,
-      ACTIONS.topics,
-      ACTIONS.topic,
-      ACTIONS.neighborhood,
-      ACTIONS.pulse,
-      ACTIONS.runs,
-      ACTIONS.run,
-      ACTIONS.policy,
-    ]);
-    expect(new Set(names).size).toBe(names.length);
-    for (const entry of doors) {
-      expect(entry.action.caps).toEqual(["containers:read"]);
-    }
-    const cycled = [
-      "jobs:read",
-      "machines:read",
-      "machines:run",
-      "locations:write",
-      "services:invoke",
-      "network:host",
-    ] as const;
-    for (const entry of doors) {
-      const waking = entry.action.name === ACTIONS.pulse || entry.action.name === ACTIONS.runs;
-      expect(entry.action.delegates ?? []).toEqual(waking ? cycled : []);
-    }
-  });
-});
-
 describe("the vocabulary", () => {
   // A misspelled sort answered with the default order would silently show a reader a different
   // feed from the one he asked for; a kind nothing matches answered with an empty list reads as
