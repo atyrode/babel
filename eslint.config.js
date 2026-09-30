@@ -110,14 +110,15 @@ export default tseslint.config(
     // config's last word on a rule is the whole of it: matching them here would replace that
     // rule rather than add to it. They reach the part no more than the baseline does — their
     // own groups refuse every specifier that leaves the part but `contract.ts`.
-    ignores: ["babel/feed/**", "babel/watch/**", "babel/jev/**"],
+    // Fixture imports ship no part code; runtime optionality is exercised separately.
+    ignores: ["babel/feed/**", "babel/watch/**", "babel/jev/**", "**/*.test.{ts,tsx}"],
     rules: {
       "no-restricted-imports": [
         "error",
         {
           patterns: [
             {
-              group: ["**/babel/jev/**"],
+              group: ["**/jev", "**/jev/**"],
               message:
                 "Babel never depends on the judgement part: it is enabled, disabled and removed on its own, and code that imports it is code that stops working when it is gone",
             },
