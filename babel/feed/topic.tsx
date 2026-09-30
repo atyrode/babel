@@ -18,6 +18,7 @@ import {
   type TopicRow,
 } from "./api.ts";
 import { EMPTY_QUERY, FeedListing } from "./home.tsx";
+import { Neighborhood } from "./neighborhood.tsx";
 import { INTEREST_LABEL, INTEREST_MEANS, RAIL_POLL_MS } from "./rail.tsx";
 
 /*
@@ -51,6 +52,8 @@ const ASKS: ReadonlyArray<{
 
 export function TopicPanel({ host, arg }: PanelProps): ReactElement {
   const shown = useShown(arg, "topic");
+  const entityId = arg?.["topic"] === shown ? arg["entityId"] : undefined;
+  const returnToEntityId = arg?.["topic"] === shown ? arg["returnToEntityId"] : undefined;
   return (
     <ScrollRegion className={`plugin-${FEED_PLUGIN_ID.replaceAll(".", "_")}`} aria-label="Topic">
       <Stack className="babel-panel" gap="var(--babel-space-4)">
@@ -60,14 +63,29 @@ export function TopicPanel({ host, arg }: PanelProps): ReactElement {
             <span>Press a topic in Home&apos;s rail, or on a row, and it is read here.</span>
           </div>
         ) : (
-          <TopicView host={host} topic={shown} />
+          <TopicView
+            host={host}
+            topic={shown}
+            linkedEntityId={entityId}
+            returnToEntityId={returnToEntityId}
+          />
         )}
       </Stack>
     </ScrollRegion>
   );
 }
 
-function TopicView({ host, topic }: { host: HostServices; topic: string }): ReactElement {
+function TopicView({
+  host,
+  topic,
+  linkedEntityId,
+  returnToEntityId,
+}: {
+  host: HostServices;
+  topic: string;
+  linkedEntityId: unknown;
+  returnToEntityId: unknown;
+}): ReactElement {
   const [query, setQuery] = useState<FeedQuery>({
     ...EMPTY_QUERY,
     surface: "all",
@@ -110,6 +128,8 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
 
   const row = read.value?.topic ?? null;
   const proposed = read.value?.proposed ?? [];
+  const entityId =
+    typeof linkedEntityId === "string" && linkedEntityId === topic ? linkedEntityId : row?.id;
 
   return (
     <FeedListing
@@ -136,8 +156,9 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
             {failure !== "" && <p className="babel-note">{failure}</p>}
             {read.value !== null && row === null && (
               <p className="babel-note">
-                No topic in this hub answers to that name. What follows is the feed narrowed to it,
-                which is why it is empty: only you create a topic, and Babel proposes the identity.
+                {entityId === undefined
+                  ? "No topic in this hub answers to that name. What follows is the feed narrowed to it, which is why it is empty: only you create a topic, and Babel proposes the identity."
+                  : "This linked entity is not a current rail topic. Its stored neighbourhood can still be read below; the topic feed has no current filings."}
               </p>
             )}
             {row !== null && row.posts === 0 && (
@@ -160,6 +181,14 @@ function TopicView({ host, topic }: { host: HostServices; topic: string }): Reac
             )}
             <Coverage host={host} topic={row} rows={read.value?.coverage ?? []} />
             {row !== null && <AskBabel host={host} topic={row} />}
+            {entityId !== undefined && (
+              <Neighborhood
+                key={entityId}
+                host={host}
+                entityId={entityId}
+                returnToEntityId={returnToEntityId}
+              />
+            )}
           </Stack>
         </header>
       }

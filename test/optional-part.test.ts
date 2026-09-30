@@ -105,6 +105,7 @@ const ASKED: Readonly<Partial<Record<ActionName, unknown>>> = {
   [ACTIONS.thread]: { id: RECORD },
   [ACTIONS.topics]: {},
   [ACTIONS.topic]: { topic: TOPIC_NAME },
+  [ACTIONS.neighborhood]: { entityId: TOPIC },
   [ACTIONS.pulse]: {},
   [ACTIONS.runs]: {},
   [ACTIONS.run]: { id: RUN },

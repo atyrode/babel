@@ -1,5 +1,5 @@
 /*
-  THE READING DOORS: the nine questions a reader asks of Babel.
+  THE READING DOORS: the questions a reader asks of Babel.
 
   Every one of them is a `defineServerAction` over the contract's own schemas, and the kit parses
   both ends — a request outside the input schema is refused by name, and a result outside the
@@ -25,6 +25,8 @@ import {
   EntityIdSchema,
   FeedQuerySchema,
   FeedResultSchema,
+  NeighborhoodQuerySchema,
+  NeighborhoodResultSchema,
   PolicyQuerySchema,
   PolicyResultSchema,
   PulseResultSchema,
@@ -147,6 +149,17 @@ export function readDoors(store: BabelStore): readonly Door[] {
         result: TopicResultSchema,
       }),
       async (_ctx, { topic }) => await store.topic(topic),
+    ),
+
+    defineDoor(
+      defineServerAction({
+        name: ACTIONS.neighborhood,
+        title: "Read an entity neighbourhood",
+        caps: READ_CAPS,
+        input: NeighborhoodQuerySchema,
+        result: NeighborhoodResultSchema,
+      }),
+      async (_ctx, query) => await store.neighborhood(query),
     ),
 
     defineDoor(

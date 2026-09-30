@@ -3,7 +3,7 @@ import { resetPolledResources } from "@manifold/plugin/hooks";
 import { ACTIONS, door } from "../contract.ts";
 import { forgetSelection, look } from "./api.ts";
 import { TopicPanel } from "./topic.tsx";
-import { fakeHost, feed, mount, pointAt, topic, type Fake } from "./testing.tsx";
+import { fakeHost, feed, mount, neighborhood, pointAt, topic, type Fake } from "./testing.tsx";
 
 /*
   THE TOPIC PANEL: the header, the stance, the asks — and under them the same feed, narrowed.
@@ -16,6 +16,7 @@ import { fakeHost, feed, mount, pointAt, topic, type Fake } from "./testing.tsx"
 function hub(overrides: Record<string, (args: unknown) => unknown> = {}): Fake {
   return fakeHost({
     topic: () => topic(),
+    neighborhood: () => neighborhood(),
     feed: () => feed({ posts: feed().posts.slice(0, 1), total: 1 }),
     topics: () => ({ topics: [], proposed: [], unfiled: 0 }),
     pulse: () => ({

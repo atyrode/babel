@@ -378,6 +378,7 @@ export const ACTIONS = {
   thread: "thread",
   topics: "topics",
   topic: "topic",
+  neighborhood: "neighborhood",
   pulse: "pulse",
   runs: "runs",
   run: "run",
@@ -1192,6 +1193,187 @@ export const TopicResultSchema = z.strictObject({
   ),
   feed: FeedResultSchema,
 });
+
+// --------------------------------------------------------- entity neighbourhood reads (#224)
+
+export const NEIGHBORHOOD_LIMITS = {
+  depth: 8,
+  nodes: 64,
+  items: 200,
+  bytes: 262_144,
+} as const;
+
+export const NeighborhoodQuerySchema = z.strictObject({
+  entityId: EntityIdSchema,
+  depth: z.number().int().min(0).max(NEIGHBORHOOD_LIMITS.depth).default(2),
+  maxNodes: z.number().int().min(1).max(NEIGHBORHOOD_LIMITS.nodes).default(32),
+  maxItems: z.number().int().min(1).max(NEIGHBORHOOD_LIMITS.items).default(100),
+  maxBytes: z.number().int().min(4096).max(NEIGHBORHOOD_LIMITS.bytes).default(65_536),
+});
+export type NeighborhoodQuery = z.infer<typeof NeighborhoodQuerySchema>;
+
+const NeighborhoodStatusSchema = z.strictObject({
+  id: z.string(),
+  seq: z.number().int(),
+  state: z.string(),
+  actorId: z.string().nullable(),
+  actorKind: z.string().nullable(),
+  runId: z.string().nullable(),
+  reason: z.string().nullable(),
+  at: z.string(),
+});
+
+export const NeighborhoodNodeSchema = z.strictObject({
+  id: EntityIdSchema,
+  name: z.string(),
+  kind: z.string(),
+  canonicalId: z.string(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  depth: z.number().int().min(0),
+});
+
+/** Stored values and payload JSON are verbatim, never generated summaries or inferred quotes. */
+export const NeighborhoodFactSchema = z.strictObject({
+  id: z.string(),
+  entityId: z.string(),
+  predicate: z.string(),
+  value: z.string(),
+  objectId: z.string().nullable(),
+  validFrom: z.string(),
+  validUntil: z.string().nullable(),
+  observedAt: z.string(),
+  authorityKind: z.string(),
+  authorityId: z.string(),
+  confidence: z.string(),
+  note: z.string().nullable(),
+  supersedesId: z.string().nullable(),
+  replacedBy: z.string().nullable(),
+  recordedAt: z.string(),
+  status: NeighborhoodStatusSchema.nullable(),
+});
+
+export const NeighborhoodRecordSchema = z.strictObject({
+  id: RecordIdSchema,
+  kind: RecordKindSchema,
+  rootId: z.string(),
+  supersedesId: z.string().nullable(),
+  replacedBy: z.string().nullable(),
+  parentId: z.string().nullable(),
+  seq: z.number().int(),
+  title: z.string(),
+  payloadJson: z.string(),
+  runId: z.string().nullable(),
+  recipeId: z.string().nullable(),
+  recipeVersion: z.number().int().nullable(),
+  actorKind: z.string(),
+  actorId: z.string(),
+  createdAt: z.string(),
+  status: NeighborhoodStatusSchema.nullable(),
+  ruling: NeighborhoodStatusSchema.nullable(),
+});
+
+export const NeighborhoodFilingSchema = z.strictObject({
+  id: z.string(),
+  recordId: z.string(),
+  entityId: z.string(),
+  rationale: z.string(),
+  authorKind: z.string(),
+  authorId: z.string(),
+  heuristic: z.boolean(),
+  createdAt: z.string(),
+});
+
+export const NeighborhoodQuestionSchema = z.strictObject({
+  id: RecordIdSchema,
+  kind: z.string(),
+  class: z.string(),
+  text: z.string(),
+  why: z.string(),
+  payloadJson: z.string(),
+  raisedByKind: z.string(),
+  raisedById: z.string(),
+  createdAt: z.string(),
+  status: NeighborhoodStatusSchema.nullable(),
+  /** Open until the first status event; null status still means no attributed event exists. */
+  effectiveState: z.string(),
+});
+
+export const NeighborhoodAnswerSchema = z.strictObject({
+  id: z.string(),
+  questionId: z.string(),
+  actorId: z.string(),
+  outcome: z.string(),
+  text: z.string(),
+  recordedAt: z.string(),
+});
+
+export const NeighborhoodLinkSchema = z.strictObject({
+  id: z.string(),
+  kind: z.string(),
+  fromKind: z.string(),
+  fromId: z.string(),
+  toKind: z.string(),
+  toId: z.string(),
+  position: z.number().int().nullable(),
+  note: z.string().nullable(),
+  actorKind: z.string(),
+  actorId: z.string(),
+  createdAt: z.string(),
+  /** Direction-normalized containment only; other relations never extend the walk. */
+  parentId: z.string().nullable(),
+  childId: z.string().nullable(),
+});
+
+export const NeighborhoodSourceSchema = z.strictObject({
+  selector: z.string(),
+  title: z.string().nullable(),
+  repositoryIdentity: z.string().nullable(),
+  repositoryRemote: z.string().nullable(),
+  snapshotId: z.string().nullable(),
+  archivePath: z.string().nullable(),
+  archiveLabel: z.string().nullable(),
+  contentDigest: z.string().nullable(),
+  modifiedAt: z.string().nullable(),
+  archivedAt: z.string().nullable(),
+  /** This is today's catalog locator, NOT necessarily the capture cited by a historical claim. */
+  authority: z.literal("current-catalog"),
+  /** Absence of a citation is not evidence that a session was never reviewed. */
+  reviewState: z.literal("unknown"),
+});
+
+export const NeighborhoodResultSchema = z.strictObject({
+  entityId: EntityIdSchema,
+  state: z.enum(["found", "missing"]),
+  limits: NeighborhoodQuerySchema.omit({ entityId: true }),
+  nodes: z.array(NeighborhoodNodeSchema).max(NEIGHBORHOOD_LIMITS.nodes),
+  facts: z.array(NeighborhoodFactSchema).max(NEIGHBORHOOD_LIMITS.items),
+  records: z.array(NeighborhoodRecordSchema).max(NEIGHBORHOOD_LIMITS.items),
+  filings: z.array(NeighborhoodFilingSchema).max(NEIGHBORHOOD_LIMITS.items),
+  questions: z.array(NeighborhoodQuestionSchema).max(NEIGHBORHOOD_LIMITS.items),
+  answers: z.array(NeighborhoodAnswerSchema).max(NEIGHBORHOOD_LIMITS.items),
+  links: z.array(NeighborhoodLinkSchema).max(NEIGHBORHOOD_LIMITS.items),
+  sources: z.array(NeighborhoodSourceSchema).max(NEIGHBORHOOD_LIMITS.items),
+  coverage: z.strictObject({
+    scope: z.literal("stored-linked-material"),
+    traversalComplete: z.boolean(),
+    recordsComplete: z.boolean(),
+    truncated: z.boolean(),
+    reasons: z.array(z.enum(["depth", "nodes", "items", "bytes", "unavailable"])),
+    visitedNodes: z.number().int().min(0),
+    returnedItems: z.number().int().min(0),
+    omittedItems: z.number().int().min(0),
+    /** Lower bound at the visited frontier, not a census of unseen descendants. */
+    omittedNodesAtLeast: z.number().int().min(0),
+    unavailableEntities: z.number().int().min(0),
+    /** No raw/archive authorization probe is made by this read. */
+    inaccessibleMaterial: z.null(),
+    /** Catalogued or uncited does not mean unreviewed; no exhaustive association exists. */
+    unreviewedMaterial: z.null(),
+    resultBytes: z.number().int().min(0),
+  }),
+});
+export type NeighborhoodResult = z.infer<typeof NeighborhoodResultSchema>;
 
 // -------------------------------------------- refinement (§4.7) and output projections (§4.6)
 

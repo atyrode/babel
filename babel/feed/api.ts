@@ -12,6 +12,7 @@ import {
   FEED_PLUGIN_ID,
   FeedResultSchema,
   LaunchResultSchema,
+  NeighborhoodResultSchema,
   PANELS,
   ProfilesResultSchema,
   PulseResultSchema,
@@ -60,6 +61,7 @@ const RESULTS = {
   thread: ThreadResultSchema,
   topics: TopicsResultSchema,
   topic: TopicResultSchema,
+  neighborhood: NeighborhoodResultSchema,
   pulse: PulseResultSchema,
   profiles: ProfilesResultSchema,
   launch: LaunchResultSchema,
@@ -208,6 +210,24 @@ export function openRecord(host: HostServices, recordId: string): OpenPanelRefus
 export function openTopic(host: HostServices, topic: string): OpenPanelRefusal | null {
   look({ topic });
   return seat(host, PANELS.topic, { topic });
+}
+
+/**
+ * Opens a linked entity even if it is no longer a rail topic (for example a merged-away
+ * identity). The explicit entity id is not inferred from the topic string: a topic name can
+ * itself look like another entity's id.
+ */
+export function openEntity(
+  host: HostServices,
+  entityId: string,
+  returnToEntityId?: string,
+): OpenPanelRefusal | null {
+  look({ topic: entityId });
+  return seat(host, PANELS.topic, {
+    topic: entityId,
+    entityId,
+    ...(returnToEntityId === undefined ? {} : { returnToEntityId }),
+  });
 }
 
 /**

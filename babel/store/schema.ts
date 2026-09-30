@@ -949,9 +949,11 @@ export const SCHEMA_V1: readonly string[] = [
   // `contradicts` (an evidence-free challenger objection, and a record whose own text opens
   // CONTRADICTS), `corrects` (a record whose own text opens CORRECTION or CORRECTS),
   // `challenges` (each grounded objection to its hypothesis, note=ground, actor=challenger run),
-  // `supersedes`, `refines` and `about`. The explicit duplicate application also appends
+  // `supersedes`, `refines` and `about`. Explicit duplicate application also appends
   // `corroborates`, representative -> other member, without rewriting either record. A new
   // word costs nothing at the table and everything at the reader.
+  // Neighbourhood reads recognize entity `contains` (parent→child) and `part-of`
+  // (child→parent) as one downward containment spine; all other words are links, not traversal.
   `CREATE TABLE edges(
      id TEXT PRIMARY KEY,
      kind TEXT NOT NULL,

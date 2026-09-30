@@ -360,6 +360,85 @@ Every answer is retained verbatim as an attributed immutable event. **Answer int
 reviewable multi-action plan is specified and not built**: a raw answer stands as the answer, and
 no fact, entity resolution or focus-policy change is derived from it without an operator act.
 
+#### 4.8.1 Entity neighbourhoods
+
+The `neighborhood` read action is the shared agent/browser projection of stored linked material,
+not a generated summary or another store. It requires the same workspace read capability as the
+other record-reading doors and delegates no machine, archive or model operation. It creates no
+entity, fact, filing, inference or durable read trace.
+
+Starting at an explicit entity ID, breadth-first traversal follows only entity `contains`
+edges from parent to child and entity `part-of` edges from parent to child in the inverse
+stored direction. Cycles and shared descendants spend one node slot per entity. Every other
+relationship stays a labelled link with its original endpoints and attribution; neither
+contradictions nor a dependency silently extend the neighbourhood. The first path gives a
+node's shortest depth, not a permanent parent. Ordering is deterministic for unchanged rows.
+
+The strict request names `depth`, `maxNodes`, `maxItems` and `maxBytes`. Defaults are two
+containment hops, 32 entities including the root, 100 material rows in total and 65,536 UTF-8
+JSON bytes. Hard ceilings are eight hops, 64 entities, 200 material rows and 262,144 bytes;
+depth zero is a root-only read, and the smallest byte budget is 4,096. Nodes precede material;
+material uses a stable category order: facts, records, filings, questions, answers, links,
+catalog sources. An oversized row is omitted whole, never clipped into a misleading quotation.
+The limits actually applied and serialized response size travel in the answer.
+
+Facts retain their stored value, authority, observation and validity times, supersession and
+newest attributed status. No status row means unknown, not an invented active state. All facts,
+including stale or disputed revisions, remain eligible. Current filings associate records
+without hiding superseded, stale, disputed or ruled-on conclusions. A later withdrawal removes
+that membership. Conclusions retain their verbatim payload JSON, producing run, recipe,
+actor, newest status and ruling; none becomes an authoritative ledger fact by being shown here.
+Incident links include contradictions, without choosing a winner or traversing their targets.
+Questions match stored entity IDs, exact existing names/active aliases or explicitly named filed
+work. Their newest state and verbatim attributed answers remain separate from facts.
+
+Catalog sources are included through a direct filed-record citation or a stored
+`repository-remote` fact, including historical bindings. Their locators describe the
+**current catalog**, not necessarily the historical capture cited by a conclusion; exact
+historical locators and copied quotations, when present, remain in that record's stored payload.
+A dangling citation is still a labelled link, not an invented source. This read does not open
+raw transcripts, consult protected transcript-map caches or bypass Recall's separate grants.
+
+Coverage is explicitly `stored-linked-material`, never the whole project. `traversalComplete`
+requires exhausting the reachable containment graph; stopping at a depth, node or byte boundary,
+or encountering a missing/unnameable entity, makes it false. `recordsComplete` additionally
+requires that no eligible material row was omitted. `omittedItems` counts omissions only for
+returned entities, while `omittedNodesAtLeast` is a lower bound at the visited frontier, not a
+census of unseen descendants. Missing entity endpoints are counted separately. Unknown archive
+access and unreviewed inventory are returned as null: catalog presence or lack of a citation
+does not establish that material is accessible, exhaustively associated or never reviewed.
+Generated neighbourhood summaries remain outside this records-only read.
+
+The feed plugin's **Topic** panel consumes this same typed read after resolving the topic's
+entity ID; it does not fetch descendants separately or recompute depth. **Stored neighbourhood**
+is separate from the existing topic feed and does not change its sort, paging or interest controls.
+The containment spine lists each returned entity once, including entities with no filed posts,
+with its server-reported depth and an action opening that entity's Topic panel. Direction-normalized
+parent-to-child links retain their original `contains`/`part-of` direction and attribution.
+Cycles and multiple parents remain visible links rather than infinitely nested or duplicated
+branches. Other relations and contradictions have their own labelled sections and do not expand
+the read. Record actions open the existing record panel and update the shared peek selection;
+a host that cannot place another tile is reported without discarding that selection.
+
+A linked entity's Topic panel retains a one-step return action to its originating entity,
+including when the target is missing or its neighbourhood read is unavailable. Return opens the
+origin's Topic panel through the host rather than treating browser history, which tracks the
+container, as an entity-navigation stack.
+
+Facts expose stored authority, confidence, validity/observation/recording dates, replacement
+history and the actual newest status, including stale/disputed or unknown. Filed records expose
+their run, recipe revision, actor, status and operator ruling separately from filing rationale
+and heuristic provenance. Questions retain their state, reason and attributed answers. Raw
+payload JSON and notes are labelled stored material, never rendered as archive quotations.
+Current-catalog sources state their authority and unknown review history beside an explicit
+warning that these are **not historical citation proof**. The panel reports every applied limit,
+depth/node/item/byte truncation reason, unavailable count, covered scope and frontier omission
+lower bound. Missing entities, empty existing neighbourhoods, bounded responses returning no
+material, loading and unavailable reads are different states; a failed refresh does not leave
+old facts presented as a current successful read. Archive access and exhaustive unreviewed
+inventory remain unknown. Opening or refreshing this section performs only the shared read,
+never a model call, source fetch or store write.
+
 ### 4.9 Subjects, focus, and context
 
 Babel's field is a data lake it points at rather than copies. A **subject** is anything with a

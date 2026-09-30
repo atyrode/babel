@@ -50,6 +50,8 @@ import {
   type FeedPost,
   type FeedQuery,
   type FeedResult,
+  type NeighborhoodQuery,
+  type NeighborhoodResult,
   type RecordPeel,
   type RunProgress,
   type Ruling,
@@ -72,6 +74,7 @@ import {
   type IndexEntry,
 } from "./feedindex.ts";
 import { FEED_FRESHNESS_MS, feedOrdering, feedQueryForSurface, sortFeed } from "./rank.ts";
+import { readNeighborhood } from "./neighborhood.ts";
 
 /**
  * THE STORE'S HALF OF THE PULSE: what today's tables say. The door answers a wider shape — it
@@ -275,6 +278,7 @@ export interface BabelStore {
   thread(id: string): Promise<ThreadResult>;
   topics(): Promise<TopicsResult>;
   topic(name: string): Promise<TopicResult>;
+  neighborhood(query: NeighborhoodQuery): Promise<NeighborhoodResult>;
   pulse(): Promise<PulseResult>;
   runs(query: RunsQuery): Promise<RunsResult>;
   run(id: string): Promise<RunResult>;
@@ -2220,6 +2224,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       unfiled: (await index()).unfiled,
     }),
     topic,
+    neighborhood: async (query) => await readNeighborhood(db, query),
     pulse,
     runs,
     run,
