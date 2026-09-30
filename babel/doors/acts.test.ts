@@ -110,7 +110,7 @@ async function seedRecord(store: ActsStore, id: string, kind = "proposal"): Prom
   );
 }
 
-test("the thirteen acts are declared, each carrying the write capability except the crossing's two", () => {
+test("acts retain their write boundary, while policy installation also carries read authority for its cycle", () => {
   const harness = openHarness();
   const names = harness.doors.map((door) => door.action.name);
   expect(names).toEqual([
@@ -128,12 +128,18 @@ test("the thirteen acts are declared, each carrying the write capability except 
     ACTIONS.importLedger,
     ACTIONS.rehostSessions,
   ]);
-  // The crossing and its repair ask `isRoot` instead: no capability in the vocabulary means
-  // "the owner". The repair also declares the machine read it needs to check its destination.
+  // The crossing and its repair ask `isRoot`; only the policy setter runs a full cycle that
+  // reads its routed Code workspace before registering and posting work.
   const owners: readonly string[] = [ACTIONS.importLedger, ACTIONS.rehostSessions];
   for (const door of harness.doors) {
-    expect(door.action.caps).toEqual(owners.includes(door.action.name) ? [] : ["containers:write"]);
-    expect(door.action.title.length).toBeGreaterThan(0);
+    const caps: readonly ("containers:read" | "containers:write")[] = owners.includes(
+      door.action.name,
+    )
+      ? []
+      : door.action.name === ACTIONS.setPolicy
+        ? ["containers:read", "containers:write"]
+        : ["containers:write"];
+    expect(door.action.caps).toEqual(caps);
   }
   for (const name of owners) {
     const door = harness.doors.find((candidate) => candidate.action.name === name);

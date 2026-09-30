@@ -2337,17 +2337,24 @@ export const MATERIAL_SCHEMA = "babel.material/1";
  * than no material at all. The index maps the name back to the selector, which is why the name
  * itself need only be unique and readable.
  *
+ * The native owner seals material as POSIX ustar without a long-name extension: the last path
+ * component cannot exceed 100 bytes. Its output collector refuses the entire preparation if
+ * even one selected session exceeds that limit, so the ordinal and extension share the same
+ * bound with the sanitized selector.
+ *
  * It is HERE rather than in either half because both halves need the same answer and neither may
  * import the other: `machine/prepare.ts` writes the file and `doors/launch.ts` tells the model
  * which file to open, and a second copy of this rule is a prompt pointing at a path that is not
  * there.
  */
 export function materialFile(ordinal: number, selector: string): string {
+  const prefix = `${String(ordinal + 1).padStart(4, "0")}-`;
+  const suffix = ".jsonl";
   const safe = selector
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 96);
-  return `${String(ordinal + 1).padStart(4, "0")}-${safe === "" ? "session" : safe}.jsonl`;
+    .slice(0, 100 - prefix.length - suffix.length);
+  return `${prefix}${safe === "" ? "session" : safe}${suffix}`;
 }
 
 /**

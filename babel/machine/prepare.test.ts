@@ -92,6 +92,13 @@ test("a preparation id is the selection's content, not the moment it was fixed",
   expect(reversed.selection.map((held) => held.sourceId)).toEqual(["a1b2c3", "d4e5f6"]);
 });
 
+test("material names remain sealable by the owner's ustar output for long selectors", () => {
+  const selector = `codex/${"a".repeat(200)}`;
+  for (const ordinal of [0, 9999])
+    expect(Buffer.byteLength(materialFile(ordinal, selector))).toBeLessThanOrEqual(100);
+  expect(materialFile(0, selector)).not.toBe(materialFile(1, selector));
+});
+
 test("a different capture, a different reading, or a different scope is a different id", () => {
   const base = [entry("a1b2c3", "a", "b"), entry("d4e5f6", "c", "d")];
   const id = newPreparation("2026-09-12T10:00:00.000Z", base).id;

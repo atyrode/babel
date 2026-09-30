@@ -85,12 +85,10 @@ import manifestJson from "./manifest.json";
     fresh one already has.
 
   THE LOOP HAS NO CLOCK. A plugin may not poll as an alternate scheduler (`docs/PLUGINS.md`),
-  and a server half has no timer of its own, so `conductor.tick()` is called by something that
-  has ALREADY woken this half: one of the plugin's own jobs settling (`onJobSettled`, #505 — the
-  one wake a background half gets), a door the operator knocked on, or the enable itself. Every
-  step of a cycle is idempotent, which is what makes that safe; what keeps it from becoming the
-  forbidden timer is that only three doors wake it and no two dispatches inside half a minute
-  wake it twice.
+  and a server half has no timer of its own. Enable, a settled native job or a write-authorized
+  policy installation or launch may run a full conductor cycle. Read-only pulse, runs and drain
+  status dispatches observe progress at a thirty-second floor without posting work; neither
+  a reader nor a burst of panel polls can authorize a new Code session.
 */
 
 /**
@@ -817,6 +815,31 @@ async function cycle(
     console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
 }
 
+/** Read-only polls reconcile progress; the next native/write wake owns every new posting. */
+async function observeCycle(
+  jobs: BabelJobs,
+  machines: MachinesSlice,
+  actions: ActionsSlice | undefined,
+  chain: string | null,
+  services?: EmbeddingServices | undefined,
+): Promise<void> {
+  const policy = (await coordinated.policy()).policy;
+  for (const note of await loop(
+    jobs,
+    machines,
+    actions,
+    planFor(policy, BEAT_OPERATION),
+    planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+    planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+    false,
+    chain,
+  ).observe())
+    console.warn(`${BABEL_PLUGIN_ID}: observation: ${note}`);
+  for (const report of await drainTick(draining(jobs, actions, chain, services), undefined, false))
+    for (const note of report.notes)
+      console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
+}
+
 /**
  * A `map-prepare` JOB'S OWN WAKE, and nothing else: what a settled `map-prepare` job — one of a
  * drain's preparations, its cadence, or a preparation of the standing mapping lane — is
@@ -884,50 +907,30 @@ async function mapDrainCycle(
 }
 
 /**
- * The doors a cycle follows. They are the ones an operator watches and the ones that start work
- * — never every read: `feed`, `record` and `thread` are opened dozens of times while a page is
- * being read, and a cycle behind each of them would turn a reader into a scheduler.
+ * Read-only polls fold live jobs and settled receipts without scheduling or posting anything.
+ * A hook has no `follow`, so the panel's five-second drain poll still needs its own observation
+ * at most once per thirty seconds to measure a running job's rate. A write-authorized launch
+ * or policy installation, and the installed beat's own settled-job hook, run the full cycle:
+ * only those wakes can preserve the Code-workspace write cap a prepared session needs.
  *
- * A DISPATCH IS ALSO THE ONLY CYCLE THAT CAN SEE A RUNNING JOB, which is why these matter more
- * than they look. `follow` is the one verb `GuestHookJobs` omits — "a live subscription belongs
- * to a dispatch, not to a hook" (`plugin-kit/src/server.ts`) — and it is the only read the hub
- * serves for a job that has not finished: `journal` refuses that job `job_unfinished`. So the
- * slice a door's cycle is given carries it and folds where each in-flight run is; the slice a
- * settlement's hook is given does not, and that cycle ingests what ended and says nothing about
- * what has not (#261).
- *
- * `drainStatus` is here for exactly that reason (#258). A settlement wakes the drain on its own
- * hook, but that hook cannot fold where a RUNNING job is, and a drain is watched precisely while
- * its jobs are running: without this wake the panel's tokens-per-minute would advance only when
- * something finished, and "flat for three minutes" — the one no-go the runbook names — would be
- * a fact about the wake rather than about the drain. The floor below still applies, so the
- * panel's five-second poll costs one cycle every thirty seconds.
- *
- * EVERY DOOR IN THIS LIST MUST DELEGATE `jobs:read`. The dispatcher attenuates `ctx.jobs` to what
- * the door declared, so a cycle behind one that does not can read back no job at all: nothing
- * settles, nothing is folded, and the wake is worse than none because `woke` is one floor shared
- * by every poller. It is exported so `server.test.ts` holds the list itself to that.
+ * Every listed door declares `jobs:read` because its own dispatch slice is attenuated to its
+ * caps and delegates. Read-only parts may call pulse, runs and drainStatus without acquiring
+ * container write authority; their observations cannot post new work.
  */
 export const WAKES: Record<string, true> = {
   [ACTIONS.pulse]: true,
   [ACTIONS.runs]: true,
+  [ACTIONS.drainStatus]: true,
   [ACTIONS.launch]: true,
+  [ACTIONS.setPolicy]: true,
+};
+const READ_WAKES: Record<string, true> = {
+  [ACTIONS.pulse]: true,
+  [ACTIONS.runs]: true,
   [ACTIONS.drainStatus]: true,
 };
-
-/**
- * How often a DISPATCH may wake the loop, at most.
- *
- * Watch polls `runs` every five seconds while it is open, so a cycle behind every one of those
- * dispatches would be a thirty-times-an-hour scheduler wearing a reader's clothes — the alternate
- * scheduler `docs/PLUGINS.md` forbids, built out of somebody else's poll. The wake that matters
- * is a settlement, and it arrives on its own hook; this is the safety net under the wake that
- * did not arrive — a hook that overran its two-second bound, a hub restarted mid-run — so it is
- * floored at thirty seconds, six times the panel's own poll, and never floors a settlement or
- * the operator's own launch.
- */
 const WAKE_FLOOR_MS = 30_000;
-let woke = 0;
+let observedAt = 0;
 
 const doors = babelDoors(
   store,
@@ -991,7 +994,7 @@ const doors = babelDoors(
 
 /**
  * Every door, with the calling context's own database bound for the length of its handler, and
- * a cycle behind the three that warrant one. A dispatch the host served no database to runs
+ * an observation or cycle behind the five that warrant one. A dispatch the host served no database to runs
  * anyway and fails at its first statement, by name: a plugin that declared `database` and got
  * none is a host bug, not a caller's refusal.
  *
@@ -1011,23 +1014,19 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
       const at = ctx.now();
       const refused =
         produced !== null && typeof produced === "object" && Object.hasOwn(produced, "refused");
-      if (wakes && !refused && at - woke >= WAKE_FLOOR_MS) {
-        woke = at;
-        try {
-          await cycle(
-            jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
-            machinesSlice(ctx.machines),
-            ctx.actions,
-            // A door knows whom it serves: the chain is its principal's, the same on every
-            // click, so the operator's own next wake can finish what his last one posted (#470).
-            principalChain(ctx.principal.id),
-            // THE ONE WAKE THAT HOLDS SERVICE AUTHORITY (#337). A dispatch is served
-            // `ctx.services`; a hook is not, so the corpus backfill happens on the operator's
-            // own ticks and nowhere else.
-            ctx.services,
-          );
-        } catch (error) {
-          console.warn(`${BABEL_PLUGIN_ID}: the cycle after ${name} failed: ${message(error)}`);
+      if (wakes && !refused) {
+        const observing = Object.hasOwn(READ_WAKES, name);
+        if (!observing || at - observedAt >= WAKE_FLOOR_MS) {
+          if (observing) observedAt = at;
+          try {
+            const jobs = jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive));
+            const machines = machinesSlice(ctx.machines);
+            const chain = principalChain(ctx.principal.id);
+            if (observing) await observeCycle(jobs, machines, ctx.actions, chain, ctx.services);
+            else await cycle(jobs, machines, ctx.actions, chain, ctx.services);
+          } catch (error) {
+            console.warn(`${BABEL_PLUGIN_ID}: the cycle after ${name} failed: ${message(error)}`);
+          }
         }
       }
       return produced;

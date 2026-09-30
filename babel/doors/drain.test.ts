@@ -536,7 +536,7 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
     ACTIONS.drainStatus,
     ACTIONS.drainStop,
   ]);
-  const [, mapBegin, , stop] = doors as readonly Door[];
+  const [, mapBegin, status, stop] = doors as readonly Door[];
 
   // THE MAPPING START IS ADMITTED WHERE ITS FIRST FAN IS POSTED: the executor's `map-prepare`
   // node and the source owner's private mapping target, as `startMapCatalog` is. A read wake is
@@ -566,6 +566,8 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
     "locations:write",
     "services:read",
   ]);
+
+  expect(status?.action.caps).toEqual(["containers:read"]);
 
   // A stop closes this plugin's own row and reaches its jobs through its OWN ceiling. It
   // asked `jobs:cancel` at the operation they share, and that operation is one no

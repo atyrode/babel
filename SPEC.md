@@ -1055,9 +1055,10 @@ choice, including its price; Babel neither chooses a provider nor holds its cred
 applies before material reaches the model and before generated prose is retained or served.
 
 Weighting mapping is a delegation, and it is stated here because it is easy to miss. A policy
-writer — whoever may install a policy through `setPolicy`, which asks for `containers:write` —
-can turn an already-consented Recall mapping route into standing paid mapping by setting
-`activityWeights.map`, without personally holding the grants `mapDrainStart` asks of its presser
+writer — whoever may install a policy through `setPolicy`, which asks for `containers:read` and
+`containers:write` so its write-authorized wake can keep the beat — can turn an already-consented
+Recall mapping route into standing paid mapping by setting `activityWeights.map`, without
+personally holding the grants `mapDrainStart` asks of its presser
 at the executor's `map-prepare` node, the source owner's private mapping target and the Code
 workspace. The standing lane spends under the installer-lineage authority the beat carries,
 bounded by the installation's existing consents and the policy's own ceilings. This is the same

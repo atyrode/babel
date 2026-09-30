@@ -17,6 +17,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   ceiling. A native preflight refuses insufficient free space before fetching. Synthetic titling
   selection and no-fetch preflight regressions cover the two-copy boundary.
 
+- **Prepared sessions keep the authority of their posting wake.** The policy writer and launch
+  carry Code-workspace read/write and native material-binding authority into the preparation's
+  settlement; read-only pulse, runs and drain status fold progress without starting work.
+  Lost-posting recovery and the read-only part ceiling are covered by the server and part tests.
+
+- **Long selectors no longer invalidate sealed preparation outputs.** Material filenames now
+  reserve the native ustar component limit for the ordinal and extension before shortening the
+  selector; its exact identity remains in the material index. A boundary regression covers
+  ordinal uniqueness, and preview title preparations sealed bounded multi-session material.
+
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary
   preview/coordinate files use private creation before publication. An isolated synthetic

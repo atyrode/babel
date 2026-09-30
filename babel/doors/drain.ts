@@ -65,7 +65,7 @@ import { DEFERRED_SESSION_DELEGATES, pressOperation } from "./launch.ts";
   "launched nothing" about a machine nobody ever asked. The posting that follows is Babel's own
   `prepare` or its beat, discharged at `engine.jobs.execute` against the same bridge, so the start
   carries every native posting requirement plus the Code-workspace and broker authority its
-  settled preparation needs to post its session. `doors/read.ts` carries the reasoning.
+  settled preparation needs to post its session. `doors/launch.ts` carries the posting ceiling.
 
   WHY `drain.stop` IS GOVERNED AT THE OPERATION NODE AND NOT AT A JOB. A drain holds several jobs
   and a declared requirement resolves to exactly ONE node (`plugin-host.ts` parses one
@@ -75,23 +75,11 @@ import { DEFERRED_SESSION_DELEGATES, pressOperation } from "./launch.ts";
   cancelling every job of this drain needs — and asking for it by name is honest about the
   breadth instead of borrowing it one job at a time.
 
-  WHY `drain.status` REPORTS A DRY READ EVEN THOUGH IT WAKES WORK. Its response reports what
-  is draining from this plugin's own tables — the drain row, its runs and the conductor's fold
-  of each run's progress. The panel polls it every five seconds. Its cycle can also post Code
-  work, so dispatch requires `containers:write` alongside `containers:read`; neither cap asks
-  for version-bound governed consent merely to report the burn rate.
-
-  BUT IT IS ONE OF THE DOORS A CYCLE FOLLOWS (`server.ts`'s `WAKES`), and that is what the
-  delegates are for: the dispatcher attenuates `ctx.jobs` to what the door declared, so a cycle
-  behind a door with no `jobs:read` cannot read back a single job — every `jobs.status` in
-  `reconcileRuns` refuses, nothing settles, and the `run_progress` fold this wake EXISTS for
-  never happens. The same cycle describes a machine to keep its beat registered, then schedules
-  or executes `catalog` and `prepare`: their manifest declarations require `machines:read`,
-  `machines:run`, `locations:write`, `services:invoke` and `network:host`. `pulse`, `runs` and
-  `launch` carry the same cycle ceiling (`doors/read.ts` and `doors/launch.ts`). A deferred
-  Code session also needs the caller's `containers:write` as a required cap, not a delegate;
-  delegates remain intersected with caller authority and the plugin's install grant.
-
+  `drain.status` is a read of this plugin's own tables and stays callable by read-only panels.
+  Its post-dispatch wake folds the running jobs' progress, but does not refill a slot or post
+  Code work. The next write-authorized native beat or settlement does that. The read delegates
+  permit `jobs.status` and `jobs.follow`, so the panel's five-second poll can still measure
+  progress while a job is running without claiming the caller's workspace write authority.
 */
 
 /**
@@ -118,10 +106,9 @@ const START_DELEGATES = ["machines:read", ...DEFERRED_SESSION_DELEGATES] as cons
 const STOP_CAPS = ["containers:write"] as const;
 const STOP_DELEGATES = ["jobs:cancel"] as const;
 
-/** A status read follows a cycle that can relaunch a settled drain slot, so it must retain the
- * caller's Code-workspace write authority as well as the native posting delegates. */
-const STATUS_CAPS = ["containers:read", "containers:write"] as const;
-const STATUS_DELEGATES = ["machines:read", ...DEFERRED_SESSION_DELEGATES] as const;
+/** A status poll folds running jobs without acquiring write authority over a Code workspace. */
+const STATUS_CAPS = ["containers:read"] as const;
+const STATUS_DELEGATES = ["jobs:read", "services:read"] as const;
 
 /** Every act of a drain is news on this plugin's own node, as `doors/acts.ts` explains. */
 const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;

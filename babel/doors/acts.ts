@@ -50,6 +50,7 @@ import {
   type ActsStore,
 } from "../store/acts.ts";
 import { defineDoor, type Door } from "./door.ts";
+import { DEFERRED_SESSION_DELEGATES } from "./launch.ts";
 
 /**
  * Every act is news on this plugin's own node. The id is the contract's, not the context's:
@@ -75,9 +76,11 @@ const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;
   `{ refused }`, which denies the dispatch by rule and leaves the trace clean. Anything else
   raises: a broken statement or a lost handle is this plugin's bug and is logged as one.
 
-  The caps are `containers:write` because these are writes into the workspace the plugin serves,
-  and `importLedger` carries none and asks `ctx.auth.isRoot` instead: the crossing is the
-  owner's one-off act, and no capability in Manifold's closed vocabulary means "the owner".
+  The ordinary acts ask `containers:write` for writes into this plugin's workspace. A policy
+  installation also asks `containers:read` and preserves native posting delegates: its successful
+  dispatch registers the beat and may post prepared Code work under the caller's own authority.
+  `importLedger` carries no caps and asks `ctx.auth.isRoot` instead, since no capability in
+  Manifold's vocabulary means "the owner".
 */
 
 const ACT_CAPS = ["containers:write"] as const;
@@ -171,7 +174,8 @@ const tellAction = defineServerAction({
 const setPolicyAction = defineServerAction({
   name: ACTIONS.setPolicy,
   title: "Install an evaluation policy",
-  caps: ACT_CAPS,
+  caps: ["containers:read", "containers:write"],
+  delegates: ["machines:read", ...DEFERRED_SESSION_DELEGATES],
   input: SetPolicyInputSchema,
   result: PolicySetSchema,
 });

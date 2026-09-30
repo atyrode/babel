@@ -372,6 +372,13 @@ space and refuses `material_storage_insufficient`, naming the raw, sealed and fr
 before fetching any named capture. Content queries use the same doubled free-space budget
 when limiting which matches they can seal.
 
+The native output collector seals POSIX ustar without long-name extensions
+([Manifold job-outputs.ts:73–89 at 47407b58](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/packages/agent/src/job-outputs.ts#L73-L89)).
+Each material file's basename is therefore at most 100 bytes: `materialFile` reserves its
+ordinal and extension before clipping the sanitized selector, while the index keeps the exact
+selector for provenance. An overlong basename formerly refused the entire output collection
+even when the selected material fitted both scratch and output-byte ceilings.
+
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.
 They are not in `MACHINE_OPERATIONS`, which is what the machine half implements and what
@@ -565,13 +572,16 @@ doors of the baseline and one section of Watch:
 
 The shared posting delegates are `machines:run`, `locations:write`, `services:invoke` and
 `network:host`. They cover native execution, output/cache locations and the bound archive
-service; the owner still checks the caller's authority and consent at each effect.
+service; the owner still checks the caller's authority and consent at each effect. A deferred
+Code session also needs the write wake's `containers:read` and `containers:write` caps plus
+`services:read`, `jobs:read` and `jobs:input` delegates for broker observation and material
+binding; a read-only status poll never acquires that authority.
 
-| Door          | Authority                                                                                   | What it does                                                                                                                                                                                                                                                                     |
-| ------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `drainStart`  | `containers:read`, delegating `machines:read` and the shared posting delegates              | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts the first fan of jobs through the same launch path the operator's own button uses, and writes the `drains` row.                                                                                 |
-| `drainStatus` | `containers:read`, delegating `jobs:read`, `machines:read` and the shared posting delegates | What is draining: jobs live, jobs at the model, tokens and cost a minute over the last three minutes, spend against target, ETA against deadline, refusals by reason, the account. A cycle follows it: the delegates let it read a running job back and relaunch a settled slot. |
-| `drainStop`   | `containers:write`, delegating `jobs:cancel`                                                | Cancels every job the drain holds, and marks the row `closing` — or `stopped`, when it holds none.                                                                                                                                                                               |
+| Door          | Authority                                                                         | What it does                                                                                                                                                                                 |
+| ------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `drainStart`  | `containers:read`, `containers:write`, with native and deferred-session delegates | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts its first jobs through the ordinary launch path and records the drain.                                      |
+| `drainStatus` | `containers:read`, delegating `jobs:read` and `services:read`                     | Reads live jobs, model progress, burn rate, spend, ETA and refusals. Its post-read observation folds progress but never refills a slot; the beat or a write-authorized settlement does that. |
+| `drainStop`   | `containers:write`, delegating `jobs:cancel`                                      | Cancels each job the drain holds and marks it `closing`, or `stopped` when none remain.                                                                                                      |
 
 Four things are worth knowing before reading `server/drain.ts`:
 

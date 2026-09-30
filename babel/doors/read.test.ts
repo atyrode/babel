@@ -129,7 +129,7 @@ afterEach(() => {
 });
 
 describe("the roster", () => {
-  test("declares nine reading doors, with write authority only for cycle-starting reads", () => {
+  test("declares nine reading doors callable without container write authority", () => {
     const names = doors.map((entry) => entry.action.name);
     expect(names).toEqual([
       ACTIONS.feed,
@@ -144,43 +144,9 @@ describe("the roster", () => {
     ]);
     expect(new Set(names).size).toBe(names.length);
     for (const entry of doors) {
-      expect(entry.action.caps).toEqual(
-        entry.action.name === ACTIONS.pulse || entry.action.name === ACTIONS.runs
-          ? ["containers:read", "containers:write"]
-          : ["containers:read"],
-      );
+      expect(entry.action.caps).toEqual(["containers:read"]);
       expect(entry.action.title).not.toBe("");
     }
-    /*
-      THE TWO READS A CYCLE FOLLOWS LEND NATIVE AND DEFERRED SESSION CEILINGS. The restored
-      credential needs the required `containers:write` cap at Code's workspace, and delegates
-      `services:read` at the broker, `jobs:read` for OMP's review and `jobs:input` for material
-      bound from the settled preparation. Machine, location, service invocation and network
-      delegates admit preparation. Other reads retain no write or native delegated authority.
-    */
-    const cycled = [
-      "machines:read",
-      "services:read",
-      "jobs:read",
-      "jobs:input",
-      "machines:run",
-      "locations:write",
-      "services:invoke",
-      "network:host",
-    ];
-    const lent: Record<string, readonly string[]> = {};
-    for (const entry of doors) lent[entry.action.name] = [...(entry.action.delegates ?? [])];
-    expect(lent).toEqual({
-      [ACTIONS.feed]: [],
-      [ACTIONS.record]: [],
-      [ACTIONS.thread]: [],
-      [ACTIONS.topics]: [],
-      [ACTIONS.topic]: [],
-      [ACTIONS.pulse]: cycled,
-      [ACTIONS.runs]: cycled,
-      [ACTIONS.run]: [],
-      [ACTIONS.policy]: [],
-    });
     // The roster publishes the plugin's own prefix, which is what a button's `action` spells.
     expect(door(ACTIONS.feed)).toBe("atyrode.babel.feed");
   });

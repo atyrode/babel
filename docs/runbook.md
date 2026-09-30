@@ -533,9 +533,11 @@ is below the scratch's
 capacity (`bounded-output-storage-required`) and gives stdout and stderr only what is above it
 (`docs/building.md`, the machine half). So the scratch is 768 MiB (`RUNTIME_SCRATCH_BYTES`),
 which leaves each of them 256 MiB of stdio, and never the full 1 GiB, which would leave none. The
-hub bounds each material by the capacity the machine last measured, divided among the materials
-a lane may hold at once (`docs/building.md`). dev-01's scratch is 768 MiB: dotfiles #711
-(`46ae639`, merged 2026-09-24), which the operator reports active.
+hub bounds each material by the capacity the machine last measured, minus 64 MiB of headroom,
+then divides it among both the raw files and the archive being sealed, and the number of
+materials the lane may hold at once (`docs/building.md`). On dev-01 the 768 MiB scratch gives
+two simultaneous preparations 176 MiB of raw selected material each; dotfiles #711
+(`46ae639`, merged 2026-09-24) is reported active by the operator.
 
 Temporary output lifetime does not change that capacity. After proven workload closure and
 durable terminal publication, the owner reclaims only the job's raw output roots. Sealed
