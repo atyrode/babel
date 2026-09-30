@@ -791,6 +791,12 @@ version, and the one thing inlined into every bundle), `typescript`, React with 
 React, `@manifold/plugin` and `@manifold/ui` are **shared externals**, rewritten by `pack` into
 reads from the shell's own module registry, so a bundle never carries a second copy of them.
 
+Each Babel worktree needs its own `bun install --frozen-lockfile`, not a symlink to another
+worktree's whole dependency directory. Bun records those dependencies' physical module-path
+labels in the machine artifact; sharing the directory changes its bytes even at identical
+package versions. The SDK-path normalization above does not rewrite Babel's own dependency
+labels. Install locally before packing and committing the machine stamp.
+
 **Install and test with the same `MANIFOLD_DIR`, or reinstall after changing it.** `bun install`
 writes `node_modules/react` as a SYMLINK into whichever SDK checkout `manifold-dir.sh` resolved
 at install time, so pointing `MANIFOLD_DIR` somewhere else afterwards leaves this tree resolving
