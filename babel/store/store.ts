@@ -40,6 +40,7 @@ import {
   REPOSITORY_PROVENANCES,
   ROLES,
   RULINGS,
+  ReviewSubmissionSchema,
   isRecordId,
   normalizeRemote,
   modelList,
@@ -53,6 +54,7 @@ import {
   type NeighborhoodQuery,
   type NeighborhoodResult,
   type RecordPeel,
+  type ReviewSubmission,
   type RunProgress,
   type Ruling,
 } from "../contract.ts";
@@ -75,6 +77,7 @@ import {
 } from "./feedindex.ts";
 import { FEED_FRESHNESS_MS, feedOrdering, feedQueryForSurface, sortFeed } from "./rank.ts";
 import { readNeighborhood } from "./neighborhood.ts";
+import { supersededReviewProposalSql } from "./schema.ts";
 
 /**
  * THE STORE'S HALF OF THE PULSE: what today's tables say. The door answers a wider shape — it
@@ -215,6 +218,9 @@ export interface RunRow {
    * and no receipt named a model for.
    */
   models: string[];
+  /** Durable submission progress is independent of whether the native session has ended. */
+  reviewSubmission: ReviewSubmission | null;
+  reviewAdmission?: { state: "creating" | "unknown"; reason: string };
 }
 
 export interface RunsQuery {
@@ -668,6 +674,8 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
   // when a run ends. A run with no `inference` block is one nothing metered, which is not the
   // same claim as "no calls were made": the engine's own lane makes them and nobody counts them.
   const calls = row["metered_calls"];
+  const submission = ReviewSubmissionSchema.safeParse(document(row["review_submission"]));
+  const admission = document(row["review_admission"]);
   return {
     id: text(row["id"]),
     kind: text(row["kind"]),
@@ -685,6 +693,11 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
     freshness: runFreshness(state, instant(lastWord), nowMs),
     lastWord,
     progress: runProgress(row, nowMs),
+    reviewSubmission: submission.success ? submission.data : null,
+    ...((admission["state"] === "creating" || admission["state"] === "unknown") &&
+    typeof admission["reason"] === "string"
+      ? { reviewAdmission: { state: admission["state"], reason: admission["reason"] } }
+      : {}),
     // ONE FIELD FOR BOTH HALVES OF A RUN'S LIFE (#169): the fold's list while it runs, the
     // receipt's after it settles. The two are never both there — the fold's row is deleted by
     // the settlement that writes the receipt — so `COALESCE` reads whichever half this run is
@@ -705,6 +718,8 @@ const RUN_COLUMNS = `r.id AS id, r.kind AS kind, r.machine_id AS machine_id, r.j
   r.recipe_id AS recipe_id, r.started_at AS started_at, r.finished_at AS finished_at,
   r.closure AS closure, r.cost_usd AS cost_usd, r.tokens AS tokens, r.records AS records,
   CASE WHEN json_valid(r.payload) THEN json_extract(r.payload, '$.inference.calls') END AS metered_calls,
+  CASE WHEN json_valid(r.payload) THEN json_extract(r.payload, '$.reviewSubmission') END AS review_submission,
+  CASE WHEN json_valid(r.payload) THEN json_extract(r.payload, '$.reviewAdmission') END AS review_admission,
   p.stage AS progress_stage, p.message AS progress_message, p.fraction AS progress_fraction,
   p.since AS progress_since, p.calls AS progress_calls, p.input_tokens AS progress_input_tokens,
   p.output_tokens AS progress_output_tokens, p.cache_tokens AS progress_cache_tokens,
@@ -1026,6 +1041,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       current.posts.find((entry) => entry.post.id === id)?.post ?? (await soloPost(row, current));
 
     const replacedBy = await one(`SELECT id FROM records WHERE supersedes_id = ? LIMIT 1`, [id]);
+    const corrected = await one(
+      `SELECT 1 AS superseded WHERE ${supersededReviewProposalSql("?")}`,
+      [id],
+    );
     const ruling = await one(
       `SELECT disposition FROM dispositions WHERE record_id = ? ORDER BY seq DESC LIMIT 1`,
       [id],
@@ -1037,7 +1056,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         ? STANDING_REOPENED
         : standingOf(last)
       : "";
-    if (replacedBy !== null) standing = "superseded";
+    if (replacedBy !== null || corrected !== null) standing = "superseded";
     const act =
       reviewable && (standing === "new" || standing === STANDING_REOPENED) ? "Rule on this" : "";
 
@@ -1532,9 +1551,28 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
         ORDER BY recorded_at DESC, id DESC LIMIT 50`,
       [id],
     );
+    const reviews = await db.query(
+      `SELECT id, payload FROM runs
+        WHERE json_valid(preparation)
+          AND json_extract(preparation, '$.review.recordId') = ?
+          AND json_valid(payload)
+          AND json_type(payload, '$.reviewSubmission') = 'object'
+        ORDER BY started_at DESC, id DESC LIMIT 50`,
+      [id],
+    );
+    const reviewRuns: NonNullable<RecordPeel["reception"]["reviewRuns"]> = [];
+    for (const review of reviews) {
+      const submission = ReviewSubmissionSchema.safeParse(
+        document(review["payload"])["reviewSubmission"],
+      );
+      if (submission.success) {
+        reviewRuns.push({ runId: text(review["id"]), submission: submission.data });
+      }
+    }
     return {
       byRole: roles,
       contested,
+      reviewRuns,
       operatorHistory: stances.map((row) => ({
         stance: text(row["stance"]),
         reason: text(row["reason"]),
@@ -1677,7 +1715,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   /** The plan this record carries, if an interpreter proposed one and nobody has ruled yet. */
   const planOf = async (id: string): Promise<RecordPeel["plan"]> => {
     const row = await one(
-      `SELECT kind, operation, state FROM plans
+      `SELECT kind, operation,
+              CASE WHEN ${supersededReviewProposalSql("plans.subject_id")}
+                   THEN 'superseded' ELSE state END AS state FROM plans
         WHERE subject_id = ? AND kind IN ('topic','backlog')
         ORDER BY created_at DESC, id DESC LIMIT 1`,
       [id],

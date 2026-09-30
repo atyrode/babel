@@ -1401,6 +1401,50 @@ describe("the pulse", () => {
 });
 
 describe("runs and the policy", () => {
+  test("an interrupted review retains partial actions in both Watch and record reception", async () => {
+    const partial = {
+      mode: "tools",
+      state: "partial",
+      actions: 2,
+      agentRunId: "native-review",
+      agentId: "reviewer",
+      complete: false,
+    } as const;
+    await harness.db.run(
+      `UPDATE runs SET kind = 'evaluate', preparation = ?, payload = ? WHERE id = 'run-c'`,
+      [
+        JSON.stringify({ review: { recordId: ARGUED } }),
+        JSON.stringify({ reviewSubmission: partial }),
+      ],
+    );
+    expect((await harness.store.run("run-c")).run?.reviewSubmission).toEqual(partial);
+    expect((await harness.store.record(ARGUED))?.reception.reviewRuns).toEqual([
+      { runId: "run-c", submission: partial },
+    ]);
+
+    await harness.db.run(`UPDATE runs SET closure = 'failed', finished_at = ? WHERE id = 'run-c'`, [
+      stamp(NOW),
+    ]);
+    const interrupted = await harness.store.runs({ limit: 25, offset: 0 });
+    expect(interrupted.runs.find((run) => run.id === "run-c")).toMatchObject({
+      state: "failed",
+      reviewSubmission: { state: "partial", actions: 2 },
+    });
+    expect((await harness.store.record(ARGUED))?.reception.reviewRuns?.[0]?.submission.state).toBe(
+      "partial",
+    );
+
+    const complete = { ...partial, state: "completed", complete: true } as const;
+    await harness.db.run(`UPDATE runs SET closure = 'completed', payload = ? WHERE id = 'run-c'`, [
+      JSON.stringify({ reviewSubmission: complete }),
+    ]);
+    expect((await harness.store.run("run-c")).run?.reviewSubmission?.state).toBe("completed");
+    expect((await harness.store.record(ARGUED))?.reception.reviewRuns?.[0]?.submission).toEqual(
+      complete,
+    );
+    expect((await harness.store.record(CANDIDATE))?.reception.reviewRuns).toEqual([]);
+  });
+
   test("a run's state and freshness come from its own closure and its last word", async () => {
     const answer = await harness.store.runs({ limit: 25, offset: 0 });
     expect(answer.total).toBe(4);

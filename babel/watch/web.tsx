@@ -3,7 +3,6 @@ import { usePolledResource } from "@manifold/plugin/hooks";
 import type { MachineSummary } from "@manifold/protocol";
 import { ScrollRegion, Stack } from "@manifold/ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { z } from "zod";
 import {
   ACTIONS,
   DrainQuerySchema,
@@ -19,6 +18,7 @@ import {
   RunsResultSchema,
   ServicesInstalledSchema,
   ServicesPreviewSchema,
+  StopResultSchema,
   TopicsResultSchema,
   WATCH_PLUGIN_ID,
 } from "../contract.ts";
@@ -380,10 +380,14 @@ export function Watch({ host }: PanelProps) {
   const onStop = useCallback(
     async (run: RunRow) => {
       setStopping(run.id);
-      const outcome = await act(host, ACTIONS.stop, stopInput(run), z.unknown());
+      const outcome = await act(host, ACTIONS.stop, stopInput(run), StopResultSchema);
       setStopping("");
       setStopNote(
-        outcome.ok ? `Asked ${run.id} to stop; it stops at its next safe point.` : outcome.message,
+        outcome.ok
+          ? outcome.value.closure === "stopping"
+            ? `Fenced ${run.id} against further submissions; its posting is unconfirmed and its reservation remains held.`
+            : `Stopped ${run.id}.`
+          : outcome.message,
       );
       runs.refresh();
     },

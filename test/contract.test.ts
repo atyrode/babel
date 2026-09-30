@@ -5,6 +5,7 @@ import {
   PluginManifestSchema,
 } from "@manifold/protocol";
 import {
+  ACTIONS,
   BABEL_PLUGIN_ID,
   EVENTS,
   FEED_PLUGIN_ID,
@@ -25,6 +26,8 @@ import {
   RESTIC_SERVICE,
   RUNTIME_TOOLS,
   RUNTIME_SCRATCH_BYTES,
+  REVIEW_ACTION_CAP,
+  REVIEW_ACTION_RESULT_PROJECTION,
   SessionRowSchema,
   WATCH_PLUGIN_ID,
   asLaunchRequest,
@@ -109,6 +112,20 @@ describe("the baseline's manifest spells the contract", () => {
     // widened by a typo into a table nothing would refuse.
     const tables = Object.keys(importableTables());
     for (const table of INGESTIBLE_TABLES) expect(tables).toContain(table);
+  });
+
+  test("the review tool is its own capability, an optional core.access edge, and a bounded receipt", () => {
+    // ADR 0035: an own capability is granted only when the manifest declares it, and a Run
+    // holding it reaches this door alone — never `containers:write` and never an operator act.
+    expect(REVIEW_ACTION_CAP).toBe(`${BABEL_PLUGIN_ID}:review`);
+    expect(babel.capabilities).toContain(REVIEW_ACTION_CAP);
+    const tool = plugin.actions.find((action) => action.name === ACTIONS.reviewAction);
+    expect(tool?.caps).toEqual([REVIEW_ACTION_CAP]);
+    expect(tool?.delegates ?? []).toEqual([]);
+    expect(tool?.runAccess).toBeUndefined();
+    expect(tool?.resultProjection).toEqual(REVIEW_ACTION_RESULT_PROJECTION);
+    // Run admission is an optional edge: absent core.access keeps validated text review.
+    expect(babel.dependencies?.["core.access"]?.type).toBe("optional");
   });
 });
 
@@ -470,12 +487,11 @@ describe("the machine half is declared as the machine half is built", () => {
     lease this plugin writes and nothing reads.
   */
   test("the baseline requires Code, and prepare exports the material it seals", () => {
-    expect(babel.dependencies).toEqual({
-      [CODE_PLUGIN_ID]: {
-        type: "required",
-        reason: expect.stringContaining("runSession") as unknown as string,
-      },
-    });
+    expect(
+      Object.fromEntries(
+        Object.entries(babel.dependencies ?? {}).map(([id, dependency]) => [id, dependency.type]),
+      ),
+    ).toEqual({ [CODE_PLUGIN_ID]: "required", "core.access": "optional" });
     /*
       THE HUB'S OWN BOUND IS UNDER THE MACHINE'S, WITH ROOM. `doors/launch.ts` refuses a
       selection whose catalogued bytes exceed `MAX_MATERIAL_BYTES`, BEFORE a job is posted;

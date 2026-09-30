@@ -75,6 +75,11 @@ import type {
 import { mappingPolicy, perMachineBound } from "../store/coordinator.ts";
 import { transcriptMaps, TranscriptMapProjectionRefusal } from "../store/transcript-maps.ts";
 import {
+  reviewActionStatus,
+  reviewSubmission,
+  type ReviewSubmission,
+} from "../store/review-actions.ts";
+import {
   activeDrains,
   addSpend,
   deadlineOf,
@@ -160,9 +165,11 @@ import {
        coordinator's lanes and ceilings govern every model dollar; a fixed `explore` registered
        at schedule time would spend outside them.
     3. finished jobs are ingested — the ones the loop requested and the beat's own, which nobody
-       requested. A run's records, edges, statuses, assessments, filings, plans, questions,
-       steering replies and sessions arrive as ONE sealed output holding the files
-       `JOB_OUTPUT_FILES` names, each a list of rows in the store's own shapes; ingestion is a
+       requested. Native output files hold the rows `JOB_OUTPUT_FILES` names; text reviews
+       validate their final answer and commit its accepted rows at settlement. Governed tool
+       reviews instead commit each accepted action durably while running: their final text
+       is never submitted, and terminal settlement only records completion and spend.
+       Native output ingestion is a
        `batch` of `INSERT OR IGNORE` (append-only tables are never rewritten), an upsert of the
        run, and the capture-aware upsert of `store/sessions.ts` for `sessions`, the projection
        of the archive (#453). Every insert is keyed by the row's own identifier, so ingesting the
@@ -1465,7 +1472,7 @@ function sessionAccounting(read: SessionRead) {
  * is kept — the message itself, and the request that drew it, are records in the transcript the
  * three `transcript_*` columns locate, on the machine that ran the session.
  */
-function sessionCall(input: {
+export function sessionCall(input: {
   readonly runId: string;
   readonly at: number;
   readonly machineId: string;
@@ -1513,7 +1520,7 @@ function sessionCall(input: {
  * The call row, written once. `OR IGNORE` on `(run_id, seq)` is what makes a settlement replayed
  * after a crash a no-op here, the way every other row a settlement writes is one.
  */
-function callStatement(call: RunCall, condition?: SqlCondition): SqlStatement {
+export function callStatement(call: RunCall, condition?: SqlCondition): SqlStatement {
   const values: readonly SqlParam[] = [
     call.runId,
     call.seq,
@@ -2520,6 +2527,159 @@ export async function finishClosedReview(
   });
 }
 
+/** Tool receipts already committed their rows. Native settlement only closes their ledger. */
+async function settleToolReview(
+  deps: Pick<ConductorDeps, "store" | "coordinator">,
+  at: number,
+  run: PendingRun,
+  read: SessionRead,
+  preparation: ReviewPreparation,
+  ingested: IngestedRun[],
+  settled: SettledClaim[],
+  notes: string[],
+): Promise<void> {
+  const { store, coordinator } = deps;
+  const { inference, costUsd, receiptUsage } = sessionAccounting(read);
+  const session = read.session;
+  const successful =
+    read.job.state === "exited" &&
+    (read.job.result?.exitCode ?? session?.exitCode) === 0 &&
+    (session?.failure ?? null) === null;
+  const live = `EXISTS (SELECT 1 FROM claims c WHERE
+      c.id=json_extract(runs.preparation,'$.review.assignmentId')
+      AND c.fence=json_extract(runs.preparation,'$.review.fence')
+      AND c.run_id=runs.authority_id AND c.job_id=runs.job_id AND c.finished_at IS NULL)`;
+  const complete = `(? AND ${live} AND coalesce(json_extract(payload,'$.stopRequested'),0)=0
+      AND json_extract(payload,'$.reviewSubmission.complete')=1
+      AND json_extract(payload,'$.reviewSubmission.actions')>0)`;
+  const reason = successful
+    ? "typed review ended without an accepted completion marker, or after its authority was withdrawn"
+    : "typed review session ended without successful native completion; accepted actions remain durable";
+  const finishedAt = new Date(at).toISOString();
+  const receipt: Receipt = {
+    runId: run.id,
+    kind: "evaluate",
+    machineId: run.machine_id,
+    recipeId: preparation.recipe.id,
+    role: preparation.role,
+    ...(jsonRecord(run.profile) === undefined ? {} : { profile: jsonRecord(run.profile) }),
+    ...(session === null ? {} : { models: [session.model] }),
+    preparation: preparationOf(run.preparation),
+    startedAt: run.started_at,
+    finishedAt,
+    closure: "failed",
+    ...receiptUsage,
+    counts: {},
+  };
+  const call = sessionCall({
+    runId: run.id,
+    at,
+    machineId: run.machine_id,
+    session,
+    inference,
+    closure: read.job.state === "cancelled" ? "stopped" : "failed",
+    reason,
+  });
+  const terminal = (completed: boolean): SqlCondition => ({
+    sql: `EXISTS (SELECT 1 FROM runs WHERE id=? AND closure IS NULL
+        AND json_extract(payload,'$.reviewSubmission.mode')='tools'
+        AND ${completed ? "" : "NOT "}${complete})`,
+    params: [run.id, successful ? 1 : 0],
+  });
+  // Read counts and the marker INSIDE the write: a last acknowledged action can race a
+  // terminal observation. Neither its receipt nor its correction history may be replaced.
+  const rows = await store.db.batch([
+    {
+      sql: `UPDATE runs SET payload=payload WHERE id=? AND closure IS NULL RETURNING id`,
+      params: [run.id],
+    },
+    // Trace before closure: a competing Stop or settlement that won already suppresses both.
+    // A timestamp is not a transaction identity; two wakes can settle in the same millisecond.
+    callStatement({ ...call, closure: "completed", refusal: "" }, terminal(true)),
+    callStatement(call, terminal(false)),
+    {
+      sql: `UPDATE runs SET
+        closure=CASE WHEN ${complete} THEN 'completed' ELSE ? END,
+        finished_at=?,cost_usd=?,tokens=?,
+        payload=json_set(json_patch(payload,?),
+          '$.closure',CASE WHEN ${complete} THEN 'completed' ELSE ? END,
+          '$.reason',CASE WHEN ${complete} THEN '' ELSE ? END,
+          '$.counts.reviewActions',json_extract(payload,'$.reviewSubmission.actions'),
+          '$.reviewSubmission.state',CASE WHEN ${complete} THEN 'completed'
+            WHEN json_extract(payload,'$.reviewSubmission.actions')>0 THEN 'partial' ELSE 'pending' END,
+          '$.reviewSubmission.reason',CASE WHEN ${complete} THEN '' ELSE ? END,
+          '$.posting',json('false'))
+        WHERE id=? AND closure IS NULL AND json_extract(payload,'$.reviewSubmission.mode')='tools'
+        RETURNING payload,authority_id`,
+      params: [
+        successful ? 1 : 0,
+        read.job.state === "cancelled" ? "stopped" : "failed",
+        finishedAt,
+        costUsd,
+        inference === null
+          ? (receiptUsage.tokens ?? null)
+          : inference.inputTokens + inference.outputTokens,
+        JSON.stringify({ ...receipt, ...(inference === null ? {} : { inference }) }),
+        successful ? 1 : 0,
+        read.job.state === "cancelled" ? "stopped" : "failed",
+        successful ? 1 : 0,
+        reason,
+        successful ? 1 : 0,
+        successful ? 1 : 0,
+        reason,
+        run.id,
+      ],
+    },
+    {
+      // A completed receipt carries no refusal; an empty sentence would read as one.
+      sql: `UPDATE runs SET payload=json_remove(payload,'$.reason','$.reviewSubmission.reason')
+        WHERE id=? AND closure='completed' AND finished_at=? AND changes()=1 RETURNING payload`,
+      params: [run.id, finishedAt],
+    },
+    { sql: `DELETE FROM run_progress WHERE run_id=?`, params: [run.id] },
+  ]);
+  if ((rows[0]?.length ?? 0) === 0) return;
+  const payload = rows[4]?.[0]?.["payload"] ?? rows[3]?.[0]?.["payload"];
+  if (typeof payload !== "string") return;
+  const receiptWritten = JSON.parse(payload) as Receipt;
+  const finalSubmission = reviewSubmission(JSON.parse(payload));
+  const finalReason = receiptWritten.reason ?? "";
+  store.touch();
+  if (finalReason !== "") notes.push(`run ${run.id}: ${finalReason}`);
+  ingested.push({
+    runId: run.id,
+    jobId: run.job_id,
+    closure: receiptWritten.closure,
+    costUsd: costUsd ?? 0,
+    rows: { reviewActions: finalSubmission?.actions ?? 0 },
+    skipped: 0,
+  });
+  const authorityId = String(rows[3]?.[0]?.["authority_id"]);
+  const [held] = await store.db.query<{ reserved_cost: number }>(
+    `SELECT reserved_cost FROM claims WHERE id=? AND run_id=? AND fence=?
+        AND finished_at IS NULL AND (job_id=? OR job_id IS NULL)`,
+    [preparation.assignmentId, authorityId, preparation.fence, run.job_id],
+  );
+  if (held === undefined) return;
+  const outcome = receiptWritten.closure === "completed" ? "completed" : "failed";
+  const charged = costUsd ?? Number(held.reserved_cost);
+  const finished = await coordinator.finish({
+    id: preparation.assignmentId,
+    runId: authorityId,
+    fence: preparation.fence,
+    cost: charged,
+    outcome,
+    now: at,
+  });
+  settled.push({
+    claimId: preparation.assignmentId,
+    outcome,
+    cost: finished.outcome === "finished" ? finished.cost : charged,
+    overrun: finished.outcome === "finished" && finished.overrun,
+    refused: finished.outcome === "finished" ? null : finished.refusal.reason,
+    reason: null,
+  });
+}
 export async function settleReviewSession(
   deps: Pick<ConductorDeps, "store" | "coordinator">,
   at: number,
@@ -2533,6 +2693,10 @@ export async function settleReviewSession(
   refusals: Refusals,
 ): Promise<void> {
   const { store, coordinator } = deps;
+  if ((await reviewActionStatus(store, run.id))?.mode === "tools") {
+    await settleToolReview(deps, at, run, read, preparation, ingested, settled, notes);
+    return;
+  }
   const drainCycleRunId = (
     preparationOf(run.preparation)?.["reviewDrain"] as { drainId: string } | undefined
   )?.drainId;
@@ -2735,6 +2899,24 @@ export async function settleReviewSession(
     runStatement(run.id, target, receipt, counts, liveAuthority),
     runStatement(run.id, { ...target, closure: "failed" }, staleReceipt, {}, staleAuthority),
   );
+  // Text history, including pre-tool runs, records the accepted channel in the receipt
+  // transaction. Durable tool actions never enter this validator or replay as final prose.
+  statements.push({
+    sql: `UPDATE runs SET payload=json_set(payload,'$.reviewSubmission',json_set(json(?),
+        '$.state',CASE WHEN closure IN ('completed','skipped') THEN 'completed' ELSE 'pending' END,
+        '$.actions',CASE WHEN closure IN ('completed','skipped') THEN 1 ELSE 0 END))
+      WHERE id=? AND closure IS NOT NULL AND finished_at=?`,
+    params: [
+      JSON.stringify({
+        mode: "text",
+        state: "pending",
+        actions: 0,
+        ...(reason === "" ? {} : { reason }),
+      }),
+      run.id,
+      new Date(at).toISOString(),
+    ],
+  });
   if (!drainReview) {
     statements.push({
       // Ordinary review output, receipt and charge remain one commit after extraction.
@@ -4981,13 +5163,27 @@ export function conductor(deps: ConductorDeps): Conductor {
     authority?: { readonly id: string; readonly runId: string; readonly fence: number },
     terminalJob?: { readonly jobId: string; readonly previousJobId: string },
   ): Promise<void> {
+    // A late typed posting can have a known terminal job but an expired, never-bound claim.
+    // Its durable terminal parent proves earned spend, not renewed submission authority.
     const open = await store.db.query<OpenClaim>(
       `SELECT id, run_id, fence, reserved_cost FROM claims
-         WHERE (job_id = ? ${terminalJob === undefined ? "" : "OR job_id = ?"}) AND finished_at IS NULL
+         WHERE (job_id = ? ${terminalJob === undefined ? "" : "OR job_id = ?"}
+           ${
+             authority === undefined
+               ? ""
+               : `OR (job_id IS NULL AND EXISTS (
+             SELECT 1 FROM runs r WHERE r.job_id=? AND r.closure IS NOT NULL
+               AND r.authority_kind='conductor' AND r.authority_id=claims.run_id
+               AND json_extract(r.payload,'$.reviewSubmission.mode')='tools'
+               AND json_extract(r.preparation,'$.review.assignmentId')=claims.id
+               AND json_extract(r.preparation,'$.review.fence')=claims.fence))`
+           })
+           AND finished_at IS NULL
        ${authority === undefined ? "" : "AND id = ? AND run_id = ? AND fence = ?"}`,
       [
         jobId,
         ...(terminalJob === undefined ? [] : [terminalJob.previousJobId]),
+        ...(authority === undefined ? [] : [jobId]),
         ...(authority === undefined ? [] : [authority.id, authority.runId, authority.fence]),
       ],
     );
@@ -5132,6 +5328,50 @@ export function conductor(deps: ConductorDeps): Conductor {
     return { provider, identityKey };
   }
 
+  function jsonRecord(value: string | null): Record<string, unknown> | undefined {
+    if (value === null || value === "") return undefined;
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * WHICH MODEL THE LAUNCH ASKED FOR, off the run row's own launch report (#169).
+   *
+   * The receipt's `model` is documented as the model a run ASKED for, and it was being written
+   * from the session's transcript — which names the model that ANSWERED. So a fallback was
+   * recorded as an intent nobody had, `RunTrace.model` said "requested" about an observation,
+   * and two runs of one request that fell back differently compared as `different-request`,
+   * which disqualifies every other field of the comparison.
+   *
+   * `askedModel` is written by the launch door, which is the only place Babel knows the answer:
+   * a review the conductor dispatched names a Code PROFILE and Code resolves the model behind
+   * it, so for those runs nothing here asked for a model by name and the field is absent.
+   * Absent is the honest reading of that and is not "the same as what answered".
+   */
+  function askedModel(profile: string | null): string | undefined {
+    const asked = jsonRecord(profile)?.["askedModel"];
+    return typeof asked === "string" && asked !== "" ? asked : undefined;
+  }
+
+  /** The run row's own preparation blob, as the receipt carries it back unchanged. */
+  function preparationOf(preparation: string | null): Receipt["preparation"] {
+    if (preparation === null || preparation === "") return undefined;
+    let held: unknown;
+    try {
+      held = JSON.parse(preparation);
+    } catch {
+      return undefined;
+    }
+    return typeof held === "object" && held !== null && !Array.isArray(held)
+      ? (held as Record<string, unknown>)
+      : undefined;
+  }
   /**
    * ONE FINISHED TITLING SESSION, TURNED INTO ONE ANSWER PER SESSION IT WAS OFFERED (#342).
    *
@@ -5660,8 +5900,9 @@ export function conductor(deps: ConductorDeps): Conductor {
    * a consent that lapsed, a Code that is no longer installed.
    *
    * THE REFUSAL IS BOUNDED THE WAY THE REAPER BOUNDS AN UNREADABLE JOB, and by the same counter.
-   * Analysis is the exception: its parent and reservation survive silence until a terminal
-   * Code response accounts the job. Transport failure never proves paid work stopped.
+   * Analysis, mapping and typed reviews are exceptions: their parent and reservation survive
+   * silence until a terminal Code response accounts the job. Transport failure never proves
+   * paid work stopped, nor does it roll back a typed review's acknowledged actions.
    * One refusal is a hiccup and the note says so; {@link UNREPORTED_CYCLES} in a row is a run
    * nobody will ever be able to read, and retrying it on every wake for ever is how a dead run
    * holds a batch slot and a panel row until someone notices. So the sentence is recorded ON THE
@@ -5716,12 +5957,14 @@ export function conductor(deps: ConductorDeps): Conductor {
       notes.push(note);
       const analysis = AnalysisWorkSchema.safeParse(preparationOf(run.preparation)?.["analysis"]);
       const drainReview = preparationOf(run.preparation)?.["reviewDrain"] !== undefined;
+      const submission = await reviewActionStatus(store, run.id);
       if (
         silent < UNREPORTED_CYCLES ||
         analysis.success ||
         mapping !== null ||
         review !== null ||
-        drainReview
+        drainReview ||
+        submission?.mode === "tools"
       ) {
         // Still hoped for: the sentence is on the row so a reader sees it without the journal,
         // and the run stays open for the next wake to ask again.
@@ -6111,6 +6354,37 @@ export function conductor(deps: ConductorDeps): Conductor {
     refusals: Refusals,
     scope?: RunScope,
   ): Promise<{ inFlight: number; runs: RunsTally }> {
+    // A crash after the terminal receipt but before claim accounting must not abandon earned
+    // work at its reservation, nor replay any accepted tool action.
+    if (scope === undefined) {
+      const closed = await store.db.query<{
+        job_id: string;
+        cost_usd: number | null;
+        closure: string;
+        authority_id: string;
+        preparation: string;
+      }>(`SELECT r.job_id,r.cost_usd,r.closure,r.authority_id,r.preparation FROM runs r
+        JOIN claims c ON (c.job_id=r.job_id OR c.job_id IS NULL) AND c.run_id=r.authority_id
+          AND c.id=json_extract(r.preparation,'$.review.assignmentId')
+          AND c.fence=json_extract(r.preparation,'$.review.fence')
+        WHERE r.closure IS NOT NULL AND r.job_id IS NOT NULL AND c.finished_at IS NULL
+          AND json_extract(r.payload,'$.reviewSubmission.mode')='tools'`);
+      for (const row of closed) {
+        const preparation = reviewPreparation(preparationOf(row.preparation));
+        if (preparation !== null)
+          await settleClaims(
+            row.job_id,
+            row.cost_usd,
+            row.closure === "completed" ? "completed" : "failed",
+            settled,
+            {
+              id: preparation.assignmentId,
+              runId: row.authority_id,
+              fence: preparation.fence,
+            },
+          );
+      }
+    }
     const lane: SqlCondition =
       scope === undefined
         ? { sql: "1", params: [] }
@@ -6386,7 +6660,10 @@ export function conductor(deps: ConductorDeps): Conductor {
                       AND r.authority_kind='conductor' AND r.authority_id=c.run_id
                       AND json_extract(r.preparation,'$.review.assignmentId')=c.id
                       AND json_extract(r.preparation,'$.review.fence')=c.fence
-                      AND json_extract(r.payload,'$.posting')=1 AND r.closure IS NULL)) orphan
+                      AND r.closure IS NULL
+                      AND (json_extract(r.payload,'$.posting')=1
+                        OR json_extract(r.payload,'$.reviewSubmission.mode')='tools'
+                        OR json_extract(r.payload,'$.reviewAdmission.state') IN ('creating','unknown')))) orphan
         WHERE NOT (open_runs > 0 AND ((role LIKE 'analysis:%' OR role LIKE 'mapping:%')
           OR EXISTS (SELECT 1 FROM drain_launches a WHERE a.drain_id=orphan.run_id AND a.preset='review-backlog')))
           AND ((job_id IS NULL AND granted_at <= ?)
@@ -6875,6 +7152,51 @@ export function conductor(deps: ConductorDeps): Conductor {
       : { refused: stop, code: "retention", pending: true };
   }
 
+  /** Called only before the native post, or after a definitive refusal proved it posted none. */
+  async function closeUnpostedReview(
+    run: ReviewPosting,
+    reason: string,
+    settled: SettledClaim[],
+  ): Promise<void> {
+    const at = new Date(deps.now()).toISOString();
+    const closed = await store.db.batch([
+      {
+        sql: `UPDATE runs SET
+          closure=CASE WHEN json_extract(payload,'$.stopRequested')=1 THEN 'stopped' ELSE 'failed' END,
+          finished_at=?,cost_usd=0,
+          payload=json_set(payload,'$.posting',json('false'),'$.postingRetired',json('true'),
+            '$.reason',?,'$.closure',
+            CASE WHEN json_extract(payload,'$.stopRequested')=1 THEN 'stopped' ELSE 'failed' END)
+          WHERE id=? AND closure IS NULL AND job_id IS NULL
+            AND coalesce(json_extract(payload,'$.reviewSubmission.actions'),0)=0 RETURNING id`,
+        params: [at, reason, run.id],
+      },
+      {
+        sql: `UPDATE claims SET finished_at=?,actual_cost=0,outcome='failed'
+          WHERE id=? AND run_id=? AND fence=? AND finished_at IS NULL AND job_id IS NULL
+            AND EXISTS (SELECT 1 FROM runs WHERE id=? AND closure IS NOT NULL
+              AND job_id IS NULL AND json_extract(payload,'$.postingRetired')=1)
+          RETURNING id`,
+        params: [at, run.preparation.assignmentId, run.authorityId, run.preparation.fence, run.id],
+      },
+      {
+        sql: `DELETE FROM run_progress WHERE run_id=?
+          AND EXISTS (SELECT 1 FROM runs WHERE id=? AND closure IS NOT NULL)`,
+        params: [run.id, run.id],
+      },
+    ]);
+    if ((closed[1]?.length ?? 0) > 0)
+      settled.push({
+        claimId: run.preparation.assignmentId,
+        outcome: "failed",
+        cost: 0,
+        overrun: false,
+        refused: null,
+        reason,
+      });
+    store.touch();
+  }
+
   /** As in analysis and mapping, only an adopt-only final miss proves no session was bought. */
   async function postReview(
     run: ReviewPosting,
@@ -6980,7 +7302,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       `SELECT id,authority_id,chain,preparation,profile,machine_id,payload FROM runs
         WHERE kind=? AND authority_kind='conductor' AND closure IS NULL AND job_id IS NULL
           AND json_type(preparation,'$.review')='object' AND json_extract(payload,'$.posting')=1
-          AND chain=?
+          AND coalesce(json_extract(payload,'$.reviewSubmission.mode'),'text')='text'
+          AND json_type(payload,'$.reviewAdmission') IS NULL AND chain=?
         ORDER BY started_at LIMIT 128`,
       [OPERATIONS.evaluate, deps.chain],
     );
@@ -7016,7 +7339,6 @@ export function conductor(deps: ConductorDeps): Conductor {
         });
     }
   }
-
   async function dispatchReviews(
     policy: Policy,
     at: number,
@@ -7185,7 +7507,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         });
         return { stop: { reason: "dispatch-refused", detail: claimed.refusal.detail }, gaps };
       }
-      const runId = `run_${assignment.id}_${String(claimed.claim.fence)}`;
+      let runId = `run_${assignment.id}_${String(claimed.claim.fence)}`;
       const preparation: ReviewPreparation = {
         assignmentId: assignment.id,
         recordId: assignment.recordId,
@@ -7209,8 +7531,35 @@ export function conductor(deps: ConductorDeps): Conductor {
         blinded: true,
         recipe: { id: recipe.id, version: recipe.version },
       };
-      const prompt = composeReviewPrompt({ assignment, preparation, recipe, projection });
-      const bytes = promptBytes(prompt);
+      const checked = await engine.checkProfile(route.profile);
+      if (!checked.ok) {
+        settled.push(await release(claimed.claim, checked.refused));
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: checked.code,
+          detail: checked.refused,
+        });
+        return { stop: { reason: "dispatch-refused", detail: checked.refused }, gaps };
+      }
+      const useTools = route.agentId !== undefined && engine.createReviewRun !== undefined;
+      let submission: ReviewSubmission = {
+        mode: "text",
+        state: "pending",
+        actions: 0,
+        reason:
+          route.agentId === undefined
+            ? "no review Agent configured; validated text submission"
+            : "governed tool runtime unavailable; validated text submission",
+      };
+      let prompt = composeReviewPrompt({
+        assignment,
+        preparation,
+        recipe,
+        projection,
+        submissionMode: useTools ? "tools" : "text",
+      });
+      let bytes = promptBytes(prompt);
       if (bytes > PROMPT_LIMIT) {
         const detail =
           `the ${assignment.role} review prompt is ${String(bytes)} bytes and Code accepts ` +
@@ -7224,7 +7573,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         });
         return { stop: { reason: "dispatch-refused", detail }, gaps };
       }
-      const posting: ReviewPosting = {
+      let posting: ReviewPosting = {
         id: runId,
         authorityId: claimed.claim.runId,
         chain: deps.chain ?? null,
@@ -7246,13 +7595,30 @@ export function conductor(deps: ConductorDeps): Conductor {
             recipe.id,
             JSON.stringify(route.profile),
             claimed.claim.runId,
-            JSON.stringify({ review: preparation }),
+            JSON.stringify({
+              review: preparation,
+              reviewTarget: projection.target,
+              reviewAssignment: assignment,
+            }),
             new Date(at).toISOString(),
             JSON.stringify({
               closure: null,
               requestedAt: at,
-              posting: true,
+              posting: !useTools,
               postingPrompt: prompt,
+              claim: {
+                id: claimed.claim.id,
+                runId: claimed.claim.runId,
+                fence: claimed.claim.fence,
+              },
+              ...(useTools
+                ? {
+                    reviewAdmission: {
+                      state: "creating",
+                      reason: "governed review Run creation unresolved; no model session posted",
+                    },
+                  }
+                : { reviewSubmission: submission }),
             }),
             posting.chain,
             ...fence.params,
@@ -7277,7 +7643,196 @@ export function conductor(deps: ConductorDeps): Conductor {
         return { stop: { reason: "dispatch-refused", detail }, gaps };
       }
       store.touch();
-      const started = await postReview(posting, settled, notes, true);
+      if (useTools) {
+        let admitted: EngineAnswer<{ runId: string; agentId: string }>;
+        try {
+          admitted = await engine.createReviewRun!({
+            agentId: route.agentId!,
+            lifetimeMs: Math.min(claimed.claim.expiresAt - deps.now(), 3_600_000),
+          });
+        } catch {
+          admitted = {
+            ok: false,
+            code: ENGINE_REFUSALS.unconfirmed,
+            refused: "governed review Run creation unresolved; no model session posted",
+          };
+        }
+        if (!admitted.ok && admitted.code === ENGINE_REFUSALS.unconfirmed) {
+          await store.db.run(
+            `UPDATE runs SET payload=json_set(payload,'$.reviewAdmission.state','unknown',
+              '$.reviewAdmission.reason',?,'$.reason',?) WHERE id=?
+                AND coalesce(json_extract(payload,'$.stopRequested'),0)=0`,
+            [admitted.refused, admitted.refused, runId],
+          );
+          store.touch();
+          return { stop: { reason: "dispatch-refused", detail: admitted.refused }, gaps };
+        }
+        submission = admitted.ok
+          ? {
+              mode: "tools",
+              state: "pending",
+              actions: 0,
+              complete: false,
+              agentRunId: admitted.value.runId,
+              agentId: admitted.value.agentId,
+            }
+          : { mode: "text", state: "pending", actions: 0, reason: admitted.refused };
+        prompt = composeReviewPrompt({
+          assignment,
+          preparation,
+          recipe,
+          projection,
+          submissionMode: submission.mode,
+        });
+        bytes = promptBytes(prompt);
+        if (bytes > PROMPT_LIMIT) {
+          const detail = `validated text fallback exceeds Code's ${String(PROMPT_LIMIT)} byte prompt bound`;
+          await closeUnpostedReview(posting, detail, settled);
+          return { stop: { reason: "dispatch-refused", detail }, gaps };
+        }
+        posting = {
+          ...posting,
+          request: {
+            profile: route.profile,
+            machineId,
+            prompt,
+            ...(submission.mode === "tools"
+              ? { agentTools: { runId: submission.agentRunId } }
+              : { postingKey: runId }),
+          },
+        };
+        // Publish the authenticated tool actor before native callbacks can arrive. The same
+        // live claim/policy fence as keyed posting prevents a Stop during admission buying work.
+        const admissionFence = reviewPostingFence(posting);
+        const pinned = await store.db.batch([
+          {
+            sql: `UPDATE runs SET payload=json_set(json_remove(payload,'$.reviewAdmission'),
+              '$.reviewSubmission',json(?),'$.posting',json('true'),'$.postingPrompt',?)
+              WHERE id=? AND closure IS NULL AND job_id IS NULL AND ${admissionFence.sql}
+              RETURNING id`,
+            params: [JSON.stringify(submission), prompt, runId, ...admissionFence.params],
+          },
+          {
+            sql: `INSERT INTO run_progress(run_id,job_id,stage,message,since,updated_at)
+              SELECT id,'','posting unconfirmed','Review Code posting unresolved; reservation held',?,''
+              FROM runs WHERE id=? AND closure IS NULL AND job_id IS NULL
+                AND json_extract(payload,'$.posting')=1 ON CONFLICT(run_id) DO NOTHING`,
+            params: [new Date(deps.now()).toISOString(), runId],
+          },
+        ]);
+        if ((pinned[0]?.length ?? 0) === 0) {
+          const detail = "review was stopped or its claim or policy changed before model posting";
+          await closeUnpostedReview(posting, detail, settled);
+          return { stop: { reason: "dispatch-refused", detail }, gaps };
+        }
+      }
+      let started: Started;
+      if (submission.mode === "tools") {
+        let answered: EngineAnswer<CodeJob>;
+        try {
+          answered = await engine.runSession(posting.request);
+        } catch {
+          answered = {
+            ok: false,
+            code: ENGINE_REFUSALS.unconfirmed,
+            refused: "review posting unresolved",
+          };
+        }
+        if (answered.ok) {
+          // Reuse main's atomic publication/binding and late-ack Stop attribution.
+          started = await answerReviewPosting(posting, answered, notes, true);
+        } else if (
+          answered.code === ENGINE_REFUSALS.unconfirmed ||
+          ((await reviewActionStatus(store, runId))?.actions ?? 0) > 0
+        ) {
+          await store.db.run(
+            `UPDATE runs SET payload=json_set(payload,'$.reviewSubmission.reason',?)
+              WHERE id=? AND closure IS NULL`,
+            [answered.refused, runId],
+          );
+          started = await unresolvedReviewPosting(posting, answered.refused, notes);
+        } else if (answered.noToolSession === true) {
+          // Only this named, pre-effect refusal may start another identity. The old tool
+          // identity stays immutable; callbacks and final prose can never submit as its text.
+          const detail = answered.refused;
+          submission = { mode: "text", state: "pending", actions: 0, reason: detail };
+          prompt = composeReviewPrompt({
+            assignment,
+            preparation,
+            recipe,
+            projection,
+            submissionMode: "text",
+          });
+          if (promptBytes(prompt) > PROMPT_LIMIT) {
+            await closeUnpostedReview(posting, detail, settled);
+            return {
+              stop: {
+                reason: "dispatch-refused",
+                detail: "validated text fallback exceeds Code's prompt bound",
+              },
+              gaps,
+            };
+          }
+          const fallback: ReviewPosting = {
+            ...posting,
+            id: `${runId}_text`,
+            request: { profile: route.profile, machineId, prompt, postingKey: `${runId}_text` },
+          };
+          const fallbackFence = reviewPostingFence(fallback);
+          const replaced = await store.db.batch([
+            {
+              sql: `INSERT INTO runs(id,kind,machine_id,container_id,recipe_id,profile,
+                authority_kind,authority_id,preparation,started_at,records,chain,payload)
+                SELECT ?,kind,machine_id,container_id,recipe_id,profile,authority_kind,authority_id,
+                  preparation,started_at,0,chain,
+                  json_set(json_remove(payload,'$.reason'),'$.reviewSubmission',json(?),
+                    '$.posting',json('true'),'$.postingPrompt',?)
+                FROM runs WHERE id=? AND closure IS NULL AND job_id IS NULL
+                  AND json_extract(payload,'$.reviewSubmission.actions')=0
+                  AND coalesce(json_extract(payload,'$.stopRequested'),0)=0
+                  AND ${fallbackFence.sql} ON CONFLICT(id) DO NOTHING RETURNING id`,
+              params: [
+                fallback.id,
+                JSON.stringify(submission),
+                prompt,
+                runId,
+                ...fallbackFence.params,
+              ],
+            },
+            {
+              sql: `UPDATE runs SET closure='failed',finished_at=?,cost_usd=0,
+                payload=json_set(payload,'$.closure','failed','$.posting',json('false'),
+                  '$.reason',?,'$.reviewSubmission.reason',?)
+                WHERE id=? AND closure IS NULL AND changes()=1`,
+              params: [new Date(deps.now()).toISOString(), detail, detail, runId],
+            },
+            {
+              sql: `DELETE FROM run_progress WHERE run_id=?
+                AND EXISTS (SELECT 1 FROM runs WHERE id=? AND closure IS NOT NULL)`,
+              params: [runId, runId],
+            },
+            {
+              sql: `INSERT INTO run_progress(run_id,job_id,stage,message,since,updated_at)
+                SELECT id,'','posting unconfirmed','Review Code posting unresolved; reservation held',?,''
+                FROM runs WHERE id=? AND closure IS NULL AND job_id IS NULL
+                ON CONFLICT(run_id) DO NOTHING`,
+              params: [new Date(deps.now()).toISOString(), fallback.id],
+            },
+          ]);
+          if ((replaced[0]?.length ?? 0) === 0) {
+            await closeUnpostedReview(posting, detail, settled);
+            return { stop: { reason: "dispatch-refused", detail }, gaps };
+          }
+          posting = fallback;
+          runId = fallback.id;
+          started = await postReview(posting, settled, notes, true);
+        } else {
+          await closeUnpostedReview(posting, answered.refused, settled);
+          started = { refused: answered.refused, code: answered.code };
+        }
+      } else {
+        started = await postReview(posting, settled, notes, true);
+      }
       if ("refused" in started) {
         refused.push({
           assignmentId: assignment.id,

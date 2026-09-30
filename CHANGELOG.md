@@ -180,30 +180,32 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   fetch disclosed unavailable rather than empty and Retry recovered. Synthetic records were
   used; no deployed archive or shared preview was accessed.
 
-### Fixed
-
-### Added
-
-- **Watch proposes a budget split without granting permission to spend (#225).** Its owner-only
-  allocation section reads the deterministic seven-day acceptance basis, counted and unknown
-  inventories, protected floors, sparse damping and displaced shares. Pinning a fraction asks
-  the baseline to renormalize the permitted remainder while retaining earlier pins; stale or
-  impossible edits stay refused. Named versions retain their reason and replayable basis, and
-  reading one never installs policy or launches work. Stage-less runs remain unattributed,
-  future-dated rulings stay outside the arithmetic, and a globally disabled policy allocates
-  nothing. Rendered regressions cover multiple pins, refusals and unavailable states. A
-  disposable real-store door smoke counted sixteen outcomes, pinned and saved a share, replayed
-  the saved basis exactly and refused a stale save without creating work or changing policy.
-  Live preview rendering remains an operator verification boundary.
-
-### Added
-
-- **The topics rail shows seven days of recorded activity (#248).** Small four-pixel-scale
-  bars count post creation, reviewer events and operator feedback for currently filed topics, while unknown dates
-  remain explicit instead of looking like quiet days. Explicitly tracked empty entities remain
-  navigable with their actual zero post count, and Watch can select them for exploration.
-  Real SQLite and rendered interaction regressions cover the UTC boundary, withdrawn filings,
-  seven-bin display and empty-target selection; preview-hub visual acceptance remains pending.
+- **A drawn review can submit durable typed actions instead of one final document (#315).**
+  With `review.agentId` naming an already-authorized Agent, the conductor pins the submission
+  mode before any session is posted, admits a bounded Run through the optional `core.access`
+  edge holding only `atyrode.babel:review` and the `reviewAction` tool, and posts the Code
+  session with `agentTools` and no posting key. Each assessment or refinement action is
+  validated by the same acceptance a text answer gets, commits with its receipt in one
+  fenced transaction or writes nothing, retries by key without a second write, and corrects by
+  superseding. A superseded proposal becomes historical and cannot be ruled on; a corrected
+  topic filing no longer routes work through its superseded predecessor. The run reads as
+  partial until a completion marker covering an active assessment or skip and a successful
+  native exit both land, in Watch and in the record's reception; refinements alone cannot
+  complete the assignment. No Agent, no tool channel, an unapproved receipt digest or OMP's
+  pre-effect tool refusal keeps the validated text answer, identified as such; an unacknowledged
+  admission or tool posting is held with its reservation and never bought again, and Stop
+  fences it without a job node. A Code stale-profile refusal before OMP posting closes an
+  unused typed claim at zero without triggering text fallback. A stopped posting later proven
+  unused also closes at zero without text replay. Native terminal receipts and call traces
+  commit together, including terminal Stop; interrupted claim accounting repairs without
+  replay, and unknown cost charges the reservation.
+  A disposable real-store door consumer proves malformed and untrusted refusal, correction
+  lineage, exact replay after closure and a completion marker that remains partial without
+  native success. In an isolated actual Watch preview, durable synthetic assignments showed
+  pending, partial, marker-only partial, completed and interrupted partial after reload; text
+  fallback was labelled separately. Regression coverage also spans conductor, launch and Feed.
+  The terminal facts and fallback receipt were explicitly synthetic fixtures; live Code
+  settlement and real-provider compliance remain separately unverified.
 
 ### Fixed
 

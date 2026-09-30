@@ -323,6 +323,13 @@ export function accountsClause(profile: {
  * not-yet-posted Code session. Mapping has its own preparation operation and cancel grant.
  */
 export function stopInput(run: RunRow, reason = ""): z.infer<typeof StopInputSchema> {
+  if (
+    (run.reviewSubmission?.mode === "tools" || run.reviewAdmission !== undefined) &&
+    run.jobId === "" &&
+    run.prepareJobId === ""
+  ) {
+    return StopInputSchema.parse({ runId: run.id, reason });
+  }
   const preparing = run.jobId === "" && run.prepareJobId !== "";
   return StopInputSchema.parse({
     runId: run.id,

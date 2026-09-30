@@ -28,7 +28,7 @@ import {
   ResultRefusal,
   type RefusalCode,
 } from "../machine/results.ts";
-import { nameableRecordSql, SCHEMA_V1 } from "./schema.ts";
+import { nameableRecordSql, SCHEMA_V1, supersededReviewProposalSql } from "./schema.ts";
 import { suggestDuplicate } from "./duplicates.ts";
 import {
   budgetChanges,
@@ -766,6 +766,7 @@ async function openPlans(store: ActsStore, recordId: string): Promise<readonly P
   return await store.db.query<PlanRow>(
     `SELECT id, kind, subject_id, operation, payload, proposed_by_kind, proposed_by_id, state
      FROM plans WHERE subject_id = ? AND kind IN ('topic', 'backlog') AND state = 'open'
+       AND NOT ${supersededReviewProposalSql("plans.subject_id")}
      ORDER BY created_at, id`,
     [recordId],
   );
@@ -1458,6 +1459,15 @@ export interface RuleArgs {
 export async function rule(store: ActsStore, args: RuleArgs, operator: string): Promise<Ruled> {
   if (operator === "") throw new ActRefused("a ruling has no operator");
   const kind = await recordKind(store, args.id);
+  if (
+    await first(store, `SELECT 1 AS superseded WHERE ${supersededReviewProposalSql("?")}`, [
+      args.id,
+    ])
+  ) {
+    throw new ActRefused(
+      "this review proposal was superseded by a correction and cannot be ruled on",
+    );
+  }
   if (args.ruling === "reopen") {
     if (args.note.trim() === "") throw new ActRefused("a reopen states no reason for reopening");
     if (args.duplicateOf !== undefined) throw new ActRefused("a reopen names no original");
@@ -1572,7 +1582,15 @@ export async function rule(store: ActsStore, args: RuleArgs, operator: string): 
       };
     }
   }
-  const results = await store.db.batch(statements);
+  let results: readonly (readonly SqlRow[])[];
+  try {
+    results = await store.db.batch(statements);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("review_proposal_superseded")) {
+      throw new ActRefused("this review proposal was superseded before the ruling committed");
+    }
+    throw error;
+  }
   const seq = Number(results[0]?.[0]?.["seq"] ?? 0);
   store.touch();
   return {
@@ -1963,6 +1981,7 @@ function gap(
            WHERE r.kind IN (${holes(kinds)})
              AND ${nameableRecordSql("r.id")}
              AND NOT EXISTS (SELECT 1 FROM records h WHERE h.supersedes_id = r.id)
+             AND NOT ${supersededReviewProposalSql("r.id")}
              AND NOT EXISTS (SELECT 1 FROM next_actions n
                               WHERE n.record_id = r.id AND n.proposed_by_kind = 'engine'
                                 AND n.proposed_by_id = ?

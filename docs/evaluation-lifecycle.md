@@ -15,16 +15,17 @@ question, and authorizes nothing. Only the operator's disposition does that.
 
 Every table is in `babel/store/schema.ts` and every name below is that file's.
 
-| Table           | What it holds                                                                                                                                                                                                    |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `records`       | the claims themselves — hypothesis, observation, finding, proposal — immutable by trigger, so a correction is a supersession and never an update                                                                 |
-| `status_events` | a record's lifecycle, append-only; the newest row is its status                                                                                                                                                  |
-| `assessments`   | what a reviewer judged: the record, **the exact revision read**, the role, the vote, the reasoning or the filing/backlog result, as JSON. A correction supersedes the earlier statement rather than replacing it |
-| `claims`        | who is entitled to review what, under a fence and a lease renewed by the job that holds it; finished rows are the spend ledger                                                                                   |
-| `policies`      | the evaluation policy, versioned; the newest row is in force, and only the operator writes one                                                                                                                   |
-| `feedback`      | the operator's scoped reason on a record — and `question = 1` marks what the next review must answer                                                                                                             |
-| `dispositions`  | the operator's rulings, append-only, the newest per record its standing                                                                                                                                          |
-| `budgets`       | a bounded overlay on the policy's spending, with its own TTL                                                                                                                                                     |
+| Table            | What it holds                                                                                                                                                                                                    |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `records`        | the claims themselves — hypothesis, observation, finding, proposal — immutable by trigger, so a correction is a supersession and never an update                                                                 |
+| `status_events`  | a record's lifecycle, append-only; the newest row is its status                                                                                                                                                  |
+| `assessments`    | what a reviewer judged: the record, **the exact revision read**, the role, the vote, the reasoning or the filing/backlog result, as JSON. A correction supersedes the earlier statement rather than replacing it |
+| `claims`         | who is entitled to review what, under a fence and a lease renewed by the job that holds it; finished rows are the spend ledger                                                                                   |
+| `review_actions` | immutable typed submissions, action keys, correction links, committed effects and durable receipts; an invalid action writes none of them                                                                        |
+| `policies`       | the evaluation policy, versioned; the newest row is in force, and only the operator writes one                                                                                                                   |
+| `feedback`       | the operator's scoped reason on a record — and `question = 1` marks what the next review must answer                                                                                                             |
+| `dispositions`   | the operator's rulings, append-only, the newest per record its standing                                                                                                                                          |
+| `budgets`        | a bounded overlay on the policy's spending, with its own TTL                                                                                                                                                     |
 
 Three properties follow from the shapes rather than from discipline:
 
@@ -42,11 +43,13 @@ The roles a review may take are spelled once, in `babel/contract.ts`:
 `reception`, `evidence`, `challenge`, `comparison`, `outcome`, `relevance`, and the two lanes of
 topic maintenance, `filing` and `backlog`. A vote is `support`, `oppose` or `unsure`.
 
-**A bare vote is a complete review.** After reading an exact revision, a reviewer may record
-support, opposition or uncertainty with no comment, no new evidence and no original argument.
-Support means _this deserves the operator's consideration_; opposition means _put it lower in the
-reading order_. Neither means the claim is proven or that anything is authorized. A skip is not a
-vote, and a failure is not a vote: an assignment that produced neither stays visible as a gap.
+**A bare vote is a complete contribution.** After reading an exact revision, a reviewer may
+record support, opposition or uncertainty with no comment, no new evidence and no original
+argument. In typed mode, review completion still requires an accepted marker and successful
+native settlement. Support means _this deserves the operator's consideration_; opposition
+means _put it lower in the reading order_. Neither means the claim is proven or that anything
+is authorized. A skip is not a vote, and a failure is not a vote: an assignment that produced
+neither stays visible as a gap.
 
 ## 3. The policy, and the gate
 
@@ -59,7 +62,7 @@ The policy carries, in one document: the cadence; `batchSize`, `concurrentPerMac
 long; `perCycleCost` and `dailyCost`, the spending ceilings; the five reserved shares —
 `coverageShare`, `explorationShare`, `discoveryShare`, `filingShare`, `backlogShare` — which are
 the protected allocations across lanes; and the review route, `review.machineId`,
-`review.profile`, `review.roleRecipes` and `review.recipes`.
+`review.profile`, optional `review.agentId`, `review.roleRecipes` and `review.recipes`.
 
 A policy that cannot be honoured is refused with the sentence saying why, because each such
 setting would make some other part of the system lie: an unversioned policy could never be
@@ -94,19 +97,35 @@ in `dispatchReviews`:
    stale worker returning after a takeover cannot commit.
 3. **Project, blinded.** §5.
 4. **Dispatch.** The review prompt is composed from the recipe the role names and the blinded
-   projection, measured against the byte bound Code accepts, and posted as a **Code session**
-   through `atyrode.code.runSession`. The claim is then bound to Code's job id and a `runs` row
-   records it.
-5. **Settle.** A later cycle reads the session back through `code.readSession`, writes the
-   assessment, and settles the claim **at what it actually cost**. A refused submission still
-   settles and still counts as spend: the model answered and the deployment paid for it. A job
-   that reached no model and produced nothing settles too, so no allowance is held by a dead
-   worker.
+   projection, then measured against Code's byte bound. A `runs` row retains the intent before
+   posting through `atyrode.code.runSession`; the claim is bound to the acknowledged job id.
+   An already-authorized `review.agentId` selects a bounded generic Run with the one
+   `reviewAction` tool. Absent or definitively unavailable tool authority selects identified,
+   validated text instead. The mode is pinned before model execution, independently of Jev.
+5. **Commit actions.** In tools mode, each assessment or refinement passes shape, evidence
+   and assignment-scope validation before one transaction writes its rows, receipt and partial
+   submission state. Invalid actions write nothing; retries return the same receipt; corrections
+   append linked successors. A completion marker requires an active assessment (including an
+   explicit skip) and names every active accepted action exactly once; refinements alone cannot
+   finish an assignment. The marker does not itself complete the review. Prose cannot submit
+   a tools-mode answer.
+6. **Settle.** A later cycle reads the native session through `code.readSession`. A successful
+   exit with a marker, still-bound claim and no Stop completes a typed review; other endings
+   keep acknowledged work partial. Text-mode answers still pass the authoritative validator
+   before settlement writes any accepted rows. The terminal receipt and typed call trace commit
+   together, including when Stop closes a terminal cancellation, and claim accounting is
+   recoverable. Refused submissions still count as spend; unknown cost is charged at the
+   reservation rather than treated as free.
 
 The loop has no clock. A plugin may not poll as an alternate scheduler, so a tick runs when the
-plugin's own dispatch wakes it or when one of its jobs settles. Every step is idempotent: two
-ticks in the same second do the work of one, and a retried cycle re-derives the same assignment
-ids, the same job ids and the same claim.
+plugin's own dispatch wakes it or when one of its jobs settles. Claim fences prevent overlapping
+wakes from buying the same review. Accepted action keys are idempotent; unknown native
+tool postings are held, not retried, because the pinned Code/OMP path cannot combine tools with
+a posting key. No text fallback can replay committed tool work. Stop fences the retained
+intent immediately, including when the posting has not acknowledged its job. If OMP's named
+pre-execution refusal subsequently proves that stopped intent posted no session and no action
+was accepted, it closes at zero and releases the reservation without starting text fallback.
+An uncertain posting remains retained.
 
 **A paid-but-refused review is not a free failure.** The park heuristic reads the spend ledger: a
 streak of reviews that reached no model and produced nothing parks the loop with a stated reason

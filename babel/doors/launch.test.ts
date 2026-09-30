@@ -1819,6 +1819,65 @@ async function stoppableSession(): Promise<void> {
   });
 }
 
+test("stopping an unconfirmed typed posting fences submissions without retiring or releasing it", async () => {
+  await stoppableSession();
+  const submission = {
+    mode: "tools",
+    state: "partial",
+    actions: 1,
+    agentRunId: "native-review",
+    agentId: "reviewer",
+    complete: false,
+  };
+  await harness.db.run(
+    `UPDATE runs SET job_id = NULL, kind = ?, preparation = ?, payload = ? WHERE id = 'run_session'`,
+    [
+      OPERATIONS.evaluate,
+      JSON.stringify({ review: { recordId: RECORD, assignmentId: "asg_session" } }),
+      JSON.stringify({ posting: true, reviewSubmission: submission }),
+    ],
+  );
+  const answer = await dispatch(ACTIONS.stop, { runId: "run_session", reason: "Enough" });
+  expect(answer).toEqual({
+    runId: "run_session",
+    jobId: "",
+    machineId: MACHINE,
+    closure: "stopping",
+  });
+  const run = await harness.store.run("run_session");
+  expect(run.run).toMatchObject({
+    state: "running",
+    reviewSubmission: { state: "partial", actions: 1 },
+  });
+  expect(run.receipt).toMatchObject({ stopRequested: true, stopReason: "Enough" });
+  expect(
+    await harness.db.query(
+      `SELECT finished_at, reserved_cost FROM claims WHERE id = 'asg_session'`,
+    ),
+  ).toEqual([{ finished_at: null, reserved_cost: 0.0625 }]);
+  expect(code.cancelled).toEqual([]);
+  expect(fleet.cancelled).toEqual([]);
+});
+
+test("terminal cancellation preserves the typed review's durable partial projection", async () => {
+  await stoppableSession();
+  const submission = {
+    mode: "tools",
+    state: "partial",
+    actions: 2,
+    agentRunId: "native-review",
+    agentId: "reviewer",
+    complete: false,
+  };
+  await harness.db.run(`UPDATE runs SET payload = ? WHERE id = 'run_session'`, [
+    JSON.stringify({ reviewSubmission: submission }),
+  ]);
+  await halt("run_session", { operationId: OPERATIONS.explore, jobId: "job_code_1" });
+  const run = await harness.store.run("run_session");
+  expect(run.run).toMatchObject({ state: "stopped", reviewSubmission: submission });
+  expect(run.receipt).toMatchObject({ stopRequested: true, reviewSubmission: submission });
+});
+
 function chargedSession(): CodeJob {
   return {
     jobId: "job_code_1",

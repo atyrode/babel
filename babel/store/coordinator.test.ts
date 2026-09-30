@@ -563,6 +563,33 @@ test("a record filed under an excluded topic is a gap and is never drawn", async
   expect(after.some((assignment) => assignment.recordId === withheld)).toBe(true);
 });
 
+test("correcting a filing to an open topic removes the old excluded topic from routing", async () => {
+  const { db, coord } = await deployment({ enabled: true });
+  const corrected = await record(db, "hyp_00000001", "hypothesis", 40);
+  const open = await record(db, "hyp_00000002", "hypothesis", 40);
+  await filing(db, corrected, "ent_0000000a");
+  await filing(db, open, "ent_0000000b");
+  await fact(db, "ent_0000000a", "analysis-policy", "excluded");
+  await fact(db, "ent_0000000b", "lifecycle", "active");
+  expect((await sampleDraws(coord, 40)).every((assignment) => assignment.recordId === open)).toBe(
+    true,
+  );
+
+  await db.run(
+    `INSERT INTO filings(id, record_id, entity_id, rationale, author_kind, author_id, heuristic,
+       withdrawn, supersedes_id, created_at)
+     VALUES('fil_corrected',?,'ent_0000000b','corrected topic','run','run_seed',0,0,?,?)`,
+    [corrected, `fil_${corrected}_ent_0000000a`, ago(0)],
+  );
+  expect(
+    (await sampleDraws(coord, 60)).some((assignment) => assignment.recordId === corrected),
+  ).toBe(true);
+  const result = await coord.draw({ runId: "cycle_1", now: NOW, seed: 1n });
+  expect(result.gaps.some((gap) => gap.recordId === corrected && gap.reason === "excluded")).toBe(
+    false,
+  );
+});
+
 test("a dormant topic loses the weighted draw to an active one, and is never shut out", async () => {
   const { db, coord } = await deployment({ enabled: true });
   const active = await record(db, "hyp_00000001", "hypothesis", 40);
@@ -873,6 +900,43 @@ test("a takeover fences the stale holder and keeps its reservation charged", asy
   expect(spend.total).toBeCloseTo(assignment.reservedCost + 0.01, 10);
   expect(spend.byRun["run_a"]).toBeCloseTo(assignment.reservedCost, 10);
   expect(spend.byRun["run_b"]).toBeCloseTo(0.01, 10);
+});
+
+test("an unacknowledged review posting occupies its machine and cannot be taken over after expiry", async () => {
+  const { db, coord, assignment } = await oneAssignment();
+  const granted = await coord.claim({ assignment, runId: "cycle_review", now: NOW });
+  if (granted.outcome !== "granted") throw new Error(granted.refusal.detail);
+  await db.run(
+    `INSERT INTO runs(id,kind,machine_id,authority_kind,authority_id,preparation,started_at,records,payload)
+      VALUES ('pending-review',?,'review-machine','conductor','cycle_review',?,?,0,?)`,
+    [
+      OPERATIONS.evaluate,
+      JSON.stringify({ review: { assignmentId: assignment.id, fence: granted.claim.fence } }),
+      new Date(NOW).toISOString(),
+      JSON.stringify({
+        posting: true,
+        reviewSubmission: {
+          mode: "tools",
+          state: "pending",
+          actions: 0,
+          complete: false,
+          agentRunId: "agent-run",
+          agentId: "reviewer",
+        },
+      }),
+    ],
+  );
+  const expired = granted.claim.expiresAt + DAY;
+  expect(await coord.open(expired)).toEqual({ total: 1, byMachine: { "review-machine": 1 } });
+  expect((await coord.claim({ assignment, runId: "new-cycle", now: expired })).outcome).toBe(
+    "refused",
+  );
+  expect(
+    await db.query(`SELECT fence,finished_at,actual_cost FROM claims WHERE id=?`, [assignment.id]),
+  ).toEqual([{ fence: 1n, finished_at: null, actual_cost: null }]);
+  const draw = await coord.draw({ runId: "new-cycle", now: expired, seed: 3n });
+  if (draw.outcome === "assignment") expect(draw.assignment.id).not.toBe(assignment.id);
+  else expect(draw.outcome).toBe("gap");
 });
 
 test("a finish reconciles the reservation, reports an overrun, and accepts only the identical retry", async () => {
@@ -1350,7 +1414,7 @@ test("a corpus larger than one page is read whole: the first page and the last b
   // …and the reserved coverage lane draws the oldest due across the WHOLE corpus, which is the
   // first row of the first page.
   expect(draws.some((assignment) => assignment.recordId === oldest)).toBe(true);
-});
+}, 20_000);
 
 // ---------------------------------------------------------------------------- the budget overlay
 

@@ -1418,6 +1418,67 @@ const reviewShape = {
   keep: KeptSchema.optional(),
 };
 
+export const MAX_REVIEW_ACTIONS = 32;
+export const MAX_REVIEW_ACTION_BYTES = 32768;
+const ReviewActionKeySchema = z
+  .string()
+  .min(1)
+  .max(120)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/u);
+
+// One compact superset rather than eight expanded role schemas. The persisted role is
+// authoritative and parseReviewResult applies its narrower schema before any write. Do not
+// default absent fields here: a default belonging to another role would change the raw answer.
+const ReviewActionResultSchema = z.strictObject({
+  vote: reviewShape.vote,
+  contributions: reviewShape.contributions.removeDefault().max(32).optional(),
+  outcome: reviewShape.outcome,
+  results: reviewShape.results.removeDefault().max(32).optional(),
+  environment: reviewShape.environment.removeDefault().optional(),
+  as_of: reviewShape.as_of.removeDefault().optional(),
+  uncertainty: reviewShape.uncertainty.removeDefault().optional(),
+  skip: reviewShape.skip.removeDefault().optional(),
+  filing: reviewShape.filing,
+  topic: reviewShape.topic,
+  no_topic: reviewShape.no_topic,
+  no_change: reviewShape.no_change,
+  consolidate: reviewShape.consolidate,
+  supersede: reviewShape.supersede,
+  retire: reviewShape.retire,
+  promote: reviewShape.promote,
+  keep: reviewShape.keep,
+});
+
+/** The governed tool's bounded shape. No actor, role, assignment or store-row authority. */
+export const ReviewActionInputSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    key: ReviewActionKeySchema,
+    kind: z.literal("assessment"),
+    supersedes: ReviewActionKeySchema.optional(),
+    result: ReviewActionResultSchema,
+  }),
+  z.strictObject({
+    key: ReviewActionKeySchema,
+    kind: z.literal("refinement"),
+    supersedes: ReviewActionKeySchema.optional(),
+    contribution: ContributionSchema.extend({
+      kind: z.literal("refinement"),
+      text: z.string().min(1),
+      target: ContributionTargetSchema,
+      would_change: z.string().min(1),
+    }),
+  }),
+  z.strictObject({
+    key: ReviewActionKeySchema,
+    kind: z.literal("complete"),
+    actions: z
+      .array(ReviewActionKeySchema)
+      .min(1)
+      .max(MAX_REVIEW_ACTIONS - 1),
+  }),
+]);
+export type ReviewActionInput = z.infer<typeof ReviewActionInputSchema>;
+
 /** What one role's result may contain. */
 interface RoleAuthority {
   /** The reception vocabulary. Reception alone: a comparison minting a global vote would turn
@@ -1543,11 +1604,10 @@ export type ReviewResult = z.infer<typeof ReviewResultSchema>;
  * `vote` invites exactly that, so what a role is shown is a union of the two answers it may
  * give: a skip with its reason, or an assessment.
  *
- * THE VALIDATOR IS STILL THE ENFORCEMENT, and this is documentation strength rather than a
- * guarantee: the generated schema is printed into the prompt (`server/engine/review.ts`), not
- * registered as a provider-constrained tool, so a model can still type both. What changes is
- * that the contract it reads cannot express the mistake, instead of forbidding it in prose two
- * files away.
+ * THE VALIDATOR IS STILL THE ENFORCEMENT. This role-specific schema is printed only for the
+ * validated text fallback. Governed reviews register ReviewActionInputSchema instead; its
+ * bounded action envelope constrains generation while the persisted role and this same
+ * acceptance still decide what may commit.
  *
  * The assessment form accepts `skip: ""` because that is what a model echoing an empty field
  * submits today, and it has always been valid. Refusing it here would trade five refusals for a
@@ -1605,17 +1665,7 @@ const reviewSchemas: Record<Role, z.ZodType> = {
   backlog: reviewSchema("backlog"),
 };
 
-/**
- * ONE ROLE'S ANSWER CONTRACT, PRINTED INTO THE PROMPT — not registered anywhere.
- *
- * This said "the JSON Schema the submit tool is registered with", and there is no submit tool:
- * the only caller interpolates it into the answer fence (`server/engine/review.ts`) and the
- * answer is read back out of the final message. Two readers reasoned correctly from that
- * sentence and reached the false conclusion that the shape was enforced where it is generated,
- * an hour apart, so the sentence is the defect: nothing here constrains a model, and
- * `acceptReviewResult` is the only enforcement there is. Making the old sentence true — a submit
- * tool whose parameters are this schema — is #315.
- */
+/** The role-specific validated text fallback contract, printed only in text mode. */
 export function reviewJsonSchema(role: Role): unknown {
   return z.toJSONSchema(reviewSchemas[role], { io: "input", target: "draft-2020-12" });
 }

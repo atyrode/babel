@@ -100,6 +100,44 @@ describe("what it is looking at", () => {
 });
 
 describe("the peel", () => {
+  test("durable partial review work is visible separately from completed review runs", async () => {
+    const fake = hub({
+      record: () =>
+        peel({
+          reception: {
+            byRole: [],
+            contested: false,
+            operatorHistory: [],
+            reviewRuns: [
+              {
+                runId: "interrupted-review",
+                submission: {
+                  mode: "tools",
+                  state: "partial",
+                  actions: 2,
+                  agentRunId: "native-partial",
+                  agentId: "reviewer",
+                  complete: false,
+                },
+              },
+              {
+                runId: "finished-review",
+                submission: { mode: "text", state: "completed", actions: 1 },
+              },
+            ],
+          },
+        }),
+    });
+    const view = await mount(<RecordPanel host={fake.host} arg={{ recordId: "pro_0000000a" }} />);
+    const reception = view.one('[data-depth="4"]');
+    expect(reception.textContent).toContain("Partial review");
+    expect(reception.textContent).toContain("2 durable actions");
+    expect(reception.textContent).toContain("Completed review");
+    expect(reception.textContent).toContain("validated text");
+    expect(reception.querySelector(".babel-roles")).toBeNull();
+    await view.unmount();
+  });
+
   test("opens the grounded objection and its actual source receipt independently of review votes", async () => {
     const candidate = post({
       id: "hyp_00000001",

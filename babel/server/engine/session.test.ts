@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
-import { ENGINE_REFUSALS } from "../../contract.ts";
+import { actionResultProjectionDigest } from "@manifold/protocol";
+import {
+  ACTIONS,
+  BABEL_PLUGIN_ID,
+  ENGINE_REFUSALS,
+  REVIEW_ACTION_CAP,
+  REVIEW_ACTION_RESULT_PROJECTION,
+} from "../../contract.ts";
 import { ENGINE_WITHOUT_ACTIONS, codeEngine, type ActionsSlice } from "./session.ts";
 
 /*
@@ -416,6 +423,24 @@ describe("what a profile may spend, asked before anything is posted", () => {
     expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
   });
 
+  test("a tool session with stale profile after preflight has posted no job", async () => {
+    const slice = actions((args) =>
+      args.action === "listProfiles"
+        ? { profiles: [profile({})] }
+        : hostRefusal(
+            "refused: atyrode.babel -> atyrode.code.runSession (code_stale_preferences)",
+          )(),
+    );
+    const answered = await codeEngine(slice).runSession({
+      profile: { containerId: "ctr_a", expectedRevision: 4 },
+      machineId: "m-dev-01",
+      prompt: "read the material",
+      agentTools: { runId: "run_tool" },
+    });
+    expect(answered).toMatchObject({ ok: false, code: ENGINE_REFUSALS.staleProfile });
+    expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
+  });
+
   test("an unresolved profile is posted, because an empty list Code could not resolve is not 'spends nothing'", async () => {
     const slice = actions((args) =>
       args.action === "listProfiles"
@@ -520,4 +545,185 @@ test("a keyed call skips the profile preflight, and a retire hears a definitive 
   expect(slice.calls.map((call) => call.action)).toEqual(["runSession", "runSession"]);
   expect(slice.calls[0]!.input).toMatchObject({ postingKey: "run_asg_1_1" });
   expect(slice.calls[1]!.input).toMatchObject({ postingKey: "run_asg_1_1", adoptOnly: true });
+});
+
+async function reviewRunReply(digest?: string) {
+  return {
+    run: {
+      id: "agent-run-review",
+      agentId: "reviewer",
+      session: null,
+      activity: "unknown",
+      principal: { id: "principal-reviewer", kind: "agent", name: "Reviewer", color: "#1971c2" },
+      rootRunId: "agent-run-review",
+      parentRunId: null,
+      authorizedByPrincipalId: "operator",
+      authorizationPath: "principal",
+      authorizationCredential: {
+        tokenId: null,
+        grantId: null,
+        caps: ["agents:delegate"],
+        containerScope: null,
+      },
+      purpose: "Review Babel records",
+      target: "manifold://",
+      reach: "node",
+      caps: [REVIEW_ACTION_CAP],
+      tools: [
+        {
+          door: `${BABEL_PLUGIN_ID}.${ACTIONS.reviewAction}`,
+          contractDigest:
+            digest ?? (await actionResultProjectionDigest(REVIEW_ACTION_RESULT_PROJECTION)),
+        },
+      ],
+      createdAt: 1_000,
+      expiresAt: 61_000,
+      renewals: 0,
+      maxDepth: 0,
+      maxDescendants: 0,
+      depth: 0,
+      cleanupOwnerPrincipalId: "operator",
+      state: "pending_policy",
+      policyRevision: "a".repeat(64),
+      cleanup: { revokedCredentials: 0, revokedGrants: 0 },
+    },
+  };
+}
+
+test("review Run admission narrows existing authority and never exposes returned credentials", async () => {
+  const reply = {
+    ...(await reviewRunReply()),
+    credential: { token: "synthetic-secret-never-forwarded", expiresAt: 61_000 },
+  };
+  const slice = actions((args) => {
+    expect(args.plugin).toBe("core.access");
+    expect(args.action).toBe("createRun");
+    expect(args.input).toEqual({
+      agentId: "reviewer",
+      caps: [REVIEW_ACTION_CAP],
+      tools: [`${BABEL_PLUGIN_ID}.${ACTIONS.reviewAction}`],
+      target: "manifold://",
+      reach: "node",
+      lifetimeMs: 60_000,
+      delegation: { maxDepth: 0, maxDescendants: 0 },
+    });
+    return reply;
+  });
+  expect(
+    await codeEngine(slice).createReviewRun!({ agentId: "reviewer", lifetimeMs: 60_000 }),
+  ).toEqual({ ok: true, value: { runId: "agent-run-review", agentId: "reviewer" } });
+});
+
+test("a stale publication approval cannot admit the current review tool", async () => {
+  const reply = await reviewRunReply("b".repeat(64));
+  const engine = codeEngine(actions(() => reply));
+  expect(await engine.createReviewRun!({ agentId: "reviewer", lifetimeMs: 60_000 })).toMatchObject({
+    ok: false,
+    code: ENGINE_REFUSALS.forbidden,
+  });
+});
+
+test.each([
+  [
+    "forbidden Agent",
+    hostRefusal("refused: atyrode.babel -> core.access.createRun (agent_unavailable)"),
+    ENGINE_REFUSALS.forbidden,
+  ],
+  [
+    "unavailable runtime",
+    hostRefusal("dependency_unavailable: core.access"),
+    ENGINE_REFUSALS.unavailable,
+  ],
+  [
+    "unknown transport",
+    () => {
+      throw new Error("synthetic-secret-never-retained");
+    },
+    ENGINE_REFUSALS.unconfirmed,
+  ],
+  [
+    "unknown post-effect refusal",
+    hostRefusal("refused: core.access.createRun (unexpected failure)"),
+    ENGINE_REFUSALS.unconfirmed,
+  ],
+  [
+    "malformed creation reply",
+    () => ({ run: { id: "unknown-created" } }),
+    ENGINE_REFUSALS.unconfirmed,
+  ],
+] as const)(
+  "generic creation distinguishes %s without inferring permission to replay",
+  async (_label, answer, code) => {
+    const result = await codeEngine(actions(answer)).createReviewRun!({
+      agentId: "reviewer",
+      lifetimeMs: 60_000,
+    });
+    expect(result).toMatchObject({ ok: false, code });
+    expect(JSON.stringify(result)).not.toContain("synthetic-secret-never-retained");
+  },
+);
+
+test.each(["runtime", "mode"] as const)(
+  "only the named pre-execution %s refusal proves no tool session",
+  async (kind) => {
+    const engine = codeEngine(
+      actions((args) =>
+        args.action === "listProfiles"
+          ? { profiles: [profile({})] }
+          : hostRefusal(
+              `refused: atyrode.babel -> atyrode.code.runSession (code_omp_agent_tools_${kind}_unsupported)`,
+            )(),
+      ),
+    );
+    expect(
+      await engine.runSession({
+        profile: { containerId: "ctr_a", expectedRevision: 4 },
+        machineId: "m-dev-01",
+        prompt: "Review",
+        agentTools: { runId: "agent-run-review" },
+      }),
+    ).toMatchObject({ ok: false, code: ENGINE_REFUSALS.unavailable, noToolSession: true });
+  },
+);
+
+test.each([
+  "code_omp_review_changed",
+  "code_session_conflict",
+  "code_invalid_omp_result",
+  "code_omp_refused",
+])(
+  "a tool post refused with %s has no proof of absence and cannot be bought again",
+  async (token) => {
+    const engine = codeEngine(
+      actions((args) =>
+        args.action === "listProfiles"
+          ? { profiles: [profile({})] }
+          : hostRefusal(`refused: atyrode.babel -> atyrode.code.runSession (${token})`)(),
+      ),
+    );
+    const answer = await engine.runSession({
+      profile: { containerId: "ctr_a", expectedRevision: 4 },
+      machineId: "m-dev-01",
+      prompt: "Review",
+      agentTools: { runId: "agent-run-review" },
+    });
+    expect(answer).toMatchObject({ ok: false, code: ENGINE_REFUSALS.unconfirmed });
+    expect(answer).not.toHaveProperty("noToolSession");
+  },
+);
+
+test("tool sessions cannot acquire the keyed text recovery path", async () => {
+  const slice = actions(() => {
+    throw new Error("must refuse before contacting Code");
+  });
+  const result = await codeEngine(slice).runSession({
+    profile: { containerId: "ctr_a", expectedRevision: 4 },
+    machineId: "m-dev-01",
+    prompt: "Review",
+    agentTools: { runId: "agent-run-review" },
+    postingKey: "review",
+    adoptOnly: true,
+  });
+  expect(result).toMatchObject({ ok: false, code: ENGINE_REFUSALS.refused });
+  expect(slice.calls).toEqual([]);
 });

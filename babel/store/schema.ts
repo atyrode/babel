@@ -25,7 +25,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 18 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 19 } as const;
 
 /** Named allocation intentions share this store, but never replace an active policy. */
 const ALLOCATION_PLAN_SCHEMA: readonly string[] = [
@@ -67,6 +67,49 @@ const ALLOCATION_PLAN_SCHEMA: readonly string[] = [
       ON CONFLICT(id) DO UPDATE SET revision = revision + 1;
     END`,
   ),
+];
+
+/** Static SQL expression only: a correction withdraws its predecessor's proposed work. */
+export function supersededReviewProposalSql(recordSql: string): string {
+  return `EXISTS(
+    SELECT 1 FROM review_actions prior JOIN review_actions newer
+      ON newer.run_id=prior.run_id AND newer.supersedes_key=prior.action_key
+    WHERE json_extract(prior.receipt,'$.proposalId')=${recordSql}
+  )`;
+}
+
+/** Accepted tool actions and their acknowledgements are one append-only transaction. */
+const REVIEW_ACTION_SCHEMA: readonly string[] = [
+  `CREATE TABLE review_actions(
+     run_id TEXT NOT NULL REFERENCES runs(id),
+     action_key TEXT NOT NULL,
+     sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 32),
+     kind TEXT NOT NULL CHECK(kind IN ('assessment','refinement','complete')),
+     supersedes_key TEXT,
+     input TEXT NOT NULL,
+     receipt TEXT NOT NULL,
+     effects TEXT NOT NULL,
+     PRIMARY KEY(run_id, action_key),
+     UNIQUE(run_id, sequence),
+     FOREIGN KEY(run_id, supersedes_key) REFERENCES review_actions(run_id, action_key)
+   ) STRICT`,
+  `CREATE UNIQUE INDEX review_actions_one_successor
+     ON review_actions(run_id, supersedes_key) WHERE supersedes_key IS NOT NULL`,
+  `CREATE TRIGGER review_actions_immutable BEFORE UPDATE ON review_actions BEGIN
+     SELECT RAISE(ABORT, 'a review action is never edited; supersede it');
+   END`,
+  `CREATE TRIGGER review_actions_kept BEFORE DELETE ON review_actions BEGIN
+     SELECT RAISE(ABORT, 'a review action is never deleted');
+   END`,
+  `CREATE UNIQUE INDEX review_agent_run ON runs(json_extract(payload,'$.reviewSubmission.agentRunId'))
+     WHERE json_extract(payload,'$.reviewSubmission.mode') = 'tools'`,
+  `CREATE INDEX review_posting_claim ON runs(
+     authority_id,json_extract(preparation,'$.review.assignmentId'),json_extract(preparation,'$.review.fence')
+   ) WHERE authority_kind='conductor'`,
+  `CREATE TRIGGER review_proposal_ruling_fence BEFORE INSERT ON dispositions
+     WHEN ${supersededReviewProposalSql("NEW.record_id")} BEGIN
+       SELECT RAISE(ABORT, 'review_proposal_superseded');
+   END`,
 ];
 
 /** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
@@ -1369,6 +1412,7 @@ export const SCHEMA_V1: readonly string[] = [
 
   // ---------------------------------------------------------------- a run's own traffic (#349)
   ...RUN_CALL_SCHEMA,
+  ...REVIEW_ACTION_SCHEMA,
 
   // ---------------------------------------------------------------- an inferred title (#342)
   ...SESSION_TITLE_SCHEMA,
@@ -1600,6 +1644,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // The lookups a draw makes into its own history, which a store this large answered by scanning
   // a table once per row. Indexes only, derived from the same list.
   ...HISTORY_INDEX_SCHEMA.map(objectAddition),
+  ...REVIEW_ACTION_SCHEMA.map(objectAddition),
 ];
 
 /**
@@ -1623,9 +1668,10 @@ export interface SchemaAddition {
  * addition would then run on every enable and fail on the second.
  */
 function objectAddition(sql: string): SchemaAddition {
-  const named = /^\s*CREATE\s+(?:VIRTUAL\s+)?(?:TABLE|INDEX|TRIGGER)\s+([a-z_][a-z_0-9]*)/iu.exec(
-    sql,
-  );
+  const named =
+    /^\s*CREATE\s+(?:VIRTUAL\s+|UNIQUE\s+)?(?:TABLE|INDEX|TRIGGER)\s+([a-z_][a-z_0-9]*)/iu.exec(
+      sql,
+    );
   const object = named?.[1];
   if (object === undefined) throw new Error(`a schema addition creates nothing named: ${sql}`);
   return { object, sql };
