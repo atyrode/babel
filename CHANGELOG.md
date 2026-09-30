@@ -78,7 +78,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   nothing. Rendered regressions cover multiple pins, refusals and unavailable states. A
   disposable real-store door smoke counted sixteen outcomes, pinned and saved a share, replayed
   the saved basis exactly and refused a stale save without creating work or changing policy.
-  Live preview rendering remains an operator verification boundary.
+  In an isolated local Watch, synthetic feedback shifted review/challenge shares while sparse
+  activities held their baseline; two pins retained the protected exploration floor. The rendered
+  form refused impossible shares, saved/replayed a named immutable version, refused stale and
+  duplicate saves, and withheld stale content when the transport went offline. A disabled policy
+  stayed all-zero before and after the interaction. Store comparisons found one new allocation
+  intention and no policy, budget, claim, drain, run or native-work changes. No actual provider,
+  archive or deployed preview was exercised.
 
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain
