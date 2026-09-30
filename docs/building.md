@@ -661,13 +661,15 @@ bun install --cwd ../manifold --frozen-lockfile   # the kit resolves zod and the
 ```
 
 `MANIFOLD_REV` follows Manifold `main` and currently names
-`47407b58f00b1fefcde1d86f6dd6d9b06e9c1216`. At that revision the kit stamps
-`hardenedContract: 9` into repacked bundles (`packages/plugin-kit/src/pack.ts:526-532`),
-while the host retains contracts 1–9 (`packages/protocol/src/isolate.ts:984-987`).
-A contract-9 web half needs a declared portable Worker entry for hardened installation
-(`packages/server/src/plugin-host.ts:2414-2419`). This family's documented delivery remains
-in-realm; its server-only OMP dependencies remain hardened. The declaration never silently
-changes which runner an installer selected.
+`070132088e30f10266e43a52074bc58f16c051fe`. At that revision the kit stamps
+`hardenedContract: 11` into repacked bundles (`packages/plugin-kit/src/pack.ts:526-532`),
+while the host retains contracts 1–11 (`packages/protocol/src/isolate.ts:985-993`).
+The added contracts carry optional physical-core inventory and credential-bound read-only
+lifecycle metadata, omitting their new fields for older packed guests. A contract-9-or-newer
+web half needs a declared portable Worker entry for hardened installation
+(`packages/server/src/plugin-host.ts:569-580,2422-2425`). This family's documented delivery
+remains in-realm; its server-only OMP dependencies remain hardened. The declaration never
+silently changes which runner an installer selected.
 The reviewed bounded-result channel includes exact digest-reviewed `textFields`: string-or-null
 leaves preserve already-redacted evidence rather than refusing a redaction marker as a credential
 carrier. Ordinary agent-facing results remain mechanical-only without trusted source approval,
@@ -868,7 +870,7 @@ bundle is attached or installed.** The release gate uses the supported `prepare-
 to set `BABEL_DEPENDENCY_RECEIPT` through `GITHUB_ENV`; after the SDK verifier succeeds,
 `bun run verify` records the dependency bundles' actual SHA-256 digests into that receipt under
 `dist/`. Ordinary verification records nothing unless that variable is explicitly set. The
-[pinned Manifold workflow](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/.github/workflows/plugins.yml#L93-L132)
+[pinned Manifold workflow](https://github.com/atyrode/manifold/blob/070132088e30f10266e43a52074bc58f16c051fe/.github/workflows/plugins.yml#L93-L132)
 runs preparation before the normal pack/verify steps and uploads their `dist/` as the existing
 `manifold-plugins` artifact. Its alternate `pack-verify-command` suppresses that upload and is
 not used here.
@@ -881,15 +883,18 @@ An artifact's own checksum file is not evidence that its bytes match the gate. T
 dependency build, published checksum files, dependency-first ordering and exact source-pin
 checks remain in place; nothing switches to externally published dependency bundles.
 
-The reproducibility repair arrives through Code
-[`498b39a`](https://github.com/atyrode/code/blob/498b39ae285114ecb87b9d4d203136f9141d016e/package.json#L17-L19),
-which pins OMP `f5b9d09`. Its
-[`plugins/workers/build.ts:497-508`](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/workers/build.ts#L497-L508)
-keeps syntax and whitespace optimization but disables Bun 1.4.2's unstable identifier
-minification. Independent builds of these exact merged pins matched all three OMP and four
-Code bundles; the composed verifier's receipt accepted that second closure and refused
-changed bytes, a missing or extra bundle, a moved role and a hidden symlink. That is source
-and disposable-consumer evidence, not an enabled native installation or preview receipt.
+The current closure arrives through Code
+[`4bae10b`](https://github.com/atyrode/code/blob/4bae10b04f5c1cbad6f63d4c9785a2d732ffb3b4/package.json#L17-L19),
+which pins OMP `f67e4f1`. Its
+[`plugins/workers/build.ts:497-508`](https://github.com/atyrode/manifold-omp/blob/f67e4f14fd0835d51ce0c5d54adeb8c43ec369f9/plugins/workers/build.ts#L497-L508)
+keeps whitespace compaction without optional syntax or identifier minification. The
+[Code native/browser gate](https://github.com/atyrode/code/actions/runs/36668035946) passed,
+and all three OMP and four Code fingerprints matched the local build. This conservative
+configuration is not an identified compiler-cause repair;
+[manifold-omp#94](https://github.com/atyrode/manifold-omp/issues/94) retains that investigation.
+The composed verifier's receipt still refuses changed bytes, a missing or extra bundle, a moved
+role and a hidden symlink. Neither matching source builds nor disposable consumer proof is an
+enabled native installation or preview receipt.
 
 The receipt CLI can also compare disposable closures directly:
 

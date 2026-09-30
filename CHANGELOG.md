@@ -11,6 +11,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The plugin closure follows Manifold's credential-bound lifecycle metadata.** The SDK and
+  both workflow refs move to `0701320`, with Code `4bae10b` and OMP `f67e4f1` on the same
+  revision. It supplies the optional hook metadata and physical-core inventory needed by
+  subsequent Babel consumers, without granting services or changing policy. Code's native
+  and browser gate passed with matching local dependency fingerprints; Babel's composed gate
+  checks the whole closure. Source pins are not native deployment or preview acceptance.
+
 - **Preparation conservatively budgets raw and sealed material together.** Machine-reported
   capacity and lane concurrency now bound each catalogued selection for two simultaneous copies;
   an unmeasured machine uses the declared scratch size, while Recall keeps its separate fetch
