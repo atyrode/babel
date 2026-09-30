@@ -116,8 +116,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Real synthetic restic and SQLite regressions cover stale sources, restart and idempotent
   sealed-output ingestion. Actual imported-corpus coverage remains an operator step.
 
-### Added
-
 - **A Topic opens its stored neighbourhood without inventing a second hierarchy (#224).**
   Agents and the browser share one bounded, read-only projection. The panel links every returned
   entity, including zero-post entities, shows the direction and depth of containment without
@@ -126,9 +124,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   and provenance; records open in the existing peel/peek surface. Current catalog locators are
   explicitly not historical citation proof, and raw notes/payloads never become archive quotes.
   Coverage distinguishes missing, empty, unavailable and depth/node/item/byte-limited reads from
-  a complete project inventory. Rendered interaction regressions cover navigation, refreshes,
-  stale/disputed material, omissions and record opening without another browser walk; preview
-  interaction remains a separate verification boundary.
+  a complete project inventory. Real-store regressions cover bounds, navigation, stale facts and
+  authority-preserving record opening. On an isolated local Hub, actual Feed/Topic interaction
+  opened bounded and cyclic links, a retired entity, typed records, stale/disputed history,
+  zero-material and missing entities; a Back action returned from each destination. Offline
+  fetch disclosed unavailable rather than empty and Retry recovered. Synthetic records were
+  used; no deployed archive or shared preview was accessed.
 
 ### Fixed
 
