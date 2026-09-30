@@ -623,6 +623,34 @@ export function FeedRow({
       data-leaving={leaving ? "" : undefined}
       tabIndex={-1}
       ref={register}
+      onMouseDown={(event) => {
+        // Moving focus can fold the previous row's acts and move this button before mouseup.
+        // Keep native hit-testing stable until activation; never open anything on a press.
+        if (
+          event.button !== 0 ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.shiftKey ||
+          !(event.target instanceof Element)
+        )
+          return;
+        const button = event.target.closest<HTMLButtonElement>("button");
+        if (button !== null && !button.draggable) event.preventDefault();
+      }}
+      onClickCapture={(event) => {
+        // The click target is now fixed. Keyboard activation already owns its focus.
+        if (
+          event.detail > 0 &&
+          event.button === 0 &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.shiftKey &&
+          event.target instanceof Element
+        )
+          event.target.closest<HTMLButtonElement>("button")?.focus();
+      }}
       onFocus={onFocus}
       aria-label={`${KIND_LABELS[post.kind]}: ${post.title}`}
     >

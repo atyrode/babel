@@ -8,8 +8,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
   module's dependencies in the order they are imported, which is the whole mechanism — a
   `register()` call inside `render.tsx` would run after its own import of react-dom.
 */
-// Once per process: the feed's harness registers the same DOM, one `bun test` over the whole
-// family evaluates both, and a second registration throws.
+// Feed and Watch import this same bootstrap before their components and render helpers.
 if (!GlobalRegistrator.isRegistered) {
   // Keep native-service consumers independent of when a panel first registers its DOM.
   const transport = { fetch, Headers, Request, Response, FormData, AbortController, AbortSignal };

@@ -1,6 +1,8 @@
+import "../watch/test/dom.ts";
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import type { OpenPanelOutcome, OpenPanelRequest } from "@manifold/plugin";
 import { resetPolledResources } from "@manifold/plugin/hooks";
+import { act } from "react";
 import { forgetSelection, looking, type TopicRow } from "./api.ts";
 import { HomePanel } from "./home.tsx";
 import { RecordPanel } from "./record.tsx";
@@ -502,6 +504,51 @@ describe("the peek", () => {
     expect(fake.opened).toEqual([
       { panelId: "atyrode.babel.feed.record", arg: { recordId: "fnd_0000000b" } },
     ]);
+    await view.unmount();
+  });
+
+  test("a pointer activation transfers focus only after the target is fixed, then j/k keep its pane pinned", async () => {
+    const posts = feed().posts;
+    const fake = hub({
+      record: (args) => {
+        const id = typeof args === "object" && args !== null && "id" in args ? args.id : undefined;
+        const selected = posts.find((post) => post.id === id);
+        if (selected === undefined) throw new Error("record missing from gesture fixture");
+        return peel({ post: selected });
+      },
+      thread: () => thread(),
+    });
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.key("j");
+    await view.key("Enter");
+    const following = await mount(<RecordPanel host={fake.host} arg={fake.opened[0]?.arg} />);
+    const first = view.one('[data-post="pro_0000000a"]');
+    const second = view.one('[data-open="fnd_0000000b"]');
+    await act(async () => {
+      // HappyDOM has no pointer hit-testing. Model only the native focus default here;
+      // the real Chromium scenario proves a folding row cannot move the mouseup target.
+      const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+      if (second.dispatchEvent(down)) second.focus();
+    });
+    expect(document.activeElement).toBe(first);
+    expect(fake.opened).toHaveLength(1);
+    await act(async () => {
+      second.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
+      second.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0, detail: 1 }));
+    });
+    expect(document.activeElement).toBe(second);
+    const pinned = await mount(<RecordPanel host={fake.host} arg={fake.opened[1]?.arg} />);
+    await view.key("j");
+    await following.settle();
+    expect(following.one("h1").textContent).toBe(posts[2]!.title);
+    expect(pinned.one("h1").textContent).toBe(posts[1]!.title);
+    await view.key("k");
+    await following.settle();
+    expect(following.one("h1").textContent).toBe(posts[1]!.title);
+    expect(pinned.one("h1").textContent).toBe(posts[1]!.title);
+    expect(fake.opened).toHaveLength(2);
+    await pinned.unmount();
+    await following.unmount();
     await view.unmount();
   });
 

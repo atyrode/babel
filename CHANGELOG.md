@@ -97,9 +97,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 - **Home's Enter peek follows the keyboard walk (#248).** Enter now opens a following
   record pane, so `j`/`k` update its rendered record rather than moving only an unseen
-  selection; pointer-opened record panes remain pinned. Actual Chromium interaction on the
-  disposable local Hub followed Enter with `j`/`k`, observed the changing record, and kept a
-  pointer-opened comparison pane pinned. Broader #248 visual gaps remain separately tracked.
+  selection; pointer-opened record panes remain pinned. Unmodified primary presses on row
+  buttons now transfer focus at activation, not before mouseup: folding the previous row's
+  actions can no longer move the claim out from under a click. Canceled presses open nothing;
+  modified gestures, inputs and keyboard focus retain their native behaviour. Actual Chromium
+  hit-testing observed the same claim on pointerdown and mouseup, exactly one new tile write,
+  and immediate `j`/`k` movement in the following pane while the pointer-opened pane stayed pinned.
 
 - **Feed's sentence stays on one line, and Watch preserves typed minutes (#248).** The
   sentence scrolls horizontally on narrow tiles, with shared anchored popovers that escape
@@ -108,7 +111,9 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   first digit of `12` into `5`; the visible number normalizes on blur. Watch now shows the
   existing Ceilings summary immediately after Start, before Runs and Drain. The disposable
   Hub kept `12` and its field geometry unchanged across an actual policy refresh, and showed
-  the recorded ceilings without launching a run or changing model/provider authority.
+  the recorded ceilings without launching a run or changing model/provider authority. A saved
+  synthetic Code profile appeared up front and preserved selection as its real configured
+  model changed; no machine, account credential or provider invocation was involved.
 
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain

@@ -1,18 +1,4 @@
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-
-/*
-  THE DOM these panels are rendered into, registered ONCE for the process. It lives here
-  rather than in each test file because `bun test` runs the three of them in one process and
-  a second registration throws; importing this module is what a test file does to get a DOM,
-  a fake host and the fixtures, and the three arrive together.
-*/
-if (!GlobalRegistrator.isRegistered) {
-  // Panel registration must not replace the native transport used by HTTP/native-service tests.
-  const transport = { fetch, Headers, Request, Response, FormData, AbortController, AbortSignal };
-  GlobalRegistrator.register();
-  Object.assign(globalThis, transport);
-  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-}
+import "../watch/test/dom.ts";
 
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
