@@ -68,6 +68,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   days-back draft. Restoring the unmodified Jev bundle with no configured service preserved the
   same baseline rows and draft. No real provider or deployed archive was accessed.
 
+- **Watch proposes a budget split without granting permission to spend (#225).** Its owner-only
+  allocation section reads the deterministic seven-day acceptance basis, counted and unknown
+  inventories, protected floors, sparse damping and displaced shares. Pinning a fraction asks
+  the baseline to renormalize the permitted remainder while retaining earlier pins; stale or
+  impossible edits stay refused. Named versions retain their reason and replayable basis, and
+  reading one never installs policy or launches work. Stage-less runs remain unattributed,
+  future-dated rulings stay outside the arithmetic, and a globally disabled policy allocates
+  nothing. Rendered regressions cover multiple pins, refusals and unavailable states. A
+  disposable real-store door smoke counted sixteen outcomes, pinned and saved a share, replayed
+  the saved basis exactly and refused a stale save without creating work or changing policy.
+  Live preview rendering remains an operator verification boundary.
+
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain
   and bind the recovered session atomically. Uncertain posts hold their reservation and machine
