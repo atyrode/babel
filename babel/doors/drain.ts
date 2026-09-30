@@ -77,9 +77,8 @@ import { DEFERRED_SESSION_DELEGATES, pressOperation } from "./launch.ts";
 
   `drain.status` is a read of this plugin's own tables and stays callable by read-only panels.
   Its post-dispatch wake folds the running jobs' progress, but does not refill a slot or post
-  Code work. The next write-authorized native beat or settlement does that. The read delegates
-  permit `jobs.status` and `jobs.follow`, so the panel's five-second poll can still measure
-  progress while a job is running without claiming the caller's workspace write authority.
+  Code work. An ordinary drain installs its own write-authorized native cadence before the first
+  fan; that cadence refills the drain even if the standing policy weights every activity at zero.
 */
 
 /**
@@ -121,6 +120,13 @@ export interface DrainDoorDeps {
   deps(ctx: Parameters<Door["handler"]>[0]): DrainDeps;
   /** The manifest's `concurrentJobs`: the most jobs of one operation a machine runs at once. */
   readonly concurrentJobs: number;
+  /** Register an ordinary drain's native wake under this press, before its first fan. */
+  startOrdinary(
+    ctx: Parameters<Door["handler"]>[0],
+    row: DrainRow,
+  ): Promise<{ readonly ok: boolean; readonly notes: readonly string[] }>;
+  /** Release a cadence when the first fan could not post any job. */
+  stopOrdinary(ctx: Parameters<Door["handler"]>[0]): Promise<void>;
   /**
    * THE MAPPING DRAIN'S FIRST FAN AND ITS OWN WAKE, under the start's own authority: the running
    * mapping drains' own conductor step (`Conductor.tickMapDrains`) and the drain's native
@@ -372,6 +378,11 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       const row = await readDrain(store, drainId);
       if (row === null) return { refused: `the drain row for ${drainId} was not written` };
       const deps = doorDepsAtStart;
+      const cadence = await doorDeps.startOrdinary(ctx, row);
+      if (!cadence.ok) {
+        await endDrain(deps, row, "failed", cadence.notes.join("; "), []);
+        return { refused: `this drain has no native continuation: ${cadence.notes.join("; ")}` };
+      }
       // The fan holds `concurrent` materials on the machine at once: each is bounded to that
       // share of its scratch, as every later tick's are (#453).
       const plan = {
@@ -396,6 +407,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       }
       if (live.length === 0) {
         await endDrain(deps, row, "failed", `nothing could be launched: ${refused}`, []);
+        await doorDeps.stopOrdinary(ctx);
         return { refused: `this drain launched nothing: ${refused}` };
       }
       store.touch();

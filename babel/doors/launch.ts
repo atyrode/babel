@@ -449,12 +449,15 @@ export interface LaunchMachinery {
    * `chain` is the account chain this wake acts for (see {@link principalChain}): what it posts
    * is recorded under it, and a posting whose answer was lost is asked again only by a wake of
    * the chain that posted it.
+   * A drain-owned cadence names only its live runs; it cannot post other prepared work on the
+   * same principal's account merely because that work became ready in the meantime.
    */
   postPrepared(
     jobs: BabelJobs,
     engine: CodeEngine,
     plan: RunPlan,
     chain: string | null,
+    onlyRunIds?: ReadonlySet<string>,
   ): Promise<readonly Posted[]>;
   /**
    * SETTLE ONE RUN'S UNRESOLVED POSTING FOR GOOD, for an operator's Stop (#470): an adopt-only
@@ -2101,9 +2104,14 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     engine: CodeEngine,
     plan: RunPlan,
     chain: string | null,
+    onlyRunIds?: ReadonlySet<string>,
   ): Promise<readonly Posted[]> {
     void jobs;
     void plan;
+    if (onlyRunIds?.size === 0) return [];
+    const ids = onlyRunIds === undefined ? [] : [...onlyRunIds];
+    const selected =
+      onlyRunIds === undefined ? "" : ` AND r.id IN (${ids.map(() => "?").join(",")})`;
     const waiting = await store.db.query<PreparedRun>(
       `SELECT r.id AS id, r.kind AS kind, r.machine_id AS machine_id,
               r.container_id AS container_id, r.prepare_job_id AS prepare_job_id,
@@ -2113,8 +2121,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
          FROM runs r JOIN runs p ON p.job_id = r.prepare_job_id
         WHERE r.closure IS NULL AND r.job_id IS NULL AND r.container_id IS NOT NULL
           AND p.closure IS NOT NULL
-          AND r.kind != '${TRANSCRIPT_MAP_SESSION_OPERATION}'
+          AND r.kind != '${TRANSCRIPT_MAP_SESSION_OPERATION}'${selected}
         ORDER BY r.started_at`,
+      ids,
     );
     const posted: Posted[] = [];
     for (const run of waiting) {

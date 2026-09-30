@@ -351,12 +351,29 @@ preparing, whose `atyrode.babel.prepare` job is cancelled — and whose ROW IS C
 races the seal loses. A stop that left the row open would be the operator pressing stop and
 the account spending afterwards.
 
+**AN ORDINARY DRAIN CARRIES ITS OWN CONTINUATION.** A Code session's settlement wakes Code,
+not Babel; with every activity weight at zero the conductor has no beat of its own. Before
+posting its first fan, `drainStart` therefore registers a per-drain native `catalog` cadence
+under the start's delegated write authority. The cadence folds Code receipts, refills only
+while the drain still admits work, and remains through the deadline until its last job is
+folded; an ended drain loses its cadence. A credential that cannot keep that schedule past
+the deadline and settlement margin refuses the start before any job spends. Read-only
+`drainStatus` may fold progress, but cannot schedule or launch; a missed panel poll no longer
+strands the drain. The server-hook regression starts a drain with all standing weights zero,
+observes its first closure through read-only status, then sees the native cadence refill,
+close at `maxJobs` and unregister itself.
+
 **AND THE SELECTION'S BOUND IS UNDER THE MACHINE'S, WITH ROOM.** The machine has two bounds.
-The leases are written into the runtime scratch. And `outputBytes` is the AGGREGATE the owner
-seals against — stdout, stderr and both of `prepare`'s leases come out of one running budget,
-and each lease is a ustar archive carrying 512 bytes of header and padding per member. The
-raw material files remain in scratch while the native sealer writes their ustar archive, so a
-material transiently needs two copies of its selected/normalized bytes.
+Raw leases are written into runtime scratch, while the native collector writes their sealed
+ustar archives to the owner's state-backed output store; it removes raw files only after
+publication ([Manifold `job-runtime.ts:163-167` at `47407b58`](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/packages/agent/src/job-runtime.ts#L163-L167),
+[`job-runtime.ts:220-225`](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/packages/agent/src/job-runtime.ts#L220-L225),
+[`module.nix:45-53,115-119`](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/infra/native/module.nix#L45-L53)).
+`outputBytes` bounds the output collection across leases, headers, stdout and
+stderr. Babel deliberately charges both raw and sealed bytes against the measured runtime
+capacity when admitting a selection, although the sealed copy is on another backing volume:
+this conservative bound leaves room for overlapping material and keeps its native preflight
+below the owner's aggregate output limit.
 `MAX_MATERIAL_BYTES` is 448 MiB, 64 MiB under the 512 MiB `inputBytes` the omp session extracts
 the material into; it remains Recall's independent fetch ceiling, not a general 32 MiB cap.
 The hub bounds catalogued source bytes at

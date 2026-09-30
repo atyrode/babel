@@ -952,8 +952,8 @@ async function tickMapDrain(
  * conductor's tick: the conductor is what settles a finished job and writes what it spent, and a
  * controller that read the runs table first would decide against last cycle's numbers.
  *
- * `preset` narrows it to one kind of drain: a mapping drain's own wake moves its lane on and
- * never spends another drain's fan under the credential that wake carries.
+ * `preset` narrows it to one kind of drain; `drainId` narrows a native cadence to the one
+ * ordinary drain whose starting credential it carries. Neither wake spends another drain's fan.
  *
  * `refill=false` is the read-only status wake: never post a new slot under a panel caller.
  *
@@ -965,6 +965,7 @@ export async function drainTick(
   deps: DrainDeps,
   preset?: DrainPreset,
   refill = true,
+  drainId?: string,
 ): Promise<readonly DrainReport[]> {
   let drains: readonly DrainRow[];
   try {
@@ -985,6 +986,7 @@ export async function drainTick(
   const reports: DrainReport[] = [];
   for (const row of drains) {
     if (preset !== undefined && row.preset !== preset) continue;
+    if (drainId !== undefined && row.id !== drainId) continue;
     try {
       reports.push(await tickDrain(deps, row, refill));
     } catch (error) {

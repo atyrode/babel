@@ -545,6 +545,39 @@ test("reviewed limits survive the preparation wake and still govern the posted s
   ]);
 });
 
+test("a drain-owned wake posts only its prepared run, not another ready run of the same account", async () => {
+  const request = {
+    preset: "read-whats-new" as const,
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  };
+  const other = await start(request);
+  const owned = await start(request);
+  const ownedId = String(owned["runId"]);
+  const otherId = String(other["runId"]);
+  await sealStage("completed", String(other["jobId"]));
+  await sealStage("completed", String(owned["jobId"]));
+  const asked: string[] = [];
+  code.posting = (posted) => {
+    asked.push(String(posted.postingKey));
+    const job = stageJob();
+    return job.ok
+      ? { ok: true, value: { ...job.value, jobId: `job_code_${String(asked.length)}` } }
+      : job;
+  };
+
+  expect(
+    await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE, new Set([ownedId])),
+  ).toEqual([{ runId: ownedId, jobId: "job_code_1" }]);
+  expect(asked).toEqual([ownedId]);
+  expect(await harness.db.query(`SELECT job_id FROM runs WHERE id = ?`, [otherId])).toEqual([
+    { job_id: null },
+  ]);
+  expect(
+    await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE, new Set([otherId])),
+  ).toEqual([{ runId: otherId, jobId: "job_code_2" }]);
+});
+
 test("an explicit explore posts its preparation within prepare's own declared ceiling", async () => {
   /*
     THE LIMITS THE HUB JUDGES A POSTING AGAINST ARE THE MANIFEST'S (#449). This file's fixed plan

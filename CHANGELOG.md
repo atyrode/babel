@@ -11,7 +11,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
-- **Preparation leaves scratch for both raw material and its native archive.** Machine-reported
+- **Preparation conservatively budgets raw and sealed material together.** Machine-reported
   capacity and lane concurrency now bound each catalogued selection for two simultaneous copies;
   an unmeasured machine uses the declared scratch size, while Recall keeps its separate fetch
   ceiling. A native preflight refuses insufficient free space before fetching. Synthetic titling
@@ -21,6 +21,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   carry Code-workspace read/write and native material-binding authority into the preparation's
   settlement; read-only pulse, runs and drain status fold progress without starting work.
   Lost-posting recovery and the read-only part ceiling are covered by the server and part tests.
+
+- **Ordinary drains continue without a weighted conductor beat.** Each start installs a bounded
+  native catalog cadence under its own write authority before spending its first fan, so completed
+  Code sessions refill slots and close at their target or deadline even when every standing weight
+  is zero. Read-only status remains observational; a real server-hook regression covers refill,
+  terminal closure and cadence cleanup.
 
 - **Long selectors no longer invalidate sealed preparation outputs.** Material filenames now
   reserve the native ustar component limit for the ordinal and extension before shortening the

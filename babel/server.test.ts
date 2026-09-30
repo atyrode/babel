@@ -22,6 +22,7 @@ import { ActionCallError } from "@manifold/plugin-kit/errors";
 import type { SqlParam, SqlStatement } from "@manifold/plugin";
 import type { SettledJob } from "@manifold/protocol";
 import {
+  DRAIN_SCHEDULE_PREFIX,
   ACTIONS,
   asLaunchRequest,
   BABEL_PLUGIN_ID,
@@ -44,7 +45,12 @@ import { transcriptMaps } from "./store/transcript-maps.ts";
 import { buildTranscriptMap } from "./machine/transcript-map-tree.ts";
 import { transcriptMapCaptureId } from "./transcript-map-identity.ts";
 import { insertDrain } from "./store/drains.ts";
-import { CONDUCTOR_SCHEDULE_ID, type JobLaunch, type ScheduleTiming } from "./server/conductor.ts";
+import {
+  BEAT_OPERATION,
+  CONDUCTOR_SCHEDULE_ID,
+  type JobLaunch,
+  type ScheduleTiming,
+} from "./server/conductor.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -1017,6 +1023,121 @@ test("enabling a store made before drains named a profile drops the session colu
     legacyKnobs: "{legacy-not-json",
     session: "legacy-unstructured-choice",
   });
+});
+
+test("an ordinary drain keeps refilling and ends without a weighted beat or panel write authority", async () => {
+  const stored = await harness.db.query<{ payload: string }>(
+    `SELECT payload FROM policies WHERE version='p1'`,
+  );
+  const standing = PolicySchema.parse(JSON.parse(stored[0]!.payload));
+  await insert(harness.db, "policies", {
+    version: "p2",
+    seq: 2,
+    actor_id: "operator",
+    reason: "only the drain spends",
+    payload: JSON.stringify({
+      ...standing,
+      version: "p2",
+      activityWeights: Object.fromEntries(
+        Object.keys(standing.activityWeights).map((activity) => [activity, 0]),
+      ),
+    }),
+    recorded_at: stamp(NOW),
+  });
+  jobs.execute = (launch: JobLaunch): unknown => ({ ...launch, state: "queued", result: null });
+  const started = {
+    ...context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.drainStart)),
+    actions: {
+      call: async ({ action }: { action: string }) => {
+        if (action !== "listProfiles") throw new Error(`unexpected Code action ${action}`);
+        return await Promise.resolve({
+          profiles: [
+            {
+              containerId: "ctr_workbench",
+              revision: 1,
+              selected: {
+                model: "synthetic/model",
+                thinking: "low",
+                capability: 4,
+                advisor: "review",
+              },
+              machineId: MACHINE,
+              accounts: [{ provider: "synthetic", identityKey: "test-account" }],
+              resolved: true,
+            },
+          ],
+        });
+      },
+    },
+    emit: () => {},
+  } as unknown as GuestCtx;
+  const action = plugin.actions.find((entry) => entry.name === ACTIONS.drainStart)!;
+  const request = action.input.parse({
+    machineId: MACHINE,
+    preset: "keep-going",
+    profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+    concurrent: 1,
+    maxJobs: 2,
+    minutes: 5,
+    target: { deadline: new Date(Date.now() + 24 * HOUR).toISOString() },
+    reason: "synthetic autonomous continuation",
+    operation: { kind: "operation", machineId: MACHINE, operationId: BEAT_OPERATION },
+  });
+  const answer = await plugin.handlers[ACTIONS.drainStart]?.(started, request as never);
+  expect(answer).toMatchObject({ launched: 1 });
+  const drainId = (answer as { drainId: string }).drainId;
+  const wake = jobs.scheduled.find((row) => row.scheduleId.startsWith(DRAIN_SCHEDULE_PREFIX));
+  expect(wake).toBeDefined();
+  expect(jobs.scheduled.some((row) => row.scheduleId === CONDUCTOR_SCHEDULE_ID)).toBe(false);
+  const first = await harness.db.query<{ id: string }>(
+    `SELECT id FROM runs WHERE id LIKE ? ORDER BY started_at LIMIT 1`,
+    [`run_${drainId}_%`],
+  );
+  await harness.db.run(`UPDATE runs SET closure='completed', finished_at=? WHERE id=?`, [
+    stamp(clock),
+    first[0]!.id,
+  ]);
+
+  // A read-only status may fold closure but may not buy the next job.
+  await plugin.handlers[ACTIONS.drainStatus]?.(
+    context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.drainStatus)),
+    { drainId } as never,
+  );
+  expect(await harness.db.query(`SELECT jobs_launched FROM drains WHERE id=?`, [drainId])).toEqual([
+    { jobs_launched: 1n },
+  ]);
+  expect(jobs.refused).toEqual([]);
+
+  // The cadence was registered by the start, not by that read; it can refill and stop unaided.
+  const cadenceJob = settled({
+    jobId: "job_drain_cadence",
+    operationId: BEAT_OPERATION,
+    scheduleId: wake!.scheduleId,
+    revision: wake!.revision,
+  });
+  await plugin.lifecycle?.onJobSettled?.(
+    context(harness.db as unknown as GuestDatabase, jobs) as never,
+    cadenceJob,
+  );
+  expect(
+    await harness.db.query(`SELECT state, jobs_launched FROM drains WHERE id=?`, [drainId]),
+  ).toEqual([{ state: "running", jobs_launched: 2n }]);
+  const second = await harness.db.query<{ id: string }>(
+    `SELECT id FROM runs WHERE id LIKE ? ORDER BY started_at DESC LIMIT 1`,
+    [`run_${drainId}_%`],
+  );
+  await harness.db.run(`UPDATE runs SET closure='completed', finished_at=? WHERE id=?`, [
+    stamp(clock),
+    second[0]!.id,
+  ]);
+  await plugin.lifecycle?.onJobSettled?.(
+    context(harness.db as unknown as GuestDatabase, jobs) as never,
+    cadenceJob,
+  );
+  expect(
+    await harness.db.query(`SELECT state, jobs_launched FROM drains WHERE id=?`, [drainId]),
+  ).toEqual([{ state: "target", jobs_launched: 2n }]);
+  expect(jobs.scheduled.some((row) => row.scheduleId === wake!.scheduleId)).toBe(false);
 });
 
 test("mapping-only methods are unavailable to ordinary exploration", async () => {

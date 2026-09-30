@@ -15,6 +15,9 @@ import {
   BeatChainSchema,
   beatChainKey,
   DRAIN_CONCURRENT_MAX,
+  DRAIN_SCHEDULE_PREFIX,
+  OUTPUT_BINDING,
+  OUTPUT_LOCATION,
   INPUT_FIELD,
   MACHINE_OPERATIONS,
   MAP_DRAIN_PRESET,
@@ -36,6 +39,7 @@ import {
   BEAT_OPERATION,
   CONDUCTOR_SCHEDULE_ID,
   conductor,
+  describeHost,
   describeMapHost,
   SCHEDULE_LIFETIME_MS,
   STANDING_RUN,
@@ -58,7 +62,7 @@ import {
 import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { ensureTerms } from "./store/corpus.ts";
-import { activeDrains, deadlineOf, readDrain } from "./store/drains.ts";
+import { activeDrains, deadlineOf, readDrain, type DrainRow } from "./store/drains.ts";
 import { openStore } from "./store/store.ts";
 import manifestJson from "./manifest.json";
 
@@ -485,6 +489,120 @@ const CADENCE_LIFETIMES_MS = [
   60 * 60 * 1000,
 ] as const;
 
+/** A drain's cadence cannot be mistaken for the policy's single conductor schedule. */
+function ordinaryDrainWakeId(drainId: string): string {
+  return `${DRAIN_SCHEDULE_PREFIX}${createHash("sha256").update(drainId).digest("hex").slice(0, 32)}`;
+}
+
+/**
+ * Code sessions settle in Code, not Babel. A drain with no weighted standing activities must
+ * therefore carry its own native wake, under the credential that started its first fan. Register
+ * before spending that fan, and keep the cadence past its deadline until every held job settles.
+ */
+async function ordinaryDrainWake(
+  jobs: BabelJobs,
+  row: DrainRow,
+  policy: Policy,
+): Promise<{ readonly ok: boolean; readonly notes: readonly string[] }> {
+  const refused = (why: string) => ({
+    ok: false,
+    notes: [`drain ${row.id} cadence: ${why}`],
+  });
+  if (!policy.enabled) return refused("the policy is disabled");
+  const scheduleId = ordinaryDrainWakeId(row.id);
+  try {
+    const described = await describeHost(jobs, row.machineId, BEAT_OPERATION);
+    if ("refused" in described) return refused(described.refused);
+    const installation = described.readiness.installation;
+    const intervalMs = Math.max(1, policy.cadenceSeconds) * 1000;
+    const limits = planFor(policy, BEAT_OPERATION).limits;
+    const configuration = createHash("sha256")
+      .update(
+        JSON.stringify({
+          drainId: row.id,
+          machineId: row.machineId,
+          intervalMs,
+          limits,
+          installationRevision: installation?.revision,
+          artifactSha256: installation?.artifactSha256,
+        }),
+      )
+      .digest("hex");
+    const at = store.now();
+    const registered = (await jobs.schedules()).filter((entry) => entry.scheduleId === scheduleId);
+    if (
+      registered.some(
+        (entry) =>
+          entry.revision.startsWith(`${configuration}.`) && entry.expiresAt - at > intervalMs,
+      )
+    )
+      return { ok: true, notes: [] };
+    const revision = `${configuration}.${String(at)}`;
+    const deadline = deadlineOf(row.target);
+    const floor = Math.max(at + intervalMs, deadline === null ? 0 : deadline + 2 * intervalMs);
+    for (const lifetime of CADENCE_LIFETIMES_MS) {
+      const expiresAt = at + lifetime;
+      if (expiresAt <= floor) break;
+      try {
+        await jobs.schedule({
+          jobId: `drainwake_${createHash("sha256").update(`${scheduleId}.${revision}`).digest("hex")}`,
+          machineId: row.machineId,
+          operationId: BEAT_OPERATION,
+          input: { [INPUT_FIELD]: JSON.stringify({ machineId: row.machineId }) },
+          outputs: [
+            { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [BEAT_OPERATION] },
+          ],
+          limits,
+          ...(installation === null
+            ? {}
+            : {
+                installationRevision: installation.revision,
+                artifactSha256: installation.artifactSha256,
+              }),
+          scheduleId,
+          revision,
+          firstNominalAt: at + intervalMs,
+          intervalMs,
+          deadlineMs: intervalMs,
+          expiresAt,
+          offlinePolicy: "coalesce-one",
+        });
+        return { ok: true, notes: [] };
+      } catch (error) {
+        if (!message(error).includes("schedule-expiry-ceiling")) throw error;
+      }
+    }
+    return refused("the credential ends before the drain's deadline can be settled");
+  } catch (error) {
+    return refused(message(error));
+  }
+}
+
+/** Stop ended drains' cadences; renew only the drain whose own credential woke this cycle. */
+async function ordinaryDrainWakes(jobs: BabelJobs, ownId?: string): Promise<string[]> {
+  const notes: string[] = [];
+  try {
+    const live = new Map(
+      (await activeDrains(store))
+        .filter((row) => row.preset !== MAP_DRAIN_PRESET)
+        .map((row) => [ordinaryDrainWakeId(row.id), row] as const),
+    );
+    for (const entry of await jobs.schedules()) {
+      if (!entry.scheduleId.startsWith(DRAIN_SCHEDULE_PREFIX) || live.has(entry.scheduleId))
+        continue;
+      await jobs.disableSchedule({ scheduleId: entry.scheduleId, revision: entry.revision });
+    }
+    const own = ownId === undefined ? undefined : live.get(ordinaryDrainWakeId(ownId));
+    if (own !== undefined)
+      notes.push(
+        ...(await ordinaryDrainWake(jobs, own, (await coordinated.policy()).policy)).notes,
+      );
+  } catch (error) {
+    notes.push(`ordinary drain cadence: ${message(error)}`);
+  }
+  return notes;
+}
+
 /**
  * A PAID MAPPING DRAIN'S OWN WAKE (#469). A Code session settling wakes Code, not Babel, so a
  * drain needs a native cadence to settle its sessions and refill its fan — and that cadence is
@@ -813,8 +931,53 @@ async function cycle(
   // After the controller, so a drain it just ended loses its cadence on this same wake.
   for (const note of await mapDrainWakes(jobs, policy, undefined))
     console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
+  for (const note of await ordinaryDrainWakes(jobs)) console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
 }
 
+/**
+ * One ordinary drain's own wake. Observe completed jobs first, then post only the prepared runs
+ * held by this drain and refill only its fan. A drain-start credential is not a conductor policy
+ * installation; using it to draw unrelated standing work would transfer authority.
+ */
+async function ordinaryDrainCycle(
+  jobs: BabelJobs,
+  actions: ActionsSlice | undefined,
+  row: DrainRow,
+): Promise<void> {
+  const policy = (await coordinated.policy()).policy;
+  const chain = principalChain(row.startedBy);
+  for (const note of await loop(
+    jobs,
+    unaskable(HOOK_WITHOUT_MACHINES),
+    actions,
+    planFor(policy, BEAT_OPERATION),
+    planFor(policy, MACHINE_OPERATIONS.mapCatalog),
+    planFor(policy, MACHINE_OPERATIONS.mapPrepare),
+    false,
+    chain,
+  ).observe())
+    console.warn(`${BABEL_PLUGIN_ID}: drain ${row.id}: ${note}`);
+  const own = await readDrain(store, row.id);
+  if (own !== null && (own.state === "running" || own.state === "closing")) {
+    const runIds = new Set(own.live.map((held) => held.runId));
+    for (const posted of await machinery.postPrepared(
+      jobs,
+      codeEngine(actions),
+      planFor(policy, BEAT_OPERATION),
+      chain,
+      runIds,
+    )) {
+      if ("refused" in posted)
+        console.warn(`${BABEL_PLUGIN_ID}: drain ${row.id} run ${posted.runId}: ${posted.refused}`);
+      else if ("waiting" in posted)
+        console.warn(`${BABEL_PLUGIN_ID}: drain ${row.id} run ${posted.runId}: ${posted.waiting}`);
+    }
+    for (const report of await drainTick(draining(jobs, actions, chain), undefined, true, row.id))
+      for (const note of report.notes) console.warn(`${BABEL_PLUGIN_ID}: drain ${row.id}: ${note}`);
+  }
+  for (const note of await ordinaryDrainWakes(jobs, row.id))
+    console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
+}
 /** Read-only polls reconcile progress; the next native/write wake owns every new posting. */
 async function observeCycle(
   jobs: BabelJobs,
@@ -945,6 +1108,18 @@ const doors = babelDoors(
         ctx.services,
       ),
     concurrentJobs: DRAIN_FAN,
+    startOrdinary: async (ctx, row) =>
+      await ordinaryDrainWake(
+        jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+        row,
+        (await coordinated.policy()).policy,
+      ),
+    stopOrdinary: async (ctx) => {
+      for (const note of await ordinaryDrainWakes(
+        jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+      ))
+        console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
+    },
     startMapping: async (ctx, drainId) => {
       const { policy } = await coordinated.policy();
       const refusal = await catalogAdmitted(policy);
@@ -1171,6 +1346,21 @@ export const plugin: ServerPluginDef = {
           // credential and woken for that drain alone, or a preparation of the standing lane,
           // woken under the chain it was posted with (#469, #470).
           await mapDrainCycle(jobsSlice(ctx.jobs), ctx.actions, job);
+        } else if (job.scheduleId?.startsWith(DRAIN_SCHEDULE_PREFIX)) {
+          const jobs = jobsSlice(ctx.jobs);
+          const own = (await activeDrains(store)).find(
+            (row) =>
+              row.preset !== MAP_DRAIN_PRESET &&
+              row.machineId === job.machineId &&
+              job.operationId === BEAT_OPERATION &&
+              ordinaryDrainWakeId(row.id) === job.scheduleId,
+          );
+          if (own === undefined) {
+            for (const note of await ordinaryDrainWakes(jobs))
+              console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
+          } else {
+            await ordinaryDrainCycle(jobs, ctx.actions, own);
+          }
         } else {
           await cycle(
             jobsSlice(ctx.jobs),

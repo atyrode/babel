@@ -1339,6 +1339,12 @@ be answerable afterwards.
   burn rate read from the hub's own metered calls over a trailing window rather than estimated. A
   refused submission is spend (§6.5), so a drain never relaunches against a burn rate that did not
   happen.
+- **Continuation** — each ordinary drain registers its own native catalog cadence under the
+  authority of its start, before the first job. It folds completed Code sessions and refills its
+  fan even when the standing policy has no weighted activities and its beat is disabled. A read-only
+  status poll can observe progress but cannot post work. If the start's credential cannot keep a
+  cadence through the drain's deadline and settlement window, the start launches nothing; an
+  ended drain's cadence is disabled.
 - **Endings, and there are four** — `target` and `deadline` are the controller stopping itself,
   `stopped` is the operator, `failed` is the controller refusing to continue. Stopping means
   stopping _launching_: a drain still holding jobs goes to `closing` and keeps them, because they

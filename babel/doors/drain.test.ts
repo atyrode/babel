@@ -521,6 +521,8 @@ beforeEach(async () => {
     coordinator: coordinated,
     deps: () => deps,
     concurrentJobs: 16,
+    startOrdinary: async () => ({ ok: true, notes: [] }),
+    stopOrdinary: async () => {},
     now: () => store.now(),
   });
 });
@@ -672,6 +674,8 @@ test("a fan above the machine's ceiling is refused by name rather than posted an
     coordinator: coordinator(harness.store, () => harness.store.now(), 4),
     deps: () => deps,
     concurrentJobs: 4,
+    startOrdinary: async () => ({ ok: true, notes: [] }),
+    stopOrdinary: async () => {},
     now: () => harness.store.now(),
   });
   const refused = String((await start({ concurrent: 8 }))["refused"]);
