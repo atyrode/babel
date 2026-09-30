@@ -896,7 +896,7 @@ class Draws {
   }
 
   bindStatement(request: Parameters<Coordinator["bindStatement"]>[0]) {
-    return governed(openReadStore(this.db), () => clock).bindStatement(request);
+    return governed(openReadStore(this.db), () => clock, 16).bindStatement(request);
   }
 
   async finish(request: {
