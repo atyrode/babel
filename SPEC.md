@@ -1599,6 +1599,9 @@ single-recipe attribution. Record-local recipe fields alone do not establish a r
 
 The baseline `policy` door supplies the census and, only when `recipeRecords` is requested,
 at most the newest 100 eligible current records with verbatim claims of at most 8,192 characters.
+Newest follows the full-precision UTC creation timestamp, padding shorter native fractional
+spellings to the imported nine-digit layout, with record id breaking exact ties. Import insertion
+order and rounded timestamp conversions do not determine the sample.
 Ordinary policy reads keep their existing result. Jev's `recipeStanding` door looks up those
 claims only in its existing bounded process memo, under the current bank, per-kind document and
 service-policy revision. The bounded sample is not random, representative, or complete corpus

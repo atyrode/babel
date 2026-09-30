@@ -13,11 +13,15 @@ import { nameableRecordSql } from "./schema.ts";
  * retained its Recipes array: that scalar is only the first member of a possibly multi-recipe run.
  * Native runs retain their full selection in preparation.recipes. An explicit empty or malformed
  * selection never falls through to the scalar. Record-local recipe_id never substitutes for a run.
+ * Imports and store acts retain nine fractional UTC digits; native receipts can have fewer.
+ * Padding those digits for text order preserves nanoseconds that julianday would round away.
  */
 export async function recipeRecords(db: PluginDatabase): Promise<RecipeRecords> {
   const claimPath = `CASE r.kind WHEN 'hypothesis' THEN '$.statement'
                        WHEN 'observation' THEN '$.claim' WHEN 'finding' THEN '$.pattern'
                        WHEN 'proposal' THEN '$.outcome' END`;
+  // SQLite's text length stops at NUL; the byte guard bounds that tail before transfer while
+  // allowing four UTF-8 bytes per Unicode scalar rather than imposing an ASCII-sized ceiling.
   const rows = await db.query<SqlRow>(
     `WITH run_documents AS (
        SELECT id, recipe_id,
@@ -52,7 +56,10 @@ export async function recipeRecords(db: PluginDatabase): Promise<RecipeRecords> 
          FROM attributed
      ), sample AS (
        SELECT * FROM classified WHERE category = 'eligible'
-        ORDER BY julianday(created_at) DESC, id DESC LIMIT ?
+        ORDER BY substr(created_at, 1, 19) || '.' ||
+                 substr(CASE WHEN substr(created_at, 20, 1) = '.'
+                             THEN rtrim(substr(created_at, 21), 'Z') ELSE '' END ||
+                        '000000000', 1, 9) DESC, id DESC LIMIT ?
      ), claims AS (
        SELECT s.*,
               COALESCE(NULLIF(
@@ -66,8 +73,9 @@ export async function recipeRecords(db: PluginDatabase): Promise<RecipeRecords> 
        FROM classified GROUP BY category, CASE WHEN category = 'eligible' THEN recipe ELSE '' END
      UNION ALL
      SELECT 'record', category, recipe, 0, id, seq, kind,
-            CASE WHEN length(claim) <= ? THEN claim END FROM claims`,
-    [...RECORD_KINDS, RECIPE_READING_BATCH, RECIPE_READING_TEXT_MAX],
+            CASE WHEN length(claim) <= ? AND length(CAST(claim AS BLOB)) <= 4 * ?
+                 THEN claim END FROM claims`,
+    [...RECORD_KINDS, RECIPE_READING_BATCH, RECIPE_READING_TEXT_MAX, RECIPE_READING_TEXT_MAX],
   );
   const result: RecipeRecords = {
     total: 0,

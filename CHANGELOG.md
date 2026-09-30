@@ -60,8 +60,9 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   inspected, and reports the never-judged count as unknown. Ready Jev may retain current readings
   while funding is unknown, explicitly disclosed; no provider calls or paid probes are made.
   Missing/disabled Jev and no current cached readings add no empty surface and change no ranking
-  or scheduling. Real-store regressions cover attribution, the newest-by-creation bound,
-  revision/eviction and oversized imported payloads. On an isolated preview, the actual Watch
+  or scheduling. Real-store regressions cover attribution, full-precision newest sampling,
+  revision/eviction and oversized imported payloads, including NUL-hidden tails and multibyte
+  claims at the handoff bound. On an isolated preview, the actual Watch
   panel rendered synthetic warm-cache readings, exclusions and a zero-output recipe. Hot
   disable/re-enable removed and restored the reading without resetting the selected recipe or
   days-back draft. Restoring the unmodified Jev bundle with no configured service preserved the

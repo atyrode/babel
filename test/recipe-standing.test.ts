@@ -6,6 +6,7 @@ import {
   ACTIONS,
   PolicyResultSchema,
   RECIPE_READING_BATCH,
+  RECIPE_READING_TEXT_MAX,
   RecipeStandingSchema,
 } from "../babel/contract.ts";
 import { readDoors } from "../babel/doors/read.ts";
@@ -235,12 +236,48 @@ test("the inspected page follows creation time rather than import insertion orde
   });
 });
 
-test("large unrelated payloads never cross the bounded database handoff", async () => {
+test("the sample cutoff preserves imported nanoseconds when id order favors older records", async () => {
+  await run("single");
+  for (let n = 1; n <= RECIPE_READING_BATCH + 1; n++) {
+    const nanos = String(RECIPE_READING_BATCH + 2 - n).padStart(9, "0");
+    await record(n, "single", `claim ${n}`, null, {
+      createdAt: `2026-09-30T00:00:00.${nanos}Z`,
+    });
+  }
+  const result = await recipeRecords(store.db);
+  expect(result.records.map((row) => row.recordId).sort()).toEqual(
+    Array.from(
+      { length: RECIPE_READING_BATCH },
+      (_, index) => `fnd_${(index + 1).toString(16).padStart(8, "0")}`,
+    ),
+  );
+});
+
+test.each([
+  ["2026-09-30T00:00:00.123000001Z", "2026-09-30T00:00:00.123Z"],
+  ["2026-09-30T00:00:00.000000001Z", "2026-09-30T00:00:00Z"],
+])("the sample keeps %s ahead of the shorter UTC spelling %s", async (newer, older) => {
+  await run("single");
+  const newest = await record(1, "single", "at the cutoff", null, { createdAt: newer });
+  const oldest = await record(2, "single", "past the cutoff", null, { createdAt: older });
+  for (let n = 3; n <= RECIPE_READING_BATCH + 1; n++) {
+    await record(n, "single", `later ${n}`, null, {
+      createdAt: "2026-10-01T00:00:00.000Z",
+    });
+  }
+  const result = await recipeRecords(store.db);
+  const selected = result.records.map((row) => row.recordId);
+  expect(selected).toContain(newest);
+  expect(selected).not.toContain(oldest);
+});
+
+test("large unrelated payloads and NUL-hidden claim tails never cross the bounded database handoff", async () => {
   await run("single");
   await record(1, "single", "short claim", null, {
     payload: { pattern: "short claim", retainedImport: "x".repeat(100_000) },
   });
   await record(2, "single", "x".repeat(8193));
+  await record(3, "single", `prefix\u0000${"x".repeat(100_000)}`);
   const bounded: PluginDatabase = {
     ...store.db,
     query: async <Row extends SqlRow>(...args: Parameters<PluginDatabase["query"]>) => {
@@ -254,9 +291,32 @@ test("large unrelated payloads never cross the bounded database handoff", async 
   };
   const result = await recipeRecords(bounded);
   expect(result.records.map(({ recordId, text }) => ({ recordId, text }))).toEqual([
+    { recordId: "fnd_00000003", text: null },
     { recordId: "fnd_00000002", text: null },
     { recordId: "fnd_00000001", text: "short claim" },
   ]);
+});
+
+test("the database byte guard preserves complete multibyte claims at its character bound", async () => {
+  await run("single");
+  const bmp = "\u754c".repeat(RECIPE_READING_TEXT_MAX);
+  const astral = "\u{10400}".repeat(RECIPE_READING_TEXT_MAX / 2);
+  const scalarBound = "\u{10400}".repeat(RECIPE_READING_TEXT_MAX);
+  await record(1, "single", bmp);
+  await record(2, "single", astral);
+  await record(3, "single", scalarBound);
+  const bounded: PluginDatabase = {
+    ...store.db,
+    query: async <Row extends SqlRow>(...args: Parameters<PluginDatabase["query"]>) => {
+      const rows = await store.db.query<Row>(...args);
+      // SQL counts scalars; the existing API's UTF-16 limit is applied after this handoff.
+      expect(rows.find((row) => row["id"] === "fnd_00000003")?.["text"]).toBe(scalarBound);
+      return rows;
+    },
+  };
+  const result = await recipeRecords(bounded);
+  expect(result.records.find((row) => row.recordId === "fnd_00000001")?.text).toBe(bmp);
+  expect(result.records.find((row) => row.recordId === "fnd_00000002")?.text).toBe(astral);
 });
 
 test("absent, disabled, cold and changed-during-read Jev all remove the enhancement without invoking", async () => {
