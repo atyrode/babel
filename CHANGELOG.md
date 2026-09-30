@@ -9,6 +9,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-09-30
+
 ### Fixed
 
 - **The plugin closure follows Manifold's credential-bound lifecycle metadata.** The SDK and
@@ -5779,7 +5781,8 @@ storage configuration yet — repository selection is per-invocation
   (ea65a45…85fe13f), replaced in 8636960 and a879067. SPEC.md and README.md
   rewritten around the restic model (5b8d593).
 
-[Unreleased]: https://github.com/atyrode/babel/compare/v0.5.7...HEAD
+[Unreleased]: https://github.com/atyrode/babel/compare/v0.5.8...HEAD
+[0.5.8]: https://github.com/atyrode/babel/releases/tag/v0.5.8
 [0.5.7]: https://github.com/atyrode/babel/releases/tag/v0.5.7
 [0.5.6]: https://github.com/atyrode/babel/releases/tag/v0.5.6
 [0.5.5]: https://github.com/atyrode/babel/releases/tag/v0.5.5
