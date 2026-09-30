@@ -42,6 +42,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { GuestDatabase, GuestSqlParam, GuestSqlRow } from "@manifold/plugin-kit";
+import type { SqlStatement } from "@manifold/plugin";
 import type {
   AnalysisBriefRecord,
   AnalysisRole,
@@ -632,11 +633,10 @@ export interface DrawRequest {
    */
   readonly machines?: readonly string[];
   /**
-   * `"mapping"` draws ONLY transcript-mapping work, for an operator-started mapping drain whose
-   * wake can post the native preparation. Mapping is never a standing activity: an ordinary draw
-   * never hands it out, whatever the policy's weights say.
+   * Narrows the eligible activity, never its standing weight or budget. Mapping is dispatched
+   * by its own native lane; a mixed drain's review slot must never fall back to analysis.
    */
-  readonly only?: "mapping";
+  readonly only?: "mapping" | "review";
   readonly now?: number;
   readonly seed?: bigint;
 }
@@ -681,6 +681,13 @@ export interface ClaimRequest {
   readonly runId: string;
   readonly jobId?: string;
   readonly now?: number;
+  /** Publish a durable parent in the grant transaction, before any external posting.
+   * The statements must guard themselves on the granted id/run/fence. A throwing publication
+   * rolls back the claim too; the guard contends with a stop or a competing parent. */
+  readonly publication?: {
+    readonly guard: { readonly sql: string; readonly params: readonly GuestSqlParam[] };
+    statements(fence: number): readonly SqlStatement[];
+  };
 }
 
 export type ClaimResult =
@@ -693,6 +700,7 @@ export interface BindRequest {
   readonly jobId: string;
   readonly previousJobId?: string;
   readonly now?: number;
+  readonly guard?: { readonly sql: string; readonly params: readonly GuestSqlParam[] };
 }
 
 export type BindResult =
@@ -2415,6 +2423,17 @@ export function coordinator(
 
     const [active, spent] = await Promise.all([openClaims(moment), spendOn(moment)]);
     const mappingOnly = request.only === "mapping";
+    const reviewOnly = request.only === "review";
+    if (reviewOnly && (policy.review === undefined || policy.activityWeights.review <= 0)) {
+      return {
+        outcome: "gap",
+        gap: {
+          reason: "unrouted",
+          detail: "review-only work requires an installed review route and positive review weight",
+        },
+        gaps: [],
+      };
+    }
     const machines = mappingOnly
       ? policy.mapping === undefined
         ? []
@@ -2442,7 +2461,7 @@ export function coordinator(
             gaps: [] as Gap[],
             readings: undefined,
           }),
-      !mappingOnly
+      !mappingOnly && !reviewOnly
         ? buildAnalysis(policy, moment)
         : Promise.resolve({ candidates: [] as AnalysisCandidate[], gaps: [] as Gap[] }),
       mappingOnly && mappingBudget ? buildMapping(policy, moment) : Promise.resolve([]),
@@ -3025,6 +3044,10 @@ export function coordinator(
         policy.maxItemReviews,
       );
     }
+    if (request.publication !== undefined) {
+      admissionSql += ` AND (${request.publication.guard.sql})`;
+      admissionParams.push(...request.publication.guard.params);
+    }
     const jobId: string | null = request.jobId ?? null;
     if (existing === null) {
       const rows = await db.batch([
@@ -3046,6 +3069,7 @@ export function coordinator(
             ...admissionParams,
           ],
         },
+        ...(request.publication?.statements(1) ?? []),
       ]);
       const row = rows[0]?.[0];
       if (row === undefined) {
@@ -3110,6 +3134,7 @@ export function coordinator(
                  AND EXISTS (SELECT 1 FROM claims archived
                    WHERE archived.id = claims.id || '~' || CAST(claims.fence AS TEXT)
                      AND ${superseded.archived})
+                 ${request.publication === undefined ? "" : `AND (${request.publication.guard.sql})`}
                RETURNING ${CLAIM_COLUMNS}`,
         params: [
           request.runId,
@@ -3123,8 +3148,10 @@ export function coordinator(
           existing.fence,
           ...superseded.guardParams,
           ...superseded.archivedParams,
+          ...(request.publication?.guard.params ?? []),
         ],
       },
+      ...(request.publication?.statements(existing.fence + 1) ?? []),
     ]);
     const row = rows[1]?.[0];
     if (row === undefined) {
@@ -3150,6 +3177,7 @@ export function coordinator(
              WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL
                AND expires_at > ? AND ? <> ''
                AND (job_id = ? OR (job_id IS NULL AND ? IS NULL) OR job_id = ?)
+               ${request.guard === undefined ? "" : `AND (${request.guard.sql})`}
              RETURNING ${CLAIM_COLUMNS}`,
       params: [
         request.jobId,
@@ -3161,6 +3189,7 @@ export function coordinator(
         request.jobId,
         request.previousJobId ?? null,
         request.previousJobId ?? null,
+        ...(request.guard?.params ?? []),
       ],
     };
   }
@@ -3392,20 +3421,27 @@ export function coordinator(
     // preparation. Rebinding and charging are one write so spendOn cannot count both.
     const document = "CASE WHEN json_valid(r.preparation) THEN r.preparation ELSE '{}' END";
     const claimPath = held.role.startsWith("mapping:") ? "$.mapping.claim" : "$.analysis.claim";
+    const terminalAuthority =
+      held.role.startsWith("analysis:") || held.role.startsWith("mapping:")
+        ? `r.authority_kind = 'conductor' AND r.authority_id = claims.run_id
+         AND json_extract(${document}, '${claimPath}.id') = claims.id
+         AND json_extract(${document}, '${claimPath}.runId') = claims.run_id
+         AND json_extract(${document}, '${claimPath}.fence') = claims.fence`
+        : `json_extract(${document}, '$.reviewDrain.drainId') = claims.run_id
+         AND EXISTS (SELECT 1 FROM drain_launches a WHERE a.run_id = r.id
+           AND a.drain_id = claims.run_id AND a.preset = 'review-backlog')
+         AND json_extract(${document}, '$.review.assignmentId') = claims.id
+         AND json_extract(${document}, '$.review.fence') = claims.fence`;
     const terminalGuard =
       terminal === undefined
         ? ""
         : `
-                 AND (claims.role LIKE 'analysis:%' OR claims.role LIKE 'mapping:%')
                  AND job_id IN (?, ?)
                  AND EXISTS (
                    SELECT 1 FROM runs r
                     WHERE r.job_id = ? AND r.prepare_job_id = ?
                       AND r.closure IS NOT NULL
-                      AND r.authority_kind = 'conductor' AND r.authority_id = claims.run_id
-                      AND json_extract(${document}, '${claimPath}.id') = claims.id
-                      AND json_extract(${document}, '${claimPath}.runId') = claims.run_id
-                      AND json_extract(${document}, '${claimPath}.fence') = claims.fence
+                      AND ${terminalAuthority}
                  )`;
     const unpostedGuard =
       unposted === undefined
@@ -3533,20 +3569,22 @@ export function coordinator(
   }
 
   /**
-   * Releases, at zero, a MAPPING claim whose job no run names. The proof is the same statement as
-   * the release: a run published for this job — even one closed since — makes it an
-   * abandonment's question, and the claim is refused here rather than released free. Only mapping
-   * qualifies, because only mapping publishes its run in the same write that admits it before
-   * anything is posted; an analysis post can exist with no run row at all.
+   * Releases an unpublished mapping or drain-review claim at zero. Both lanes persist their
+   * parent before calling an executor. A claim racing that publication contends on this write;
+   * a parent, even one since closed, is never evidence that nothing was spent.
    */
   async function withdraw(request: AbandonRequest): Promise<WithdrawResult> {
     const moment = request.now ?? now();
     const rows = await db.batch([
       {
         sql: `UPDATE claims SET finished_at = ?, actual_cost = 0, outcome = 'withdrawn'
-               WHERE id = ? AND fence = ? AND finished_at IS NULL AND role LIKE 'mapping:%'
+               WHERE id = ? AND fence = ? AND finished_at IS NULL
+                 AND (role LIKE 'mapping:%' OR EXISTS (
+                   SELECT 1 FROM drain_launches a WHERE a.drain_id = claims.run_id
+                     AND a.preset = 'review-backlog'))
                  AND NOT EXISTS (SELECT 1 FROM runs
-                                  WHERE runs.job_id = claims.job_id
+                                  WHERE runs.id = claims.run_id
+                                     OR runs.job_id = claims.job_id
                                      OR runs.prepare_job_id = claims.job_id)
                RETURNING id`,
         params: [iso(moment), request.id, count(request.fence)],

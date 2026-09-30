@@ -275,6 +275,7 @@ export function drainStatus(over: Partial<DrainStatus> = {}): DrainStatus {
     drainId: "drn_live",
     machineId: "m-dev-01",
     preset: "read-whats-new",
+    allocation: [],
     state: "running",
     reason: "",
     startedAt: new Date(Date.now() - 60_000).toISOString(),

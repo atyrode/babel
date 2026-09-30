@@ -101,6 +101,27 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Selection makes no provider invocation, funding remains unknown, and service effects,
   repository reads, policy shares, eligibility, claims and cache freshness fences are unchanged.
 
+- **Drains can split an explicitly declared window across explore and coordinator-managed
+  review by whole-item cost (#258).** Watch and the start door accept positive
+  `read-whats-new`/`explore-topic`/`review-backlog` weights; review draws review-only claims
+  under the installed route without touching standing policy; deterministic deficit scheduling
+  accounts measured incurred cost plus durable reservations,
+  reports empty-work and missing/zero-price gaps, and preserves single-preset operation.
+  Admission reserves slots before posting; review claims and immutable prompt/request intent
+  commit together before keyed Code dispatch. Lost acknowledgements replay only under the
+  original account chain; stop retires unused keys, cancels known jobs and retains uncertain
+  cancellations. Terminal receipts reconcile the shared claim exactly once, including late
+  acknowledgements and missing meters. Standing policy and mapping remain unchanged.
+  Review ordinals share the durable drain's coordinator cycle ceiling, enforced in the claim
+  transaction without fresh allowance on refill or restart; parent/posting identities remain
+  distinct. Oversized prompts now visibly refuse and retire the unused slot so another eligible
+  preset can progress, without swallowing database/publication errors.
+  A disposable real-store consumer proves incurred/reserved deficits, settled 1:3 cost shares,
+  concurrency and stopped-admission refusal, stale-fold refusal, unpriced refill refusal and
+  unchanged standing policy. Physical-core cap integration awaits the verified upstream
+  [Manifold #939](https://github.com/atyrode/manifold/issues/939) pin; #264's live acceptance
+  remains unperformed. No paid drain or preview interaction was exercised.
+
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary
   preview/coordinate files use private creation before publication. An isolated synthetic

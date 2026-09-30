@@ -15,13 +15,19 @@ import {
   RATE_WINDOW_MS,
   accountName,
   activeDrains,
+  allocationEstimate,
+  allocationStatus,
   burnRate,
   closeDrain,
   deadlineOf,
+  directDrainAdmission,
   drainOnMachine,
   finishDrain,
+  finishDirectLaunch,
   insertDrain,
   readDrain,
+  reconcileLive,
+  reserveDirectLaunch,
   recentDrains,
   recordLaunch,
   sample,
@@ -427,4 +433,173 @@ test("a profile Code reported no account for says so rather than leaving a blank
   // silences it is instead of printing nothing.
   expect(accountName(LEDGER)).toBe("ctr_workbench: the-drain-account (as Code reported at start)");
   expect(accountName({ ...LEDGER, accounts: [] })).toBe("ctr_workbench (Code reported no account)");
+});
+
+test("direct admission atomically owns a slot and ordinal across stale concurrent wakes", async () => {
+  await open("drn_reserved", { concurrent: 1 });
+  const row = (await readDrain(harness.store, "drn_reserved"))!;
+  const job = { runId: "run_reserved_0", jobId: "job_reserved_0", launchedAt: NOW, reserved: true };
+  const won = await Promise.all([
+    reserveDirectLaunch(harness.store, row, job, "read-whats-new", 300_000),
+    reserveDirectLaunch(harness.store, row, job, "read-whats-new", 300_000),
+  ]);
+  expect(won.sort()).toEqual([false, true]);
+  const held = (await readDrain(harness.store, row.id))!;
+  expect(held.jobsLaunched).toBe(1);
+  expect((await reconcileLive(harness.store, held.live)).holding).toEqual([job]);
+  expect(
+    await reserveDirectLaunch(
+      harness.store,
+      held,
+      { ...job, runId: "run_reserved_1", jobId: "job_reserved_1" },
+      "explore-topic",
+      1,
+    ),
+  ).toBe(false);
+  await closeDrain(harness.store, row.id, "stopped", "operator stop");
+  const guard = directDrainAdmission(row.id, job.runId, NOW);
+  expect(await harness.db.query(`SELECT 1 AS admitted WHERE ${guard.sql}`, guard.params)).toEqual(
+    [],
+  );
+  await finishDirectLaunch(harness.store, job.runId, "stopped before preparation");
+  expect((await reconcileLive(harness.store, held.live)).missing).toEqual([job]);
+});
+
+test("allocation uses each whole meter once despite overlapping recipes and spends remaining reserve only", async () => {
+  await open("drn_weighted", {
+    knobs: { recipes: ["one", "two"], allocation: { "read-whats-new": 3, "explore-topic": 1 } },
+  });
+  let row = (await readDrain(harness.store, "drn_weighted"))!;
+  const first = {
+    runId: "run_weighted_0",
+    jobId: "job_weighted_0",
+    launchedAt: NOW,
+    reserved: true,
+  };
+  expect(await reserveDirectLaunch(harness.store, row, first, "read-whats-new", 400_000)).toBe(
+    true,
+  );
+  await harness.db.run(
+    `INSERT INTO runs(id, kind, machine_id, started_at, closure, preparation, payload)
+      VALUES (?, 'atyrode.babel.explore', 'm-dev-01', ?, 'completed', ?, ?)`,
+    [
+      first.runId,
+      new Date(NOW).toISOString(),
+      JSON.stringify({ recipes: [{ id: "one" }, { id: "two" }] }),
+      JSON.stringify({ inference: { calls: 2, costMicros: 300_000 } }),
+    ],
+  );
+  await finishDirectLaunch(harness.store, first.runId, null);
+  row = (await readDrain(harness.store, row.id))!;
+  const second = { ...first, runId: "run_weighted_1", jobId: "job_weighted_1" };
+  expect(await reserveDirectLaunch(harness.store, row, second, "explore-topic", 200_000)).toBe(
+    true,
+  );
+  await harness.db.run(
+    `INSERT INTO runs(id, kind, machine_id, started_at, payload)
+      VALUES (?, 'atyrode.babel.explore', 'm-dev-01', ?, '{}')`,
+    [second.runId, new Date(NOW).toISOString()],
+  );
+  await harness.db.run(
+    `INSERT INTO run_progress(run_id, job_id, stage, since, calls, cost_usd, updated_at)
+      VALUES (?, ?, 'at the model', ?, 1, 0.05, ?)`,
+    [second.runId, second.jobId, new Date(NOW).toISOString(), new Date(NOW).toISOString()],
+  );
+  const allocation = await allocationStatus(harness.store, row);
+  expect(allocation).toMatchObject([
+    {
+      preset: "read-whats-new",
+      share: 0.75,
+      incurredCostMicros: 300_000,
+      reservedCostMicros: 0,
+      deficitCostMicros: 75_000,
+      unpricedJobs: 0,
+    },
+    {
+      preset: "explore-topic",
+      share: 0.25,
+      incurredCostMicros: 50_000,
+      reservedCostMicros: 150_000,
+      deficitCostMicros: -75_000,
+      unpricedJobs: 0,
+    },
+  ]);
+  expect(await allocationEstimate(harness.store, row, "read-whats-new")).toEqual({
+    costMicros: 300_000,
+    eligible: true,
+  });
+});
+
+test.each([
+  { payload: {}, gap: "missing-price" },
+  { payload: { inference: { calls: 3, costMicros: 0 } }, gap: "zero-price" },
+])(
+  "unpriced whole work keeps uncertainty visible and cannot drive mixed refills: $gap",
+  async ({ payload, gap }) => {
+    await open("drn_unpriced", {
+      knobs: {
+        recipes: [],
+        inferenceLimits: { costMicros: 100_000 },
+        allocation: { "read-whats-new": 1, "explore-topic": 2 },
+      },
+    });
+    const row = (await readDrain(harness.store, "drn_unpriced"))!;
+    expect(await allocationEstimate(harness.store, row, "read-whats-new")).toEqual({
+      costMicros: 100_000,
+      eligible: true,
+    });
+    const job = { runId: "run_unpriced", jobId: "job_unpriced", launchedAt: NOW, reserved: true };
+    expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", null)).toBe(false);
+    expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", 100_000)).toBe(
+      true,
+    );
+    await harness.db.run(
+      `INSERT INTO runs(id, kind, machine_id, started_at, closure, cost_usd, payload)
+      VALUES (?, 'atyrode.babel.explore', 'm-dev-01', ?, 'completed', 7, ?)`,
+      [job.runId, new Date(NOW).toISOString(), JSON.stringify(payload)],
+    );
+    await finishDirectLaunch(harness.store, job.runId, null);
+    expect((await allocationStatus(harness.store, row))[0]).toMatchObject({
+      incurredCostMicros: 0,
+      unpricedJobs: 1,
+      gap,
+    });
+    expect((await allocationEstimate(harness.store, row, "read-whats-new")).eligible).toBe(false);
+    expect((await allocationEstimate(harness.store, row, "explore-topic")).eligible).toBe(true);
+  },
+);
+
+test("the reservation fence reads pending receipts, deadlines and other machine work", async () => {
+  await open("drn_fenced", { concurrent: 1, knobs: { recipes: [], admissionLimit: 1 } });
+  const row = (await readDrain(harness.store, "drn_fenced"))!;
+  const job = { runId: "run_fenced", jobId: "job_fenced", launchedAt: NOW, reserved: true };
+  await harness.db.run(
+    `INSERT INTO runs(id, kind, machine_id, started_at, payload)
+      VALUES ('other-work', 'atyrode.babel.explore', 'm-dev-01', ?, '{}')`,
+    [new Date(NOW).toISOString()],
+  );
+  expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", 1)).toBe(false);
+  await harness.db.run(`UPDATE runs SET closure = 'completed' WHERE id = 'other-work'`);
+  expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", 1)).toBe(true);
+  await harness.db.run(
+    `INSERT INTO runs(id, kind, machine_id, started_at, closure, payload)
+      VALUES (?, 'atyrode.babel.explore', 'm-dev-01', ?, 'completed', ?)`,
+    [
+      job.runId,
+      new Date(NOW).toISOString(),
+      JSON.stringify({ inference: { costMicros: 1_000_000 } }),
+    ],
+  );
+  const guard = directDrainAdmission(row.id, job.runId, NOW);
+  expect(await harness.db.query(`SELECT 1 AS admitted WHERE ${guard.sql}`, guard.params)).toEqual(
+    [],
+  );
+  await harness.db.run(`UPDATE runs SET payload = '{}' WHERE id = ?`, [job.runId]);
+  await harness.db.run(`UPDATE drains SET target = ? WHERE id = ?`, [
+    JSON.stringify({ deadline: new Date(NOW).toISOString() }),
+    row.id,
+  ]);
+  expect(await harness.db.query(`SELECT 1 AS admitted WHERE ${guard.sql}`, guard.params)).toEqual(
+    [],
+  );
 });

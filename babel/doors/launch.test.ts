@@ -48,6 +48,7 @@ import {
 } from "../server/engine/session.ts";
 import type { Recipe } from "../server/engine/prompts.ts";
 import { coordinator } from "../store/coordinator.ts";
+import { closeDrain } from "../store/drains.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import manifestJson from "../manifest.json";
@@ -87,7 +88,7 @@ class Fleet implements BabelJobs {
     return this.readiness;
   }
 
-  execute(args: JobLaunch): JobRunState {
+  execute(args: JobLaunch): JobRunState | Promise<JobRunState> {
     if (this.refusal !== "") throw new Error(this.refusal);
     this.executed.push(args);
     return {
@@ -516,6 +517,536 @@ test("an explore seals its material and records the intent; the session waits fo
   expect(explore.prepare_job_id).toBe(sealed.jobId);
   expect(JSON.parse(explore.preparation)["recipes"]).toEqual([{ id: "code-health", version: 3 }]);
 });
+
+/** The controller's durable slot exists before it calls the real direct launcher. */
+async function directDrain(preset: "read-whats-new" | "keep-going" = "read-whats-new") {
+  const identity = {
+    drainId: "drn_launch",
+    runId: "run_drn_launch_0",
+    jobId: "job_drn_launch_0",
+    authorityId: "operator",
+    chain: WAKE,
+  };
+  const prepareJobId = preset === "keep-going" ? identity.jobId : `${identity.jobId}_material`;
+  await insert(harness.db, "drains", {
+    id: identity.drainId,
+    machine_id: MACHINE,
+    preset,
+    concurrent: 1,
+    target: JSON.stringify({ costMicros: 1_000_000, deadline: stamp(NOW + HOUR) }),
+    started_at: stamp(NOW),
+    started_by: "operator",
+    jobs_launched: 1,
+    live: JSON.stringify([{ runId: identity.runId, jobId: prepareJobId }]),
+  });
+  await insert(harness.db, "drain_launches", {
+    run_id: identity.runId,
+    drain_id: identity.drainId,
+    ordinal: 0,
+    preset,
+    reserved_cost_micros: 50_000,
+    state: "reserved",
+  });
+  const accepted = new Map<string, { request: JobLaunch; job: JobRunState }>();
+  const execute = fleet.execute.bind(fleet);
+  fleet.execute = async (request) => {
+    const held = accepted.get(request.jobId);
+    if (held !== undefined) {
+      if (JSON.stringify(held.request) !== JSON.stringify(request))
+        throw new HostCallError("jobs.execute", "job_digest_conflict");
+      return held.job;
+    }
+    const job = await execute(request);
+    accepted.set(request.jobId, { request, job });
+    return job;
+  };
+  fleet.status = () => {
+    const job = accepted.get(prepareJobId);
+    if (job === undefined) throw new HostCallError("jobs.status", "job_not_started");
+    return job.job;
+  };
+  const input = {
+    preset,
+    machineId: MACHINE,
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+    recipes: ["code-health"],
+    inferenceLimits: { calls: 2, costMicros: 50_000 },
+  };
+  return {
+    identity,
+    prepareJobId,
+    start: () =>
+      preset === "keep-going"
+        ? machinery.startBeat(identity, fleet, input, ANALYSIS_PLAN)
+        : machinery.startExplore(identity, fleet, code, input, ANALYSIS_PLAN),
+    stop: () => closeDrain(harness.store, identity.drainId, "stopped", "operator stopped"),
+  };
+}
+
+test.each(["parent-only", "before-accept", "after-accept"] as const)(
+  "a direct drain recovers %s with its first native request after restart",
+  async (boundary) => {
+    const direct = await directDrain();
+    const run = harness.db.run.bind(harness.db);
+    const execute = fleet.execute.bind(fleet);
+    let interrupted = false;
+    harness.db.run = async (sql, params) => {
+      if (
+        boundary === "parent-only" &&
+        !interrupted &&
+        sql.startsWith("INSERT INTO runs(id, kind, machine_id, job_id")
+      ) {
+        interrupted = true;
+        throw new Error("lost wake before retaining native intent");
+      }
+      return await run(sql, params);
+    };
+    fleet.execute = async (request) => {
+      if (!interrupted) {
+        interrupted = true;
+        if (boundary === "after-accept") await execute(request);
+        throw new Error("lost native posting response");
+      }
+      return await execute(request);
+    };
+    try {
+      expect(await direct.start()).toHaveProperty("pending", true);
+    } finally {
+      harness.db.run = run;
+      fleet.execute = execute;
+    }
+    const parent = (
+      await harness.db.query<{ preparation: string }>(`SELECT preparation FROM runs WHERE id = ?`, [
+        direct.identity.runId,
+      ])
+    )[0]!;
+    const request = JSON.parse(parent.preparation).nativeRequest as JobLaunch;
+    // Nothing on the next wake still describes the original selection or installation.
+    await archived("omp/newer", { modified_at: stamp(NOW) });
+    await harness.db.run(`DELETE FROM sessions WHERE selector = 'omp/s1'`);
+    fleet.readiness = {
+      ...READY,
+      installation: { ...READY.installation!, revision: "rev-replaced" },
+    };
+    cookbook = {};
+    machinery = launchMachinery(harness.store, deps);
+    expect(await direct.start()).toEqual({
+      runId: direct.identity.runId,
+      jobId: direct.prepareJobId,
+    });
+    expect(fleet.executed).toEqual([request]);
+    expect(handed(fleet.executed[0])).toEqual(["omp/s1"]);
+    expect(
+      await harness.db.query(`SELECT run_id, state FROM drain_launches WHERE drain_id = ?`, [
+        direct.identity.drainId,
+      ]),
+    ).toEqual([{ run_id: direct.identity.runId, state: "reserved" }]);
+  },
+);
+
+test("overlapping direct retries cannot replace the first retained native request", async () => {
+  const direct = await directDrain();
+  const run = harness.db.run.bind(harness.db);
+  let resume!: () => void;
+  let reached!: () => void;
+  const paused = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const retained = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let first = true;
+  harness.db.run = async (sql, params) => {
+    const result = await run(sql, params);
+    if (first && sql.startsWith("INSERT INTO runs(id, kind, machine_id, container_id")) {
+      first = false;
+      reached();
+      await paused;
+    }
+    return result;
+  };
+  const initial = direct.start();
+  try {
+    await retained;
+    await archived("omp/newer", { modified_at: stamp(NOW) });
+    const recovered = await direct.start();
+    resume();
+    expect(await initial).toEqual(recovered);
+    expect(fleet.executed.map(handed)).toEqual([["omp/s1"]]);
+  } finally {
+    resume();
+    harness.db.run = run;
+    await initial;
+  }
+});
+
+test.each(["profile-check", "native-intent", "native-ack"] as const)(
+  "stop during %s fences or cancels a direct preparation",
+  async (boundary) => {
+    const direct = await directDrain();
+    const run = harness.db.run.bind(harness.db);
+    const execute = fleet.execute.bind(fleet);
+    if (boundary === "profile-check")
+      code.checkProfile = async () => {
+        await direct.stop();
+        return { ok: true, value: null };
+      };
+    if (boundary === "native-intent")
+      harness.db.run = async (sql, params) => {
+        const result = await run(sql, params);
+        if (sql.startsWith("INSERT INTO runs(id, kind, machine_id, job_id")) await direct.stop();
+        return result;
+      };
+    if (boundary === "native-ack")
+      fleet.execute = async (request) => {
+        const result = await execute(request);
+        await direct.stop();
+        return result;
+      };
+    try {
+      await direct.start();
+    } finally {
+      harness.db.run = run;
+      fleet.execute = execute;
+    }
+    expect(fleet.executed.map((request) => request.jobId)).toEqual(
+      boundary === "native-ack" ? [direct.prepareJobId] : [],
+    );
+    expect(fleet.cancelled.map((job) => job.jobId)).toEqual(
+      boundary === "native-ack" ? [direct.prepareJobId] : [],
+    );
+    await sealStage("completed", direct.prepareJobId);
+    let bought = 0;
+    code.posting = () => {
+      bought += 1;
+      return stageJob();
+    };
+    await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+    expect(bought).toBe(0);
+  },
+);
+
+test.each(["before-claim", "after-claim"] as const)(
+  "a direct drain stopped %s buys no model session",
+  async (boundary) => {
+    const direct = await directDrain();
+    await direct.start();
+    await sealStage("completed", direct.prepareJobId);
+    const batch = harness.db.batch.bind(harness.db);
+    harness.db.batch = async (statements) => {
+      if (!statements.some((statement) => statement.sql.startsWith("UPDATE runs SET preparation")))
+        return await batch(statements);
+      if (boundary === "before-claim") await direct.stop();
+      const result = await batch(statements);
+      if (boundary === "after-claim") await direct.stop();
+      return result;
+    };
+    let bought = 0;
+    code.posting = () => {
+      bought += 1;
+      return stageJob();
+    };
+    try {
+      await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+    } finally {
+      harness.db.batch = batch;
+    }
+    expect(bought).toBe(0);
+    expect(code.keyed.size).toBe(0);
+    if (boundary === "after-claim") expect(code.retired.has(direct.identity.runId)).toBe(true);
+  },
+);
+
+test.each(["model-ack", "model-bind", "cancel-unconfirmed"] as const)(
+  "stop during %s cancels the acknowledged session and retains its terminal accounting",
+  async (boundary) => {
+    const direct = await directDrain();
+    await direct.start();
+    await sealStage("completed", direct.prepareJobId);
+    code.posting = () => stageJob();
+    const post = code.runSession.bind(code);
+    const batch = harness.db.batch.bind(harness.db);
+    if (boundary === "model-bind")
+      harness.db.batch = async (statements) => {
+        if (statements.some((statement) => statement.sql.startsWith("UPDATE runs SET job_id")))
+          await direct.stop();
+        return await batch(statements);
+      };
+    else
+      code.runSession = async (request) => {
+        const answer = await post(request);
+        await direct.stop();
+        return answer;
+      };
+    if (boundary === "cancel-unconfirmed")
+      code.cancelSession = async (request) => {
+        code.cancelled.push(request);
+        return refusedByCode(ENGINE_REFUSALS.unconfirmed, "cancellation response lost");
+      };
+    try {
+      await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+    } finally {
+      harness.db.batch = batch;
+    }
+    expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_stage_code" }]);
+    expect(
+      await harness.db.query(`SELECT job_id, closure FROM runs WHERE id = ?`, [
+        direct.identity.runId,
+      ]),
+    ).toEqual([{ job_id: "job_stage_code", closure: null }]);
+    expect(
+      await harness.db.query(
+        `SELECT state, json_array_length(live) AS held FROM drains WHERE id = ?`,
+        [direct.identity.drainId],
+      ),
+    ).toEqual([{ state: "closing", held: 1n }]);
+    expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toEqual([]);
+    expect(code.keyed.size).toBe(1);
+  },
+);
+
+test("a stopped direct drain retires a lost model response with the same request and accounts its job", async () => {
+  const direct = await directDrain();
+  await direct.start();
+  await sealStage("completed", direct.prepareJobId);
+  let bought = 0;
+  code.posting = () => {
+    bought += 1;
+    return stageJob();
+  };
+  const post = code.runSession.bind(code);
+  const requests: SessionRequest[] = [];
+  code.runSession = async (request) => {
+    requests.push(request);
+    const answer = await post(request);
+    if (requests.length === 1) throw new Error("response lost after model accepted");
+    return answer;
+  };
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+  await direct.stop();
+  cookbook = {};
+  machinery = launchMachinery(harness.store, deps);
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+  expect(requests).toEqual([requests[0]!, { ...requests[0]!, adoptOnly: true }]);
+  expect(requests[0]?.postingKey).toBe(direct.identity.runId);
+  expect(bought).toBe(1);
+  expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_stage_code" }]);
+  expect(
+    await harness.db.query(`SELECT job_id, closure FROM runs WHERE id = ?`, [
+      direct.identity.runId,
+    ]),
+  ).toEqual([{ job_id: "job_stage_code", closure: null }]);
+});
+
+test.each(["cost", "tokens", "deadline"] as const)(
+  "a direct drain at its %s bound admits no preparation or deferred model before the controller closes it",
+  async (bound) => {
+    const direct = await directDrain();
+    await direct.start();
+    await sealStage("completed", direct.prepareJobId);
+    await harness.db.run(`UPDATE drains SET target = ?, spent = ? WHERE id = ?`, [
+      JSON.stringify(
+        bound === "deadline"
+          ? { deadline: stamp(NOW) }
+          : bound === "cost"
+            ? { deadline: stamp(NOW + HOUR), costMicros: 10 }
+            : { deadline: stamp(NOW + HOUR), outputTokens: 10 },
+      ),
+      JSON.stringify({ costMicros: 10, outputTokens: 10 }),
+      direct.identity.drainId,
+    ]);
+    let bought = 0;
+    code.posting = () => {
+      bought += 1;
+      return stageJob();
+    };
+    await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+    expect(bought).toBe(0);
+    // A reserved next slot cannot bypass the same target just because the controller still
+    // says running. No parent means this is fresh admission, not recovery of the first run.
+    const runId = "run_drn_launch_1";
+    await harness.db.run(
+      `UPDATE drains SET live = json_insert(live, '$[#]', json(?)) WHERE id = ?`,
+      [JSON.stringify({ runId, jobId: "job_drn_launch_1_material" }), direct.identity.drainId],
+    );
+    await insert(harness.db, "drain_launches", {
+      run_id: runId,
+      drain_id: direct.identity.drainId,
+      ordinal: 1,
+      preset: "read-whats-new",
+      reserved_cost_micros: 50_000,
+      state: "reserved",
+    });
+    expect(
+      await machinery.startExplore(
+        { ...direct.identity, runId, jobId: "job_drn_launch_1" },
+        fleet,
+        code,
+        {
+          preset: "read-whats-new",
+          machineId: MACHINE,
+          profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+          recipes: ["code-health"],
+        },
+        ANALYSIS_PLAN,
+      ),
+    ).toHaveProperty("refused");
+    expect(fleet.executed.map((job) => job.jobId)).toEqual([direct.prepareJobId]);
+    expect(await harness.db.query(`SELECT id FROM runs WHERE id = ?`, [runId])).toEqual([]);
+  },
+);
+
+test("a deadline never frees an uncertain direct preparation", async () => {
+  const direct = await directDrain();
+  fleet.execute = () => {
+    throw new Error("native transport interrupted");
+  };
+  expect(await direct.start()).toHaveProperty("pending", true);
+  machinery = launchMachinery(harness.store, { ...deps, now: () => NOW + 2 * HOUR });
+  expect(await direct.start()).toHaveProperty("pending", true);
+  expect(
+    await harness.db.query(`SELECT job_id, closure FROM runs WHERE id = ?`, [
+      direct.identity.runId,
+    ]),
+  ).toEqual([{ job_id: null, closure: null }]);
+  expect(
+    await harness.db.query(`SELECT json_array_length(live) AS held FROM drains WHERE id = ?`, [
+      direct.identity.drainId,
+    ]),
+  ).toEqual([{ held: 1n }]);
+  expect(fleet.executed).toEqual([]);
+});
+
+test.each(["recipe", "archive", "material-bound"] as const)(
+  "a direct drain's empty %s selection yields a typed no-eligible refusal before native intent",
+  async (empty) => {
+    const direct = await directDrain();
+    if (empty === "recipe") cookbook = {};
+    else if (empty === "archive") await harness.db.run(`DELETE FROM sessions`);
+    else await harness.db.run(`UPDATE sessions SET size = ?`, [MAX_MATERIAL_BYTES + 1]);
+    expect(await direct.start()).toMatchObject({ code: "no_eligible_work" });
+    expect(fleet.executed).toEqual([]);
+    expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+  },
+);
+
+test.each(["read-whats-new", "keep-going"] as const)(
+  "a %s drain never replays malformed retained native limits",
+  async (preset) => {
+    const direct = await directDrain(preset);
+    const execute = fleet.execute.bind(fleet);
+    fleet.execute = () => {
+      throw new Error("lost native response before acceptance");
+    };
+    expect(await direct.start()).toHaveProperty("pending", true);
+    await harness.db.run(
+      `UPDATE runs SET preparation = json_remove(preparation, '$.nativeRequest.limits')
+        WHERE id = ?`,
+      [direct.identity.runId],
+    );
+    fleet.execute = execute;
+    machinery = launchMachinery(harness.store, deps);
+    expect(await direct.start()).toHaveProperty("pending", true);
+    expect(fleet.executed).toEqual([]);
+    expect(
+      await harness.db.query(`SELECT closure FROM runs WHERE id = ?`, [direct.identity.runId]),
+    ).toEqual([{ closure: null }]);
+  },
+);
+
+test.each(["preparation", "session", "absent"] as const)(
+  "an upgraded direct parent adopts known %s without rebuilding old material",
+  async (state) => {
+    const direct = await directDrain();
+    await direct.start();
+    await harness.db.run(
+      `UPDATE runs SET preparation = json_remove(preparation, '$.nativeRequest', '$.drainId')
+        WHERE id = ?`,
+      [direct.identity.runId],
+    );
+    if (state === "session")
+      await harness.db.run(`UPDATE runs SET job_id = 'job_legacy_code' WHERE id = ?`, [
+        direct.identity.runId,
+      ]);
+    if (state === "absent")
+      fleet.status = () => {
+        throw new HostCallError("jobs.status", "job_not_started");
+      };
+    cookbook = {};
+    await harness.db.run(`DELETE FROM sessions`);
+    machinery = launchMachinery(harness.store, deps);
+    const answer = await direct.start();
+    if (state === "absent") expect(answer).toHaveProperty("pending", true);
+    else
+      expect(answer).toEqual({
+        runId: direct.identity.runId,
+        jobId: state === "session" ? "job_legacy_code" : direct.prepareJobId,
+      });
+    expect(fleet.executed.map((job) => job.jobId)).toEqual([direct.prepareJobId]);
+  },
+);
+
+test("a direct beat recovers its exact bounded request despite changed current readiness", async () => {
+  const direct = await directDrain("keep-going");
+  const execute = fleet.execute.bind(fleet);
+  fleet.execute = () => {
+    throw new Error("native response lost");
+  };
+  expect(await direct.start()).toHaveProperty("pending", true);
+  const row = (
+    await harness.db.query<{ preparation: string }>(`SELECT preparation FROM runs WHERE id = ?`, [
+      direct.identity.runId,
+    ])
+  )[0]!;
+  const request = JSON.parse(row.preparation).nativeRequest as JobLaunch;
+  fleet.execute = execute;
+  fleet.readiness = { ...READY, connected: false };
+  machinery = launchMachinery(harness.store, deps);
+  expect(await direct.start()).toEqual({
+    runId: direct.identity.runId,
+    jobId: direct.prepareJobId,
+  });
+  expect(fleet.executed).toEqual([request]);
+  expect(await direct.start()).toEqual({
+    runId: direct.identity.runId,
+    jobId: direct.prepareJobId,
+  });
+  expect(fleet.executed).toEqual([request]);
+});
+
+test.each(["before-retain", "after-ack"] as const)(
+  "a direct beat stopped %s cannot escape the drain fence",
+  async (boundary) => {
+    const direct = await directDrain("keep-going");
+    const execute = fleet.execute.bind(fleet);
+    const run = harness.db.run.bind(harness.db);
+    if (boundary === "before-retain")
+      harness.db.run = async (sql, params) => {
+        if (sql.startsWith("INSERT INTO runs(id, kind, machine_id, job_id")) await direct.stop();
+        return await run(sql, params);
+      };
+    else
+      fleet.execute = async (request) => {
+        const answer = await execute(request);
+        await direct.stop();
+        return answer;
+      };
+    try {
+      await direct.start();
+    } finally {
+      harness.db.run = run;
+      fleet.execute = execute;
+    }
+    expect(fleet.executed.map((job) => job.jobId)).toEqual(
+      boundary === "before-retain" ? [] : [direct.prepareJobId],
+    );
+    expect(fleet.cancelled.map((job) => job.jobId)).toEqual(
+      boundary === "before-retain" ? [] : [direct.prepareJobId],
+    );
+    expect(await direct.start()).toHaveProperty("refused");
+  },
+);
 
 test("reviewed limits survive the preparation wake and still govern the posted session", async () => {
   const inferenceLimits = { calls: 2, inputTokens: 10_000, costMicros: 50_000 };

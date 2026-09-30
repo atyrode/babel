@@ -4327,25 +4327,15 @@ export const ServicesInstalledSchema = z.strictObject({
 // ---------------------------------------------------------------------------- the drain (#258)
 
 /**
- * WHICH PRESETS A DRAIN MAY FAN OUT, and why it is these three and not all five.
- *
- * A drain keeps N jobs in flight and launches the next one itself. The two DRAWN presets
- * (`review-backlog`, `file-and-tidy`) do not work that way: the coordinator decides what is
- * reviewed, claims it under a fence and the conductor dispatches it, and a controller that
- * fanned those out would be a second implementation of the one thing the coordinator exists to
- * arbitrate — the lane, the fence, the reservation and the day's allowance (`doors/launch.ts`
- * says this about its own drawn branch). Running that loop faster is an operator's own budget
- * overlay (`setBudget`, #260), which raises the bound admission reads; a drain sets none,
- * because nothing it launches consults one (`server/drain.ts`).
- *
- * So a drain fans out exactly the presets that are launched DIRECTLY: two explores and the
- * beat. `keep-going` is in the list because it is the one lane that spends no model at all,
- * which makes it the honest rehearsal of the controller — the fan, the relaunch on settle and
- * the self-stop, proven without spending a cent of the window the drain exists to protect.
+ * A drain may launch archived exploration, coordinator-claimed review, or a free beat.
+ * Review keeps the installed route, role recipes, claims and spending ceilings; weighting a
+ * drain never writes standing policy or makes review an unclaimed direct exploration.
+ * Mapping retains its separate governed start and is not included in the mixed allocation.
  */
 export const DRAIN_PRESETS = [
   "read-whats-new",
   "explore-topic",
+  "review-backlog",
   "keep-going",
   "map-transcripts",
 ] as const;
@@ -4356,8 +4346,37 @@ export type DrainPreset = (typeof DRAIN_PRESETS)[number];
 export const DRAIN_SPENDING_PRESETS: readonly DrainPreset[] = [
   "read-whats-new",
   "explore-topic",
+  "review-backlog",
   "map-transcripts",
 ];
+
+/** Whole-work-item spending activities; mapping keeps its separately governed start. */
+export const DRAIN_ALLOCATION_PRESETS = [
+  "read-whats-new",
+  "explore-topic",
+  "review-backlog",
+] as const;
+export const DrainAllocationSchema = z
+  .strictObject({
+    "read-whats-new": z.number().finite().positive().optional(),
+    "explore-topic": z.number().finite().positive().optional(),
+    "review-backlog": z.number().finite().positive().optional(),
+  })
+  .refine((weights) => Object.keys(weights).length > 0, "name at least one positive weight");
+export type DrainAllocation = z.infer<typeof DrainAllocationSchema>;
+
+/** Whole-run attribution, never overlapping recipe participation bills. */
+export const DrainAllocationStatusSchema = z.strictObject({
+  preset: DrainPresetSchema,
+  weight: z.number(),
+  share: z.number(),
+  incurredCostMicros: z.number(),
+  reservedCostMicros: z.number(),
+  deficitCostMicros: z.number(),
+  unpricedJobs: z.number().int(),
+  gap: z.string(),
+});
+export type DrainAllocationStatus = z.infer<typeof DrainAllocationStatusSchema>;
 
 /**
  * THE MAPPING DRAIN (#223). Transcript mapping is not a standing conductor activity: paid map
@@ -4373,6 +4392,7 @@ export const MAP_DRAIN_PRESET = "map-transcripts" satisfies DrainPreset;
 export const DRAIN_OPERATIONS: Readonly<Record<DrainPreset, OperationName>> = {
   "read-whats-new": PRESET_OPERATIONS["read-whats-new"],
   "explore-topic": PRESET_OPERATIONS["explore-topic"],
+  "review-backlog": PRESET_OPERATIONS["review-backlog"],
   "keep-going": PRESET_OPERATIONS["keep-going"],
   "map-transcripts": MACHINE_OPERATIONS.mapPrepare,
 };
@@ -4456,7 +4476,8 @@ export type DrainSpend = z.infer<typeof DrainSpendSchema>;
  */
 export const DrainStartInputSchema = z.strictObject({
   machineId: bounded(120),
-  preset: DrainPresetSchema,
+  preset: DrainPresetSchema.optional(),
+  allocation: DrainAllocationSchema.optional(),
   /**
    * THE CODE PROFILE EVERY JOB OF THIS FAN IS POSTED ON (#279), named before the button.
    *
@@ -4649,6 +4670,7 @@ export const DrainReportSchema = z.strictObject({
   drainId: z.string(),
   machineId: z.string(),
   preset: DrainPresetSchema,
+  presetAllocation: z.array(DrainAllocationStatusSchema).default([]),
   ending: z.string(),
   reason: z.string(),
   startedBy: z.string(),
@@ -4750,6 +4772,7 @@ export const DrainStatusSchema = z.strictObject({
   drainId: z.string(),
   machineId: z.string(),
   preset: DrainPresetSchema,
+  allocation: z.array(DrainAllocationStatusSchema).default([]),
   state: DrainStateSchema,
   reason: z.string(),
   startedAt: z.string(),

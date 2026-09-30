@@ -228,6 +228,18 @@ const DRAINS_TABLE = `CREATE TABLE drains(
      CHECK (state != 'closing' OR ending != '')
    ) STRICT`;
 
+/** A direct drain reserves its ordinal and whole-work-item cost before any external post. */
+const DRAIN_LAUNCHES_TABLE = `CREATE TABLE drain_launches(
+     run_id TEXT PRIMARY KEY,
+     drain_id TEXT NOT NULL REFERENCES drains(id),
+     ordinal INTEGER NOT NULL,
+     preset TEXT NOT NULL,
+     reserved_cost_micros INTEGER,
+     state TEXT NOT NULL CHECK (state IN ('reserved','posted','refused')),
+     gap TEXT NOT NULL DEFAULT '',
+     UNIQUE(drain_id, ordinal)
+   ) STRICT`;
+
 /**
  * WHAT A RUN PROPOSES BE DONE NEXT, AND WHAT THE OPERATOR ANSWERED (#340) — spelled once and
  * created twice, for the reason `budgets` and `drains` are.
@@ -1197,6 +1209,7 @@ export const SCHEMA_V1: readonly string[] = [
   // earlier enable created would have had the table and not the index — no longer holds:
   // `SCHEMA_ADDITIONS` names any schema object (#340).
   DRAINS_TABLE,
+  DRAIN_LAUNCHES_TABLE,
   // ---------------------------------------------------------------- the crossing
   // The one-off import's own ledger: where each table's rows came from and how many.
   `CREATE TABLE imports(
@@ -1286,6 +1299,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     object: "drains",
     sql: DRAINS_TABLE,
   },
+  { object: "drain_launches", sql: DRAIN_LAUNCHES_TABLE },
   // #279: a run that reaches a model is a Code session. Two nullable columns with no default,
   // which is additive in the strictest sense — every row an earlier shape wrote reads as NULL,
   // and NULL is the truth about it: those runs were posted by a launcher of Babel's own and
