@@ -1781,6 +1781,7 @@ and owner refusals are displayed, not reinterpreted as empty data or accepted ch
 no duty/policy toggles or apply controls in this section. Spend fractions are not invocation
 fractions or a cost guarantee: the scheduler still uses its existing weights, and neither preview
 nor save authorizes execution (§5.8).
+
 ### 8.4 Stored data, stateless workers, and one interaction surface
 
 Storage is the product. Everything Babel knows lives in the store (§9); a surface reads and
