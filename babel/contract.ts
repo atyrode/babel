@@ -1589,6 +1589,8 @@ export const JEV_ACTIONS = {
   pairs: "pairs",
   duplicatesPlan: "duplicatesPlan",
   duplicates: "duplicates",
+  /** Read a bounded sample of current cached judgements by recipe; never invokes a provider. */
+  recipeStanding: "recipeStanding",
 } as const;
 export type JevActionName = (typeof JEV_ACTIONS)[keyof typeof JEV_ACTIONS];
 
@@ -3418,6 +3420,65 @@ export const RecipeRowSchema = z.strictObject({
   runs: z.number().int(),
 });
 
+/** The policy read's optional, bounded current-record handoff. Default policy reads are unchanged. */
+export const RECIPE_READING_BATCH = 100;
+export const RECIPE_READING_TEXT_MAX = 8192;
+export const PolicyQuerySchema = z.strictObject({
+  recipeRecords: z.boolean().optional(),
+});
+export const RecipeEligibilitySchema = z.strictObject({
+  recipeId: z.string(),
+  eligible: z.number().int().nonnegative(),
+});
+export const RecipeRecordsSchema = z.strictObject({
+  /** Every retained record, partitioned into eligible, multi-recipe and other excluded rows. */
+  total: z.number().int().nonnegative(),
+  eligible: z.number().int().nonnegative(),
+  multiRecipe: z.number().int().nonnegative(),
+  excluded: z.number().int().nonnegative(),
+  recipes: z.array(RecipeEligibilitySchema),
+  /** Newest eligible current revisions, not a representative or complete corpus sample. */
+  records: z
+    .array(
+      z.strictObject({
+        recordId: RecordIdSchema,
+        revision: z.number().int().nonnegative(),
+        kind: RecordKindSchema,
+        recipeId: z.string(),
+        /** Null when the verbatim claim exceeds the handoff bound; never truncated for judgement. */
+        text: z.string().max(RECIPE_READING_TEXT_MAX).nullable(),
+      }),
+    )
+    .max(RECIPE_READING_BATCH),
+});
+export type RecipeRecords = z.infer<typeof RecipeRecordsSchema>;
+
+const RecipeReadingCountsSchema = z.strictObject({
+  knownCached: z.number().int().nonnegative(),
+  missingOrEvicted: z.number().int().nonnegative(),
+  notInspected: z.number().int().nonnegative(),
+  /** An answer-only memo cannot certify how many records have never been judged. */
+  unjudged: z.null(),
+  bands: z.record(z.enum(STANDINGS), z.number().int().nonnegative()),
+});
+export const RecipeStandingSchema = z
+  .strictObject({
+    observedAt: z.string(),
+    bankVersion: z.number().int(),
+    policyRevision: z.string(),
+    basis: z.array(z.strictObject({ kind: RecordKindSchema, basis: z.string() })),
+    funding: z.literal("unknown"),
+    coverage: z.literal("partial-cache"),
+    total: z.number().int().nonnegative(),
+    eligible: z.number().int().nonnegative(),
+    multiRecipe: z.number().int().nonnegative(),
+    excluded: z.number().int().nonnegative(),
+    counts: RecipeReadingCountsSchema,
+    recipes: z.array(RecipeEligibilitySchema.extend(RecipeReadingCountsSchema.shape)),
+  })
+  .nullable();
+export type RecipeStanding = z.infer<typeof RecipeStandingSchema>;
+
 /**
  * THE OVERLAY IN FORCE, as the ceilings panel shows it beside the standing numbers (#260): what
  * it moves, until when, and why. `changes` carries both values because the operator's question
@@ -3463,6 +3524,8 @@ export const PolicyResultSchema = z.strictObject({
   lanes: z.array(z.strictObject({ lane: z.string(), role: z.string(), share: z.number() })),
   activityWeights: ActivityWeightsSchema,
   recipes: z.array(RecipeRowSchema),
+  /** Present only when explicitly requested; independent of any optional judgement part. */
+  recipeRecords: RecipeRecordsSchema.optional(),
   /** Null when nothing is overlaid: the standing numbers are the numbers. */
   overlay: BudgetOverlaySchema.nullable(),
   /**

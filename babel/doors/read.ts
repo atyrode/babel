@@ -25,6 +25,7 @@ import {
   EntityIdSchema,
   FeedQuerySchema,
   FeedResultSchema,
+  PolicyQuerySchema,
   PolicyResultSchema,
   PulseResultSchema,
   RecordPeelSchema,
@@ -40,6 +41,7 @@ import {
   TopicsResultSchema,
 } from "../contract.ts";
 import type { BabelStore } from "../store/store.ts";
+import { recipeRecords } from "../store/recipe-records.ts";
 import { defineDoor, type Door } from "./door.ts";
 import { defineServerAction, type GuestStorage } from "@manifold/plugin-kit/server";
 
@@ -189,10 +191,13 @@ export function readDoors(store: BabelStore): readonly Door[] {
         name: ACTIONS.policy,
         title: "Read the evaluation policy",
         caps: READ_CAPS,
-        input: NoQuerySchema,
+        input: PolicyQuerySchema,
         result: PolicyResultSchema,
       }),
-      async () => await store.policy(),
+      async (_ctx, query) => ({
+        ...(await store.policy()),
+        ...(query.recipeRecords === true ? { recipeRecords: await recipeRecords(store.db) } : {}),
+      }),
     ),
   ];
 }

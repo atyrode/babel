@@ -1,3 +1,12 @@
+import type { HostServices } from "@manifold/plugin";
+import { useEffect, useState } from "react";
+import {
+  JEV_ACTIONS,
+  JEV_PLUGIN_ID,
+  RECIPE_READING_BATCH,
+  RecipeStandingSchema,
+  type RecipeStanding,
+} from "../contract.ts";
 import { Cluster, Stack } from "@manifold/ui";
 import { figure, since, type RecipeRow } from "./api.ts";
 
@@ -22,13 +31,43 @@ import { figure, since, type RecipeRow } from "./api.ts";
 */
 
 export interface RecipesProps {
+  readonly host: HostServices;
   readonly recipes: readonly RecipeRow[];
   readonly now: number;
   /** A failed read, in the door's own words. */
   readonly note: string;
 }
 
-export function Recipes({ recipes, now, note }: RecipesProps) {
+export function Recipes({ host, recipes, now, note }: RecipesProps) {
+  const [held, setHeld] = useState<{
+    client: HostServices["client"];
+    reading: RecipeStanding;
+  } | null>(null);
+  useEffect(() => {
+    const client = host.client;
+    let active = true;
+    let timer: number | undefined;
+    async function refresh(): Promise<void> {
+      let reading: RecipeStanding = null;
+      try {
+        const reply = await client.action(`${JEV_PLUGIN_ID}.${JEV_ACTIONS.recipeStanding}`, {});
+        const parsed = reply.ok ? RecipeStandingSchema.safeParse(reply.result) : null;
+        if (parsed?.success) reading = parsed.data;
+      } catch {
+        // Optional means no error/empty section, including after a previously warm reading.
+      }
+      if (!active) return;
+      setHeld({ client, reading });
+      timer = window.setTimeout(() => void refresh(), 15_000);
+    }
+    void refresh();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [host.client]);
+  const reading = held?.client === host.client ? held.reading : null;
+  const byRecipe = new Map(reading?.recipes.map((row) => [row.recipeId, row]));
   const enabled = recipes.filter((recipe) => recipe.enabled).length;
   const never = recipes.filter((recipe) => recipe.runs === 0).length;
   const tally =
@@ -46,6 +85,22 @@ export function Recipes({ recipes, now, note }: RecipesProps) {
         </p>
       </Stack>
       {note === "" ? null : <p className="plugin-atyrode_babel_watch__note">{note}</p>}
+      {reading === null ? null : (
+        <p className="plugin-atyrode_babel_watch__note" data-recipe-standing="partial-cache">
+          Partial cached-current Jev readings — funding unknown; no provider calls. Bank{" "}
+          {reading.bankVersion}, service policy {reading.policyRevision}, observed{" "}
+          {reading.observedAt}. Complete eligibility census: {figure(reading.eligible)}{" "}
+          exactly-one-recipe current records of {figure(reading.total)} retained;{" "}
+          {figure(reading.multiRecipe)} multi-recipe; {figure(reading.excluded)} otherwise excluded
+          (non-current, unreadable identifier or unattributed). Only the newest{" "}
+          {RECIPE_READING_BATCH} eligible records can be inspected:{" "}
+          {figure(reading.counts.knownCached)} known cached,{" "}
+          {figure(reading.counts.missingOrEvicted)} missing-or-evicted,{" "}
+          {figure(reading.counts.notInspected)} not inspected (older or over the text bound).
+          Never-judged count unknown: a missing answer is not proof it was never judged. Bands below
+          describe only the known cached sample, not the corpus.
+        </p>
+      )}
       <ul className="plugin-atyrode_babel_watch__recipes">
         {recipes.map((recipe) => (
           <li key={recipe.id} className="plugin-atyrode_babel_watch__recipe">
@@ -74,10 +129,48 @@ export function Recipes({ recipes, now, note }: RecipesProps) {
                   ? "The policy carries no description for this one."
                   : recipe.looksFor}
               </p>
+              <RecipeReading row={byRecipe.get(recipe.id)} />
             </Stack>
           </li>
         ))}
+        {reading?.recipes
+          .filter((row) => !recipes.some((recipe) => recipe.id === row.recipeId))
+          .map((row) => (
+            <li key={row.recipeId} className="plugin-atyrode_babel_watch__recipe">
+              <span className="plugin-atyrode_babel_watch__recipe-name">{row.recipeId}</span>
+              <RecipeReading row={row} />
+            </li>
+          ))}
       </ul>
     </Stack>
+  );
+}
+
+function RecipeReading({
+  row,
+}: {
+  row: NonNullable<RecipeStanding>["recipes"][number] | undefined;
+}) {
+  if (row === undefined) return null;
+  return (
+    <p className="plugin-atyrode_babel_watch__recipe-looks" data-recipe-reading={row.recipeId}>
+      {figure(row.eligible)} eligible{row.eligible === 0 ? " — zero eligible output" : ""};{" "}
+      {figure(row.knownCached)} known cached; {figure(row.missingOrEvicted)} missing-or-evicted;{" "}
+      {figure(row.notInspected)} not inspected; never-judged unknown.
+      {row.knownCached === 0 ? null : (
+        <>
+          {" "}
+          Cached sample bands:{" "}
+          {Object.entries(row.bands)
+            .filter(([band]) => band !== "unjudged")
+            .map(
+              ([band, count]) =>
+                `${band} ${figure(count)} (${String(Math.round((100 * count) / row.knownCached))}%)`,
+            )
+            .join(" · ")}
+          .
+        </>
+      )}
+    </p>
   );
 }

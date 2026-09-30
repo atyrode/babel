@@ -8,6 +8,10 @@
     "atyrode.babel": {
       "type": "required",
       "reason": "a run is launched, followed and stopped through babel's doors"
+    },
+    "atyrode.babel.jev": {
+      "type": "optional",
+      "reason": "partial cached-current recipe readings without spending; absent without Jev"
     }
   },
   "contributes": {

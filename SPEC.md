@@ -1588,6 +1588,36 @@ the day's cycles and the reasons they did not spend, the archive host labels no 
 to, the machines and what they can run, the standing policy with its ceilings and any budget
 overlay, the recipes the hub holds, and the drains. It is where a run is started and stopped.
 
+**Recipe standings are an optional, cache-only reading (#362).** The existing Recipes section
+keeps declared lenses with zero eligible output. Its eligibility census covers every retained
+record: only nameable current revisions belonging to a run with exactly one recipe are eligible;
+multi-recipe current records and other exclusions are counted separately. The complete retained
+worker `Recipes` array takes precedence over the imported scalar, which may only name its first
+member. Native runs use their full preparation selection; an explicitly empty or malformed array
+never falls back to the scalar. With no array retained, a nonempty run-level scalar is the legacy
+single-recipe attribution. Record-local recipe fields alone do not establish a run's attribution.
+
+The baseline `policy` door supplies the census and, only when `recipeRecords` is requested,
+at most the newest 100 eligible current records with verbatim claims of at most 8,192 characters.
+Newest follows the full-precision UTC creation timestamp, padding shorter native fractional
+spellings to the imported nine-digit layout, with record id breaking exact ties. Import insertion
+order and rounded timestamp conversions do not determine the sample.
+Ordinary policy reads keep their existing result. Jev's `recipeStanding` door looks up those
+claims only in its existing bounded process memo, under the current bank, per-kind document and
+service-policy revision. The bounded sample is not random, representative, or complete corpus
+coverage. Known cached standings, inspected-but-missing-or-evicted answers and records not
+inspected (older or over the text bound) are distinct. The never-judged count is unknown, not zero:
+the answer-only memo cannot distinguish an eviction or restart from a record never judged.
+Standing-band shares use known cached readings as their denominator, never all eligible output.
+
+For this #362 reading only, a ready service with retained current-revision answers may show the
+partial sample while **current funding is unknown**. The free readiness roster is not a credit
+check. No provider call, paid probe, sweep or model is used, even on a cache miss. Missing or
+disabled Jev, a changed service revision during the read, and no current cached readings leave the
+existing Recipes surface unchanged. A refresh replaces the browser-connection-local reading;
+there is no durable position store, ranking change, scheduling input or baseline dependency.
+This funding disclosure does not change the acceptance contract of other optional Jev features.
+
 ### 8.4 Stored data, stateless workers, and one interaction surface
 
 Storage is the product. Everything Babel knows lives in the store (§9); a surface reads and

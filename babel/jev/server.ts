@@ -5,15 +5,20 @@ import { DUPLICATE_ACTIONS, DUPLICATE_HANDLERS } from "./duplicates/doors.ts";
 import { PAIR_ACTIONS, PAIR_HANDLERS } from "./pairs/doors.ts";
 import { SWEEP_ACTIONS, SWEEP_HANDLERS } from "./sweep/doors.ts";
 import { refreshReviewReadingsAction, REVIEW_READING_HANDLERS } from "./review-readings.ts";
+import { recipeStandingAction, RECIPE_HANDLERS } from "./recipes.ts";
 
 /*
-  THE SERVER HALF OF atyrode.babel.jev, AND THE READ-ONLY DOORS ITS PASSES ARE DRIVEN THROUGH.
+  THE SERVER HALF OF atyrode.babel.jev, AND ITS CALLER-DRIVEN DOORS.
 
   Jev is a part: typed judgement over the records the baseline holds, enabled and removed on its
   own. Babel never depends on it: without current cached advice its draw is unchanged. A sweep
   may buy judgements and then publish cached positions through the baseline's authenticated
   ephemeral handoff. The cache-only refresh door can renew that advice without invoking Jev.
   Neither writes durable state; funding remains unknown. The dependency edge stays one-way.
+  The #362 recipe reading is different: only cached-current answers are read, with partial
+  coverage and unknown current funding disclosed. Readiness is not a credit guarantee, so a warm
+  reading may remain while funding is unknown. Missing/disabled Jev and no cached reading render
+  nothing extra.
 
   THE THIRD DOOR IS `pairs` (#357, #358), and it is the same shape one unit up: a relation
   between two records is not a property of either, so it cannot ride the per-record sweep. Its
@@ -166,12 +171,19 @@ export { duplicates, duplicatesPlan, type DuplicateDeps } from "./duplicates/pas
 
 export const plugin: ServerPluginDef = {
   manifest: PluginManifestSchema.parse(manifestJson),
-  actions: [...SWEEP_ACTIONS, ...PAIR_ACTIONS, ...DUPLICATE_ACTIONS, refreshReviewReadingsAction],
+  actions: [
+    ...SWEEP_ACTIONS,
+    ...PAIR_ACTIONS,
+    ...DUPLICATE_ACTIONS,
+    refreshReviewReadingsAction,
+    recipeStandingAction,
+  ],
   handlers: {
     ...SWEEP_HANDLERS,
     ...PAIR_HANDLERS,
     ...DUPLICATE_HANDLERS,
     ...REVIEW_READING_HANDLERS,
+    ...RECIPE_HANDLERS,
   },
 };
 
