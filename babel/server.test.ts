@@ -550,9 +550,7 @@ test("an accepted policy installation registers the beat under write authority e
   } as never);
   expect(answer).toMatchObject({ version: "p2" });
   expect(jobs.refused).toEqual([]);
-  expect(jobs.scheduled).toMatchObject([
-    { scheduleId: CONDUCTOR_SCHEDULE_ID, machineId: MACHINE, revision: "p2" },
-  ]);
+  expect(jobs.scheduled).toMatchObject([{ scheduleId: CONDUCTOR_SCHEDULE_ID, machineId: MACHINE }]);
 });
 
 test("the doors that ask a machine what it can run are lent that read, and no others are", () => {
@@ -678,7 +676,7 @@ test("enabling registers the beat with the slice the installer's credential rest
   // rather than waiting for a dispatch or a settlement to notice there is none. The rest of
   // the cycle ran under the same authority: the run the hub was waiting on is closed.
   expect(jobs.scheduled).toMatchObject([
-    { scheduleId: `${BABEL_PLUGIN_ID}.conductor`, revision: "p1", machineId: MACHINE },
+    { scheduleId: `${BABEL_PLUGIN_ID}.conductor`, machineId: MACHINE },
   ]);
   expect(jobs.statuses).toBe(1);
   expect(await closure()).toBe("completed");
@@ -2115,9 +2113,9 @@ test("the next beat recovers a posting the previous beat's wake lost, and only a
   await plugin.lifecycle?.onEnable?.(
     wake(harness.db as unknown as GuestDatabase, fake.actions) as never,
   );
-  expect(jobs.scheduled).toMatchObject([{ scheduleId: CONDUCTOR_SCHEDULE_ID, revision: "p1" }]);
+  expect(jobs.scheduled).toMatchObject([{ scheduleId: CONDUCTOR_SCHEDULE_ID }]);
   await preparedExplore();
-  const beat = (jobId: string, revision = "p1"): SettledJob =>
+  const beat = (jobId: string, revision = jobs.scheduled[0]!.revision): SettledJob =>
     settled({
       jobId,
       operationId: PRESET_OPERATIONS["keep-going"],

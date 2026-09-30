@@ -625,8 +625,11 @@ aside on purpose. The first beats on a fresh hub work through the whole reposito
 at a time; `counts.pending` reaching zero is the sign the backfill is done.
 
 The beat is registered only while the policy is enabled, at the policy's `cadenceSeconds`, on the
-machine the policy names, for a bounded lifetime the loop renews. A policy change re-registers it,
-because the schedule's revision is the policy version.
+machine the policy names, for a bounded lifetime the loop renews. A policy change re-registers it.
+Each registration gets a fresh revision scoped to that policy: Manifold retains even disabled
+schedule revisions as immutable requests, so a plugin replacement or renewal cannot reuse the
+policy version as the revision without a `schedule-revision-conflict`. The occurrence's revision
+also names the posting chain its settlement may resume.
 
 Drawing, launching and spending stay inside the cycle, where the coordinator's lanes and ceilings
 govern every dollar. A fixed `explore` registered at schedule time would spend outside them, which
