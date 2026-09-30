@@ -4584,17 +4584,21 @@ export function conductor(deps: ConductorDeps): Conductor {
       preparation.fence,
       run.job_id,
     ];
+    const openRun: SqlCondition = {
+      sql: `EXISTS (SELECT 1 FROM runs WHERE id=? AND closure IS NULL)`,
+      params: [run.id],
+    };
     const liveAuthority: SqlCondition = {
       sql:
         `EXISTS (SELECT 1 FROM claims WHERE id = ? AND fence = ? AND job_id = ? ` +
-        `AND finished_at IS NULL)`,
-      params: authorityParams,
+        `AND finished_at IS NULL) AND ${openRun.sql}`,
+      params: [...authorityParams, ...openRun.params],
     };
     const staleAuthority: SqlCondition = {
       sql:
         `NOT EXISTS (SELECT 1 FROM claims WHERE id = ? AND fence = ? AND job_id = ? ` +
-        `AND finished_at IS NULL)`,
-      params: authorityParams,
+        `AND finished_at IS NULL) AND ${openRun.sql}`,
+      params: [...authorityParams, ...openRun.params],
     };
     const counts: Record<string, number> = {};
     const statements: SqlStatement[] = [
@@ -4605,8 +4609,8 @@ export function conductor(deps: ConductorDeps): Conductor {
         sql:
           `UPDATE claims SET job_id = job_id ` +
           `WHERE id = ? AND fence = ? AND job_id = ? AND finished_at IS NULL ` +
-          `RETURNING run_id`,
-        params: authorityParams,
+          `AND ${openRun.sql} RETURNING run_id`,
+        params: [...authorityParams, ...openRun.params],
       },
     ];
     if (reason === "") {
@@ -4711,22 +4715,46 @@ export function conductor(deps: ConductorDeps): Conductor {
       closure: receipt.closure,
       reason,
     } as const;
+    const outcome =
+      reason === ""
+        ? skippedResult
+          ? "skipped"
+          : "completed"
+        : session === null && read.job.state === "cancelled"
+          ? "skipped"
+          : "failed";
     statements.push(
-      runStatement(run.id, target, receipt, counts, liveAuthority),
-      runStatement(run.id, { ...target, closure: "failed" }, staleReceipt, {}, staleAuthority),
-      // THE CALL IS RECORDED UNDER WHICHEVER EPOCH WON, on the same two guards and after the
-      // run row so the reference has something to point at. A takeover suppressed the
-      // SUBMISSION, never the call: the model answered and the deployment paid, and a trace
-      // that dropped the row would make a spent review look like one that never happened.
+      // Calls precede closure so both output branches use the same open-run authority.
       callStatement(sessionCall(callBase), liveAuthority),
       callStatement(
         sessionCall({ ...callBase, closure: "failed", reason: staleReason }),
         staleAuthority,
       ),
+      runStatement(run.id, target, receipt, counts, liveAuthority),
+      runStatement(run.id, { ...target, closure: "failed" }, staleReceipt, {}, staleAuthority),
+      {
+        // Review output, receipt and charge share one commit. Losing its answer cannot leave
+        // a completed run for the orphan reaper to charge again at its reservation.
+        sql: `UPDATE claims SET finished_at=?,actual_cost=?,outcome=?
+          WHERE id=? AND fence=? AND job_id=? AND finished_at IS NULL
+            AND EXISTS (SELECT 1 FROM runs WHERE id=? AND authority_id=claims.run_id
+              AND closure=?)
+          RETURNING reserved_cost`,
+        params: [
+          new Date(at).toISOString(),
+          costUsd,
+          outcome,
+          ...authorityParams,
+          run.id,
+          receipt.closure,
+        ],
+      },
     );
     const results = await store.db.batch(statements);
-    const claimRunId = results[0]?.[0]?.["run_id"];
-    const authorized = typeof claimRunId === "string";
+    // The two receipt branches precede the charge. A concurrent settlement that already
+    // closed the run wins both guards; the late reader publishes and reports nothing twice.
+    if ((results.at(-3)?.length ?? 0) === 0 && (results.at(-2)?.length ?? 0) === 0) return;
+    const authorized = typeof results[0]?.[0]?.["run_id"] === "string";
     const finalReason = authorized ? reason : staleReason;
     const finalReceipt = authorized ? receipt : staleReceipt;
     const finalCounts = authorized ? counts : {};
@@ -4763,41 +4791,16 @@ export function conductor(deps: ConductorDeps): Conductor {
       rows: finalCounts,
       skipped: 0,
     });
-    if (!authorized) return;
-    const outcome =
-      reason === ""
-        ? skippedResult
-          ? "skipped"
-          : "completed"
-        : session === null && read.job.state === "cancelled"
-          ? "skipped"
-          : "failed";
-    const finished = await coordinator.finish({
-      id: preparation.assignmentId,
-      runId: claimRunId,
-      fence: preparation.fence,
-      cost: costUsd,
+    const charged = results.at(-1)?.[0];
+    if (!authorized || charged === undefined) return;
+    settled.push({
+      claimId: preparation.assignmentId,
       outcome,
+      cost: costUsd,
+      overrun: costUsd > Number(charged["reserved_cost"]),
+      refused: null,
+      reason: null,
     });
-    settled.push(
-      finished.outcome === "finished"
-        ? {
-            claimId: preparation.assignmentId,
-            outcome,
-            cost: finished.cost,
-            overrun: finished.overrun,
-            refused: null,
-            reason: null,
-          }
-        : {
-            claimId: preparation.assignmentId,
-            outcome,
-            cost: costUsd,
-            overrun: false,
-            refused: finished.refusal.reason,
-            reason: null,
-          },
-    );
   }
   /** The run row's own preparation blob, as the receipt carries it back unchanged. */
   function preparationOf(preparation: string | null): Receipt["preparation"] {
@@ -5359,6 +5362,7 @@ export function conductor(deps: ConductorDeps): Conductor {
   ): Promise<{ readonly inFlight: boolean; readonly stage?: string; readonly stalled?: boolean }> {
     const containerId = run.container_id ?? "";
     const mapping = mappingIntent(run.preparation);
+    const review = reviewPreparation(preparationOf(run.preparation));
     // What this wake can see of a mapping run's authority. Only a refusal stops the session; an
     // executor this wake's credential cannot describe is no evidence anything changed.
     const authority =
@@ -5375,10 +5379,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
     }
     const answered = await engine.readSession({ containerId, jobId: run.job_id });
-    if (
-      reviewPreparation(preparationOf(run.preparation)) !== null &&
-      (!answered.ok || TERMINAL_STATES[answered.value.job.state] !== true)
-    ) {
+    if (review !== null && (!answered.ok || TERMINAL_STATES[answered.value.job.state] !== true)) {
       const stopped = await store.db.query<{ chain: string | null }>(
         `SELECT chain FROM runs WHERE id=? AND json_extract(payload,'$.stopRequested')=1`,
         [run.id],
@@ -5397,7 +5398,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       const note = `session ${run.job_id} in ${containerId} cannot be read: ${answered.refused}`;
       notes.push(note);
       const analysis = AnalysisWorkSchema.safeParse(preparationOf(run.preparation)?.["analysis"]);
-      if (silent < UNREPORTED_CYCLES || analysis.success || mapping !== null) {
+      if (silent < UNREPORTED_CYCLES || analysis.success || mapping !== null || review !== null) {
         // Still hoped for: the sentence is on the row so a reader sees it without the journal,
         // and the run stays open for the next wake to ask again.
         await store.db.run(`UPDATE runs SET payload = json_set(payload,'$.note',?) WHERE id = ?`, [
@@ -6030,12 +6031,12 @@ export function conductor(deps: ConductorDeps): Conductor {
                       (SELECT MAX(r.unreadable) FROM runs r WHERE r.job_id = c.job_id) AS silent
                  FROM claims c
                 WHERE c.finished_at IS NULL AND (? IS NULL OR c.role LIKE 'mapping:%')
-                  AND NOT (c.job_id IS NULL AND EXISTS (
+                  AND NOT EXISTS (
                     SELECT 1 FROM runs r WHERE r.kind='${OPERATIONS.evaluate}'
                       AND r.authority_kind='conductor' AND r.authority_id=c.run_id
                       AND json_extract(r.preparation,'$.review.assignmentId')=c.id
                       AND json_extract(r.preparation,'$.review.fence')=c.fence
-                      AND json_extract(r.payload,'$.posting')=1 AND r.closure IS NULL)))
+                      AND json_extract(r.payload,'$.posting')=1 AND r.closure IS NULL))
         WHERE NOT ((role LIKE 'analysis:%' OR role LIKE 'mapping:%') AND open_runs > 0)
           AND ((job_id IS NULL AND granted_at <= ?)
            OR (job_id IS NOT NULL AND runs = 0 AND granted_at <= ?)
@@ -6322,7 +6323,9 @@ export function conductor(deps: ConductorDeps): Conductor {
         AND finished_at IS NULL AND expires_at>? AND (job_id IS NULL OR job_id=?))
         AND NOT EXISTS (SELECT 1 FROM policies WHERE seq=(SELECT max(seq) FROM policies)
           AND (version!=? OR json_extract(payload,'$.enabled')=0
-            OR coalesce(json_extract(payload,'$.activityWeights.review'),0)<=0))`,
+            OR coalesce(json_extract(payload,'$.activityWeights.review'),0)<=0))
+        AND NOT EXISTS (SELECT 1 FROM runs WHERE id=?
+          AND (closure IS NOT NULL OR coalesce(json_extract(payload,'$.stopRequested'),0)=1))`,
       params: [
         run.preparation.assignmentId,
         run.authorityId,
@@ -6330,6 +6333,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         new Date(deps.now()).toISOString(),
         jobId,
         run.preparation.policyVersion,
+        run.id,
       ],
     };
   }
@@ -6499,7 +6503,14 @@ export function conductor(deps: ConductorDeps): Conductor {
       return { refused: reason, pending: true };
     }
     try {
-      const admitted = await reviewPostingAdmitted(run);
+      const [intent] = await store.db.query<{ retiring: number | bigint }>(
+        `SELECT coalesce(json_extract(payload,'$.postingRetiring'),0) retiring
+          FROM runs WHERE id=? AND closure IS NULL AND job_id IS NULL`,
+        [run.id],
+      );
+      if (intent === undefined)
+        return { refused: "the review posting was already resolved", pending: true };
+      const admitted = Number(intent.retiring) === 0 && (await reviewPostingAdmitted(run));
       const answered = admitted ? await engine.runSession(run.request) : null;
       if (answered !== null && (answered.ok || answered.code === ENGINE_REFUSALS.unconfirmed))
         return await answerReviewPosting(run, answered, notes, owner);
@@ -6507,7 +6518,13 @@ export function conductor(deps: ConductorDeps): Conductor {
         answered !== null && !answered.ok
           ? answered.refused
           : "the original review claim or policy no longer admits posting";
-      if (!owner) return await unresolvedReviewPosting(run, reason, notes);
+      // Retirement is irreversible, even if this wake dies before Code sees the adopt-only ask.
+      // An eligible later wake must not turn a refusal back into admission under the same key.
+      await store.db.run(
+        `UPDATE runs SET payload=json_set(payload,'$.postingRetiring',json('true'))
+          WHERE id=? AND closure IS NULL AND job_id IS NULL`,
+        [run.id],
+      );
       const retired = await engine.runSession({ ...run.request, adoptOnly: true });
       if (retired.ok || retired.code !== ENGINE_REFUSALS.postingUnknown)
         return await answerReviewPosting(run, retired, notes, owner);

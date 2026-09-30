@@ -3089,9 +3089,10 @@ async function drawnReviewPosting() {
   return { db, store, coordinator, code, wake, answer };
 }
 
-test.each([false, true])(
-  "a lost drawn-review answer retains its claim for its own chain and settles one purchase (expired: %s)",
-  async (expired) => {
+test.each(["admitted", "expired", "disabled", "stopped"] as const)(
+  "a lost drawn-review answer retains its claim for its own chain and settles one purchase (%s)",
+  async (boundary) => {
+    const stopped = boundary !== "admitted";
     const started = clock;
     try {
       const f = await drawnReviewPosting();
@@ -3124,7 +3125,14 @@ test.each([false, true])(
         ]),
       ).toEqual([{ id: runId, chain: WAKE, job_id: null, closure: null }]);
 
-      if (expired) clock += POLICY.leaseSeconds * 4_000;
+      if (boundary === "expired") clock += POLICY.leaseSeconds * 4_000;
+      if (boundary === "disabled")
+        await f.db.run(`UPDATE policies SET payload=json_set(payload,'$.enabled',json('false'))`);
+      if (boundary === "stopped")
+        await f.db.run(
+          `UPDATE runs SET payload=json_set(payload,'$.stopRequested',json('true')) WHERE id=?`,
+          [runId],
+        );
       for (const chain of [principalChain("unrelated"), null]) {
         await f.wake(chain).tick();
         expect(asked).toHaveLength(1);
@@ -3143,12 +3151,11 @@ test.each([false, true])(
       f.answer();
       const settled = [...(await f.wake().tick()).settled, ...(await f.wake().tick()).settled];
       expect(asked).toHaveLength(2);
-      expect(asked[1]!.postingKey).toBe(runId);
-      if (expired) expect(asked[1]!.adoptOnly).toBe(true);
+      expect(asked[1]).toEqual({ ...asked[0]!, ...(stopped ? { adoptOnly: true } : {}) });
       expect(f.code.posted).toHaveLength(1);
-      expect(f.code.cancelled).toEqual(expired ? ["job_code_review"] : []);
+      expect(f.code.cancelled).toEqual(stopped ? ["job_code_review"] : []);
       expect(settled.filter((row) => row.claimId === claim!.id)).toMatchObject([
-        { outcome: expired ? "failed" : "completed", cost: 0.12 },
+        { outcome: stopped ? "failed" : "completed", cost: 0.12 },
       ]);
       expect(
         await f.db.query(
@@ -3162,17 +3169,17 @@ test.each([false, true])(
           run_id: claim!.run_id,
           fence: claim!.fence,
           actual_cost: 0.12,
-          outcome: expired ? "failed" : "completed",
+          outcome: stopped ? "failed" : "completed",
           finished: 1n,
         },
       ]);
-      expect((await f.store.run(runId)).run).toMatchObject({
-        state: expired ? "failed" : "finished",
-        costUsd: 0.12,
+      expect(await f.store.run(runId)).toMatchObject({
+        run: { state: stopped ? "failed" : "finished", costUsd: 0.12 },
+        receipt: { closure: stopped ? "failed" : "completed", costUsd: 0.12 },
       });
       expect(
         await f.db.query(`SELECT vote FROM assessments WHERE record_id=?`, [ASSIGNMENT.recordId]),
-      ).toEqual(expired ? [] : [{ vote: null }]);
+      ).toEqual(stopped ? [] : [{ vote: null }]);
       expect((await f.coordinator.spend(clock)).total).toBeCloseTo(0.12, 8);
     } finally {
       clock = started;
@@ -3180,9 +3187,9 @@ test.each([false, true])(
   },
 );
 
-test("a refused drawn-review post retains its claim until adopt-only retirement is confirmed", async () => {
-  const started = clock;
-  try {
+test.each([false, true])(
+  "a refused drawn-review post remains retire-only after an interrupted retire (reached Code: %s)",
+  async (reachedCode) => {
     const f = await drawnReviewPosting();
     const asked: SessionRequest[] = [];
     const post = f.code.runSession.bind(f.code);
@@ -3190,10 +3197,13 @@ test("a refused drawn-review post retains its claim until adopt-only retirement 
       asked.push(request);
       if (asked.length === 1)
         return refusedByCode("engine_stale_profile", "the profile moved under this invocation");
-      const answer = await post(request);
-      return asked.length === 2
-        ? refusedByCode("engine_unconfirmed", "the retirement answer was lost")
-        : answer;
+      if (asked.length === 2) {
+        if (reachedCode) await post(request);
+        return refusedByCode("engine_unconfirmed", "the retirement answer was lost");
+      }
+      // Stop fresh draws after recovery, without changing its pre-call admission decision.
+      await f.db.run(`UPDATE policies SET payload=json_set(payload,'$.enabled',json('false'))`);
+      return await post(request);
     };
     await f.wake().tick();
     expect(asked).toHaveLength(2);
@@ -3205,7 +3215,7 @@ test("a refused drawn-review post retains its claim until adopt-only retirement 
     const [run] = await f.db.query<{ id: string }>(`SELECT id FROM runs WHERE kind=?`, [
       OPERATIONS.evaluate,
     ]);
-    expect(f.code.retired.has(run!.id)).toBe(true);
+    expect(f.code.retired.has(run!.id)).toBe(reachedCode);
     expect(
       await f.db.query(`SELECT job_id, actual_cost, finished_at FROM claims WHERE id=?`, [
         claim!.id,
@@ -3215,8 +3225,6 @@ test("a refused drawn-review post retains its claim until adopt-only retirement 
       { closure: null },
     ]);
 
-    clock += POLICY.leaseSeconds * 4_000;
-    await f.db.run(`UPDATE policies SET payload=json_set(payload,'$.enabled',json('false'))`);
     for (const chain of [principalChain("unrelated"), null]) {
       await f.wake(chain).tick();
       expect(asked).toHaveLength(2);
@@ -3226,8 +3234,8 @@ test("a refused drawn-review post retains its claim until adopt-only retirement 
       expect((await f.coordinator.spend(clock)).total).toBeCloseTo(claim!.reserved_cost, 8);
     }
     const settled = [...(await f.wake().tick()).settled, ...(await f.wake().tick()).settled];
-    expect(asked.at(-1)!.adoptOnly).toBe(true);
-    expect(new Set(asked.map((request) => request.postingKey))).toEqual(new Set([run!.id]));
+    expect(asked).toHaveLength(3);
+    expect(asked[2]).toEqual({ ...asked[0]!, adoptOnly: true });
     expect(f.code.posted).toEqual([]);
     expect(f.code.cancelled).toEqual([]);
     expect(settled.filter((row) => row.claimId === claim!.id)).toMatchObject([
@@ -3243,10 +3251,8 @@ test("a refused drawn-review post retains its claim until adopt-only retirement 
       { job_id: null, closure: "failed" },
     ]);
     expect((await f.coordinator.spend(clock)).total).toBe(0);
-  } finally {
-    clock = started;
-  }
-});
+  },
+);
 
 test("a null-chain initial review retires a definitive refusal without trapping its claim", async () => {
   const f = await drawnReviewPosting();
@@ -3395,6 +3401,160 @@ test("a late drawn-review answer cannot cancel the session its original chain al
     await f.db.query(`SELECT closure, cost_usd FROM runs WHERE kind=?`, [OPERATIONS.evaluate]),
   ).toEqual([{ closure: "completed", cost_usd: 0.12 }]);
   expect(f.code.cancelled).toEqual([]);
+});
+
+test("review posting retains its exact input before Code and retires it unchanged after policy replacement", async () => {
+  const f = await drawnReviewPosting();
+  const asked: SessionRequest[] = [];
+  const post = f.code.runSession.bind(f.code);
+  f.code.runSession = async (request) => {
+    asked.push(request);
+    const [intent] = await f.db.query<{
+      profile: string;
+      prompt: string;
+      chain: string;
+      fence: bigint;
+      claim_fence: bigint;
+      claim_run: string;
+      authority_id: string;
+    }>(
+      `SELECT r.profile,json_extract(r.payload,'$.postingPrompt') prompt,r.chain,
+        json_extract(r.preparation,'$.review.fence') fence,c.fence claim_fence,
+        c.run_id claim_run,r.authority_id FROM runs r JOIN claims c
+        ON c.id=json_extract(r.preparation,'$.review.assignmentId') WHERE r.id=?`,
+      [request.postingKey!],
+    );
+    expect(intent).toMatchObject({ prompt: request.prompt, chain: WAKE });
+    expect(JSON.parse(intent!.profile)).toEqual(request.profile);
+    expect(intent!.fence).toBe(intent!.claim_fence);
+    expect(intent!.authority_id).toBe(intent!.claim_run);
+    if (asked.length === 1) {
+      await post(request);
+      return refusedByCode("engine_unconfirmed", "the original posting answer was lost");
+    }
+    if (JSON.stringify(request) !== JSON.stringify({ ...asked[0]!, adoptOnly: true }))
+      return refusedByCode("engine_refused", "the original keyed input changed");
+    return await post(request);
+  };
+  await f.wake().tick();
+  await f.db.run(
+    `UPDATE policies SET version='replacement',payload=json_set(payload,
+      '$.version','replacement','$.enabled',json('false'),
+      '$.review.profile.expectedRevision',99,'$.review.recipes[0].body','Changed recipe')`,
+  );
+  f.answer();
+  const settled = [...(await f.wake().tick()).settled, ...(await f.wake().tick()).settled];
+  expect(asked).toHaveLength(2);
+  expect(f.code.posted).toHaveLength(1);
+  expect(settled).toMatchObject([{ outcome: "failed", cost: 0.12 }]);
+  expect(await f.db.query(`SELECT vote FROM assessments`)).toEqual([]);
+  expect((await f.coordinator.spend(clock)).total).toBeCloseTo(0.12, 8);
+});
+
+test("overlapping review settlements publish and charge the original claim once", async () => {
+  const f = await drawnReviewPosting();
+  await f.wake().tick();
+  f.answer();
+  const read = f.code.readSession.bind(f.code);
+  const arrived = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  let reads = 0;
+  f.code.readSession = async (request) => {
+    const answer = await read(request);
+    if (++reads === 1) {
+      arrived.resolve();
+      await resume.promise;
+    }
+    return answer;
+  };
+  const late = f.wake().tick();
+  await arrived.promise;
+  let first: TickReport;
+  try {
+    first = await f.wake().tick();
+  } finally {
+    resume.resolve();
+  }
+  const second = await late;
+  expect([...first.settled, ...second.settled]).toMatchObject([
+    { outcome: "completed", cost: 0.12 },
+  ]);
+  expect(await f.db.query(`SELECT vote FROM assessments`)).toEqual([{ vote: null }]);
+  expect(await f.db.query(`SELECT actual_cost,outcome FROM claims`)).toEqual([
+    { actual_cost: 0.12, outcome: "completed" },
+  ]);
+  expect(
+    await f.db.query(`SELECT closure,cost_usd FROM runs WHERE kind=?`, [OPERATIONS.evaluate]),
+  ).toEqual([{ closure: "completed", cost_usd: 0.12 }]);
+  expect(await f.db.query(`SELECT closure FROM run_calls`)).toEqual([{ closure: "completed" }]);
+  expect((await f.coordinator.spend(clock)).total).toBeCloseTo(0.12, 8);
+});
+
+test("an interrupted review receipt commit retains its terminal charge across restart", async () => {
+  const f = await drawnReviewPosting();
+  await f.wake().tick();
+  f.answer();
+  const batch = f.db.batch.bind(f.db);
+  const query = f.db.query.bind(f.db);
+  const run = f.db.run.bind(f.db);
+  let closed = false;
+  f.db.query = async <Row extends SqlRow = SqlRow>(sql: string, params?: readonly SqlParam[]) => {
+    if (closed) throw new Error("the callback data lease ended");
+    return await query<Row>(sql, params);
+  };
+  f.db.run = async (sql, params) => {
+    if (closed) throw new Error("the callback data lease ended");
+    return await run(sql, params);
+  };
+  f.db.batch = async (statements) => {
+    if (closed) throw new Error("the callback data lease ended");
+    const result = await batch(statements);
+    const terminal = await query(`SELECT id FROM runs WHERE kind=? AND closure IS NOT NULL`, [
+      OPERATIONS.evaluate,
+    ]);
+    if (terminal.length > 0) {
+      closed = true;
+      throw new Error("the callback lost its commit answer");
+    }
+    return result;
+  };
+  try {
+    await f
+      .wake()
+      .tick()
+      .catch(() => undefined);
+  } finally {
+    f.db.batch = batch;
+    f.db.query = query;
+    f.db.run = run;
+  }
+  expect(closed).toBe(true);
+  expect(await f.db.query(`SELECT actual_cost,outcome FROM claims`)).toEqual([
+    { actual_cost: 0.12, outcome: "completed" },
+  ]);
+  const restarted = await f.wake().tick();
+  expect(restarted.settled).toEqual([]);
+  expect(f.code.posted).toHaveLength(1);
+  expect(await f.db.query(`SELECT vote FROM assessments`)).toEqual([{ vote: null }]);
+  expect((await f.coordinator.spend(clock)).total).toBeCloseTo(0.12, 8);
+});
+
+test("unreadable adopted reviews retain the original slot until their terminal meter arrives", async () => {
+  const f = await drawnReviewPosting();
+  await f.wake().tick();
+  const read = f.code.readSession.bind(f.code);
+  f.code.readSession = async () =>
+    refusedByCode("engine_unconfirmed", "the session read remains unresolved");
+  for (let attempt = 0; attempt < 4; attempt++) await f.wake().tick();
+  expect(await f.db.query(`SELECT actual_cost,finished_at FROM claims`)).toEqual([
+    { actual_cost: null, finished_at: null },
+  ]);
+  expect(await f.coordinator.open(clock)).toEqual({ total: 1, byMachine: { [MACHINE]: 1 } });
+  f.code.readSession = read;
+  f.answer();
+  expect((await f.wake().tick()).settled).toMatchObject([{ outcome: "completed", cost: 0.12 }]);
+  expect(f.code.posted).toHaveLength(1);
+  expect((await f.coordinator.spend(clock)).total).toBeCloseTo(0.12, 8);
 });
 
 test("an enabled policy without a review route reserves nothing", async () => {
