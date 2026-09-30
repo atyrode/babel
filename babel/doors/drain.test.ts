@@ -23,6 +23,8 @@ import {
   MATERIAL_SCHEMA,
   OPERATIONS,
   PRESET_OPERATIONS,
+  RECALL_SERVICE_ID,
+  TRANSCRIPT_MAP_SERVICE_OPERATION,
   PrepareInputSchema,
   type ProfileRow,
 } from "../contract.ts";
@@ -36,6 +38,7 @@ import type {
   RunPlan,
 } from "../server/conductor.ts";
 import { drainTick, type DrainDeps, type DrainLaunch } from "../server/drain.ts";
+import { liveDrainCapacity } from "../server/drain-admission.ts";
 import { runPlan, type BabelJobs } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { drainReportId, readDrain, readDrainReport } from "../store/drains.ts";
@@ -259,6 +262,9 @@ let harness: TestStore;
 let fleet: Fleet;
 let doors: readonly Door[];
 let deps: DrainDeps;
+let physicalCores: number | undefined;
+let operationCeiling: number | null;
+let inventory: Pick<GuestCtx["machines"], "inventory"> | undefined;
 
 const ctx = {
   principal: { id: "operator" },
@@ -483,6 +489,27 @@ function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch 
 
 beforeEach(async () => {
   harness = await openTestStore(NOW);
+  physicalCores = 16;
+  operationCeiling = 16;
+  inventory = {
+    inventory: async () => ({
+      ok: true,
+      value: {
+        machines: [
+          {
+            id: MACHINE,
+            name: MACHINE,
+            online: true,
+            revoked: false,
+            draining: false,
+            terminalExecution: null,
+            lastRefusal: null,
+            ...(physicalCores === undefined ? {} : { physicalCoreCount: physicalCores }),
+          },
+        ],
+      },
+    }),
+  };
   code.posted.length = 0;
   fleet = new Fleet();
   // The Code fake is one object across the file, so its record of what it was asked is reset
@@ -527,6 +554,7 @@ beforeEach(async () => {
   const coordinated = coordinator(store, () => store.now(), 16);
   deps = {
     store,
+    admission: async (machineId) => await liveDrainCapacity(inventory, machineId, operationCeiling),
     coordinator: coordinated,
     launch: posting(store, () => fleet),
     jobs: fleet,
@@ -538,7 +566,6 @@ beforeEach(async () => {
   doors = drainDoors(store, {
     coordinator: coordinated,
     deps: () => deps,
-    concurrentJobs: 16,
     startOrdinary: async () => ({ ok: true, notes: [] }),
     stopOrdinary: async () => {},
     now: () => store.now(),
@@ -688,19 +715,121 @@ test("a fan above the machine's ceiling is refused by name rather than posted an
   // `concurrentJobs` is the manifest's `limits.concurrentJobs` for the operation this preset
   // posts: the hub refuses every posting past it at `execute`, so the door refuses above it by
   // name rather than spending the drain's first round on refusals.
-  doors = drainDoors(harness.store, {
-    coordinator: coordinator(harness.store, () => harness.store.now(), 4),
-    deps: () => deps,
-    concurrentJobs: 4,
-    startOrdinary: async () => ({ ok: true, notes: [] }),
-    stopOrdinary: async () => {},
-    now: () => harness.store.now(),
-  });
-  const refused = String((await start({ concurrent: 8 }))["refused"]);
-  expect(refused).toMatch(/fan of 8 cannot be admitted/);
-  expect(refused).toMatch(/4 jobs a machine runs at once/);
-  expect(fleet.executed).toHaveLength(0);
-  expect(await harness.db.query(`SELECT id FROM drains`)).toHaveLength(0);
+  operationCeiling = 4;
+  expect(await start({ concurrent: 8 })).toHaveProperty("refused");
+  expect(fleet.executed).toEqual([]);
+  expect(await harness.db.query(`SELECT id FROM drains`)).toEqual([]);
+});
+
+test("start refuses a fan above live physical cores without rewriting policy", async () => {
+  const policy = await harness.db.query(`SELECT payload FROM policies`);
+  physicalCores = 1;
+  expect(await start({ concurrent: 2 })).toHaveProperty("refused");
+  expect(fleet.executed).toEqual([]);
+  expect(await harness.db.query(`SELECT id FROM drains`)).toEqual([]);
+  expect(await harness.db.query(`SELECT payload FROM policies`)).toEqual(policy);
+});
+
+test.each([undefined, 0, -1, 1.5, Number.NaN, Infinity])(
+  "unknown or invalid physical core capacity %s cannot start a drain",
+  async (cores) => {
+    physicalCores = cores;
+    expect(await start()).toHaveProperty("refused");
+    expect(fleet.executed).toEqual([]);
+    expect(await harness.db.query(`SELECT id FROM drains`)).toEqual([]);
+  },
+);
+
+test.each(["absent", "refused", "disconnect", "offline", "revoked"] as const)(
+  "%s inventory cannot authorize a drain",
+  async (condition) => {
+    const source = inventory!;
+    inventory =
+      condition === "absent"
+        ? undefined
+        : {
+            inventory: async () => {
+              if (condition === "disconnect") throw new Error("disconnected");
+              if (condition === "refused")
+                return { ok: false, code: "not_authorized", message: "credential withdrawn" };
+              const answer = await source.inventory();
+              if (!answer.ok) return answer;
+              return {
+                ok: true,
+                value: {
+                  machines: answer.value.machines.map((machine) => ({
+                    ...machine,
+                    online: condition !== "offline",
+                    revoked: condition === "revoked",
+                  })),
+                },
+              };
+            },
+          };
+    expect(await start()).toHaveProperty("refused");
+    expect(fleet.executed).toEqual([]);
+    expect(await harness.db.query(`SELECT id FROM drains`)).toEqual([]);
+  },
+);
+
+test("capacity lost after the first reservation refuses an empty drain and releases its slot", async () => {
+  const source = inventory!;
+  inventory = {
+    inventory: async () => {
+      if ((await harness.db.query(`SELECT run_id FROM drain_launches`)).length > 0)
+        physicalCores = undefined;
+      return await source.inventory();
+    },
+  };
+  expect(await start({ concurrent: 1 })).toHaveProperty("refused");
+  expect(fleet.executed).toEqual([]);
+  expect(await harness.db.query(`SELECT state, live FROM drains`)).toEqual([
+    { state: "failed", live: "[]" },
+  ]);
+  expect(await harness.db.query(`SELECT state FROM drain_launches`)).toEqual([
+    { state: "refused" },
+  ]);
+});
+
+test("a shrink between reservations stops the fan and retains paid work and receipts", async () => {
+  physicalCores = 3;
+  const execute = fleet.execute.bind(fleet);
+  fleet.execute = (job) => {
+    const answer = execute(job);
+    physicalCores = 1;
+    return answer;
+  };
+  const started = await start({ concurrent: 3, target: { costMicros: 9_000_000 } });
+  expect(started).toMatchObject({ concurrent: 3, launched: 1 });
+  const id = String(started["drainId"]);
+  expect((await readDrain(harness.store, id))?.live.map((job) => job.runId)).toEqual([
+    `run_${id}_0`,
+  ]);
+  inventory = undefined;
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 1, state: "running" });
+  expect(code.cancelled).toEqual([]);
+  await settleJob(`run_${id}_0`, { costMicros: 250_000 });
+  await drainTick(deps);
+  expect((await readDrain(harness.store, id))?.spent.costMicros).toBe(250_000);
+  expect(fleet.executed).toHaveLength(1);
+});
+
+test("pending native recovery and delayed Code posting require current physical capacity", async () => {
+  const machinery = realLaunch();
+  const id = String((await start({ concurrent: 2, maxJobs: 2 }))["drainId"]);
+  await harness.db.run(`UPDATE drain_launches SET state='reserved' WHERE drain_id=?`, [id]);
+  physicalCores = 1;
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 2 });
+  expect(fleet.executed).toHaveLength(2);
+  await sealDrainJob(id, 0);
+  await sealDrainJob(id, 1);
+  await machinery.postPrepared(fleet, code, PLAN, WAKE);
+  expect(code.posted).toEqual([]);
+  expect((await readDrain(harness.store, id))?.live).toHaveLength(2);
+  physicalCores = 2;
+  await machinery.postPrepared(fleet, code, PLAN, WAKE);
+  expect(code.posted).toHaveLength(2);
+  expect(code.cancelled).toEqual([]);
 });
 
 test("a settlement relaunches: the fan is refilled and the spend is folded once", async () => {
@@ -1144,6 +1273,7 @@ test("a launch whose run row never landed releases its slot instead of holding i
 function realLaunch() {
   const machinery = launchMachinery(harness.store, {
     coordinator: deps.coordinator,
+    drainAdmission: (machineId, operationId) => deps.admission(machineId, operationId),
     jobs: () => fleet,
     engine: () => deps.engine,
     cookbook: async () =>
@@ -1387,6 +1517,7 @@ test("over the real launch path a drain's fan seals material, and the settle wak
   */
   const machinery = launchMachinery(harness.store, {
     coordinator: deps.coordinator,
+    drainAdmission: (machineId, operationId) => deps.admission(machineId, operationId),
     jobs: () => fleet,
     engine: () => deps.engine,
     cookbook: async () =>
@@ -1490,6 +1621,7 @@ test("the session a wake posts quotes what the operator told Babel, and the run 
   */
   const machinery = launchMachinery(harness.store, {
     coordinator: deps.coordinator,
+    drainAdmission: (machineId, operationId) => deps.admission(machineId, operationId),
     jobs: () => fleet,
     engine: () => deps.engine,
     cookbook: async () =>
@@ -2167,4 +2299,72 @@ test("review refill and restart keep one durable cycle ceiling with a one-item b
   expect((await restarted.coordinator.spend()).byRun[id]).toBe(policy.perCycleCost);
   expect(await harness.db.query(`SELECT version,payload FROM policies`)).toEqual(before);
   expect(await harness.db.query(`SELECT id FROM budgets`)).toEqual([]);
+});
+
+test("mapping start shares physical admission without entering its separately governed lane", async () => {
+  await installReviewRoute();
+  await harness.db.run(`UPDATE policies SET payload=json_set(payload, '$.mapping', json(?))`, [
+    JSON.stringify({
+      sourceMachineId: "source-machine",
+      executorMachineId: MACHINE,
+      profile: PROFILE,
+      dailyCost: 1,
+      generateRecipe: "installed-review",
+      reviewRecipe: "installed-review",
+    }),
+  ]);
+  let entered = false;
+  doors = drainDoors(harness.store, {
+    coordinator: deps.coordinator,
+    deps: () => deps,
+    startMapping: async () => {
+      entered = true;
+      return { launched: 1, notes: [] };
+    },
+    now: () => harness.store.now(),
+  });
+  physicalCores = 1;
+  const request = {
+    operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.mapPrepare },
+    source: {
+      kind: "service",
+      machineId: "source-machine",
+      serviceId: RECALL_SERVICE_ID,
+      operationId: TRANSCRIPT_MAP_SERVICE_OPERATION,
+    },
+    profile: { kind: "container", containerId: PROFILE.containerId },
+    concurrent: 2,
+    target: { costMicros: 1_000_000 },
+    reason: "bounded mapping window",
+  };
+  expect(await dispatch(ACTIONS.mapDrainStart, request)).toHaveProperty("refused");
+  expect(entered).toBe(false);
+  expect(await harness.db.query(`SELECT id FROM drains`)).toEqual([]);
+  expect(await dispatch(ACTIONS.mapDrainStart, { ...request, concurrent: 1 })).toMatchObject({
+    concurrent: 1,
+    launched: 1,
+  });
+  expect(entered).toBe(true);
+});
+
+test("a later core shrink retains a paid fan and folds it down before admitting more", async () => {
+  physicalCores = 3;
+  const id = String(
+    (
+      await start({
+        concurrent: 3,
+        target: { costMicros: 9_000_000 },
+      })
+    )["drainId"],
+  );
+  physicalCores = 1;
+  await settleJob(`run_${id}_0`, { costMicros: 100_000 });
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 2, state: "running" });
+  await settleJob(`run_${id}_1`, { costMicros: 100_000 });
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 0, live: 1, state: "running" });
+  await settleJob(`run_${id}_2`, { costMicros: 100_000 });
+  expect((await drainTick(deps))[0]).toMatchObject({ launched: 1, live: 1, state: "running" });
+  expect(fleet.executed).toHaveLength(4);
+  expect(code.cancelled).toEqual([]);
+  expect((await readDrain(harness.store, id))?.spent.costMicros).toBe(300_000);
 });

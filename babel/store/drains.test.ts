@@ -440,8 +440,8 @@ test("direct admission atomically owns a slot and ordinal across stale concurren
   const row = (await readDrain(harness.store, "drn_reserved"))!;
   const job = { runId: "run_reserved_0", jobId: "job_reserved_0", launchedAt: NOW, reserved: true };
   const won = await Promise.all([
-    reserveDirectLaunch(harness.store, row, job, "read-whats-new", 300_000),
-    reserveDirectLaunch(harness.store, row, job, "read-whats-new", 300_000),
+    reserveDirectLaunch(harness.store, row, job, "read-whats-new", 300_000, 1),
+    reserveDirectLaunch(harness.store, row, job, "read-whats-new", 300_000, 1),
   ]);
   expect(won.sort()).toEqual([false, true]);
   const held = (await readDrain(harness.store, row.id))!;
@@ -453,6 +453,7 @@ test("direct admission atomically owns a slot and ordinal across stale concurren
       held,
       { ...job, runId: "run_reserved_1", jobId: "job_reserved_1" },
       "explore-topic",
+      1,
       1,
     ),
   ).toBe(false);
@@ -476,7 +477,7 @@ test("allocation uses each whole meter once despite overlapping recipes and spen
     launchedAt: NOW,
     reserved: true,
   };
-  expect(await reserveDirectLaunch(harness.store, row, first, "read-whats-new", 400_000)).toBe(
+  expect(await reserveDirectLaunch(harness.store, row, first, "read-whats-new", 400_000, 2)).toBe(
     true,
   );
   await harness.db.run(
@@ -492,7 +493,7 @@ test("allocation uses each whole meter once despite overlapping recipes and spen
   await finishDirectLaunch(harness.store, first.runId, null);
   row = (await readDrain(harness.store, row.id))!;
   const second = { ...first, runId: "run_weighted_1", jobId: "job_weighted_1" };
-  expect(await reserveDirectLaunch(harness.store, row, second, "explore-topic", 200_000)).toBe(
+  expect(await reserveDirectLaunch(harness.store, row, second, "explore-topic", 200_000, 2)).toBe(
     true,
   );
   await harness.db.run(
@@ -549,8 +550,10 @@ test.each([
       eligible: true,
     });
     const job = { runId: "run_unpriced", jobId: "job_unpriced", launchedAt: NOW, reserved: true };
-    expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", null)).toBe(false);
-    expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", 100_000)).toBe(
+    expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", null, 2)).toBe(
+      false,
+    );
+    expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", 100_000, 2)).toBe(
       true,
     );
     await harness.db.run(
@@ -570,7 +573,7 @@ test.each([
 );
 
 test("the reservation fence reads pending receipts, deadlines and other machine work", async () => {
-  await open("drn_fenced", { concurrent: 1, knobs: { recipes: [], admissionLimit: 1 } });
+  await open("drn_fenced", { concurrent: 1, knobs: { recipes: [] } });
   const row = (await readDrain(harness.store, "drn_fenced"))!;
   const job = { runId: "run_fenced", jobId: "job_fenced", launchedAt: NOW, reserved: true };
   await harness.db.run(
@@ -578,9 +581,9 @@ test("the reservation fence reads pending receipts, deadlines and other machine 
       VALUES ('other-work', 'atyrode.babel.explore', 'm-dev-01', ?, '{}')`,
     [new Date(NOW).toISOString()],
   );
-  expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", 1)).toBe(false);
+  expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", 1, 1)).toBe(false);
   await harness.db.run(`UPDATE runs SET closure = 'completed' WHERE id = 'other-work'`);
-  expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", 1)).toBe(true);
+  expect(await reserveDirectLaunch(harness.store, row, job, "read-whats-new", 1, 1)).toBe(true);
   await harness.db.run(
     `INSERT INTO runs(id, kind, machine_id, started_at, closure, payload)
       VALUES (?, 'atyrode.babel.explore', 'm-dev-01', ?, 'completed', ?)`,
@@ -602,4 +605,25 @@ test("the reservation fence reads pending receipts, deadlines and other machine 
   expect(await harness.db.query(`SELECT 1 AS admitted WHERE ${guard.sql}`, guard.params)).toEqual(
     [],
   );
+});
+
+test("live capacity serializes competing machine reservations and a later shrink", async () => {
+  await open("drn_capacity_a", { concurrent: 3 });
+  await open("drn_capacity_b", { concurrent: 3 });
+  const a = (await readDrain(harness.store, "drn_capacity_a"))!;
+  const b = (await readDrain(harness.store, "drn_capacity_b"))!;
+  const job = { runId: "run_capacity_a", jobId: "job_capacity_a", launchedAt: NOW, reserved: true };
+  const other = { ...job, runId: "run_capacity_b", jobId: "job_capacity_b" };
+  const won = await Promise.all([
+    reserveDirectLaunch(harness.store, a, job, "read-whats-new", 1, 1),
+    reserveDirectLaunch(harness.store, b, other, "read-whats-new", 1, 1),
+  ]);
+  expect(won.filter(Boolean)).toHaveLength(1);
+  const held = (await readDrain(harness.store, won[0] ? a.id : b.id))!;
+  const next = { ...job, runId: "run_capacity_next", jobId: "job_capacity_next" };
+  expect(await reserveDirectLaunch(harness.store, held, next, "read-whats-new", 1, 0)).toBe(false);
+  expect(await reserveDirectLaunch(harness.store, held, next, "read-whats-new", 1, 1)).toBe(false);
+  expect((await readDrain(harness.store, held.id))?.jobsLaunched).toBe(1);
+  expect((await readDrain(harness.store, held.id))?.live).toEqual(held.live);
+  expect(await reserveDirectLaunch(harness.store, held, next, "read-whats-new", 1, 2)).toBe(true);
 });

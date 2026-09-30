@@ -48,6 +48,7 @@ import {
 import { ARCHIVED_CAPTURE, materialBound } from "../store/analysis.ts";
 import { perMachineBound, type Coordinator, type Policy } from "../store/coordinator.ts";
 import { directDrainAdmission } from "../store/drains.ts";
+import { drainPostingRefusal, type DrainAdmission } from "../server/drain-admission.ts";
 import {
   carriedSteering,
   composeAnalysisPrompt,
@@ -507,6 +508,7 @@ export interface LaunchMachinery {
 
 export interface LaunchDeps {
   readonly coordinator: Coordinator;
+  readonly drainAdmission?: DrainAdmission;
   /** This dispatch's own job authority, narrowed to the verbs this plugin uses. */
   jobs(ctx: GuestCtx): BabelJobs;
   /** Babel's side of Code's doors, over the authority of whoever is asking (ADR 0041). */
@@ -840,6 +842,13 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             };
         }
       }
+      const capacityRefusal = await drainPostingRefusal(
+        store,
+        deps.drainAdmission,
+        run.drain.runId,
+        launch.operationId,
+      );
+      if (capacityRefusal !== null) return { refused: capacityRefusal, pending: true };
       // Status and intent persistence both yield; stop may have closed the drain meanwhile.
       if (!(await directAdmitted(run.drain.id, run.drain.runId)))
         return { refused: "its drain no longer admits this preparation", pending: true };
@@ -2397,6 +2406,15 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     const refusal = !(await deps.coordinator.policy()).policy.enabled
       ? "the evaluation policy in force is disabled"
       : await continuing(run);
+    if (refusal === null) {
+      const capacityRefusal = await drainPostingRefusal(
+        store,
+        deps.drainAdmission,
+        run.id,
+        OPERATIONS.explore,
+      );
+      if (capacityRefusal !== null) return [{ runId: run.id, waiting: capacityRefusal }];
+    }
     const answered =
       refusal === null ? await engine.runSession({ ...request, postingKey: run.id }) : null;
     return await settlePosting(
@@ -2537,6 +2555,16 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             posted.push(...(await close(run, at, refusal)));
             continue;
           }
+        }
+        const capacityRefusal = await drainPostingRefusal(
+          store,
+          deps.drainAdmission,
+          run.id,
+          OPERATIONS.explore,
+        );
+        if (capacityRefusal !== null) {
+          posted.push({ runId: run.id, waiting: capacityRefusal });
+          continue;
         }
         // The parent is the serialization boundary; neither AsyncLocalStorage nor Code's
         // runSession deduplicates concurrent calls. Claim it only after readiness checks.

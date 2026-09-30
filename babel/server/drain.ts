@@ -55,6 +55,7 @@ import { STANDING_RUN, type RunPlan } from "./conductor.ts";
 import type { CodeEngine } from "./engine/session.ts";
 import type { BabelJobs } from "./plan.ts";
 import { reconcileDrainReview, startDrainReview, stopDrainReview } from "./drain-review.ts";
+import { drainPostingRefusal, type DrainAdmission } from "./drain-admission.ts";
 
 /*
   THE DRAIN CONTROLLER (#258): keep N jobs in flight until a target, a deadline or a stop.
@@ -141,6 +142,7 @@ export interface DrainDeps {
   readonly store: BabelStore;
   readonly coordinator: Coordinator;
   readonly launch: DrainLaunch;
+  readonly admission: DrainAdmission;
   /** This wake's own job authority: what posts a job, and what may be asked to cancel one. */
   readonly jobs: BabelJobs;
   /**
@@ -669,6 +671,26 @@ export async function fillDirectDrain(
     const inForce = await deps.coordinator.policy(at);
     row = (await readDrain(deps.store, row.id)) ?? row;
     if (row.state !== "running" || !inForce.policy.enabled) return;
+    const capacityRefusal = await drainPostingRefusal(
+      deps.store,
+      deps.admission,
+      drainIdentity(row, ordinal, deps.chain).runId,
+      drainOperation(preset),
+    );
+    if (capacityRefusal !== null) {
+      // Release only an unposted reservation. The store keeps a slot with an existing run,
+      // whose native or paid outcome may still need recovery under a later authorized wake.
+      await finishDirectLaunch(
+        deps.store,
+        drainIdentity(row, ordinal, deps.chain).runId,
+        capacityRefusal,
+      );
+      excluded.add(preset);
+      refused = capacityRefusal;
+      notes.push(capacityRefusal);
+      journaled.push({ at, kind: "admission", detail: capacityRefusal });
+      return;
+    }
     const identity = { ...drainIdentity(row, ordinal, deps.chain), drainId: row.id };
     const plan = {
       ...deps.plan(inForce.policy, pressOperation(preset), row.profile),
@@ -753,6 +775,17 @@ export async function fillDirectDrain(
         (left.lane.deficitCostMicros + left.lane.share * quantum),
     );
     const picked = candidates[0]!;
+    const capacity = await deps.admission(row.machineId, drainOperation(picked.lane.preset));
+    if ("refused" in capacity) {
+      notes.push(capacity.refused);
+      journaled.push({ at, kind: "admission", detail: capacity.refused });
+      break;
+    }
+    if (capacity.limit < row.concurrent) {
+      const detail = `physical-core admission limits this fan of ${String(row.concurrent)} to ${String(capacity.limit)}; existing work is retained`;
+      notes.push(detail);
+      journaled.push({ at, kind: "admission", detail });
+    }
     const ordinal = row.jobsLaunched;
     const identity = drainIdentity(row, ordinal, deps.chain);
     const job: LiveJob = {
@@ -771,6 +804,7 @@ export async function fillDirectDrain(
         job,
         picked.lane.preset,
         picked.estimate.costMicros,
+        capacity.limit,
       ))
     ) {
       notes.push("no free admitted machine slot, or another wake changed this drain");

@@ -11,6 +11,7 @@ import {
   type PendingRun,
 } from "./conductor.ts";
 import type { DrainDeps } from "./drain.ts";
+import { drainPostingRefusal } from "./drain-admission.ts";
 import {
   blindedLeak,
   composeReviewPrompt,
@@ -25,7 +26,7 @@ import {
   type SessionRead,
 } from "./engine/session.ts";
 
-type Deps = Pick<DrainDeps, "store" | "coordinator" | "engine" | "chain" | "now">;
+type Deps = Pick<DrainDeps, "store" | "coordinator" | "engine" | "chain" | "now" | "admission">;
 type Guard = { readonly sql: string; readonly params: readonly SqlParam[] };
 type Parent = Omit<PendingRun, "job_id"> & {
   job_id: string | null;
@@ -306,6 +307,13 @@ export async function startDrainReview(
     await stopDrainReview(deps, row, run.id, "review admission is no longer authorized");
     return { refused: "review admission is no longer authorized", pending: true };
   }
+  const capacityRefusal = await drainPostingRefusal(
+    deps.store,
+    deps.admission,
+    run.id,
+    OPERATIONS.evaluate,
+  );
+  if (capacityRefusal !== null) return { refused: capacityRefusal, pending: true };
   let answered;
   try {
     answered = await deps.engine.runSession(intent.request);

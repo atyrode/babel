@@ -39,6 +39,7 @@ import {
 import { insertDrain, readDrain } from "../store/drains.ts";
 import { launchMachinery, principalChain, type Started } from "../doors/launch.ts";
 import { drainTick, endDrain, type DrainDeps } from "./drain.ts";
+import { liveDrainCapacity, type DrainAdmission } from "./drain-admission.ts";
 import { coordinator as governed } from "../store/coordinator.ts";
 import { reviewPreparation } from "./engine/review.ts";
 import type {
@@ -8992,12 +8993,38 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       return { ok: true, value: job };
     },
   };
+  const capacity: { cores: number | undefined } = { cores: 16 };
+  const admission: DrainAdmission = async (machineId) =>
+    await liveDrainCapacity(
+      {
+        inventory: async () => ({
+          ok: true,
+          value: {
+            machines: [
+              {
+                id: route.executorMachineId,
+                name: "mapping executor",
+                online: true,
+                revoked: false,
+                draining: false,
+                terminalExecution: null,
+                lastRefusal: null,
+                ...(capacity.cores === undefined ? {} : { physicalCoreCount: capacity.cores }),
+              },
+            ],
+          },
+        }),
+      },
+      machineId,
+      null,
+    );
   // A native wake in this fixture is the drain's own unless a test says otherwise (#469).
   const loop = (nativeDispatch: boolean, drain: string | null, chain: string | null = null) => {
     clock += 1_000;
     return conductor({
       store: f.store,
       coordinator,
+      drainAdmission: admission,
       jobs: f.fleet,
       engine,
       machines: new Folders(),
@@ -9085,6 +9112,8 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
     route,
     version,
     coordinator,
+    capacity,
+    admission,
     engine,
     posted,
     readings,
@@ -9243,12 +9272,33 @@ test("only a wake carrying the drain's authority draws, prepares or posts paid m
   expect(f.posted).toHaveLength(1);
 });
 
+test("mapping drains wait for fresh physical capacity before claims and delayed sessions", async () => {
+  const f = await paidMapDeployment();
+  f.capacity.cores = undefined;
+  await f.tick();
+  expect(f.fleet.launched).toEqual([]);
+  expect(await f.db.query(`SELECT id FROM claims`)).toEqual([]);
+  f.capacity.cores = 1;
+  await f.tick();
+  expect(f.fleet.launched).toHaveLength(1);
+  f.seal();
+  f.capacity.cores = undefined;
+  await f.wake();
+  expect(f.posted).toEqual([]);
+  expect(await f.db.query(`SELECT id FROM claims WHERE finished_at IS NULL`)).toHaveLength(1);
+  f.capacity.cores = 1;
+  await f.wake();
+  expect(f.posted).toHaveLength(1);
+  expect(f.cancelled).toEqual([]);
+});
+
 /** The drain controller over the same fixture: a mapping drain launches nothing itself. */
 function mapDrainDeps(f: Awaited<ReturnType<typeof paidMapDeployment>>): DrainDeps {
   const refuse = async (): Promise<Started> => ({ refused: "a mapping drain launches no preset" });
   return {
     store: f.store,
     coordinator: f.coordinator,
+    admission: f.admission,
     launch: { startExplore: refuse, startBeat: refuse },
     jobs: f.fleet,
     engine: f.engine,

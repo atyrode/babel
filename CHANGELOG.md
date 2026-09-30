@@ -111,16 +111,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   commit together before keyed Code dispatch. Lost acknowledgements replay only under the
   original account chain; stop retires unused keys, cancels known jobs and retains uncertain
   cancellations. Terminal receipts reconcile the shared claim exactly once, including late
-  acknowledgements and missing meters. Standing policy and mapping remain unchanged.
+  acknowledgements and missing meters. Standing policy and mapping's governed mode remain unchanged.
   Review ordinals share the durable drain's coordinator cycle ceiling, enforced in the claim
   transaction without fresh allowance on refill or restart; parent/posting identities remain
   distinct. Oversized prompts now visibly refuse and retire the unused slot so another eligible
   preset can progress, without swallowing database/publication errors.
   A disposable real-store consumer proves incurred/reserved deficits, settled 1:3 cost shares,
   concurrency and stopped-admission refusal, stale-fold refusal, unpriced refill refusal and
-  unchanged standing policy. Physical-core cap integration awaits the verified upstream
-  [Manifold #939](https://github.com/atyrode/manifold/issues/939) pin; #264's live acceptance
-  remains unperformed. No paid drain or preview interaction was exercised.
+  unchanged standing policy. Physical admission now reads the current wake's machine inventory
+  at start, each reservation/refill and pending native/Code posting recovery, including mapping.
+  Oversized starts explicitly refuse; unknown or shrinking capacity holds new work without
+  discarding existing work or receipts. Deterministic regressions cover unavailable inventory,
+  shrinking capacity, reservation competition and wake-local lifecycle metadata; these additions
+  await integration verification against Manifold #941/#940 and the corresponding dependency pins.
+  #264's live acceptance remains unperformed. No paid drain or preview interaction was exercised.
 
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary

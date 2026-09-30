@@ -79,12 +79,15 @@ import {
   addSpend,
   deadlineOf,
   drainHoldsRun,
+  machineOpenWork,
   noteDrain,
   reconcileLive,
+  readDrain,
   reserveLaunchStatement,
   runningDrainHoldsRun,
   targetMet,
 } from "../store/drains.ts";
+import { drainPostingRefusal, type DrainAdmission } from "./drain-admission.ts";
 import {
   materialJobId,
   nativeAdmissionRefusal,
@@ -497,6 +500,7 @@ export interface ConductorDeps {
   readonly coordinator: Coordinator;
   readonly jobs: JobsSlice;
   readonly machines: MachinesSlice;
+  readonly drainAdmission?: DrainAdmission;
   /**
    * BABEL'S SIDE OF CODE'S DOORS, over this wake's own authority (#279).
    *
@@ -3099,6 +3103,24 @@ export function conductor(deps: ConductorDeps): Conductor {
       await closeMappingPreparation(runId, jobId, intent, refusal, settled);
       return;
     }
+    const capacityRefusal = await drainPostingRefusal(
+      store,
+      deps.drainAdmission,
+      runId,
+      OPERATIONS.mapPrepare,
+    );
+    if (capacityRefusal !== null) {
+      notes.push(`mapping ${runId}: preparation waits: ${capacityRefusal}`);
+      if (deps.mappingDrainId !== undefined)
+        await noteDrain(store, deps.mappingDrainId, [
+          {
+            at: deps.now(),
+            kind: "admission",
+            detail: capacityRefusal,
+          },
+        ]);
+      return;
+    }
     if (promptBytes(JSON.stringify({ [INPUT_FIELD]: JSON.stringify(intent.input) })) > 65_536) {
       await closeMappingPreparation(
         runId,
@@ -3226,6 +3248,22 @@ export function conductor(deps: ConductorDeps): Conductor {
     if ("refused" in described) return described.refused;
     const checked = await engine.checkProfile(route.profile);
     if (!checked.ok) return checked.refused;
+    let drainLimit: number | null = null;
+    if ("drainId" in slot) {
+      const row = await readDrain(store, slot.drainId);
+      if (row === null) return "mapping drain is absent";
+      if (deps.drainAdmission === undefined)
+        return "physical-core admission unavailable on this wake";
+      const capacity = await deps.drainAdmission(route.executorMachineId, OPERATIONS.mapPrepare);
+      if ("refused" in capacity) return capacity.refused;
+      drainLimit = capacity.limit;
+      const open = machineOpenWork(route.executorMachineId);
+      if (
+        (await store.db.query(`SELECT 1 WHERE (${open.sql}) < ?`, [...open.params, capacity.limit]))
+          .length === 0
+      )
+        return `physical-core admission holds mapping at the live ceiling of ${String(capacity.limit)}; existing work is retained`;
+    }
     const jobId = materialJobId(`job_${assignment.id}_${cycleRunId}`);
     const claimed = await coordinator.claim({ assignment, runId: cycleRunId, jobId, now: at });
     if (claimed.outcome === "refused") return claimed.refusal.detail;
@@ -3272,7 +3310,15 @@ export function conductor(deps: ConductorDeps): Conductor {
           params: [slot.share],
         };
     const reserve = drain
-      ? [reserveLaunchStatement(slot.drainId, { runId, jobId, launchedAt: at }, slot.ordinal)]
+      ? [
+          reserveLaunchStatement(
+            slot.drainId,
+            { runId, jobId, launchedAt: at },
+            slot.ordinal,
+            route.executorMachineId,
+            drainLimit!,
+          ),
+        ]
       : [];
     const published = await store.db.batch([
       ...reserve,
@@ -3710,6 +3756,16 @@ export function conductor(deps: ConductorDeps): Conductor {
         await closeMappingPreparation(run.id, run.prepare_job_id, intent, currentRefusal, settled);
         continue;
       }
+      const capacityRefusal = await drainPostingRefusal(
+        store,
+        deps.drainAdmission,
+        run.id,
+        OPERATIONS.mapPrepare,
+      );
+      if (capacityRefusal !== null) {
+        notes.push(`mapping ${run.id}: posting waits: ${capacityRefusal}`);
+        continue;
+      }
       const fence = mappingFence(intent, run.prepare_job_id, "admission");
       const owned = await store.db.batch([
         {
@@ -3794,6 +3850,18 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (unestablished(refusal)) {
       notes.push(`mapping ${run.id}: posting recovery waits: ${refusal.unestablished}`);
       return;
+    }
+    if (refusal === null) {
+      const capacityRefusal = await drainPostingRefusal(
+        store,
+        deps.drainAdmission,
+        run.id,
+        OPERATIONS.mapPrepare,
+      );
+      if (capacityRefusal !== null) {
+        notes.push(`mapping ${run.id}: posting recovery waits: ${capacityRefusal}`);
+        return;
+      }
     }
     const answered =
       refusal === null

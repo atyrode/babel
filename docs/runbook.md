@@ -1066,22 +1066,27 @@ Two bounds are structural rather than advisory. **A review slot is one coordinat
 second review fan**: it claims exactly one assignment through the same shared caps and leases
 as the conductor. **A drain without a finite bound is a loop**:
 `drainStart` requires a target, deadline or positive `maxJobs`; omission of the deadline still
-gives it one two hours out. A fan above the manifest's `concurrentJobs` for the operation it posts
-is refused at the door rather than discovered one refused job at a time.
-The current SDK does not publish a host core count, and the operation's `processes` is a per-job
-process ceiling, **not a concurrent-job limit or physical-core telemetry**. The atomic slot check
-uses published `concurrentJobs`, counts other open Babel runs and unresolved drain reservations
-on the machine, and leaves native resource enforcement to the hub. Work outside Babel is not
-visible to this ledger. Physical-core-bounded admission remains an **unmet part of #258
-acceptance**; operator pre-flight must size the fan for the actual machine. No source-only check
-establishes a live CPU, memory or provider-price ceiling.
-The upstream prerequisite is an authoritative machine-id-scoped **physical-core count** exposed
-in the SDK's machine readiness/description contract, with defined availability/freshness and
-offline/unknown semantics. Logical CPUs, a per-job `processes` ceiling and current Babel job
-counts are not substitutes. Babel can then cap admission by the smaller of that count and each
-selected operation's `concurrentJobs`, rechecking changes at refill. Host-wide concurrent
-resource admission still belongs to Manifold. This telemetry is absent, and #264's authorized
-dev-01/account throughput rehearsal remains a separate unperformed operational prerequisite.
+gives it one two hours out. A fan above the applicable operation's declared `concurrentJobs`
+or the machine inventory's fresh `physicalCoreCount` is refused at the door, never silently
+rewritten into policy. Admissions use the minimum of those bounds and the requested fan.
+The inventory fact is OS-visible online physical package/core pairs, not logical CPUs, quota,
+policy batch size or the operation's per-job `processes` ceiling.
+
+Each reservation/refill and pending native/Code posting recovery reads inventory under the
+current wake's credential. Automatic enable/settled wakes use only their optional read-only
+inventory slice; no enable-captured facts or authority survive into a later wake. Missing,
+refused, disconnected, offline, revoked or invalid facts hold new admissions and leave a note.
+A later shrink retains already-paid work, unresolved reservations and receipts, while withholding
+extra postings above the live cap. Mapping retains its own governed mode with the same physical
+admission protection. Atomic slot checks count other open Babel work and unresolved reservations
+on the machine, not child preparations twice; work outside Babel is not visible to this ledger.
+Host-wide resource admission remains Manifold's responsibility.
+
+This source integration requires Manifold's live inventory (#941) and optional lifecycle
+metadata (#940), delivered in dependency order. It is not evidence of an installed bundle or
+current host headroom. #264's authorized dev-01/account throughput rehearsal remains an
+unperformed operational prerequisite; no source-only check establishes a live CPU, memory or
+provider-price ceiling.
 
 `concurrent` limits simultaneous work, not total launches. `maxJobs` bounds admission ordinals
 across wakes and recovery, including refused and zero-usage attempts. At that bound the drain

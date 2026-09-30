@@ -53,7 +53,7 @@ import { coordinator, mappingPolicy, PolicySchema } from "./store/coordinator.ts
 import { transcriptMaps } from "./store/transcript-maps.ts";
 import { buildTranscriptMap } from "./machine/transcript-map-tree.ts";
 import { transcriptMapCaptureId } from "./transcript-map-identity.ts";
-import { insertDrain } from "./store/drains.ts";
+import { insertDrain, readDrain } from "./store/drains.ts";
 import {
   BEAT_OPERATION,
   CONDUCTOR_SCHEDULE_ID,
@@ -233,6 +233,23 @@ function context(
     // Only a DISPATCH is served one (`serveCtxCall`), and this plugin asks it one question: what
     // a folder a catalogued session worked in is. Nothing here catalogues one, so nothing asks.
     machines: {
+      inventory: async () => ({
+        ok: true,
+        value: {
+          machines: [
+            {
+              id: MACHINE,
+              name: MACHINE,
+              online: true,
+              revoked: false,
+              draining: false,
+              terminalExecution: null,
+              lastRefusal: null,
+              physicalCoreCount: 16,
+            },
+          ],
+        },
+      }),
       repository: async () =>
         await Promise.resolve({ ok: false, reason: "this test enrolls no machine" }),
     },
@@ -2542,4 +2559,71 @@ test("enabling a store made before the history indexes adds every one of them", 
       indexes,
     ),
   ).toEqual(indexes.map((name) => ({ name })));
+});
+
+test("automatic drain refills use only the current hook's inventory, never enable metadata", async () => {
+  const base = context(harness.db as unknown as GuestDatabase, jobs, Date.now());
+  await plugin.lifecycle?.onEnable?.(base as never);
+  await insertDrain(harness.store, {
+    id: "drn_wake_capacity",
+    machineId: MACHINE,
+    preset: "keep-going",
+    profile: {
+      profile: { containerId: "ctr_workbench", expectedRevision: 1 },
+      model: "synthetic",
+      thinking: "low",
+      accounts: [],
+      resolved: true,
+    },
+    knobs: { recipes: [], maxJobs: 3 },
+    concurrent: 2,
+    target: { deadline: new Date(Date.now() + HOUR).toISOString() },
+    startedBy: "operator",
+  });
+  const posted: JobLaunch[] = [];
+  jobs.execute = (launch) => {
+    posted.push(launch);
+    return {};
+  };
+  jobs.status = ({ jobId }) => ({
+    jobId,
+    machineId: MACHINE,
+    operationId: PRESET_OPERATIONS["keep-going"],
+    state: "running",
+    result: null,
+  });
+  const wake = async (machines: Pick<GuestCtx["machines"], "inventory"> | undefined) =>
+    await plugin.lifecycle?.onJobSettled?.(
+      { ...base, machines } as never,
+      settled({ jobId: "job_capacity_wake", operationId: PRESET_OPERATIONS["keep-going"] }),
+    );
+  await wake(undefined);
+  expect(posted).toEqual([]);
+  const fresh = (physicalCoreCount: number): Pick<GuestCtx["machines"], "inventory"> => ({
+    inventory: async () => ({
+      ok: true,
+      value: {
+        machines: [
+          {
+            id: MACHINE,
+            name: MACHINE,
+            online: true,
+            revoked: false,
+            draining: false,
+            terminalExecution: null,
+            lastRefusal: null,
+            physicalCoreCount,
+          },
+        ],
+      },
+    }),
+  });
+  await wake(fresh(1));
+  expect(posted).toHaveLength(1);
+  await wake(undefined);
+  expect(posted).toHaveLength(1);
+  expect((await readDrain(harness.store, "drn_wake_capacity"))?.live).toHaveLength(1);
+  await wake(fresh(2));
+  expect(posted).toHaveLength(2);
+  expect((await readDrain(harness.store, "drn_wake_capacity"))?.concurrent).toBe(2);
 });

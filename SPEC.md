@@ -1459,10 +1459,17 @@ be answerable afterwards.
   Admission atomically retains the ordinal, live slot, preset and reservation before native
   posting. The exact preparation request is durable; interrupted wakes retry that identity rather
   than select a new window. Concurrent starts admit only one drain per machine. Slots are bounded
-  by the declared fan and captured manifest `concurrentJobs`, counting other open Babel work on
-  that machine. The current SDK publishes no physical-core count: `processes` is a per-job process
-  ceiling, not evidence of cores. Physical-core-bounded admission remains an unmet part of #258
-  acceptance. The host still owns native concurrency/resource enforcement.
+  by the minimum of the requested fan, the applicable operation's declared `concurrentJobs`
+  and fresh machine inventory `physicalCoreCount`, counting other open Babel work and unresolved
+  reservations on that machine atomically. A start above that ceiling explicitly refuses.
+  Each reservation, refill and pending native/Code posting recovery reads capacity again under
+  its own wake's credential, including automatic lifecycle wakes and the separately governed
+  mapping drain. Missing, refused, offline, revoked or invalid inventory holds new admissions;
+  later shrinkage retains existing work, reservations and receipts rather than cancelling them
+  to fit. Degradation is visible in admission notes. Inventory is never retained in enable state
+  or on a drain row. Logical CPUs, quota, policy batch size and per-job `processes` are not
+  physical-core evidence. The host still owns native concurrency/resource enforcement, including
+  work outside Babel's ledger; source regressions do not establish live resource headroom.
   Reservations are scheduling estimates, not a hard spend ceiling; provider retries and the last
   accepted call can exceed them. Standing policies, budgets, claims and the separately governed
   mapping drain retain their meanings. Mixed allocation does not authorize an embedding duty.

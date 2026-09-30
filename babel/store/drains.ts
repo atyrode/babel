@@ -196,8 +196,6 @@ export interface Reconciled {
 export interface DrainKnobs {
   readonly recipes: readonly string[];
   readonly allocation?: DrainAllocation;
-  /** The admitted manifest/process bound, not a standing-policy override. */
-  readonly admissionLimit?: number;
   readonly sinceDays?: number | undefined;
   readonly entityId?: string | undefined;
   readonly minutes?: number | undefined;
@@ -411,13 +409,9 @@ function knobsOf(text: string): DrainKnobs {
   const maxJobs = DrainStartInputSchema.shape.maxJobs.parse(row["maxJobs"]);
   const inferenceLimits = DrainStartInputSchema.shape.inferenceLimits.parse(row["inferenceLimits"]);
   const allocation = DrainAllocationSchema.optional().parse(row["allocation"]);
-  const admissionLimit = DrainStartInputSchema.shape.concurrent
-    .optional()
-    .parse(row["admissionLimit"]);
   return {
     recipes,
     ...(allocation === undefined ? {} : { allocation }),
-    ...(admissionLimit === undefined ? {} : { admissionLimit }),
     ...(maxJobs === undefined ? {} : { maxJobs }),
     ...(inferenceLimits === undefined ? {} : { inferenceLimits }),
     ...(typeof row["sinceDays"] === "number" ? { sinceDays: row["sinceDays"] } : {}),
@@ -610,15 +604,26 @@ export async function recordLaunch(
  * only a running drain grants one, and the same durable cursor decides between overlapping
  * wakes: the loser's snapshot of the fan is stale, and it publishes nothing.
  */
-export function reserveLaunchStatement(id: string, job: LiveJob, ordinal: number): SqlStatement {
+export function reserveLaunchStatement(
+  id: string,
+  job: LiveJob,
+  ordinal: number,
+  machineId: string,
+  limit: number,
+): SqlStatement {
+  const open = machineOpenWork(machineId);
   return {
     sql: `UPDATE drains SET live = json_insert(live, '$[#]', json(?)),
                        jobs_launched = jobs_launched + 1
       WHERE id = ? AND state = 'running' AND jobs_launched = ?
+        AND (SELECT COUNT(*) FROM json_each(drains.live) l
+          LEFT JOIN runs r ON r.id = json_extract(l.value, '$.runId')
+          WHERE r.id IS NULL OR r.closure IS NULL) < MIN(concurrent, ?)
+        AND (${open.sql}) < ?
         AND NOT EXISTS (SELECT 1 FROM json_each(drains.live)
                          WHERE json_extract(value, '$.jobId') = ?)
       RETURNING id`,
-    params: [JSON.stringify(job), id, ordinal, job.jobId],
+    params: [JSON.stringify(job), id, ordinal, limit, ...open.params, limit, job.jobId],
   };
 }
 
@@ -691,6 +696,21 @@ export function directDrainAdmission(
   };
 }
 
+/** Count whole work items, not their child preparations; unresolved reservations still count. */
+export function machineOpenWork(machineId: string): {
+  readonly sql: string;
+  readonly params: SqlParam[];
+} {
+  return {
+    sql: `SELECT COUNT(*) FROM (
+      SELECT id FROM runs WHERE machine_id = ? AND closure IS NULL AND kind NOT IN (?, ?)
+      UNION SELECT a.run_id FROM drain_launches a JOIN drains d ON d.id = a.drain_id
+        WHERE d.machine_id = ? AND d.state IN ('running','closing') AND a.state = 'reserved'
+    )`,
+    params: [machineId, MACHINE_OPERATIONS.prepare, MACHINE_OPERATIONS.mapPrepare, machineId],
+  };
+}
+
 /** Reserve a slot AND its immutable attribution before crossing the native posting seam. */
 export async function reserveDirectLaunch(
   store: DrainsStore,
@@ -698,7 +718,9 @@ export async function reserveDirectLaunch(
   job: LiveJob,
   preset: DrainPreset,
   reservedCostMicros: number | null,
+  limit: number,
 ): Promise<boolean> {
+  if (!Number.isSafeInteger(limit) || limit <= 0) return false;
   if (
     row.knobs.allocation !== undefined &&
     (reservedCostMicros === null ||
@@ -707,20 +729,17 @@ export async function reserveDirectLaunch(
   )
     return false;
   const open = directDrainOpen(store.now());
+  const work = machineOpenWork(row.machineId);
   const results = await store.db.batch([
     {
       sql: `UPDATE drains SET live = json_insert(live, '$[#]', json(?)),
           jobs_launched = jobs_launched + 1
         WHERE id = ? AND jobs_launched = ? AND jobs_settled = ?
-          AND json(live) = json(?) AND json_array_length(live) < concurrent
+          AND json(live) = json(?) AND json_array_length(live) < MIN(concurrent, ?)
           AND (json_extract(knobs, '$.maxJobs') IS NULL
             OR jobs_launched < json_extract(knobs, '$.maxJobs'))
           AND EXISTS (SELECT 1 FROM drains d WHERE d.id = drains.id AND ${open.sql})
-          AND (SELECT COUNT(*) FROM (
-            SELECT id FROM runs WHERE machine_id = ? AND closure IS NULL AND kind != ?
-            UNION SELECT a.run_id FROM drain_launches a JOIN drains d ON d.id = a.drain_id
-              WHERE d.machine_id = ? AND d.state IN ('running','closing') AND a.state = 'reserved'
-          )) < ?
+          AND (${work.sql}) < ?
         RETURNING id`,
       params: [
         JSON.stringify(job),
@@ -728,11 +747,10 @@ export async function reserveDirectLaunch(
         row.jobsLaunched,
         row.jobsSettled,
         JSON.stringify(row.live),
+        limit,
         ...open.params,
-        row.machineId,
-        MACHINE_OPERATIONS.prepare,
-        row.machineId,
-        row.knobs.admissionLimit ?? row.concurrent,
+        ...work.params,
+        limit,
       ],
     },
     {

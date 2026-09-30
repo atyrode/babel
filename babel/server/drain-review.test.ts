@@ -78,7 +78,6 @@ async function fixture(options: { batchSize?: number; concurrent?: number } = {}
       recipes: [],
       allocation: { "review-backlog": 1 },
       inferenceLimits: { costMicros: 100_000 },
-      admissionLimit: 4,
     },
     concurrent: options.concurrent ?? 2,
     target: { costMicros: 5_000_000, deadline: new Date(NOW + 3_600_000).toISOString() },
@@ -93,6 +92,7 @@ async function fixture(options: { batchSize?: number; concurrent?: number } = {}
       { runId: identity.runId, jobId: identity.jobId, launchedAt: NOW, reserved: true },
       "review-backlog",
       100_000,
+      4,
     ),
   ).toBe(true);
   const jobs = new Map<string, CodeJob>();
@@ -179,6 +179,7 @@ async function fixture(options: { batchSize?: number; concurrent?: number } = {}
   };
   const deps = {
     store: store.store,
+    admission: async () => ({ limit: 4 }),
     coordinator: coordinator(store.store, () => store.store.now(), 16),
     engine,
     chain: CHAIN,
@@ -409,6 +410,7 @@ test.each([1, 4])(
         { runId: second.runId, jobId: second.jobId, launchedAt: NOW, reserved: true },
         "review-backlog",
         100_000,
+        4,
       ),
     ).toBe(true);
     const identities = [f.identity, second];

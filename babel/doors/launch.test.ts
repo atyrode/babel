@@ -365,6 +365,7 @@ beforeEach(async () => {
   cookbook = { ...RECIPES };
   deps = {
     coordinator: coordinator(store, () => store.now(), 16),
+    drainAdmission: async () => ({ limit: 16 }),
     jobs: () => fleet,
     engine: () => code,
     cookbook: async () => await Promise.resolve(cookbook),
@@ -3392,3 +3393,46 @@ test.each(["posting", "bound"] as const)(
     expect((await governor.open(NOW)).byMachine[MACHINE]).toBe(1);
   },
 );
+
+test("lost direct Code postings wait for current capacity without retiring paid work", async () => {
+  const direct = await directDrain();
+  await direct.start();
+  await sealStage("completed", direct.prepareJobId);
+  let bought = 0;
+  code.posting = () => {
+    bought += 1;
+    return stageJob();
+  };
+  const post = code.runSession.bind(code);
+  const requests: SessionRequest[] = [];
+  code.runSession = async (request) => {
+    requests.push(request);
+    const answer = await post(request);
+    if (requests.length === 1) throw new Error("response lost after model accepted");
+    return answer;
+  };
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+  machinery = launchMachinery(harness.store, {
+    ...deps,
+    drainAdmission: async () => ({ refused: "physical-core inventory unavailable" }),
+  });
+  expect(await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE)).toMatchObject([
+    { runId: direct.identity.runId, waiting: expect.any(String) },
+  ]);
+  expect(requests).toHaveLength(1);
+  expect(code.cancelled).toEqual([]);
+  expect(
+    await harness.db.query(`SELECT job_id, closure FROM runs WHERE id = ?`, [
+      direct.identity.runId,
+    ]),
+  ).toEqual([{ job_id: null, closure: null }]);
+  machinery = launchMachinery(harness.store, deps);
+  await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+  expect(bought).toBe(1);
+  expect(requests).toEqual([requests[0]!, requests[0]!]);
+  expect(
+    await harness.db.query(`SELECT job_id, closure FROM runs WHERE id = ?`, [
+      direct.identity.runId,
+    ]),
+  ).toEqual([{ job_id: "job_stage_code", closure: null }]);
+});

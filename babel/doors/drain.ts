@@ -117,8 +117,6 @@ export interface DrainDoorDeps {
   readonly coordinator: Coordinator;
   /** The controller's own dependencies, over this dispatch's authority. */
   deps(ctx: Parameters<Door["handler"]>[0]): DrainDeps;
-  /** The manifest's `concurrentJobs`: the most jobs of one operation a machine runs at once. */
-  readonly concurrentJobs: number;
   /** Register an ordinary drain's native wake under this press, before its first fan. */
   startOrdinary(
     ctx: Parameters<Door["handler"]>[0],
@@ -191,24 +189,21 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
     };
   };
 
-  /** The fan's manifest bound and the one-drain-per-machine rule, shared by both starts. */
+  /** Live capacity and the one-drain-per-machine rule, shared by both starts. */
   const admissible = async (
+    deps: DrainDeps,
     machineId: string,
     concurrent: number,
+    operations: readonly string[],
   ): Promise<{ readonly refused: string } | null> => {
-    /*
-      THE FAN IS BOUNDED AGAINST THE MANIFEST, HERE, AND BY THE DRAIN'S OWN JOBS IN THE
-      CONTROLLER. `concurrentJobs` is `limits.concurrentJobs`: the hub refuses every posting past
-      it at `execute` (atyrode/manifold#551), so a fan above it would spend the drain's first
-      round on refusals. It is refused by name instead.
-    */
-    if (concurrent > doorDeps.concurrentJobs) {
-      return {
-        refused:
-          `this drain's fan of ${String(concurrent)} cannot be admitted: it is above the ` +
-          `${String(doorDeps.concurrentJobs)} jobs a machine runs at once under this plugin's ` +
-          `manifest, and the hub refuses every posting past that at execute`,
-      };
+    for (const operationId of operations) {
+      const capacity = await deps.admission(machineId, operationId);
+      if ("refused" in capacity) return capacity;
+      if (concurrent > capacity.limit) {
+        return {
+          refused: `this drain's fan of ${String(concurrent)} exceeds the live physical-core/operation ceiling of ${String(capacity.limit)} for ${machineId}/${operationId}`,
+        };
+      }
     }
     const held = await drainOnMachine(store, machineId);
     // ONE DRAIN PER MACHINE. Two controllers fanning one host is the 2026-09-13 failure with
@@ -319,7 +314,17 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
             `and a cost or token target is never met: give this drain a deadline or maxJobs`,
         };
       }
-      const blocked = await admissible(input.machineId, input.concurrent);
+      const doorDepsAtStart = doorDeps.deps(ctx);
+      const blocked = await admissible(
+        doorDepsAtStart,
+        input.machineId,
+        input.concurrent,
+        input.allocation === undefined
+          ? [operationId]
+          : DRAIN_ALLOCATION_PRESETS.filter(
+              (selected) => input.allocation?.[selected] !== undefined,
+            ).map((selected) => DRAIN_OPERATIONS[selected]),
+      );
       if (blocked !== null) return blocked;
       const inForce = await doorDeps.coordinator.policy(at);
       if (!inForce.policy.enabled) {
@@ -368,11 +373,9 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         ...(input.inferenceLimits === undefined ? {} : { inferenceLimits: input.inferenceLimits }),
       };
 
-      const doorDepsAtStart = doorDeps.deps(ctx);
       const profiled = await ledgerOf(doorDepsAtStart, input.profile);
       if ("refused" in profiled) return profiled;
       const ledger = profiled.ledger;
-      const admissionLimit = doorDeps.concurrentJobs;
 
       const drainId = newId("drn");
       const inserted = await insertDrain(store, {
@@ -380,7 +383,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         machineId: input.machineId,
         preset,
         profile: ledger,
-        knobs: { ...knobs, admissionLimit },
+        knobs,
         concurrent: input.concurrent,
         target,
         startedBy: ctx.principal.id,
@@ -512,12 +515,14 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       }
       const stops = stopsAt(input.target, input.maxJobs, at);
       if ("refused" in stops) return stops;
-      const blocked = await admissible(route.executorMachineId, input.concurrent);
+      const deps = doorDeps.deps(ctx);
+      const blocked = await admissible(deps, route.executorMachineId, input.concurrent, [
+        DRAIN_OPERATIONS[MAP_DRAIN_PRESET],
+      ]);
       if (blocked !== null) return blocked;
       if (doorDeps.startMapping === undefined) {
         return { refused: "this deployment wires no mapping dispatch" };
       }
-      const deps = doorDeps.deps(ctx);
       const profiled = await ledgerOf(deps, route.profile);
       if ("refused" in profiled) return profiled;
       const ledger = profiled.ledger;
