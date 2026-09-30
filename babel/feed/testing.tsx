@@ -170,9 +170,21 @@ export async function mount(node: ReactElement): Promise<Mounted> {
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => root.render(node));
+  const all = (selector: string): HTMLElement[] => {
+    const scopes: HTMLElement[] = [];
+    // Shared popovers escape overflow clips, but remain owned by their trigger's aria-controls.
+    for (const trigger of container.querySelectorAll("[aria-controls]")) {
+      const controlled = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
+      if (controlled !== null && !container.contains(controlled)) scopes.push(controlled);
+    }
+    scopes.push(container);
+    return [
+      ...new Set(scopes.flatMap((scope) => [...scope.querySelectorAll<HTMLElement>(selector)])),
+    ];
+  };
   const one = (selector: string): HTMLElement => {
-    const found = container.querySelector<HTMLElement>(selector);
-    if (found === null)
+    const found = all(selector)[0];
+    if (found === undefined)
       throw new Error(`nothing matches ${selector} in: ${container.textContent ?? ""}`);
     return found;
   };
@@ -180,7 +192,7 @@ export async function mount(node: ReactElement): Promise<Mounted> {
     container,
     root,
     one,
-    all: (selector) => [...container.querySelectorAll<HTMLElement>(selector)],
+    all,
     text: () => container.textContent ?? "",
     press: async (selector) => {
       const element = one(selector);

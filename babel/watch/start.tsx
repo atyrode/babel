@@ -63,7 +63,7 @@ export interface StartProps {
   readonly onOpen: (uri: string) => void;
 }
 
-/** The one numeric knob a preset owns, clamped to the contract's own bounds. */
+/** The one numeric knob a preset owns; normalize on blur, not between typed digits. */
 function Knob({
   draft,
   onDraft,
@@ -79,17 +79,18 @@ function Knob({
     <label className="plugin-atyrode_babel_watch__knob">
       <span className="plugin-atyrode_babel_watch__knob-label">{card?.knobLabel ?? ""}</span>
       <input
+        key={knob}
         type="number"
         className="plugin-atyrode_babel_watch__knob-input"
         min={bounds.min}
         max={bounds.max}
         step={bounds.step}
-        value={value}
-        /*
-          The value is clamped to the contract's own bounds here rather than trusted: a spinner
-          can be typed into, and `LaunchInputSchema` would refuse the whole launch for a 0 or a
-          400 — a refusal the operator could not explain from the screen.
-        */
+        defaultValue={value}
+        // Keep the in-progress text intact: typing 12 must not turn the first 1 into 5.
+        // The draft stays bounded for launch; leaving the field shows that committed value.
+        onBlur={(event) => {
+          event.currentTarget.value = String(value);
+        }}
         onInput={(event) => {
           const typed = Number(event.currentTarget.value);
           const next = Number.isFinite(typed)

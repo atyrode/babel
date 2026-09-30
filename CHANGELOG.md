@@ -86,6 +86,30 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   intention and no policy, budget, claim, drain, run or native-work changes. No actual provider,
   archive or deployed preview was exercised.
 
+- **The topics rail shows seven days of recorded activity (#248).** Small four-pixel-scale
+  bars count post creation, reviewer events and operator feedback for currently filed topics,
+  while unknown dates remain explicit instead of looking like quiet days. Explicitly tracked
+  empty entities remain navigable with their actual zero post count, and Watch can select them
+  for exploration. A disposable local Hub rendered the seven-bin rail, tracked-empty
+  navigation and empty Watch targets through the actual panels. An undated-only topic showed
+  its visible unknown-event count beside seven zero bars, unlike a genuinely quiet topic.
+  All rendered records were synthetic; this is not archive or provider-ingestion evidence.
+
+- **Home's Enter peek follows the keyboard walk (#248).** Enter now opens a following
+  record pane, so `j`/`k` update its rendered record rather than moving only an unseen
+  selection; pointer-opened record panes remain pinned. Actual Chromium interaction on the
+  disposable local Hub followed Enter with `j`/`k`, observed the changing record, and kept a
+  pointer-opened comparison pane pinned. Broader #248 visual gaps remain separately tracked.
+
+- **Feed's sentence stays on one line, and Watch preserves typed minutes (#248).** The
+  sentence scrolls horizontally on narrow tiles, with shared anchored popovers that escape
+  its overflow clip. Actual Chromium interaction verified `s` → Escape → `c`, arrow-key
+  selection and visible menus at 320-pixel viewport width. Keep-going no longer rewrites the
+  first digit of `12` into `5`; the visible number normalizes on blur. Watch now shows the
+  existing Ceilings summary immediately after Start, before Runs and Drain. The disposable
+  Hub kept `12` and its field geometry unchanged across an actual policy refresh, and showed
+  the recorded ceilings without launching a run or changing model/provider authority.
+
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain
   and bind the recovered session atomically. Uncertain posts hold their reservation and machine
@@ -239,12 +263,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   visibility invalidates the handoff. No earlier dispatch or wake lends its handles to another.
   Selection makes no provider invocation, funding remains unknown, and service effects,
   repository reads, policy shares, eligibility, claims and cache freshness fences are unchanged.
-
-- **Home's Enter peek follows the keyboard walk (#248).** Enter now opens a following
-  record pane, so `j`/`k` update its rendered record rather than moving only an unseen
-  selection; pointer-opened record panes remain pinned. A rendered Home-plus-Record
-  regression reproduced the stale pane before this fix and passes after it; preview visual
-  acceptance remains pending.
 
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary

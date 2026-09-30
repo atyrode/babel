@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import type { OpenPanelOutcome, OpenPanelRequest } from "@manifold/plugin";
 import { resetPolledResources } from "@manifold/plugin/hooks";
-import { forgetSelection, looking } from "./api.ts";
+import { forgetSelection, looking, type TopicRow } from "./api.ts";
 import { HomePanel } from "./home.tsx";
 import { RecordPanel } from "./record.tsx";
 import {
@@ -311,6 +311,7 @@ describe("the sentence", () => {
     await view.key("s");
     expect(view.one('[data-pick="sort"]').getAttribute("aria-expanded")).toBe("true");
     await view.key("Escape");
+    expect(view.one('[data-pick="sort"]').getAttribute("aria-expanded")).toBe("false");
     await view.key("c");
     expect(view.one('[data-pick="kinds"]').getAttribute("aria-expanded")).toBe("true");
     await view.unmount();
@@ -595,7 +596,7 @@ describe("the rail", () => {
   });
 
   test("explicitly tracked empty entities remain selectable without inventing topic activity", async () => {
-    const empty = topics().topics.map((topic): ReturnType<typeof topics>["topics"][number] => ({
+    const empty = topics().topics.map((topic): TopicRow => ({
       ...topic,
       posts: 0,
       awaiting: 0,
@@ -629,6 +630,29 @@ describe("the rail", () => {
     ).toMatch(/\b1 event\b.*\bunknown dates\b/);
     expect(view.one('[data-topic="ent_0000cafe"] .babel-topic-undated').textContent).toContain("1");
     expect(view.all('[data-topic="ent_0000beef"] .babel-topic-undated')).toHaveLength(0);
+    await view.unmount();
+  });
+
+  test("undated-only topics stay visibly distinct from a quiet seven-day window", async () => {
+    const rows = topics().topics.map((topic, index): TopicRow => ({
+      ...topic,
+      posts: 2,
+      latestAt: index === 0 ? "2026-08-12T08:00:00Z" : "",
+      recentActivity: {
+        ...topic.recentActivity,
+        days: [0, 0, 0, 0, 0, 0, 0],
+        unknownDates: index === 0 ? 0 : 2,
+      },
+    }));
+    const fake = hub({ topics: () => topics({ topics: rows }) });
+    const view = await mount(<HomePanel host={fake.host} />);
+    for (const row of rows) {
+      const bars = view.all(`[data-topic="${row.id}"] .babel-topic-trend > span`);
+      expect(bars.map((bar) => parseInt(bar.style.height, 10))).toEqual([0, 0, 0, 0, 0, 0, 0]);
+      expect(view.one(`[data-topic="${row.id}"] .babel-topic-count`).textContent).toBe("2");
+    }
+    expect(view.all('[data-topic="ent_0000beef"] .babel-topic-undated')).toHaveLength(0);
+    expect(view.one('[data-topic="ent_0000cafe"] .babel-topic-undated').textContent).toMatch(/\b2\b/);
     await view.unmount();
   });
 

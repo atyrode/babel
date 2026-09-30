@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactElement, type ReactNode } from "react";
+import { Popover } from "@manifold/ui";
 import {
   ESTABLISHED,
   FEED_GROUPINGS,
@@ -216,67 +217,65 @@ function Menu({
   setOpen: (next: PickName | null) => void;
   children: ReactNode;
 }): ReactElement {
-  const surface = useRef<HTMLSpanElement | null>(null);
   const opener = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!open) return undefined;
-    const box = surface.current;
-    box?.querySelector<HTMLElement>("[role^='menuitem']")?.focus();
-    function onPointerDown(event: PointerEvent): void {
-      if (box === null || !box.contains(event.target as Node)) setOpen(null);
-    }
+    opener.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    // The sentence owns its keyboard hold as soon as a shortcut opens it, including before
+    // the portaled layer finishes mounting its dismissal listeners.
     function onKey(event: KeyboardEvent): void {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setOpen(null);
-        opener.current?.focus();
-        return;
-      }
-      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-      const items = [...(box?.querySelectorAll<HTMLElement>("[role^='menuitem']") ?? [])];
-      if (items.length === 0) return;
+      if (event.key !== "Escape") return;
       event.preventDefault();
-      const at = items.indexOf(document.activeElement as HTMLElement);
-      const step = event.key === "ArrowDown" ? 1 : -1;
-      // A wrap rather than a stop: the list is five items long and the reader holding the key
-      // down is looking for one of them, not for the end.
-      items[(at + step + items.length) % items.length]?.focus();
+      setOpen(null);
+      opener.current?.focus();
     }
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKey);
-    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
   }, [open, setOpen]);
 
   return (
-    <span className="babel-pick" ref={surface}>
-      <button
-        type="button"
-        ref={opener}
-        data-pick={name}
-        className="babel-pick-button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={title}
-        onClick={() => setOpen(open ? null : name)}
+    <span className="babel-pick">
+      <Popover
+        open={open}
+        onOpenChange={(next) => setOpen(next ? name : null)}
+        align="start"
+        contentClassName="plugin-atyrode_babel_feed babel-menu-popover"
+        trigger={
+          <button
+            type="button"
+            ref={opener}
+            data-pick={name}
+            className="babel-pick-button"
+            aria-haspopup="menu"
+            title={title}
+          >
+            {label}
+            <span className="babel-pick-caret" aria-hidden="true">
+              ▾
+            </span>
+          </button>
+        }
       >
-        {label}
-        <span className="babel-pick-caret" aria-hidden="true">
-          ▾
-        </span>
-      </button>
-      {open && (
         <div
           className={wide ? "babel-menu babel-menu-wide" : "babel-menu"}
           role="menu"
           aria-label={title}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+            const items = [
+              ...event.currentTarget.querySelectorAll<HTMLElement>("[role^='menuitem']"),
+            ];
+            if (items.length === 0) return;
+            event.preventDefault();
+            const at = items.findIndex((item) => item === document.activeElement);
+            const step = event.key === "ArrowDown" ? 1 : -1;
+            items[(at + step + items.length) % items.length]?.focus();
+          }}
         >
           {children}
         </div>
-      )}
+      </Popover>
     </span>
   );
 }

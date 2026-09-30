@@ -462,6 +462,8 @@ export function Watch({ host }: PanelProps) {
           onStart={onStart}
           onOpen={(uri) => host.navigate(uri)}
         />
+        <Ceilings policy={policy.value} now={now} note={policyNote} />
+        <Allocation key={`${host.principal.id}:${host.containerId ?? ""}`} host={host} />
         <Runs
           runs={runs.value.runs}
           total={runs.value.total}
@@ -498,10 +500,8 @@ export function Watch({ host }: PanelProps) {
           onStop={onDrainStop}
         />
         <Recipes host={host} recipes={policy.value?.recipes ?? []} now={now} note={policyNote} />
-        <Ceilings policy={policy.value} now={now} note={policyNote} />
-        <Allocation key={`${host.principal.id}:${host.containerId ?? ""}`} host={host} />
         {/*
-        LAST, under the ceilings, because it is the least frequent thing an operator does here:
+        LAST, after the operating controls, because it is the least frequent task here:
         a service policy is installed once per machine and then re-read only when something has
         stopped working. It is on this panel rather than a settings page of its own for the
         reason the archive's own steps are — what it configures is what the machines run.
