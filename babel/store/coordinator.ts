@@ -1438,6 +1438,7 @@ export function coordinator(
                 ROW_NUMBER() OVER (PARTITION BY r.root_id, f.entity_id
                                    ORDER BY f.created_at DESC, f.id DESC) AS rn
            FROM filings f JOIN records r ON r.id = f.record_id
+          WHERE NOT EXISTS (SELECT 1 FROM filings later WHERE later.supersedes_id = f.id)
        ) WHERE rn = 1 AND withdrawn = 0`,
       "root, entity_id",
     );

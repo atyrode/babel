@@ -563,6 +563,33 @@ test("a record filed under an excluded topic is a gap and is never drawn", async
   expect(after.some((assignment) => assignment.recordId === withheld)).toBe(true);
 });
 
+test("correcting a filing to an open topic removes the old excluded topic from routing", async () => {
+  const { db, coord } = await deployment({ enabled: true });
+  const corrected = await record(db, "hyp_00000001", "hypothesis", 40);
+  const open = await record(db, "hyp_00000002", "hypothesis", 40);
+  await filing(db, corrected, "ent_0000000a");
+  await filing(db, open, "ent_0000000b");
+  await fact(db, "ent_0000000a", "analysis-policy", "excluded");
+  await fact(db, "ent_0000000b", "lifecycle", "active");
+  expect((await sampleDraws(coord, 40)).every((assignment) => assignment.recordId === open)).toBe(
+    true,
+  );
+
+  await db.run(
+    `INSERT INTO filings(id, record_id, entity_id, rationale, author_kind, author_id, heuristic,
+       withdrawn, supersedes_id, created_at)
+     VALUES('fil_corrected',?,'ent_0000000b','corrected topic','run','run_seed',0,0,?,?)`,
+    [corrected, `fil_${corrected}_ent_0000000a`, ago(0)],
+  );
+  expect(
+    (await sampleDraws(coord, 60)).some((assignment) => assignment.recordId === corrected),
+  ).toBe(true);
+  const result = await coord.draw({ runId: "cycle_1", now: NOW, seed: 1n });
+  expect(result.gaps.some((gap) => gap.recordId === corrected && gap.reason === "excluded")).toBe(
+    false,
+  );
+});
+
 test("a dormant topic loses the weighted draw to an active one, and is never shut out", async () => {
   const { db, coord } = await deployment({ enabled: true });
   const active = await record(db, "hyp_00000001", "hypothesis", 40);

@@ -4656,6 +4656,27 @@ test("unknown generic Run creation never posts a model or repeats creation after
   });
 });
 
+test("a proven pre-posting stale tool refusal releases its claim without a text replay", async () => {
+  const f = await governedReviewFixture();
+  f.code.answer = refusedByCode("engine_stale_profile", "profile changed before posting");
+  await f.loop.tick();
+  expect(f.code.attempts).toBe(1);
+  expect(f.code.posted).toEqual([]);
+  expect(
+    await f.db.query(`SELECT id,closure,cost_usd FROM runs WHERE id IN (?,?)`, [
+      f.runId,
+      `${f.runId}_text`,
+    ]),
+  ).toEqual([{ id: f.runId, closure: "failed", cost_usd: 0 }]);
+  expect(await governed(f.store, () => clock, 16).open(clock)).toEqual({
+    total: 0,
+    byMachine: {},
+  });
+  expect(
+    await f.db.query(`SELECT outcome,actual_cost FROM claims WHERE id=?`, [ASSIGNMENT.id]),
+  ).toEqual([{ outcome: "failed", actual_cost: 0 }]);
+});
+
 test("a proven unsupported native tool runtime gets a new text intent, never a repinned tool run", async () => {
   const f = await governedReviewFixture();
   f.code.answer = {

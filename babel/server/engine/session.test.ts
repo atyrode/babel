@@ -423,6 +423,24 @@ describe("what a profile may spend, asked before anything is posted", () => {
     expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
   });
 
+  test("a tool session with stale profile after preflight has posted no job", async () => {
+    const slice = actions((args) =>
+      args.action === "listProfiles"
+        ? { profiles: [profile({})] }
+        : hostRefusal(
+            "refused: atyrode.babel -> atyrode.code.runSession (code_stale_preferences)",
+          )(),
+    );
+    const answered = await codeEngine(slice).runSession({
+      profile: { containerId: "ctr_a", expectedRevision: 4 },
+      machineId: "m-dev-01",
+      prompt: "read the material",
+      agentTools: { runId: "run_tool" },
+    });
+    expect(answered).toMatchObject({ ok: false, code: ENGINE_REFUSALS.staleProfile });
+    expect(slice.calls.map((call) => call.action)).toEqual(["listProfiles", "runSession"]);
+  });
+
   test("an unresolved profile is posted, because an empty list Code could not resolve is not 'spends nothing'", async () => {
     const slice = actions((args) =>
       args.action === "listProfiles"

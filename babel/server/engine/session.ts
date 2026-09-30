@@ -570,10 +570,15 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
         ...(request.postingKey === undefined ? {} : { postingKey: request.postingKey }),
         ...(request.adoptOnly === true ? { adoptOnly: true } : {}),
       });
-      // Code can refuse after OMP has executed (for example, a provenance write or result
-      // consistency check). Without keyed recovery, only the named pre-effect tool refusals
-      // prove that another mode is safe. Never turn a post-effect refusal into a free redraw.
-      if (request.agentTools !== undefined && !answered.ok && answered.noToolSession !== true)
+      // Code's stale profile refusal occurs while composing, before its OMP runSession call.
+      // Other failures after dispatch may have posted despite Code's refusal; without a key
+      // they are unconfirmed and cannot be replayed as text.
+      if (
+        request.agentTools !== undefined &&
+        !answered.ok &&
+        answered.noToolSession !== true &&
+        answered.code !== ENGINE_REFUSALS.staleProfile
+      )
         return { ...answered, code: ENGINE_REFUSALS.unconfirmed };
       return answered;
     },
