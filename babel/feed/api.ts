@@ -217,9 +217,17 @@ export function openTopic(host: HostServices, topic: string): OpenPanelRefusal |
  * identity). The explicit entity id is not inferred from the topic string: a topic name can
  * itself look like another entity's id.
  */
-export function openEntity(host: HostServices, entityId: string): OpenPanelRefusal | null {
+export function openEntity(
+  host: HostServices,
+  entityId: string,
+  returnToEntityId?: string,
+): OpenPanelRefusal | null {
   look({ topic: entityId });
-  return seat(host, PANELS.topic, { topic: entityId, entityId });
+  return seat(host, PANELS.topic, {
+    topic: entityId,
+    entityId,
+    ...(returnToEntityId === undefined ? {} : { returnToEntityId }),
+  });
 }
 
 /**

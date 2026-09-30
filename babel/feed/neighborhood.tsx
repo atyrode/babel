@@ -19,11 +19,20 @@ type Link = NeighborhoodResult["links"][number];
 export function Neighborhood({
   host,
   entityId,
+  returnToEntityId,
 }: {
   host: HostServices;
   entityId: string;
+  returnToEntityId?: unknown;
 }): ReactElement {
   const [failure, setFailure] = useState("");
+  const [navigation, setNavigation] = useState("");
+  const previous =
+    typeof returnToEntityId === "string" &&
+    returnToEntityId !== entityId &&
+    EntityIdSchema.safeParse(returnToEntityId).success
+      ? returnToEntityId
+      : null;
   const read = usePolledResource<NeighborhoodResult | null>(
     async () => ask(host, ACTIONS.neighborhood, { entityId }),
     RAIL_POLL_MS,
@@ -41,6 +50,18 @@ export function Neighborhood({
   return (
     <section className="babel-neighborhood" aria-label="Entity neighbourhood">
       <h2>Stored neighbourhood</h2>
+      {previous !== null && (
+        <nav aria-label="Neighbourhood back navigation">
+          <button
+            type="button"
+            className="babel-link"
+            onClick={() => setNavigation(openEntity(host, previous) === "no_tile" ? NO_SEAT : "")}
+          >
+            Back to {previous}
+          </button>
+        </nav>
+      )}
+      {navigation !== "" && <p role="status">{navigation}</p>}
       {failure !== "" ? (
         <div role="status">
           <p>Neighbourhood unavailable: {failure}</p>
@@ -173,7 +194,13 @@ function NeighborhoodContents({
         type="button"
         className="babel-link"
         data-entity={id}
-        onClick={() => setNavigation(openEntity(host, id) === "no_tile" ? NO_SEAT : "")}
+        onClick={() =>
+          setNavigation(
+            openEntity(host, id, id === result.entityId ? undefined : result.entityId) === "no_tile"
+              ? NO_SEAT
+              : "",
+          )
+        }
       >
         {node === undefined ? `${id} (not returned in this scope)` : `${node.name} · ${id}`}
       </button>

@@ -234,7 +234,7 @@ describe("the shared neighbourhood projection", () => {
     await view.settle();
     expect(fake.opened.at(-1)).toEqual({
       panelId: `${FEED_PLUGIN_ID}.${PANELS.topic}`,
-      arg: { topic: LEFT, entityId: LEFT },
+      arg: { topic: LEFT, entityId: LEFT, returnToEntityId: ROOT },
     });
     expect(view.one(".babel-topic-name").textContent).toBe("t/Empty service");
     expect(view.one(".babel-neighborhood").textContent).toContain("empty neighbourhood");
@@ -288,6 +288,44 @@ describe("the shared neighbourhood projection", () => {
     );
     expect(view.one(`[data-node="${LEFT}"]`).textContent).toContain("Former identity");
     expect(fake.to("neighborhood").map((call) => call.args)).toEqual([{ entityId: LEFT }]);
+    await view.unmount();
+  });
+
+  test("a missing linked entity retains the originating topic as a return route", async () => {
+    const fake = fakeHost({
+      topic: () => topic({ topic: null }),
+      neighborhood: (args) =>
+        neighborhood({
+          entityId: NeighborhoodQuerySchema.parse(args).entityId,
+          state: "missing",
+          nodes: [],
+          coverage: {
+            ...neighborhood().coverage,
+            visitedNodes: 0,
+            traversalComplete: false,
+            recordsComplete: false,
+            truncated: true,
+            unavailableEntities: 1,
+            reasons: ["unavailable"],
+          },
+        }),
+      feed: () => feed({ posts: [], total: 0 }),
+    });
+    const view = await mount(
+      <TopicPanel
+        host={fake.host}
+        arg={{ topic: LEFT, entityId: LEFT, returnToEntityId: ROOT }}
+      />,
+    );
+    expect(view.one(".babel-neighborhood-missing").textContent).toContain(LEFT);
+    expect(view.one('[aria-label="Neighbourhood back navigation"]').textContent).toContain(
+      `Back to ${ROOT}`,
+    );
+    await view.press('[aria-label="Neighbourhood back navigation"] button');
+    expect(fake.opened.at(-1)).toEqual({
+      panelId: `${FEED_PLUGIN_ID}.${PANELS.topic}`,
+      arg: { topic: ROOT, entityId: ROOT },
+    });
     await view.unmount();
   });
 
