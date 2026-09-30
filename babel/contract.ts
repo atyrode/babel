@@ -4054,8 +4054,6 @@ export const DRAIN_SPENDING_PRESETS: readonly DrainPreset[] = [
  * door with the executor and source-owner nodes as governed targets ({@link StartMapDrainRequestSchema}).
  */
 export const MAP_DRAIN_PRESET = "map-transcripts" satisfies DrainPreset;
-/** A normal drain's own native catalog cadence, kept under the start's authority. */
-export const DRAIN_SCHEDULE_PREFIX = `${BABEL_PLUGIN_ID}.drain.`;
 
 /** The operation each drain preset's jobs run at: where its jobs are posted and cancelled. */
 export const DRAIN_OPERATIONS: Readonly<Record<DrainPreset, OperationName>> = {

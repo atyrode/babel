@@ -15,7 +15,6 @@ import {
   BeatChainSchema,
   beatChainKey,
   DRAIN_CONCURRENT_MAX,
-  DRAIN_SCHEDULE_PREFIX,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   INPUT_FIELD,
@@ -488,6 +487,9 @@ const CADENCE_LIFETIMES_MS = [
   6 * 60 * 60 * 1000,
   60 * 60 * 1000,
 ] as const;
+
+/** The drain uses the declared beat operation, not a new machine operation or a policy beat. */
+const DRAIN_SCHEDULE_PREFIX = `${BEAT_OPERATION}.drain.`;
 
 /** A drain's cadence cannot be mistaken for the policy's single conductor schedule. */
 function ordinaryDrainWakeId(drainId: string): string {

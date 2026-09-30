@@ -22,7 +22,6 @@ import { ActionCallError } from "@manifold/plugin-kit/errors";
 import type { SqlParam, SqlStatement } from "@manifold/plugin";
 import type { SettledJob } from "@manifold/protocol";
 import {
-  DRAIN_SCHEDULE_PREFIX,
   ACTIONS,
   asLaunchRequest,
   BABEL_PLUGIN_ID,
@@ -1086,7 +1085,7 @@ test("an ordinary drain keeps refilling and ends without a weighted beat or pane
   const answer = await plugin.handlers[ACTIONS.drainStart]?.(started, request as never);
   expect(answer).toMatchObject({ launched: 1 });
   const drainId = (answer as { drainId: string }).drainId;
-  const wake = jobs.scheduled.find((row) => row.scheduleId.startsWith(DRAIN_SCHEDULE_PREFIX));
+  const wake = jobs.scheduled.find((row) => row.scheduleId !== CONDUCTOR_SCHEDULE_ID);
   expect(wake).toBeDefined();
   expect(jobs.scheduled.some((row) => row.scheduleId === CONDUCTOR_SCHEDULE_ID)).toBe(false);
   const first = await harness.db.query<{ id: string }>(
