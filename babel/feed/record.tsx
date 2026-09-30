@@ -22,10 +22,10 @@ import { Thread } from "./thread.tsx";
 
   IT DRAWS WHAT ITS OWN SEAT WAS OPENED FOR, and follows Home when it was opened for nothing.
   A tile placed with `{recordId}` on its leaf (#533: `host.openPanel`, `PanelProps.arg`) is
-  PINNED to that record — two records are two tiles, each reading its own — while a tile the
-  principal arranged by hand carries no argument and reads the selection instead, which is
-  what makes it the peek pane: ↵ on a row points it, `j`/`k` walk it, and a panel with
-  neither says so rather than drawing an empty frame.
+  PINNED to that record — two records are two tiles, each reading its own. Enter in Home opens
+  a tile with no argument so `j`/`k` move that pane with the list; a tile the principal placed
+  by hand follows the same selection. A pane with no record says so rather than drawing an
+  empty frame.
 
   ITS KEYS ARE ITS OWN. Home owns the window's keyboard because Home is the list; this panel
   binds `y n d f q` on its own subtree, so the two never rule on two different records from

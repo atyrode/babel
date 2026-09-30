@@ -1,3 +1,4 @@
+import "./dom.ts";
 import { describe, expect, test } from "bun:test";
 import { Votes } from "./votes.tsx";
 import { mount, post } from "./testing.tsx";

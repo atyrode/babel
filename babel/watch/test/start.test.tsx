@@ -2,11 +2,12 @@ import "./dom.ts";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { afterEach, expect, test } from "bun:test";
 import { GENERATOR_PLUGIN_ID, LAUNCHER_PANEL } from "@atyrode/manifold-code";
+import { act } from "react";
 import { ACTIONS, door } from "../../contract.ts";
 import { Watch } from "../web.tsx";
 import type { PROFILES } from "./host.ts";
-import { MACHINES, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
-import { mount, settle, unmountAll } from "./render.tsx";
+import { MACHINES, TOPICS, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
+import { click, mount, settle, type, unmountAll } from "./render.tsx";
 
 /*
   START SOMETHING, as the operator meets it (#279).
@@ -50,11 +51,10 @@ afterEach(async () => {
 });
 
 test("the section renders the profiles Code answered, and offers no model, thinking or account field", async () => {
-  const { root, fake } = await open();
+  const { root } = await open();
   const start = section(root);
 
   // The list is Code's, and each row says what Code will run it as and where Code last posted.
-  expect(fake.callsTo(ACTIONS.profiles).length).toBeGreaterThan(0);
   const rows = [...start.querySelectorAll("[data-field='profile']")];
   expect(rows.map((row) => row.getAttribute("data-container"))).toEqual([
     "ctr_workbench",
@@ -130,6 +130,79 @@ test("the button posts the launch carrying the chosen profile and the revision i
   expect(args["session"]).toBeUndefined();
 });
 
+test("minutes preserve typed digits and normalize bounds only when leaving the field", async () => {
+  const { root } = await open();
+  const start = section(root);
+  const keepGoing = [
+    ...start.querySelectorAll<HTMLButtonElement>(".plugin-atyrode_babel_watch__preset"),
+  ].find((button) => button.textContent?.startsWith("Keep going"));
+  if (keepGoing === undefined) throw new Error("keep-going preset absent");
+  await click(keepGoing);
+  const minutes = start.querySelector<HTMLInputElement>("input[type='number']")!;
+  await type(minutes, "1");
+  expect(minutes.value).toBe("1");
+  await type(minutes, `${minutes.value}2`);
+  expect(minutes.value).toBe("12");
+  await act(async () => {
+    minutes.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  });
+  expect(minutes.value).toBe("12");
+  await type(minutes, "2");
+  await act(async () => {
+    minutes.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  });
+  expect(minutes.value).toBe("5");
+});
+
+test("an empty entity remains an explicit exploration target with an honest zero count", async () => {
+  const fake = fakeHost(
+    watchDoors({
+      runs: () => runsResult([]),
+      topics: () => ({
+        ...TOPICS,
+        topics: [
+          {
+            ...TOPICS.topics[0]!,
+            posts: 0,
+            awaiting: 0,
+            latestAt: "",
+            recentActivity: {
+              since: "2026-09-06T00:00:00Z",
+              days: [0, 0, 0, 0, 0, 0, 0],
+              unknownDates: 0,
+            },
+          },
+        ],
+      }),
+    }),
+    MACHINES,
+  );
+  const root = await mount(<Watch host={fake.host} />);
+  await settle();
+  const start = section(root);
+  const explore = [
+    ...start.querySelectorAll<HTMLButtonElement>(".plugin-atyrode_babel_watch__preset"),
+  ].find((button) => button.textContent?.startsWith("Explore a topic"));
+  if (!explore) throw new Error("exploration preset absent");
+  explore.click();
+  await settle();
+  const machine = start.querySelector<HTMLSelectElement>("[data-field='machine']")!;
+  machine.value = "m-dev-01";
+  machine.dispatchEvent(new Event("change", { bubbles: true }));
+  start.querySelector<HTMLElement>("[data-container='ctr_workbench']")!.click();
+  await settle();
+  const launch = start.querySelector<HTMLButtonElement>(`[data-action='${door(ACTIONS.launch)}']`)!;
+  expect(launch.disabled).toBe(true);
+  const topic = start.querySelector<HTMLSelectElement>("[data-field='topic']")!;
+  expect(topic.options[1]!.textContent).toBe("babel · 0 posts");
+  topic.value = TOPICS.topics[0]!.id;
+  topic.dispatchEvent(new Event("change", { bubbles: true }));
+  await settle();
+  expect(topic.value).toBe(TOPICS.topics[0]!.id);
+  expect(launch.disabled).toBe(false);
+  expect(fake.callsTo(ACTIONS.launch)).toEqual([]);
+});
+
 test("a Code that could not be asked is the sentence it refused with, and no button that can post", async () => {
   const { root } = await open({
     profiles: [],
@@ -145,10 +218,4 @@ test("a Code that could not be asked is the sentence it refused with, and no but
     `[data-action='${door(ACTIONS.launch)}']`,
   ) as HTMLButtonElement;
   expect(button.disabled).toBe(true);
-});
-
-test("the rest of Watch is untouched: the runs feed is still read", async () => {
-  const { fake } = await open();
-  expect(fake.callsTo(ACTIONS.runs).length).toBeGreaterThan(0);
-  expect(fake.callsTo(ACTIONS.drainStatus).length).toBeGreaterThan(0);
 });

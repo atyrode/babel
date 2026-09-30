@@ -86,6 +86,37 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   intention and no policy, budget, claim, drain, run or native-work changes. No actual provider,
   archive or deployed preview was exercised.
 
+- **The topics rail shows seven days of recorded activity (#248).** Small four-pixel-scale
+  bars count post creation, reviewer events and operator feedback for currently filed topics,
+  while unknown dates remain explicit instead of looking like quiet days. Explicitly tracked
+  empty entities remain navigable with their actual zero post count, and Watch can select them
+  for exploration. A disposable local Hub rendered the seven-bin rail, tracked-empty
+  navigation and empty Watch targets through the actual panels. An undated-only topic showed
+  its visible unknown-event count beside seven zero bars, unlike a genuinely quiet topic.
+  All rendered records were synthetic; this is not archive or provider-ingestion evidence.
+
+- **Home's Enter peek follows the keyboard walk (#248).** Enter now opens a following
+  record pane, so `j`/`k` update its rendered record rather than moving only an unseen
+  selection; an existing argument-free Record pane is reused, while pointer-opened panes
+  remain pinned. Unmodified primary presses on row buttons transfer focus at activation,
+  not before mouseup: folding the previous row's actions can no longer move the claim out
+  from under a click. Canceled presses open nothing; modified gestures, inputs and keyboard
+  focus retain their native behaviour. Actual Chromium hit-testing observed the same claim
+  on pointerdown and mouseup, exactly one new tile write, and immediate `j`/`k` movement
+  in the following pane while the pointer-opened pane stayed pinned. The real SDK layout
+  algebra additionally proves Enter reuses a hand-placed argument-free pane.
+
+- **Feed's sentence stays on one line, and Watch preserves typed minutes (#248).** The
+  sentence scrolls horizontally on narrow tiles, with shared anchored popovers that escape
+  its overflow clip. Actual Chromium interaction verified `s` → Escape → `c`, arrow-key
+  selection and visible menus at 320-pixel viewport width. Keep-going no longer rewrites the
+  first digit of `12` into `5`; the visible number normalizes on blur. Watch now shows the
+  existing Ceilings summary immediately after Start, before Runs and Drain. The disposable
+  Hub kept `12` and its field geometry unchanged across an actual policy refresh, and showed
+  the recorded ceilings without launching a run or changing model/provider authority. A saved
+  synthetic Code profile appeared up front and preserved selection as its real configured
+  model changed; no machine, account credential or provider invocation was involved.
+
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain
   and bind the recovered session atomically. Uncertain posts hold their reservation and machine
@@ -164,6 +195,15 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   disposable real-store door smoke counted sixteen outcomes, pinned and saved a share, replayed
   the saved basis exactly and refused a stale save without creating work or changing policy.
   Live preview rendering remains an operator verification boundary.
+
+### Added
+
+- **The topics rail shows seven days of recorded activity (#248).** Small four-pixel-scale
+  bars count post creation, reviewer events and operator feedback for currently filed topics, while unknown dates
+  remain explicit instead of looking like quiet days. Explicitly tracked empty entities remain
+  navigable with their actual zero post count, and Watch can select them for exploration.
+  Real SQLite and rendered interaction regressions cover the UTC boundary, withdrawn filings,
+  seven-bin display and empty-target selection; preview-hub visual acceptance remains pending.
 
 ### Fixed
 

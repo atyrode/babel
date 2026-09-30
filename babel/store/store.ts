@@ -123,6 +123,11 @@ export interface TopicRow {
   posts: number;
   awaiting: number;
   latestAt: string;
+  recentActivity: {
+    since: string;
+    days: [number, number, number, number, number, number, number];
+    unknownDates: number;
+  };
   interest: {
     state: "" | "working" | "watching" | "not-now" | "excluded";
     reason: string;
@@ -771,6 +776,28 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   const topicRows = async (): Promise<TopicRow[]> => {
     const current = await index();
     const facts = await readInterests(db);
+    // Use the feed's cached memberships and event dates. Withdrawn filings contribute nothing;
+    // a past vote on a currently filed post remains a recorded event, not a new post.
+    const dayMs = 86_400_000;
+    const firstDay = Math.floor(current.builtAt / dayMs) - 6;
+    const since = new Date(firstDay * dayMs).toISOString();
+    const activity = new Map<string, TopicRow["recentActivity"]>();
+    for (const topic of current.topics) {
+      activity.set(topic.id, { since, days: [0, 0, 0, 0, 0, 0, 0], unknownDates: 0 });
+    }
+    for (const entry of current.posts) {
+      if (entry.topics.length === 0) continue;
+      for (let event = -1; event < entry.activity.length; event++) {
+        const at = event < 0 ? entry.createdAt : entry.activity[event]!;
+        const bucket = Number.isFinite(at) && at > 0 ? Math.floor(at / dayMs) - firstDay : -1;
+        for (const topic of entry.topics) {
+          const row = activity.get(topic.id);
+          if (row === undefined) continue;
+          if (at <= 0 || !Number.isFinite(at)) row.unknownDates++;
+          else if (bucket >= 0 && bucket < 7) row.days[bucket as 0 | 1 | 2 | 3 | 4 | 5 | 6]++;
+        }
+      }
+    }
     const rows: TopicRow[] = current.topics.map((topic) => ({
       id: topic.id,
       name: topic.name,
@@ -779,6 +806,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       posts: topic.posts,
       awaiting: topic.awaiting,
       latestAt: topic.latestAt,
+      recentActivity: activity.get(topic.id)!,
       interest: interestOf(facts.get(topic.id)),
     }));
     // The order is the operator's attention rather than the corpus's size: what he is working

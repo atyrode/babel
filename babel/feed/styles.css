@@ -163,6 +163,8 @@
 
 .plugin-atyrode_babel_feed .babel-sentence {
   margin: 0;
+  overflow-x: auto;
+  white-space: nowrap;
   color: var(--babel-ink-muted);
   font-size: 0.86rem;
   line-height: 1.9;
@@ -203,18 +205,20 @@
   font-size: 0.8em;
 }
 
-.plugin-atyrode_babel_feed .babel-menu {
-  position: absolute;
-  z-index: 25;
-  top: calc(100% + var(--babel-space-1));
-  left: 0;
-  display: grid;
-  min-width: 14rem;
-  padding: var(--babel-space-1);
-  border: 1px solid var(--babel-rule);
+.plugin-atyrode_babel_feed.babel-menu-popover {
+  max-width: calc(100vw - 20px);
+  border-color: var(--babel-rule);
   border-radius: var(--babel-radius);
   background: var(--babel-bg-raised);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+  padding: var(--babel-space-1);
+  font-size: 0.82rem;
+}
+
+.plugin-atyrode_babel_feed .babel-menu {
+  display: grid;
+  min-width: 14rem;
+  max-height: min(32rem, 80vh);
+  overflow-y: auto;
 }
 
 .plugin-atyrode_babel_feed .babel-menu-wide {
@@ -708,7 +712,24 @@
   color: var(--babel-accent);
 }
 
+.plugin-atyrode_babel_feed .babel-topic-trend {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  gap: 4px;
+  height: 16px;
+  margin-left: auto;
+}
+
+.plugin-atyrode_babel_feed .babel-topic-trend > span {
+  width: 4px;
+  flex: 0 0 4px;
+  background: var(--babel-accent);
+  opacity: 0.7;
+}
+
 .plugin-atyrode_babel_feed .babel-topic-count,
+.plugin-atyrode_babel_feed .babel-topic-undated,
 .plugin-atyrode_babel_feed .babel-topic-group-count {
   color: var(--babel-ink-faint);
   font-variant-numeric: tabular-nums;

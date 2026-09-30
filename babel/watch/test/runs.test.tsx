@@ -388,7 +388,11 @@ test("reading more asks the door for a longer page, not for a second one", async
   await settle();
   expect(fake.callsTo(ACTIONS.runs)[0]?.args).toEqual({ limit: 25, offset: 0 });
 
-  await click(root.querySelector(".plugin-atyrode_babel_watch__quiet"));
+  await click(
+    [...root.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Read more",
+    ) ?? null,
+  );
   await settle();
 
   /*

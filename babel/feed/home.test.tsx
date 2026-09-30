@@ -1,9 +1,23 @@
+import "./dom.ts";
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
-import type { OpenPanelOutcome, OpenPanelRequest } from "@manifold/plugin";
+import { openedPanel, type OpenPanelOutcome, type OpenPanelRequest } from "@manifold/plugin";
+import type { TileLayout } from "@manifold/protocol";
 import { resetPolledResources } from "@manifold/plugin/hooks";
-import { forgetSelection, looking } from "./api.ts";
+import { act } from "react";
+import { forgetSelection, looking, type TopicRow } from "./api.ts";
 import { HomePanel } from "./home.tsx";
-import { Denial, fakeHost, feed, mount, post, topics, type Fake } from "./testing.tsx";
+import { RecordPanel } from "./record.tsx";
+import {
+  Denial,
+  fakeHost,
+  feed,
+  mount,
+  peel,
+  post,
+  thread,
+  topics,
+  type Fake,
+} from "./testing.tsx";
 
 /*
   HOME, as the operator uses it.
@@ -300,6 +314,7 @@ describe("the sentence", () => {
     await view.key("s");
     expect(view.one('[data-pick="sort"]').getAttribute("aria-expanded")).toBe("true");
     await view.key("Escape");
+    expect(view.one('[data-pick="sort"]').getAttribute("aria-expanded")).toBe("false");
     await view.key("c");
     expect(view.one('[data-pick="kinds"]').getAttribute("aria-expanded")).toBe("true");
     await view.unmount();
@@ -462,18 +477,23 @@ describe("asking and answering", () => {
 
 describe("the peek", () => {
   test("↵ opens the focused row, and `j`/`k` walk the peek with the list", async () => {
-    const fake = hub();
+    const fake = hub({ record: () => peel(), thread: () => thread() });
     const view = await mount(<HomePanel host={fake.host} />);
     await view.key("j");
     expect(view.one(".babel-row[data-focused]").getAttribute("data-post")).toBe("pro_0000000a");
     expect(looking().recordId).toBe("");
     await view.key("Enter");
     expect(looking().recordId).toBe("pro_0000000a");
+    const pane = await mount(<RecordPanel host={fake.host} arg={fake.opened[0]?.arg} />);
+    expect(fake.last("record")).toEqual({ id: "pro_0000000a" });
     await view.key("j");
     expect(looking().recordId).toBe("fnd_0000000b");
+    await pane.settle();
+    expect(fake.last("record")).toEqual({ id: "fnd_0000000b" });
     await view.key("k");
     expect(looking().recordId).toBe("pro_0000000a");
     expect(view.one(".babel-row[data-selected]").getAttribute("data-post")).toBe("pro_0000000a");
+    await pane.unmount();
     await view.unmount();
   });
 
@@ -485,6 +505,51 @@ describe("the peek", () => {
     expect(fake.opened).toEqual([
       { panelId: "atyrode.babel.feed.record", arg: { recordId: "fnd_0000000b" } },
     ]);
+    await view.unmount();
+  });
+
+  test("a pointer activation transfers focus only after the target is fixed, then j/k keep its pane pinned", async () => {
+    const posts = feed().posts;
+    const fake = hub({
+      record: (args) => {
+        const id = typeof args === "object" && args !== null && "id" in args ? args.id : undefined;
+        const selected = posts.find((post) => post.id === id);
+        if (selected === undefined) throw new Error("record missing from gesture fixture");
+        return peel({ post: selected });
+      },
+      thread: () => thread(),
+    });
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.key("j");
+    await view.key("Enter");
+    const following = await mount(<RecordPanel host={fake.host} arg={fake.opened[0]?.arg} />);
+    const first = view.one('[data-post="pro_0000000a"]');
+    const second = view.one('[data-open="fnd_0000000b"]');
+    await act(async () => {
+      // HappyDOM has no pointer hit-testing. Model only the native focus default here;
+      // the real Chromium scenario proves a folding row cannot move the mouseup target.
+      const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+      if (second.dispatchEvent(down)) second.focus();
+    });
+    expect(document.activeElement).toBe(first);
+    expect(fake.opened).toHaveLength(1);
+    await act(async () => {
+      second.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
+      second.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0, detail: 1 }));
+    });
+    expect(document.activeElement).toBe(second);
+    const pinned = await mount(<RecordPanel host={fake.host} arg={fake.opened[1]?.arg} />);
+    await view.key("j");
+    await following.settle();
+    expect(following.one("h1").textContent).toBe(posts[2]!.title);
+    expect(pinned.one("h1").textContent).toBe(posts[1]!.title);
+    await view.key("k");
+    await following.settle();
+    expect(following.one("h1").textContent).toBe(posts[1]!.title);
+    expect(pinned.one("h1").textContent).toBe(posts[1]!.title);
+    expect(fake.opened).toHaveLength(2);
+    await pinned.unmount();
+    await following.unmount();
     await view.unmount();
   });
 
@@ -501,24 +566,64 @@ describe("the peek", () => {
 });
 
 /*
-  THE SEATS (#533). A gesture that OPENS something asks the host for a tile of this plugin's
-  own carrying what it was opened for, and points the selection at the same thing so the tiles
-  that carry no argument follow along. `j`/`k` only point: a seat per row the reader scrolled
-  past is a workspace nobody asked for.
+  THE SEATS (#533). Enter opens one following pane and points the selection at it; `j`/`k`
+  change the selection without opening new seats. Opening a claim by pointer pins the seat
+  instead, so two record tiles can remain independently inspectable.
 */
 describe("the seats", () => {
-  test("↵ opens the record in a seat of its own, and `j`/`k` only point", async () => {
+  test("↵ opens a following record pane, and `j`/`k` do not spawn more seats", async () => {
     const fake = hub();
     const view = await mount(<HomePanel host={fake.host} />);
     await view.key("j");
     await view.key("Enter");
-    expect(fake.opened).toEqual([
-      { panelId: "atyrode.babel.feed.record", arg: { recordId: "pro_0000000a" } },
-    ]);
     expect(looking().recordId).toBe("pro_0000000a");
     await view.key("j");
     expect(looking().recordId).toBe("fnd_0000000b");
     expect(fake.opened).toHaveLength(1);
+    await view.unmount();
+  });
+
+  test("↵ reuses a hand-placed following Record pane", async () => {
+    const layout: TileLayout = {
+      root: {
+        id: "root",
+        dir: "row",
+        ratios: [0.5, 0.5],
+        children: ["home", "following"],
+        ref: null,
+      },
+      home: {
+        id: "home",
+        dir: null,
+        ratios: [],
+        children: [],
+        ref: { kind: "panel", panelId: "atyrode.babel.feed.home" },
+      },
+      following: {
+        id: "following",
+        dir: null,
+        ratios: [],
+        children: [],
+        ref: { kind: "panel", panelId: "atyrode.babel.feed.record" },
+      },
+    };
+    const openings: OpenPanelOutcome[] = [];
+    const fake = hub({}, (request) => {
+      const opening = openedPanel(layout, request.panelId, request.arg, "home");
+      const outcome: OpenPanelOutcome =
+        opening === null
+          ? { ok: false, refused: "no_tile" }
+          : { ok: true, tileId: opening.tileId, placed: opening.placed };
+      openings.push(outcome);
+      return outcome;
+    });
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.key("j");
+    await view.key("Enter");
+    expect(openings).toEqual([{ ok: true, tileId: "following", placed: false }]);
+    expect(looking().recordId).toBe("pro_0000000a");
+    await view.key("j");
+    expect(looking().recordId).toBe("fnd_0000000b");
     await view.unmount();
   });
 
@@ -578,6 +683,69 @@ describe("the rail", () => {
     ).toEqual(["ent_0000beef", "ent_0000cafe"]);
     await view.press('[data-topic="ent_0000cafe"]');
     expect(looking().topic).toBe("ent_0000cafe");
+    await view.unmount();
+  });
+
+  test("explicitly tracked empty entities remain selectable without inventing topic activity", async () => {
+    const empty = topics().topics.map((topic): TopicRow => ({
+      ...topic,
+      posts: 0,
+      awaiting: 0,
+      latestAt: "",
+      recentActivity: { ...topic.recentActivity, days: [0, 0, 0, 0, 0, 0, 0], unknownDates: 0 },
+    }));
+    const fake = hub({ topics: () => topics({ topics: empty }) });
+    const view = await mount(<HomePanel host={fake.host} />);
+    expect(
+      view.all(".babel-topic-list button").map((row) => row.getAttribute("data-topic")),
+    ).toEqual(["ent_0000beef"]);
+    expect(view.one('[data-topic="ent_0000beef"] .babel-topic-count').textContent).toBe("0");
+    expect(
+      view.one('[data-topic="ent_0000beef"] .babel-topic-trend').getAttribute("aria-label"),
+    ).toContain("0, 0, 0, 0, 0, 0, 0");
+    await view.press('[data-topic="ent_0000beef"]');
+    expect(looking().topic).toBe("ent_0000beef");
+    await view.unmount();
+  });
+
+  test("topic trends show seven dated activity bins without treating unknown dates as zero", async () => {
+    const view = await mount(<HomePanel host={hub().host} />);
+    const trend = view.one('[data-topic="ent_0000beef"] .babel-topic-trend');
+    expect(trend.getAttribute("aria-label")).toMatch(/0, 1, 2, 0, 3, 1, 4/);
+    const bars = view.all('[data-topic="ent_0000beef"] .babel-topic-trend > span');
+    expect(bars.map((bar) => parseInt((bar as HTMLElement).style.height, 10) || 0)).toEqual([
+      0, 4, 8, 0, 12, 4, 16,
+    ]);
+    expect(
+      view.one('[data-topic="ent_0000cafe"] .babel-topic-trend').getAttribute("aria-label"),
+    ).toMatch(/\b1 event\b.*\bunknown dates\b/);
+    expect(view.one('[data-topic="ent_0000cafe"] .babel-topic-undated').textContent).toContain("1");
+    expect(view.all('[data-topic="ent_0000beef"] .babel-topic-undated')).toHaveLength(0);
+    await view.unmount();
+  });
+
+  test("undated-only topics stay visibly distinct from a quiet seven-day window", async () => {
+    const rows = topics().topics.map((topic, index): TopicRow => ({
+      ...topic,
+      posts: 2,
+      latestAt: index === 0 ? "2026-08-12T08:00:00Z" : "",
+      recentActivity: {
+        ...topic.recentActivity,
+        days: [0, 0, 0, 0, 0, 0, 0],
+        unknownDates: index === 0 ? 0 : 2,
+      },
+    }));
+    const fake = hub({ topics: () => topics({ topics: rows }) });
+    const view = await mount(<HomePanel host={fake.host} />);
+    for (const row of rows) {
+      const bars = view.all(`[data-topic="${row.id}"] .babel-topic-trend > span`);
+      expect(bars.map((bar) => parseInt(bar.style.height, 10))).toEqual([0, 0, 0, 0, 0, 0, 0]);
+      expect(view.one(`[data-topic="${row.id}"] .babel-topic-count`).textContent).toBe("2");
+    }
+    expect(view.all('[data-topic="ent_0000beef"] .babel-topic-undated')).toHaveLength(0);
+    expect(view.one('[data-topic="ent_0000cafe"] .babel-topic-undated').textContent).toMatch(
+      /\b2\b/,
+    );
     await view.unmount();
   });
 

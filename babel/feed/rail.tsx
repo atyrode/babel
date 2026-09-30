@@ -71,6 +71,9 @@ function TopicLink({
   if (topic.binding !== null) facts.push(`${topic.binding.kind}: ${topic.binding.identity}`);
   if (topic.interest.state !== "")
     facts.push(INTEREST_LABEL[topic.interest.state] ?? topic.interest.state);
+  const { since, days, unknownDates } = topic.recentActivity;
+  const peak = Math.max(1, ...days);
+  const history = `Seven UTC days from ${since.slice(0, 10)}; recorded post and reception activity, oldest first: ${days.join(", ")}${unknownDates > 0 ? `; ${unknownDates} ${unknownDates === 1 ? "event" : "events"} with unknown dates` : ""}`;
   return (
     <li>
       <button
@@ -81,6 +84,15 @@ function TopicLink({
         onClick={() => onOpen(topic.id)}
       >
         <span>t/{topic.name}</span>
+        <span className="babel-topic-trend" role="img" aria-label={history} title={history}>
+          {days.map((count, day) => (
+            <span
+              key={day}
+              style={{ height: count === 0 ? 0 : `${Math.ceil((count / peak) * 4) * 4}px` }}
+            />
+          ))}
+        </span>
+        {unknownDates > 0 && <span className="babel-topic-undated">{unknownDates} undated</span>}
         <span className="babel-topic-count">{topic.posts.toLocaleString()}</span>
       </button>
     </li>

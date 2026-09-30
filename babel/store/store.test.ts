@@ -947,6 +947,80 @@ describe("topics", () => {
     expect(answer.topics.map((row) => row.id)).not.toContain(RETIRED);
   });
 
+  test("seven UTC days count recorded activity only for currently filed posts", async () => {
+    const entity = "ent_0000abce";
+    const atEdge = "hyp_0000abc1";
+    const earlier = "hyp_0000abc2";
+    const start = MIDNIGHT - 6 * DAY;
+    await insert(harness.db, "entities", {
+      id: entity,
+      kind: "project",
+      name: "a focused topic",
+      canonical_id: entity,
+      created_by: "operator",
+      created_at: stamp(start - DAY),
+    });
+    for (const [id, at] of [
+      [atEdge, start],
+      [earlier, start - 1],
+    ] as const) {
+      await insert(harness.db, "records", {
+        id,
+        root_id: id,
+        kind: "hypothesis",
+        run_id: "run-a",
+        actor_kind: "run",
+        actor_id: "run-a",
+        title: id,
+        created_at: stamp(at),
+        payload: JSON.stringify({ schema: 1, statement: id }),
+      });
+      await insert(harness.db, "filings", {
+        id: `fil_${id}`,
+        record_id: id,
+        entity_id: entity,
+        rationale: "relevant",
+        author_kind: "operator",
+        author_id: "operator",
+        created_at: stamp(at),
+      });
+    }
+    await insert(harness.db, "assessments", {
+      id: "asm_activity",
+      record_id: earlier,
+      revision_id: earlier,
+      run_id: "run-z",
+      role: "reception",
+      vote: "support",
+      payload: JSON.stringify({ vote: "support" }),
+      recorded_at: stamp(NOW),
+    });
+    harness.store.touch();
+    const row = (await harness.store.topics()).topics.find((topic) => topic.id === entity);
+    expect(Date.parse(row?.recentActivity.since ?? "")).toBe(start);
+    expect(row?.recentActivity).toMatchObject({
+      days: [1, 0, 0, 0, 0, 0, 1],
+      unknownDates: 0,
+    });
+    // Withdrawing the older post also removes its newer vote from this topic's timeline.
+    await insert(harness.db, "filings", {
+      id: "fil_withdrawn_activity",
+      record_id: earlier,
+      entity_id: entity,
+      rationale: "no longer relevant",
+      author_kind: "operator",
+      author_id: "operator",
+      withdrawn: 1,
+      supersedes_id: `fil_${earlier}`,
+      created_at: stamp(NOW),
+    });
+    harness.store.touch();
+    expect(
+      (await harness.store.topics()).topics.find((topic) => topic.id === entity)?.recentActivity
+        .days,
+    ).toEqual([1, 0, 0, 0, 0, 0, 0]);
+  });
+
   test("unfiled counts the posts under nothing and never the observations", async () => {
     const answer = await harness.store.topics();
     // The agreed proposal whose filing was withdrawn, the record filed under a retired entity,
