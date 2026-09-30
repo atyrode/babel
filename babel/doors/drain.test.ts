@@ -1287,6 +1287,34 @@ function realLaunch() {
   return machinery;
 }
 
+test("an ordinary preparation still occupies the machine after Stop and a fresh drain start", async () => {
+  const machinery = realLaunch();
+  physicalCores = 1;
+  const policy = await harness.db.query(`SELECT payload FROM policies`);
+  const drainId = String((await start({ concurrent: 1 }))["drainId"]);
+  expect(fleet.executed.map((job) => job.jobId)).toEqual([`job_${drainId}_0_material`]);
+  await halt(drainId, "stop before Code");
+  await drainTick(deps);
+  expect(await start({ concurrent: 1 })).toHaveProperty("refused");
+  expect(fleet.executed.map((job) => job.jobId)).toEqual([`job_${drainId}_0_material`]);
+  expect(
+    await harness.db.query(`SELECT closure FROM runs WHERE job_id=?`, [
+      `job_${drainId}_0_material`,
+    ]),
+  ).toEqual([{ closure: null }]);
+  expect(code.posted).toEqual([]);
+  await sealDrainJob(drainId, 0);
+  await machinery.postPrepared(fleet, code, PLAN, WAKE);
+  expect(code.posted).toEqual([]); // A late seal never revives stopped result authority.
+  const restart = await start({ concurrent: 1 });
+  expect(restart).toMatchObject({ launched: 1 });
+  expect(fleet.executed.map((job) => job.jobId)).toEqual([
+    `job_${drainId}_0_material`,
+    `job_${String(restart["drainId"])}_0_material`,
+  ]);
+  expect(await harness.db.query(`SELECT payload FROM policies`)).toEqual(policy);
+});
+
 async function sealDrainJob(drainId: string, ordinal: number): Promise<void> {
   await harness.db.run(
     `UPDATE runs SET closure = 'completed', finished_at = ?, payload = ? WHERE job_id = ?`,
@@ -2317,6 +2345,8 @@ test("mapping start shares physical admission without entering its separately go
   doors = drainDoors(harness.store, {
     coordinator: deps.coordinator,
     deps: () => deps,
+    startOrdinary: async () => ({ ok: true, notes: [] }),
+    stopOrdinary: async () => {},
     startMapping: async () => {
       entered = true;
       return { launched: 1, notes: [] };

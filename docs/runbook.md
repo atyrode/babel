@@ -1068,7 +1068,8 @@ as the conductor. **A drain without a finite bound is a loop**:
 `drainStart` requires a target, deadline or positive `maxJobs`; omission of the deadline still
 gives it one two hours out. A fan above the applicable operation's declared `concurrentJobs`
 or the machine inventory's fresh `physicalCoreCount` is refused at the door, never silently
-rewritten into policy. Admissions use the minimum of those bounds and the requested fan.
+rewritten into policy. The shared machine ceiling is the minimum of those bounds; each drain's
+requested fan is a separate limit, not a replacement for the total across standing work and drains.
 The inventory fact is OS-visible online physical package/core pairs, not logical CPUs, quota,
 policy batch size or the operation's per-job `processes` ceiling.
 
@@ -1079,11 +1080,16 @@ refused, disconnected, offline, revoked or invalid facts hold new admissions and
 A later shrink retains already-paid work, unresolved reservations and receipts, while withholding
 extra postings above the live cap. Mapping retains its own governed mode with the same physical
 admission protection. Atomic slot checks count other open Babel work and unresolved reservations
-on the machine, not child preparations twice; work outside Babel is not visible to this ledger.
-Host-wide resource admission remains Manifold's responsibility.
+on the machine. A preparation shares its parent's slot only through the parent's explicit
+`prepare_job_id` on that machine, not matching ID suffixes or unrelated job IDs. A retained child
+still holds one slot after its parent closes or disappears. Stop preserves native-attempt evidence
+and pending claims: an uncertain post or cancellation never becomes free capacity on restart.
+Only a definitive refusal before effect or an authoritative terminal native receipt releases
+that preparation. Work outside Babel is not visible to this ledger; host-wide resource admission
+remains Manifold's responsibility.
 
-This source integration requires Manifold's live inventory (#941) and optional lifecycle
-metadata (#940), delivered in dependency order. It is not evidence of an installed bundle or
+The source dependency pins provide Manifold's live inventory (#941) and optional lifecycle
+metadata (#940). Source integration is not evidence of an installed bundle or
 current host headroom. #264's authorized dev-01/account throughput rehearsal remains an
 unperformed operational prerequisite; no source-only check establishes a live CPU, memory or
 provider-price ceiling.

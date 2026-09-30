@@ -9,6 +9,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+- **Retained preparations keep their machine core slot after their parent closes (#258).**
+  Explicit same-machine parent/preparation linkage counts one whole item, including a pending
+  reservation, while a child with no open parent remains occupied. Stop preserves native-attempt
+  evidence; mapping claims wait for authoritative native settlement rather than cancellation
+  acknowledgement. Regression definitions cover ordinary and mapping parents, absent parents,
+  definitive refusal, lost answers, Stop/restart and late terminal receipts. This rebased repair
+  has not been executed or accepted live; integrated verification remains required.
+
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain
   and bind the recovered session atomically. Uncertain posts hold their reservation and machine
@@ -22,6 +30,32 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   claim's metered charge commit together; a late settlement cannot overwrite the closed receipt.
   Real-store regressions cover interrupted retirement, overlapping settlement, lost commit
   answers and the eventual terminal meter.
+
+- **Drains can split an explicitly declared window across explore and coordinator-managed
+  review by whole-item cost (#258).** Watch and the start door accept positive
+  `read-whats-new`/`explore-topic`/`review-backlog` weights; review draws review-only claims
+  under the installed route without touching standing policy; deterministic deficit scheduling
+  accounts measured incurred cost plus durable reservations,
+  reports empty-work and missing/zero-price gaps, and preserves single-preset operation.
+  Admission reserves slots before posting; review claims and immutable prompt/request intent
+  commit together before keyed Code dispatch. Lost acknowledgements replay only under the
+  original account chain; stop retires unused keys, cancels known jobs and retains uncertain
+  cancellations. Terminal receipts reconcile the shared claim exactly once, including late
+  acknowledgements and missing meters. Standing policy and mapping's governed mode remain unchanged.
+  Review ordinals share the durable drain's coordinator cycle ceiling, enforced in the claim
+  transaction without fresh allowance on refill or restart; parent/posting identities remain
+  distinct. Oversized prompts now visibly refuse and retire the unused slot so another eligible
+  preset can progress, without swallowing database/publication errors.
+  The retained candidate's real-store scenarios exercise incurred/reserved deficits, cost shares,
+  concurrency and stopped-admission refusal, stale-fold refusal, unpriced refill refusal and
+  unchanged standing policy. Physical admission reads the current wake's machine inventory
+  at start, each reservation/refill and pending native/Code posting recovery, including mapping.
+  Oversized starts explicitly refuse; unknown or shrinking capacity holds new work without
+  discarding existing work or receipts. Regression definitions include unavailable inventory,
+  shrinking capacity, reservation competition and wake-local lifecycle metadata. Source is rebased
+  onto the mainline cadence, keyed review, advice and dependency pins; this integrated revision
+  remains unverified.
+  #264's live acceptance remains unperformed. No paid drain or preview interaction was exercised.
 
 ## [0.5.8] - 2026-09-30
 
@@ -100,31 +134,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   visibility invalidates the handoff. No earlier dispatch or wake lends its handles to another.
   Selection makes no provider invocation, funding remains unknown, and service effects,
   repository reads, policy shares, eligibility, claims and cache freshness fences are unchanged.
-
-- **Drains can split an explicitly declared window across explore and coordinator-managed
-  review by whole-item cost (#258).** Watch and the start door accept positive
-  `read-whats-new`/`explore-topic`/`review-backlog` weights; review draws review-only claims
-  under the installed route without touching standing policy; deterministic deficit scheduling
-  accounts measured incurred cost plus durable reservations,
-  reports empty-work and missing/zero-price gaps, and preserves single-preset operation.
-  Admission reserves slots before posting; review claims and immutable prompt/request intent
-  commit together before keyed Code dispatch. Lost acknowledgements replay only under the
-  original account chain; stop retires unused keys, cancels known jobs and retains uncertain
-  cancellations. Terminal receipts reconcile the shared claim exactly once, including late
-  acknowledgements and missing meters. Standing policy and mapping's governed mode remain unchanged.
-  Review ordinals share the durable drain's coordinator cycle ceiling, enforced in the claim
-  transaction without fresh allowance on refill or restart; parent/posting identities remain
-  distinct. Oversized prompts now visibly refuse and retire the unused slot so another eligible
-  preset can progress, without swallowing database/publication errors.
-  A disposable real-store consumer proves incurred/reserved deficits, settled 1:3 cost shares,
-  concurrency and stopped-admission refusal, stale-fold refusal, unpriced refill refusal and
-  unchanged standing policy. Physical admission now reads the current wake's machine inventory
-  at start, each reservation/refill and pending native/Code posting recovery, including mapping.
-  Oversized starts explicitly refuse; unknown or shrinking capacity holds new work without
-  discarding existing work or receipts. Deterministic regressions cover unavailable inventory,
-  shrinking capacity, reservation competition and wake-local lifecycle metadata; these additions
-  await integration verification against Manifold #941/#940 and the corresponding dependency pins.
-  #264's live acceptance remains unperformed. No paid drain or preview interaction was exercised.
 
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary

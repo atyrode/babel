@@ -696,18 +696,32 @@ export function directDrainAdmission(
   };
 }
 
-/** Count whole work items, not their child preparations; unresolved reservations still count. */
+/**
+ * A preparation and its explicitly linked parent occupy one whole-work slot. The child's open
+ * row keeps that slot after its parent closes; without a parent it counts under its own id.
+ * Reservations share the parent identity, so interrupted publication cannot double-count it.
+ */
 export function machineOpenWork(machineId: string): {
   readonly sql: string;
   readonly params: SqlParam[];
 } {
   return {
     sql: `SELECT COUNT(*) FROM (
-      SELECT id FROM runs WHERE machine_id = ? AND closure IS NULL AND kind NOT IN (?, ?)
+      SELECT COALESCE(parent.id, child.id) FROM runs child
+        LEFT JOIN runs parent ON child.kind IN (?, ?) AND parent.kind NOT IN (?, ?)
+          AND parent.machine_id = child.machine_id AND parent.prepare_job_id = child.job_id
+        WHERE child.machine_id = ? AND child.closure IS NULL
       UNION SELECT a.run_id FROM drain_launches a JOIN drains d ON d.id = a.drain_id
         WHERE d.machine_id = ? AND d.state IN ('running','closing') AND a.state = 'reserved'
     )`,
-    params: [machineId, MACHINE_OPERATIONS.prepare, MACHINE_OPERATIONS.mapPrepare, machineId],
+    params: [
+      MACHINE_OPERATIONS.prepare,
+      MACHINE_OPERATIONS.mapPrepare,
+      MACHINE_OPERATIONS.prepare,
+      MACHINE_OPERATIONS.mapPrepare,
+      machineId,
+      machineId,
+    ],
   };
 }
 

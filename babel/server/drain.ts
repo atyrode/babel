@@ -404,14 +404,16 @@ async function laneOf(store: DrainDeps["store"], runId: string): Promise<RunLane
  * would spend an account after the operator stopped spending. `AND job_id IS NULL` is the
  * fence against the opposite race — a wake that posted the session between the read and this
  * write owns the row, and that run is cancelled through Code on the next tick.
+ * Native attempts remain evidence after Stop: cancellation is not proof the preparation ended.
  */
 async function closeIntent(deps: DrainDeps, runId: string, reason: string): Promise<void> {
   const at = new Date(deps.now()).toISOString();
   const closed = await deps.store.db.run(
-    `UPDATE runs SET closure = 'stopped', finished_at = ?, payload = ?
+    `UPDATE runs SET closure = 'stopped', finished_at = ?,
+      payload = json_set(payload, '$.closure', 'stopped', '$.reason', ?, '$.stoppedAt', ?)
       WHERE id = ? AND closure IS NULL AND job_id IS NULL
         AND COALESCE(json_extract(payload, '$.posting'), 0) = 0`,
-    [at, JSON.stringify({ closure: "stopped", reason, stoppedAt: at }), runId],
+    [at, reason, at, runId],
   );
   if (closed.changes === 0)
     throw new Error(`${runId} changed during cancellation; its session may be live`);

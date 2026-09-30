@@ -3047,16 +3047,27 @@ export function conductor(deps: ConductorDeps): Conductor {
     if ((changed.at(-1)?.length ?? 0) === 0) return;
     await store.db.run(
       `UPDATE runs SET closure='failed',finished_at=?,payload=?
-      WHERE job_id=? AND closure IS NULL AND EXISTS (SELECT 1 FROM runs parent WHERE parent.id=?
-        AND coalesce(json_extract(parent.payload,'$.nativeAttempts'),0)=0)`,
+      WHERE id=? AND job_id=? AND kind=? AND machine_id=? AND closure IS NULL
+        AND EXISTS (SELECT 1 FROM runs parent WHERE parent.id=?
+          AND coalesce(json_extract(parent.payload,'$.nativeAttempts'),0)=0)`,
       [
         new Date(deps.now()).toISOString(),
         JSON.stringify({ closure: "failed", reason }),
+        intent.input.runId,
         prepareJobId,
+        OPERATIONS.mapPrepare,
+        intent.route.executorMachineId,
         runId,
       ],
     );
-    await settleClaims(prepareJobId, 0, "failed", settled, intent.claim);
+    // Closing result authority cannot settle an uncertain native posting. The retained child
+    // holds both machine occupancy and the claim until its own authoritative terminal receipt.
+    const terminal = await store.db.query(
+      `SELECT 1 FROM runs WHERE id=? AND job_id=? AND kind=? AND machine_id=?
+        AND closure IS NOT NULL`,
+      [intent.input.runId, prepareJobId, OPERATIONS.mapPrepare, intent.route.executorMachineId],
+    );
+    if (terminal.length > 0) await settleClaims(prepareJobId, 0, "failed", settled, intent.claim);
     await store.db.run(`DELETE FROM run_progress WHERE run_id=?`, [runId]);
     store.touch();
   }

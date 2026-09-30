@@ -1458,10 +1458,15 @@ be answerable afterwards.
   happen.
   Admission atomically retains the ordinal, live slot, preset and reservation before native
   posting. The exact preparation request is durable; interrupted wakes retry that identity rather
-  than select a new window. Concurrent starts admit only one drain per machine. Slots are bounded
-  by the minimum of the requested fan, the applicable operation's declared `concurrentJobs`
-  and fresh machine inventory `physicalCoreCount`, counting other open Babel work and unresolved
-  reservations on that machine atomically. A start above that ceiling explicitly refuses.
+  than select a new window. Concurrent starts admit only one running drain per machine. Each
+  drain's requested fan is bounded separately; all open Babel work and unresolved reservations
+  share the machine ceiling, the minimum of the applicable operation's declared `concurrentJobs`
+  and fresh inventory `physicalCoreCount`. A start above that ceiling explicitly refuses.
+  A preparation and its parent count once via the parent's explicit `prepare_job_id` on the same
+  machine, never an inferred run-ID relationship. A retained preparation still occupies one slot
+  when its parent closes or disappears. Stop and cancellation preserve native-attempt evidence
+  and pending claims; only a definitive refusal before effect or authoritative terminal native
+  receipt releases the preparation's occupancy.
   Each reservation, refill and pending native/Code posting recovery reads capacity again under
   its own wake's credential, including automatic lifecycle wakes and the separately governed
   mapping drain. Missing, refused, offline, revoked or invalid inventory holds new admissions;

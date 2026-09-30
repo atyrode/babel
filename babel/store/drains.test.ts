@@ -25,6 +25,7 @@ import {
   finishDrain,
   finishDirectLaunch,
   insertDrain,
+  machineOpenWork,
   readDrain,
   reconcileLive,
   reserveDirectLaunch,
@@ -37,7 +38,7 @@ import {
   type DrainSample,
   type LiveJob,
 } from "./drains.ts";
-import type { DrainProfile } from "../contract.ts";
+import { MACHINE_OPERATIONS, type DrainProfile } from "../contract.ts";
 import { openTestStore, type TestStore } from "./testdb.ts";
 
 const NOW = Date.UTC(2026, 8, 14, 12, 0, 0);
@@ -627,3 +628,80 @@ test("live capacity serializes competing machine reservations and a later shrink
   expect((await readDrain(harness.store, held.id))?.live).toEqual(held.live);
   expect(await reserveDirectLaunch(harness.store, held, next, "read-whats-new", 1, 2)).toBe(true);
 });
+
+test.each([MACHINE_OPERATIONS.prepare, MACHINE_OPERATIONS.mapPrepare])(
+  "%s shares its explicit parent's slot and survives parent closure or absence",
+  async (kind) => {
+    const { db, store } = harness;
+    const work = machineOpenWork("m-dev-01");
+    const occupied = async () =>
+      Number((await db.query<{ n: number | bigint }>(`SELECT (${work.sql}) n`, work.params))[0]!.n);
+    await open("drn_retained", { concurrent: 1 });
+    const row = (await readDrain(store, "drn_retained"))!;
+    const job = { runId: "parent", jobId: "native-preparation", launchedAt: NOW, reserved: true };
+    expect(await reserveDirectLaunch(store, row, job, "read-whats-new", 1, 2)).toBe(true);
+    await db.run(
+      `INSERT INTO runs(id,kind,machine_id,prepare_job_id,started_at,payload)
+        VALUES ('parent','atyrode.babel.explore','m-dev-01','native-preparation',?,'{}')`,
+      [new Date(NOW).toISOString()],
+    );
+    // No id suffix or authority-id convention: the persisted prepare_job_id is the link.
+    await db.run(
+      `INSERT INTO runs(id,kind,machine_id,job_id,started_at,payload)
+        VALUES ('independent-child-id',?,'m-dev-01','native-preparation',?,'{}')`,
+      [kind, new Date(NOW).toISOString()],
+    );
+    expect(await occupied()).toBe(1); // Reservation, open parent and child are one item.
+    await db.run(`UPDATE runs SET closure='stopped' WHERE id='parent'`);
+    expect(await occupied()).toBe(1); // Even an interrupted reserved -> posted transition.
+    await finishDirectLaunch(store, job.runId, null);
+    await closeDrain(store, row.id, "stopped", "operator stop");
+    expect(await occupied()).toBe(1);
+    await db.run(`DELETE FROM runs WHERE id='parent'`);
+    expect(await occupied()).toBe(1);
+
+    await open("drn_restart", { concurrent: 1 });
+    const restart = (await readDrain(store, "drn_restart"))!;
+    const next = { runId: "next", jobId: "next-job", launchedAt: NOW, reserved: true };
+    expect(await reserveDirectLaunch(store, restart, next, "read-whats-new", 1, 1)).toBe(false);
+    await db.run(`UPDATE runs SET closure='completed' WHERE id='independent-child-id'`);
+    expect(await occupied()).toBe(0);
+    expect(await reserveDirectLaunch(store, restart, next, "read-whats-new", 1, 1)).toBe(true);
+    expect(await occupied()).toBe(1);
+    const held = (await readDrain(store, restart.id))!;
+    expect(
+      await reserveDirectLaunch(
+        store,
+        held,
+        { ...next, runId: "beyond-fan", jobId: "beyond-fan-job" },
+        "read-whats-new",
+        1,
+        4,
+      ),
+    ).toBe(false); // The per-drain fan stays separate from the machine ceiling.
+  },
+);
+
+test.each([MACHINE_OPERATIONS.prepare, MACHINE_OPERATIONS.mapPrepare])(
+  "%s never associates a child by an unrelated run or job id",
+  async (kind) => {
+    const { db, store } = harness;
+    await open("drn_unrelated", { concurrent: 1 });
+    const row = (await readDrain(store, "drn_unrelated"))!;
+    await db.run(
+      `INSERT INTO runs(id,kind,machine_id,job_id,started_at,payload)
+        VALUES ('lookalike','atyrode.babel.explore','m-dev-01','shared-job',?,'{}'),
+          ('lookalike_material',?,'m-dev-01','shared-job',?,'{}')`,
+      [new Date(NOW).toISOString(), kind, new Date(NOW).toISOString()],
+    );
+    const next = { runId: "next", jobId: "next-job", launchedAt: NOW, reserved: true };
+    expect(await reserveDirectLaunch(store, row, next, "read-whats-new", 1, 2)).toBe(false);
+    // A prepare_job_id on another machine is not this machine's parent either.
+    await db.run(
+      `UPDATE runs SET machine_id='another-machine',prepare_job_id='shared-job' WHERE id='lookalike'`,
+    );
+    expect(await reserveDirectLaunch(store, row, next, "read-whats-new", 1, 1)).toBe(false);
+    await db.run(`UPDATE runs SET closure='failed' WHERE id='lookalike_material'`);
+    expect(await reserveDirectLaunch(store, row, next, "read-whats-new", 1, 1)).toBe(true);
+  },
+);
