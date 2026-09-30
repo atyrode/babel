@@ -386,6 +386,8 @@ its fences, and at most four substantive items. An earlier reminder before the m
 not keep three real exploration results from losing their closing JSON delimiter at this limit.
 For citations it recommends the exact `file` basename from the material index, an already
 admitted spelling (`babel/server/engine/citations.ts:78-106`) that avoids retyping long paths.
+The terminal prompt lists each selected basename after any prior records and warns that their
+original source paths are not this run's evidence; admission still checks the index exactly.
 
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.

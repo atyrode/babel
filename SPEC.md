@@ -1200,9 +1200,11 @@ stage's schema. Code's pinned OMP receipt retains only the first 16,384 characte
 message ([OMP `plugins/api/session.ts:5-6,164-170` at `f5b9d09c5929943dea246e415875f18e0a68bddb`](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/api/session.ts#L164-L170)),
 so the prompt ends with a complete fenced-answer budget under 12,000 characters and at most four
 substantive items; the model must honor the bound before the receipt is truncated. A citation
-may use the exact `file` basename from the material's index, not a retyped long path. Every
-locator and digest is checked against the served index; an edited path, digest or unserved
-session refuses the affected claim, not its siblings.
+may use the exact `file` basename from the material's index, not a retyped long path. The
+terminal prompt lists those admitted basenames after any prior records, whose older source
+paths do not become newly served evidence. Every locator and digest is checked against this
+run's index; an edited path, digest or unserved session refuses the affected claim, not its
+siblings.
 
 **A refused submission is spend.** The model answered and the deployment paid; the receipt is
 written with the cost and the refusal's own code, the claim is finished rather than abandoned, and

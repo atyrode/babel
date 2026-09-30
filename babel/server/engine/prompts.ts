@@ -57,7 +57,7 @@ import { promptBytes } from "./session.ts";
 
 /** The job and prompt this module composes, recorded in every receipt (§7). */
 export const JOB_VERSION = 3;
-export const PROMPT_VERSION = "babel.analysis-prompt/6";
+export const PROMPT_VERSION = "babel.analysis-prompt/7";
 
 // ---------------------------------------------------------------------------- the answer
 
@@ -356,6 +356,16 @@ export function composeExplorePrompt(input: ExplorePromptInput): string {
       "supported claims; leave other arrays empty and omit absent optional fields rather than " +
       "shortening an evidence locator or digest. Finish the JSON and close the fence.\n",
   );
+  if (input.sessions.length > 0) {
+    parts.push(
+      "The only admissible evidence `path` values for this run are these exact `file` basenames " +
+        "from its material index: ",
+      input.sessions.map((session) => JSON.stringify(session.file)).join(", "),
+      ". Copy each `sourceDigest` from that same index. Prior records carry locators from other " +
+        "preparations; their original source paths are not served here. Never copy their paths or " +
+        "digests into your result. If you cannot verify a locator in this index, omit the claim.\n",
+    );
+  }
   return parts.join("");
 }
 

@@ -27,11 +27,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   selector; its exact identity remains in the material index. A boundary regression covers
   ordinal uniqueness, and preview title preparations sealed bounded multi-session material.
 
-- **Analysis final answers favor complete JSON over overflowing OMP's bounded receipt.** The
-  last instruction asks for a fenced answer below 12,000 characters with at most four substantive
-  items, and citations use exact short index filenames rather than retyped long paths. Three
-  preview explorations reproduced 16,384-character clipped answers; the answer and citation
-  suites retain strict provenance and parsing.
+- **Analysis final answers favor complete JSON and exact served citations.** The last
+  instruction asks for a fenced answer below 12,000 characters with at most four substantive
+  items and lists this run's short index filenames instead of copying old source paths from
+  prior records. Three preview explorations reproduced 16,384-character clipped answers;
+  a bounded exploration then wrote four accepted records, while a synthesis copying prior
+  paths was refused. The answer and citation suites retain strict provenance and parsing.
 
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary
