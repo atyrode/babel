@@ -435,6 +435,8 @@ export const ACTIONS = {
   installRecall: "installRecall",
   // Governed run-authored review work; never an operator ruling.
   reviewAction: "reviewAction",
+  /** Authenticated optional judgment reservation/check; never a review or record writer. */
+  reviewJudgmentContext: "reviewJudgmentContext",
   // the operator's acts
   rule: "rule",
   /**
@@ -843,6 +845,14 @@ export const RecordPeelPostSchema = FeedPostSchema.extend({
   kind: z.union([PostKindSchema, RecordKindSchema]),
 });
 
+/** Optional judgment attempts are bounded independently of durable review actions. */
+export const JEV_REVIEW_CALLS = 3;
+export const JEV_REVIEW_INPUT_BYTES = 8192;
+export const JevReviewReservationSchema = z.strictObject({
+  key: z.string().regex(/^[a-zA-Z0-9_-]{1,96}$/),
+  stateDigest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
 /** Durable submission state, independent of a native session's terminal state. */
 export const ReviewSubmissionSchema = z.discriminatedUnion("mode", [
   z.strictObject({
@@ -859,6 +869,8 @@ export const ReviewSubmissionSchema = z.discriminatedUnion("mode", [
     agentId: z.string().min(1),
     complete: z.boolean(),
     reason: z.string().optional(),
+    /** Present only when this Run was admitted with the exact optional publication approval. */
+    judgments: z.array(JevReviewReservationSchema).max(JEV_REVIEW_CALLS).optional(),
   }),
 ]);
 export type ReviewSubmission = z.infer<typeof ReviewSubmissionSchema>;
@@ -1846,6 +1858,8 @@ export type SuggestionsResult = z.infer<typeof SuggestionsResultSchema>;
   (atyrode/manifold#770).
 */
 export const JEV_ACTIONS = {
+  /** Bounded, explicitly granted judgment of state assembled by the assigned review Run. */
+  ask: "ask",
   /** What one pass would read, and what has already been judged. Reads only; spends nothing. */
   sweepPlan: "sweepPlan",
   /** One bounded pass: judge, screen, and hand back what a caller may deliver. */
@@ -1903,6 +1917,82 @@ export type RecordPosition = z.infer<typeof RecordPositionSchema>;
 
 /** Shared handoff vocabulary, not a dependency from the baseline onto the optional part. */
 export const JEV_SERVICE_ID = "atyrode.babel.jev.typesafe";
+export const JEV_ASK_CAP = "atyrode.babel.jev:ask";
+export interface ReviewRunAdmission {
+  runId: string;
+  agentId: string;
+  /** Only confirmed exact optional tool publication sets this; absence is the ordinary Run. */
+  jev?: true;
+}
+export const JevReviewInputSchema = z.strictObject({
+  key: JevReviewReservationSchema.shape.key,
+  state: z.string().min(1).max(JEV_REVIEW_INPUT_BYTES),
+});
+export const ReviewJudgmentContextInputSchema = JevReviewReservationSchema.extend({
+  phase: z.enum(["reserve", "check"]),
+});
+export type ReviewJudgmentContextInput = z.infer<typeof ReviewJudgmentContextInputSchema>;
+export const ReviewJudgmentContextSchema = JevReviewReservationSchema.extend({
+  agentRunId: z.string().min(1).max(128),
+  agentId: z.string().min(1).max(128),
+  runId: z.string().min(1).max(256),
+  recordId: RecordIdSchema,
+  kind: RecordKindSchema,
+  role: z.enum(ROLES),
+  stage: z.literal("review"),
+  assignmentId: z.string().min(1).max(256),
+  fence: z.number().int().positive(),
+});
+export const JevReviewResultSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    key: JevReviewReservationSchema.shape.key,
+    status: z.literal("absent"),
+  }),
+  ReviewJudgmentContextSchema.extend({
+    status: z.literal("judged"),
+    requestKey: z.string().regex(/^[a-f0-9]{64}$/),
+    bankVersion: z.number().int().nonnegative(),
+    documentVersion: z.number().int().nonnegative(),
+    answers: z
+      .array(
+        z.strictObject({
+          question: z.string().min(1).max(96),
+          answer: z.union([z.number().finite(), z.string().min(1).max(128)]),
+        }),
+      )
+      .min(1)
+      .max(32),
+  }),
+]);
+export type JevReviewResult = z.infer<typeof JevReviewResultSchema>;
+/** Bounded known bank scalar leaves and authenticated lineage; no submitted state or other provider fields. */
+export const JEV_REVIEW_RESULT_PROJECTION = {
+  kind: "projected-json" as const,
+  fields: [
+    ...[
+      "key",
+      "status",
+      "agentRunId",
+      "agentId",
+      "runId",
+      "recordId",
+      "kind",
+      "role",
+      "stage",
+      "assignmentId",
+      "fence",
+      "stateDigest",
+      "requestKey",
+      "bankVersion",
+      "documentVersion",
+    ].map((field) => [field]),
+    ["answers", "*", "question"],
+    ["answers", "*", "answer"],
+  ],
+  maxArrayItems: 32,
+  maxResultBytes: 8192,
+};
+
 export const REVIEW_READINGS_HELD = 256;
 export const REVIEW_READINGS_TTL_MS = 5 * 60 * 1000;
 const readingDigest = z.string().regex(/^[a-f0-9]{64}$/);

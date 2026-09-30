@@ -1,5 +1,9 @@
 import { z } from "zod";
 import {
+  JEV_ACTIONS,
+  JEV_PLUGIN_ID,
+  JEV_REVIEW_CALLS,
+  JEV_REVIEW_INPUT_BYTES,
   JOB_OUTPUT_FILES,
   REFINEMENT_KEY,
   ROLES,
@@ -207,6 +211,7 @@ export function composeReviewPrompt(input: {
   readonly recipe: Recipe;
   readonly projection: ReviewProjection;
   readonly submissionMode?: "text" | "tools";
+  readonly optionalJudgment?: boolean;
 }): string {
   const { assignment, preparation, recipe, projection } = input;
   const params: Record<string, string> = {
@@ -229,6 +234,9 @@ export function composeReviewPrompt(input: {
     input.submissionMode === "tools"
       ? ""
       : `${ANSWER_FENCE}\n${JSON.stringify(reviewJsonSchema(assignment.role), null, 2)}\n\`\`\`\n\n`,
+    input.submissionMode === "tools" && input.optionalJudgment
+      ? `Optional assistance: the granted ${JEV_PLUGIN_ID}.${JEV_ACTIONS.ask} tool can grade the state you assemble from retrieved material. Supply a fresh key and the state, not actor, record, role or claim fields. At most ${String(JEV_REVIEW_CALLS)} attempts and ${String(JEV_REVIEW_INPUT_BYTES)} encoded input bytes are admitted; these are call/size bounds, not a dollar budget. A ready service does not prove credit. An absent or refused judgment is no evidence either way: continue ordinary review unchanged. Jev cannot submit work for you; use the same validated reviewAction intake for your own assessment and completion, whether assisted or not.\n\n`
+      : "",
     "## Your role\n\n",
     `${ROLE_QUESTION[assignment.role]}\n\n${ROLE_RULES[assignment.role]}\n\n`,
     preparation.refinementDepth < preparation.maxRefinementDepth

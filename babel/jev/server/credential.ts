@@ -39,10 +39,9 @@ import { JEV_SERVICE_ID } from "../../contract.ts";
   memo is reusable without an invocation even when funding is unknown. Only a cold invocation
   can observe an upstream refusal; neither the paid path nor a cache-only consumer probes credit.
 
-  THE TWO BOUNDS THE CEILINGS DO NOT GIVE (#369) are both here, because both are properties of
-  THE CALL rather than of a budget. Per-cycle and per-day ceilings in micro-dollars meter what a
-  deployment spends over a window; neither says how large one call may be, and neither notices
-  the same record being judged twice for two payments. So:
+  REQUEST BOUNDS ARE NOT SPEND ACCOUNTING (#369, #363). The input cap below and the review
+  Run's separate attempt allowance bound work, not dollars. Neither proves remaining credit
+  or implements a deployment's monetary ceilings:
 
   - A PER-CALL SIZE CAP, refused before the roster is read. The failure it defends against is
     not a malicious loop but one call carrying a pasted session — roughly thirty times the
@@ -129,18 +128,13 @@ export type JevServices = Pick<GuestServices, "listInstances" | "invokeInstance"
  *
  * `ServiceInputSchema` refines an input to
  * `new TextEncoder().encode(JSON.stringify(input)).length <= 65536` (manifold's
- * `packages/protocol/src/services.ts`), and this is that same measure at a lower number so the
- * two are comparable: 65,536 is the FRAME the host will carry, 8,192 is the SPEND this part will
- * pay for.
+ * `packages/protocol/src/services.ts`), and this uses the same measure at a lower number:
+ * 65,536 is the transport frame, 8,192 the maximum state input this part sends.
  *
- * BYTES RATHER THAN TOKENS, and the part holds no tokenizer because it does not need one: no
- * token is shorter than a byte, so a cap on bytes bounds the token bill from above. 8,192 bytes
- * is therefore at most 8,192 tokens — a quarter of Jev's 32k-token frame for a state plus its
- * longest question, so a call this admits can never be refused upstream for size — and in
- * practice around two thousand, twice the thousand-token call the study's "thirty times the
- * intended rate" implies was intended. The bank's own exemplars are records' claims verbatim and
- * run 400 to 900 bytes, so the cap admits a record several times the largest anyone has written
- * and refuses a 30,000-token paste by a factor of fifteen.
+ * This is not a dollar or exact token ceiling. The operator's service policy supplies the
+ * question literals and provider configuration separately; readiness and this size check say
+ * nothing about remaining credit, provider acceptance or the final bill. Oversized states are
+ * absent, never silently truncated into a different question.
  */
 export const JEV_CALL_CAP_BYTES = 8192;
 

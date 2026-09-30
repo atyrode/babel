@@ -2,9 +2,12 @@ import type { SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
 import {
   JOB_OUTPUT_FILES,
+  JEV_REVIEW_CALLS,
   OPERATIONS,
   ReviewActionReceiptSchema,
   ReviewSubmissionSchema,
+  ReviewJudgmentContextSchema,
+  type ReviewJudgmentContextInput,
   type ReviewActionReceipt,
   type ReviewSubmission,
 } from "../contract.ts";
@@ -77,6 +80,68 @@ function canonical(value: unknown): string {
   }
   return JSON.stringify(value);
 }
+/** Resolve the host's actor to exactly one persisted assignment, never model-supplied scope. */
+async function heldReview(store: ActsStore, actor: { runId: string; agentId: string }) {
+  const runs = await store.db.query<HeldRun>(
+    `SELECT id,kind,authority_kind,authority_id,preparation,payload FROM runs
+      WHERE json_extract(payload,'$.reviewSubmission.mode')='tools'
+        AND json_extract(payload,'$.reviewSubmission.agentRunId')=?`,
+    [actor.runId],
+  );
+  const run = runs[0];
+  if (run === undefined || runs.length !== 1)
+    throw new ActRefused("this Agent Run holds no typed review assignment");
+  const payload = JSON.parse(run.payload) as Record<string, unknown>;
+  const submission = reviewSubmission(payload);
+  if (submission?.mode !== "tools" || submission.agentId !== actor.agentId)
+    throw new ActRefused("this Agent does not hold the persisted review assignment");
+  return { run, payload, submission };
+}
+
+/** Shared live fence for review writes and optional judgment before/after a provider await. */
+function reviewAuthority(run: HeldRun, payload: Record<string, unknown>, at: string) {
+  const prepared = JSON.parse(run.preparation ?? "null") as Record<string, unknown> | null;
+  const preparation = reviewPreparation(prepared);
+  const claim = ClaimSchema.safeParse(payload["claim"]);
+  const target = prepared?.["reviewTarget"];
+  if (
+    run.kind !== OPERATIONS.evaluate ||
+    run.authority_kind !== "conductor" ||
+    preparation === null ||
+    !claim.success ||
+    claim.data.runId !== run.authority_id ||
+    claim.data.id !== preparation.assignmentId ||
+    claim.data.fence !== preparation.fence ||
+    typeof target !== "object" ||
+    target === null ||
+    Array.isArray(target) ||
+    (target as Record<string, unknown>)["id"] !== preparation.revisionId
+  )
+    throw new ActRefused("the persisted run has no authoritative review preparation and claim");
+  const guard = `EXISTS(SELECT 1 FROM runs r JOIN claims c ON c.id=?
+    WHERE r.id=? AND r.payload=? AND r.preparation=? AND r.kind=?
+      AND r.authority_kind='conductor' AND r.authority_id=c.run_id
+      AND r.closure IS NULL AND r.finished_at IS NULL
+      AND coalesce(json_extract(r.payload,'$.stopRequested'),0)=0
+      AND c.run_id=? AND c.fence=? AND c.finished_at IS NULL AND c.expires_at>?
+      AND c.record_id=? AND c.role=? AND c.lane=? AND c.policy_version=?
+      AND (r.job_id IS NULL OR r.job_id=c.job_id))`;
+  const guardParams: SqlParam[] = [
+    claim.data.id,
+    run.id,
+    run.payload,
+    run.preparation,
+    OPERATIONS.evaluate,
+    claim.data.runId,
+    claim.data.fence,
+    at,
+    preparation.recordId,
+    preparation.role,
+    preparation.lane,
+    preparation.policyVersion,
+  ];
+  return { preparation, target, guard, guardParams };
+}
 
 function duplicate(action: HeldAction, input: string): ReviewActionReceipt {
   if (action.input !== input)
@@ -116,20 +181,7 @@ export async function reviewAction(
   if (new TextEncoder().encode(document).byteLength > MAX_REVIEW_ACTION_BYTES) {
     throw new ActRefused(`a review action exceeds ${String(MAX_REVIEW_ACTION_BYTES)} bytes`);
   }
-  const runs = await store.db.query<HeldRun>(
-    `SELECT id,kind,authority_kind,authority_id,preparation,payload FROM runs
-      WHERE json_extract(payload,'$.reviewSubmission.mode')='tools'
-        AND json_extract(payload,'$.reviewSubmission.agentRunId')=?`,
-    [actor.runId],
-  );
-  const run = runs[0];
-  if (run === undefined || runs.length !== 1)
-    throw new ActRefused("this Agent Run holds no typed review assignment");
-  const payload = JSON.parse(run.payload) as Record<string, unknown>;
-  const submission = reviewSubmission(payload);
-  if (submission?.mode !== "tools" || submission.agentId !== actor.agentId) {
-    throw new ActRefused("this Agent does not hold the persisted review assignment");
-  }
+  const { run, payload, submission } = await heldReview(store, actor);
   const history = await store.db.query<HeldAction>(
     "SELECT action_key,kind,supersedes_key,input,receipt,effects FROM review_actions WHERE run_id=? ORDER BY sequence",
     [run.id],
@@ -148,24 +200,8 @@ export async function reviewAction(
       "the review action limit is reached; the last call is reserved for completion",
     );
   }
-  const prepared = JSON.parse(run.preparation ?? "null") as Record<string, unknown> | null;
-  const preparation = reviewPreparation(prepared);
-  const claim = ClaimSchema.safeParse(payload["claim"]);
-  const target = prepared?.["reviewTarget"];
-  if (
-    run.kind !== OPERATIONS.evaluate ||
-    run.authority_kind !== "conductor" ||
-    preparation === null ||
-    !claim.success ||
-    claim.data.runId !== run.authority_id ||
-    claim.data.id !== preparation.assignmentId ||
-    claim.data.fence !== preparation.fence ||
-    typeof target !== "object" ||
-    target === null ||
-    Array.isArray(target) ||
-    (target as Record<string, unknown>)["id"] !== preparation.revisionId
-  )
-    throw new ActRefused("the persisted run has no authoritative review preparation and claim");
+  const at = stamp(store.now());
+  const { preparation, target, guard, guardParams } = reviewAuthority(run, payload, at);
 
   const superseded = new Set(
     history.flatMap((held) => (held.supersedes_key === null ? [] : [held.supersedes_key])),
@@ -206,29 +242,6 @@ export async function reviewAction(
     }
   }
 
-  const at = stamp(store.now());
-  const guard = `EXISTS(SELECT 1 FROM runs r JOIN claims c ON c.id=?
-    WHERE r.id=? AND r.payload=? AND r.preparation=? AND r.kind=?
-      AND r.authority_kind='conductor' AND r.authority_id=c.run_id
-      AND r.closure IS NULL AND r.finished_at IS NULL
-      AND coalesce(json_extract(r.payload,'$.stopRequested'),0)=0
-      AND c.run_id=? AND c.fence=? AND c.finished_at IS NULL AND c.expires_at>?
-      AND c.record_id=? AND c.role=? AND c.lane=? AND c.policy_version=?
-      AND (r.job_id IS NULL OR r.job_id=c.job_id))`;
-  const guardParams: SqlParam[] = [
-    claim.data.id,
-    run.id,
-    run.payload,
-    run.preparation,
-    OPERATIONS.evaluate,
-    claim.data.runId,
-    claim.data.fence,
-    at,
-    preparation.recordId,
-    preparation.role,
-    preparation.lane,
-    preparation.policyVersion,
-  ];
   const live = await store.db.query(`SELECT 1 AS live WHERE ${guard}`, guardParams);
   if (live.length !== 1)
     throw new ActRefused("the review claim is stale, expired, cancelled or settled");
@@ -383,4 +396,56 @@ export async function reviewAction(
   }
   store.touch();
   return receipt;
+}
+
+/**
+ * Jev may consume one of the admitted attempt slots or recheck that reservation. This changes
+ * no record, assessment, proposal or ruling. Attempts remain consumed on refusal or restart:
+ * unknown provider completion is never an invitation to replay a call.
+ */
+export async function reviewJudgmentContext(
+  store: ActsStore,
+  actor: { runId: string; agentId: string },
+  input: ReviewJudgmentContextInput,
+) {
+  const { run, payload, submission } = await heldReview(store, actor);
+  const reservations = submission.judgments;
+  if (reservations === undefined || submission.complete || submission.state === "completed")
+    throw new ActRefused("this review has no active optional judgment permission");
+  const { preparation, guard, guardParams } = reviewAuthority(run, payload, stamp(store.now()));
+  const reservation = { key: input.key, stateDigest: input.stateDigest };
+  const context = ReviewJudgmentContextSchema.parse({
+    ...reservation,
+    agentRunId: actor.runId,
+    agentId: actor.agentId,
+    runId: run.id,
+    recordId: preparation.revisionId,
+    kind: preparation.kind,
+    role: preparation.role,
+    stage: "review",
+    assignmentId: preparation.assignmentId,
+    fence: preparation.fence,
+  });
+  if (input.phase === "reserve") {
+    if (
+      reservations.length >= JEV_REVIEW_CALLS ||
+      reservations.some((row) => row.key === input.key)
+    )
+      throw new ActRefused("optional judgment limit reached or this key was already attempted");
+    const accepted = await store.db.query(
+      `UPDATE runs SET payload=json_set(payload,'$.reviewSubmission.judgments',json(?))
+        WHERE id=? AND ${guard} RETURNING id`,
+      [JSON.stringify([...reservations, reservation]), run.id, ...guardParams],
+    );
+    if (accepted.length !== 1)
+      throw new ActRefused("the review changed, stopped or lost its claim before judgment");
+    store.touch();
+  } else {
+    if (!reservations.some((row) => row.key === input.key && row.stateDigest === input.stateDigest))
+      throw new ActRefused("this judgment has no matching reservation");
+    const live = await store.db.query(`SELECT 1 AS live WHERE ${guard}`, guardParams);
+    if (live.length !== 1)
+      throw new ActRefused("the review claim is stale, expired, cancelled or settled");
+  }
+  return context;
 }

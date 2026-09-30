@@ -99,9 +99,15 @@ in `dispatchReviews`:
 4. **Dispatch.** The review prompt is composed from the recipe the role names and the blinded
    projection, then measured against Code's byte bound. A `runs` row retains the intent before
    posting through `atyrode.code.runSession`; the claim is bound to the acknowledged job id.
-   An already-authorized `review.agentId` selects a bounded generic Run with the one
-   `reviewAction` tool. Absent or definitively unavailable tool authority selects identified,
-   validated text instead. The mode is pinned before model execution, independently of Jev.
+   An already-authorized `review.agentId` selects a bounded generic Run with the
+   `reviewAction` tool. Only an exact existing optional publication approval and explicit
+   `services:invoke` grant with root-subtree reach may add Jev's namespaced judgment tool on
+   that same Run. Missing Jev permission keeps ordinary typed review at its original root-node
+   scope; absent or definitively unavailable ordinary tool authority selects identified,
+   validated text instead. The mode is pinned before model execution. Optional Jev grades only
+   the state the agent assembles, with host/store-bound scope and at most three attempts; it
+   never submits an assessment. Ready metadata is not proof of credit, and invocation refusal
+   means no judgment, not a review failure or fabricated vote.
 5. **Commit actions.** In tools mode, each assessment or refinement passes shape, evidence
    and assignment-scope validation before one transaction writes its rows, receipt and partial
    submission state. Invalid actions write nothing; retries return the same receipt; corrections

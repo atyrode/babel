@@ -442,8 +442,9 @@ cadence and budget the policy governs that lane by.
 here registers one, mints a credential or widens a grant. With it set, `dispatchReviews`
 persists the run row with its pinned submission intent BEFORE any session is posted, creates a
 bounded Run through the optional `core.access.createRun` edge (`server/engine/session.ts`,
-`createReviewRun`: the one own capability `atyrode.babel:review`, the one tool
-`atyrode.babel.reviewAction`, target `manifold://`, reach `node`, no delegation, a lifetime no
+`createReviewRun`: the own capability `atyrode.babel:review` and tool
+`atyrode.babel.reviewAction`, optionally joined by the explicitly approved Jev tool below;
+target `manifold://`, reach `node`, no delegation, a lifetime no
 longer than the claim's lease) and checks the Run's copied tool approval against the receipt
 projection `REVIEW_ACTION_RESULT_PROJECTION` digest in `contract.ts` — the same comparison
 `scripts/recall-profile.ts` makes for Recall — then posts the Code session with
@@ -488,8 +489,8 @@ the still-bound claim, no Stop and a successful native exit; otherwise accepted 
 `partial` (or `pending` if none was accepted). The terminal receipt and native call trace commit
 together; a later wake repairs interrupted claim accounting without replaying an action. A
 terminal result with no known spend charges the claim's reservation, never an invented zero.
-Jev is not on this path at all: ordinary agents can submit the same actions when it is absent,
-disabled, unavailable or unfunded.
+Jev never participates in that intake: ordinary agents submit the same actions when it is absent,
+disabled, ungranted, unavailable or unfunded.
 
 Operator prerequisites, none of which Babel performs: a sponsor holding `agents:delegate` and
 `atyrode.babel:review` at the target, an existing Agent whose grant approves that capability and
@@ -504,6 +505,50 @@ text fallback; uncertain admission remains visible and held instead.
 here. The regression sources cover temporary-database store/door boundaries and conductor
 settlement with simulated Code responses. They are not provider-compliance evidence; optional
 paid samples remain separate work under #264's shared ledger.
+
+**OPTIONAL IN-SESSION JUDGMENT (#363).** Review admission reads the host roster and, only for a
+live installed Jev declaration, `core.access.getAgent`. It requests
+`atyrode.babel.jev.ask` and `atyrode.babel.jev:ask` alongside the ordinary review authority only
+when the Agent's existing grant explicitly approves the current
+`JEV_REVIEW_RESULT_PROJECTION` digest and byte bound from `babel/contract.ts`, and already
+grants `services:invoke` with `manifold://` subtree reach. A native delegate only attenuates
+the caller; it cannot lend service authority. The host's single Run target must cover an
+instance service that may live on a different machine from OMP. The assisted Run therefore
+selects exactly those three caps, the two tools and subtree reach, with no delegation; service
+operation consent remains separately required. The declaration is discovery, not consent.
+Missing or unreadable optional metadata, missing native authority or stale approvals keep
+the original one-tool, root-node typed Run. A known pre-effect admission refusal may retry
+without Jev; an unknown or malformed creation answer never permits another Run. Babel changes
+no standing Agent grant and never acknowledges policy on the model's behalf.
+
+`babel/jev/review.ts` accepts only a correlation key and assembled state. Its calls to
+`atyrode.babel.reviewJudgmentContext` carry the host's authenticated Agent/Run across the declared
+Jev → Babel edge. `babel/store/review-actions.ts` resolves the one persisted assignment and uses
+the same live claim/Stop predicate as durable review intake. Admission pins an optional
+`reviewSubmission.judgments` array; reserving one of its three slots is a payload compare-and-swap,
+not a record, assessment or operator write. There is no separate Jev store. Reused keys cannot
+reinvoke unknown work, and post-invocation checks discard stale or stopped answers. The review
+action door also refuses Jev as an immediate plugin writer.
+
+The optional door reuses `requestFor`/`judge`/`askJev`, the reviewed service binding, versioned
+bank and bounded current-policy memo. It sends only the model's assembled state; questions,
+credential resolution and service policy remain the existing operator-reviewed contract.
+It returns only known bank scalar leaves plus trusted scope and request/state digests.
+The 8,192-byte encoded input and result bounds and three-attempt allowance are not dollar
+enforcement. Ready service metadata cannot establish remaining credit. An invocation refusal
+(including exhausted credit), unreadable result or unavailable authority yields `status: absent`
+without a judgment; the model continues ordinary review through the unchanged durable intake.
+A memo hit reuses an existing answer without asserting current funding. No provider charges,
+live native activation or credit-accounting changes are implied by this source feature.
+
+Qualification should cover `babel/doors/review-actions.test.ts` (real-store actor, fence,
+attempt and optional-failure transitions), `babel/server/engine/session.test.ts` (exact publication
+approval and no unknown-creation replay), and the ordinary baseline fallback in
+`test/optional-part.test.ts`. An installed-Hub synthetic native `agent_run_request` exercise
+must additionally prove host policy acknowledgement, tool discovery, correlated bounded results
+and ordinary completion after optional refusal. A direct handler call alone is not that channel
+proof. Keep HOME/XDG/data disposable and use synthetic service replies, never provider credentials
+or live inference; funded behavior remains separately measurable.
 
 **`archive` is declared, and `restic` is a closure like the others.** restic is half of why the
 operation waited: upstream's whole Linux distribution is bare bzip2 —

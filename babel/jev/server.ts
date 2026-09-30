@@ -6,6 +6,7 @@ import { PAIR_ACTIONS, PAIR_HANDLERS } from "./pairs/doors.ts";
 import { SWEEP_ACTIONS, SWEEP_HANDLERS } from "./sweep/doors.ts";
 import { refreshReviewReadingsAction, REVIEW_READING_HANDLERS } from "./review-readings.ts";
 import { recipeStandingAction, RECIPE_HANDLERS } from "./recipes.ts";
+import { reviewJudgmentAction, REVIEW_JUDGMENT_HANDLERS } from "./review.ts";
 
 /*
   THE SERVER HALF OF atyrode.babel.jev, AND ITS CALLER-DRIVEN DOORS.
@@ -19,6 +20,11 @@ import { recipeStandingAction, RECIPE_HANDLERS } from "./recipes.ts";
   coverage and unknown current funding disclosed. Readiness is not a credit guarantee, so a warm
   reading may remain while funding is unknown. Missing/disabled Jev and no cached reading render
   nothing extra.
+
+  A REVIEW RUN MAY ALSO ASK THIS PART DIRECTLY (#363). The own `:ask` gate and its bounded
+  publication require an explicit existing Agent approval. The baseline checks the host-bound
+  actor and claim before reserving an attempt and again before the answer is disclosed. The
+  part writes no review; the run uses the same durable reviewAction intake as an ordinary run.
 
   THE THIRD DOOR IS `pairs` (#357, #358), and it is the same shape one unit up: a relation
   between two records is not a property of either, so it cannot ride the per-record sweep. Its
@@ -36,7 +42,7 @@ import { recipeStandingAction, RECIPE_HANDLERS } from "./recipes.ts";
   completely supported connected cluster. Its `duplicate` service operation cannot be confused
   with either existing policy. No part of this pass submits or applies a suggestion.
 
-  IT HOLDS TWO AUTHORITIES, AND EACH ARRIVED WITH THE CHILD THAT SPENDS IT. `services:invoke` is
+  IT HOLDS TWO NATIVE AUTHORITIES, AND EACH ARRIVED WITH THE CHILD THAT SPENDS IT. `services:invoke` is
   the judgement call. The key Jev is reached with is the operator's; the part names the service
   and the host injects the credential by reference, so the part never receives it
   (`server/credential.ts`, the whole argument). Declaring the capability is what makes the
@@ -177,6 +183,7 @@ export const plugin: ServerPluginDef = {
     ...DUPLICATE_ACTIONS,
     refreshReviewReadingsAction,
     recipeStandingAction,
+    reviewJudgmentAction,
   ],
   handlers: {
     ...SWEEP_HANDLERS,
@@ -184,6 +191,7 @@ export const plugin: ServerPluginDef = {
     ...DUPLICATE_HANDLERS,
     ...REVIEW_READING_HANDLERS,
     ...RECIPE_HANDLERS,
+    ...REVIEW_JUDGMENT_HANDLERS,
   },
 };
 

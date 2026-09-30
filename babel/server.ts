@@ -215,7 +215,7 @@ function loop(
   chain: string | null,
   mappingDrainId?: string,
 ): Conductor {
-  const engine = codeEngine(actions);
+  const engine = codeEngine(actions, dispatched.getStore()?.readingMetadata?.host);
   return conductor({
     store,
     coordinator: coordinated,
