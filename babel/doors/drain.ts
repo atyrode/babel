@@ -2,6 +2,7 @@ import { defineServerAction } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
+  DRAIN_ALLOCATION_PRESETS,
   DRAIN_DEFAULT_TTL_MS,
   DRAIN_OPERATIONS,
   DRAIN_SPENDING_PRESETS,
@@ -29,22 +30,20 @@ import {
   readDrainReport,
   recentDrains,
   reconcileLive,
-  recordLaunch,
   type DrainKnobs,
   type DrainRow,
 } from "../store/drains.ts";
 import {
-  drainIdentity,
-  drainInput,
   drainOperation,
   endDrain,
+  fillDirectDrain,
   foldDrain,
   type DrainDeps,
 } from "../server/drain.ts";
 import type { BabelStore } from "../store/store.ts";
 import { mappingPolicy, type Coordinator } from "../store/coordinator.ts";
 import { defineDoor, type Door } from "./door.ts";
-import { DEFERRED_SESSION_DELEGATES, pressOperation } from "./launch.ts";
+import { DEFERRED_SESSION_DELEGATES } from "./launch.ts";
 
 /*
   THE THREE DOORS A DRAIN IS RUN THROUGH: start one, read one, end one (#258).
@@ -118,8 +117,6 @@ export interface DrainDoorDeps {
   readonly coordinator: Coordinator;
   /** The controller's own dependencies, over this dispatch's authority. */
   deps(ctx: Parameters<Door["handler"]>[0]): DrainDeps;
-  /** The manifest's `concurrentJobs`: the most jobs of one operation a machine runs at once. */
-  readonly concurrentJobs: number;
   /** Register an ordinary drain's native wake under this press, before its first fan. */
   startOrdinary(
     ctx: Parameters<Door["handler"]>[0],
@@ -192,24 +189,21 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
     };
   };
 
-  /** The fan's manifest bound and the one-drain-per-machine rule, shared by both starts. */
+  /** Live capacity and the one-drain-per-machine rule, shared by both starts. */
   const admissible = async (
+    deps: DrainDeps,
     machineId: string,
     concurrent: number,
+    operations: readonly string[],
   ): Promise<{ readonly refused: string } | null> => {
-    /*
-      THE FAN IS BOUNDED AGAINST THE MANIFEST, HERE, AND BY THE DRAIN'S OWN JOBS IN THE
-      CONTROLLER. `concurrentJobs` is `limits.concurrentJobs`: the hub refuses every posting past
-      it at `execute` (atyrode/manifold#551), so a fan above it would spend the drain's first
-      round on refusals. It is refused by name instead.
-    */
-    if (concurrent > doorDeps.concurrentJobs) {
-      return {
-        refused:
-          `this drain's fan of ${String(concurrent)} cannot be admitted: it is above the ` +
-          `${String(doorDeps.concurrentJobs)} jobs a machine runs at once under this plugin's ` +
-          `manifest, and the hub refuses every posting past that at execute`,
-      };
+    for (const operationId of operations) {
+      const capacity = await deps.admission(machineId, operationId);
+      if ("refused" in capacity) return capacity;
+      if (concurrent > capacity.limit) {
+        return {
+          refused: `this drain's fan of ${String(concurrent)} exceeds the live physical-core/operation ceiling of ${String(capacity.limit)} for ${machineId}/${operationId}`,
+        };
+      }
     }
     const held = await drainOnMachine(store, machineId);
     // ONE DRAIN PER MACHINE. Two controllers fanning one host is the 2026-09-13 failure with
@@ -269,12 +263,18 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       result: DrainStartResultSchema,
     }),
     async (ctx, input) => {
-      if (input.preset === MAP_DRAIN_PRESET) {
+      if ((input.preset === undefined) === (input.allocation === undefined)) {
+        return {
+          refused: "name exactly one preset or an explicit positive spending-preset allocation",
+        };
+      }
+      const preset = input.preset ?? DRAIN_ALLOCATION_PRESETS[0];
+      if (preset === MAP_DRAIN_PRESET) {
         return {
           refused: `a ${MAP_DRAIN_PRESET} drain is started with ${ACTIONS.mapDrainStart}, which names the executor's map-prepare node and the source owner's mapping target`,
         };
       }
-      const operationId = DRAIN_OPERATIONS[input.preset];
+      const operationId = DRAIN_OPERATIONS[preset];
       // The node must agree with the request even though native authority is discharged at
       // posting rather than at this input node.
       if (
@@ -290,21 +290,41 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       const at = doorDeps.now();
       const stops = stopsAt(input.target, input.maxJobs, at);
       if ("refused" in stops) return stops;
+      if (
+        input.allocation !== undefined &&
+        (!Number.isSafeInteger(input.inferenceLimits?.costMicros) ||
+          (input.inferenceLimits?.costMicros ?? 0) <= 0)
+      ) {
+        return {
+          refused:
+            "missing-price: a mixed drain needs an explicit positive inferenceLimits.costMicros per-job reservation before it can launch",
+        };
+      }
       // A PRESET THAT SPENDS NOTHING CANNOT MEET A SPEND TARGET, so one is refused rather than
       // started as a fan nothing will ever stop: `keep-going` is the beat, it reaches no model,
       // and its metered spend is zero for as long as it runs.
       if (
-        !SPENDING.includes(input.preset) &&
+        !SPENDING.includes(preset) &&
         input.target.deadline === undefined &&
         input.maxJobs === undefined
       ) {
         return {
           refused:
-            `the ${input.preset} preset reaches no model, so its metered spend stays at zero ` +
+            `the ${preset} preset reaches no model, so its metered spend stays at zero ` +
             `and a cost or token target is never met: give this drain a deadline or maxJobs`,
         };
       }
-      const blocked = await admissible(input.machineId, input.concurrent);
+      const doorDepsAtStart = doorDeps.deps(ctx);
+      const blocked = await admissible(
+        doorDepsAtStart,
+        input.machineId,
+        input.concurrent,
+        input.allocation === undefined
+          ? [operationId]
+          : DRAIN_ALLOCATION_PRESETS.filter(
+              (selected) => input.allocation?.[selected] !== undefined,
+            ).map((selected) => DRAIN_OPERATIONS[selected]),
+      );
       if (blocked !== null) return blocked;
       const inForce = await doorDeps.coordinator.policy(at);
       if (!inForce.policy.enabled) {
@@ -314,31 +334,37 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
             `nothing; enable it and the drain runs under its ceilings`,
         };
       }
+      if (preset === "review-backlog" || input.allocation?.["review-backlog"] !== undefined) {
+        const route = inForce.policy.review;
+        if (
+          route === undefined ||
+          inForce.policy.activityWeights.review <= 0 ||
+          route.machineId !== input.machineId ||
+          route.profile.containerId !== input.profile.containerId ||
+          route.profile.expectedRevision !== input.profile.expectedRevision
+        ) {
+          return {
+            refused:
+              "review-backlog requires an enabled, positively weighted review route matching this drain's machine and Code profile revision; a drain changes no standing policy",
+          };
+        }
+      }
 
       /*
         A DRAIN SETS NO BUDGET OVERLAY, and #260's own reasoning is why.
 
-        AN OVERLAY MOVES ADMISSION NUMBERS, AND A DRAIN'S JOBS CONSULT NONE OF THEM. The three
-        presets a drain fans out are launched DIRECTLY — `startExplore`/`startBeat` go `ready` →
-        `post` → `jobs.execute` — so they take no claim, and `openClaims`/`activeInBatch`, which
-        is all admission counts, never sees one. Raising `concurrentPerMachine` for the drain's
-        TTL therefore bounded nothing of the drain's: what it did was raise the CONDUCTOR's
-        review bound to the fan's size on every online machine (`cap = bound * machines.length`),
-        so a drain on one host widened another host's review fan for two hours — a number moved
-        for something that does not read it, which is the exact failure #260 exists to remove.
-
-        WHAT ONE RUN MAY SPEND IS THE POLICY'S, UNTOUCHED. `perRunUsd(standing)` is the ceiling
-        every job of this drain inherits through its plan, and a drain changes how many runs
-        happen at once and never what one run is allowed (#268) — so there is nothing left for an
-        overlay to carry: moving `perCycleCost` alone would divide that ceiling by the batch and
-        break exactly the invariant. A heavier run is a profile change; a longer drain is a
-        deadline. The standing `policies` row and the `budgets` table are both untouched, and the
-        row records no overlay because there is none to unwind.
+        Direct exploration and beat jobs do not consume coordinator claims. Raising a shared
+        bound for them would widen unrelated conductor work without bounding the direct fan.
+        Review slots do consume ordinary shared claims, and must remain within the installed
+        policy and any already-authorized overlay rather than manufacture a second allowance.
+        The drain changes neither standing weights nor role recipes, per-cycle/daily ceilings,
+        leases or profiles. Its explicit allocation and live-slot ledger govern only its own fan.
       */
       const { target, deadlineAt, note } = stops;
 
       const knobs: DrainKnobs = {
         recipes: input.recipes,
+        ...(input.allocation === undefined ? {} : { allocation: input.allocation }),
         ...(input.sinceDays === undefined ? {} : { sinceDays: input.sinceDays }),
         ...(input.entityId === undefined ? {} : { entityId: input.entityId }),
         ...(input.minutes === undefined ? {} : { minutes: input.minutes }),
@@ -347,22 +373,24 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         ...(input.inferenceLimits === undefined ? {} : { inferenceLimits: input.inferenceLimits }),
       };
 
-      const doorDepsAtStart = doorDeps.deps(ctx);
       const profiled = await ledgerOf(doorDepsAtStart, input.profile);
       if ("refused" in profiled) return profiled;
       const ledger = profiled.ledger;
 
       const drainId = newId("drn");
-      await insertDrain(store, {
+      const inserted = await insertDrain(store, {
         id: drainId,
         machineId: input.machineId,
-        preset: input.preset,
+        preset,
         profile: ledger,
         knobs,
         concurrent: input.concurrent,
         target,
         startedBy: ctx.principal.id,
+        exclusive: true,
       });
+      if (!inserted)
+        return { refused: "another drain was admitted on this machine; stop it first" };
 
       /*
         THE FIRST FAN IS POSTED HERE rather than left to the next wake, and that is the whole of
@@ -383,28 +411,9 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         await endDrain(deps, row, "failed", cadence.notes.join("; "), []);
         return { refused: `this drain has no native continuation: ${cadence.notes.join("; ")}` };
       }
-      // The fan holds `concurrent` materials on the machine at once: each is bounded to that
-      // share of its scratch, as every later tick's are (#453).
-      const plan = {
-        ...deps.plan(inForce.policy, pressOperation(input.preset), ledger),
-        materials: input.concurrent,
-      };
-      const request = drainInput(row);
-      const live: { runId: string; jobId: string; launchedAt: number }[] = [];
-      let refused = "";
-      for (let slot = 0; slot < Math.min(input.concurrent, input.maxJobs ?? Infinity); slot += 1) {
-        const identity = drainIdentity(row, slot, deps.chain);
-        const started = SPENDING.includes(input.preset)
-          ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, request, plan)
-          : await deps.launch.startBeat(identity, deps.jobs, request, plan);
-        if ("refused" in started) {
-          refused = started.refused;
-          break;
-        }
-        const job = { runId: started.runId, jobId: started.jobId, launchedAt: at };
-        await recordLaunch(store, drainId, job, slot);
-        live.push(job);
-      }
+      const filled = await fillDirectDrain(deps, row);
+      const live = filled.row.live;
+      const refused = filled.refused || filled.notes.join("; ");
       if (live.length === 0) {
         await endDrain(deps, row, "failed", `nothing could be launched: ${refused}`, []);
         await doorDeps.stopOrdinary(ctx);
@@ -419,7 +428,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       return {
         drainId,
         machineId: input.machineId,
-        preset: input.preset,
+        preset,
         concurrent: input.concurrent,
         launched: live.length,
         deadline: deadlineAt,
@@ -506,17 +515,19 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       }
       const stops = stopsAt(input.target, input.maxJobs, at);
       if ("refused" in stops) return stops;
-      const blocked = await admissible(route.executorMachineId, input.concurrent);
+      const deps = doorDeps.deps(ctx);
+      const blocked = await admissible(deps, route.executorMachineId, input.concurrent, [
+        DRAIN_OPERATIONS[MAP_DRAIN_PRESET],
+      ]);
       if (blocked !== null) return blocked;
       if (doorDeps.startMapping === undefined) {
         return { refused: "this deployment wires no mapping dispatch" };
       }
-      const deps = doorDeps.deps(ctx);
       const profiled = await ledgerOf(deps, route.profile);
       if ("refused" in profiled) return profiled;
       const ledger = profiled.ledger;
       const drainId = newId("drn");
-      await insertDrain(store, {
+      const inserted = await insertDrain(store, {
         id: drainId,
         machineId: route.executorMachineId,
         preset: MAP_DRAIN_PRESET,
@@ -525,7 +536,10 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         concurrent: input.concurrent,
         target: stops.target,
         startedBy: ctx.principal.id,
+        exclusive: true,
       });
+      if (!inserted)
+        return { refused: "another drain was admitted on this machine; stop it first" };
       const row = await readDrain(store, drainId);
       if (row === null) return { refused: `the drain row for ${drainId} was not written` };
       // THE FIRST FAN IS POSTED BY THIS PRESS, for the go/no-go rule's reason (runbook §11.3):

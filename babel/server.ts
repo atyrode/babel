@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import {
   defineServerPlugin,
+  type GuestCtx,
   type GuestDatabase,
   type GuestStorage,
   type ServerHandler,
@@ -14,12 +15,12 @@ import {
   BABEL_PLUGIN_ID,
   BeatChainSchema,
   beatChainKey,
-  DRAIN_CONCURRENT_MAX,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   INPUT_FIELD,
   MACHINE_OPERATIONS,
   MAP_DRAIN_PRESET,
+  OPERATIONS,
   RECALL_SERVICE_ID,
   type OperationName,
   TRANSCRIPT_MAP_CATALOG_ADMISSION_KEY,
@@ -33,6 +34,7 @@ import { enableChain, launchMachinery, principalChain, type LaunchDeps } from ".
 import type { Recipe } from "./server/engine/prompts.ts";
 import { codeEngine, type ActionsSlice } from "./server/engine/session.ts";
 import { drainTick, type DrainDeps } from "./server/drain.ts";
+import { liveDrainCapacity, type DrainAdmission } from "./server/drain-admission.ts";
 import { embedder, type EmbeddingServices } from "./server/embed.ts";
 import {
   BEAT_OPERATION,
@@ -119,6 +121,8 @@ type Bound = {
   readonly database: GuestDatabase;
   readonly storage: GuestStorage;
   readonly readingMetadata?: ReadingMetadata;
+  readonly machines?: Pick<GuestCtx["machines"], "inventory"> | undefined;
+  readonly jobs?: Pick<GuestCtx["jobs"], "listRuns"> | undefined;
 };
 
 const dispatched = new AsyncLocalStorage<Bound>();
@@ -167,12 +171,6 @@ const manifest = PluginManifestSchema.parse(manifestJson);
  * number, there is no bound, and no policy is refused against one nobody wrote.
  */
 const CONCURRENT_JOBS = jobCeiling(manifest);
-/**
- * WHAT BOUNDS A DRAIN'S FAN while no operation declares a ceiling: the contract's own
- * `DRAIN_CONCURRENT_MAX`, which is what `DrainStartRequestSchema` already admits. A door that
- * took `null` as "unbounded" would let one machine be asked for any number of jobs at once.
- */
-const DRAIN_FAN = CONCURRENT_JOBS ?? DRAIN_CONCURRENT_MAX;
 const reviewReadings = new ReviewReadings(store, () => store.now());
 const coordinated = coordinator(
   store,
@@ -180,6 +178,20 @@ const coordinated = coordinator(
   CONCURRENT_JOBS,
   async () => await reviewReadings.snapshot(dispatched.getStore()?.readingMetadata),
 );
+
+const drainAdmission: DrainAdmission = async (machineId, operationId) => {
+  // Exploration's native preparation is an applicable operation even though Code posts its
+  // session. An unrelated operation's ceiling is not a limit on this drain.
+  const operations =
+    operationId === OPERATIONS.explore ? [operationId, MACHINE_OPERATIONS.prepare] : [operationId];
+  let ceiling: number | null = null;
+  for (const id of operations) {
+    const declared = manifest.machine?.operations[id]?.limits.concurrentJobs;
+    if (declared !== undefined) ceiling = Math.min(ceiling ?? declared, declared);
+  }
+  const current = dispatched.getStore();
+  return await liveDrainCapacity(current?.machines, machineId, ceiling, current?.jobs);
+};
 
 /**
  * WHAT A RUN OF AN OPERATION RUNS UNDER: its declared limits, and whether the owner may meter
@@ -208,6 +220,7 @@ function loop(
     store,
     coordinator: coordinated,
     jobs,
+    drainAdmission,
     machines,
     // A run that reaches a model is CODE's job, and `onJobSettled` is delivered only to the
     // plugin that started one: the loop learns what became of a session by asking Code, over
@@ -319,6 +332,7 @@ async function cookbook(): Promise<Readonly<Record<string, Recipe>>> {
  */
 const LAUNCH_DEPS: LaunchDeps = {
   coordinator: coordinated,
+  drainAdmission,
   jobs: (ctx) => jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
   engine: (actions) => codeEngine(actions),
   cookbook,
@@ -831,6 +845,7 @@ function draining(
     store,
     coordinator: coordinated,
     launch: machinery,
+    admission: drainAdmission,
     jobs,
     engine: codeEngine(actions),
     chain,
@@ -1120,7 +1135,6 @@ const doors = babelDoors(
         principalChain(ctx.principal.id),
         ctx.services,
       ),
-    concurrentJobs: DRAIN_FAN,
     startOrdinary: async (ctx, row) =>
       await ordinaryDrainWake(
         jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
@@ -1202,6 +1216,8 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
       {
         database: served,
         storage: ctx.storage,
+        machines: ctx.machines,
+        jobs: ctx.jobs,
         readingMetadata: {
           host: ctx.host,
           services: { listInstances: (input) => ctx.services.listInstances(input) },
@@ -1318,9 +1334,10 @@ export const plugin: ServerPluginDef = {
         none, and then the cycle runs against a slice that refuses every verb and records the
         refusal: what it can still do is the store's own half of the work.
 
-        Hooks may read roster and service metadata under their own credential, but have no
-        service effects or repository reads. The folders this cycle would have identified
-        are left for a cycle a door wakes.
+        Hooks may read wake-local inventory, roster and service metadata under their own
+        credential, but have no service effects or repository reads. The folders this cycle
+        would have identified are left for a cycle a door wakes. Metadata never enters the
+        retained enable state.
       */
       const installer = ctx.jobs;
       try {
@@ -1328,6 +1345,8 @@ export const plugin: ServerPluginDef = {
           {
             database,
             storage: ctx.storage,
+            machines: ctx.machines,
+            jobs: ctx.jobs,
             ...(ctx.host === undefined || ctx.services === undefined
               ? {}
               : { readingMetadata: { host: ctx.host, services: ctx.services } }),
@@ -1374,6 +1393,8 @@ export const plugin: ServerPluginDef = {
         {
           database,
           storage: ctx.storage,
+          machines: ctx.machines,
+          jobs: ctx.jobs,
           ...(ctx.host === undefined || ctx.services === undefined
             ? {}
             : { readingMetadata: { host: ctx.host, services: ctx.services } }),

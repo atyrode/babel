@@ -1002,11 +1002,58 @@ is measured in the tokens and dollars the hub metered on that account — `usage
 settled job, `inference_call` while one runs — never in the provider's percentage, which lags by
 minutes and moves in whole points.
 
-What the window is spent on is a weighted list over Babel's activities: the presets Watch offers
-(`read-whats-new`, `explore-topic`, `keep-going`; a drawn preset is not fannable, see below), with
-three rules. Weights are over metered cost, never run count. The controller schedules by deficit, so
-a preset with no eligible work yields its slot and reports a gap rather than idling. And the
-operator names the allocation when the drain starts, or is asked (rule 8).
+The operator chooses either one existing preset or an explicit allocation such as
+`allocation: { "read-whats-new": 1, "explore-topic": 3 }`, with a Code profile, shared recipe
+bundle, the topic/lookback knobs, a concurrency and a finite bound. Do not send `preset` beside
+`allocation`. A mixed allocation may weight `read-whats-new`, `explore-topic` and
+`review-backlog`. `review-backlog` is coordinator-managed evaluate work: the drain only takes
+free slots with review-only draws under the installed review route, which must be enabled,
+positively weighted and match the drain's machine and Code profile revision. Each drain review
+is an ordinary coordinator claim with the standing role recipes, lease, fences, per-cycle and daily
+ceilings; the drain's recipe bundle applies to explorations only, and a drain never writes
+standing policy. `keep-going` remains the single-preset free rehearsal and mapping keeps its own
+governed door.
+
+All review ordinals charge the durable drain ID as one coordinator cycle, under the existing
+day-window accounting. The installed `perCycleCost` bounds their combined actual-or-reserved
+charge, atomically with each grant. A refill, concurrent wake or restart does not create fresh
+cycle allowance; a long-running drain may therefore exhaust its review cycle while other
+eligible presets continue. Distinct parent runs, claim fences and Code posting keys are retained.
+
+The stable drain ordinal owns the review's durable parent. Granting its claim and publishing the
+blinded prompt, exact Code request, profile revision, original account chain and claim fence is
+one transaction, fenced by the still-open drain. Recovery reuses that request and posting key;
+another account chain cannot replay it. Stop retires unresolved keys with Code's adopt-only
+operation or cancels known jobs. A denied cancellation or unknown terminal state keeps the slot
+and claim, visibly unresolved, until positive evidence permits settlement. Thus zero open claims
+within a tick requires successful cancellation/retirement authority; no transport failure is
+treated as a free release. Late receipts are charged once without regaining review-result authority.
+An oversized review prompt is a visible preflight refusal: no claim or model session is bought,
+the unused ordinal is retired, and another eligible preset can take the slot. Database and
+publication errors remain errors rather than being mistaken for absent work.
+
+Blank/omitted allocation entries receive no work; every supplied weight must be positive and
+finite. Watch never supplies weights the operator did not enter.
+
+Weights mean shares of **whole-work-item metered cost**, never counts or the sum of per-recipe
+participation figures. The next eligible job maximizes its weighted deficit after one look-ahead
+job: share times total measured incurred cost plus remaining reservations plus look-ahead cost,
+minus that preset's incurred cost and remaining reservation. Contract preset order breaks ties.
+Each positive settled meter contributes to its preset's mean whole-item estimate. Mixed start
+requires a positive operator-named `inferenceLimits.costMicros` before any launch: an absent
+initial reservation is refused as `missing-price`, not filled by a zero estimate. The reservation
+is the greater of this threshold and the positive measured whole-item mean; look-ahead is the
+mean of eligible reservation estimates. The retained Code threshold is pre-call admission, not
+a provider price or a hard provider spending ceiling.
+
+At most one reserved discovery job per unpriced preset is admitted before positive whole-item
+metering. Until then `missing-price` is visible and slots may remain unused. A missing meter or a zero-cost
+receipt blocks further mixed admissions for that preset rather than buying an endless stream
+of apparently free work. Known remaining reservations stay held for missing receipts; zero price
+is shown separately. Other eligible presets receive the free slots. `no-eligible` means the
+locally selected material or recipes offered no work; it is retried on later wakes, not replaced
+by a preset the operator omitted. Missing-price totals are incomplete measurements, not a claim
+that the account spent nothing.
 
 On 2026-09-13 the allocation was everything on `review-backlog`, and that was a sound _choice_:
 reviews are the mass-produced unit of Babel's self-maintenance, duplicate assessments are reception
@@ -1015,13 +1062,48 @@ review re-prepared the whole corpus before its first model call (post-mortem F1,
 for any allocation: a run never re-prepares the corpus, and the fan is sized to the measured cost of
 one run.
 
-Two bounds are structural rather than advisory. **A drawn preset cannot be fanned out**: the
-coordinator arbitrates a draw under a claim and a fence, and fanning it would be a second
-implementation of that arbitration — so `drainStart` takes the directly-launched presets only
-(`babel/server/drain.ts`). And **a drain without a finite bound is a loop**:
+Two bounds are structural rather than advisory. **A review slot is one coordinator draw, not a
+second review fan**: it claims exactly one assignment through the same shared caps and leases
+as the conductor. **A drain without a finite bound is a loop**:
 `drainStart` requires a target, deadline or positive `maxJobs`; omission of the deadline still
-gives it one two hours out. A fan above the manifest's `concurrentJobs` for the operation it posts
-is refused at the door rather than discovered one refused job at a time.
+gives it one two hours out. A fan above the applicable operation's declared `concurrentJobs`
+or the machine inventory's fresh `physicalCoreCount` is refused at the door, never silently
+rewritten into policy. The shared machine ceiling is the minimum of those bounds; each drain's
+requested fan is a separate limit, not a replacement for the total across standing work and drains.
+The inventory fact is OS-visible online physical package/core pairs, not logical CPUs, quota,
+policy batch size or the operation's per-job `processes` ceiling.
+
+Each reservation/refill and pending native/Code posting recovery reads inventory under the
+current wake's credential. Automatic enable/settled wakes use only their optional read-only
+inventory slice; no enable-captured facts or authority survive into a later wake. Missing,
+refused, disconnected, offline, revoked or invalid facts hold new admissions and leave a note.
+A later shrink retains already-paid work, unresolved reservations and receipts, while withholding
+extra postings above the live cap. Standing mapping and drain-owned mapping use the same physical
+admission protection, at claim publication and before native/Code posting; policy lane share is
+not a separate machine allowance. Atomic slot checks count other open Babel work and unresolved
+reservations on the machine. The current wake also reads every native `jobs.listRuns` page:
+active policy and drain cadences count before their settlement writes a Babel run. Job identity
+deduplicates native observations against existing runs and reservations. Terminal native jobs
+add no occupancy; an unreadable listing holds new admission rather than guessing that the machine
+is idle. These observations are not persisted or reused by another wake.
+A preparation shares its parent's slot only through the parent's explicit
+`prepare_job_id` on that machine, not matching ID suffixes or unrelated job IDs. A retained child
+still holds one slot after its parent closes or disappears. Stop preserves native-attempt evidence
+and pending claims: an uncertain post or cancellation never becomes free capacity on restart.
+Only a definitive refusal before effect or an authoritative terminal native receipt releases
+that preparation. For direct native work, a typed pre-admission refusal must be paired with
+`jobs.status` `job_not_started` for every recorded posting attempt. That closes the immutable
+intent, parent and reservation once; later wakes do not repost the rejected request. Transport
+failure, unreadable status, `job_owner_mismatch` or an earlier uncertain attempt keeps the slot
+held. Do not clear it by deleting a run or changing the retained request. Work outside the
+credential-visible Babel jobs is not covered; host-wide resource admission remains Manifold's
+responsibility.
+
+The source dependency pins provide Manifold's live inventory (#941) and optional lifecycle
+metadata (#940). Source integration is not evidence of an installed bundle or
+current host headroom. #264's authorized dev-01/account throughput rehearsal remains an
+unperformed operational prerequisite; no source-only check establishes a live CPU, memory or
+provider-price ceiling.
 
 `concurrent` limits simultaneous work, not total launches. `maxJobs` bounds admission ordinals
 across wakes and recovery, including refused and zero-usage attempts. At that bound the drain
@@ -1030,10 +1112,18 @@ Optional `inferenceLimits` use Code's published schema and are retained through 
 every refill. Ordinary `launch` accepts the same ephemeral limits. Malformed retained limits
 refuse rather than replaying an unbounded request.
 
-A drain is not a governor and sets no policy overlay: the standing policy and budgets table
-are untouched, and its jobs take no claim. Native token/cost thresholds are checked before a
-call, so an accepted response can overshoot. Provider-internal retries and charged failures
-still require a conservative exposure reservation in the shared ledger before admission.
+A drain sets no policy overlay: the standing policy and budgets table are untouched. Its
+exploration jobs take no coordinator claim; each review job reserves and reconciles one ordinary
+shared claim. Native token/cost thresholds are checked before a call, so an accepted response
+can overshoot. Missing terminal metering never releases a review's reservation as zero.
+Direct admission persists its ordinal, immutable preset and reservation before execution, and
+the launch persists the exact preparation request before posting. Restart retries the same
+request/derived identity; simultaneous ticks cannot each buy the same free slot. A stop closes
+admission first, including delayed model posting; a late acknowledged job is cancelled and kept
+until its receipt lands. Reservations never time out into free slots while a posting is unknown.
+The existing single-preset path continues to refill without requiring positive price coverage;
+mixed allocation is stricter because a cost split cannot be inferred from unpriced work. It
+authorizes no embedding duty and changes no standing policy, budget, recipe weight or claim.
 
 **The mapping drain is the one exception to "a drawn preset is not fannable"**, and it is not a
 second arbitration. Paid transcript mapping runs in two ways. The standing way is the policy's
@@ -1205,6 +1295,11 @@ within 90 s; tokens per minute must be non-zero once a call has been metered; sp
 the target; the ETA must stay before the deadline. **Tokens per minute flat for three minutes while
 jobs read "at the model" is a no-go: stop and read the journal.** A process count, a socket count or
 a percentage read by a home-made script is not any of these numbers.
+Each preset also shows its declared weight/share, measured whole-item incurred cost, remaining
+reservation, deficit and unpriced-job count/gap. These reservations are scheduling estimates,
+**not an additional bill and not a hard cost ceiling**: do not add them to final receipts or
+sum the separately labelled overlapping recipe figures. A target still tests incurred spend,
+not reservations, so the final response/provider retry exposure can overshoot it.
 
 ### 11.5 Stopping
 
@@ -1262,6 +1357,13 @@ Mandatory, and each one was broken on 2026-09-13.
 (`babel/server/drain.ts`) and the Watch drain section
 (`babel/watch/drain.tsx`). The release path: a `v*` tag packs, verifies, attaches
 the bundles and hands them to the integrated preview's receiver.
+
+**Source extension for #258 (2026-09-29).** Explicit weighted direct-preset allocation, durable
+pre-post reservations and exact-request recovery, price/eligibility coverage and Watch controls
+are implemented in source. The accompanying deterministic tests are not live acceptance.
+No paid drain, provider call, fleet operation or preview interaction was run for this change;
+the preview runner answers HTTP 403. #264 remains the separate operational rehearsal/acceptance
+boundary, including live burn-rate visibility, actual machine sizing and unattended self-stop.
 
 **The engine is Code.** Babel does not launch omp and does not compose a session: `atyrode.babel`
 depends on `atyrode.code`, which depends on `atyrode.omp`. Watch's Start section lists the saved

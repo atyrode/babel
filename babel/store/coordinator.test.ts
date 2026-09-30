@@ -3241,3 +3241,18 @@ test("an unknown mapping posting stays occupied after expiry and retained mappin
   ).toBe("refused");
   expect((await coord.spend(expired)).mapping).toBe(assignment.reservedCost);
 });
+
+test("a review-only draw never substitutes eligible exploration or changes standing weights", async () => {
+  const policy = stagePolicy("explore", {
+    activityWeights: { ...DEFAULT_POLICY.activityWeights, review: 0.01, explore: 1 },
+  });
+  const { db, coord } = await deployment(policy);
+  await catalog(db, "omp/review-only-source");
+  const before = await coord.policy();
+  const review = await coord.draw({ runId: "drain_review", only: "review", now: NOW });
+  expect(review.outcome).toBe("gap");
+  if (review.outcome === "gap") expect(review.gap.reason).toBe("no-candidates");
+  const ordinary = drawn(await coord.draw({ runId: "ordinary", now: NOW }));
+  expect(ordinary.activity).toBe("explore");
+  expect((await coord.policy()).standing).toEqual(before.standing);
+});

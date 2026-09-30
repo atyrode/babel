@@ -25,7 +25,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 15 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 16 } as const;
 
 /** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
 const RECALL_TRACE_SCHEMA: readonly string[] = [
@@ -226,6 +226,18 @@ const DRAINS_TABLE = `CREATE TABLE drains(
      jobs_settled INTEGER NOT NULL DEFAULT 0,
      CHECK ((state IN ('running','closing')) = (finished_at IS NULL)),
      CHECK (state != 'closing' OR ending != '')
+   ) STRICT`;
+
+/** A direct drain reserves its ordinal and whole-work-item cost before any external post. */
+const DRAIN_LAUNCHES_TABLE = `CREATE TABLE drain_launches(
+     run_id TEXT PRIMARY KEY,
+     drain_id TEXT NOT NULL REFERENCES drains(id),
+     ordinal INTEGER NOT NULL,
+     preset TEXT NOT NULL,
+     reserved_cost_micros INTEGER,
+     state TEXT NOT NULL CHECK (state IN ('reserved','posted','refused')),
+     gap TEXT NOT NULL DEFAULT '',
+     UNIQUE(drain_id, ordinal)
    ) STRICT`;
 
 /**
@@ -1197,6 +1209,7 @@ export const SCHEMA_V1: readonly string[] = [
   // earlier enable created would have had the table and not the index — no longer holds:
   // `SCHEMA_ADDITIONS` names any schema object (#340).
   DRAINS_TABLE,
+  DRAIN_LAUNCHES_TABLE,
   // ---------------------------------------------------------------- the crossing
   // The one-off import's own ledger: where each table's rows came from and how many.
   `CREATE TABLE imports(
@@ -1286,6 +1299,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     object: "drains",
     sql: DRAINS_TABLE,
   },
+  { object: "drain_launches", sql: DRAIN_LAUNCHES_TABLE },
   // #279: a run that reaches a model is a Code session. Two nullable columns with no default,
   // which is additive in the strictest sense — every row an earlier shape wrote reads as NULL,
   // and NULL is the truth about it: those runs were posted by a launcher of Babel's own and

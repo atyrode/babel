@@ -20,8 +20,10 @@ import type {
   TopicsResultSchema,
 } from "../contract.ts";
 import {
+  DRAIN_ALLOCATION_PRESETS,
   DRAIN_CONCURRENT_MAX,
   DRAIN_OPERATIONS,
+  DrainAllocationSchema,
   DrainStartRequestSchema,
   DrainStopInputSchema,
   MACHINE_OPERATIONS,
@@ -544,18 +546,17 @@ export function modelClause(models: readonly string[], lastModel: string): strin
 export type DrainStatus = z.infer<typeof DrainStatusSchema>;
 
 /**
- * What each drain preset is, in the operator's words, and what its one knob is: the days a
- * `read-whats-new` reads back over, the topic an `explore-topic` runs on, the minutes a
- * `keep-going` beat is given. It also says what a drain of it SPENDS, which is what the form
- * refuses a token target on. The {@link Knob} vocabulary is the launch form's own: the two
- * forms offer the same three requests, so two words for one dial would be two answers to it.
+ * What each drain preset is, in the operator's words, and which knob it owns. Direct presets
+ * reuse the launch form's {@link Knob} vocabulary; coordinator reviews keep their standing
+ * recipe selection, and mapping uses its installed route. The card also says whether its jobs
+ * reach a model at all.
  */
 
 export interface DrainCard {
   readonly title: string;
   readonly does: string;
-  /** `route`: the installed mapping route decides where it runs and on which profile. */
-  readonly knob: Knob | "route";
+  /** `route` is installed mapping; `review` keeps the coordinator's standing review recipes. */
+  readonly knob: Knob | "route" | "review";
   /** Whether jobs of this preset reach a model at all; `keep-going` does not. */
   readonly spends: boolean;
 }
@@ -571,6 +572,12 @@ export const DRAIN_CARDS: Record<DrainPreset, DrainCard> = {
     title: "Explore a topic",
     does: "One exploration per job over the sessions this topic's own records cite.",
     knob: "topic",
+    spends: true,
+  },
+  "review-backlog": {
+    title: "Review backlog",
+    does: "One coordinator-managed review/evaluate job under the installed review route, claims, budgets and standing recipes.",
+    knob: "review",
     spends: true,
   },
   "keep-going": {
@@ -603,6 +610,11 @@ export interface DrainDraft {
   readonly machineId: string;
   /** The Code workspace this fan is posted on; empty until one is picked. */
   readonly containerId: string;
+  readonly mode: "preset" | "allocation";
+  /** Blank means omitted; entering allocation mode never chooses a weight for the operator. */
+  readonly allocation: Readonly<Record<(typeof DRAIN_ALLOCATION_PRESETS)[number], string>>;
+  /** Operator-entered per-job Code threshold and initial scheduling reservation, in USD. */
+  readonly jobCostUsd: string;
   readonly preset: DrainPreset;
   readonly entityId: string;
   readonly sinceDays: number;
@@ -621,6 +633,9 @@ export interface DrainDraft {
 }
 
 export const INITIAL_DRAIN: DrainDraft = {
+  mode: "preset",
+  allocation: { "read-whats-new": "", "explore-topic": "", "review-backlog": "" },
+  jobCostUsd: "",
   preset: "read-whats-new",
   machineId: "",
   entityId: "",
@@ -632,6 +647,14 @@ export const INITIAL_DRAIN: DrainDraft = {
   containerId: "",
   reason: "",
 };
+
+function drainAllocation(draft: DrainDraft): Record<string, number> {
+  return Object.fromEntries(
+    DRAIN_ALLOCATION_PRESETS.filter((preset) => draft.allocation[preset].trim() !== "").map(
+      (preset) => [preset, Number(draft.allocation[preset])],
+    ),
+  );
+}
 
 /**
  * The draft as `drain.start` takes it, plus the OPERATION NODE the door is authorized at — the
@@ -652,9 +675,13 @@ export function drainStartRequest(
   now: number,
 ): z.infer<typeof DrainStartRequestSchema> {
   const card = DRAIN_CARDS[draft.preset];
+  const mixed = draft.mode === "allocation";
   return DrainStartRequestSchema.parse({
     machineId: draft.machineId,
-    preset: draft.preset,
+    ...(mixed ? { allocation: drainAllocation(draft) } : { preset: draft.preset }),
+    ...(mixed
+      ? { inferenceLimits: { costMicros: Math.round(Number(draft.jobCostUsd) * 1_000_000) } }
+      : {}),
     concurrent: draft.concurrent,
     reason: draft.reason,
     profile: { containerId: profile.containerId, expectedRevision: profile.revision },
@@ -663,13 +690,19 @@ export function drainStartRequest(
       ...(draft.targetUsd > 0 ? { costMicros: Math.round(draft.targetUsd * 1_000_000) } : {}),
     },
     recipes: [],
-    ...(card.knob === "topic" && draft.entityId !== "" ? { entityId: draft.entityId } : {}),
-    ...(card.knob === "days" ? { sinceDays: draft.sinceDays } : {}),
-    ...(card.knob === "minutes" ? { minutes: draft.minutes } : {}),
+    ...((mixed ? Number(draft.allocation["explore-topic"]) > 0 : card.knob === "topic") &&
+    draft.entityId !== ""
+      ? { entityId: draft.entityId }
+      : {}),
+    ...((mixed ? Number(draft.allocation["read-whats-new"]) > 0 : card.knob === "days")
+      ? { sinceDays: draft.sinceDays }
+      : {}),
+    ...(!mixed && card.knob === "minutes" ? { minutes: draft.minutes } : {}),
     operation: {
       kind: "operation",
       machineId: draft.machineId,
-      operationId: DRAIN_OPERATIONS[draft.preset],
+      // Mixed mode keeps the historical drain anchor, even when only review is allocated.
+      operationId: DRAIN_OPERATIONS[mixed ? "read-whats-new" : draft.preset],
     },
   });
 }
@@ -738,13 +771,31 @@ export function drainUnready(
   profile: ProfileRow | null,
   route: TranscriptMapConfig | null = null,
 ): string {
-  if (DRAIN_CARDS[draft.preset].knob === "route") {
+  const mixed = draft.mode === "allocation";
+  if (mixed && !DrainAllocationSchema.safeParse(drainAllocation(draft)).success) {
+    return "Enter at least one positive, finite preset weight; leave omitted presets blank.";
+  }
+  if (mixed) {
+    const costMicros = Math.round(Number(draft.jobCostUsd) * 1_000_000);
+    if (
+      !(costMicros > 0) ||
+      !DrainStartRequestSchema.shape.inferenceLimits.safeParse({ costMicros }).success
+    ) {
+      return "Enter a positive per-job cost threshold in USD (at least one micro-dollar).";
+    }
+  }
+  if (!mixed && DRAIN_CARDS[draft.preset].knob === "route") {
     if (route === null) return "Install a policy with a transcript-mapping route first.";
     if (draft.reason.trim() === "") return "Say why: the reason is recorded on the drain.";
     return "";
   }
   if (draft.machineId === "") return "Pick a machine to drain on.";
-  if (DRAIN_CARDS[draft.preset].knob === "topic" && draft.entityId === "") {
+  if (
+    (mixed
+      ? Number(draft.allocation["explore-topic"]) > 0
+      : DRAIN_CARDS[draft.preset].knob === "topic") &&
+    draft.entityId === ""
+  ) {
     return "Pick a topic to explore.";
   }
   if (profile === null) {

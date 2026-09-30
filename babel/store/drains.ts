@@ -1,6 +1,8 @@
 import type { PluginDatabase, SqlParam, SqlStatement } from "@manifold/plugin";
 import {
   CodeProfileSchema,
+  DRAIN_ALLOCATION_PRESETS,
+  DrainAllocationSchema,
   DRAIN_ENDINGS,
   DRAIN_NOTE_KINDS,
   DRAIN_PRESETS,
@@ -15,6 +17,8 @@ import {
   MACHINE_OPERATIONS,
   RUN_STAGES,
   type DrainEnding,
+  type DrainAllocation,
+  type DrainAllocationStatus,
   type DrainLane,
   type DrainNoteKind,
   type DrainPreset,
@@ -63,6 +67,8 @@ export interface LiveJob {
   readonly jobId: string;
   /** Epoch milliseconds, so the panel's clock and this one are the same clock. */
   readonly launchedAt: number;
+  /** Reserved before a native post; an absent run is unresolved, not an orphan to discard. */
+  readonly reserved?: boolean;
 }
 
 /**
@@ -189,6 +195,7 @@ export interface Reconciled {
  */
 export interface DrainKnobs {
   readonly recipes: readonly string[];
+  readonly allocation?: DrainAllocation;
   readonly sinceDays?: number | undefined;
   readonly entityId?: string | undefined;
   readonly minutes?: number | undefined;
@@ -316,7 +323,12 @@ function liveOf(text: string): LiveJob[] {
     const runId = typeof row["runId"] === "string" ? row["runId"] : "";
     const jobId = typeof row["jobId"] === "string" ? row["jobId"] : "";
     if (runId === "" || jobId === "") continue;
-    jobs.push({ runId, jobId, launchedAt: count(row["launchedAt"] as number | undefined) });
+    jobs.push({
+      runId,
+      jobId,
+      launchedAt: count(row["launchedAt"] as number | undefined),
+      ...(row["reserved"] === true ? { reserved: true } : {}),
+    });
   }
   return jobs;
 }
@@ -396,8 +408,10 @@ function knobsOf(text: string): DrainKnobs {
   // A malformed safety bound must never become an unbounded replay.
   const maxJobs = DrainStartInputSchema.shape.maxJobs.parse(row["maxJobs"]);
   const inferenceLimits = DrainStartInputSchema.shape.inferenceLimits.parse(row["inferenceLimits"]);
+  const allocation = DrainAllocationSchema.optional().parse(row["allocation"]);
   return {
     recipes,
+    ...(allocation === undefined ? {} : { allocation }),
     ...(maxJobs === undefined ? {} : { maxJobs }),
     ...(inferenceLimits === undefined ? {} : { inferenceLimits }),
     ...(typeof row["sinceDays"] === "number" ? { sinceDays: row["sinceDays"] } : {}),
@@ -516,15 +530,21 @@ export interface NewDrain {
   readonly concurrent: number;
   readonly target: DrainTarget;
   readonly startedBy: string;
+  readonly exclusive?: boolean;
 }
 
 /** The row a `drain.start` leaves behind, before its first job is posted. */
-export async function insertDrain(store: DrainsStore, drain: NewDrain): Promise<void> {
-  await store.db.run(
+export async function insertDrain(store: DrainsStore, drain: NewDrain): Promise<boolean> {
+  const inserted = await store.db.run(
     `INSERT INTO drains(id, machine_id, preset, profile, knobs, concurrent, target, started_at,
                         started_by, state, ending, reason, spent, live, samples, closures,
                         refusals, jobs_launched, jobs_settled)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', '', '', ?, '[]', '[]', '{}', '{}', 0, 0)`,
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', '', '', ?, '[]', '[]', '{}', '{}', 0, 0
+       ${
+         drain.exclusive === true
+           ? "WHERE NOT EXISTS (SELECT 1 FROM drains WHERE machine_id = ? AND state IN ('running','closing'))"
+           : ""
+       }`,
     [
       drain.id,
       drain.machineId,
@@ -536,8 +556,10 @@ export async function insertDrain(store: DrainsStore, drain: NewDrain): Promise<
       new Date(store.now()).toISOString(),
       drain.startedBy,
       JSON.stringify(NO_SPEND),
+      ...(drain.exclusive === true ? [drain.machineId] : []),
     ],
   );
+  return inserted.changes > 0;
 }
 
 /**
@@ -582,15 +604,27 @@ export async function recordLaunch(
  * only a running drain grants one, and the same durable cursor decides between overlapping
  * wakes: the loser's snapshot of the fan is stale, and it publishes nothing.
  */
-export function reserveLaunchStatement(id: string, job: LiveJob, ordinal: number): SqlStatement {
+export function reserveLaunchStatement(
+  id: string,
+  job: LiveJob,
+  ordinal: number,
+  machineId: string,
+  limit: number,
+  activeJobIds: readonly string[] = [],
+): SqlStatement {
+  const open = machineOpenWork(machineId, activeJobIds);
   return {
     sql: `UPDATE drains SET live = json_insert(live, '$[#]', json(?)),
                        jobs_launched = jobs_launched + 1
       WHERE id = ? AND state = 'running' AND jobs_launched = ?
+        AND (SELECT COUNT(*) FROM json_each(drains.live) l
+          LEFT JOIN runs r ON r.id = json_extract(l.value, '$.runId')
+          WHERE r.id IS NULL OR r.closure IS NULL) < MIN(concurrent, ?)
+        AND (${open.sql}) < ?
         AND NOT EXISTS (SELECT 1 FROM json_each(drains.live)
                          WHERE json_extract(value, '$.jobId') = ?)
       RETURNING id`,
-    params: [JSON.stringify(job), id, ordinal, job.jobId],
+    params: [JSON.stringify(job), id, ordinal, limit, ...open.params, limit, job.jobId],
   };
 }
 
@@ -623,6 +657,323 @@ export function runningDrainHoldsRun(runId: string): {
   };
 }
 
+/** The target is checked at admission, including receipts not folded by this wake yet. */
+function directDrainOpen(now: number): { sql: string; params: SqlParam[] } {
+  const cost = `COALESCE(json_extract(d.spent, '$.costMicros'), 0) + COALESCE((
+    SELECT SUM(CASE WHEN r.closure IS NULL THEN COALESCE(p.cost_usd, 0) * 1000000
+      ELSE COALESCE(json_extract(r.payload, '$.inference.costMicros'), r.cost_usd * 1000000, 0) END)
+      FROM json_each(d.live) l JOIN runs r ON r.id = json_extract(l.value, '$.runId')
+      LEFT JOIN run_progress p ON p.run_id = r.id), 0)`;
+  const tokens = `COALESCE(json_extract(d.spent, '$.outputTokens'), 0) + COALESCE((
+    SELECT SUM(CASE WHEN r.closure IS NULL THEN COALESCE(p.output_tokens, 0)
+      ELSE COALESCE(json_extract(r.payload, '$.inference.outputTokens'), r.tokens, 0) END)
+      FROM json_each(d.live) l JOIN runs r ON r.id = json_extract(l.value, '$.runId')
+      LEFT JOIN run_progress p ON p.run_id = r.id), 0)`;
+  return {
+    sql: `d.state = 'running'
+      AND (json_extract(d.target, '$.deadline') IS NULL
+        OR julianday(json_extract(d.target, '$.deadline')) > julianday(?))
+      AND (json_extract(d.target, '$.costMicros') IS NULL
+        OR json_extract(d.target, '$.costMicros') > (${cost}))
+      AND (json_extract(d.target, '$.outputTokens') IS NULL
+        OR json_extract(d.target, '$.outputTokens') > (${tokens}))`,
+    params: [new Date(now).toISOString()],
+  };
+}
+
+/** The direct drain's native/model posting fence; mapping has its own claims and fence. */
+export function directDrainAdmission(
+  drainId: string,
+  runId: string,
+  now: number,
+): { readonly sql: string; readonly params: SqlParam[] } {
+  const open = directDrainOpen(now);
+  return {
+    sql: `EXISTS (SELECT 1 FROM drains d, json_each(d.live) l
+      LEFT JOIN drain_launches a ON a.run_id = json_extract(l.value, '$.runId') AND a.drain_id = d.id
+      WHERE d.id = ? AND json_extract(l.value, '$.runId') = ?
+        AND (a.run_id IS NULL OR a.state != 'refused') AND ${open.sql})`,
+    params: [drainId, runId, ...open.params],
+  };
+}
+
+/**
+ * A preparation and its explicitly linked parent occupy one whole-work slot. The child's open
+ * row keeps that slot after its parent closes; without a parent it counts under its own id.
+ * Reservations share the parent identity, so interrupted publication cannot double-count it.
+ * Live native identities come from the caller's current jobs listing, not a second store.
+ */
+export function machineOpenWork(
+  machineId: string,
+  activeJobIds: readonly string[] = [],
+): {
+  readonly sql: string;
+  readonly params: SqlParam[];
+} {
+  return {
+    sql: `SELECT COUNT(*) FROM (
+      SELECT COALESCE(parent.id, child.id) FROM runs child
+        LEFT JOIN runs parent ON child.kind IN (?, ?) AND parent.kind NOT IN (?, ?)
+          AND parent.machine_id = child.machine_id AND parent.prepare_job_id = child.job_id
+        WHERE child.machine_id = ? AND child.closure IS NULL
+      UNION SELECT a.run_id FROM drain_launches a JOIN drains d ON d.id = a.drain_id
+        WHERE d.machine_id = ? AND d.state IN ('running','closing') AND a.state = 'reserved'
+      UNION SELECT COALESCE(parent.id, child.id, reservation.run_id, 'native:' || native.value)
+        FROM json_each(?) native
+        LEFT JOIN runs child ON child.machine_id = ? AND child.job_id = native.value
+        LEFT JOIN runs parent ON parent.machine_id = ? AND parent.prepare_job_id = native.value
+          AND parent.kind NOT IN (?, ?) AND (child.id IS NULL OR child.kind IN (?, ?))
+        LEFT JOIN (
+          SELECT a.run_id, d.machine_id, json_extract(l.value, '$.jobId') job_id
+            FROM drain_launches a JOIN drains d ON d.id = a.drain_id
+            JOIN json_each(d.live) l ON json_extract(l.value, '$.runId') = a.run_id
+            WHERE d.state IN ('running','closing') AND a.state = 'reserved'
+        ) reservation ON reservation.machine_id = ? AND reservation.job_id = native.value
+    )`,
+    params: [
+      MACHINE_OPERATIONS.prepare,
+      MACHINE_OPERATIONS.mapPrepare,
+      MACHINE_OPERATIONS.prepare,
+      MACHINE_OPERATIONS.mapPrepare,
+      machineId,
+      machineId,
+      JSON.stringify(activeJobIds),
+      machineId,
+      machineId,
+      MACHINE_OPERATIONS.prepare,
+      MACHINE_OPERATIONS.mapPrepare,
+      MACHINE_OPERATIONS.prepare,
+      MACHINE_OPERATIONS.mapPrepare,
+      machineId,
+    ],
+  };
+}
+
+/** Reserve a slot AND its immutable attribution before crossing the native posting seam. */
+export async function reserveDirectLaunch(
+  store: DrainsStore,
+  row: DrainRow,
+  job: LiveJob,
+  preset: DrainPreset,
+  reservedCostMicros: number | null,
+  limit: number,
+  activeJobIds: readonly string[] = [],
+): Promise<boolean> {
+  if (!Number.isSafeInteger(limit) || limit <= 0) return false;
+  if (
+    row.knobs.allocation !== undefined &&
+    (reservedCostMicros === null ||
+      !Number.isSafeInteger(reservedCostMicros) ||
+      reservedCostMicros <= 0)
+  )
+    return false;
+  const open = directDrainOpen(store.now());
+  const work = machineOpenWork(row.machineId, activeJobIds);
+  const results = await store.db.batch([
+    {
+      sql: `UPDATE drains SET live = json_insert(live, '$[#]', json(?)),
+          jobs_launched = jobs_launched + 1
+        WHERE id = ? AND jobs_launched = ? AND jobs_settled = ?
+          AND json(live) = json(?) AND json_array_length(live) < MIN(concurrent, ?)
+          AND (json_extract(knobs, '$.maxJobs') IS NULL
+            OR jobs_launched < json_extract(knobs, '$.maxJobs'))
+          AND EXISTS (SELECT 1 FROM drains d WHERE d.id = drains.id AND ${open.sql})
+          AND (${work.sql}) < ?
+        RETURNING id`,
+      params: [
+        JSON.stringify(job),
+        row.id,
+        row.jobsLaunched,
+        row.jobsSettled,
+        JSON.stringify(row.live),
+        limit,
+        ...open.params,
+        ...work.params,
+        limit,
+      ],
+    },
+    {
+      sql: `INSERT INTO drain_launches(run_id, drain_id, ordinal, preset, reserved_cost_micros, state)
+        SELECT ?, ?, ?, ?, ?, 'reserved' WHERE changes() > 0
+        ON CONFLICT(run_id) DO NOTHING`,
+      params: [job.runId, row.id, row.jobsLaunched, preset, reservedCostMicros],
+    },
+  ]);
+  return (results[0]?.length ?? 0) > 0;
+}
+
+export async function finishDirectLaunch(
+  store: DrainsStore,
+  runId: string,
+  refused: string | null,
+): Promise<void> {
+  await store.db.run(
+    `UPDATE drain_launches SET state = ?, gap = ?
+      WHERE run_id = ? AND state = 'reserved'
+        ${refused === null ? "" : "AND NOT EXISTS (SELECT 1 FROM runs WHERE id = ?)"} `,
+    [
+      refused === null ? "posted" : "refused",
+      refused ?? "",
+      runId,
+      ...(refused === null ? [] : [runId]),
+    ],
+  );
+}
+
+export async function pendingDirectLaunches(
+  store: DrainsStore,
+  row: DrainRow,
+): Promise<readonly { runId: string; ordinal: number; preset: DrainPreset }[]> {
+  const pending = await store.db.query<{
+    run_id: string;
+    ordinal: number | bigint;
+    preset: string;
+  }>(
+    `SELECT run_id, ordinal, preset FROM drain_launches
+      WHERE drain_id = ? AND state = 'reserved' ORDER BY ordinal`,
+    [row.id],
+  );
+  return pending.map((entry) => ({
+    runId: entry.run_id,
+    ordinal: count(entry.ordinal),
+    preset: entry.preset as DrainPreset,
+  }));
+}
+
+type AllocationRun = {
+  preset: string;
+  reserved_cost_micros: number | bigint | null;
+  state: string;
+  gap: string;
+  closure: string | null;
+  payload: string | null;
+  calls: number | bigint | null;
+  cost_usd: number | null;
+};
+
+/** The scheduler and the operator read one projection of whole-run incurred plus remaining reserve. */
+export async function allocationStatus(
+  store: DrainsStore,
+  row: DrainRow,
+): Promise<DrainAllocationStatus[]> {
+  const weights: Readonly<Partial<Record<DrainPreset, number | undefined>>> = row.knobs
+    .allocation ?? { [row.preset]: 1 };
+  const presets =
+    row.knobs.allocation === undefined
+      ? [row.preset]
+      : DRAIN_ALLOCATION_PRESETS.filter((preset) => weights[preset] !== undefined);
+  // Normalize through the largest weight so two finite weights cannot overflow their sum.
+  const largest = Math.max(...presets.map((preset) => weights[preset] ?? 0));
+  const totalWeight = presets.reduce((sum, preset) => sum + (weights[preset] ?? 0) / largest, 0);
+  const runs = await store.db.query<AllocationRun>(
+    `SELECT a.preset, a.reserved_cost_micros, a.state, a.gap, r.closure, r.payload,
+        p.calls, p.cost_usd FROM drain_launches a
+      LEFT JOIN runs r ON r.id = a.run_id LEFT JOIN run_progress p ON p.run_id = r.id
+      WHERE a.drain_id = ? ORDER BY a.ordinal`,
+    [row.id],
+  );
+  const lanes = presets.map((preset): DrainAllocationStatus => {
+    const weight = weights[preset] ?? 0;
+    let liveIncurred = 0;
+    let incurred = 0;
+    let reserved = 0;
+    let unpriced = 0;
+    let gap = "";
+    for (const run of runs) {
+      if (run.preset !== preset) continue;
+      if (run.state === "refused") {
+        gap = run.gap;
+        continue;
+      }
+      const payload = parsed(run.payload ?? "{}");
+      const block =
+        payload !== null && typeof payload === "object" && "inference" in payload
+          ? payload.inference
+          : null;
+      const measuredCost =
+        block !== null && typeof block === "object" && "costMicros" in block
+          ? block.costMicros
+          : null;
+      const measured =
+        run.closure === null
+          ? count(run.calls) > 0 && run.cost_usd !== null
+            ? run.cost_usd * 1_000_000
+            : null
+          : typeof measuredCost === "number" && Number.isFinite(measuredCost) && measuredCost >= 0
+            ? measuredCost
+            : null;
+      incurred += measured ?? 0;
+      if (run.closure === null) liveIncurred += measured ?? 0;
+      if (run.closure === null || measured === null) {
+        reserved += Math.max(0, count(run.reserved_cost_micros) - (measured ?? 0));
+      }
+      if (preset !== "keep-going" && (measured === null || measured === 0)) {
+        unpriced += 1;
+        gap = measured === 0 ? "zero-price" : "missing-price";
+      }
+    }
+    if (row.knobs.allocation === undefined)
+      incurred = Math.max(incurred, row.spent.costMicros + liveIncurred);
+    return {
+      preset,
+      weight,
+      share: weight / largest / totalWeight,
+      incurredCostMicros: incurred,
+      reservedCostMicros: reserved,
+      deficitCostMicros: 0,
+      unpricedJobs: unpriced,
+      gap,
+    };
+  });
+  const committed = lanes.reduce(
+    (sum, lane) => sum + lane.incurredCostMicros + lane.reservedCostMicros,
+    0,
+  );
+  return lanes.map((lane) => ({
+    ...lane,
+    deficitCostMicros: lane.share * committed - lane.incurredCostMicros - lane.reservedCostMicros,
+  }));
+}
+
+/** A measured mean is a scheduling estimate, never a price table or an exposure ceiling. */
+export async function allocationEstimate(
+  store: DrainsStore,
+  row: DrainRow,
+  preset: DrainPreset,
+): Promise<{ costMicros: number | null; eligible: boolean }> {
+  const rows = await store.db.query<{
+    attempts: number | bigint;
+    priced: number | bigint;
+    unpriced: number | bigint;
+    cost: number | null;
+  }>(
+    `SELECT COUNT(*) AS attempts,
+        SUM(CASE WHEN r.closure IS NOT NULL AND json_extract(r.payload, '$.inference.costMicros') > 0
+          THEN 1 ELSE 0 END) AS priced,
+        SUM(CASE WHEN r.closure IS NOT NULL AND
+          COALESCE(json_extract(r.payload, '$.inference.costMicros'), 0) <= 0 THEN 1 ELSE 0 END) AS unpriced,
+        AVG(CASE WHEN r.closure IS NOT NULL AND json_extract(r.payload, '$.inference.costMicros') > 0
+          THEN json_extract(r.payload, '$.inference.costMicros') END) AS cost
+      FROM drain_launches a LEFT JOIN runs r ON r.id = a.run_id
+      WHERE a.drain_id = ? AND a.preset = ? AND a.state != 'refused'`,
+    [row.id, preset],
+  );
+  const found = rows[0];
+  const cost = found?.cost ?? null;
+  const named = row.knobs.inferenceLimits?.costMicros ?? 0;
+  const reservation = cost === null ? named : Math.max(named, Math.ceil(cost));
+  // An explicitly selected but unpriced activity gets one discovery work item, not an unbounded
+  // free-cost fiction. Once observed, only positive metered whole-item cost admits refills.
+  return {
+    costMicros: reservation > 0 ? reservation : null,
+    eligible:
+      row.knobs.allocation === undefined ||
+      (reservation > 0 &&
+        (count(found?.attempts) === 0 ||
+          (count(found?.priced) > 0 && count(found?.unpriced) === 0))),
+  };
+}
+
 /** What one tick folded: the jobs still held, the settled totals, the tallies and the journal. */
 export interface DrainFold {
   readonly live: readonly LiveJob[];
@@ -648,6 +999,7 @@ export async function saveFold(
                        jobs_settled = jobs_settled + ?
       WHERE id = ? AND state = ? AND state IN ('running', 'closing')
         AND jobs_launched = ? AND jobs_settled = ?
+        AND json(live) = json(?)
       RETURNING id`,
     [
       JSON.stringify(fold.live),
@@ -660,6 +1012,7 @@ export async function saveFold(
       row.state,
       row.jobsLaunched,
       row.jobsSettled,
+      JSON.stringify(row.live),
     ],
   );
   return rows.length > 0;
@@ -886,7 +1239,14 @@ export async function reconcileLive(
   for (const entry of live) {
     const row = byRun.get(entry.runId);
     if (row === undefined) {
-      missing.push(entry);
+      const admission = entry.reserved
+        ? await store.db.query<{ state: string }>(
+            `SELECT state FROM drain_launches WHERE run_id = ?`,
+            [entry.runId],
+          )
+        : [];
+      if (admission[0]?.state === "reserved") holding.push(entry);
+      else missing.push(entry);
       continue;
     }
     if (row.closure !== null) {
@@ -1105,6 +1465,7 @@ export async function drainStatus(
     etaAt: row.state === "running" ? targetEta(row.target, spent, rate, at) : "",
     refusals: { ...row.refusals },
     closures: { ...row.closures },
+    allocation: await allocationStatus(store, row),
     report,
   };
 }
@@ -1224,7 +1585,14 @@ function tokensOf(row: ReportRunRow): { readonly tokens: DrainTokens; readonly m
 function recipesOf(row: ReportRunRow): readonly string[] {
   const held = parsed(row.preparation ?? "");
   if (held === null || typeof held !== "object") return [];
-  const listed = (held as Record<string, unknown>)["recipes"];
+  const document = held as Record<string, unknown>;
+  const review = document["review"];
+  if (review !== null && typeof review === "object" && "recipe" in review) {
+    const recipe = review.recipe;
+    const id = recipe !== null && typeof recipe === "object" && "id" in recipe ? recipe.id : "";
+    return typeof id === "string" && id !== "" ? [id] : [];
+  }
+  const listed = document["recipes"];
   if (!Array.isArray(listed)) return [];
   const ids: string[] = [];
   for (const entry of listed) {
@@ -1393,6 +1761,7 @@ async function buildDrainReport(store: DrainsStore, row: DrainRow): Promise<Drai
     drainId: row.id,
     machineId: row.machineId,
     preset: row.preset,
+    presetAllocation: await allocationStatus(store, row),
     ending: row.state,
     reason: row.reason,
     startedBy: row.startedBy,

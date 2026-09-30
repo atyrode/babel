@@ -309,7 +309,7 @@ export function Watch({ host }: PanelProps) {
 
   const mappingRoute = useMemo(() => mappingRouteOf(policy.value), [policy.value]);
   const onDrainStart = useCallback(async () => {
-    const mapping = DRAIN_CARDS[drainDraft.preset].knob === "route";
+    const mapping = drainDraft.mode === "preset" && DRAIN_CARDS[drainDraft.preset].knob === "route";
     // The deadline is an instant computed at the press, from the minutes the operator set: a
     // form left open for ten minutes must not post a deadline ten minutes in the past.
     const press = mapping

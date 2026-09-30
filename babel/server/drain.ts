@@ -16,14 +16,18 @@ import { transcriptMaps } from "../store/transcript-maps.ts";
 import {
   activeDrains,
   addSpend,
+  allocationEstimate,
+  allocationStatus,
   closeDrain,
   deadlineOf,
   finishDrain,
+  finishDirectLaunch,
   foldJournal,
   noteDrain,
+  pendingDirectLaunches,
   reconcileLive,
   readDrain,
-  recordLaunch,
+  reserveDirectLaunch,
   saveFold,
   targetMet,
   writeDrainReport,
@@ -50,6 +54,8 @@ import {
 import { STANDING_RUN, type RunPlan } from "./conductor.ts";
 import type { CodeEngine } from "./engine/session.ts";
 import type { BabelJobs } from "./plan.ts";
+import { reconcileDrainReview, startDrainReview, stopDrainReview } from "./drain-review.ts";
+import { drainPostingRefusal, type DrainAdmission } from "./drain-admission.ts";
 
 /*
   THE DRAIN CONTROLLER (#258): keep N jobs in flight until a target, a deadline or a stop.
@@ -61,12 +67,12 @@ import type { BabelJobs } from "./plan.ts";
   kill"). Two hours and fourteen minutes later the window had not moved a percent. This is the
   operation that was missing.
 
-  WHAT IT IS NOT. It is not a second launcher: every job it posts goes through
-  `launchMachinery`'s own `startExplore`/`startBeat`, so the document, the ceiling, the pinned
-  installation and the run row are the ones the operator's own button produces — there is no
-  second answer to what a run IS. It is not a second governor either: the standing `policies` row
-  is never touched and there is no overlay to set — `doors/drain.ts` says the whole of it: an
-  overlay moves admission numbers, and a drain's jobs, launched directly, consult none of them.
+  WHAT IT IS NOT. It is not a second governor: exploration and beats use `launchMachinery`,
+  while review slots draw review-only work through the shared coordinator and retain its
+  installed role recipes, claims, ceilings and result authority. No standing policy or overlay
+  is written. A review's durable parent, claim and preset reservation are published before
+  keyed Code dispatch, so uncertain admission holds the same slot rather than opening a
+  second review pool.
   THE FAN IS BOUNDED WHERE IT IS REAL, twice: the door refuses a `concurrent` above the
   manifest's `concurrentJobs` for the operation the preset posts, and this controller launches
   only into the slots its own live jobs leave free. Nothing here edits a lease, a share or a
@@ -136,6 +142,7 @@ export interface DrainDeps {
   readonly store: BabelStore;
   readonly coordinator: Coordinator;
   readonly launch: DrainLaunch;
+  readonly admission: DrainAdmission;
   /** This wake's own job authority: what posts a job, and what may be asked to cancel one. */
   readonly jobs: BabelJobs;
   /**
@@ -185,8 +192,7 @@ const SPENDING: readonly string[] = DRAIN_SPENDING_PRESETS;
  * fan burn" is answered by summing the runs that named it (#267) rather than by trusting that
  * the profile still points where it did at the start.
  */
-export function drainInput(row: DrainRow): LaunchInput {
-  const preset = row.preset;
+export function drainInput(row: DrainRow, preset: DrainPreset = row.preset): LaunchInput {
   // A mapping drain launches no preset: its jobs are drawn claims (`tickMapDrain`).
   if (preset === MAP_DRAIN_PRESET) throw new Error(`drain ${row.id} launches no preset`);
   return {
@@ -398,14 +404,16 @@ async function laneOf(store: DrainDeps["store"], runId: string): Promise<RunLane
  * would spend an account after the operator stopped spending. `AND job_id IS NULL` is the
  * fence against the opposite race — a wake that posted the session between the read and this
  * write owns the row, and that run is cancelled through Code on the next tick.
+ * Native attempts remain evidence after Stop: cancellation is not proof the preparation ended.
  */
 async function closeIntent(deps: DrainDeps, runId: string, reason: string): Promise<void> {
   const at = new Date(deps.now()).toISOString();
   const closed = await deps.store.db.run(
-    `UPDATE runs SET closure = 'stopped', finished_at = ?, payload = ?
+    `UPDATE runs SET closure = 'stopped', finished_at = ?,
+      payload = json_set(payload, '$.closure', 'stopped', '$.reason', ?, '$.stoppedAt', ?)
       WHERE id = ? AND closure IS NULL AND job_id IS NULL
         AND COALESCE(json_extract(payload, '$.posting'), 0) = 0`,
-    [at, JSON.stringify({ closure: "stopped", reason, stoppedAt: at }), runId],
+    [at, reason, at, runId],
   );
   if (closed.changes === 0)
     throw new Error(`${runId} changed during cancellation; its session may be live`);
@@ -414,6 +422,17 @@ async function closeIntent(deps: DrainDeps, runId: string, reason: string): Prom
  * WHAT A DRAIN'S END DOES TO WHAT IT IS HOLDING: asks for each live job to be cancelled, in
  * the lane that job belongs to, and closes the row.
  */
+/** Preset attribution is immutable per admission, even when the drain's anchor is explore. */
+async function heldReviews(deps: DrainDeps, row: DrainRow): Promise<ReadonlySet<string>> {
+  const entries = await deps.store.db.query<{ run_id: string }>(
+    `SELECT a.run_id FROM drain_launches a JOIN drains d ON d.id=a.drain_id
+      JOIN json_each(d.live) l ON json_extract(l.value,'$.runId')=a.run_id
+      WHERE a.drain_id = ? AND a.preset = ?`,
+    [row.id, "review-backlog"],
+  );
+  return new Set(entries.map((entry) => entry.run_id));
+}
+
 export async function endDrain(
   deps: DrainDeps,
   row: DrainRow,
@@ -434,12 +453,28 @@ export async function endDrain(
     the drain's DURABLE held set, read after the close: a run another wake reserved after the
     caller's snapshot was taken is in it, and no reservation can join it once the drain is closed.
   */
-  const mapping = row.preset === MAP_DRAIN_PRESET;
-  const early = mapping ? await closeDrain(deps.store, row.id, ending, reason) : null;
-  const held = mapping ? ((await readDrain(deps.store, row.id))?.live ?? live) : live;
+  const early = await closeDrain(deps.store, row.id, ending, reason);
+  const held = (await readDrain(deps.store, row.id))?.live ?? live;
   let cancelled = 0;
+  const reviews = await heldReviews(deps, row);
   for (const job of held) {
+    if (reviews.has(job.runId)) {
+      try {
+        const stopped = await stopDrainReview(deps, row, job.runId, reason);
+        if (stopped.cancelled) cancelled += 1;
+        notes.push(...stopped.notes);
+        journaled.push(
+          ...stopped.notes.map((detail): DrainNote => ({ at, kind: "cancel", detail })),
+        );
+      } catch (error) {
+        notes.push(`${job.runId} review stop remains unresolved: ${message(error)}`);
+      }
+      continue;
+    }
     const lane = await laneOf(deps.store, job.runId);
+    if (job.reserved === true && lane.container === "" && lane.prepareJobId === "") {
+      await finishDirectLaunch(deps.store, job.runId, "stopped before preparation");
+    }
     try {
       if (lane.container === "") {
         // BABEL'S OWN JOB (the beat): posted under this plugin's id at the drain's operation,
@@ -447,7 +482,10 @@ export async function endDrain(
         await deps.jobs.cancel({
           kind: "job",
           machineId: row.machineId,
-          operationId,
+          operationId:
+            job.reserved === true && SPENDING.includes(row.preset)
+              ? OPERATIONS.prepare
+              : operationId,
           jobId: job.jobId,
         });
       } else if (lane.jobId === "") {
@@ -612,6 +650,176 @@ async function indexDuty(
   return { journal, notes };
 }
 
+/** First fan and settlement refills use the same durable cost-deficit admission path. */
+export async function fillDirectDrain(
+  deps: DrainDeps,
+  initial: DrainRow,
+): Promise<{
+  readonly row: DrainRow;
+  readonly launched: number;
+  readonly refused: string;
+  readonly notes: readonly string[];
+}> {
+  let row = (await readDrain(deps.store, initial.id)) ?? initial;
+  let launched = 0;
+  let refused = "";
+  const notes: string[] = [];
+  const excluded = new Set<DrainPreset>();
+  const journaled: DrainNote[] = [];
+  const launch = async (preset: DrainPreset, ordinal: number): Promise<void> => {
+    if (preset === MAP_DRAIN_PRESET)
+      throw new Error("Mapping drains use their separately governed claim path.");
+    const at = deps.now();
+    const inForce = await deps.coordinator.policy(at);
+    row = (await readDrain(deps.store, row.id)) ?? row;
+    if (row.state !== "running" || !inForce.policy.enabled) return;
+    const capacityRefusal = await drainPostingRefusal(
+      deps.store,
+      deps.admission,
+      drainIdentity(row, ordinal, deps.chain).runId,
+      drainOperation(preset),
+    );
+    if (capacityRefusal !== null) {
+      // Release only an unposted reservation. The store keeps a slot with an existing run,
+      // whose native or paid outcome may still need recovery under a later authorized wake.
+      await finishDirectLaunch(
+        deps.store,
+        drainIdentity(row, ordinal, deps.chain).runId,
+        capacityRefusal,
+      );
+      excluded.add(preset);
+      refused = capacityRefusal;
+      notes.push(capacityRefusal);
+      journaled.push({ at, kind: "admission", detail: capacityRefusal });
+      return;
+    }
+    const identity = { ...drainIdentity(row, ordinal, deps.chain), drainId: row.id };
+    const plan = {
+      ...deps.plan(inForce.policy, pressOperation(preset), row.profile),
+      materials: row.concurrent,
+    };
+    const input = drainInput(row, preset);
+    const started =
+      preset === "review-backlog"
+        ? await startDrainReview(deps, row, identity)
+        : SPENDING.includes(preset)
+          ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, input, plan)
+          : await deps.launch.startBeat(identity, deps.jobs, input, plan);
+    if ("refused" in started) {
+      const gap = started.code === "no_eligible_work" ? "no-eligible" : started.refused;
+      await finishDirectLaunch(deps.store, identity.runId, gap);
+      excluded.add(preset);
+      refused = `${preset}: ${gap}`;
+      notes.push(`${preset}: ${started.refused}`);
+      journaled.push({
+        at,
+        kind: "admission",
+        detail:
+          started.code === undefined || started.code === ""
+            ? `${preset}: ${started.refused}`
+            : `${started.code}: ${preset}: ${started.refused}`,
+      });
+    } else {
+      await finishDirectLaunch(deps.store, identity.runId, null);
+      launched += 1;
+    }
+    row = (await readDrain(deps.store, row.id)) ?? row;
+    // A stop can land during execute. Its first read may have preceded the parent; cancel the
+    // now-known job as well, and retain its receipt rather than dropping its reservation.
+    if (row.state === "closing") {
+      await endDrain(deps, row, row.ending === "" ? "stopped" : row.ending, row.reason, row.live);
+    }
+  };
+
+  // Interrupted native preparations are retried under the same ordinal and exact retained
+  // request. Their slots never expire, and the launch path fences stops before every post.
+  for (const pending of await pendingDirectLaunches(deps.store, row)) {
+    await launch(pending.preset, pending.ordinal);
+  }
+  while (row.state === "running") {
+    const at = deps.now();
+    for (const runId of await heldReviews(deps, row)) await reconcileDrainReview(deps, runId);
+    const folded = await foldDrain(deps.store, row, await reconcileLive(deps.store, row.live), at);
+    row = (await readDrain(deps.store, row.id)) ?? folded.row;
+    if (
+      row.state !== "running" ||
+      row.live.length >= row.concurrent ||
+      (row.knobs.maxJobs !== undefined && row.jobsLaunched >= row.knobs.maxJobs) ||
+      targetMet(row.target, folded.spent) !== "" ||
+      (deadlineOf(row.target) ?? Infinity) <= at
+    )
+      break;
+
+    const candidates = [];
+    for (const lane of await allocationStatus(deps.store, row)) {
+      if (excluded.has(lane.preset)) continue;
+      const estimate = await allocationEstimate(deps.store, row, lane.preset);
+      if (!estimate.eligible) {
+        notes.push(
+          `${lane.preset}: ${lane.gap || "missing-price"}; no positive whole-item meter for refill`,
+        );
+        continue;
+      }
+      candidates.push({ lane, estimate });
+    }
+    if (candidates.length === 0) break;
+    const prices = candidates.flatMap(({ estimate }) =>
+      estimate.costMicros === null ? [] : [estimate.costMicros],
+    );
+    const quantum =
+      prices.length === 0 ? 1 : prices.reduce((sum, value) => sum + value, 0) / prices.length;
+    // One look-ahead job's measured mean prevents an all-zero opening deficit from ignoring the
+    // declared weights. Fixed preset order breaks exact ties, independent of object insertion.
+    candidates.sort(
+      (left, right) =>
+        right.lane.deficitCostMicros +
+        right.lane.share * quantum -
+        (left.lane.deficitCostMicros + left.lane.share * quantum),
+    );
+    const picked = candidates[0]!;
+    const capacity = await deps.admission(row.machineId, drainOperation(picked.lane.preset));
+    if ("refused" in capacity) {
+      notes.push(capacity.refused);
+      journaled.push({ at, kind: "admission", detail: capacity.refused });
+      break;
+    }
+    if (capacity.limit < row.concurrent) {
+      const detail = `physical-core admission limits this fan of ${String(row.concurrent)} to ${String(capacity.limit)}; existing work is retained`;
+      notes.push(detail);
+      journaled.push({ at, kind: "admission", detail });
+    }
+    const ordinal = row.jobsLaunched;
+    const identity = drainIdentity(row, ordinal, deps.chain);
+    const job: LiveJob = {
+      runId: identity.runId,
+      jobId:
+        SPENDING.includes(picked.lane.preset) && picked.lane.preset !== "review-backlog"
+          ? materialJobId(identity.jobId)
+          : identity.jobId,
+      launchedAt: at,
+      reserved: true,
+    };
+    if (
+      !(await reserveDirectLaunch(
+        deps.store,
+        row,
+        job,
+        picked.lane.preset,
+        picked.estimate.costMicros,
+        capacity.limit,
+        capacity.activeJobIds,
+      ))
+    ) {
+      notes.push("no free admitted machine slot, or another wake changed this drain");
+      break;
+    }
+    await launch(picked.lane.preset, ordinal);
+  }
+  await noteDrain(deps.store, row.id, journaled);
+  row = (await readDrain(deps.store, row.id)) ?? row;
+  return { row, launched, refused, notes };
+}
+
 /**
  * One drain, moved on by one tick.
  *
@@ -628,10 +836,24 @@ async function indexDuty(
  */
 async function tickDrain(deps: DrainDeps, row: DrainRow, refill: boolean): Promise<DrainReport> {
   const at = deps.now();
+  const reviewNotes: string[] = [];
+  for (const runId of await heldReviews(deps, row)) await reconcileDrainReview(deps, runId);
+  if (row.state === "closing") {
+    const reviews = await heldReviews(deps, row);
+    for (const job of row.live) {
+      if (!reviews.has(job.runId)) continue;
+      try {
+        const stopped = await stopDrainReview(deps, row, job.runId, row.reason);
+        reviewNotes.push(...stopped.notes);
+      } catch (error) {
+        reviewNotes.push(`${job.runId} review stop remains unresolved: ${message(error)}`);
+      }
+    }
+  }
   const folded = await foldDrain(deps.store, row, await reconcileLive(deps.store, row.live), at);
   row = folded.row;
   const seen = folded.seen;
-  const notes: string[] = [...folded.notes];
+  const notes: string[] = [...reviewNotes, ...folded.notes];
   const spent = folded.spent;
   if (row.state !== "running" && row.state !== "closing") {
     return {
@@ -733,7 +955,11 @@ async function tickDrain(deps: DrainDeps, row: DrainRow, refill: boolean): Promi
   }
   // Exhausting admissions stops refills, not the jobs already admitted. Their receipts still
   // belong to this drain, including refusals and jobs that spent nothing.
-  if (row.knobs.maxJobs !== undefined && row.jobsLaunched >= row.knobs.maxJobs) {
+  if (
+    row.knobs.maxJobs !== undefined &&
+    row.jobsLaunched >= row.knobs.maxJobs &&
+    (row.preset === MAP_DRAIN_PRESET || (await pendingDirectLaunches(deps.store, row)).length === 0)
+  ) {
     const why = `the admission bound of ${String(row.knobs.maxJobs)} jobs is exhausted`;
     if (seen.holding.length > 0) {
       return {
@@ -760,107 +986,18 @@ async function tickDrain(deps: DrainDeps, row: DrainRow, refill: boolean): Promi
 
   if (row.preset === MAP_DRAIN_PRESET)
     return await tickMapDrain(deps, row, inForce.policy, seen, notes, at);
-  // The session is the drain's own, every time: the model and the account the operator named
-  // when they started it, not whatever a later default would be (#267, #279). Its fan holds
-  // `concurrent` materials on the machine at once, so each is bounded to that share (#453).
-  const plan = {
-    ...deps.plan(inForce.policy, pressOperation(row.preset), row.profile),
-    materials: row.concurrent,
-  };
-  const input = drainInput(row);
-  const holding = [...seen.holding];
-  // What this round could not do. It is journaled AFTER the round rather than folded with it,
-  // because a fold advances the drain's own load integrals and this write must not advance them
-  // a second time in the same instant.
+  const filled = await fillDirectDrain(deps, row);
+  const holding = filled.row.live;
+  const launched = filled.launched;
+  const refused = filled.refused;
   const journaled: DrainNote[] = [];
-  let launched = 0;
-  let refused = "";
-  for (let slot = holding.length; slot < row.concurrent; slot += 1) {
-    if (row.knobs.maxJobs !== undefined && row.jobsLaunched + launched >= row.knobs.maxJobs) break;
-    const identity = drainIdentity(row, row.jobsLaunched + launched, deps.chain);
-    const started = SPENDING.includes(row.preset)
-      ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, input, plan)
-      : await deps.launch.startBeat(identity, deps.jobs, input, plan);
-    /*
-      WHAT IS RECORDED AS LIVE IS THE JOB THAT WAS POSTED, which for the lane that spends is
-      the PREPARATION and not the run's derived identity: `startExplore` posts
-      `materialJobId(identity.jobId)` and the session comes one wake later under an id Code
-      mints (#592). `drain.start`'s own first fan records `started.jobId`, which is the same
-      string, and the two paths writing different things into one column is how a stop ends
-      up naming an id nothing holds. The verb that stops a run still reads the ROW, not this.
-    */
-    const postedJobId = SPENDING.includes(row.preset)
-      ? materialJobId(identity.jobId)
-      : identity.jobId;
-    const job: LiveJob = { runId: identity.runId, jobId: postedJobId, launchedAt: at };
-    if ("refused" in started) {
-      /*
-        A JOB THIS DRAIN ALREADY POSTED IS ADOPTED RATHER THAN RE-POSTED. `job_digest_conflict`
-        is the hub saying it holds this id under a different request (`job-store.ts`: the digest
-        covers the input, and an explore's selection window moves between ticks), which for a
-        DERIVED id can only mean a tick of this drain posted it and lost the write that recorded
-        it — the 2-second hook lease closing between `execute` and the row. Without this the
-        ordinal never advances, every later tick re-posts the same conflicting id, the slot is
-        dead for the rest of the drain and the orphan's spend is never folded. The run row is
-        already there (it is written by the same call that posted the job), so taking the job
-        back onto `live` is enough: it settles like any other and its receipt lands in `spent`.
-        If the row is NOT there, the next tick's `missing` releases the slot.
-
-        IT IS THE HUB'S WORD THAT DECIDES, not the sentence: `refused` is written for the
-        operator and this branch is a behaviour, so it turns on the code `post` carried out of
-        the error the hub threw (#288). A code is present only when the hub refused, so a
-        sentence of Babel's own can never reach here.
-      */
-      if (started.code === "job_digest_conflict") {
-        const adopted = `${identity.jobId} was already posted by an earlier tick, and is taken back`;
-        notes.push(adopted);
-        journaled.push({ at, kind: "adopted", detail: adopted });
-        const recorded = await recordLaunch(deps.store, row.id, job, row.jobsLaunched + launched);
-        if (!recorded) {
-          const current = await readDrain(deps.store, row.id);
-          holding.splice(0, holding.length, ...(current?.live ?? []));
-          break;
-        }
-        holding.push(job);
-        launched += 1;
-        continue;
-      }
-      // ONE REFUSAL ENDS THE ROUND, not the drain. The next slot would ask the same thing of the
-      // same machine with the same window and hear the same sentence, and a tick that asked
-      // sixteen times would report one fact sixteen times. The drain stays running: the reason
-      // may be a machine reconnecting or a concurrency ceiling that frees up on the next settle.
-      refused = started.refused;
-      notes.push(`no further job was launched: ${started.refused}`);
-      /*
-        AN ADMISSION REFUSAL IS DURABLE NOWHERE ELSE (#270). `startExplore` writes its run row
-        only after the hub has taken the job, so a refused launch leaves no row, no receipt and
-        no closure — it is work that never became a job, and on 2026-09-13 the only trace of
-        twenty of them was a shell's scrollback. The code the hub carried out of its own error
-        leads the sentence, which is what makes the report's `launchRefusals` countable.
-      */
-      journaled.push({
-        at,
-        kind: "admission",
-        detail:
-          started.code === undefined || started.code === ""
-            ? started.refused
-            : `${started.code}: ${started.refused}`,
-      });
-      break;
-    }
-    // The persisted admission cursor decides whether this wake, or another one, recorded it.
-    const recorded = await recordLaunch(deps.store, row.id, job, row.jobsLaunched + launched);
-    if (!recorded) {
-      const current = await readDrain(deps.store, row.id);
-      holding.splice(0, holding.length, ...(current?.live ?? []));
-      break;
-    }
-    holding.push(job);
-    launched += 1;
-  }
+  notes.push(...filled.notes);
   // THE CORPUS INDEX'S OWN SLICE OF THIS TICK (#337), after the launching and before the
   // journal, so the note it leaves rides the one write that already happens here.
-  const indexed = await indexDuty(deps, at);
+  const indexed = await indexDuty(
+    row.knobs.allocation === undefined ? deps : { ...deps, embed: null },
+    at,
+  );
   journaled.push(...indexed.journal);
   notes.push(...indexed.notes);
   await noteDrain(deps.store, row.id, journaled);
@@ -887,8 +1024,8 @@ async function tickDrain(deps: DrainDeps, row: DrainRow, refill: boolean): Promi
     launched,
     settled: seen.settled.length,
     live: holding.length,
-    state: "running",
-    reason: "",
+    state: filled.row.state,
+    reason: filled.row.reason,
     notes,
   };
 }

@@ -25,6 +25,8 @@ const START = "[data-action='atyrode.babel.drainStart']";
 const STOP = "[data-action='atyrode.babel.drainStop']";
 const KNOB_LABEL = ".plugin-atyrode_babel_watch__knob-label";
 const STAT = ".plugin-atyrode_babel_watch__stat";
+const ALLOCATION_MODE = "[data-field='drain-allocation-mode']";
+const ALLOCATION = "[data-field='drain-allocation']";
 
 afterEach(async () => {
   await unmountAll();
@@ -49,6 +51,15 @@ function field(root: HTMLElement, label: string): HTMLElement {
     if (control !== null) return control as HTMLElement;
   }
   throw new Error(`no field labelled ${label}`);
+}
+
+function preset(root: HTMLElement, title: string): HTMLElement {
+  const card = [...section(root).querySelectorAll<HTMLElement>(DRAIN_PRESET)].find(
+    (entry) =>
+      entry.querySelector(".plugin-atyrode_babel_watch__preset-title")?.textContent === title,
+  );
+  if (card === undefined) throw new Error(`no drain preset ${title}`);
+  return card;
 }
 
 /** One figure of the running-drain strip, by its label. */
@@ -84,18 +95,135 @@ async function compose(root: HTMLElement): Promise<void> {
   await type(field(root, "Why"), "the 7-day window resets at 13:00Z");
 }
 
-test("the drain presets are the ones a drain fans out, and the beat says it spends nothing", async () => {
-  const { root } = await open();
-  const cards = [...section(root).querySelectorAll(DRAIN_PRESET)];
-  expect(
-    cards.map(
-      (card) => card.querySelector(".plugin-atyrode_babel_watch__preset-title")?.textContent,
-    ),
-  ).toEqual(["Read what's new", "Explore a topic", "Keep going", "Map transcripts"]);
-  // THE DRAWN PRESETS ARE ABSENT BY DESIGN: fanning them out would be a second implementation of
-  // the coordinator, and the panel must not offer what the door refuses.
-  expect(section(root).textContent).not.toContain("Review the backlog");
-  expect(cards[2]?.textContent).toContain("spends nothing");
+test("review and exploration allocation keeps only entered weights, the shared topic and the canonical operation", async () => {
+  const { root, fake } = await open();
+  await compose(root);
+  // A previously selected mapping route must not redirect a mixed drain to its door.
+  await click(preset(root, "Map transcripts"));
+  await click(root.querySelector(ALLOCATION_MODE));
+  expect((field(root, "Read what's new weight") as HTMLInputElement).value).toBe("");
+  expect((field(root, "Explore a topic weight") as HTMLInputElement).value).toBe("");
+  expect((field(root, "Review backlog weight") as HTMLInputElement).value).toBe("");
+  expect((field(root, "Per-job cost threshold") as HTMLInputElement).value).toBe("");
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
+
+  await type(field(root, "Review backlog weight"), "2.5");
+  await type(field(root, "Explore a topic weight"), "1.5");
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
+  await choose(field(root, "Topic"), "ent_1a2b3c4d");
+  await type(field(root, "Jobs at once"), "4");
+  await type(field(root, "Or at"), "5");
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
+  await type(field(root, "Per-job cost threshold"), "0.125");
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(false);
+  await click(root.querySelector(START));
+
+  expect(fake.callsTo(ACTIONS.drainStart)).toHaveLength(1);
+  const posted = DrainStartRequestSchema.parse(fake.callsTo(ACTIONS.drainStart)[0]?.args);
+  expect(posted.allocation).toEqual({ "explore-topic": 1.5, "review-backlog": 2.5 });
+  expect(posted.preset).toBeUndefined();
+  expect(posted.entityId).toBe("ent_1a2b3c4d");
+  expect(posted.sinceDays).toBeUndefined();
+  expect(posted.concurrent).toBe(4);
+  expect(posted.target.costMicros).toBe(5_000_000);
+  expect(posted.inferenceLimits).toEqual({ costMicros: 125_000 });
+  expect(posted.profile).toEqual({ containerId: "ctr_workbench", expectedRevision: 7 });
+  expect(posted.operation).toEqual({
+    kind: "operation",
+    machineId: "m-dev-01",
+    operationId: OPERATIONS.explore,
+  });
+  expect(fake.callsTo(ACTIONS.mapDrainStart)).toHaveLength(0);
+});
+
+test("blank weights omit a preset and nonpositive weights cannot start a drain", async () => {
+  const { root, fake } = await open();
+  await compose(root);
+  await click(root.querySelector(ALLOCATION_MODE));
+  await type(field(root, "Per-job cost threshold"), "0.5");
+  for (const weight of ["0", "-1", ""]) {
+    await type(field(root, "Review backlog weight"), weight);
+    expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
+    await click(root.querySelector(START));
+  }
+  expect(fake.callsTo(ACTIONS.drainStart)).toHaveLength(0);
+  await type(field(root, "Review backlog weight"), "0.5");
+  // A preset removed from the allocation must no longer require a topic.
+  await type(field(root, "Explore a topic weight"), "1");
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
+  for (const weight of ["0", "-1"]) {
+    await type(field(root, "Explore a topic weight"), weight);
+    expect(section(root).querySelectorAll("select")).toHaveLength(1);
+    expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
+  }
+  await type(field(root, "Explore a topic weight"), "");
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(false);
+  await click(root.querySelector(START));
+  const posted = DrainStartRequestSchema.parse(fake.callsTo(ACTIONS.drainStart)[0]?.args);
+  expect(posted.allocation).toEqual({ "review-backlog": 0.5 });
+  expect(posted.preset).toBeUndefined();
+  expect(posted.entityId).toBeUndefined();
+  expect(posted.sinceDays).toBeUndefined();
+  expect(posted.operation.operationId).toBe(OPERATIONS.explore);
+});
+
+test("allocation refuses missing or nonpositive per-job thresholds instead of choosing one", async () => {
+  const { root, fake } = await open();
+  await compose(root);
+  await click(root.querySelector(ALLOCATION_MODE));
+  await type(field(root, "Review backlog weight"), "1");
+  for (const cost of ["", "0", "-1", "0.0000001", "1e309"]) {
+    await type(field(root, "Per-job cost threshold"), cost);
+    expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
+    await click(root.querySelector(START));
+  }
+  expect(fake.callsTo(ACTIONS.drainStart)).toHaveLength(0);
+  await type(field(root, "Per-job cost threshold"), "0.000001");
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(false);
+  await click(root.querySelector(START));
+  const posted = DrainStartRequestSchema.parse(fake.callsTo(ACTIONS.drainStart)[0]?.args);
+  expect(posted.inferenceLimits).toEqual({ costMicros: 1 });
+});
+
+test("choosing the free rehearsal after allocation sends one catalog preset, not weights", async () => {
+  const { root, fake } = await open();
+  await compose(root);
+  await click(root.querySelector(ALLOCATION_MODE));
+  await type(field(root, "Review backlog weight"), "3");
+  await type(field(root, "Per-job cost threshold"), "0.5");
+  await click(preset(root, "Keep going"));
+  await type(field(root, "Each catalog runs"), "15");
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(false);
+  await click(root.querySelector(START));
+  const posted = DrainStartRequestSchema.parse(fake.callsTo(ACTIONS.drainStart)[0]?.args);
+  expect(posted.preset).toBe("keep-going");
+  expect(posted.allocation).toBeUndefined();
+  expect(posted.inferenceLimits).toBeUndefined();
+  expect(posted.minutes).toBe(15);
+  expect(posted.operation.operationId).toBe(OPERATIONS.catalog);
+});
+
+test("single review keeps its evaluate operation without exploration knobs or mixed limits", async () => {
+  const { root, fake } = await open();
+  await compose(root);
+  await click(root.querySelector(ALLOCATION_MODE));
+  await type(field(root, "Explore a topic weight"), "1");
+  await choose(field(root, "Topic"), "ent_1a2b3c4d");
+  await type(field(root, "Per-job cost threshold"), "0.5");
+  await click(preset(root, "Review backlog"));
+  expect(section(root).querySelectorAll("select")).toHaveLength(1);
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(false);
+  await click(root.querySelector(START));
+
+  const posted = DrainStartRequestSchema.parse(fake.callsTo(ACTIONS.drainStart)[0]?.args);
+  expect(posted.preset).toBe("review-backlog");
+  expect(posted.allocation).toBeUndefined();
+  expect(posted.inferenceLimits).toBeUndefined();
+  expect(posted.entityId).toBeUndefined();
+  expect(posted.sinceDays).toBeUndefined();
+  expect(posted.operation.operationId).toBe(OPERATIONS.evaluate);
+  expect(posted.profile).toEqual({ containerId: "ctr_workbench", expectedRevision: 7 });
+  expect(fake.callsTo(ACTIONS.mapDrainStart)).toHaveLength(0);
 });
 
 test("nothing can be started until a Code profile is named, and no model or account field exists", async () => {
@@ -144,6 +272,8 @@ test("the button posts the profile, the fan, the deadline and the operation node
   const calls = fake.callsTo(ACTIONS.drainStart);
   expect(calls).toHaveLength(1);
   const posted = DrainStartRequestSchema.parse(calls[0]?.args);
+  expect(posted.preset).toBe("read-whats-new");
+  expect(posted.allocation).toBeUndefined();
   // THE PROFILE, AT THE REVISION THE OPERATOR WAS SHOWN IT AT: a profile that moved between
   // the read and the press is refused `code_stale_preferences` by Code, which is the whole
   // reason the revision travels rather than being re-read on the server.
@@ -218,6 +348,57 @@ test("a running drain shows the six figures the runbook names, and the account i
   expect(strip.textContent).toContain("completed");
 });
 
+test("weighted status distinguishes metered cost, held estimates and unpriced or ineligible work", async () => {
+  const { root } = await open({
+    runs: () => runsResult([]),
+    drainStatus: () => ({
+      drains: [
+        drainStatus({
+          allocation: [
+            {
+              preset: "review-backlog",
+              weight: 3,
+              share: 0.75,
+              incurredCostMicros: 0,
+              reservedCostMicros: 300_000,
+              deficitCostMicros: 200_000,
+              unpricedJobs: 2,
+              gap: "missing-price: 2 jobs have no positive metered cost",
+            },
+            {
+              preset: "explore-topic",
+              weight: 1,
+              share: 0.25,
+              incurredCostMicros: 400_000,
+              reservedCostMicros: 100_000,
+              deficitCostMicros: -200_000,
+              unpricedJobs: 0,
+              gap: "no-eligible-work: the topic has no sessions",
+            },
+          ],
+        }),
+      ],
+    }),
+  });
+  const allocation = root.querySelector(ALLOCATION);
+  const review = allocation?.querySelector("[data-preset='review-backlog']")?.textContent;
+  const explore = allocation?.querySelector("[data-preset='explore-topic']")?.textContent;
+  expect(review).toContain("Review backlog");
+  expect(review).toContain("weight 3 · share 75.0%");
+  expect(review).toContain("incurred $0.0000");
+  expect(review).toContain("reserved $0.3000");
+  expect(review).toContain("deficit $0.2000");
+  expect(review).toContain("2 unpriced job(s)");
+  expect(review).toContain("missing-price: 2 jobs have no positive metered cost");
+  expect(explore).toContain("weight 1 · share 25.0%");
+  expect(explore).toContain("incurred $0.4000");
+  expect(explore).toContain("reserved $0.1000");
+  expect(explore).toContain("deficit $-0.2000");
+  expect(explore).toContain("0 unpriced job(s)");
+  expect(explore).toContain("no-eligible-work: the topic has no sessions");
+  expect(allocation?.textContent).toContain("not hard spend ceilings");
+});
+
 test("an ETA past the deadline says so, because that is the operator's cue to act", async () => {
   const { root } = await open({
     runs: () => runsResult([]),
@@ -237,11 +418,32 @@ test("an ETA past the deadline says so, because that is the operator's cue to ac
   expect(stat(root, "ETA")).toContain("after the deadline");
 });
 
-test("stopping a drain posts its operation node, and the screen says what the door answered", async () => {
+test("a review-only allocation displays review while stopping at the canonical drain operation", async () => {
   const { root, fake } = await open({
     runs: () => runsResult([]),
-    drainStatus: () => ({ drains: [drainStatus({ drainId: "drn_live" })] }),
+    drainStatus: () => ({
+      drains: [
+        drainStatus({
+          drainId: "drn_live",
+          preset: "read-whats-new",
+          allocation: [
+            {
+              preset: "review-backlog",
+              weight: 1,
+              share: 1,
+              incurredCostMicros: 50_000,
+              reservedCostMicros: 100_000,
+              deficitCostMicros: 0,
+              unpricedJobs: 0,
+              gap: "",
+            },
+          ],
+        }),
+      ],
+    }),
   });
+  expect(root.querySelector(DRAIN)?.textContent).toContain("Review backlog on m-dev-01");
+  expect(root.querySelector(DRAIN)?.textContent).not.toContain("Read what's new");
   await click(root.querySelector(STOP));
   await settle();
   const calls = fake.callsTo(ACTIONS.drainStop);
@@ -358,8 +560,30 @@ test("the last drain's report is on the screen beside the drain that left it", a
             account: "ctr_workbench: the-drain-account (as Code reported at start)",
             model: "anthropic/claude-sonnet-4-5",
             thinking: "high",
+            presetAllocation: [
+              {
+                preset: "review-backlog",
+                weight: 3,
+                share: 0.75,
+                incurredCostMicros: 3_900_000,
+                reservedCostMicros: 0,
+                deficitCostMicros: -75_000,
+                unpricedJobs: 0,
+                gap: "",
+              },
+              {
+                preset: "explore-topic",
+                weight: 1,
+                share: 0.25,
+                incurredCostMicros: 1_200_000,
+                reservedCostMicros: 0,
+                deficitCostMicros: 75_000,
+                unpricedJobs: 0,
+                gap: "",
+              },
+            ],
             allocation: {
-              named: ["code-health", "time-and-spend"],
+              named: ["code-health", "time-and-spend", "performance"],
               ran: [
                 {
                   name: "code-health",
@@ -372,8 +596,19 @@ test("the last drain's report is on the screen beside the drain that left it", a
                     costMicros: 5_100_000,
                   },
                 },
+                {
+                  name: "time-and-spend",
+                  runs: 70,
+                  tokens: {
+                    calls: 210,
+                    inputTokens: 5_700_000,
+                    outputTokens: 402_000,
+                    cacheReadTokens: 19_200_000,
+                    costMicros: 5_100_000,
+                  },
+                },
               ],
-              shared: false,
+              shared: true,
             },
             accounts: [
               {
@@ -468,4 +703,16 @@ test("the last drain's report is on the screen beside the drain that left it", a
   // The controller's own notes, and what it could not see at all.
   expect(text).toContain("1 note(s) the controller made, 3 dropped");
   expect(text).toContain("what this report cannot answer");
+  const report = strip.querySelector(".plugin-atyrode_babel_watch__drain-report");
+  const allocation = report?.querySelector(ALLOCATION);
+  const reviewAllocation = allocation?.querySelector("[data-preset='review-backlog']");
+  const exploreAllocation = allocation?.querySelector("[data-preset='explore-topic']");
+  expect(reviewAllocation?.textContent).toContain("incurred $3.9000");
+  expect(exploreAllocation?.textContent).toContain("incurred $1.2000");
+  const recipes = report?.querySelector("[data-field='drain-recipe-participation']");
+  expect(recipes?.textContent).toContain("code-health 70 runs · $5.1000");
+  expect(recipes?.textContent).toContain("time-and-spend 70 runs · $5.1000");
+  expect(recipes?.textContent).toContain("Do not add them together");
+  expect(allocation?.textContent).not.toContain("code-health");
+  expect(text).not.toContain("$10.2000");
 });

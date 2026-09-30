@@ -79,12 +79,15 @@ import {
   addSpend,
   deadlineOf,
   drainHoldsRun,
+  machineOpenWork,
   noteDrain,
   reconcileLive,
+  readDrain,
   reserveLaunchStatement,
   runningDrainHoldsRun,
   targetMet,
 } from "../store/drains.ts";
+import { drainPostingRefusal, type DrainAdmission, type DrainCapacity } from "./drain-admission.ts";
 import {
   materialJobId,
   nativeAdmissionRefusal,
@@ -392,7 +395,8 @@ export interface JobsSlice {
     machineId: string;
     operationId?: string | undefined;
     limit?: number | undefined;
-  }): Awaitable<{ runs: readonly { job: JobRunState | null }[] }>;
+    cursor?: string | undefined;
+  }): Awaitable<{ runs: readonly { job: JobRunState | null }[]; nextCursor: string | null }>;
   output(args: {
     node: OutputRef;
     offset: number;
@@ -497,6 +501,7 @@ export interface ConductorDeps {
   readonly coordinator: Coordinator;
   readonly jobs: JobsSlice;
   readonly machines: MachinesSlice;
+  readonly drainAdmission?: DrainAdmission;
   /**
    * BABEL'S SIDE OF CODE'S DOORS, over this wake's own authority (#279).
    *
@@ -2001,7 +2006,7 @@ function neverRetained(error: unknown): boolean {
  * Babel's own, polled through `ctx.jobs`; non-null is a CODE SESSION, whose job belongs to
  * another plugin and is reconciled through `code.readSession` (#279).
  */
-type PendingRun = {
+export type PendingRun = {
   id: string;
   job_id: string;
   machine_id: string;
@@ -2377,6 +2382,491 @@ function mappingIntent(preparation: string | null): TranscriptMapRun | null {
   }
 }
 
+function jsonRecord(value: string | null): Record<string, unknown> | undefined {
+  if (value === null || value === "") return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * WHICH MODEL THE LAUNCH ASKED FOR, off the run row's own launch report (#169).
+ *
+ * The receipt's `model` is documented as the model a run ASKED for, and it was being written
+ * from the session's transcript — which names the model that ANSWERED. So a fallback was
+ * recorded as an intent nobody had, `RunTrace.model` said "requested" about an observation,
+ * and two runs of one request that fell back differently compared as `different-request`,
+ * which disqualifies every other field of the comparison.
+ *
+ * `askedModel` is written by the launch door, which is the only place Babel knows the answer:
+ * a review the conductor dispatched names a Code PROFILE and Code resolves the model behind
+ * it, so for those runs nothing here asked for a model by name and the field is absent.
+ * Absent is the honest reading of that and is not "the same as what answered".
+ */
+function askedModel(profile: string | null): string | undefined {
+  const asked = jsonRecord(profile)?.["askedModel"];
+  return typeof asked === "string" && asked !== "" ? asked : undefined;
+}
+
+/** The immutable, blinded record revision a review session is shown. */
+export async function projectReview(
+  store: Pick<BabelStore, "db">,
+  recordId: string,
+): Promise<ReviewProjection | null> {
+  const records = await store.db.query<{
+    id: string;
+    kind: string;
+    root_id: string;
+    parent_id: string | null;
+    title: string;
+    created_at: string;
+    payload: string;
+  }>(
+    `SELECT id, kind, root_id, parent_id, title, created_at, payload
+         FROM records WHERE id = ? LIMIT 1`,
+    [recordId],
+  );
+  const record = records[0];
+  if (record === undefined) return null;
+  let payload: unknown = {};
+  try {
+    // Withheld review state is removed here, not merely detected downstream: an imported
+    // record's own payload carries the keys the reviewer must not see.
+    payload = blinded(JSON.parse(record.payload));
+  } catch {
+    payload = {};
+  }
+  const sources = await store.db.query<{
+    selector: string;
+    harness: string;
+    title: string;
+    workspace: string;
+    repository_remote: string | null;
+    content_digest: string;
+  }>(
+    `SELECT s.selector, s.harness, s.title, s.workspace, s.repository_remote,
+              s.content_digest
+         FROM edges e JOIN sessions s ON s.selector = e.to_id
+        WHERE e.from_id = ? AND e.kind = 'cites' AND e.to_kind = 'session'
+        ORDER BY e.position, s.selector`,
+    [recordId],
+  );
+  return {
+    target: {
+      id: record.id,
+      kind: record.kind,
+      root_id: record.root_id,
+      parent_id: record.parent_id,
+      title: record.title,
+      created_at: record.created_at,
+      payload,
+    },
+    sources,
+  };
+}
+
+/** Replay a drain review's terminal receipt across the receipt/claim crash boundary. */
+export async function finishClosedReview(
+  deps: Pick<ConductorDeps, "store" | "coordinator" | "now">,
+  run: {
+    id: string;
+    preparation: string | null;
+    payload: string;
+    closure: string | null;
+    job_id: string | null;
+    prepare_job_id: string | null;
+  },
+): Promise<void> {
+  const review = reviewPreparation(preparationOf(run.preparation));
+  if (review === null || run.closure === null) return;
+  const [held] = await deps.store.db.query<{
+    run_id: string;
+    reserved_cost: number;
+    finished_at: string | null;
+  }>(
+    `SELECT run_id,reserved_cost,finished_at FROM claims WHERE id=? AND fence=?
+      AND (job_id=? OR job_id=?)`,
+    [review.assignmentId, review.fence, run.job_id, run.prepare_job_id],
+  );
+  if (held === undefined || held.finished_at !== null) return;
+  const receipt = jsonRecord(run.payload) ?? {};
+  const meter = receipt["inference"] as { costMicros?: number } | undefined;
+  const cost =
+    meter?.costMicros !== undefined
+      ? meter.costMicros / 1_000_000
+      : typeof receipt["costUsd"] === "number"
+        ? receipt["costUsd"]
+        : Number(held.reserved_cost);
+  await deps.coordinator.finish({
+    id: review.assignmentId,
+    runId: held.run_id,
+    fence: review.fence,
+    cost,
+    outcome:
+      run.closure === "completed"
+        ? "completed"
+        : run.closure === "stopped" || run.closure === "skipped"
+          ? "skipped"
+          : "failed",
+    ...(run.job_id === null || run.prepare_job_id === null
+      ? {}
+      : { terminalJob: { jobId: run.job_id, previousJobId: run.prepare_job_id } }),
+    now: deps.now(),
+  });
+}
+
+export async function settleReviewSession(
+  deps: Pick<ConductorDeps, "store" | "coordinator">,
+  at: number,
+  run: PendingRun,
+  read: SessionRead,
+  reportedClosure: Receipt["closure"],
+  preparation: ReviewPreparation,
+  ingested: IngestedRun[],
+  settled: SettledClaim[],
+  notes: string[],
+  refusals: Refusals,
+): Promise<void> {
+  const { store, coordinator } = deps;
+  const drainCycleRunId = (
+    preparationOf(run.preparation)?.["reviewDrain"] as { drainId: string } | undefined
+  )?.drainId;
+  const drainReview = drainCycleRunId !== undefined;
+  const [current] = await store.db.query<{ closure: string | null; stopped: number | bigint }>(
+    `SELECT closure,COALESCE(json_extract(payload,'$.stopRequested'),0) stopped FROM runs WHERE id=?`,
+    [run.id],
+  );
+  if (current?.closure != null) return;
+  const session = read.session;
+  const { inference, costUsd: knownCost, receiptUsage } = sessionAccounting(read);
+  const costUsd = knownCost ?? 0;
+  let reason = "";
+  let skippedResult = false;
+  let refusedContributions: RefusedContribution[] = [];
+  let submittedPayload: unknown = null;
+  let acceptedRows: Readonly<Record<string, readonly Record<string, string | number | null>[]>> =
+    {};
+  const projection = await projectReview(store, preparation.recordId);
+  if (Number(current?.stopped) === 1) {
+    reason = `${REFUSALS.authority}: the review was stopped; its spend is retained, not result authority`;
+  } else if (session === null) {
+    reason = unsealedReason("the review session", read);
+  } else if (session.exitCode !== 0) {
+    reason = `${REFUSALS.schema}: the review session exited ${String(session.exitCode)} and submitted no result`;
+  } else if (endedOnFailedCall(session)) {
+    reason = failedCallReason("the review session", session.failure);
+  } else if (projection === null) {
+    reason = `${REFUSALS.unknownReference}: record ${preparation.recordId} is no longer readable`;
+  } else {
+    const verdict = reviewVerdict(preparation, session.finalMessage, projection.target);
+    reason = verdict.reason;
+    refusedContributions = [...verdict.refused];
+    submittedPayload = verdict.submitted;
+    if (verdict.result !== null) {
+      skippedResult = verdict.result.skip !== "";
+      acceptedRows = reviewRows(preparation, verdict.result, run.id, new Date(at).toISOString());
+    }
+  }
+
+  const authorityParams: readonly SqlParam[] = [
+    preparation.assignmentId,
+    preparation.fence,
+    run.job_id,
+  ];
+  const openGuard = `EXISTS (SELECT 1 FROM runs WHERE id=? AND closure IS NULL)`;
+  const resultGuard =
+    `AND ${openGuard}` +
+    (drainReview
+      ? ` AND EXISTS (SELECT 1 FROM runs WHERE id=?
+          AND COALESCE(json_extract(payload,'$.stopRequested'),0)=0)`
+      : "");
+  const resultParams = [...authorityParams, run.id, ...(drainReview ? [run.id] : [])];
+  const liveAuthority: SqlCondition = {
+    sql:
+      `EXISTS (SELECT 1 FROM claims WHERE id = ? AND fence = ? AND job_id = ? ` +
+      `AND finished_at IS NULL) ${resultGuard}`,
+    params: resultParams,
+  };
+  const staleAuthority: SqlCondition = {
+    sql: `NOT (${liveAuthority.sql}) AND ${openGuard}`,
+    params: [...resultParams, run.id],
+  };
+  const counts: Record<string, number> = {};
+  const statements: SqlStatement[] = [
+    {
+      sql: `UPDATE runs SET payload=payload WHERE id=? AND closure IS NULL RETURNING id`,
+      params: [run.id],
+    },
+    {
+      // A no-op write makes the authority check and every guarded output below one SQLite
+      // write transaction. A takeover before this statement wins and suppresses the review;
+      // one after it waits until the accepted rows and terminal receipt are durable.
+      sql:
+        `UPDATE claims SET job_id = job_id ` +
+        `WHERE id = ? AND fence = ? AND job_id = ? AND finished_at IS NULL ${resultGuard} ` +
+        `RETURNING run_id`,
+      params: resultParams,
+    },
+  ];
+  if (reason === "") {
+    for (const file of INGEST_ORDER) {
+      const ingest = INGEST[file];
+      const rows = acceptedRows[file] ?? [];
+      if (ingest === undefined || rows.length === 0) continue;
+      for (const row of rows) {
+        const refused = refuseRow(ingest.table, row);
+        const statement = refused === null ? rowStatement(ingest, row, liveAuthority) : null;
+        if (refused !== null || statement === null) {
+          reason = `${refused?.code ?? REFUSALS.schema}: ${refused?.message ?? `${file} contains a row outside the store schema`}`;
+          break;
+        }
+        statements.push(statement);
+        counts[file] = (counts[file] ?? 0) + 1;
+      }
+      if (reason !== "") break;
+    }
+  }
+  if (reason !== "") {
+    statements.splice(2);
+    for (const key of Object.keys(counts)) delete counts[key];
+  }
+  const receiptClosure: Receipt["closure"] =
+    reason === ""
+      ? skippedResult
+        ? "skipped"
+        : "completed"
+      : session === null
+        ? reportedClosure
+        : "failed";
+  const base: Receipt = {
+    runId: run.id,
+    kind: "evaluate",
+    machineId: run.machine_id,
+    recipeId: preparation.recipe.id,
+    role: preparation.role,
+    ...(jsonRecord(run.profile) === undefined ? {} : { profile: jsonRecord(run.profile) }),
+    // ASKED ON THE LEFT, ANSWERED ON THE RIGHT (#169). A review names a Code profile and not
+    // a model, so `model` is absent here and `models` is the whole of what is known.
+    ...(askedModel(run.profile) === undefined ? {} : { model: askedModel(run.profile) }),
+    ...(session === null ? {} : { models: [session.model] }),
+    preparation: {
+      ...(drainReview ? { reviewDrain: preparationOf(run.preparation)?.["reviewDrain"] } : {}),
+      review: preparation,
+      jobVersion: REVIEW_JOB_VERSION,
+      promptVersion: REVIEW_PROMPT_VERSION,
+      blindingPolicyVersion: REVIEW_BLINDING_POLICY_VERSION,
+    },
+    startedAt: run.started_at,
+    finishedAt: new Date(at).toISOString(),
+    closure: receiptClosure,
+    ...(reason === "" ? {} : { reason }),
+    ...receiptUsage,
+    counts,
+  };
+  // `counts` itself stays the per-file row count the ingest reports; the refused contributions
+  // are counted onto the RECEIPT's copy of it, where "how did this review's spend land" is read.
+  const withRefusals: Receipt =
+    refusedContributions.length === 0
+      ? base
+      : {
+          ...base,
+          refusedContributions,
+          counts: { ...counts, contributionsRefused: refusedContributions.length },
+        };
+  // A REFUSED REVIEW KEEPS WHAT IT SUBMITTED. The sentence alone made "did this class of
+  // refusal fall?" and "did the judgement change under refusal?" unanswerable from the store
+  // (#311); the payload is the model's own answer, unedited, because an edited one is not
+  // evidence. Too large to keep is reported as its size rather than truncated into something
+  // nobody submitted.
+  const receipt: Receipt =
+    reason === "" || submittedPayload === null
+      ? withRefusals
+      : { ...withRefusals, rejectedSubmission: rejectedSubmission(submittedPayload) };
+  const target: IngestTarget = {
+    runId: run.id,
+    jobId: run.job_id,
+    machineId: run.machine_id,
+    operationId: run.kind,
+    outputs: [],
+    closure: receipt.closure,
+    inference,
+  };
+  const staleReason =
+    `${REFUSALS.authority}: assignment ${preparation.assignmentId} fence ` +
+    `${String(preparation.fence)} is no longer held by job ${run.job_id}`;
+  const staleReceipt: Receipt = {
+    // FROM `base`, NOT FROM `receipt`: a takeover suppressed this submission entirely, so the
+    // refused contributions are not this epoch's account of anything either.
+    ...base,
+    closure: "failed",
+    reason: staleReason,
+    counts: {},
+  };
+  const callBase = {
+    runId: run.id,
+    at,
+    machineId: run.machine_id,
+    session,
+    inference,
+    closure: receipt.closure,
+    reason,
+  } as const;
+  const reviewOutcome =
+    reason === ""
+      ? skippedResult
+        ? "skipped"
+        : "completed"
+      : session === null && read.job.state === "cancelled"
+        ? "skipped"
+        : "failed";
+  statements.push(
+    // The durable parent already exists. Record the call before closing it, so both receipt
+    // guards still observe the open parent; a concurrent settlement cannot overwrite it.
+    callStatement(sessionCall(callBase), liveAuthority),
+    callStatement(
+      sessionCall({ ...callBase, closure: "failed", reason: staleReason }),
+      staleAuthority,
+    ),
+    runStatement(run.id, target, receipt, counts, liveAuthority),
+    runStatement(run.id, { ...target, closure: "failed" }, staleReceipt, {}, staleAuthority),
+  );
+  if (!drainReview) {
+    statements.push({
+      // Ordinary review output, receipt and charge remain one commit after extraction.
+      // A lost commit answer cannot leave a completed run with an uncharged claim.
+      sql: `UPDATE claims SET finished_at=?,actual_cost=?,outcome=?
+        WHERE id=? AND fence=? AND job_id=? AND finished_at IS NULL
+          AND EXISTS (SELECT 1 FROM runs WHERE id=? AND authority_id=claims.run_id
+            AND closure=?)
+        RETURNING reserved_cost`,
+      params: [
+        new Date(at).toISOString(),
+        costUsd,
+        reviewOutcome,
+        ...authorityParams,
+        run.id,
+        receipt.closure,
+      ],
+    });
+  }
+  const results = await store.db.batch(statements);
+  if ((results[0]?.length ?? 0) === 0) return;
+  const claimRunId = results[1]?.[0]?.["run_id"];
+  const authorized = typeof claimRunId === "string";
+  const finalReason = authorized ? reason : staleReason;
+  const finalReceipt = authorized ? receipt : staleReceipt;
+  const finalCounts = authorized ? counts : {};
+  const refusedCode = finalReason === "" ? null : refusalCode(finalReason);
+  // Whether a model answered before the contract said no is asked once, here, and again of
+  // every contribution the same answer carried: they are refusals OF ONE SUBMISSION and cost
+  // what that submission cost, so they are filed under the same side of the tally.
+  const paid = paidRefusal(inference?.calls ?? null, session !== null && session.exitCode === 0);
+  if (refusedCode !== null) fileRefusal(refusals, refusedCode, paid);
+  await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+  store.touch();
+  if (finalReason !== "") notes.push(`run ${run.id}: ${finalReason}`);
+  else if (authorized && refusedContributions.length > 0) {
+    // A REVIEW THAT STOOD STILL SAYS WHAT THE CONTRACT REFUSED. The tally is where "how much
+    // did the contract refuse today, and under which code" is answered, and a contribution
+    // dropped out of a recorded review would otherwise be invisible — which is the half of
+    // #305 that strictness alone was never going to answer. A review refused WHOLE is counted
+    // once, above, by the sentence it failed on: the two are never counted for the same defect.
+    for (const dropped of refusedContributions) {
+      const code = refusalCode(dropped.reason);
+      if (code !== null) fileRefusal(refusals, code, paid);
+    }
+    notes.push(
+      `run ${run.id}: recorded the review and refused ` +
+        `${String(refusedContributions.length)} of its contributions: ` +
+        refusedContributions.map((dropped) => dropped.reason).join("; "),
+    );
+  }
+  ingested.push({
+    runId: run.id,
+    jobId: run.job_id,
+    closure: finalReceipt.closure,
+    costUsd,
+    rows: finalCounts,
+    skipped: 0,
+  });
+  if (!drainReview) {
+    const charged = results.at(-1)?.[0];
+    if (!authorized || charged === undefined) return;
+    settled.push({
+      claimId: preparation.assignmentId,
+      outcome: reviewOutcome,
+      cost: costUsd,
+      overrun: costUsd > Number(charged["reserved_cost"]),
+      refused: null,
+      reason: null,
+    });
+    return;
+  }
+  const outcome =
+    authorized && reason === ""
+      ? skippedResult
+        ? "skipped"
+        : "completed"
+      : session === null && read.job.state === "cancelled"
+        ? "skipped"
+        : "failed";
+  const finished = await coordinator.finish({
+    id: preparation.assignmentId,
+    runId: drainCycleRunId ?? String(claimRunId),
+    fence: preparation.fence,
+    cost:
+      knownCost ??
+      Number(
+        (
+          await store.db.query<{ reserved_cost: number }>(
+            `SELECT reserved_cost FROM claims WHERE id=? AND fence=?`,
+            [preparation.assignmentId, preparation.fence],
+          )
+        )[0]?.reserved_cost ?? 0,
+      ),
+    outcome,
+    ...(drainReview && run.prepare_job_id !== null
+      ? { terminalJob: { jobId: run.job_id, previousJobId: run.prepare_job_id } }
+      : {}),
+  });
+  settled.push(
+    finished.outcome === "finished"
+      ? {
+          claimId: preparation.assignmentId,
+          outcome,
+          cost: finished.cost,
+          overrun: finished.overrun,
+          refused: null,
+          reason: null,
+        }
+      : {
+          claimId: preparation.assignmentId,
+          outcome,
+          cost: costUsd,
+          overrun: false,
+          refused: finished.refusal.reason,
+          reason: null,
+        },
+  );
+}
+/** The run row's own preparation blob, as the receipt carries it back unchanged. */
+function preparationOf(preparation: string | null): Receipt["preparation"] {
+  if (preparation === null || preparation === "") return undefined;
+  let held: unknown;
+  try {
+    held = JSON.parse(preparation);
+  } catch {
+    return undefined;
+  }
+  return typeof held === "object" && held !== null && !Array.isArray(held)
+    ? (held as Record<string, unknown>)
+    : undefined;
+}
 export function conductor(deps: ConductorDeps): Conductor {
   const { store, coordinator, jobs, machines, keys, plan, engine } = deps;
   const heldSilences = SILENCES_BY_DATABASE.get(store.db);
@@ -2558,16 +3048,27 @@ export function conductor(deps: ConductorDeps): Conductor {
     if ((changed.at(-1)?.length ?? 0) === 0) return;
     await store.db.run(
       `UPDATE runs SET closure='failed',finished_at=?,payload=?
-      WHERE job_id=? AND closure IS NULL AND EXISTS (SELECT 1 FROM runs parent WHERE parent.id=?
-        AND coalesce(json_extract(parent.payload,'$.nativeAttempts'),0)=0)`,
+      WHERE id=? AND job_id=? AND kind=? AND machine_id=? AND closure IS NULL
+        AND EXISTS (SELECT 1 FROM runs parent WHERE parent.id=?
+          AND coalesce(json_extract(parent.payload,'$.nativeAttempts'),0)=0)`,
       [
         new Date(deps.now()).toISOString(),
         JSON.stringify({ closure: "failed", reason }),
+        intent.input.runId,
         prepareJobId,
+        OPERATIONS.mapPrepare,
+        intent.route.executorMachineId,
         runId,
       ],
     );
-    await settleClaims(prepareJobId, 0, "failed", settled, intent.claim);
+    // Closing result authority cannot settle an uncertain native posting. The retained child
+    // holds both machine occupancy and the claim until its own authoritative terminal receipt.
+    const terminal = await store.db.query(
+      `SELECT 1 FROM runs WHERE id=? AND job_id=? AND kind=? AND machine_id=?
+        AND closure IS NOT NULL`,
+      [intent.input.runId, prepareJobId, OPERATIONS.mapPrepare, intent.route.executorMachineId],
+    );
+    if (terminal.length > 0) await settleClaims(prepareJobId, 0, "failed", settled, intent.claim);
     await store.db.run(`DELETE FROM run_progress WHERE run_id=?`, [runId]);
     store.touch();
   }
@@ -2612,6 +3113,24 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
     if (refusal !== null) {
       await closeMappingPreparation(runId, jobId, intent, refusal, settled);
+      return;
+    }
+    const capacityRefusal = await drainPostingRefusal(
+      store,
+      deps.drainAdmission,
+      runId,
+      OPERATIONS.mapPrepare,
+    );
+    if (capacityRefusal !== null) {
+      notes.push(`mapping ${runId}: preparation waits: ${capacityRefusal}`);
+      if (deps.mappingDrainId !== undefined)
+        await noteDrain(store, deps.mappingDrainId, [
+          {
+            at: deps.now(),
+            kind: "admission",
+            detail: capacityRefusal,
+          },
+        ]);
       return;
     }
     if (promptBytes(JSON.stringify({ [INPUT_FIELD]: JSON.stringify(intent.input) })) > 65_536) {
@@ -2732,6 +3251,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     requested: RequestedJob[],
     settled: SettledClaim[],
     slot: MappingSlot,
+    capacity: Extract<DrainCapacity, { limit: number }>,
+    open: SqlCondition,
   ): Promise<string | null> {
     const route = mappingPolicy(policy);
     if (!route || !deps.mapPreparePlan) return "mapping preparation limits are unavailable";
@@ -2741,6 +3262,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     if ("refused" in described) return described.refused;
     const checked = await engine.checkProfile(route.profile);
     if (!checked.ok) return checked.refused;
+    if ("drainId" in slot && (await readDrain(store, slot.drainId)) === null)
+      return "mapping drain is absent";
     const jobId = materialJobId(`job_${assignment.id}_${cycleRunId}`);
     const claimed = await coordinator.claim({ assignment, runId: cycleRunId, jobId, now: at });
     if (claimed.outcome === "refused") return claimed.refusal.detail;
@@ -2783,11 +3306,21 @@ export function conductor(deps: ConductorDeps): Conductor {
     const held: SqlCondition = drain
       ? drainHoldsRun(slot.drainId, runId)
       : {
-          sql: `(SELECT count(*) FROM runs WHERE closure IS NULL AND ${STANDING_RUN}) < ?`,
-          params: [slot.share],
+          sql: `(SELECT count(*) FROM runs WHERE closure IS NULL AND ${STANDING_RUN}) < ?
+            AND (${open.sql}) < ?`,
+          params: [slot.share, ...open.params, capacity.limit],
         };
     const reserve = drain
-      ? [reserveLaunchStatement(slot.drainId, { runId, jobId, launchedAt: at }, slot.ordinal)]
+      ? [
+          reserveLaunchStatement(
+            slot.drainId,
+            { runId, jobId, launchedAt: at },
+            slot.ordinal,
+            route.executorMachineId,
+            capacity.limit,
+            capacity.activeJobIds,
+          ),
+        ]
       : [];
     const published = await store.db.batch([
       ...reserve,
@@ -2893,6 +3426,21 @@ export function conductor(deps: ConductorDeps): Conductor {
   ): Promise<{ readonly launched: number; readonly refusal: string | null }> {
     let launched = 0;
     for (let slot = slotAt(0); launched < free && slot !== null; slot = slotAt(launched)) {
+      // A draw itself holds a short hand-out lease. Check capacity before drawing so a busy
+      // machine cannot consume the available candidates without ever claiming or posting one.
+      if (deps.drainAdmission === undefined)
+        return { launched, refusal: "physical-core admission unavailable on this wake" };
+      const capacity = await deps.drainAdmission(executorMachineId, OPERATIONS.mapPrepare);
+      if ("refused" in capacity) return { launched, refusal: capacity.refused };
+      const open = machineOpenWork(executorMachineId, capacity.activeJobIds);
+      if (
+        (await store.db.query(`SELECT 1 WHERE (${open.sql}) < ?`, [...open.params, capacity.limit]))
+          .length === 0
+      )
+        return {
+          launched,
+          refusal: `physical-core admission holds mapping at the live ceiling of ${String(capacity.limit)}; existing work is retained`,
+        };
       const drawn = await coordinator.draw({
         runId: cycleRunId,
         machines: [executorMachineId],
@@ -2914,6 +3462,8 @@ export function conductor(deps: ConductorDeps): Conductor {
         requested,
         settled,
         slot,
+        capacity,
+        open,
       );
       if (detail === LOST_LAUNCH_SLOT) {
         // Another wake took this slot first; it owns the lane now, and nothing was spent here.
@@ -3225,6 +3775,16 @@ export function conductor(deps: ConductorDeps): Conductor {
         await closeMappingPreparation(run.id, run.prepare_job_id, intent, currentRefusal, settled);
         continue;
       }
+      const capacityRefusal = await drainPostingRefusal(
+        store,
+        deps.drainAdmission,
+        run.id,
+        OPERATIONS.mapPrepare,
+      );
+      if (capacityRefusal !== null) {
+        notes.push(`mapping ${run.id}: posting waits: ${capacityRefusal}`);
+        continue;
+      }
       const fence = mappingFence(intent, run.prepare_job_id, "admission");
       const owned = await store.db.batch([
         {
@@ -3309,6 +3869,18 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (unestablished(refusal)) {
       notes.push(`mapping ${run.id}: posting recovery waits: ${refusal.unestablished}`);
       return;
+    }
+    if (refusal === null) {
+      const capacityRefusal = await drainPostingRefusal(
+        store,
+        deps.drainAdmission,
+        run.id,
+        OPERATIONS.mapPrepare,
+      );
+      if (capacityRefusal !== null) {
+        notes.push(`mapping ${run.id}: posting recovery waits: ${capacityRefusal}`);
+        return;
+      }
     }
     const answered =
       refusal === null
@@ -4560,375 +5132,6 @@ export function conductor(deps: ConductorDeps): Conductor {
     return { provider, identityKey };
   }
 
-  function jsonRecord(value: string | null): Record<string, unknown> | undefined {
-    if (value === null || value === "") return undefined;
-    try {
-      const parsed: unknown = JSON.parse(value);
-      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /**
-   * WHICH MODEL THE LAUNCH ASKED FOR, off the run row's own launch report (#169).
-   *
-   * The receipt's `model` is documented as the model a run ASKED for, and it was being written
-   * from the session's transcript — which names the model that ANSWERED. So a fallback was
-   * recorded as an intent nobody had, `RunTrace.model` said "requested" about an observation,
-   * and two runs of one request that fell back differently compared as `different-request`,
-   * which disqualifies every other field of the comparison.
-   *
-   * `askedModel` is written by the launch door, which is the only place Babel knows the answer:
-   * a review the conductor dispatched names a Code PROFILE and Code resolves the model behind
-   * it, so for those runs nothing here asked for a model by name and the field is absent.
-   * Absent is the honest reading of that and is not "the same as what answered".
-   */
-  function askedModel(profile: string | null): string | undefined {
-    const asked = jsonRecord(profile)?.["askedModel"];
-    return typeof asked === "string" && asked !== "" ? asked : undefined;
-  }
-
-  /** The immutable, blinded record revision a review session is shown. */
-  async function project(recordId: string): Promise<ReviewProjection | null> {
-    const records = await store.db.query<{
-      id: string;
-      kind: string;
-      root_id: string;
-      parent_id: string | null;
-      title: string;
-      created_at: string;
-      payload: string;
-    }>(
-      `SELECT id, kind, root_id, parent_id, title, created_at, payload
-         FROM records WHERE id = ? LIMIT 1`,
-      [recordId],
-    );
-    const record = records[0];
-    if (record === undefined) return null;
-    let payload: unknown = {};
-    try {
-      // Withheld review state is removed here, not merely detected downstream: an imported
-      // record's own payload carries the keys the reviewer must not see.
-      payload = blinded(JSON.parse(record.payload));
-    } catch {
-      payload = {};
-    }
-    const sources = await store.db.query<{
-      selector: string;
-      harness: string;
-      title: string;
-      workspace: string;
-      repository_remote: string | null;
-      content_digest: string;
-    }>(
-      `SELECT s.selector, s.harness, s.title, s.workspace, s.repository_remote,
-              s.content_digest
-         FROM edges e JOIN sessions s ON s.selector = e.to_id
-        WHERE e.from_id = ? AND e.kind = 'cites' AND e.to_kind = 'session'
-        ORDER BY e.position, s.selector`,
-      [recordId],
-    );
-    return {
-      target: {
-        id: record.id,
-        kind: record.kind,
-        root_id: record.root_id,
-        parent_id: record.parent_id,
-        title: record.title,
-        created_at: record.created_at,
-        payload,
-      },
-      sources,
-    };
-  }
-
-  async function settleReviewSession(
-    at: number,
-    run: PendingRun,
-    read: SessionRead,
-    reportedClosure: Receipt["closure"],
-    preparation: ReviewPreparation,
-    ingested: IngestedRun[],
-    settled: SettledClaim[],
-    notes: string[],
-    refusals: Refusals,
-  ): Promise<void> {
-    const session = read.session;
-    const { inference, costUsd: knownCost, receiptUsage } = sessionAccounting(read);
-    const costUsd = knownCost ?? 0;
-    let reason = "";
-    let skippedResult = false;
-    let refusedContributions: RefusedContribution[] = [];
-    let submittedPayload: unknown = null;
-    let acceptedRows: Readonly<Record<string, readonly Record<string, string | number | null>[]>> =
-      {};
-    const projection = await project(preparation.recordId);
-    const stopped = await store.db.query<{ reason: string | null }>(
-      `SELECT json_extract(payload,'$.stopReason') reason FROM runs
-        WHERE id=? AND json_extract(payload,'$.stopRequested')=1`,
-      [run.id],
-    );
-    if (stopped.length > 0) {
-      reason = `${REFUSALS.authority}: ${stopped[0]?.reason ?? "the review posting was stopped"}`;
-    } else if (session === null) {
-      reason = unsealedReason("the review session", read);
-    } else if (session.exitCode !== 0) {
-      reason = `${REFUSALS.schema}: the review session exited ${String(session.exitCode)} and submitted no result`;
-    } else if (endedOnFailedCall(session)) {
-      reason = failedCallReason("the review session", session.failure);
-    } else if (projection === null) {
-      reason = `${REFUSALS.unknownReference}: record ${preparation.recordId} is no longer readable`;
-    } else {
-      const verdict = reviewVerdict(preparation, session.finalMessage, projection.target);
-      reason = verdict.reason;
-      refusedContributions = [...verdict.refused];
-      submittedPayload = verdict.submitted;
-      if (verdict.result !== null) {
-        skippedResult = verdict.result.skip !== "";
-        acceptedRows = reviewRows(preparation, verdict.result, run.id, new Date(at).toISOString());
-      }
-    }
-
-    const authorityParams: readonly SqlParam[] = [
-      preparation.assignmentId,
-      preparation.fence,
-      run.job_id,
-    ];
-    const openRun: SqlCondition = {
-      sql: `EXISTS (SELECT 1 FROM runs WHERE id=? AND closure IS NULL)`,
-      params: [run.id],
-    };
-    const liveAuthority: SqlCondition = {
-      sql:
-        `EXISTS (SELECT 1 FROM claims WHERE id = ? AND fence = ? AND job_id = ? ` +
-        `AND finished_at IS NULL) AND ${openRun.sql}`,
-      params: [...authorityParams, ...openRun.params],
-    };
-    const staleAuthority: SqlCondition = {
-      sql:
-        `NOT EXISTS (SELECT 1 FROM claims WHERE id = ? AND fence = ? AND job_id = ? ` +
-        `AND finished_at IS NULL) AND ${openRun.sql}`,
-      params: [...authorityParams, ...openRun.params],
-    };
-    const counts: Record<string, number> = {};
-    const statements: SqlStatement[] = [
-      {
-        // A no-op write makes the authority check and every guarded output below one SQLite
-        // write transaction. A takeover before this statement wins and suppresses the review;
-        // one after it waits until the accepted rows and terminal receipt are durable.
-        sql:
-          `UPDATE claims SET job_id = job_id ` +
-          `WHERE id = ? AND fence = ? AND job_id = ? AND finished_at IS NULL ` +
-          `AND ${openRun.sql} RETURNING run_id`,
-        params: [...authorityParams, ...openRun.params],
-      },
-    ];
-    if (reason === "") {
-      for (const file of INGEST_ORDER) {
-        const ingest = INGEST[file];
-        const rows = acceptedRows[file] ?? [];
-        if (ingest === undefined || rows.length === 0) continue;
-        for (const row of rows) {
-          const refused = refuseRow(ingest.table, row);
-          const statement = refused === null ? rowStatement(ingest, row, liveAuthority) : null;
-          if (refused !== null || statement === null) {
-            reason = `${refused?.code ?? REFUSALS.schema}: ${refused?.message ?? `${file} contains a row outside the store schema`}`;
-            break;
-          }
-          statements.push(statement);
-          counts[file] = (counts[file] ?? 0) + 1;
-        }
-        if (reason !== "") break;
-      }
-    }
-    if (reason !== "") {
-      statements.splice(1);
-      for (const key of Object.keys(counts)) delete counts[key];
-    }
-    const receiptClosure: Receipt["closure"] =
-      reason === ""
-        ? skippedResult
-          ? "skipped"
-          : "completed"
-        : session === null
-          ? reportedClosure
-          : "failed";
-    const base: Receipt = {
-      runId: run.id,
-      kind: "evaluate",
-      machineId: run.machine_id,
-      recipeId: preparation.recipe.id,
-      role: preparation.role,
-      ...(jsonRecord(run.profile) === undefined ? {} : { profile: jsonRecord(run.profile) }),
-      // ASKED ON THE LEFT, ANSWERED ON THE RIGHT (#169). A review names a Code profile and not
-      // a model, so `model` is absent here and `models` is the whole of what is known.
-      ...(askedModel(run.profile) === undefined ? {} : { model: askedModel(run.profile) }),
-      ...(session === null ? {} : { models: [session.model] }),
-      preparation: {
-        review: preparation,
-        jobVersion: REVIEW_JOB_VERSION,
-        promptVersion: REVIEW_PROMPT_VERSION,
-        blindingPolicyVersion: REVIEW_BLINDING_POLICY_VERSION,
-      },
-      startedAt: run.started_at,
-      finishedAt: new Date(at).toISOString(),
-      closure: receiptClosure,
-      ...(reason === "" ? {} : { reason }),
-      ...receiptUsage,
-      counts,
-    };
-    // `counts` itself stays the per-file row count the ingest reports; the refused contributions
-    // are counted onto the RECEIPT's copy of it, where "how did this review's spend land" is read.
-    const withRefusals: Receipt =
-      refusedContributions.length === 0
-        ? base
-        : {
-            ...base,
-            refusedContributions,
-            counts: { ...counts, contributionsRefused: refusedContributions.length },
-          };
-    // A REFUSED REVIEW KEEPS WHAT IT SUBMITTED. The sentence alone made "did this class of
-    // refusal fall?" and "did the judgement change under refusal?" unanswerable from the store
-    // (#311); the payload is the model's own answer, unedited, because an edited one is not
-    // evidence. Too large to keep is reported as its size rather than truncated into something
-    // nobody submitted.
-    const receipt: Receipt =
-      reason === "" || submittedPayload === null
-        ? withRefusals
-        : { ...withRefusals, rejectedSubmission: rejectedSubmission(submittedPayload) };
-    const target: IngestTarget = {
-      runId: run.id,
-      jobId: run.job_id,
-      machineId: run.machine_id,
-      operationId: run.kind,
-      outputs: [],
-      closure: receipt.closure,
-      inference,
-    };
-    const staleReason =
-      `${REFUSALS.authority}: assignment ${preparation.assignmentId} fence ` +
-      `${String(preparation.fence)} is no longer held by job ${run.job_id}`;
-    const staleReceipt: Receipt = {
-      // FROM `base`, NOT FROM `receipt`: a takeover suppressed this submission entirely, so the
-      // refused contributions are not this epoch's account of anything either.
-      ...base,
-      closure: "failed",
-      reason: staleReason,
-      counts: {},
-    };
-    const callBase = {
-      runId: run.id,
-      at,
-      machineId: run.machine_id,
-      session,
-      inference,
-      closure: receipt.closure,
-      reason,
-    } as const;
-    const outcome =
-      reason === ""
-        ? skippedResult
-          ? "skipped"
-          : "completed"
-        : session === null && read.job.state === "cancelled"
-          ? "skipped"
-          : "failed";
-    statements.push(
-      // Calls precede closure so both output branches use the same open-run authority.
-      callStatement(sessionCall(callBase), liveAuthority),
-      callStatement(
-        sessionCall({ ...callBase, closure: "failed", reason: staleReason }),
-        staleAuthority,
-      ),
-      runStatement(run.id, target, receipt, counts, liveAuthority),
-      runStatement(run.id, { ...target, closure: "failed" }, staleReceipt, {}, staleAuthority),
-      {
-        // Review output, receipt and charge share one commit. Losing its answer cannot leave
-        // a completed run for the orphan reaper to charge again at its reservation.
-        sql: `UPDATE claims SET finished_at=?,actual_cost=?,outcome=?
-          WHERE id=? AND fence=? AND job_id=? AND finished_at IS NULL
-            AND EXISTS (SELECT 1 FROM runs WHERE id=? AND authority_id=claims.run_id
-              AND closure=?)
-          RETURNING reserved_cost`,
-        params: [
-          new Date(at).toISOString(),
-          costUsd,
-          outcome,
-          ...authorityParams,
-          run.id,
-          receipt.closure,
-        ],
-      },
-    );
-    const results = await store.db.batch(statements);
-    // The two receipt branches precede the charge. A concurrent settlement that already
-    // closed the run wins both guards; the late reader publishes and reports nothing twice.
-    if ((results.at(-3)?.length ?? 0) === 0 && (results.at(-2)?.length ?? 0) === 0) return;
-    const authorized = typeof results[0]?.[0]?.["run_id"] === "string";
-    const finalReason = authorized ? reason : staleReason;
-    const finalReceipt = authorized ? receipt : staleReceipt;
-    const finalCounts = authorized ? counts : {};
-    const refusedCode = finalReason === "" ? null : refusalCode(finalReason);
-    // Whether a model answered before the contract said no is asked once, here, and again of
-    // every contribution the same answer carried: they are refusals OF ONE SUBMISSION and cost
-    // what that submission cost, so they are filed under the same side of the tally.
-    const paid = paidRefusal(inference?.calls ?? null, session !== null && session.exitCode === 0);
-    if (refusedCode !== null) fileRefusal(refusals, refusedCode, paid);
-    await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
-    store.touch();
-    if (finalReason !== "") notes.push(`run ${run.id}: ${finalReason}`);
-    else if (authorized && refusedContributions.length > 0) {
-      // A REVIEW THAT STOOD STILL SAYS WHAT THE CONTRACT REFUSED. The tally is where "how much
-      // did the contract refuse today, and under which code" is answered, and a contribution
-      // dropped out of a recorded review would otherwise be invisible — which is the half of
-      // #305 that strictness alone was never going to answer. A review refused WHOLE is counted
-      // once, above, by the sentence it failed on: the two are never counted for the same defect.
-      for (const dropped of refusedContributions) {
-        const code = refusalCode(dropped.reason);
-        if (code !== null) fileRefusal(refusals, code, paid);
-      }
-      notes.push(
-        `run ${run.id}: recorded the review and refused ` +
-          `${String(refusedContributions.length)} of its contributions: ` +
-          refusedContributions.map((dropped) => dropped.reason).join("; "),
-      );
-    }
-    ingested.push({
-      runId: run.id,
-      jobId: run.job_id,
-      closure: finalReceipt.closure,
-      costUsd,
-      rows: finalCounts,
-      skipped: 0,
-    });
-    const charged = results.at(-1)?.[0];
-    if (!authorized || charged === undefined) return;
-    settled.push({
-      claimId: preparation.assignmentId,
-      outcome,
-      cost: costUsd,
-      overrun: costUsd > Number(charged["reserved_cost"]),
-      refused: null,
-      reason: null,
-    });
-  }
-  /** The run row's own preparation blob, as the receipt carries it back unchanged. */
-  function preparationOf(preparation: string | null): Receipt["preparation"] {
-    if (preparation === null || preparation === "") return undefined;
-    let held: unknown;
-    try {
-      held = JSON.parse(preparation);
-    } catch {
-      return undefined;
-    }
-    return typeof held === "object" && held !== null && !Array.isArray(held)
-      ? (held as Record<string, unknown>)
-      : undefined;
-  }
-
   /**
    * ONE FINISHED TITLING SESSION, TURNED INTO ONE ANSWER PER SESSION IT WAS OFFERED (#342).
    *
@@ -5110,6 +5313,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     const preparedReview = reviewPreparation(preparationOf(run.preparation));
     if (preparedReview !== null) {
       await settleReviewSession(
+        { store, coordinator },
         at,
         run,
         read,
@@ -5511,7 +5715,14 @@ export function conductor(deps: ConductorDeps): Conductor {
       const note = `session ${run.job_id} in ${containerId} cannot be read: ${answered.refused}`;
       notes.push(note);
       const analysis = AnalysisWorkSchema.safeParse(preparationOf(run.preparation)?.["analysis"]);
-      if (silent < UNREPORTED_CYCLES || analysis.success || mapping !== null || review !== null) {
+      const drainReview = preparationOf(run.preparation)?.["reviewDrain"] !== undefined;
+      if (
+        silent < UNREPORTED_CYCLES ||
+        analysis.success ||
+        mapping !== null ||
+        review !== null ||
+        drainReview
+      ) {
         // Still hoped for: the sentence is on the row so a reader sees it without the journal,
         // and the run stays open for the next wake to ask again.
         await store.db.run(`UPDATE runs SET payload = json_set(payload,'$.note',?) WHERE id = ?`, [
@@ -6175,8 +6386,9 @@ export function conductor(deps: ConductorDeps): Conductor {
                       AND r.authority_kind='conductor' AND r.authority_id=c.run_id
                       AND json_extract(r.preparation,'$.review.assignmentId')=c.id
                       AND json_extract(r.preparation,'$.review.fence')=c.fence
-                      AND json_extract(r.payload,'$.posting')=1 AND r.closure IS NULL))
-        WHERE NOT ((role LIKE 'analysis:%' OR role LIKE 'mapping:%') AND open_runs > 0)
+                      AND json_extract(r.payload,'$.posting')=1 AND r.closure IS NULL)) orphan
+        WHERE NOT (open_runs > 0 AND ((role LIKE 'analysis:%' OR role LIKE 'mapping:%')
+          OR EXISTS (SELECT 1 FROM drain_launches a WHERE a.drain_id=orphan.run_id AND a.preset='review-backlog')))
           AND ((job_id IS NULL AND granted_at <= ?)
            OR (job_id IS NOT NULL AND runs = 0 AND granted_at <= ?)
            OR (job_id IS NOT NULL AND runs > 0 AND open_runs = 0)
@@ -6188,6 +6400,43 @@ export function conductor(deps: ConductorDeps): Conductor {
     let released = 0;
     for (const orphan of orphans.slice(0, CLAIMS_REAPED_PER_TICK)) {
       const jobId = orphan.job_id;
+      const reviewDrain =
+        (
+          await store.db.query(
+            `SELECT 1 FROM drain_launches WHERE drain_id=? AND preset='review-backlog'`,
+            [orphan.run_id],
+          )
+        ).length > 0;
+      if (reviewDrain && Number(orphan.runs) === 0) {
+        const reason = "review drain claim published no intent";
+        const withdrawn = await coordinator.withdraw({
+          id: orphan.id,
+          fence: orphan.fence,
+          reason,
+          now: at,
+        });
+        if (withdrawn.outcome === "withdrawn") {
+          released += 1;
+          settled.push(withdrawal(orphan.id, reason));
+        }
+        continue;
+      }
+      if (reviewDrain) {
+        const [run] = await store.db.query<{
+          id: string;
+          preparation: string | null;
+          payload: string;
+          closure: string | null;
+          job_id: string | null;
+          prepare_job_id: string | null;
+        }>(
+          `SELECT id,preparation,payload,closure,job_id,prepare_job_id FROM runs
+            WHERE job_id=? OR prepare_job_id=?`,
+          [jobId, jobId],
+        );
+        if (run !== undefined) await finishClosedReview(deps, run);
+        continue;
+      }
       if (
         jobId !== null &&
         Number(orphan.runs) === 0 &&
@@ -6898,7 +7147,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         });
         continue;
       }
-      const projection = await project(assignment.recordId);
+      const projection = await projectReview(store, assignment.recordId);
       const leak = projection === null ? "" : blindedLeak(projection.target);
       if (projection === null || leak !== "") {
         const detail =

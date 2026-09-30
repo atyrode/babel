@@ -2,8 +2,10 @@ import type { MachineSummary } from "@manifold/protocol";
 import { Cluster, Stack, Switcher } from "@manifold/ui";
 import {
   ACTIONS,
+  DRAIN_ALLOCATION_PRESETS,
   DRAIN_PRESETS,
   door,
+  type DrainAllocationStatus,
   type DrainPreset,
   type DrainReportPayload,
   type TranscriptMapConfig,
@@ -216,6 +218,65 @@ function Field({
   );
 }
 
+function PresetAllocation({
+  allocation,
+}: {
+  readonly allocation: readonly DrainAllocationStatus[];
+}) {
+  if (allocation.length === 0) return null;
+  return (
+    <Stack gap="var(--babel-space-2)" data-field="drain-allocation">
+      <span className="plugin-atyrode_babel_watch__stat-label">Preset allocation</span>
+      {allocation.map((row) => (
+        <Stack gap="var(--babel-space-1)" key={row.preset} data-preset={row.preset}>
+          <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
+            <span>{DRAIN_CARDS[row.preset].title}</span>
+            {row.preset === "review-backlog" ? (
+              <span className="plugin-atyrode_babel_watch__muted">
+                Coordinator-managed review/evaluate
+              </span>
+            ) : null}
+            <span className="plugin-atyrode_babel_watch__lane">
+              weight {row.weight} · share {(row.share * 100).toFixed(1)}%
+            </span>
+            <span className="plugin-atyrode_babel_watch__lane">
+              incurred {micros(row.incurredCostMicros)}
+            </span>
+            <span className="plugin-atyrode_babel_watch__lane">
+              reserved {micros(row.reservedCostMicros)}
+            </span>
+            <span className="plugin-atyrode_babel_watch__lane">
+              deficit {micros(row.deficitCostMicros)}
+            </span>
+            <span
+              className={
+                row.unpricedJobs > 0
+                  ? "plugin-atyrode_babel_watch__stalled"
+                  : "plugin-atyrode_babel_watch__lane"
+              }
+            >
+              {figure(row.unpricedJobs)} unpriced job(s)
+            </span>
+          </Cluster>
+          <span
+            className={
+              row.gap === ""
+                ? "plugin-atyrode_babel_watch__muted"
+                : "plugin-atyrode_babel_watch__stalled"
+            }
+          >
+            {row.gap === "" ? "No reported gap." : row.gap}
+          </span>
+        </Stack>
+      ))}
+      <p className="plugin-atyrode_babel_watch__muted">
+        Shares are of whole-work-item metered cost, not job counts. Reservations are scheduling
+        estimates, not hard spend ceilings. Missing or zero-price coverage blocks refills.
+      </p>
+    </Stack>
+  );
+}
+
 /**
  * THE REPORT THE LAST DRAIN LEFT (#270), beside the drain it belongs to.
  *
@@ -271,27 +332,35 @@ function Report({ report }: { readonly report: DrainReportPayload }) {
         {elapsedClock(report.pipeline.prepareWallMs / 1000)} against{" "}
         {elapsedClock(report.pipeline.sessionWallMs / 1000)} in session
       </p>
+      <PresetAllocation allocation={report.presetAllocation} />
       {duties.length === 0 ? null : (
-        <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
-          {duties.map((lane) => (
-            <span key={`duty:${lane.name}`} className="plugin-atyrode_babel_watch__lane">
-              {lane.name}{" "}
-              <span className="plugin-atyrode_babel_watch__mono">
-                {figure(lane.runs)} runs · {micros(lane.tokens.costMicros)}
+        <Stack gap="var(--babel-space-1)" data-field="drain-recipe-participation">
+          <span className="plugin-atyrode_babel_watch__stat-label">Recipe participation</span>
+          <p className="plugin-atyrode_babel_watch__muted">
+            Recipe figures can overlap when a run uses several recipes. Do not add them together or
+            add them to preset allocation totals.
+          </p>
+          <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
+            {duties.map((lane) => (
+              <span key={`duty:${lane.name}`} className="plugin-atyrode_babel_watch__lane">
+                {lane.name}{" "}
+                <span className="plugin-atyrode_babel_watch__mono">
+                  {figure(lane.runs)} runs · {micros(lane.tokens.costMicros)}
+                </span>
               </span>
-            </span>
-          ))}
-          {/*
-            A DUTY THE OPERATOR NAMED AND NO RUN CARRIED is the allocation question answered in
-            the direction that matters: "as named" and "as spent" are two lists, and the gap
-            between them is the finding.
-          */}
-          {unnamed.map((name) => (
-            <span key={`unrun:${name}`} className="plugin-atyrode_babel_watch__stalled">
-              {name} <span className="plugin-atyrode_babel_watch__mono">never ran</span>
-            </span>
-          ))}
-        </Cluster>
+            ))}
+            {/*
+              A DUTY THE OPERATOR NAMED AND NO RUN CARRIED is the allocation question answered in
+              the direction that matters: "as named" and "as spent" are two lists, and the gap
+              between them is the finding.
+            */}
+            {unnamed.map((name) => (
+              <span key={`unrun:${name}`} className="plugin-atyrode_babel_watch__stalled">
+                {name} <span className="plugin-atyrode_babel_watch__mono">never ran</span>
+              </span>
+            ))}
+          </Cluster>
+        </Stack>
       )}
       {report.gaps.length === 0 ? null : (
         <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
@@ -388,8 +457,10 @@ function Running({
           {drain.state}
         </span>
         <span className="plugin-atyrode_babel_watch__muted">
-          {DRAIN_CARDS[drain.preset].title} on {drain.machineId} · started{" "}
-          {since(drain.startedAt, now)}
+          {drain.allocation.length > 1
+            ? "Mixed allocation"
+            : DRAIN_CARDS[drain.allocation[0]?.preset ?? drain.preset].title}{" "}
+          on {drain.machineId} · started {since(drain.startedAt, now)}
         </span>
       </Cluster>
       {/*
@@ -446,6 +517,7 @@ function Running({
           note={`${figure(drain.spent.inputTokens)} in / ${figure(drain.spent.outputTokens)} out.`}
         />
       </Switcher>
+      <PresetAllocation allocation={drain.allocation} />
       {refusals.length === 0 && closures.length === 0 ? null : (
         <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__lanes">
           {closures.map(([closure, n]) => (
@@ -523,7 +595,10 @@ export function Drain({
   onStop,
 }: DrainProps) {
   const card = DRAIN_CARDS[draft.preset];
-  const mapping = card.knob === "route";
+  const mixed = draft.mode === "allocation";
+  const mapping = !mixed && card.knob === "route";
+  const topic = mixed ? Number(draft.allocation["explore-topic"]) > 0 : card.knob === "topic";
+  const days = mixed ? Number(draft.allocation["read-whats-new"]) > 0 : card.knob === "days";
   const profile = chosenProfile(draft, profiles.profiles);
   const blocked = drainUnready(draft, profile, mappingRoute);
   return (
@@ -571,8 +646,8 @@ export function Drain({
               key={preset}
               type="button"
               className="plugin-atyrode_babel_watch__drain-preset"
-              aria-pressed={preset === draft.preset}
-              onClick={() => onDraft({ ...draft, preset })}
+              aria-pressed={!mixed && preset === draft.preset}
+              onClick={() => onDraft({ ...draft, mode: "preset", preset })}
             >
               <span className="plugin-atyrode_babel_watch__preset-title">
                 {DRAIN_CARDS[preset].title}
@@ -582,7 +657,79 @@ export function Drain({
               </span>
             </button>
           ))}
+          <button
+            type="button"
+            className="plugin-atyrode_babel_watch__drain-preset"
+            data-field="drain-allocation-mode"
+            aria-pressed={mixed}
+            onClick={() => onDraft({ ...draft, mode: "allocation" })}
+          >
+            <span className="plugin-atyrode_babel_watch__preset-title">Weighted allocation</span>
+            <span className="plugin-atyrode_babel_watch__preset-does">
+              Choose exploration and coordinator-managed review/evaluate metered-cost weights.
+            </span>
+          </button>
         </Cluster>
+        {mixed ? (
+          <Stack gap="var(--babel-space-2)">
+            <p className="plugin-atyrode_babel_watch__muted">
+              Enter a positive weight for each preset you want; leave it blank to omit it. No
+              presets or weights are chosen for you. Keep going is a separate free rehearsal;
+              transcript mapping keeps its separate governed route.
+            </p>
+            <Cluster gap="var(--babel-space-4)" className="plugin-atyrode_babel_watch__knobs">
+              {DRAIN_ALLOCATION_PRESETS.map((preset) => (
+                <label className="plugin-atyrode_babel_watch__knob" key={preset}>
+                  <span className="plugin-atyrode_babel_watch__knob-label">
+                    {DRAIN_CARDS[preset].title} weight
+                  </span>
+                  <input
+                    type="number"
+                    className="plugin-atyrode_babel_watch__knob-input"
+                    min={0}
+                    step="any"
+                    value={draft.allocation[preset]}
+                    onInput={(event) =>
+                      onDraft({
+                        ...draft,
+                        allocation: { ...draft.allocation, [preset]: event.currentTarget.value },
+                      })
+                    }
+                  />
+                </label>
+              ))}
+              <label className="plugin-atyrode_babel_watch__knob">
+                <span className="plugin-atyrode_babel_watch__knob-label">
+                  Per-job cost threshold
+                </span>
+                <input
+                  type="number"
+                  className="plugin-atyrode_babel_watch__knob-input"
+                  min={0}
+                  step="0.000001"
+                  value={draft.jobCostUsd}
+                  onInput={(event) => onDraft({ ...draft, jobCostUsd: event.currentTarget.value })}
+                />
+                <span className="plugin-atyrode_babel_watch__knob-unit">USD</span>
+              </label>
+            </Cluster>
+            <p className="plugin-atyrode_babel_watch__muted">
+              Weights apply to whole-work-item metered cost, not job counts. The per-job Code
+              threshold seeds each durable reservation until a measured mean is available. It stays
+              on every job, but is checked before calls and is not a hard provider spend cap.
+              Reservations are scheduling estimates, not hard spend ceilings; missing or zero-price
+              coverage blocks refills. The selected presets share the machine, Code profile and
+              target below.
+            </p>
+          </Stack>
+        ) : null}
+        {mixed || card.knob === "review" ? (
+          <p className="plugin-atyrode_babel_watch__muted" data-field="drain-review-route">
+            Review backlog requires an installed review route matching the chosen machine and Code
+            profile. It keeps coordinator claims, budget ceilings and standing recipe semantics;
+            this drain does not override them.
+          </p>
+        ) : null}
         <Cluster gap="var(--babel-space-4)" className="plugin-atyrode_babel_watch__knobs">
           {mapping ? (
             <p className="plugin-atyrode_babel_watch__muted" data-field="drain-mapping-route">
@@ -614,7 +761,7 @@ export function Drain({
               </select>
             </label>
           )}
-          {card.knob === "topic" ? (
+          {topic ? (
             <label className="plugin-atyrode_babel_watch__knob">
               <span className="plugin-atyrode_babel_watch__knob-label">Topic</span>
               <select
@@ -630,7 +777,8 @@ export function Drain({
                 ))}
               </select>
             </label>
-          ) : card.knob === "days" ? (
+          ) : null}
+          {days ? (
             <Spinner
               label="Sessions from"
               unit="days back"
@@ -638,7 +786,7 @@ export function Drain({
               bounds={{ min: 1, max: 365, step: 1 }}
               onValue={(sinceDays) => onDraft({ ...draft, sinceDays })}
             />
-          ) : card.knob === "minutes" ? (
+          ) : !mixed && card.knob === "minutes" ? (
             <Spinner
               label="Each catalog runs"
               unit="minutes"
@@ -698,7 +846,11 @@ export function Drain({
             disabled={starting || blocked !== ""}
             onClick={onStart}
           >
-            {starting ? "Starting…" : `Drain with ${card.title.toLowerCase()}`}
+            {starting
+              ? "Starting…"
+              : mixed
+                ? "Drain with weighted allocation"
+                : `Drain with ${card.title.toLowerCase()}`}
           </button>
           {blocked === "" ? null : (
             <span className="plugin-atyrode_babel_watch__muted">{blocked}</span>

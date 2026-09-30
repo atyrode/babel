@@ -9,6 +9,29 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+- **Native admission shares one physical occupancy fence across direct and standing mapping
+  work (#258, #526).** A typed direct pre-admission refusal, confirmed by authoritative
+  `job_not_started` for every recorded native attempt, closes the intent and reservation once.
+  Uncertain attempts and unreadable status retain the immutable request and occupied slot.
+  Standing mapping checks capacity before drawing, so a busy machine cannot consume candidate
+  hand-out leases; it rechecks at atomic claim publication and pending native/Code posting,
+  withdrawing a publication loser at zero. Fresh paginated native
+  listings include live policy/drain cadences before settlement writes their Babel runs, with
+  identity-based deduplication against retained preparations, parents and reservations.
+  Real-store regressions cover definitive/uncertain refusal, direct/standing races, resumed work
+  after capacity returns, delayed posting and cadence occupancy. An isolated real-store smoke
+  observed one active native cadence slot, still one after its run was persisted, then zero on
+  terminal evidence; both listing pages were read each time. No live deployment or provider work
+  was exercised.
+
+- **Retained preparations keep their machine core slot after their parent closes (#258).**
+  Explicit same-machine parent/preparation linkage counts one whole item, including a pending
+  reservation, while a child with no open parent remains occupied. Stop preserves native-attempt
+  evidence; mapping claims wait for authoritative native settlement rather than cancellation
+  acknowledgement. Real-store regressions cover ordinary and mapping parents, absent parents,
+  definitive refusal, lost answers, Stop/restart and late terminal receipts. Live throughput
+  acceptance remains separate from these isolated data-path proofs.
+
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain
   and bind the recovered session atomically. Uncertain posts hold their reservation and machine
@@ -23,9 +46,31 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Real-store regressions cover interrupted retirement, overlapping settlement, lost commit
   answers and the eventual terminal meter.
 
-## [0.5.8] - 2026-09-30
-
-### Added
+- **Drains can split an explicitly declared window across explore and coordinator-managed
+  review by whole-item cost (#258).** Watch and the start door accept positive
+  `read-whats-new`/`explore-topic`/`review-backlog` weights; review draws review-only claims
+  under the installed route without touching standing policy; deterministic deficit scheduling
+  accounts measured incurred cost plus durable reservations,
+  reports empty-work and missing/zero-price gaps, and preserves single-preset operation.
+  Admission reserves slots before posting; review claims and immutable prompt/request intent
+  commit together before keyed Code dispatch. Lost acknowledgements replay only under the
+  original account chain; stop retires unused keys, cancels known jobs and retains uncertain
+  cancellations. Terminal receipts reconcile the shared claim exactly once, including late
+  acknowledgements and missing meters. Standing policy and mapping's governed mode remain unchanged.
+  Review ordinals share the durable drain's coordinator cycle ceiling, enforced in the claim
+  transaction without fresh allowance on refill or restart; parent/posting identities remain
+  distinct. Oversized prompts now visibly refuse and retire the unused slot so another eligible
+  preset can progress, without swallowing database/publication errors.
+  Real-store regressions exercise incurred/reserved deficits, cost shares, concurrency and
+  stopped-admission refusal, stale-fold refusal, unpriced refill refusal and unchanged standing
+  policy. Physical admission reads the current wake's machine inventory at start, each
+  reservation/refill and pending native/Code posting recovery, including mapping. Oversized starts
+  explicitly refuse; unknown or shrinking capacity holds new work without discarding existing work
+  or receipts. Regression coverage includes unavailable inventory, shrinking capacity, reservation
+  competition and wake-local lifecycle metadata. In an isolated rendered Watch, edited weights and
+  the per-job threshold survive switches to the separate model-free Keep going rehearsal; missing
+  machine/profile authority keeps start disabled. No paid drain or live throughput was exercised;
+  #264's live acceptance remains separate and unperformed.
 
 - **Historical citations can acquire separately attributed, archived source facts (#431).**
   An owner-requested bounded native job checks exact tagged captures and raw or normalized
@@ -34,8 +79,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   rewrites imported claims, notes, rankings or rulings; retries preserve earlier attempts.
   Real synthetic restic and SQLite regressions cover stale sources, restart and idempotent
   sealed-output ingestion. Actual imported-corpus coverage remains an operator step.
-
-### Fixed
 
 - **Citation evidence stays unavailable when a competing capture cannot be checked.** An
   unreadable or oversized candidate cannot be silently discarded after a readable match.

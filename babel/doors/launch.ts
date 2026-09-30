@@ -1,9 +1,11 @@
 import type { SqlStatement } from "@manifold/plugin";
+import { JobLimitsSchema, JobRequestSchema } from "@manifold/protocol";
 import { HostCallError } from "@manifold/plugin-kit/errors";
 import { defineServerAction, type GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
   ACTIVITIES,
+  DRAIN_ALLOCATION_PRESETS,
   AnalysisWorkSchema,
   AnalysisClaimSchema,
   ANALYSIS_BRIEF_BYTE_LIMIT,
@@ -45,7 +47,8 @@ import {
 } from "../contract.ts";
 import { ARCHIVED_CAPTURE, materialBound } from "../store/analysis.ts";
 import { perMachineBound, type Coordinator, type Policy } from "../store/coordinator.ts";
-import { runningDrainHoldsRun } from "../store/drains.ts";
+import { directDrainAdmission } from "../store/drains.ts";
+import { drainPostingRefusal, type DrainAdmission } from "../server/drain-admission.ts";
 import {
   carriedSteering,
   composeAnalysisPrompt,
@@ -299,6 +302,23 @@ const MAX_INPUT_BYTES = 65_536;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** The native fields Babel actually posts, with bounded limits required even on recovery. */
+const DirectNativeRequestSchema = JobRequestSchema.pick({
+  jobId: true,
+  machineId: true,
+  operationId: true,
+  input: true,
+  outputs: true,
+  installationRevision: true,
+  artifactSha256: true,
+})
+  .partial({ installationRevision: true, artifactSha256: true })
+  .extend({
+    limits: JobLimitsSchema.extend({
+      inference: JobLimitsSchema.shape.inference.unwrap().required({ costMicros: true }).optional(),
+    }),
+  });
+
 /**
  * WHAT A CALLER THAT IS NOT A DISPATCH BRINGS INSTEAD OF A `ctx` (#258).
  *
@@ -312,6 +332,8 @@ export interface LaunchIdentity {
   readonly runId: string;
   readonly jobId: string;
   readonly materialJobId?: string;
+  /** A direct drain must durably hold this run before either native or model admission. */
+  readonly drainId?: string;
   /** The operator or owning conductor cycle recorded as the run's authority. */
   readonly authorityId: string;
   /** The account chain of the wake posting this run's native job (see {@link principalChain}). */
@@ -356,10 +378,9 @@ export function enableChain(): string {
  * draws for a submission — {@link refusalCode} beside the message the model reads — and the
  * same one `EngineAnswer` carries for Code's refusals.
  *
- * `code` IS PRESENT EXACTLY WHEN THE HUB REFUSED, whatever it said; it is absent when the
- * sentence is Babel's own — an unready machine, a document over the input ceiling, a window
- * offering nothing. So its absence means one thing and never "the hub refused in a way this
- * file did not recognise", which a vocabulary check here would have made it mean.
+ * `code` carries the hub's refusal word, or `no_eligible_work` for a local empty material or
+ * recipe selection. The latter lets a mixed drain yield the slot without parsing prose.
+ * Other local refusals have no code.
  */
 export interface Refused {
   readonly refused: string;
@@ -487,6 +508,7 @@ export interface LaunchMachinery {
 
 export interface LaunchDeps {
   readonly coordinator: Coordinator;
+  readonly drainAdmission?: DrainAdmission;
   /** This dispatch's own job authority, narrowed to the verbs this plugin uses. */
   jobs(ctx: GuestCtx): BabelJobs;
   /** Babel's side of Code's doors, over the authority of whoever is asking (ADR 0041). */
@@ -699,8 +721,8 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
   }
 
   /**
-   * One native request, retained before execute for conductor work so a lost response remains
-   * pollable. Only a typed pre-admission refusal plus an authoritative absent job releases it.
+   * One native request, retained before execute for conductor and direct-drain work so a lost
+   * response remains pollable. Direct retries keep the original request and reservation.
    *
    * A refusal here is the HUB's, so it carries the hub's word as well as the sentence: this is
    * the one place a posting's two accounts of itself are still together, and a caller reading
@@ -716,16 +738,28 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       readonly authorityId: string;
       readonly preparation: Record<string, unknown>;
       readonly authorityKind?: "operator" | "conductor";
+      readonly drain?: { readonly id: string; readonly runId: string };
       /** The account chain of the wake posting it, which its settlement hook is handed back. */
       readonly chain: string | null;
     },
   ): Promise<Refused | null> {
     const at = new Date(deps.now()).toISOString();
+    const drainGuard =
+      run.drain === undefined
+        ? null
+        : directDrainAdmission(run.drain.id, run.drain.runId, deps.now());
+    const selfOwned = run.drain?.runId === run.runId;
     const retain = async () =>
       await store.db.run(
         `INSERT INTO runs(id, kind, machine_id, job_id, recipe_id, authority_kind,
                         authority_id, preparation, started_at, records, chain, payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?
+       ${
+         drainGuard === null
+           ? ""
+           : `WHERE ${drainGuard.sql}
+                ${selfOwned ? "" : "AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND closure IS NULL)"}`
+       }
        ON CONFLICT(id) DO NOTHING`,
         [
           run.runId,
@@ -735,27 +769,112 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           run.recipeId,
           run.authorityKind ?? "operator",
           run.authorityId,
-          JSON.stringify(run.preparation),
+          JSON.stringify(
+            selfOwned
+              ? { ...run.preparation, drainId: run.drain!.id, nativeRequest: launch }
+              : run.preparation,
+          ),
           at,
           run.chain,
-          JSON.stringify({ closure: null, requestedAt: deps.now() }),
+          JSON.stringify({
+            closure: null,
+            requestedAt: deps.now(),
+            ...(run.drain === undefined ? {} : { nativeAttempts: 0 }),
+          }),
+          ...(drainGuard?.params ?? []),
+          ...(run.drain === undefined || selfOwned ? [] : [run.drain.runId]),
         ],
       );
-    // A governed native post already has its fenced parent. Retain its pollable job row
-    // before execute too, so a lost transport response can be reconciled by the usual loop.
-    if (run.authorityKind === "conductor") {
+    // Governed and direct-drain work retain pollable native intent before execute. A direct
+    // drain's parent already holds the exact request, including its original installation pin.
+    const durable = run.authorityKind === "conductor" || run.drain !== undefined;
+    let existing = false;
+    if (durable) {
       try {
-        await retain();
+        existing = (await retain()).changes === 0;
       } catch (error) {
-        return { refused: `Babel could not retain the native intent: ${message(error)}` };
+        return {
+          refused: `Babel could not retain the native intent: ${message(error)}`,
+          ...(run.drain === undefined ? {} : { pending: true }),
+        };
       }
+    }
+    if (run.drain !== undefined) {
+      if (selfOwned) {
+        const row = (
+          await store.db.query<{
+            preparation: string;
+            chain: string | null;
+            job_id: string | null;
+            closure: string | null;
+          }>(`SELECT preparation, chain, job_id, closure FROM runs WHERE id = ?`, [run.runId])
+        )[0];
+        if (row === undefined || row.chain !== run.chain)
+          return { refused: "the drain's native intent is unavailable", pending: true };
+        if (row.closure !== null) return null;
+        const parsed = DirectNativeRequestSchema.safeParse(
+          documentOf(row.preparation)["nativeRequest"],
+        );
+        if (!parsed.success || parsed.data.jobId !== row.job_id)
+          return { refused: "the retained drain native request is invalid", pending: true };
+        launch = parsed.data;
+      }
+      if (!(await directAdmitted(run.drain.id, run.drain.runId)))
+        return { refused: "its drain no longer admits this preparation", pending: true };
+      if (existing) {
+        const terminal = await store.db.query(
+          `SELECT 1 FROM runs WHERE id = ? AND closure IS NOT NULL`,
+          [run.runId],
+        );
+        if (terminal.length > 0) return null;
+        try {
+          await jobs.status({
+            kind: "job",
+            machineId: launch.machineId,
+            operationId: launch.operationId,
+            jobId: launch.jobId,
+          });
+          return await cancelReleasedPreparation(jobs, launch, run.drain);
+        } catch (error) {
+          // This is our exact namespaced job node; the hub reports an unretained request as
+          // either token (the same authority boundary as conductor's neverRetained).
+          const token = nativeFailureToken(error, "jobs.status");
+          if (token !== "job_not_started" && token !== "job_owner_mismatch")
+            return {
+              refused: `preparation posting remains unconfirmed: ${message(error)}`,
+              pending: true,
+            };
+        }
+      }
+      const capacityRefusal = await drainPostingRefusal(
+        store,
+        deps.drainAdmission,
+        run.drain.runId,
+        launch.operationId,
+      );
+      if (capacityRefusal !== null) return { refused: capacityRefusal, pending: true };
+      // Status and intent persistence both yield; stop may have closed the drain meanwhile.
+      if (!(await directAdmitted(run.drain.id, run.drain.runId)))
+        return { refused: "its drain no longer admits this preparation", pending: true };
+    }
+    if (run.drain !== undefined) {
+      // Older retained intents did not count attempts. Their missing evidence is one unknown
+      // attempt, never proof that this replay was the first post.
+      const attempted = await store.db.run(
+        `UPDATE runs SET payload = json_set(payload, '$.nativeAttempts',
+          coalesce(json_extract(payload, '$.nativeAttempts'), 1) + 1)
+         WHERE id = ? AND closure IS NULL AND ${drainGuard!.sql}`,
+        [run.runId, ...drainGuard!.params],
+      );
+      if (!attempted.changes)
+        return { refused: "its drain no longer admits this preparation", pending: true };
     }
     try {
       await jobs.execute(launch);
     } catch (error) {
       const refused = `${launch.machineId} refused the job: ${message(error)}`;
       let absent = false;
-      if (run.authorityKind === "conductor" && nativeAdmissionRefusal(error)) {
+      if (durable && nativeAdmissionRefusal(error)) {
         try {
           await jobs.status({
             kind: "job",
@@ -765,6 +884,45 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           });
         } catch (statusError) {
           absent = nativeFailureToken(statusError, "jobs.status") === "job_not_started";
+        }
+      }
+      if (run.drain !== undefined && absent) {
+        // A refusal proves only this attempt. An earlier lost answer must not turn into a
+        // free slot merely because this replay was refused before effect.
+        const proof = await store.db.query<{ attempts: number | bigint; refused: number | bigint }>(
+          `UPDATE runs SET payload = json_set(payload, '$.nativeRefused',
+            coalesce(json_extract(payload, '$.nativeRefused'), 0) + 1)
+           WHERE id = ? AND closure IS NULL
+           RETURNING json_extract(payload, '$.nativeAttempts') attempts,
+             json_extract(payload, '$.nativeRefused') refused`,
+          [run.runId],
+        );
+        absent = proof[0] !== undefined && Number(proof[0].attempts) === Number(proof[0].refused);
+        if (absent) {
+          await store.db.batch([
+            {
+              sql: `UPDATE runs SET closure = 'failed', finished_at = ?,
+                  payload = json_set(payload, '$.closure', 'failed', '$.reason', ?)
+                WHERE id = ? AND job_id = ? AND closure IS NULL
+                  AND json_extract(payload, '$.nativeAttempts') = json_extract(payload, '$.nativeRefused')`,
+              params: [at, refused, run.runId, launch.jobId],
+            },
+            {
+              sql: `UPDATE runs SET closure = 'failed', finished_at = ?,
+                  payload = json_set(payload, '$.closure', 'failed', '$.reason', ?)
+                WHERE id = ? AND prepare_job_id = ? AND job_id IS NULL AND closure IS NULL
+                  AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND closure = 'failed')`,
+              params: [at, refused, run.drain.runId, launch.jobId, run.runId],
+            },
+            {
+              sql: `UPDATE drain_launches SET state = 'refused', gap = ?
+                WHERE run_id = ? AND state = 'reserved'
+                  AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND closure = 'failed'
+                    AND json_extract(payload, '$.nativeAttempts') = json_extract(payload, '$.nativeRefused'))`,
+              params: [refused, run.drain.runId, run.runId],
+            },
+          ]);
+          store.touch();
         }
       }
       if (run.authorityKind === "conductor" && absent) {
@@ -778,11 +936,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       return {
         refused,
         code: hubRefusal(error),
-        ...(run.authorityKind === "conductor" && !absent ? { pending: true } : {}),
+        ...(durable && !absent ? { pending: true } : {}),
       };
     }
     try {
-      if (run.authorityKind !== "conductor") await retain();
+      if (!durable) await retain();
     } catch (error) {
       try {
         await jobs.cancel({
@@ -801,8 +959,127 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         refused: `the job was cancelled because Babel could not retain it: ${message(error)}`,
       };
     }
+    const released = await cancelReleasedPreparation(jobs, launch, run.drain);
     store.touch();
+    return released;
+  }
+
+  async function cancelReleasedPreparation(
+    jobs: BabelJobs,
+    launch: JobLaunch,
+    drain: { readonly id: string; readonly runId: string } | undefined,
+  ): Promise<Refused | null> {
+    if (drain !== undefined && !(await directAdmitted(drain.id, drain.runId))) {
+      try {
+        await jobs.cancel({
+          kind: "job",
+          machineId: launch.machineId,
+          operationId: launch.operationId,
+          jobId: launch.jobId,
+        });
+      } catch (error) {
+        return {
+          refused: `the drain ended during preparation posting; cancellation is unconfirmed: ${message(error)}`,
+          pending: true,
+        };
+      }
+    }
     return null;
+  }
+
+  async function directAdmitted(drainId: string, runId: string): Promise<boolean> {
+    const admitted = directDrainAdmission(drainId, runId, deps.now());
+    return (
+      (
+        await store.db.query(
+          `SELECT 1 FROM runs WHERE id = ? AND closure IS NULL AND ${admitted.sql}`,
+          [runId, ...admitted.params],
+        )
+      ).length > 0
+    );
+  }
+
+  /** Recover the first selection, never a moving window or a replacement installation pin. */
+  async function resumeDirect(identity: LaunchIdentity, jobs: BabelJobs): Promise<Started | null> {
+    if (identity.drainId === undefined) return null;
+    const rows = await store.db.query<{
+      preparation: string;
+      prepare_job_id: string | null;
+      job_id: string | null;
+      machine_id: string;
+      authority_id: string;
+      chain: string | null;
+      closure: string | null;
+    }>(
+      `SELECT preparation, prepare_job_id, job_id, machine_id, authority_id, chain, closure
+         FROM runs WHERE id = ?`,
+      [identity.runId],
+    );
+    const parent = rows[0];
+    if (parent === undefined) return null;
+    const intent = documentOf(parent.preparation);
+    if (
+      parent.chain !== identity.chain ||
+      (intent["drainId"] !== undefined && intent["drainId"] !== identity.drainId)
+    )
+      return { refused: "the retained direct preparation authority changed", pending: true };
+    // Old parents have no retained request. Adopt known work, but never reconstruct a request
+    // from today's catalog merely because an upgrade encountered yesterday's interrupted post.
+    if (parent.job_id !== null) return { runId: identity.runId, jobId: parent.job_id };
+    if (parent.prepare_job_id !== null && parent.closure !== null)
+      return { runId: identity.runId, jobId: parent.prepare_job_id };
+    if (intent["nativeRequest"] === undefined && parent.prepare_job_id !== null) {
+      try {
+        const request = {
+          jobId: parent.prepare_job_id,
+          machineId: parent.machine_id,
+          operationId: OPERATIONS.prepare,
+        };
+        await jobs.status({ kind: "job", ...request });
+        if (!(await directAdmitted(identity.drainId, identity.runId)))
+          await jobs.cancel({ kind: "job", ...request });
+        return { runId: identity.runId, jobId: parent.prepare_job_id };
+      } catch (error) {
+        return {
+          refused: `the legacy preparation has no retained request and remains unconfirmed: ${message(error)}`,
+          pending: true,
+        };
+      }
+    }
+    const parsed = DirectNativeRequestSchema.safeParse(intent["nativeRequest"]);
+    if (!parsed.success)
+      return { refused: "the retained direct native request is invalid", pending: true };
+    const request = parsed.data;
+    if (
+      intent["drainId"] !== identity.drainId ||
+      request.jobId !== parent.prepare_job_id ||
+      request.machineId !== parent.machine_id ||
+      request.operationId !== OPERATIONS.prepare
+    )
+      return {
+        refused: "the retained direct preparation authority or request is unavailable",
+        pending: true,
+      };
+    if (parent.job_id !== null || parent.closure !== null)
+      return { runId: identity.runId, jobId: parent.job_id ?? request.jobId };
+    const refused = await post(jobs, request, {
+      runId: `${identity.runId}_material`,
+      kind: OPERATIONS.prepare,
+      recipeId: "",
+      authorityId: parent.authority_id,
+      preparation: {
+        preset: intent["preset"],
+        for: identity.runId,
+        selected: intent["selected"],
+        available: intent["available"],
+        excluded: intent["excluded"],
+        bytes: intent["bytes"],
+        overBound: intent["overBound"],
+      },
+      chain: parent.chain,
+      drain: { id: identity.drainId, runId: identity.runId },
+    });
+    return refused ?? { runId: identity.runId, jobId: request.jobId };
   }
 
   /**
@@ -853,6 +1130,70 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     plan: RunPlan,
   ): Promise<Started> {
     const preset = PRESET_PLANS[input.preset];
+    if (identity.drainId !== undefined) {
+      const held = (
+        await store.db.query<{
+          preparation: string;
+          job_id: string;
+          machine_id: string;
+          kind: string;
+          chain: string | null;
+          closure: string | null;
+        }>(`SELECT preparation, job_id, machine_id, kind, chain, closure FROM runs WHERE id = ?`, [
+          identity.runId,
+        ])
+      )[0];
+      if (held !== undefined) {
+        const intent = documentOf(held.preparation);
+        if (
+          held.chain !== identity.chain ||
+          held.kind !== preset.operationId ||
+          (intent["drainId"] !== undefined && intent["drainId"] !== identity.drainId)
+        )
+          return { refused: "the retained drain beat authority changed", pending: true };
+        if (held.closure !== null) return { runId: identity.runId, jobId: held.job_id };
+        const request = DirectNativeRequestSchema.safeParse(intent["nativeRequest"]);
+        if (!request.success) {
+          if (intent["nativeRequest"] !== undefined)
+            return { refused: "the retained drain beat request is invalid", pending: true };
+          try {
+            const node = {
+              kind: "job" as const,
+              machineId: held.machine_id,
+              operationId: held.kind,
+              jobId: held.job_id,
+            };
+            await jobs.status(node);
+            if (!(await directAdmitted(identity.drainId, identity.runId))) await jobs.cancel(node);
+            return { runId: identity.runId, jobId: held.job_id };
+          } catch (error) {
+            return {
+              refused: `the legacy beat remains unconfirmed: ${message(error)}`,
+              pending: true,
+            };
+          }
+        }
+        if (
+          request.data.jobId !== held.job_id ||
+          request.data.machineId !== held.machine_id ||
+          request.data.operationId !== held.kind
+        )
+          return { refused: "the retained drain beat request changed", pending: true };
+        const refusal = await post(jobs, request.data, {
+          runId: identity.runId,
+          kind: held.kind,
+          recipeId: "",
+          authorityId: identity.authorityId,
+          preparation: intent,
+          chain: held.chain,
+          drain: { id: identity.drainId, runId: identity.runId },
+        });
+        return refusal ?? { runId: identity.runId, jobId: held.job_id };
+      }
+      const guard = directDrainAdmission(identity.drainId, identity.runId, deps.now());
+      if ((await store.db.query(`SELECT 1 WHERE ${guard.sql}`, guard.params)).length === 0)
+        return { refused: "its drain no longer admits this beat" };
+    }
     const admitted = await ready(jobs, input.machineId, preset.operationId);
     if ("refused" in admitted) return admitted;
     // Keep going: the beat is what wakes the hub, so starting the loop is starting one beat.
@@ -880,6 +1221,9 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         recipeId: "",
         authorityId: identity.authorityId,
         preparation: { preset: input.preset, minutes: input.minutes ?? 0 },
+        ...(identity.drainId === undefined
+          ? {}
+          : { drain: { id: identity.drainId, runId: identity.runId } }),
         chain: identity.chain,
       },
     );
@@ -1236,6 +1580,13 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     plan: RunPlan,
     analysis?: AnalysisWork,
   ): Promise<Started> {
+    if (identity.drainId !== undefined) {
+      const resumed = await resumeDirect(identity, jobs);
+      if (resumed !== null) return resumed;
+      const guard = directDrainAdmission(identity.drainId, identity.runId, deps.now());
+      if ((await store.db.query(`SELECT 1 WHERE ${guard.sql}`, guard.params)).length === 0)
+        return { refused: "its drain no longer admits this preparation" };
+    }
     if (analysis !== undefined) {
       const parsed = AnalysisWorkSchema.safeParse(analysis);
       if (!parsed.success) return { refused: "invalid analysis authority" };
@@ -1263,6 +1614,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     );
     if (recipes.length === 0) {
       return {
+        code: "no_eligible_work",
         refused:
           asked.length === 0
             ? "no cookbook recipe is installed on this hub, so an explore has no method to run"
@@ -1298,6 +1650,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       // operator does next.
       if (prepared.overBound > 0) {
         return {
+          code: "no_eligible_work",
           refused:
             `material_too_large: every session this window offers is larger than the ` +
             `${String(Math.round(prepared.bound / (1024 * 1024)))} MiB one preparation on ` +
@@ -1311,6 +1664,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           : ` (${String(excluded)} of ${String(window.held)} catalogued there name no archived ` +
             `capture yet or are Babel's own runs', which a preparation does not read)`;
       return {
+        code: "no_eligible_work",
         refused:
           input.preset === "explore-topic"
             ? `no archived session is cited by anything filed under ${input.entityId ?? ""}${left}`
@@ -1340,8 +1694,29 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       );
       if (refused !== null) return { refused };
     }
-    // Analysis intent precedes every native post. This INSERT and the reaper's unposted
-    // finish contend on the same claim, so a finished run-less grant can never post late.
+    const nativeRequest: JobLaunch = {
+      jobId: prepareJobId,
+      machineId: input.machineId,
+      operationId: OPERATIONS.prepare,
+      input: built.input,
+      // Disjoint leaves need no undeclared parent and keep material out of the result archive.
+      outputs: [
+        { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [prepareJobId] },
+        {
+          name: MATERIAL_OUTPUT,
+          locationId: OUTPUT_LOCATION,
+          components: [`${prepareJobId}_${MATERIAL_OUTPUT}`],
+        },
+      ],
+      limits: plan.limits,
+      ...admitted.pinned,
+    };
+    const drainGuard =
+      identity.drainId === undefined
+        ? null
+        : directDrainAdmission(identity.drainId, identity.runId, deps.now());
+    // Governed intent precedes native execution. Analysis contends with its claim's reaper;
+    // a direct drain contends with stop and retains the exact first request for recovery.
     const retainParent = async () =>
       await store.db.run(
         `INSERT INTO runs(id, kind, machine_id, container_id, prepare_job_id, recipe_id, profile,
@@ -1349,9 +1724,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
                         payload)
          SELECT ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, 0, ?, ?
          ${
-           analysis === undefined
-             ? ""
-             : `WHERE EXISTS (
+           drainGuard !== null
+             ? `WHERE ${drainGuard.sql}`
+             : analysis === undefined
+               ? ""
+               : `WHERE EXISTS (
            SELECT 1 FROM claims WHERE id = ? AND run_id = ? AND fence = ? AND job_id = ?
              AND role = ? AND finished_at IS NULL AND expires_at > ?
          )`
@@ -1368,6 +1745,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           identity.authorityId,
           JSON.stringify({
             preset: input.preset,
+            ...(identity.drainId === undefined ? {} : { drainId: identity.drainId, nativeRequest }),
             ...(analysis === undefined ? {} : { analysis }),
             selectors: prepared.selectors,
             selected: prepared.selectors.length,
@@ -1386,18 +1764,30 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           new Date(deps.now()).toISOString(),
           identity.chain,
           JSON.stringify({ closure: null, preparing: prepareJobId }),
-          ...(analysis === undefined
-            ? []
-            : [
-                analysis.claim.id,
-                analysis.claim.runId,
-                analysis.claim.fence,
-                prepareJobId,
-                `analysis:${analysis.stage}`,
-                new Date(deps.now()).toISOString(),
-              ]),
+          ...(drainGuard !== null
+            ? drainGuard.params
+            : analysis === undefined
+              ? []
+              : [
+                  analysis.claim.id,
+                  analysis.claim.runId,
+                  analysis.claim.fence,
+                  prepareJobId,
+                  `analysis:${analysis.stage}`,
+                  new Date(deps.now()).toISOString(),
+                ]),
         ],
       );
+    if (identity.drainId !== undefined) {
+      await retainParent();
+      // Read even our own insert back: concurrent starts may have retained a different first
+      // selection while we checked readiness. Only the winning immutable request is posted.
+      return (
+        (await resumeDirect(identity, jobs)) ?? {
+          refused: "its drain no longer admits this preparation",
+        }
+      );
+    }
     if (analysis !== undefined) {
       const retained = await retainParent();
       if (retained.changes === 0)
@@ -1406,43 +1796,23 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           pending: true,
         };
     }
-    const sealed = await post(
-      jobs,
-      {
-        jobId: prepareJobId,
-        machineId: input.machineId,
-        operationId: OPERATIONS.prepare,
-        input: built.input,
-        // Disjoint leaves need no undeclared parent and keep material out of the result archive.
-        outputs: [
-          { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [prepareJobId] },
-          {
-            name: MATERIAL_OUTPUT,
-            locationId: OUTPUT_LOCATION,
-            components: [`${prepareJobId}_${MATERIAL_OUTPUT}`],
-          },
-        ],
-        limits: plan.limits,
-        ...admitted.pinned,
+    const sealed = await post(jobs, nativeRequest, {
+      runId: `${identity.runId}_material`,
+      kind: OPERATIONS.prepare,
+      recipeId: "",
+      authorityId: identity.authorityId,
+      authorityKind: analysis === undefined ? "operator" : "conductor",
+      preparation: {
+        preset: input.preset,
+        for: identity.runId,
+        selected: prepared.selectors.length,
+        available: window.held,
+        excluded,
+        bytes: prepared.bytes,
+        overBound: prepared.overBound,
       },
-      {
-        runId: `${identity.runId}_material`,
-        kind: OPERATIONS.prepare,
-        recipeId: "",
-        authorityId: identity.authorityId,
-        authorityKind: analysis === undefined ? "operator" : "conductor",
-        preparation: {
-          preset: input.preset,
-          for: identity.runId,
-          selected: prepared.selectors.length,
-          available: window.held,
-          excluded,
-          bytes: prepared.bytes,
-          overBound: prepared.overBound,
-        },
-        chain: identity.chain,
-      },
-    );
+      chain: identity.chain,
+    });
     if (sealed !== null) {
       if (analysis === undefined) return sealed;
       await store.db.run(
@@ -1862,8 +2232,31 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     return parsed.success ? parsed.data : "invalid";
   }
 
-  /** Why a run's persisted analysis authority no longer authorizes spending, or null. */
+  /** New direct intents name their owner; older in-flight parents still live in its fan. */
+  async function directGuard(run: PreparedRun) {
+    const held = documentOf(run.preparation)["drainId"];
+    const drainId =
+      typeof held === "string"
+        ? held
+        : (
+            await store.db.query<{ id: string }>(
+              `SELECT drains.id AS id FROM drains, json_each(drains.live)
+                WHERE drains.preset IN (${DRAIN_ALLOCATION_PRESETS.map(() => "?").join(", ")})
+                  AND json_extract(json_each.value, '$.runId') = ? LIMIT 1`,
+              [...DRAIN_ALLOCATION_PRESETS, run.id],
+            )
+          )[0]?.id;
+    return drainId === undefined ? null : directDrainAdmission(drainId, run.id, deps.now());
+  }
+
+  /** Why a run's persisted authority no longer authorizes spending, or null. */
   async function continuing(run: PreparedRun): Promise<string | null> {
+    const drain = await directGuard(run);
+    if (
+      drain !== null &&
+      (await store.db.query(`SELECT 1 WHERE ${drain.sql}`, drain.params)).length === 0
+    )
+      return "its drain no longer admits this run";
     const analysis = analysisOf(run);
     if (analysis === null) return null;
     if (analysis === "invalid") return "invalid persisted analysis authority";
@@ -1919,6 +2312,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     if (await holds(run.id, jobId)) return [];
     const analysis = analysisOf(run);
     const claim = analysis === null || analysis === "invalid" ? null : analysis.claim;
+    const drain = await directGuard(run);
     try {
       const refusal = await continuing(run);
       if (refusal !== null) throw new Error(refusal);
@@ -1939,12 +2333,14 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         {
           sql: `UPDATE runs SET job_id = ?, payload = ? WHERE id = ? AND job_id IS NULL AND closure IS NULL
          ${claim === null ? "" : `AND EXISTS (SELECT 1 FROM claims WHERE id = ? AND run_id = ? AND fence = ? AND job_id = ? AND finished_at IS NULL)`}
+         ${drain === null ? "" : `AND ${drain.sql}`}
          RETURNING id`,
           params: [
             jobId,
             JSON.stringify({ closure: null, requestedAt: deps.now() }),
             run.id,
             ...(claim === null ? [] : [claim.id, claim.runId, claim.fence, jobId]),
+            ...(drain?.params ?? []),
           ],
         },
       ]);
@@ -1962,12 +2358,17 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       } catch (cancelError) {
         cancellation = message(cancelError);
       }
-      if (cancellation !== null) {
-        const reason = `session ${jobId} could not be bound or retained: ${message(error)}; cancellation is unconfirmed: ${cancellation}`;
+      if (cancellation !== null || drain !== null) {
+        const reason =
+          cancellation === null
+            ? `the newly posted session was cancelled: ${message(error)}; awaiting terminal usage`
+            : `session ${jobId} could not be bound or retained: ${message(error)}; cancellation is unconfirmed: ${cancellation}`;
         try {
-          // Keep polling the actual job without granting it a new fence or opening its slot.
+          // Direct work retains the actual job even after confirmed cancellation: cancellation
+          // is not a zero-cost receipt, and the drain must fold the session's terminal meter.
           const retained = await store.db.run(
-            `UPDATE runs SET payload = ?, job_id = ? WHERE id = ? AND closure IS NULL AND job_id IS NULL`,
+            `UPDATE runs SET payload = ?, job_id = ?, closure = NULL, finished_at = NULL
+               WHERE id = ? AND job_id IS NULL ${drain === null ? "AND closure IS NULL" : ""}`,
             [JSON.stringify({ closure: null, reason }), jobId, run.id],
           );
           if (retained.changes === 0) throw new Error(reason);
@@ -2056,19 +2457,19 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         },
       ];
     const request = { ...sessionTarget(run), prompt };
-    // A run its drain no longer admits — the drain is closing or ended — may buy nothing: like
-    // a mapping run its drain stopped, its posting is settled by a retire (#470).
-    const running = runningDrainHoldsRun(run.id);
-    const released = await store.db.query(
-      `SELECT 1 FROM drains, json_each(drains.live)
-        WHERE json_extract(json_each.value, '$.runId') = ? AND NOT ${running.sql}`,
-      [run.id, ...running.params],
-    );
+    // An ended drain retires the key; it never turns an uncertain posting into fresh spend.
     const refusal = !(await deps.coordinator.policy()).policy.enabled
       ? "the evaluation policy in force is disabled"
-      : released.length > 0
-        ? "its drain no longer admits this run"
-        : await continuing(run);
+      : await continuing(run);
+    if (refusal === null) {
+      const capacityRefusal = await drainPostingRefusal(
+        store,
+        deps.drainAdmission,
+        run.id,
+        OPERATIONS.explore,
+      );
+      if (capacityRefusal !== null) return [{ runId: run.id, waiting: capacityRefusal }];
+    }
     const answered =
       refusal === null ? await engine.runSession({ ...request, postingKey: run.id }) : null;
     return await settlePosting(
@@ -2144,6 +2545,14 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           posted.push(...(await close(run, at, reason)));
           continue;
         }
+        const drain = await directGuard(run);
+        if (
+          drain !== null &&
+          (await store.db.query(`SELECT 1 WHERE ${drain.sql}`, drain.params)).length === 0
+        ) {
+          posted.push(...(await close(run, at, "its drain no longer admits this run")));
+          continue;
+        }
         const target = sessionTarget(run);
         const analysis = analysisOf(run);
         if (analysis === "invalid") {
@@ -2202,6 +2611,16 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
             continue;
           }
         }
+        const capacityRefusal = await drainPostingRefusal(
+          store,
+          deps.drainAdmission,
+          run.id,
+          OPERATIONS.explore,
+        );
+        if (capacityRefusal !== null) {
+          posted.push({ runId: run.id, waiting: capacityRefusal });
+          continue;
+        }
         // The parent is the serialization boundary; neither AsyncLocalStorage nor Code's
         // runSession deduplicates concurrent calls. Claim it only after readiness checks.
         // Activation is checked in the same transaction so disablement during preparation
@@ -2229,6 +2648,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
                  AND finished_at IS NULL AND expires_at > ?
              )`
              }
+             ${drain === null ? "" : `AND ${drain.sql}`}
              RETURNING id`,
             params: [
               JSON.stringify(composed.preparation),
@@ -2244,6 +2664,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
                     run.prepare_job_id ?? "",
                     new Date(deps.now()).toISOString(),
                   ]),
+              ...(drain?.params ?? []),
             ],
           },
           {
@@ -2261,14 +2682,16 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         const claimed: PreparedRun = { ...run, preparation: JSON.stringify(composed.preparation) };
         const request = { ...target, prompt: composed.prompt };
         modelRequested = true;
-        const answered = await engine.runSession({ ...request, postingKey: run.id });
+        const refusal = drain === null ? null : await continuing(claimed);
+        const answered =
+          refusal === null ? await engine.runSession({ ...request, postingKey: run.id }) : null;
         posted.push(
           ...(await settlePosting(
             claimed,
             engine,
             request,
             answered,
-            answered.ok ? "" : answered.refused,
+            refusal ?? (answered?.ok === false ? answered.refused : ""),
             at,
           )),
         );

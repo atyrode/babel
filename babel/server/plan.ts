@@ -310,19 +310,15 @@ export function machinesSlice(machines: GuestCtx["machines"]): MachinesSlice {
 }
 
 /**
- * WHAT A HOOK HAS INSTEAD OF MACHINES.
+ * WHAT A HOOK HAS INSTEAD OF THE REPOSITORY VERB.
  *
- * A hook's context is not a dispatch's: `GuestLifecycleCtx` carries storage, the database, the
- * job slice its installer's credential restored — and no machines member at all. The isolate
- * proxy says the same thing from the other side (`serveCtxCall`: a `hook` or `settled` frame
- * serves `jobs.*` and answers `slice_unavailable` to everything else), so a cycle a settlement
- * woke cannot ask what a folder is. It reaches through this instead, which answers the one
- * refusal the outcome type already has a place for — the loop notes it once per machine and
- * asks again on the next cycle a dispatch wakes.
+ * A hook may receive read-only machine inventory, not `machines.repository`. The latter is a
+ * dispatch's to ask. A settlement therefore cannot identify a folder through its metadata
+ * slice; this refusal leaves it for the next cycle a dispatch wakes.
  */
 export const HOOK_WITHOUT_MACHINES =
-  "a lifecycle hook is served no machines slice: GuestLifecycleCtx carries storage, the " +
-  "database and the installer's jobs, and machines.repository is a dispatch's to ask";
+  "a lifecycle hook's machine inventory does not serve machines.repository; " +
+  "identifying a repository is a dispatch's to ask";
 
 export function unaskable(reason: string): MachinesSlice {
   return { repository: (): RepositoryOutcome => ({ ok: false, reason }) };

@@ -21,13 +21,11 @@ import type { JobLaunch } from "./conductor.ts";
 import {
   DEFAULT_LIMITS,
   ENABLE_WITHOUT_JOBS,
-  HOOK_WITHOUT_MACHINES,
   jobCeiling,
   jobsSlice,
   machinesSlice,
   operationLimits,
   runPlan,
-  unaskable,
   unauthorized,
 } from "./plan.ts";
 import manifestJson from "../manifest.json";
@@ -355,11 +353,4 @@ test("what a folder is is asked in the shape the host that served the slice take
   } as unknown as GuestCtx["machines"]);
   expect(await inRealm.repository("m", "/home/alex/babel")).toMatchObject({ ok: true, fact });
   expect(positional).toEqual([["m", "/home/alex/babel"]]);
-
-  // A hook's context carries no machines member at all, and the refusal says so rather than
-  // answering with a fact nobody observed.
-  expect(await unaskable(HOOK_WITHOUT_MACHINES).repository("m", "/home/alex/babel")).toEqual({
-    ok: false,
-    reason: HOOK_WITHOUT_MACHINES,
-  });
 });
