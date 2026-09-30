@@ -351,22 +351,60 @@ preparing, whose `atyrode.babel.prepare` job is cancelled — and whose ROW IS C
 races the seal loses. A stop that left the row open would be the operator pressing stop and
 the account spending afterwards.
 
+**AN ORDINARY DRAIN CARRIES ITS OWN CONTINUATION.** A Code session's settlement wakes Code,
+not Babel; with every activity weight at zero the conductor has no beat of its own. Before
+posting its first fan, `drainStart` therefore registers a per-drain native `catalog` cadence
+under the start's delegated write authority. The cadence folds Code receipts, refills only
+while the drain still admits work, and remains through the deadline until its last job is
+folded; an ended drain loses its cadence. A credential that cannot keep that schedule past
+the deadline and settlement margin refuses the start before any job spends. Read-only
+`drainStatus` may fold progress, but cannot schedule or launch; a missed panel poll no longer
+strands the drain. The server-hook regression starts a drain with all standing weights zero,
+observes its first closure through read-only status, then sees the native cadence refill,
+close at `maxJobs` and unregister itself.
+
 **AND THE SELECTION'S BOUND IS UNDER THE MACHINE'S, WITH ROOM.** The machine has two bounds.
-The leases are written into the runtime scratch. And `outputBytes` is the AGGREGATE the owner
-seals against — stdout, stderr and both of `prepare`'s leases come out of one running budget,
-and each lease is a ustar archive carrying 512 bytes of header and padding per member.
+Raw leases are written into runtime scratch, while the native collector writes their sealed
+ustar archives to the owner's state-backed output store; it removes raw files only after
+publication ([Manifold `job-runtime.ts:163-167` at `47407b58`](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/packages/agent/src/job-runtime.ts#L163-L167),
+[`job-runtime.ts:220-225`](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/packages/agent/src/job-runtime.ts#L220-L225),
+[`module.nix:45-53,115-119`](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/infra/native/module.nix#L45-L53)).
+`outputBytes` bounds the output collection across leases, headers, stdout and
+stderr. Babel deliberately charges both raw and sealed bytes against the measured runtime
+capacity when admitting a selection, although the sealed copy is on another backing volume:
+this conservative bound leaves room for overlapping material and keeps its native preflight
+below the owner's aggregate output limit.
 `MAX_MATERIAL_BYTES` is 448 MiB, 64 MiB under the 512 MiB `inputBytes` the omp session extracts
-the material into, and it is the ceiling rather than the bound: the scratch is shared by every
-job on the machine, so the hub bounds a material at
-`min(MAX_MATERIAL_BYTES, ⌊(C − MATERIAL_HEADROOM_BYTES) / k⌋)`. `C` is the scratch capacity the
-machine last measured, the `outputCapacity` on its newest `catalog` or `prepare` receipt (the
-ceiling alone until one reports); `MATERIAL_HEADROOM_BYTES` is 64 MiB; `k` is how many materials
+the material into; it remains Recall's independent fetch ceiling, not a general 32 MiB cap.
+The hub bounds catalogued source bytes at
+`min(MAX_MATERIAL_BYTES, ⌊(C − MATERIAL_HEADROOM_BYTES) / (k × MATERIAL_SCRATCH_COPIES)⌋)`.
+`C` is the scratch capacity the machine last measured, the `outputCapacity` on its newest
+`catalog` or `prepare` receipt; with no report it uses the declared 768 MiB runtime scratch.
+`MATERIAL_HEADROOM_BYTES` is 64 MiB; `MATERIAL_SCRATCH_COPIES` is 2; `k` is how many materials
 the lane may hold at once — 1 for an operator's launch, `concurrentPerMachine` for the
-conductor's lanes, and the drain's own `concurrent` for a drain fan. On dev-01's 768 MiB scratch
-a two-wide lane bounds each material at 352 MiB. `prepare` measures its own lease as well and
-refuses `material_storage_insufficient`, naming both figures, before it fetches anything: a
-selection admitted at exactly a bound would fill it and fail after the full read, which is the
-failure the pre-post check exists to move.
+conductor's lanes, and the drain's own `concurrent` for a drain fan. On a 768 MiB scratch a
+two-wide lane bounds each material at 176 MiB (one at 352 MiB). `prepare` also compares twice
+its raw material need, including archive/document overhead, against its own measured free
+space and refuses `material_storage_insufficient`, naming the raw, sealed and free figures,
+before fetching any named capture. Content queries use the same doubled free-space budget
+when limiting which matches they can seal.
+
+The native output collector seals POSIX ustar without long-name extensions
+([Manifold job-outputs.ts:73–89 at 47407b58](https://github.com/atyrode/manifold/blob/47407b58f00b1fefcde1d86f6dd6d9b06e9c1216/packages/agent/src/job-outputs.ts#L73-L89)).
+Each material file's basename is therefore at most 100 bytes: `materialFile` reserves its
+ordinal and extension before clipping the sanitized selector, while the index keeps the exact
+selector for provenance. An overlong basename formerly refused the entire output collection
+even when the selected material fitted both scratch and output-byte ceilings.
+
+Code's pinned OMP receipt retains at most 16,384 characters of the final assistant message
+([OMP `plugins/api/session.ts:5-6,164-170` at `f5b9d09c5929943dea246e415875f18e0a68bddb`](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/api/session.ts#L164-L170)).
+The analysis prompt ends with a complete fenced-result budget under 12,000 characters, including
+its fences, and at most four substantive items. An earlier reminder before the material did
+not keep three real exploration results from losing their closing JSON delimiter at this limit.
+For citations it recommends the exact `file` basename from the material index, an already
+admitted spelling (`babel/server/engine/citations.ts:78-106`) that avoids retyping long paths.
+The terminal prompt lists each selected basename after any prior records and warns that their
+original source paths are not this run's evidence; admission still checks the index exactly.
 
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.
@@ -561,13 +599,16 @@ doors of the baseline and one section of Watch:
 
 The shared posting delegates are `machines:run`, `locations:write`, `services:invoke` and
 `network:host`. They cover native execution, output/cache locations and the bound archive
-service; the owner still checks the caller's authority and consent at each effect.
+service; the owner still checks the caller's authority and consent at each effect. A deferred
+Code session also needs the write wake's `containers:read` and `containers:write` caps plus
+`services:read`, `jobs:read` and `jobs:input` delegates for broker observation and material
+binding; a read-only status poll never acquires that authority.
 
-| Door          | Authority                                                                                   | What it does                                                                                                                                                                                                                                                                     |
-| ------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `drainStart`  | `containers:read`, delegating `machines:read` and the shared posting delegates              | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts the first fan of jobs through the same launch path the operator's own button uses, and writes the `drains` row.                                                                                 |
-| `drainStatus` | `containers:read`, delegating `jobs:read`, `machines:read` and the shared posting delegates | What is draining: jobs live, jobs at the model, tokens and cost a minute over the last three minutes, spend against target, ETA against deadline, refusals by reason, the account. A cycle follows it: the delegates let it read a running job back and relaunch a settled slot. |
-| `drainStop`   | `containers:write`, delegating `jobs:cancel`                                                | Cancels every job the drain holds, and marks the row `closing` — or `stopped`, when it holds none.                                                                                                                                                                               |
+| Door          | Authority                                                                         | What it does                                                                                                                                                                                 |
+| ------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `drainStart`  | `containers:read`, `containers:write`, with native and deferred-session delegates | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts its first jobs through the ordinary launch path and records the drain.                                      |
+| `drainStatus` | `containers:read`, delegating `jobs:read` and `services:read`                     | Reads live jobs, model progress, burn rate, spend, ETA and refusals. Its post-read observation folds progress but never refills a slot; the beat or a write-authorized settlement does that. |
+| `drainStop`   | `containers:write`, delegating `jobs:cancel`                                      | Cancels each job the drain holds and marks it `closing`, or `stopped` when none remain.                                                                                                      |
 
 Four things are worth knowing before reading `server/drain.ts`:
 

@@ -1055,9 +1055,10 @@ choice, including its price; Babel neither chooses a provider nor holds its cred
 applies before material reaches the model and before generated prose is retained or served.
 
 Weighting mapping is a delegation, and it is stated here because it is easy to miss. A policy
-writer — whoever may install a policy through `setPolicy`, which asks for `containers:write` —
-can turn an already-consented Recall mapping route into standing paid mapping by setting
-`activityWeights.map`, without personally holding the grants `mapDrainStart` asks of its presser
+writer — whoever may install a policy through `setPolicy`, which asks for `containers:read` and
+`containers:write` so its write-authorized wake can keep the beat — can turn an already-consented
+Recall mapping route into standing paid mapping by setting `activityWeights.map`, without
+personally holding the grants `mapDrainStart` asks of its presser
 at the executor's `map-prepare` node, the source owner's private mapping target and the Code
 workspace. The standing lane spends under the installer-lineage authority the beat carries,
 bounded by the installation's existing consents and the policy's own ceilings. This is the same
@@ -1195,9 +1196,15 @@ byte-identical prefix from its cache and the recipes are the largest invariant b
 `runSession` door posts the session; Babel holds nothing.
 
 The answer is the session's final message: the last fenced JSON block, validated against the
-stage's schema. Every locator it cites must name a file the material's index served, at the digest
-the index recorded. A retyped digest, an edited path, or a citation of a session this run was never
-given refuses the whole answer.
+stage's schema. Code's pinned OMP receipt retains only the first 16,384 characters of that
+message ([OMP `plugins/api/session.ts:5-6,164-170` at `f5b9d09c5929943dea246e415875f18e0a68bddb`](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/api/session.ts#L164-L170)),
+so the prompt ends with a complete fenced-answer budget under 12,000 characters and at most four
+substantive items; the model must honor the bound before the receipt is truncated. A citation
+may use the exact `file` basename from the material's index, not a retyped long path. The
+terminal prompt lists those admitted basenames after any prior records, whose older source
+paths do not become newly served evidence. Every locator and digest is checked against this
+run's index; an edited path, digest or unserved session refuses the affected claim, not its
+siblings.
 
 **A refused submission is spend.** The model answered and the deployment paid; the receipt is
 written with the cost and the refusal's own code, the claim is finished rather than abandoned, and
@@ -1332,6 +1339,12 @@ be answerable afterwards.
   burn rate read from the hub's own metered calls over a trailing window rather than estimated. A
   refused submission is spend (§6.5), so a drain never relaunches against a burn rate that did not
   happen.
+- **Continuation** — each ordinary drain registers its own native catalog cadence under the
+  authority of its start, before the first job. It folds completed Code sessions and refills its
+  fan even when the standing policy has no weighted activities and its beat is disabled. A read-only
+  status poll can observe progress but cannot post work. If the start's credential cannot keep a
+  cadence through the drain's deadline and settlement window, the start launches nothing; an
+  ended drain's cadence is disabled.
 - **Endings, and there are four** — `target` and `deadline` are the controller stopping itself,
   `stopped` is the operator, `failed` is the controller refusing to continue. Stopping means
   stopping _launching_: a drain still holding jobs goes to `closing` and keeps them, because they

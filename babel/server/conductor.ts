@@ -517,11 +517,10 @@ export interface ConductorDeps {
   readonly catalogPlan?: RunPlan;
   readonly mapPreparePlan?: RunPlan;
   /**
-   * WHETHER THIS WAKE CAN POST NATIVE WORK. True only for a slice carrying a credential a native
-   * post can be admitted under: a settled job's own authority, or the installer's at enable. A
-   * door's bridge is attenuated to that door's caps and delegates, and the doors a cycle follows
-   * delegate no `machines:run`, so mapping — whose first step is a native preparation — is not
-   * drawn there: the claim would spend the work's bounded attempt on an admission refusal.
+   * WHETHER THIS WAKE CAN POST NATIVE MAPPING WORK. True for a settled job's own authority or
+   * the installer's at enable. Door bridges are attenuated to each action's caps and delegates;
+   * even a write-authorized door leaves mapping preparation to a native wake, where the route's
+   * installation and consent are established without spending a claim on a weaker admission.
    */
   readonly nativeDispatch?: boolean;
   /**
@@ -687,6 +686,8 @@ export interface TickReport {
 
 export interface Conductor {
   tick(): Promise<TickReport>;
+  /** Fold unfinished jobs under a reader's authority; never schedule or launch new work. */
+  observe(): Promise<readonly string[]>;
   /** Free catalog continuation under admission for this machine, never ordinary scan authority. */
   tickCatalog(
     machineId: string,
@@ -6677,7 +6678,16 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
   }
 
+  async function observe(): Promise<readonly string[]> {
+    const at = deps.now();
+    const policy = (await coordinator.policy(at)).policy;
+    const notes: string[] = [];
+    await reconcileRuns(at, policy, [], [], [], notes, { paid: new Map(), free: new Map() });
+    return notes;
+  }
   return {
+    observe,
+
     async tickCatalog(
       machineId: string,
       admission?: TranscriptMapCatalogAdmission,

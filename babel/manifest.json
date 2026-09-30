@@ -45,20 +45,20 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "8e9584c2bed4432a0ecaf041cdff7f8ae424b2b2406d3f4ee35599b5504918b5",
+        "sha256": "f0e5c1c1e573b763c4e603937d2ba1e69020e5962902006007ca91385a50bf2b",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "8e9584c2bed4432a0ecaf041cdff7f8ae424b2b2406d3f4ee35599b5504918b5",
+        "entrySha256": "f0e5c1c1e573b763c4e603937d2ba1e69020e5962902006007ca91385a50bf2b",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "8e9584c2bed4432a0ecaf041cdff7f8ae424b2b2406d3f4ee35599b5504918b5",
+        "sha256": "f0e5c1c1e573b763c4e603937d2ba1e69020e5962902006007ca91385a50bf2b",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "8e9584c2bed4432a0ecaf041cdff7f8ae424b2b2406d3f4ee35599b5504918b5",
+        "entrySha256": "f0e5c1c1e573b763c4e603937d2ba1e69020e5962902006007ca91385a50bf2b",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1

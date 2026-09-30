@@ -521,6 +521,8 @@ beforeEach(async () => {
     coordinator: coordinated,
     deps: () => deps,
     concurrentJobs: 16,
+    startOrdinary: async () => ({ ok: true, notes: [] }),
+    stopOrdinary: async () => {},
     now: () => store.now(),
   });
 });
@@ -536,7 +538,7 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
     ACTIONS.drainStatus,
     ACTIONS.drainStop,
   ]);
-  const [, mapBegin, , stop] = doors as readonly Door[];
+  const [, mapBegin, status, stop] = doors as readonly Door[];
 
   // THE MAPPING START IS ADMITTED WHERE ITS FIRST FAN IS POSTED: the executor's `map-prepare`
   // node and the source owner's private mapping target, as `startMapCatalog` is. A read wake is
@@ -566,6 +568,8 @@ test("the roster is two starts, a dry read and a stop; only the mapping start na
     "locations:write",
     "services:read",
   ]);
+
+  expect(status?.action.caps).toEqual(["containers:read"]);
 
   // A stop closes this plugin's own row and reaches its jobs through its OWN ceiling. It
   // asked `jobs:cancel` at the operation they share, and that operation is one no
@@ -670,6 +674,8 @@ test("a fan above the machine's ceiling is refused by name rather than posted an
     coordinator: coordinator(harness.store, () => harness.store.now(), 4),
     deps: () => deps,
     concurrentJobs: 4,
+    startOrdinary: async () => ({ ok: true, notes: [] }),
+    stopOrdinary: async () => {},
     now: () => harness.store.now(),
   });
   const refused = String((await start({ concurrent: 8 }))["refused"]);
@@ -1273,8 +1279,8 @@ async function sealDrainJob(drainId: string, ordinal: number): Promise<void> {
 }
 
 test("a drain bounds each material to its fan's share of the machine's measured scratch", async () => {
-  // The machine's newest receipt measured room for 5000 catalogued bytes past the headroom: one
-  // material alone would hold all five 1000-byte captures, and a fan of two holds two apiece.
+  // The newest receipt measured 5000 bytes past headroom. Raw and sealed material coexist:
+  // a fan of two has room for one 1000-byte capture per preparation, not two.
   await insert(harness.db, "runs", {
     id: "run_catalog_earlier",
     kind: PRESET_OPERATIONS["keep-going"],
@@ -1297,11 +1303,11 @@ test("a drain bounds each material to its fan's share of the machine's measured 
 
   // The door's own first fan…
   const drainId = String((await start({ concurrent: 2 }))["drainId"]);
-  expect(fleet.executed.map(handed)).toEqual([2, 2]);
+  expect(fleet.executed.map(handed)).toEqual([1, 1]);
   // …and the fan a later tick refills.
   await harness.db.run(`UPDATE drains SET live = '[]' WHERE id = ?`, [drainId]);
   await drainTick(deps);
-  expect(fleet.executed.map(handed)).toEqual([2, 2, 2, 2]);
+  expect(fleet.executed.map(handed)).toEqual([1, 1, 1, 1]);
 });
 
 test("a bounded fan recovers a lost admission write without buying a third Code job", async () => {

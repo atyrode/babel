@@ -11,6 +11,35 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Preparation conservatively budgets raw and sealed material together.** Machine-reported
+  capacity and lane concurrency now bound each catalogued selection for two simultaneous copies;
+  an unmeasured machine uses the declared scratch size, while Recall keeps its separate fetch
+  ceiling. A native preflight refuses insufficient free space before fetching. Synthetic titling
+  selection and no-fetch preflight regressions cover the two-copy boundary.
+
+- **Prepared sessions keep the authority of their posting wake.** The policy writer and launch
+  carry Code-workspace read/write and native material-binding authority into the preparation's
+  settlement; read-only pulse, runs and drain status fold progress without starting work.
+  Lost-posting recovery and the read-only part ceiling are covered by the server and part tests.
+
+- **Ordinary drains continue without a weighted conductor beat.** Each start installs a bounded
+  native catalog cadence under its own write authority before spending its first fan, so completed
+  Code sessions refill slots and close at their target or deadline even when every standing weight
+  is zero. Read-only status remains observational; a real server-hook regression covers refill,
+  terminal closure and cadence cleanup.
+
+- **Long selectors no longer invalidate sealed preparation outputs.** Material filenames now
+  reserve the native ustar component limit for the ordinal and extension before shortening the
+  selector; its exact identity remains in the material index. A boundary regression covers
+  ordinal uniqueness, and preview title preparations sealed bounded multi-session material.
+
+- **Analysis final answers favor complete JSON and exact served citations.** The last
+  instruction asks for a fenced answer below 12,000 characters with at most four substantive
+  items and lists this run's short index filenames instead of copying old source paths from
+  prior records. Three preview explorations reproduced 16,384-character clipped answers;
+  a bounded exploration then wrote four accepted records, while a synthesis copying prior
+  paths was refused. The answer and citation suites retain strict provenance and parsing.
+
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary
   preview/coordinate files use private creation before publication. An isolated synthetic

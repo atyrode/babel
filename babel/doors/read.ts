@@ -12,8 +12,9 @@
   nowhere else: the queries, the rows and the results are one vocabulary, so a panel's rendering
   code and a door's declaration cannot drift apart by a field.
 
-  Reading requires `containers:read` of its caller and nothing else. None of these doors writes,
-  and none of them touches a slice of the host: the store is the plugin's own tables.
+  Reading requires `containers:read` of its caller and nothing else. The reading handlers return
+  this plugin's own rows; the post-dispatch pulse/runs observation may fold progress into those
+  rows, but never posts new work under a reader's authority.
 */
 
 import { z } from "zod";
@@ -40,57 +41,20 @@ import {
 } from "../contract.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
-import { POSTING_DELEGATES } from "./launch.ts";
 import { defineServerAction, type GuestStorage } from "@manifold/plugin-kit/server";
 
 /** Reading is a read of the plugin's own rows; the caller needs the workspace it asked about. */
 const READ_CAPS = ["containers:read"] as const;
 
 /*
-  THE TWO READS THAT WAKE THE LOOP CARRY SIX NATIVE CEILINGS, AND NONE IS A SECOND PERMISSION.
-
-  `pulse` and `runs` are the doors a cycle follows (server.ts's `WAKES`), and the half of a cycle
-  that matters when no settlement arrived — a hook that overran, a hub restarted mid-run — is
-  INGESTION: read the jobs this store is still waiting on, take their sealed outputs, close the
-  runs. All of that is `jobs:read`, and the dispatcher attenuates `ctx.jobs` to what the door
-  declared, so without it here the safety net could not read a single job and every cycle behind
-  a read was a list of refusals.
-
-  AND A CYCLE ASKS ONE THING OF A MACHINE BEFORE IT CAN KEEP A CADENCE AT ALL, which is what
-  `machines:read` is here for. The loop's beat is registered on the machine the policy routes its
-  work to, and it is registered only once that machine has said it can run it: `reconcileSchedule`
-  asks `describeHost`, which is one `engine.jobs.describe` (`server/conductor.ts`). That read
-  moved off `machines:run` and onto the narrower word (atyrode/manifold#736), and the same
-  attenuation rule governs it: a door's native bridge is its own caps plus its delegates, so a
-  `describe` this door never declared is refused `job_capability_absent:machines:read` however
-  privileged the CALLER is.
-
-  THE BEAT'S OTHER FOUR REQUIREMENTS ARE DECLARED, NOT IMPLIED. `keep-going` is this manifest's
-  `catalog`: it writes its output and cache locations, invokes the bound restic `storage` service,
-  and uses the host network. `engine.jobs.schedule` builds that operation's request and then
-  reauthorizes EVERY requirement before it records the cadence (Manifold 2229a2fa,
-  `packages/server/src/job-service.ts:2748-2791`, `4360-4481`): its location declarations become
-  `locations:write`, the service binding becomes `services:invoke`, and `network: "host"` becomes
-  `network:host`. Without the first the cycle reports
-  `the beat cannot be registered: job_capability_absent:locations:write`; adding only it merely
-  reaches the same refusal for the service and then the network.
-
-  STARTING WORK IS REACHABLE FROM HERE, BECAUSE THE CYCLE IS WHERE WORK STARTS (#448). It
-  registers the beat, posts an analysis preparation and relaunches a drain's slot when one has
-  settled. `prepare` declares the same write locations, restic binding and host network as the
-  beat, so its `engine.jobs.execute` needs the same three words as well as `machines:run`.
-  `machines:run` is what each schedule or execute is discharged against; without it each is
-  refused `job_capability_absent:machines:run` whatever the caller held.
-
-  ALL SIX ARE DELEGATES, NOT CAPS: a delegate is the native ceiling this door's job authority may
-  reach, while a cap is what the caller must hold. The caller is unchanged — it still needs only
-  `containers:read`, and a reader asking for his own pulse is not asking a machine anything —
-  while the ceiling remains intersected with the CALLER's capabilities and the plugin's install
-  grant. The engine still requires the operator's version-bound consent at each operation,
-  location and service target. `locations:read` is deliberately absent: every operation this
-  cycle schedules or executes writes its declared locations; none reads one.
+  `pulse` and `runs` wake a read-only observation of unfinished work. The observer folds live
+  progress and settled receipts, but does not register schedules, post preparations or Code
+  sessions, or refill a drain. That keeps these doors callable by read-only parts such as Jev.
+  Native job reads and Code's readSession still need the declared bridge; none of the posting
+  authority carried by a write wake is lent to a reader.
 */
-const WAKING_DELEGATES = ["jobs:read", "machines:read", ...POSTING_DELEGATES] as const;
+const WAKING_CAPS = READ_CAPS;
+const WAKING_DELEGATES = ["jobs:read", "services:read"] as const;
 
 /** `pulse` and `topics` are asked without arguments; a strict empty object says so on the wire. */
 const NoQuerySchema = z.strictObject({});
@@ -187,7 +151,7 @@ export function readDoors(store: BabelStore): readonly Door[] {
       defineServerAction({
         name: ACTIONS.pulse,
         title: "Read what Babel did today",
-        caps: READ_CAPS,
+        caps: WAKING_CAPS,
         delegates: WAKING_DELEGATES,
         input: NoQuerySchema,
         result: PulseResultSchema,
@@ -201,7 +165,7 @@ export function readDoors(store: BabelStore): readonly Door[] {
       defineServerAction({
         name: ACTIONS.runs,
         title: "Read the runs",
-        caps: READ_CAPS,
+        caps: WAKING_CAPS,
         delegates: WAKING_DELEGATES,
         input: RunsQuerySchema,
         result: RunsResultSchema,
