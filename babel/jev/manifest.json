@@ -2,7 +2,7 @@
   "id": "atyrode.babel.jev",
   "version": "0.1.0",
   "title": "Jev",
-  "description": "Optional typed judgement over Babel records: per-record voters, pair relations and bounded duplicate-cluster proposals. Free plans precede explicit paid judgement. It holds no store, panel or write authority. Suggestions return for separate operator delivery; cached current readings may prioritize the shared review draw through an authenticated ephemeral handoff. Missing or disabled readings retain baseline selection; funding is unknown. Jev cannot rule, apply links, change feed rank, withhold work or launch a session.",
+  "description": "Optional judgement: record voters, pair relations and bounded duplicate proposals. Free plans precede paid judgement. No store, panel or write authority; suggestions need separate operator delivery. Cached readings may prioritize the review draw by authenticated ephemeral handoff. Missing or disabled readings retain baseline selection; funding is unknown. Jev cannot rule, apply links, change feed rank, withhold work or launch sessions.",
   "capabilities": ["containers:read", "services:invoke"],
   "dependencies": {
     "atyrode.babel": {

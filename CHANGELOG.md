@@ -45,9 +45,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   newly attached child citation invalidates held previews and racing applications without
   inflating shared-source support. Deterministic fixtures cover stale and malicious inputs,
   partial provenance, transactional refusal, replay, optional fallback and rendered confirmation
-  states. A disposable real-store door smoke traced two child sources across two same-run
-  hypotheses, refused a non-owner, applied one link and replayed its receipt while preserving
-  all four original records. No paid corpus sweep or deployment is implied.
+  states. An isolated real Hub and actual Feed preview exercised ledger-only acceptance,
+  owner confirmation, stale-child and declined-suggestion refusals, and durable receipt replay.
+  Its clearly synthetic audit showed two records from one run and two child sources; one
+  operator-attributed link was written, while all fourteen original fixture records remained
+  byte-for-byte unchanged. Public doors refused a separately minted non-owner. Actual plugin
+  toggles verified absent, disabled and enabled-without-service Feed fallback; provider credit
+  exhaustion was not exercised, and no paid judgement, real archive or deployment is implied.
 
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain
