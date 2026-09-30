@@ -61,20 +61,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   transaction without fresh allowance on refill or restart; parent/posting identities remain
   distinct. Oversized prompts now visibly refuse and retire the unused slot so another eligible
   preset can progress, without swallowing database/publication errors.
-  The retained candidate's real-store scenarios exercise incurred/reserved deficits, cost shares,
-  concurrency and stopped-admission refusal, stale-fold refusal, unpriced refill refusal and
-  unchanged standing policy. Physical admission reads the current wake's machine inventory
-  at start, each reservation/refill and pending native/Code posting recovery, including mapping.
-  Oversized starts explicitly refuse; unknown or shrinking capacity holds new work without
-  discarding existing work or receipts. Regression definitions include unavailable inventory,
-  shrinking capacity, reservation competition and wake-local lifecycle metadata. Source is rebased
-  onto the mainline cadence, keyed review, advice and dependency pins; this integrated revision
-  remains unverified.
-  #264's live acceptance remains unperformed. No paid drain or preview interaction was exercised.
-
-## [0.5.8] - 2026-09-30
-
-### Added
+  Real-store regressions exercise incurred/reserved deficits, cost shares, concurrency and
+  stopped-admission refusal, stale-fold refusal, unpriced refill refusal and unchanged standing
+  policy. Physical admission reads the current wake's machine inventory at start, each
+  reservation/refill and pending native/Code posting recovery, including mapping. Oversized starts
+  explicitly refuse; unknown or shrinking capacity holds new work without discarding existing work
+  or receipts. Regression coverage includes unavailable inventory, shrinking capacity, reservation
+  competition and wake-local lifecycle metadata. In an isolated rendered Watch, edited weights and
+  the per-job threshold survive switches to the separate model-free Keep going rehearsal; missing
+  machine/profile authority keeps start disabled. No paid drain or live throughput was exercised;
+  #264's live acceptance remains separate and unperformed.
 
 - **Historical citations can acquire separately attributed, archived source facts (#431).**
   An owner-requested bounded native job checks exact tagged captures and raw or normalized
@@ -83,8 +79,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   rewrites imported claims, notes, rankings or rulings; retries preserve earlier attempts.
   Real synthetic restic and SQLite regressions cover stale sources, restart and idempotent
   sealed-output ingestion. Actual imported-corpus coverage remains an operator step.
-
-### Fixed
 
 - **Citation evidence stays unavailable when a competing capture cannot be checked.** An
   unreadable or oversized candidate cannot be silently discarded after a readable match.

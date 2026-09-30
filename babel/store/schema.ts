@@ -25,7 +25,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 15 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 16 } as const;
 
 /** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
 const RECALL_TRACE_SCHEMA: readonly string[] = [

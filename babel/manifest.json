@@ -25,7 +25,7 @@
       "reason": "a Babel run is a Code session: Code owns the profile (model, thinking level, account) and posts the omp job through its runSession door, which Babel calls with ctx.actions.call"
     }
   },
-  "dataVersion": { "major": 1, "minor": 15 },
+  "dataVersion": { "major": 1, "minor": 16 },
   "database": { "maxBytes": 1073741824 },
   "purges": ["storage"],
   "contributes": {
@@ -45,20 +45,20 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "03a8e5a1ce60ea29113bdb36746db250ce50c7ee0c9b308afb6c5adc49f07a19",
+        "sha256": "2bb8fe743ac7d4c8f05cd0e69256a8722d0b27d0f49bb667b66bdc1caa491ea7",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "03a8e5a1ce60ea29113bdb36746db250ce50c7ee0c9b308afb6c5adc49f07a19",
+        "entrySha256": "2bb8fe743ac7d4c8f05cd0e69256a8722d0b27d0f49bb667b66bdc1caa491ea7",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "03a8e5a1ce60ea29113bdb36746db250ce50c7ee0c9b308afb6c5adc49f07a19",
+        "sha256": "2bb8fe743ac7d4c8f05cd0e69256a8722d0b27d0f49bb667b66bdc1caa491ea7",
         "format": "raw",
         "entry": ["machine.js"],
-        "entrySha256": "03a8e5a1ce60ea29113bdb36746db250ce50c7ee0c9b308afb6c5adc49f07a19",
+        "entrySha256": "2bb8fe743ac7d4c8f05cd0e69256a8722d0b27d0f49bb667b66bdc1caa491ea7",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
