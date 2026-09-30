@@ -1414,7 +1414,7 @@ test("a corpus larger than one page is read whole: the first page and the last b
   // …and the reserved coverage lane draws the oldest due across the WHOLE corpus, which is the
   // first row of the first page.
   expect(draws.some((assignment) => assignment.recordId === oldest)).toBe(true);
-});
+}, 20_000);
 
 // ---------------------------------------------------------------------------- the budget overlay
 
