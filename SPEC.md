@@ -420,6 +420,11 @@ branches. Other relations and contradictions have their own labelled sections an
 the read. Record actions open the existing record panel and update the shared peek selection;
 a host that cannot place another tile is reported without discarding that selection.
 
+A linked entity's Topic panel retains a one-step return action to its originating entity,
+including when the target is missing or its neighbourhood read is unavailable. Return opens the
+origin's Topic panel through the host rather than treating browser history, which tracks the
+container, as an entity-navigation stack.
+
 Facts expose stored authority, confidence, validity/observation/recording dates, replacement
 history and the actual newest status, including stale/disputed or unknown. Filed records expose
 their run, recipe revision, actor, status and operator ruling separately from filing rationale
