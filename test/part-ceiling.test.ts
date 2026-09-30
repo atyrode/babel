@@ -13,6 +13,7 @@ import {
 import { ACTIONS, BABEL_PLUGIN_ID, JEV_PLUGIN_ID, type ActionName } from "../babel/contract.ts";
 import { actDoors } from "../babel/doors/acts.ts";
 import type { Door } from "../babel/doors/door.ts";
+import { duplicateDoors } from "../babel/doors/duplicates.ts";
 import { readDoors } from "../babel/doors/read.ts";
 import { stamp } from "../babel/store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../babel/store/testdb.ts";
@@ -337,4 +338,25 @@ test("the part holds no write authority, and every ruling door is closed to it",
       `caller_ceiling: ${JEV_PLUGIN_ID} -> ${BABEL_PLUGIN_ID}.${entry.action.name} (containers:write)`,
     );
   }
+});
+
+test("even the owner's principal cannot give Jev duplicate-link execution authority", async () => {
+  const published = Object.fromEntries(
+    duplicateDoors(harness.store).map((entry) => [
+      `${BABEL_PLUGIN_ID}.${entry.action.name}`,
+      entry,
+    ]),
+  );
+  const actions = callsFrom(published, [BABEL_PLUGIN_ID, JEV_PLUGIN_ID], jev, ["*"]);
+  const before = await harness.db.query(`SELECT * FROM edges ORDER BY id`);
+  for (const action of [ACTIONS.duplicatePreview, ACTIONS.duplicateApply]) {
+    expect(
+      await refusalOf(actions, action, {
+        nextActionId: "nxt_00000001",
+        fingerprint: "a".repeat(64),
+        confirm: true,
+      }),
+    ).toBe(`caller_ceiling: ${JEV_PLUGIN_ID} -> ${BABEL_PLUGIN_ID}.${action} (containers:write)`);
+  }
+  expect(await harness.db.query(`SELECT * FROM edges ORDER BY id`)).toEqual(before);
 });

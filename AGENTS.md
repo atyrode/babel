@@ -186,8 +186,10 @@ missing capability proof, but a local skip is not a pass.
   historical payload key through migration, rotation and rollback; `docs/runbook.md` owns the
   procedures.
 - Babel-the-product makes ideas inspectable: it does not open issues, edit repositories,
-  rotate credentials or apply suggestions. It remains vault-agnostic, without credential
-  retrieval authority. This does not prohibit a coding agent's explicitly requested repository PR.
+  rotate credentials or apply suggestions. The only exception is owner-confirmed application of
+  validated duplicate corroboration links authorized by #359; this grants no other internal or
+  external execution authority. Babel remains vault-agnostic, without credential retrieval
+  authority. This does not prohibit a coding agent's explicitly requested repository PR.
 
 ## Task-specific guidance
 

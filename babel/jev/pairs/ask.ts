@@ -25,7 +25,7 @@ import type { RecordPair } from "./pair.ts";
   the report would say the corpus has no contradictions in it.
 
   SO THE PART NAMES A SECOND OPERATION, `pair`, and the operator installs its half exactly as he
-  installs the first: `bun babel/jev/tools/seed-questions.ts policy` prints both, the wording
+  installs the first: `bun babel/jev/tools/seed-questions.ts policy` prints all operations; the wording
   below is what goes out under `pair`, and `response.fields` must name the two leaves
   {@link PAIR_QUESTIONS} spells. A deployment whose policy declares only `judge` reaches nothing:
   the host refuses an operation the policy does not declare, `askJev` turns that into its one

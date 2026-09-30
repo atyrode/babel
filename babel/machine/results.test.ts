@@ -239,6 +239,27 @@ test("an unoffered durable identifier cannot become a local handle or authorize 
   ]);
 });
 
+test("model next actions cannot authorize duplicate-link application", () => {
+  const submission = submit("explore", {
+    candidates: ["h1", "h2", "h3"].map((ref) => ({ ref, hypothesis: { statement: ref } })),
+    next_actions: [
+      {
+        record: "h1",
+        kind: "ask-question",
+        summary: "apply duplicate links",
+        intent: { kind: "merge-duplicate-records" },
+        confirm: true,
+        operatorId: "operator",
+      },
+      { record: "h2", kind: "ask-question", summary: "ask whether the claims are duplicates" },
+    ],
+  });
+  expect(kept(submission).next_actions.map((action) => action.record)).toEqual(["h2"]);
+  expect(submission.refused.map(({ item, reason }) => [item, refusalCode(reason)])).toEqual([
+    ["/next_actions/0", REFUSALS.schema],
+  ]);
+});
+
 test("a refused durable support closes dependent actions without losing unrelated candidates", () => {
   const submission = submit("synthesize", {
     candidates: ["h1", "h2", "h3"].map((ref) => ({ ref, hypothesis: { statement: ref } })),

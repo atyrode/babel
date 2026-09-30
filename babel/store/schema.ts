@@ -25,7 +25,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 16 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 17 } as const;
 
 /** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
 const RECALL_TRACE_SCHEMA: readonly string[] = [
@@ -269,6 +269,8 @@ const DRAIN_LAUNCHES_TABLE = `CREATE TABLE drain_launches(
  * accepting a next action applies nothing anywhere: §4.6 puts publishing and writing to a
  * source repository outside Babel, so an acceptance is a durable record that a person accepted
  * it and nothing else.
+ * Duplicate maintenance has a separate root-authenticated preview/apply door and ledger;
+ * even an accepted typed duplicate suggestion does nothing through generic `decide`.
  *
  * `next_actions.kind` IS A CLOSED VOCABULARY where `edges.kind` is an open one, and the
  * difference is who acts on the word. A relation is read; a next action is OFFERED as a choice,
@@ -317,6 +319,139 @@ const NEXT_ACTION_SCHEMA: readonly string[] = [
   `CREATE TRIGGER next_action_rulings_kept BEFORE DELETE ON next_action_rulings BEGIN
      SELECT RAISE(ABORT, 'a decision is never deleted; it is the provenance an acceptance rate reads');
    END`,
+];
+
+/** One predicate for planning, suggestion admission and the atomic application guard. */
+export function duplicateEligibleSql(alias: string): string {
+  return `${nameableRecordSql(`${alias}.id`)}
+    AND NOT EXISTS (SELECT 1 FROM records h WHERE h.root_id = ${alias}.root_id
+      AND (h.seq > ${alias}.seq OR (h.seq = ${alias}.seq AND h.rowid > ${alias}.rowid)))
+    AND NOT EXISTS (SELECT 1 FROM records h WHERE h.supersedes_id = ${alias}.id)
+    AND COALESCE((SELECT d.disposition FROM dispositions d WHERE d.record_id = ${alias}.id
+      ORDER BY d.seq DESC LIMIT 1), 'reopen') = 'reopen'
+    AND COALESCE((SELECT s.status FROM status_events s WHERE s.record_id = ${alias}.id
+      ORDER BY s.seq DESC LIMIT 1), '') NOT IN ('rejected','retired','superseded')`;
+}
+
+/**
+ * Exact content and provenance, serialized by SQLite both before and inside the transaction.
+ * UNION terminates cycles across parented observations and historical support edges.
+ * Corroborates is deliberately not an input: applying this intent must not invalidate its snapshot.
+ */
+export function duplicateSnapshotSql(recordId: string): string {
+  return `(WITH RECURSIVE provenance(id) AS (
+    SELECT ${recordId}
+    UNION
+    SELECT child.id FROM records child JOIN provenance p ON child.parent_id = p.id
+    UNION
+    SELECT e.to_id FROM edges e JOIN provenance p ON p.id = e.from_id
+      JOIN records target ON target.id = e.to_id AND target.kind = e.to_kind
+      WHERE e.kind IN ('consolidates','addresses','derived_from')
+  )
+  SELECT json_object(
+    'records', json((SELECT json_group_array(json(row)) FROM (
+      SELECT json_object('id', r.id, 'kind', r.kind, 'root_id', r.root_id,
+        'supersedes_id', r.supersedes_id, 'seq', r.seq, 'parent_id', r.parent_id,
+        'run_id', r.run_id, 'recipe_id', r.recipe_id, 'recipe_version', r.recipe_version,
+        'actor_kind', r.actor_kind, 'actor_id', r.actor_id, 'title', r.title,
+        'created_at', r.created_at, 'payload', r.payload) AS row
+      FROM records r JOIN provenance p ON p.id = r.id ORDER BY r.id))),
+    'edges', json((SELECT json_group_array(json(row)) FROM (
+      SELECT json_object('id', e.id, 'kind', e.kind, 'from_kind', e.from_kind,
+        'from_id', e.from_id, 'to_kind', e.to_kind, 'to_id', e.to_id,
+        'position', e.position, 'note', e.note, 'actor_kind', e.actor_kind,
+        'actor_id', e.actor_id, 'created_at', e.created_at) AS row
+      FROM edges e JOIN provenance p ON p.id = e.from_id
+      WHERE e.kind IN ('cites','consolidates','addresses','derived_from') ORDER BY e.id))),
+    'sources', json((SELECT json_group_array(source) FROM (
+      SELECT DISTINCT s.harness || '/' || s.source_id AS source
+      FROM edges e JOIN provenance p ON p.id = e.from_id
+        JOIN sessions s ON s.selector = e.to_id OR (s.source_id = e.to_id
+          AND NOT EXISTS (SELECT 1 FROM sessions exact WHERE exact.selector = e.to_id)
+          AND (SELECT COUNT(*) FROM sessions matching WHERE matching.source_id = e.to_id) = 1)
+      WHERE e.kind = 'cites' AND e.to_kind = 'session' ORDER BY source))),
+    'unresolvedSources', (SELECT COUNT(DISTINCT e.to_id)
+      FROM edges e JOIN provenance p ON p.id = e.from_id
+      WHERE e.kind = 'cites' AND e.to_kind = 'session' AND NOT EXISTS (
+        SELECT 1 FROM sessions s WHERE s.selector = e.to_id OR (s.source_id = e.to_id
+          AND NOT EXISTS (SELECT 1 FROM sessions exact WHERE exact.selector = e.to_id)
+          AND (SELECT COUNT(*) FROM sessions matching WHERE matching.source_id = e.to_id) = 1)))))`;
+}
+
+/** Every expected member must still have exactly the content and eligibility that was read. */
+export function duplicateSnapshotGuard(snapshots: string): string {
+  return `NOT EXISTS (
+    SELECT 1 FROM json_each(${snapshots}) m
+    WHERE NOT EXISTS (SELECT 1 FROM records r
+      WHERE r.id = json_extract(m.value, '$.recordId') AND ${duplicateEligibleSql("r")}
+        AND ${duplicateSnapshotSql("r.id")} = json_extract(m.value, '$.snapshot')))`;
+}
+
+/** Explicit operator applications, never a model output or an importable historical table. */
+const DUPLICATE_SCHEMA: readonly string[] = [
+  `CREATE INDEX duplicate_sources_by_id ON sessions(source_id)`,
+  `CREATE INDEX duplicate_clusters ON next_actions(json_extract(payload, '$.duplicateCluster'))
+     WHERE json_extract(payload, '$.duplicateCluster') IS NOT NULL`,
+  `CREATE TRIGGER duplicate_suggestion_guard BEFORE INSERT ON next_actions
+     WHEN json_extract(NEW.payload, '$.intent.kind') = 'merge-duplicate-records'
+       AND NEW.proposed_by_kind = 'engine'
+     BEGIN
+       SELECT CASE WHEN json_type(NEW.payload, '$.duplicateSnapshots') IS NOT 'array'
+         OR json_array_length(NEW.payload, '$.duplicateSnapshots') < 2
+         OR NOT (${duplicateSnapshotGuard("json_extract(NEW.payload, '$.duplicateSnapshots')")})
+         THEN RAISE(ABORT, 'duplicate members changed before suggestion admission') END;
+     END`,
+  `CREATE TABLE duplicate_applications(
+     next_action_id TEXT PRIMARY KEY REFERENCES next_actions(id),
+     fingerprint TEXT NOT NULL,
+     operator_id TEXT NOT NULL CHECK (length(operator_id) > 0),
+     applied_at TEXT NOT NULL,
+     expected_links TEXT NOT NULL CHECK (json_valid(expected_links)),
+     outcome TEXT NOT NULL CHECK (json_valid(outcome))
+   ) STRICT`,
+  `CREATE TRIGGER duplicate_application_guard BEFORE INSERT ON duplicate_applications BEGIN
+     SELECT CASE WHEN NOT EXISTS (
+       SELECT 1 FROM next_actions n WHERE n.id = NEW.next_action_id
+         AND n.proposed_by_kind = 'engine' AND n.kind = 'ask-question'
+         AND json_extract(n.payload, '$.intent.kind') = 'merge-duplicate-records'
+         AND json_type(n.payload, '$.duplicateSnapshots') = 'array'
+         AND json_array_length(n.payload, '$.duplicateSnapshots') >= 2
+         AND NOT EXISTS (SELECT 1 FROM next_actions s
+           WHERE json_extract(s.payload, '$.supersedes') = n.id)
+         AND COALESCE((SELECT decision FROM next_action_rulings
+           WHERE next_action_id = n.id ORDER BY seq DESC LIMIT 1), '') <> 'declined'
+         AND ${duplicateSnapshotGuard("json_extract(n.payload, '$.duplicateSnapshots')")}
+     ) THEN RAISE(ABORT, 'duplicate application refused: suggestion or members changed') END;
+     SELECT CASE WHEN EXISTS (
+       SELECT 1 FROM json_each(NEW.expected_links) link
+         JOIN records a ON a.id = json_extract(link.value, '$.fromId')
+         JOIN records b ON b.id = json_extract(link.value, '$.toId')
+       WHERE json_extract(link.value, '$.exists') <> EXISTS (
+         SELECT 1 FROM edges e WHERE e.kind = 'corroborates' AND e.from_id = a.id
+           AND e.from_kind = a.kind AND e.to_id = b.id AND e.to_kind = b.kind)
+     ) THEN RAISE(ABORT, 'duplicate application refused: previewed link effect changed') END;
+   END`,
+  `CREATE TRIGGER duplicate_application_links AFTER INSERT ON duplicate_applications BEGIN
+     INSERT INTO edges(id, kind, from_kind, from_id, to_kind, to_id, position, note,
+       actor_kind, actor_id, created_at)
+     SELECT 'edg_' || lower(hex(randomblob(8))), 'corroborates', a.kind, a.id, b.kind, b.id,
+       NULL, NEW.next_action_id, 'operator', NEW.operator_id, NEW.applied_at
+     FROM json_each(NEW.outcome, '$.links') link
+       JOIN records a ON a.id = json_extract(link.value, '$.fromId')
+       JOIN records b ON b.id = json_extract(link.value, '$.toId')
+     WHERE NOT EXISTS (SELECT 1 FROM edges e WHERE e.kind = 'corroborates'
+       AND e.from_id = a.id AND e.from_kind = a.kind AND e.to_id = b.id AND e.to_kind = b.kind);
+   END`,
+  `CREATE TRIGGER duplicate_applications_immutable BEFORE UPDATE ON duplicate_applications BEGIN
+     SELECT RAISE(ABORT, 'duplicate applications are append-only');
+   END`,
+  `CREATE TRIGGER duplicate_applications_kept BEFORE DELETE ON duplicate_applications BEGIN
+     SELECT RAISE(ABORT, 'duplicate applications are append-only');
+   END`,
+  `CREATE TRIGGER corroborates_immutable BEFORE UPDATE ON edges
+     WHEN OLD.kind = 'corroborates' OR NEW.kind = 'corroborates' BEGIN
+       SELECT RAISE(ABORT, 'a corroboration link is immutable');
+     END`,
 ];
 
 /**
@@ -814,8 +949,9 @@ export const SCHEMA_V1: readonly string[] = [
   // `contradicts` (an evidence-free challenger objection, and a record whose own text opens
   // CONTRADICTS), `corrects` (a record whose own text opens CORRECTION or CORRECTS),
   // `challenges` (each grounded objection to its hypothesis, note=ground, actor=challenger run),
-  // `supersedes`, `refines` and `about`. A new word costs nothing at the table and everything
-  // at the reader, so it is added here in prose before it is written anywhere.
+  // `supersedes`, `refines` and `about`. The explicit duplicate application also appends
+  // `corroborates`, representative -> other member, without rewriting either record. A new
+  // word costs nothing at the table and everything at the reader.
   `CREATE TABLE edges(
      id TEXT PRIMARY KEY,
      kind TEXT NOT NULL,
@@ -1201,6 +1337,7 @@ export const SCHEMA_V1: readonly string[] = [
   ...TRANSCRIPT_MAP_SCHEMA,
   ...TRANSCRIPT_MAP_READ_SCHEMA,
   ...CITATION_FACT_SCHEMA,
+  ...DUPLICATE_SCHEMA,
 
   // ---------------------------------------------------------------- a drain (#258)
   // No index, and now for one reason rather than two: a deployment accumulates drains at the
@@ -1379,6 +1516,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   },
   ...TRANSCRIPT_MAP_READ_SCHEMA.map(objectAddition),
   ...CITATION_FACT_SCHEMA.map(objectAddition),
+  ...DUPLICATE_SCHEMA.map(objectAddition),
   // #169: the models that have answered a running job, JSON, in the order it first heard from
   // each. A column and not a table, because the table above already arrives by addition for a
   // store created before #261 — and an addition keyed only on the table's name would have left

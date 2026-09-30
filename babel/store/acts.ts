@@ -11,6 +11,7 @@ import {
   RefinementSchema,
   RoleSchema,
   SuggesterSchema,
+  type DuplicateIntent,
   type NextAction,
   type NextActionDecision,
   type Refinement,
@@ -28,6 +29,7 @@ import {
   type RefusalCode,
 } from "../machine/results.ts";
 import { nameableRecordSql, SCHEMA_V1 } from "./schema.ts";
+import { suggestDuplicate } from "./duplicates.ts";
 import {
   budgetChanges,
   coordinator,
@@ -1676,9 +1678,9 @@ export async function decide(
 /*
   A SUGGESTION IS A `next_actions` ROW AND CAN BE NOTHING ELSE.
 
-  Every statement below names `next_actions` or reads `policies`, `records`, `dispositions` and
-  `next_action_rulings`, and that is the whole reachable set: no `records`, no `edges`, no
-  `assessments`, no `dispositions`, no `status_events`, no delete and no edit. The frontier's two
+  This path writes only `next_actions`. Typed duplicate intent additionally reads exact member
+  records and their original provenance graph, but never writes records, edges, assessments,
+  dispositions or status events, and never deletes or edits. The frontier's two
   writer classes — the operator, authenticated; a run, mediated by the conductor against a schema
   the baseline owns — are unchanged, which is what keeps "a run may propose and may never rule"
   a property of the store rather than a rule somebody remembers.
@@ -1749,6 +1751,7 @@ export interface SuggestArgs {
   rationale: string;
   /** What the suggester judged under; kept on the row and compared by equality, never parsed. */
   basis: string;
+  intent?: DuplicateIntent | undefined;
 }
 
 /**
@@ -1778,6 +1781,7 @@ export async function suggest(
 ): Promise<Suggested> {
   const suggester = await suggesterFor(store, principalId);
   if (args.summary.trim() === "") throw new ActRefused("a suggestion says what to do, in one line");
+  if (args.intent !== undefined) return await suggestDuplicate(store, args, suggester);
   const judged = await first<JudgedRow>(
     store,
     `SELECT r.seq AS seq,
@@ -2519,7 +2523,8 @@ export function importableTables(): Record<string, readonly string[]> {
     const head = /^\s*CREATE TABLE\s+(\w+)\s*\(/.exec(statement);
     if (head === null) continue;
     const name = head[1];
-    if (name === undefined) continue;
+    // An application is an operator act through its guarded door, never importable authority.
+    if (name === undefined || name === "duplicate_applications") continue;
     tables[name] = columnParts(statement.slice(head[0].length)).map((column) => column.name);
   }
   importable = tables;

@@ -825,10 +825,11 @@ This proves private file creation on the pinned Bun; it is not a live-archive cu
 ### Running optional judgement
 
 `bun babel/jev/tools/seed-questions.ts policy` renders the versioned question literals and response
-projections for the `judge` and `pair` service operations. It installs nothing. The deployment must
-already have its operator-supplied Jev service policy and credential binding; printing the policy
-is not activation evidence. The baseline policy's `suggesters` list must map the caller's
-authenticated principal to `atyrode.babel.jev` before it can size the suggestion gap or submit.
+projections for the `judge`, `pair` and `duplicate` service operations. It installs nothing.
+The deployment must already have its operator-supplied Jev service policy and credential binding;
+printing the policy is not activation evidence. The baseline policy's `suggesters` list must map
+the caller's authenticated principal to `atyrode.babel.jev` before it can size the suggestion gap
+or submit.
 
 Home reads `atyrode.babel.jev.sweepPlan` without invoking a model. **Judge pending corpus** is the
 explicit spending action: it walks bounded batches up to the initial pending count, and **Stop
@@ -848,6 +849,21 @@ silently hydrated or claimed as checked. Explicit `contradicts` and `supersedes`
 detectors may speak; missing cuts report uncalibrated and cause no paid call on their own.
 Returned suggestions carry `subject` and `aspect` as well as their policy-and-wording basis.
 The caller removes the diagnostic `detector` field before submitting through `babel.suggest`.
+
+Duplicate maintenance uses `duplicatesPlan` for a free bounded retained-corpus page, then
+`duplicates` for one explicitly budgeted judgement dispatch with a supplied confidence cut.
+The service roster can report an absent binding, not prove remaining credit: a configured service
+that refuses invocation produces a stopped report with no suggestions, never a synthetic answer.
+The free plan reports an upper bound; the returned draft preview supplies the exact cluster count,
+member fingerprints, pair evidence and distinct-run/source audit before submission.
+
+After submission, **Preview duplicate links** names existing and proposed `corroborates` edges.
+**Confirm duplicate links** is the separate owner-only application; neither Jev nor an ordinary
+next-action acceptance executes it. The baseline revalidates the snapshot in the atomic write,
+preserves original records, and returns the same durable receipt on repetition. These doors add
+no Jev write capability and no automatic paid sweep. Source fixtures cover store, authority and
+rendered transitions; current preview and integration results, not this description, establish
+which verification has been exercised.
 
 The local preview exercises real installation, the unbound plan, reading doors and observation
 navigation. Funded Feed transitions can be exercised with isolated synthetic action responses;

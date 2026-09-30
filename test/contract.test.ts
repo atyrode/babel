@@ -100,6 +100,7 @@ describe("the baseline's manifest spells the contract", () => {
     // being evidence about anything.
     expect(INGESTIBLE_TABLES).not.toContain("dispositions");
     expect(INGESTIBLE_TABLES).not.toContain("next_action_rulings");
+    expect(INGESTIBLE_TABLES).not.toContain("duplicate_applications");
     // Nor may a run say what an archive label means (#453): the mapping decides which machine
     // every capture under the label is hosted at, and only the operator's `rehostSessions`
     // records it.

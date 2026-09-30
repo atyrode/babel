@@ -23,6 +23,7 @@ import {
 import { Votes } from "./votes.tsx";
 
 import { JevPosition } from "./jev.tsx";
+import { DuplicateAction } from "./duplicates.tsx";
 /*
   ONE RECORD, PEELED (§8.6).
 
@@ -33,8 +34,8 @@ import { JevPosition } from "./jev.tsx";
 
   Three rules shape the code rather than the layout:
 
-    - NOTHING FETCHES ON OPEN. The whole peel arrives in one door call, so opening depth 4 is
-      a disclosure and never a request; a reader who digs waits for nothing.
+    - NOTHING FETCHES ON DISCLOSURE. The whole peel arrives in one door call. Explicit action
+      previews, including duplicate links, read separately and never authorize their effect.
     - AN ABSENT SECTION IS ABSENT. Not an empty heading, not a nought: a proposal that names
       no risk is not a proposal whose risks are none.
     - IDS LIVE AT DEPTH 5, with one exception — the related strip links to other records, and
@@ -169,6 +170,19 @@ const NEXT_ACTION_ASKS: Record<ProposedAction["kind"], string> = {
   "develop-further": "Explore this further",
 };
 
+function proposalLabel(intent: RecordPeel["proposalIntent"]): string {
+  switch (intent?.kind) {
+    case "topic":
+      return `Topic ${intent.operation}`;
+    case "record-refinement":
+      return "Record refinement";
+    case "backlog":
+      return `Backlog ${intent.operation}`;
+    default:
+      return "Generic improvement";
+  }
+}
+
 /**
  * ONE PROPOSED NEXT ACTION, AND THE OPERATOR'S ANSWER TO IT (#340).
  *
@@ -208,7 +222,9 @@ function ProposedNextAction({
       });
       setStanding(result.standing);
       setNote("");
-      onActed("decide", decision, `${NEXT_ACTION_ASKS[action.kind]} — ${decision}.`);
+      const request =
+        action.intent === undefined ? NEXT_ACTION_ASKS[action.kind] : "Duplicate links";
+      onActed("decide", decision, `${request} — ${decision}.`);
     } catch (reason) {
       setFailure(refusal(reason));
     } finally {
@@ -217,12 +233,23 @@ function ProposedNextAction({
   }
 
   return (
-    <section className="babel-next-action" data-standing={standing}>
+    <section
+      className="babel-next-action"
+      data-standing={standing}
+      data-intent={action.intent?.kind}
+    >
       <p className="babel-next-action-ask">
-        <span className="babel-next-action-kind">{NEXT_ACTION_ASKS[action.kind]}</span>{" "}
+        <span className="babel-next-action-kind">
+          {action.intent === undefined ? NEXT_ACTION_ASKS[action.kind] : "Link duplicate records"}
+        </span>{" "}
         {action.summary}
       </p>
       {action.rationale !== "" && <p className="babel-note">{action.rationale}</p>}
+      {action.intent !== undefined && (
+        <p className="babel-note">
+          Suggested next action: {action.kind}. Projection/export and apply authority are separate.
+        </p>
+      )}
       {action.history.length > 0 && (
         <ul className="babel-history">
           {action.history.map((entry) => (
@@ -260,11 +287,20 @@ function ProposedNextAction({
       </div>
       <p className="babel-note">
         Accepting records that you accepted it. Babel publishes nothing and opens nothing.
+        {action.intent !== undefined && " Accept and Decline do not apply duplicate links."}
       </p>
       {failure !== "" && (
         <p className="babel-refusal" role="alert">
           {failure}
         </p>
+      )}
+      {action.intent !== undefined && (
+        <DuplicateAction
+          host={host}
+          nextActionId={action.id}
+          intent={action.intent}
+          onApplied={() => onActed("duplicateApply", "linked", "Duplicate links applied.")}
+        />
       )}
     </section>
   );
@@ -348,6 +384,14 @@ export function Peel({
               >
                 {post.kind === "observation" ? "Observation" : KIND_LABELS[post.kind]}
               </span>
+              {post.kind === "proposal" && (
+                <span
+                  className="babel-proposal-intent"
+                  data-intent={peel.proposalIntent?.kind ?? "generic-improvement"}
+                >
+                  {proposalLabel(peel.proposalIntent)}
+                </span>
+              )}
               <Chip className="babel-standing" data-standing={peel.claim.standing}>
                 {peel.claim.standing}
               </Chip>
