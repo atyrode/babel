@@ -1078,15 +1078,26 @@ current wake's credential. Automatic enable/settled wakes use only their optiona
 inventory slice; no enable-captured facts or authority survive into a later wake. Missing,
 refused, disconnected, offline, revoked or invalid facts hold new admissions and leave a note.
 A later shrink retains already-paid work, unresolved reservations and receipts, while withholding
-extra postings above the live cap. Mapping retains its own governed mode with the same physical
-admission protection. Atomic slot checks count other open Babel work and unresolved reservations
-on the machine. A preparation shares its parent's slot only through the parent's explicit
+extra postings above the live cap. Standing mapping and drain-owned mapping use the same physical
+admission protection, at claim publication and before native/Code posting; policy lane share is
+not a separate machine allowance. Atomic slot checks count other open Babel work and unresolved
+reservations on the machine. The current wake also reads every native `jobs.listRuns` page:
+active policy and drain cadences count before their settlement writes a Babel run. Job identity
+deduplicates native observations against existing runs and reservations. Terminal native jobs
+add no occupancy; an unreadable listing holds new admission rather than guessing that the machine
+is idle. These observations are not persisted or reused by another wake.
+A preparation shares its parent's slot only through the parent's explicit
 `prepare_job_id` on that machine, not matching ID suffixes or unrelated job IDs. A retained child
 still holds one slot after its parent closes or disappears. Stop preserves native-attempt evidence
 and pending claims: an uncertain post or cancellation never becomes free capacity on restart.
 Only a definitive refusal before effect or an authoritative terminal native receipt releases
-that preparation. Work outside Babel is not visible to this ledger; host-wide resource admission
-remains Manifold's responsibility.
+that preparation. For direct native work, a typed pre-admission refusal must be paired with
+`jobs.status` `job_not_started` for every recorded posting attempt. That closes the immutable
+intent, parent and reservation once; later wakes do not repost the rejected request. Transport
+failure, unreadable status, `job_owner_mismatch` or an earlier uncertain attempt keeps the slot
+held. Do not clear it by deleting a run or changing the retained request. Work outside the
+credential-visible Babel jobs is not covered; host-wide resource admission remains Manifold's
+responsibility.
 
 The source dependency pins provide Manifold's live inventory (#941) and optional lifecycle
 metadata (#940). Source integration is not evidence of an installed bundle or

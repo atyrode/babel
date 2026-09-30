@@ -38,7 +38,7 @@ import {
   type DrainSample,
   type LiveJob,
 } from "./drains.ts";
-import { MACHINE_OPERATIONS, type DrainProfile } from "../contract.ts";
+import { MACHINE_OPERATIONS, PRESET_OPERATIONS, type DrainProfile } from "../contract.ts";
 import { openTestStore, type TestStore } from "./testdb.ts";
 
 const NOW = Date.UTC(2026, 8, 14, 12, 0, 0);
@@ -705,3 +705,47 @@ test.each([MACHINE_OPERATIONS.prepare, MACHINE_OPERATIONS.mapPrepare])(
     expect(await reserveDirectLaunch(store, row, next, "read-whats-new", 1, 1)).toBe(true);
   },
 );
+
+test("live native occupancy deduplicates reservations, linked preparations and persisted cadences", async () => {
+  const { db, store } = harness;
+  await open("drn_native", { concurrent: 4 });
+  const row = (await readDrain(store, "drn_native"))!;
+  const job = { runId: "parent", jobId: "native-prepare", launchedAt: NOW, reserved: true };
+  expect(await reserveDirectLaunch(store, row, job, "read-whats-new", 1, 4)).toBe(true);
+  const native = ["native-prepare", "policy-cadence", "policy-cadence"];
+  const occupied = async (activeJobIds: readonly string[]) => {
+    const work = machineOpenWork("m-dev-01", activeJobIds);
+    return await db.query(`SELECT (${work.sql}) n`, work.params);
+  };
+  expect(await occupied(native)).toEqual([{ n: 2n }]);
+  await db.run(
+    `INSERT INTO runs(id,kind,machine_id,prepare_job_id,started_at,payload)
+      VALUES ('parent','atyrode.babel.explore','m-dev-01','native-prepare',?,'{}')`,
+    [new Date(NOW).toISOString()],
+  );
+  await db.run(
+    `INSERT INTO runs(id,kind,machine_id,job_id,started_at,payload)
+      VALUES ('child',?,'m-dev-01','native-prepare',?,'{}'),
+        ('cadence',?,'m-dev-01','policy-cadence',?,'{}')`,
+    [
+      MACHINE_OPERATIONS.prepare,
+      new Date(NOW).toISOString(),
+      PRESET_OPERATIONS["keep-going"],
+      new Date(NOW).toISOString(),
+    ],
+  );
+  expect(await occupied(native)).toEqual([{ n: 2n }]);
+  await finishDirectLaunch(store, job.runId, null);
+  await db.run(`UPDATE runs SET closure='stopped' WHERE id='parent'`);
+  expect(await occupied(native)).toEqual([{ n: 2n }]);
+  await db.run(`UPDATE runs SET closure='completed' WHERE id IN ('child','cadence')`);
+  expect(await occupied(["native-prepare"])).toEqual([{ n: 1n }]);
+  await open("drn_native_next", { concurrent: 1 });
+  const held = (await readDrain(store, "drn_native_next"))!;
+  const next = { runId: "next", jobId: "next-native", launchedAt: NOW, reserved: true };
+  expect(
+    await reserveDirectLaunch(store, held, next, "read-whats-new", 1, 1, ["native-prepare"]),
+  ).toBe(false);
+  expect(await occupied([])).toEqual([{ n: 0n }]);
+  expect(await reserveDirectLaunch(store, held, next, "read-whats-new", 1, 1, [])).toBe(true);
+});

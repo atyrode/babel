@@ -36,7 +36,13 @@ import {
   type MaterialIndex,
   type RunTrace,
 } from "../contract.ts";
-import { insertDrain, machineOpenWork, readDrain } from "../store/drains.ts";
+import {
+  finishDirectLaunch,
+  insertDrain,
+  machineOpenWork,
+  readDrain,
+  reserveDirectLaunch,
+} from "../store/drains.ts";
 import { launchMachinery, principalChain, type Started } from "../doors/launch.ts";
 import { drainTick, endDrain, type DrainDeps } from "./drain.ts";
 import { liveDrainCapacity, type DrainAdmission } from "./drain-admission.ts";
@@ -451,6 +457,7 @@ class Fleet implements JobsSlice {
 
   listRuns(args: { machineId: string; operationId?: string | undefined }): {
     runs: { job: JobRunState | null }[];
+    nextCursor: string | null;
   } {
     this.identifiers.push(args.machineId);
     const runs: { job: JobRunState | null }[] = [];
@@ -461,7 +468,7 @@ class Fleet implements JobsSlice {
       if (args.operationId !== undefined && job.operationId !== args.operationId) continue;
       runs.push({ job: this.status({ jobId }) });
     }
-    return { runs };
+    return { runs, nextCursor: null };
   }
 
   output(args: { node: { jobId: string; outputId: string }; offset: number; maxBytes: number }): {
@@ -9017,6 +9024,7 @@ async function paidMapDeployment(sourceMachineId = "map-source") {
       },
       machineId,
       null,
+      f.fleet,
     );
   // A native wake in this fixture is the drain's own unless a test says otherwise (#469).
   const loop = (nativeDispatch: boolean, drain: string | null, chain: string | null = null) => {
@@ -9454,6 +9462,140 @@ test("without a running mapping drain or a map weight, even a native-capable wak
   await f.tick(true);
   expect(f.fleet.launched).toEqual([]);
   expect(await f.db.query(`SELECT count(*) n FROM claims`)).toEqual([{ n: 0n }]);
+});
+
+test.each(["before-claim", "during-claim"] as const)(
+  "a direct reservation fences standing mapping on one core: %s",
+  async (boundary) => {
+    const f = await paidMapDeployment();
+    const original = (await readDrain(f.store, "drn_map"))!;
+    await f.db.run(`DELETE FROM drains`);
+    await f.weigh({ map: 1 });
+    f.capacity.cores = 1;
+    await insertDrain(f.store, {
+      id: "drn_direct",
+      machineId: original.machineId,
+      preset: "read-whats-new",
+      profile: original.profile,
+      knobs: { recipes: [] },
+      concurrent: 1,
+      target: original.target,
+      startedBy: "operator",
+    });
+    const row = (await readDrain(f.store, "drn_direct"))!;
+    const reserve = async () =>
+      await reserveDirectLaunch(
+        f.store,
+        row,
+        { runId: "direct", jobId: "direct-native", launchedAt: clock, reserved: true },
+        "read-whats-new",
+        1,
+        1,
+      );
+    const claim = f.coordinator.claim.bind(f.coordinator);
+    if (boundary === "before-claim") expect(await reserve()).toBe(true);
+    else
+      f.coordinator.claim = async (request) => {
+        const result = await claim(request);
+        expect(await reserve()).toBe(true);
+        return result;
+      };
+    const wake = () => f.loop(true, null, "enable:standing").tickMapDrains();
+    await wake();
+    f.coordinator.claim = claim;
+    expect(f.fleet.launched).toEqual([]);
+    expect(await f.standingRuns()).toEqual([]);
+    const released = await f.db.query(`SELECT outcome,actual_cost FROM claims`);
+    expect(released).toEqual(
+      boundary === "before-claim" ? [] : [{ outcome: "withdrawn", actual_cost: 0 }],
+    );
+    await wake();
+    expect(await f.db.query(`SELECT outcome,actual_cost FROM claims`)).toEqual(released);
+    expect(f.fleet.launched).toEqual([]);
+    await finishDirectLaunch(f.store, "direct", "no eligible direct work");
+    await wake();
+    expect(f.fleet.launched.map((job) => job.operationId)).toEqual([OPERATIONS.mapPrepare]);
+    expect(await f.db.query(`SELECT id FROM claims WHERE finished_at IS NULL`)).toHaveLength(1);
+    await insertDrain(f.store, {
+      id: "drn_next_direct",
+      machineId: original.machineId,
+      preset: "read-whats-new",
+      profile: original.profile,
+      knobs: { recipes: [] },
+      concurrent: 1,
+      target: original.target,
+      startedBy: "operator",
+    });
+    expect(
+      await reserveDirectLaunch(
+        f.store,
+        (await readDrain(f.store, "drn_next_direct"))!,
+        { runId: "next-direct", jobId: "next-direct-native", launchedAt: clock, reserved: true },
+        "read-whats-new",
+        1,
+        1,
+      ),
+    ).toBe(false);
+  },
+);
+
+test("standing mapping rechecks native occupancy before posting and live capacity before Code", async () => {
+  const f = await paidMapDeployment();
+  await f.db.run(`DELETE FROM drains`);
+  await f.weigh({ map: 1 });
+  f.capacity.cores = 1;
+  const listRuns = f.fleet.listRuns.bind(f.fleet);
+  const batch = f.db.batch.bind(f.db);
+  f.db.batch = async (statements) => {
+    const result = await batch(statements);
+    if (
+      statements.some((statement) =>
+        statement.sql.includes("INSERT INTO runs(id,kind,machine_id,job_id"),
+      )
+    )
+      f.fleet.listRuns = () => ({
+        runs: [
+          {
+            job: {
+              jobId: "scheduled-beat",
+              machineId: f.route.executorMachineId,
+              operationId: BEAT_OPERATION,
+              state: "started",
+              result: null,
+            },
+          },
+        ],
+        nextCursor: null,
+      });
+    return result;
+  };
+  const wake = () => f.loop(true, null, "enable:standing").tickMapDrains();
+  await wake();
+  f.db.batch = batch;
+  expect(f.fleet.launched).toEqual([]);
+  const held = await f.standingRuns();
+  expect(held).toHaveLength(1);
+  expect(await f.db.query(`SELECT finished_at FROM claims`)).toEqual([{ finished_at: null }]);
+  await wake();
+  expect(f.fleet.launched).toEqual([]);
+  expect(await f.standingRuns()).toEqual(held);
+  f.fleet.listRuns = listRuns;
+  await wake();
+  expect(f.fleet.launched.map((job) => job.operationId)).toEqual([OPERATIONS.mapPrepare]);
+  expect(
+    await f.db.query(`SELECT json_extract(payload,'$.nativeAttempts') attempts FROM runs WHERE id=?`, [
+      held[0]!.id,
+    ]),
+  ).toEqual([{ attempts: 1n }]);
+  f.seal();
+  f.capacity.cores = undefined;
+  await wake();
+  expect(f.posted).toEqual([]);
+  expect(await f.db.query(`SELECT finished_at FROM claims`)).toEqual([{ finished_at: null }]);
+  f.capacity.cores = 1;
+  await wake();
+  expect(f.posted).toHaveLength(1);
+  expect(f.cancelled).toEqual([]);
 });
 
 test("a positive map weight keeps mapping work in flight with no drain row", async () => {

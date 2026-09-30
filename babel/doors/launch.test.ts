@@ -109,7 +109,7 @@ class Fleet implements BabelJobs {
     throw new Error("a launch never reads a job back");
   }
 
-  listRuns(): { runs: readonly { job: JobRunState | null }[] } {
+  listRuns(): { runs: readonly { job: JobRunState | null }[]; nextCursor: string | null } {
     throw new Error("a launch never lists runs");
   }
 
@@ -365,7 +365,7 @@ beforeEach(async () => {
   cookbook = { ...RECIPES };
   deps = {
     coordinator: coordinator(store, () => store.now(), 16),
-    drainAdmission: async () => ({ limit: 16 }),
+    drainAdmission: async () => ({ limit: 16, activeJobIds: [] }),
     jobs: () => fleet,
     engine: () => code,
     cookbook: async () => await Promise.resolve(cookbook),

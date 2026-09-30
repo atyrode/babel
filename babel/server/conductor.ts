@@ -395,7 +395,8 @@ export interface JobsSlice {
     machineId: string;
     operationId?: string | undefined;
     limit?: number | undefined;
-  }): Awaitable<{ runs: readonly { job: JobRunState | null }[] }>;
+    cursor?: string | undefined;
+  }): Awaitable<{ runs: readonly { job: JobRunState | null }[]; nextCursor: string | null }>;
   output(args: {
     node: OutputRef;
     offset: number;
@@ -3259,22 +3260,18 @@ export function conductor(deps: ConductorDeps): Conductor {
     if ("refused" in described) return described.refused;
     const checked = await engine.checkProfile(route.profile);
     if (!checked.ok) return checked.refused;
-    let drainLimit: number | null = null;
-    if ("drainId" in slot) {
-      const row = await readDrain(store, slot.drainId);
-      if (row === null) return "mapping drain is absent";
-      if (deps.drainAdmission === undefined)
-        return "physical-core admission unavailable on this wake";
-      const capacity = await deps.drainAdmission(route.executorMachineId, OPERATIONS.mapPrepare);
-      if ("refused" in capacity) return capacity.refused;
-      drainLimit = capacity.limit;
-      const open = machineOpenWork(route.executorMachineId);
-      if (
-        (await store.db.query(`SELECT 1 WHERE (${open.sql}) < ?`, [...open.params, capacity.limit]))
-          .length === 0
-      )
-        return `physical-core admission holds mapping at the live ceiling of ${String(capacity.limit)}; existing work is retained`;
-    }
+    if ("drainId" in slot && (await readDrain(store, slot.drainId)) === null)
+      return "mapping drain is absent";
+    if (deps.drainAdmission === undefined)
+      return "physical-core admission unavailable on this wake";
+    const capacity = await deps.drainAdmission(route.executorMachineId, OPERATIONS.mapPrepare);
+    if ("refused" in capacity) return capacity.refused;
+    const open = machineOpenWork(route.executorMachineId, capacity.activeJobIds);
+    if (
+      (await store.db.query(`SELECT 1 WHERE (${open.sql}) < ?`, [...open.params, capacity.limit]))
+        .length === 0
+    )
+      return `physical-core admission holds mapping at the live ceiling of ${String(capacity.limit)}; existing work is retained`;
     const jobId = materialJobId(`job_${assignment.id}_${cycleRunId}`);
     const claimed = await coordinator.claim({ assignment, runId: cycleRunId, jobId, now: at });
     if (claimed.outcome === "refused") return claimed.refusal.detail;
@@ -3317,8 +3314,9 @@ export function conductor(deps: ConductorDeps): Conductor {
     const held: SqlCondition = drain
       ? drainHoldsRun(slot.drainId, runId)
       : {
-          sql: `(SELECT count(*) FROM runs WHERE closure IS NULL AND ${STANDING_RUN}) < ?`,
-          params: [slot.share],
+          sql: `(SELECT count(*) FROM runs WHERE closure IS NULL AND ${STANDING_RUN}) < ?
+            AND (${open.sql}) < ?`,
+          params: [slot.share, ...open.params, capacity.limit],
         };
     const reserve = drain
       ? [
@@ -3327,7 +3325,8 @@ export function conductor(deps: ConductorDeps): Conductor {
             { runId, jobId, launchedAt: at },
             slot.ordinal,
             route.executorMachineId,
-            drainLimit!,
+            capacity.limit,
+            capacity.activeJobIds,
           ),
         ]
       : [];

@@ -776,7 +776,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           ),
           at,
           run.chain,
-          JSON.stringify({ closure: null, requestedAt: deps.now() }),
+          JSON.stringify({
+            closure: null,
+            requestedAt: deps.now(),
+            ...(run.drain === undefined ? {} : { nativeAttempts: 0 }),
+          }),
           ...(drainGuard?.params ?? []),
           ...(run.drain === undefined || selfOwned ? [] : [run.drain.runId]),
         ],
@@ -853,12 +857,24 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       if (!(await directAdmitted(run.drain.id, run.drain.runId)))
         return { refused: "its drain no longer admits this preparation", pending: true };
     }
+    if (run.drain !== undefined) {
+      // Older retained intents did not count attempts. Their missing evidence is one unknown
+      // attempt, never proof that this replay was the first post.
+      const attempted = await store.db.run(
+        `UPDATE runs SET payload = json_set(payload, '$.nativeAttempts',
+          coalesce(json_extract(payload, '$.nativeAttempts'), 1) + 1)
+         WHERE id = ? AND closure IS NULL AND ${drainGuard!.sql}`,
+        [run.runId, ...drainGuard!.params],
+      );
+      if (!attempted.changes)
+        return { refused: "its drain no longer admits this preparation", pending: true };
+    }
     try {
       await jobs.execute(launch);
     } catch (error) {
       const refused = `${launch.machineId} refused the job: ${message(error)}`;
       let absent = false;
-      if (run.authorityKind === "conductor" && nativeAdmissionRefusal(error)) {
+      if (durable && nativeAdmissionRefusal(error)) {
         try {
           await jobs.status({
             kind: "job",
@@ -868,6 +884,45 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           });
         } catch (statusError) {
           absent = nativeFailureToken(statusError, "jobs.status") === "job_not_started";
+        }
+      }
+      if (run.drain !== undefined && absent) {
+        // A refusal proves only this attempt. An earlier lost answer must not turn into a
+        // free slot merely because this replay was refused before effect.
+        const proof = await store.db.query<{ attempts: number | bigint; refused: number | bigint }>(
+          `UPDATE runs SET payload = json_set(payload, '$.nativeRefused',
+            coalesce(json_extract(payload, '$.nativeRefused'), 0) + 1)
+           WHERE id = ? AND closure IS NULL
+           RETURNING json_extract(payload, '$.nativeAttempts') attempts,
+             json_extract(payload, '$.nativeRefused') refused`,
+          [run.runId],
+        );
+        absent = proof[0] !== undefined && Number(proof[0].attempts) === Number(proof[0].refused);
+        if (absent) {
+          await store.db.batch([
+            {
+              sql: `UPDATE runs SET closure = 'failed', finished_at = ?,
+                  payload = json_set(payload, '$.closure', 'failed', '$.reason', ?)
+                WHERE id = ? AND job_id = ? AND closure IS NULL
+                  AND json_extract(payload, '$.nativeAttempts') = json_extract(payload, '$.nativeRefused')`,
+              params: [at, refused, run.runId, launch.jobId],
+            },
+            {
+              sql: `UPDATE runs SET closure = 'failed', finished_at = ?,
+                  payload = json_set(payload, '$.closure', 'failed', '$.reason', ?)
+                WHERE id = ? AND prepare_job_id = ? AND job_id IS NULL AND closure IS NULL
+                  AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND closure = 'failed')`,
+              params: [at, refused, run.drain.runId, launch.jobId, run.runId],
+            },
+            {
+              sql: `UPDATE drain_launches SET state = 'refused', gap = ?
+                WHERE run_id = ? AND state = 'reserved'
+                  AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND closure = 'failed'
+                    AND json_extract(payload, '$.nativeAttempts') = json_extract(payload, '$.nativeRefused'))`,
+              params: [refused, run.drain.runId, run.runId],
+            },
+          ]);
+          store.touch();
         }
       }
       if (run.authorityKind === "conductor" && absent) {

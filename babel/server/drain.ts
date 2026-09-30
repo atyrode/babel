@@ -807,6 +807,7 @@ export async function fillDirectDrain(
         picked.lane.preset,
         picked.estimate.costMicros,
         capacity.limit,
+        capacity.activeJobIds,
       ))
     ) {
       notes.push("no free admitted machine slot, or another wake changed this drain");

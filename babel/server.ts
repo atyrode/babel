@@ -188,7 +188,7 @@ const drainAdmission: DrainAdmission = async (machineId, operationId) => {
     const declared = manifest.machine?.operations[id]?.limits.concurrentJobs;
     if (declared !== undefined) ceiling = Math.min(ceiling ?? declared, declared);
   }
-  return await liveDrainCapacity(dispatched.getStore()?.machines, machineId, ceiling);
+  return await liveDrainCapacity(dispatched.getStore()?.machines, machineId, ceiling, bound().jobs);
 };
 
 /**

@@ -610,8 +610,9 @@ export function reserveLaunchStatement(
   ordinal: number,
   machineId: string,
   limit: number,
+  activeJobIds: readonly string[] = [],
 ): SqlStatement {
-  const open = machineOpenWork(machineId);
+  const open = machineOpenWork(machineId, activeJobIds);
   return {
     sql: `UPDATE drains SET live = json_insert(live, '$[#]', json(?)),
                        jobs_launched = jobs_launched + 1
@@ -700,8 +701,9 @@ export function directDrainAdmission(
  * A preparation and its explicitly linked parent occupy one whole-work slot. The child's open
  * row keeps that slot after its parent closes; without a parent it counts under its own id.
  * Reservations share the parent identity, so interrupted publication cannot double-count it.
+ * Live native identities come from the caller's current jobs listing, not a second store.
  */
-export function machineOpenWork(machineId: string): {
+export function machineOpenWork(machineId: string, activeJobIds: readonly string[] = []): {
   readonly sql: string;
   readonly params: SqlParam[];
 } {
@@ -713,6 +715,17 @@ export function machineOpenWork(machineId: string): {
         WHERE child.machine_id = ? AND child.closure IS NULL
       UNION SELECT a.run_id FROM drain_launches a JOIN drains d ON d.id = a.drain_id
         WHERE d.machine_id = ? AND d.state IN ('running','closing') AND a.state = 'reserved'
+      UNION SELECT COALESCE(parent.id, child.id, reservation.run_id, 'native:' || native.value)
+        FROM json_each(?) native
+        LEFT JOIN runs child ON child.machine_id = ? AND child.job_id = native.value
+        LEFT JOIN runs parent ON parent.machine_id = ? AND parent.prepare_job_id = native.value
+          AND parent.kind NOT IN (?, ?) AND (child.id IS NULL OR child.kind IN (?, ?))
+        LEFT JOIN (
+          SELECT a.run_id, d.machine_id, json_extract(l.value, '$.jobId') job_id
+            FROM drain_launches a JOIN drains d ON d.id = a.drain_id
+            JOIN json_each(d.live) l ON json_extract(l.value, '$.runId') = a.run_id
+            WHERE d.state IN ('running','closing') AND a.state = 'reserved'
+        ) reservation ON reservation.machine_id = ? AND reservation.job_id = native.value
     )`,
     params: [
       MACHINE_OPERATIONS.prepare,
@@ -720,6 +733,14 @@ export function machineOpenWork(machineId: string): {
       MACHINE_OPERATIONS.prepare,
       MACHINE_OPERATIONS.mapPrepare,
       machineId,
+      machineId,
+      JSON.stringify(activeJobIds),
+      machineId,
+      machineId,
+      MACHINE_OPERATIONS.prepare,
+      MACHINE_OPERATIONS.mapPrepare,
+      MACHINE_OPERATIONS.prepare,
+      MACHINE_OPERATIONS.mapPrepare,
       machineId,
     ],
   };
@@ -733,6 +754,7 @@ export async function reserveDirectLaunch(
   preset: DrainPreset,
   reservedCostMicros: number | null,
   limit: number,
+  activeJobIds: readonly string[] = [],
 ): Promise<boolean> {
   if (!Number.isSafeInteger(limit) || limit <= 0) return false;
   if (
@@ -743,7 +765,7 @@ export async function reserveDirectLaunch(
   )
     return false;
   const open = directDrainOpen(store.now());
-  const work = machineOpenWork(row.machineId);
+  const work = machineOpenWork(row.machineId, activeJobIds);
   const results = await store.db.batch([
     {
       sql: `UPDATE drains SET live = json_insert(live, '$[#]', json(?)),

@@ -179,7 +179,7 @@ async function fixture(options: { batchSize?: number; concurrent?: number } = {}
   };
   const deps = {
     store: store.store,
-    admission: async () => ({ limit: 4 }),
+    admission: async () => ({ limit: 4, activeJobIds: [] }),
     coordinator: coordinator(store.store, () => store.store.now(), 16),
     engine,
     chain: CHAIN,

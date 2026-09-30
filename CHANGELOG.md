@@ -9,6 +9,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+- **Native admission shares one physical occupancy fence across direct and standing mapping
+  work (#258, #526).** A typed direct pre-admission refusal, confirmed by authoritative
+  `job_not_started` for every recorded native attempt, closes the intent and reservation once.
+  Uncertain attempts and unreadable status retain the immutable request and occupied slot.
+  Standing mapping now checks the same machine occupancy at atomic claim publication and
+  pending native/Code posting, withdrawing a publication loser at zero. Fresh paginated native
+  listings include live policy/drain cadences before settlement writes their Babel runs, with
+  identity-based deduplication against retained preparations, parents and reservations.
+  Regression definitions cover definitive/uncertain refusal, direct/standing races, delayed
+  posting and cadence occupancy. An isolated real-store smoke observed one active native cadence
+  slot, still one after its run was persisted, then zero on terminal evidence; both listing pages
+  were read each time. The regression suite and integrated verification remain unrun for this
+  repair; no live deployment or provider work was exercised.
+
 - **Retained preparations keep their machine core slot after their parent closes (#258).**
   Explicit same-machine parent/preparation linkage counts one whole item, including a pending
   reservation, while a child with no open parent remains occupied. Stop preserves native-attempt

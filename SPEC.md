@@ -1459,21 +1459,32 @@ be answerable afterwards.
   Admission atomically retains the ordinal, live slot, preset and reservation before native
   posting. The exact preparation request is durable; interrupted wakes retry that identity rather
   than select a new window. Concurrent starts admit only one running drain per machine. Each
-  drain's requested fan is bounded separately; all open Babel work and unresolved reservations
-  share the machine ceiling, the minimum of the applicable operation's declared `concurrentJobs`
-  and fresh inventory `physicalCoreCount`. A start above that ceiling explicitly refuses.
+  drain's requested fan is bounded separately; direct drains, drain-owned and standing mapping,
+  all other open Babel work and unresolved reservations share the machine ceiling, the minimum
+  of the applicable operation's declared `concurrentJobs` and fresh inventory `physicalCoreCount`.
+  A start above that ceiling explicitly refuses. Standing mapping fences both its claim's
+  publication and subsequent native/Code posting against this same occupancy, not just its
+  policy lane share; a claim that loses publication releases once at zero.
   A preparation and its parent count once via the parent's explicit `prepare_job_id` on the same
   machine, never an inferred run-ID relationship. A retained preparation still occupies one slot
   when its parent closes or disappears. Stop and cancellation preserve native-attempt evidence
   and pending claims; only a definitive refusal before effect or authoritative terminal native
   receipt releases the preparation's occupancy.
+  A direct native refusal closes its retained intent and reservation only when each posting
+  attempt has a typed pre-admission refusal and authoritative `jobs.status` `job_not_started`.
+  Unreadable status, another owner's response or an earlier uncertain attempt retains the slot
+  and original immutable request, not a fresh identity.
   Each reservation, refill and pending native/Code posting recovery reads capacity again under
-  its own wake's credential, including automatic lifecycle wakes and the separately governed
-  mapping drain. Missing, refused, offline, revoked or invalid inventory holds new admissions;
-  later shrinkage retains existing work, reservations and receipts rather than cancelling them
-  to fit. Degradation is visible in admission notes. Inventory is never retained in enable state
-  or on a drain row. Logical CPUs, quota, policy batch size and per-job `processes` are not
-  physical-core evidence. The host still owns native concurrency/resource enforcement, including
+  its own wake's credential, including automatic lifecycle wakes and both mapping modes.
+  The read also enumerates native `jobs.listRuns` pages: active policy and drain cadences occupy
+  a slot before settlement inserts their run. Native identities deduplicate with persisted runs,
+  explicitly linked preparations and reservations; terminal native jobs add no occupancy.
+  Missing, refused, offline, revoked or invalid inventory, or an unreadable native listing, holds
+  new admissions; later shrinkage retains existing work, reservations and receipts rather than
+  cancelling them to fit. Degradation is visible in admission notes. Neither inventory nor native
+  occupancy snapshots are retained in enable state or on a drain row. Logical CPUs, quota,
+  policy batch size and per-job `processes` are not physical-core evidence.
+  The host still owns native concurrency/resource enforcement, including
   work outside Babel's ledger; source regressions do not establish live resource headroom.
   Reservations are scheduling estimates, not a hard spend ceiling; provider retries and the last
   accepted call can exceed them. Standing policies, budgets, claims and the separately governed

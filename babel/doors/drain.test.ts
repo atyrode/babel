@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { PluginManifestSchema } from "@manifold/protocol";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
+import { HostCallError } from "@manifold/plugin-kit/errors";
 import {
   ACTIONS,
   DrainReportSchema,
@@ -41,7 +42,7 @@ import { drainTick, type DrainDeps, type DrainLaunch } from "../server/drain.ts"
 import { liveDrainCapacity } from "../server/drain-admission.ts";
 import { runPlan, type BabelJobs } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
-import { drainReportId, readDrain, readDrainReport } from "../store/drains.ts";
+import { drainReportId, machineOpenWork, readDrain, readDrainReport } from "../store/drains.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import manifestJson from "../manifest.json";
@@ -233,8 +234,11 @@ class Fleet implements BabelJobs {
     };
   }
 
-  listRuns(): { runs: readonly { job: JobRunState | null }[] } {
-    throw new Error("a drain never lists runs");
+  listRuns(_args: Parameters<BabelJobs["listRuns"]>[0]): {
+    runs: readonly { job: JobRunState | null }[];
+    nextCursor: string | null;
+  } {
+    return { runs: [], nextCursor: null };
   }
 
   follow(): never {
@@ -554,7 +558,8 @@ beforeEach(async () => {
   const coordinated = coordinator(store, () => store.now(), 16);
   deps = {
     store,
-    admission: async (machineId) => await liveDrainCapacity(inventory, machineId, operationCeiling),
+    admission: async (machineId) =>
+      await liveDrainCapacity(inventory, machineId, operationCeiling, fleet),
     coordinator: coordinated,
     launch: posting(store, () => fleet),
     jobs: fleet,
@@ -1286,6 +1291,183 @@ function realLaunch() {
   deps = { ...deps, launch: machinery };
   return machinery;
 }
+
+test.each(["read-whats-new", "keep-going"] as const)(
+  "a definitive direct %s refusal closes its intent and releases its slot exactly once",
+  async (preset) => {
+    realLaunch();
+    physicalCores = 1;
+    const execute = fleet.execute.bind(fleet);
+    const status = fleet.status.bind(fleet);
+    const requests: JobLaunch[] = [];
+    fleet.execute = async (request) => {
+      requests.push(request);
+      throw new HostCallError("jobs.execute", "installation_changed");
+    };
+    fleet.status = () => {
+      throw new HostCallError("jobs.status", "job_not_started");
+    };
+    const input = {
+      preset,
+      concurrent: 1,
+      maxJobs: 1,
+      target: { deadline: new Date(NOW + HOUR).toISOString() },
+    };
+    expect(await start(input)).toHaveProperty("refused");
+    expect(requests).toHaveLength(1);
+    expect(await harness.db.query(`SELECT closure FROM runs ORDER BY id`)).toEqual(
+      preset === "keep-going"
+        ? [{ closure: "failed" }]
+        : [{ closure: "failed" }, { closure: "failed" }],
+    );
+    expect(await harness.db.query(`SELECT state FROM drain_launches`)).toEqual([
+      { state: "refused" },
+    ]);
+    const work = machineOpenWork(MACHINE);
+    expect(await harness.db.query(`SELECT (${work.sql}) n`, work.params)).toEqual([{ n: 0n }]);
+    const closed = await harness.db.query(`SELECT state, live, jobs_settled FROM drains`);
+    expect(closed).toEqual([{ state: "failed", live: "[]", jobs_settled: 1n }]);
+    realLaunch();
+    await drainTick(deps);
+    await drainTick(deps);
+    expect(requests).toHaveLength(1);
+    expect(await harness.db.query(`SELECT state, live, jobs_settled FROM drains`)).toEqual(closed);
+    fleet.execute = execute;
+    fleet.status = status;
+    expect(await start(input)).toMatchObject({ launched: 1 });
+    expect(fleet.executed[0]!.jobId).not.toBe(requests[0]!.jobId);
+    expect(await harness.db.query(`SELECT (${work.sql}) n`, work.params)).toEqual([{ n: 1n }]);
+  },
+);
+
+test.each(["accepted", "unreadable", "transport", "owner-mismatch"] as const)(
+  "an uncertain direct native refusal retains its immutable request and slot: %s",
+  async (boundary) => {
+    realLaunch();
+    physicalCores = 1;
+    const execute = fleet.execute.bind(fleet);
+    const status = fleet.status.bind(fleet);
+    const requests: JobLaunch[] = [];
+    fleet.execute = async (request) => {
+      requests.push(request);
+      if (boundary === "accepted") await execute(request);
+      if (boundary === "transport") throw new Error("native response lost");
+      throw new HostCallError("jobs.execute", "installation_changed");
+    };
+    fleet.status = (node) => {
+      if (boundary === "accepted") return status(node);
+      if (boundary === "unreadable") throw new Error("native status unavailable");
+      throw new HostCallError(
+        "jobs.status",
+        boundary === "owner-mismatch" ? "job_owner_mismatch" : "job_not_started",
+      );
+    };
+    const id = String((await start({ concurrent: 1, maxJobs: 1 }))["drainId"]);
+    expect((await readDrain(harness.store, id))?.live).toHaveLength(1);
+    expect(await harness.db.query(`SELECT closure FROM runs ORDER BY id`)).toEqual([
+      { closure: null },
+      { closure: null },
+    ]);
+    expect(await harness.db.query(`SELECT state FROM drain_launches`)).toEqual([
+      { state: "reserved" },
+    ]);
+    expect(await start({ concurrent: 1 })).toHaveProperty("refused");
+    fleet.execute = async (request) => {
+      requests.push(request);
+      return await execute(request);
+    };
+    fleet.status = (node) => {
+      if (!fleet.executed.some((job) => job.jobId === node.jobId))
+        throw new HostCallError("jobs.status", "job_not_started");
+      return status(node);
+    };
+    realLaunch();
+    await drainTick(deps);
+    await drainTick(deps);
+    expect(requests).toEqual(
+      boundary === "accepted" ? [requests[0]!] : [requests[0]!, requests[0]!],
+    );
+    expect(fleet.executed).toEqual([requests[0]!]);
+    expect(await harness.db.query(`SELECT state FROM drain_launches`)).toEqual([
+      { state: "posted" },
+    ]);
+    expect((await readDrain(harness.store, id))?.jobsLaunched).toBe(1);
+    expect(code.posted).toEqual([]);
+  },
+);
+
+test.each(["recorded", "legacy"] as const)(
+  "a later definitive direct refusal cannot erase an earlier uncertain native attempt: %s",
+  async (evidence) => {
+    realLaunch();
+    physicalCores = 1;
+    let attempts = 0;
+    fleet.execute = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("native response lost");
+      throw new HostCallError("jobs.execute", "installation_changed");
+    };
+    fleet.status = () => {
+      throw new HostCallError("jobs.status", "job_not_started");
+    };
+    const id = String((await start({ concurrent: 1, maxJobs: 1 }))["drainId"]);
+    if (evidence === "legacy")
+      await harness.db.run(`UPDATE runs SET payload=json_remove(payload,'$.nativeAttempts')`);
+    realLaunch();
+    await drainTick(deps);
+    expect(attempts).toBe(2);
+    expect(await harness.db.query(`SELECT closure FROM runs ORDER BY id`)).toEqual([
+      { closure: null },
+      { closure: null },
+    ]);
+    expect(await harness.db.query(`SELECT state FROM drain_launches`)).toEqual([
+      { state: "reserved" },
+    ]);
+    expect((await readDrain(harness.store, id))?.live).toHaveLength(1);
+    expect(code.posted).toEqual([]);
+  },
+);
+
+test("active policy and drain cadences hold the core before their runs are persisted", async () => {
+  realLaunch();
+  physicalCores = 1;
+  const cadences: JobRunState[] = ["policy-cadence", "drain-cadence"].map((jobId) => ({
+    jobId,
+    machineId: MACHINE,
+    operationId: PRESET_OPERATIONS["keep-going"],
+    state: "started",
+    result: null,
+  }));
+  fleet.listRuns = ({ cursor }) =>
+    cursor === undefined
+      ? { runs: [{ job: null }], nextCursor: "older-native-runs" }
+      : { runs: cadences.map((job) => ({ job })), nextCursor: null };
+  for (let n = 0; n < cadences.length; n++) {
+    expect(await start({ concurrent: 1 })).toHaveProperty("refused");
+    expect(fleet.executed).toEqual([]);
+    expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+    expect(await harness.db.query(`SELECT run_id FROM drain_launches`)).toEqual([]);
+    cadences[n] = { ...cadences[n]!, state: "exited" };
+  }
+  expect(await start({ concurrent: 1, maxJobs: 1 })).toMatchObject({ launched: 1 });
+  expect(fleet.executed.map((job) => job.operationId)).toEqual([OPERATIONS.prepare]);
+});
+
+test("unreadable native occupancy holds direct admission without releasing existing work", async () => {
+  realLaunch();
+  const id = String((await start({ concurrent: 1, maxJobs: 2 }))["drainId"]);
+  fleet.listRuns = () => {
+    throw new HostCallError("jobs.listRuns", "not_authorized");
+  };
+  await drainTick(deps);
+  expect(fleet.executed).toHaveLength(1);
+  expect((await readDrain(harness.store, id))?.live).toHaveLength(1);
+  expect(fleet.cancelled).toEqual([]);
+  await settleJob(`run_${id}_0`, { costMicros: 30_000 });
+  await drainTick(deps);
+  expect(fleet.executed).toHaveLength(1);
+  expect((await readDrain(harness.store, id))?.spent.costMicros).toBe(30_000);
+});
 
 test("an ordinary preparation still occupies the machine after Stop and a fresh drain start", async () => {
   const machinery = realLaunch();
