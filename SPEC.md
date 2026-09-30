@@ -1196,9 +1196,12 @@ byte-identical prefix from its cache and the recipes are the largest invariant b
 `runSession` door posts the session; Babel holds nothing.
 
 The answer is the session's final message: the last fenced JSON block, validated against the
-stage's schema. Every locator it cites must name a file the material's index served, at the digest
-the index recorded. A retyped digest, an edited path, or a citation of a session this run was never
-given refuses the whole answer.
+stage's schema. Code's pinned OMP receipt retains only the first 16,384 characters of that
+message ([OMP `plugins/api/session.ts:5-6,164-170` at `f5b9d09c5929943dea246e415875f18e0a68bddb`](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/api/session.ts#L164-L170)),
+so the prompt asks for a complete fenced answer under 12,000 characters instead of overflowing
+the receipt mid-JSON. A citation may use the exact `file` basename from the material's index,
+not a retyped long path. Every locator and digest are checked against the served index; an
+edited path, digest or unserved session refuses the affected claim, not its siblings.
 
 **A refused submission is spend.** The model answered and the deployment paid; the receipt is
 written with the cost and the refusal's own code, the claim is finished rather than abandoned, and

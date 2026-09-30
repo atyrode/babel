@@ -379,6 +379,13 @@ ordinal and extension before clipping the sanitized selector, while the index ke
 selector for provenance. An overlong basename formerly refused the entire output collection
 even when the selected material fitted both scratch and output-byte ceilings.
 
+Code's pinned OMP receipt retains at most 16,384 characters of the final assistant message
+([OMP `plugins/api/session.ts:5-6,164-170` at `f5b9d09c5929943dea246e415875f18e0a68bddb`](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/api/session.ts#L164-L170)).
+The analysis prompt asks for a complete fenced result under 12,000 characters, including
+its fences, rather than a longer JSON object whose closing delimiter the receipt loses.
+For citations it recommends the exact `file` basename from the material index, an already
+admitted spelling (`babel/server/engine/citations.ts:78-106`) that avoids retyping long paths.
+
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.
 They are not in `MACHINE_OPERATIONS`, which is what the machine half implements and what
