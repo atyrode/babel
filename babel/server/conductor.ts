@@ -87,7 +87,7 @@ import {
   runningDrainHoldsRun,
   targetMet,
 } from "../store/drains.ts";
-import { drainPostingRefusal, type DrainAdmission } from "./drain-admission.ts";
+import { drainPostingRefusal, type DrainAdmission, type DrainCapacity } from "./drain-admission.ts";
 import {
   materialJobId,
   nativeAdmissionRefusal,
@@ -3251,6 +3251,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     requested: RequestedJob[],
     settled: SettledClaim[],
     slot: MappingSlot,
+    capacity: Extract<DrainCapacity, { limit: number }>,
+    open: SqlCondition,
   ): Promise<string | null> {
     const route = mappingPolicy(policy);
     if (!route || !deps.mapPreparePlan) return "mapping preparation limits are unavailable";
@@ -3262,16 +3264,6 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (!checked.ok) return checked.refused;
     if ("drainId" in slot && (await readDrain(store, slot.drainId)) === null)
       return "mapping drain is absent";
-    if (deps.drainAdmission === undefined)
-      return "physical-core admission unavailable on this wake";
-    const capacity = await deps.drainAdmission(route.executorMachineId, OPERATIONS.mapPrepare);
-    if ("refused" in capacity) return capacity.refused;
-    const open = machineOpenWork(route.executorMachineId, capacity.activeJobIds);
-    if (
-      (await store.db.query(`SELECT 1 WHERE (${open.sql}) < ?`, [...open.params, capacity.limit]))
-        .length === 0
-    )
-      return `physical-core admission holds mapping at the live ceiling of ${String(capacity.limit)}; existing work is retained`;
     const jobId = materialJobId(`job_${assignment.id}_${cycleRunId}`);
     const claimed = await coordinator.claim({ assignment, runId: cycleRunId, jobId, now: at });
     if (claimed.outcome === "refused") return claimed.refusal.detail;
@@ -3434,6 +3426,21 @@ export function conductor(deps: ConductorDeps): Conductor {
   ): Promise<{ readonly launched: number; readonly refusal: string | null }> {
     let launched = 0;
     for (let slot = slotAt(0); launched < free && slot !== null; slot = slotAt(launched)) {
+      // A draw itself holds a short hand-out lease. Check capacity before drawing so a busy
+      // machine cannot consume the available candidates without ever claiming or posting one.
+      if (deps.drainAdmission === undefined)
+        return { launched, refusal: "physical-core admission unavailable on this wake" };
+      const capacity = await deps.drainAdmission(executorMachineId, OPERATIONS.mapPrepare);
+      if ("refused" in capacity) return { launched, refusal: capacity.refused };
+      const open = machineOpenWork(executorMachineId, capacity.activeJobIds);
+      if (
+        (await store.db.query(`SELECT 1 WHERE (${open.sql}) < ?`, [...open.params, capacity.limit]))
+          .length === 0
+      )
+        return {
+          launched,
+          refusal: `physical-core admission holds mapping at the live ceiling of ${String(capacity.limit)}; existing work is retained`,
+        };
       const drawn = await coordinator.draw({
         runId: cycleRunId,
         machines: [executorMachineId],
@@ -3455,6 +3462,8 @@ export function conductor(deps: ConductorDeps): Conductor {
         requested,
         settled,
         slot,
+        capacity,
+        open,
       );
       if (detail === LOST_LAUNCH_SLOT) {
         // Another wake took this slot first; it owns the lane now, and nothing was spent here.
@@ -5123,7 +5132,6 @@ export function conductor(deps: ConductorDeps): Conductor {
     return { provider, identityKey };
   }
 
-
   /**
    * ONE FINISHED TITLING SESSION, TURNED INTO ONE ANSWER PER SESSION IT WAS OFFERED (#342).
    *
@@ -5708,7 +5716,13 @@ export function conductor(deps: ConductorDeps): Conductor {
       notes.push(note);
       const analysis = AnalysisWorkSchema.safeParse(preparationOf(run.preparation)?.["analysis"]);
       const drainReview = preparationOf(run.preparation)?.["reviewDrain"] !== undefined;
-      if (silent < UNREPORTED_CYCLES || analysis.success || mapping !== null || review !== null || drainReview) {
+      if (
+        silent < UNREPORTED_CYCLES ||
+        analysis.success ||
+        mapping !== null ||
+        review !== null ||
+        drainReview
+      ) {
         // Still hoped for: the sentence is on the row so a reader sees it without the journal,
         // and the run stays open for the next wake to ask again.
         await store.db.run(`UPDATE runs SET payload = json_set(payload,'$.note',?) WHERE id = ?`, [

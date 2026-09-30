@@ -122,6 +122,7 @@ type Bound = {
   readonly storage: GuestStorage;
   readonly readingMetadata?: ReadingMetadata;
   readonly machines?: Pick<GuestCtx["machines"], "inventory"> | undefined;
+  readonly jobs?: Pick<GuestCtx["jobs"], "listRuns"> | undefined;
 };
 
 const dispatched = new AsyncLocalStorage<Bound>();
@@ -188,7 +189,8 @@ const drainAdmission: DrainAdmission = async (machineId, operationId) => {
     const declared = manifest.machine?.operations[id]?.limits.concurrentJobs;
     if (declared !== undefined) ceiling = Math.min(ceiling ?? declared, declared);
   }
-  return await liveDrainCapacity(dispatched.getStore()?.machines, machineId, ceiling, bound().jobs);
+  const current = dispatched.getStore();
+  return await liveDrainCapacity(current?.machines, machineId, ceiling, current?.jobs);
 };
 
 /**
@@ -1215,6 +1217,7 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
         database: served,
         storage: ctx.storage,
         machines: ctx.machines,
+        jobs: ctx.jobs,
         readingMetadata: {
           host: ctx.host,
           services: { listInstances: (input) => ctx.services.listInstances(input) },
@@ -1343,6 +1346,7 @@ export const plugin: ServerPluginDef = {
             database,
             storage: ctx.storage,
             machines: ctx.machines,
+            jobs: ctx.jobs,
             ...(ctx.host === undefined || ctx.services === undefined
               ? {}
               : { readingMetadata: { host: ctx.host, services: ctx.services } }),
@@ -1390,6 +1394,7 @@ export const plugin: ServerPluginDef = {
           database,
           storage: ctx.storage,
           machines: ctx.machines,
+          jobs: ctx.jobs,
           ...(ctx.host === undefined || ctx.services === undefined
             ? {}
             : { readingMetadata: { host: ctx.host, services: ctx.services } }),

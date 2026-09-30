@@ -9202,7 +9202,9 @@ test.each(["acknowledged", "lost-answer"] as const)(
     const native = f.fleet.launched[0]!;
     const work = machineOpenWork(f.route.executorMachineId);
     const occupied = async () =>
-      Number((await f.db.query<{ n: number | bigint }>(`SELECT (${work.sql}) n`, work.params))[0]!.n);
+      Number(
+        (await f.db.query<{ n: number | bigint }>(`SELECT (${work.sql}) n`, work.params))[0]!.n,
+      );
     expect(await occupied()).toBe(1);
     const cancelled: string[] = [];
     f.fleet.cancel = ({ jobId }) => {
@@ -9583,9 +9585,10 @@ test("standing mapping rechecks native occupancy before posting and live capacit
   await wake();
   expect(f.fleet.launched.map((job) => job.operationId)).toEqual([OPERATIONS.mapPrepare]);
   expect(
-    await f.db.query(`SELECT json_extract(payload,'$.nativeAttempts') attempts FROM runs WHERE id=?`, [
-      held[0]!.id,
-    ]),
+    await f.db.query(
+      `SELECT json_extract(payload,'$.nativeAttempts') attempts FROM runs WHERE id=?`,
+      [held[0]!.id],
+    ),
   ).toEqual([{ attempts: 1n }]);
   f.seal();
   f.capacity.cores = undefined;

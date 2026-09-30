@@ -13,12 +13,13 @@ export async function liveDrainCapacity(
   machines: Pick<GuestCtx["machines"], "inventory"> | undefined,
   machineId: string,
   operationCeiling: number | null,
-  jobs: Pick<JobsSlice, "listRuns">,
+  jobs: Pick<JobsSlice, "listRuns"> | undefined,
 ): Promise<DrainCapacity> {
   const unavailable = (detail: string) => ({
     refused: `physical-core admission unavailable for ${machineId}: ${detail}; existing work is retained`,
   });
   if (machines === undefined) return unavailable("this wake has no machine inventory");
+  if (jobs === undefined) return unavailable("this wake has no native occupancy reader");
   try {
     const answer = await machines.inventory();
     if (!answer.ok) return unavailable(`${answer.code}: ${answer.message}`);

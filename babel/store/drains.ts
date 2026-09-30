@@ -703,7 +703,10 @@ export function directDrainAdmission(
  * Reservations share the parent identity, so interrupted publication cannot double-count it.
  * Live native identities come from the caller's current jobs listing, not a second store.
  */
-export function machineOpenWork(machineId: string, activeJobIds: readonly string[] = []): {
+export function machineOpenWork(
+  machineId: string,
+  activeJobIds: readonly string[] = [],
+): {
   readonly sql: string;
   readonly params: SqlParam[];
 } {

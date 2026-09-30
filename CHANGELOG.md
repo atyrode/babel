@@ -13,23 +13,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   work (#258, #526).** A typed direct pre-admission refusal, confirmed by authoritative
   `job_not_started` for every recorded native attempt, closes the intent and reservation once.
   Uncertain attempts and unreadable status retain the immutable request and occupied slot.
-  Standing mapping now checks the same machine occupancy at atomic claim publication and
-  pending native/Code posting, withdrawing a publication loser at zero. Fresh paginated native
+  Standing mapping checks capacity before drawing, so a busy machine cannot consume candidate
+  hand-out leases; it rechecks at atomic claim publication and pending native/Code posting,
+  withdrawing a publication loser at zero. Fresh paginated native
   listings include live policy/drain cadences before settlement writes their Babel runs, with
   identity-based deduplication against retained preparations, parents and reservations.
-  Regression definitions cover definitive/uncertain refusal, direct/standing races, delayed
-  posting and cadence occupancy. An isolated real-store smoke observed one active native cadence
-  slot, still one after its run was persisted, then zero on terminal evidence; both listing pages
-  were read each time. The regression suite and integrated verification remain unrun for this
-  repair; no live deployment or provider work was exercised.
+  Real-store regressions cover definitive/uncertain refusal, direct/standing races, resumed work
+  after capacity returns, delayed posting and cadence occupancy. An isolated real-store smoke
+  observed one active native cadence slot, still one after its run was persisted, then zero on
+  terminal evidence; both listing pages were read each time. No live deployment or provider work
+  was exercised.
 
 - **Retained preparations keep their machine core slot after their parent closes (#258).**
   Explicit same-machine parent/preparation linkage counts one whole item, including a pending
   reservation, while a child with no open parent remains occupied. Stop preserves native-attempt
   evidence; mapping claims wait for authoritative native settlement rather than cancellation
-  acknowledgement. Regression definitions cover ordinary and mapping parents, absent parents,
-  definitive refusal, lost answers, Stop/restart and late terminal receipts. This rebased repair
-  has not been executed or accepted live; integrated verification remains required.
+  acknowledgement. Real-store regressions cover ordinary and mapping parents, absent parents,
+  definitive refusal, lost answers, Stop/restart and late terminal receipts. Live throughput
+  acceptance remains separate from these isolated data-path proofs.
 
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain
