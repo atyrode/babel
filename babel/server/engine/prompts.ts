@@ -57,7 +57,7 @@ import { promptBytes } from "./session.ts";
 
 /** The job and prompt this module composes, recorded in every receipt (§7). */
 export const JOB_VERSION = 3;
-export const PROMPT_VERSION = "babel.analysis-prompt/5";
+export const PROMPT_VERSION = "babel.analysis-prompt/6";
 
 // ---------------------------------------------------------------------------- the answer
 
@@ -347,6 +347,15 @@ export function composeExplorePrompt(input: ExplorePromptInput): string {
     parts.push("\n");
   }
   parts.push(steeringSection(input));
+  parts.push(
+    "## Final answer budget\n\n",
+    "The session receipt retains only 16,384 characters of your last message. Return only one " +
+      "complete ```json fenced result under 12,000 characters including both fences, with no " +
+      "introduction or trailing prose. Select at most four substantive items across candidates, " +
+      "observations, objections, consolidations, questions and next_actions. Prioritize the best " +
+      "supported claims; leave other arrays empty and omit absent optional fields rather than " +
+      "shortening an evidence locator or digest. Finish the JSON and close the fence.\n",
+  );
   return parts.join("");
 }
 

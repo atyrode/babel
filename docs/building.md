@@ -381,8 +381,9 @@ even when the selected material fitted both scratch and output-byte ceilings.
 
 Code's pinned OMP receipt retains at most 16,384 characters of the final assistant message
 ([OMP `plugins/api/session.ts:5-6,164-170` at `f5b9d09c5929943dea246e415875f18e0a68bddb`](https://github.com/atyrode/manifold-omp/blob/f5b9d09c5929943dea246e415875f18e0a68bddb/plugins/api/session.ts#L164-L170)).
-The analysis prompt asks for a complete fenced result under 12,000 characters, including
-its fences, rather than a longer JSON object whose closing delimiter the receipt loses.
+The analysis prompt ends with a complete fenced-result budget under 12,000 characters, including
+its fences, and at most four substantive items. An earlier reminder before the material did
+not keep three real exploration results from losing their closing JSON delimiter at this limit.
 For citations it recommends the exact `file` basename from the material index, an already
 admitted spelling (`babel/server/engine/citations.ts:78-106`) that avoids retyping long paths.
 
