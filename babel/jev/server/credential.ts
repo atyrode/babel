@@ -189,11 +189,6 @@ export interface JevMemo {
   readonly expectedRevision?: string;
 }
 
-/** The effective memo identity; both the paid path and cache-only reads use this policy fence. */
-export function memoKey(key: string, revision: string): string {
-  return `${key}/${revision}`;
-}
-
 /**
  * Jev's answer, or `null` because Jev cannot answer.
  *

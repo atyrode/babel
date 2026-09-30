@@ -53,6 +53,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   toggles verified absent, disabled and enabled-without-service Feed fallback; provider credit
   exhaustion was not exercised, and no paid judgement, real archive or deployment is implied.
 
+- **Watch's existing Recipes section can show partial cached-current Jev standings (#362).**
+  Complete eligibility counts inspect a run's full retained recipe selection rather than trust
+  an imported first-recipe scalar; declared zero-output lenses remain visible. A bounded,
+  cache-only handoff separates known cached bands, missing-or-evicted answers and records not
+  inspected, and reports the never-judged count as unknown. Ready Jev may retain current readings
+  while funding is unknown, explicitly disclosed; no provider calls or paid probes are made.
+  Missing/disabled Jev and no current cached readings add no empty surface and change no ranking
+  or scheduling. Real-store regressions cover attribution, the newest-by-creation bound,
+  revision/eviction and oversized imported payloads. On an isolated preview, the actual Watch
+  panel rendered synthetic warm-cache readings, exclusions and a zero-output recipe. Hot
+  disable/re-enable removed and restored the reading without resetting the selected recipe or
+  days-back draft. Restoring the unmodified Jev bundle with no configured service preserved the
+  same baseline rows and draft. No real provider or deployed archive was accessed.
+
 - **A lost review-posting answer no longer purchases a second review (#490).** Review requests
   retain Code's keyed identity before dispatch, recover only under their original account chain
   and bind the recovered session atomically. Uncertain posts hold their reservation and machine
@@ -113,20 +127,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   actual imported-corpus operation and measured coverage remain separate, unperformed acceptance.
 
 ## [0.5.8] - 2026-09-30
-
-### Added
-
-- **Watch's existing Recipes section can show partial cached-current Jev standings (#362).**
-  Complete eligibility counts inspect a run's full retained recipe selection rather than trust
-  an imported first-recipe scalar; declared zero-output lenses remain visible. A bounded,
-  cache-only handoff separates known cached bands, missing-or-evicted answers and records not
-  inspected, and reports the never-judged count as unknown. Ready Jev may retain current readings
-  while funding is unknown, explicitly disclosed; no provider calls or paid probes are made.
-  Missing/disabled Jev and no current cached readings add no empty surface and change no ranking
-  or scheduling. A disposable real-store consumer proves the newest-by-creation bounded handoff,
-  unknown funding and zero provider calls, including cold/disabled fallback; regressions also
-  cover attribution, revision/eviction and oversized imported payloads. Rendered preview
-  acceptance remains separate.
 
 ### Fixed
 
