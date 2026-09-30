@@ -53,6 +53,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   a bounded exploration then wrote four accepted records, while a synthesis copying prior
   paths was refused. The answer and citation suites retain strict provenance and parsing.
 
+- **Automatic review wakes consume cached advice under their own authority (#361).** Enable
+  and job settlement bind only that callback's optional read-only roster/service metadata.
+  Missing or denied metadata keeps the exact baseline draw with a reason; withdrawn provider
+  visibility invalidates the handoff. No earlier dispatch or wake lends its handles to another.
+  Selection makes no provider invocation, funding remains unknown, and service effects,
+  repository reads, policy shares, eligibility, claims and cache freshness fences are unchanged.
+
 - **Recall's rebuildable cache files stay owner-only even under a permissive umask (#480).**
   Normalized reading streams and metadata, listing sidecars, token SQLite files and temporary
   preview/coordinate files use private creation before publication. An isolated synthetic
@@ -240,8 +247,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   never the cached opinion. Cache-only doors use existing native service delegates without
   widening either manifest or caller permission. No credit probe, inference budget, feed rank,
   ruling, durable assessment store or Jev capability was added.
-  Automatic consumption on enable/job settlement is still blocked by the pinned host's missing
-  lifecycle host/service metadata slice; dispatch-only evidence does not close #361.
+  Lifecycle consumption in this release remained baseline-only because its host pin lacked
+  read-only hook metadata; automatic wake support is added under Unreleased.
 
 - **Mapping is a standing, weighted activity.** A policy's `activityWeights` gains `map`, which
   defaults to 0; a policy written before it reads as 0. While `map` is above zero and the policy

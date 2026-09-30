@@ -569,8 +569,8 @@ test("a metadata-less wake borrows no prior dispatch authority and does not revo
   await f.warm(NEW, { worth_first: 100 });
   await f.refresh();
   expect((await f.draw()).recordId).toBe(NEW);
-  // This is the current pin's lifecycle consumption seam, also needed for a revoked installer.
-  // No captured dispatch context is available to the new wake.
+  // A callback without its own metadata (including a revoked installer) cannot borrow a
+  // captured dispatch context. The actual lifecycle callbacks are covered in server.test.ts.
   const wake = coordinator(
     f.held.store,
     () => NOW,

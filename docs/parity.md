@@ -104,10 +104,12 @@ assumed from that row alone.
   Selection reasons and digests travel in the existing review preparation receipt, never a
   standing/tally/heard/roster copy or the blinded prompt. Implicit seeds preserve baseline
   activity/lane entropy, and TTL is rechecked after metadata awaits.
-  **Automatic lifecycle consumption remains blocked on the pinned host:** enable and
-  job-settlement contexts expose neither host roster nor service metadata. They must gain a
-  read-only slice bound to their own current credential before #361 can claim automatic advice;
-  a dispatch context retained across wakes is not an acceptable substitute.
+  Enable and job-settlement wakes use the same cache through their own optional read-only
+  roster/service metadata. The host rechecks the installer's or settled job's current credential
+  on each read; no dispatch or prior wake's handles are retained for another callback. Missing
+  or denied metadata keeps the exact baseline selection with a reason, while withdrawn provider
+  visibility invalidates the handoff. These hooks gain no service effects or repository reads.
+  Live review and provider-operation evidence remains subject to the operational boundary above.
 
 ## What this document is for
 

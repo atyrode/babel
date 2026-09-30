@@ -858,12 +858,14 @@ baseline process. Current immutable record identity, revision and exact text dig
 handoff; the memo key also includes the shipped bank, per-kind document and service-policy
 revision. Installed provider bytes and enablement epoch plus live service readiness/revision
 fence admission and consumption. TTL is checked again after asynchronous metadata reads.
-Missing metadata degrades to the ordinary draw rather than refusing. The pinned Manifold
-lifecycle context exposes neither `host` nor `services`: enable and job-settlement wakes
-therefore cannot consume advice yet. Automatic lifecycle consumption requires a current,
-read-only host/service metadata slice under the installer's or settled job's own credential;
-an earlier dispatch's captured context or caller-auth check cannot substitute for it. This
-is an outstanding #361 prerequisite, not evidence of automatic advice on this pin.
+Enable and job-settlement wakes can consume the same cached advice through the host's optional
+read-only roster and service-instance metadata, bound to the installer's or settled job's own
+credential and reauthorized at each read. Each callback supplies its own handles only for that
+wake; neither an earlier dispatch nor an earlier lifecycle callback lends authority to another.
+Absent or denied metadata preserves the exact ordinary draw with `metadata-unavailable`;
+withdrawn provider visibility records `provider-unavailable` and invalidates the cached advice.
+These hooks still have no service effects or repository reads. Funding remains unknown, and
+automatic selection adds no provider invocation, service grant or spending authority.
 Nothing is written to an assessment, record, disposition or feed-rank table.
 
 Within the existing lanes, descending net tally divided by admitted-panel size precedes age in
