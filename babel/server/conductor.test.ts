@@ -895,54 +895,8 @@ class Draws {
     };
   }
 
-  async bind(request: {
-    id: string;
-    runId: string;
-    fence: Fence;
-    jobId: string;
-  }): Promise<Record<string, unknown>> {
-    await this.db.run(`UPDATE claims SET job_id = ? WHERE id = ? AND run_id = ? AND fence = ?`, [
-      request.jobId,
-      request.id,
-      request.runId,
-      request.fence,
-    ]);
-    const rows = await this.db.query<{
-      record_id: string;
-      role: string;
-      lane: string;
-      policy_version: string;
-      reserved_cost: number;
-      granted_at: string;
-      expires_at: string;
-    }>(
-      `SELECT record_id, role, lane, policy_version, reserved_cost, granted_at, expires_at
-         FROM claims WHERE id = ?`,
-      [request.id],
-    );
-    const row = rows[0];
-    if (row === undefined) {
-      return { outcome: "refused", refusal: { reason: "not-found", detail: "missing claim" } };
-    }
-    return {
-      outcome: "bound",
-      claim: {
-        id: request.id,
-        recordId: row.record_id,
-        role: row.role,
-        lane: row.lane,
-        policyVersion: row.policy_version,
-        jobId: request.jobId,
-        runId: request.runId,
-        fence: Number(request.fence),
-        reservedCost: row.reserved_cost,
-        actualCost: null,
-        grantedAt: Date.parse(row.granted_at),
-        expiresAt: Date.parse(row.expires_at),
-        finishedAt: null,
-        outcome: null,
-      },
-    };
+  bindStatement(request: Parameters<Coordinator["bindStatement"]>[0]) {
+    return governed(openReadStore(this.db), () => clock, 16).bindStatement(request);
   }
 
   async finish(request: {
@@ -1368,6 +1322,8 @@ class ReviewCode implements CodeEngine {
    */
   readonly posted: SessionRequest[] = [];
   readonly keyed = new Map<string, CodeJob>();
+  readonly retired = new Set<string>();
+  readonly cancelled: string[] = [];
   read: SessionRead = sessionRead({ state: "started", sealed: false });
 
   async profiles(): Promise<EngineAnswer<readonly never[]>> {
@@ -1381,8 +1337,12 @@ class ReviewCode implements CodeEngine {
     const key = request.postingKey;
     const found = key === undefined ? undefined : this.keyed.get(key);
     if (found !== undefined) return await Promise.resolve({ ok: true, value: found });
-    if (request.adoptOnly === true)
+    if (request.adoptOnly === true) {
+      if (key !== undefined) this.retired.add(key);
       return refusedByCode("engine_posting_unknown", "nothing was posted under this key");
+    }
+    if (key !== undefined && this.retired.has(key))
+      return refusedByCode("engine_refused", "code_posting_retired");
     this.posted.push(request);
     const job: CodeJob = {
       jobId: "job_code_review",
@@ -1402,7 +1362,11 @@ class ReviewCode implements CodeEngine {
     return await Promise.resolve({ ok: true, value: this.read });
   }
 
-  async cancelSession(): Promise<EngineAnswer<CodeJob>> {
+  async cancelSession(request?: {
+    containerId: string;
+    jobId: string;
+  }): Promise<EngineAnswer<CodeJob>> {
+    if (request !== undefined) this.cancelled.push(request.jobId);
     return await Promise.resolve({ ok: true, value: this.read.job });
   }
 }
@@ -3057,20 +3021,381 @@ test("a batch every slot of which a dead job holds is drawn into the same cycle 
     ["clm_dead_3", "abandoned"],
     ["clm_dead_4", "abandoned"],
   ]);
-  // THE SLOT IS REUSABLE IN THE SAME CYCLE THAT FREED IT. The reap runs before the cycle asks
-  // what it may draw, so the batch the coordinator is asked about holds four free slots, the
-  // cycle draws instead of stopping on `batch`, and the work it drew TOOK ONE OF THEM: the
-  // fifth settlement is the assignment this cycle claimed and then released when there was no
-  // engine to post it to. A cycle stopped on a full batch never claims anything, which is
-  // what a ghost used to cost for as long as the lease it was granted under.
+  // Reaping frees a slot before drawing in this same cycle. The new claim stays reserved:
+  // an unavailable Code cannot confirm retirement of its durable posting key.
   expect(reaping.stop?.reason).not.toBe("batch");
   expect(reaping.pulse.tick.gaps["batch"]).toBeUndefined();
   expect(draws.draws).toBe(1);
-  expect(reaping.settled[4]?.claimId).toBe(ASSIGNMENT.id);
+  expect(reaping.settled).toHaveLength(4);
+  expect(
+    await db.query(`SELECT job_id, finished_at FROM claims WHERE id=?`, [ASSIGNMENT.id]),
+  ).toEqual([{ job_id: null, finished_at: null }]);
   clock = started;
 });
 
 // ----------------------------------------------------------------------- drawn Code reviews
+
+async function drawnReviewPosting() {
+  const db = openDatabase();
+  await seed(db);
+  await db.run(
+    `INSERT INTO policies(version, seq, actor_id, reason, payload, recorded_at)
+     VALUES (?, 1, 'operator', 'keyed review posting', ?, ?)`,
+    [
+      POLICY.version,
+      JSON.stringify({
+        ...POLICY,
+        initialReviews: 1,
+        maxItemReviews: 1,
+        batchSize: 1,
+        dailyCost: POLICY.perCycleCost,
+        review: ROUTE,
+      }),
+      new Date(clock).toISOString(),
+    ],
+  );
+  const store = openReadStore(db, () => clock);
+  const coordinator = governed(store, () => clock, 16);
+  const code = new ReviewCode();
+  const fleet = new Fleet();
+  // A wake has no in-memory state from its predecessor, only the retained SQLite intent.
+  const wake = (chain: string | null = WAKE) => {
+    const reopened = openReadStore(db, () => clock);
+    return conductor({
+      store: reopened,
+      coordinator: governed(reopened, () => clock, 16),
+      engine: code,
+      jobs: fleet,
+      machines: new Folders(),
+      keys: new Keys(),
+      plan: PLAN,
+      chain,
+      now: () => clock,
+    });
+  };
+  const answer = () => {
+    code.read = sessionRead({
+      jobId: "job_code_review",
+      state: "exited",
+      usage: { input: 100, output: 40, cacheRead: 0, cacheWrite: 0, cost: 0.12 },
+      finalMessage:
+        "```json\n" +
+        JSON.stringify({
+          contributions: [{ kind: "comment", text: "Synthetic review contribution." }],
+        }) +
+        "\n```",
+    });
+  };
+  return { db, store, coordinator, code, wake, answer };
+}
+
+test.each([false, true])(
+  "a lost drawn-review answer retains its claim for its own chain and settles one purchase (expired: %s)",
+  async (expired) => {
+    const started = clock;
+    try {
+      const f = await drawnReviewPosting();
+      const asked: SessionRequest[] = [];
+      const post = f.code.runSession.bind(f.code);
+      f.code.runSession = async (request) => {
+        asked.push(request);
+        const answer = await post(request);
+        return asked.length === 1
+          ? refusedByCode("engine_unconfirmed", "the posting wake lost its answer")
+          : answer;
+      };
+      await f.wake().tick();
+      expect(f.code.posted).toHaveLength(1);
+      const [claim] = await f.db.query<{
+        id: string;
+        run_id: string;
+        fence: bigint;
+        reserved_cost: number;
+        job_id: string | null;
+        actual_cost: number | null;
+        finished_at: string | null;
+      }>(`SELECT id, run_id, fence, reserved_cost, job_id, actual_cost, finished_at FROM claims`);
+      expect(claim).toMatchObject({ job_id: null, actual_cost: null, finished_at: null });
+      const runId = `run_${claim!.id}_${String(claim!.fence)}`;
+      expect(f.code.posted[0]!.postingKey).toBe(runId);
+      expect(
+        await f.db.query(`SELECT id, chain, job_id, closure FROM runs WHERE kind=?`, [
+          OPERATIONS.evaluate,
+        ]),
+      ).toEqual([{ id: runId, chain: WAKE, job_id: null, closure: null }]);
+
+      if (expired) clock += POLICY.leaseSeconds * 4_000;
+      for (const chain of [principalChain("unrelated"), null]) {
+        await f.wake(chain).tick();
+        expect(asked).toHaveLength(1);
+        expect(f.code.posted).toHaveLength(1);
+        expect(f.code.cancelled).toEqual([]);
+        expect(
+          await f.db.query(
+            `SELECT id, run_id, fence, reserved_cost, job_id, actual_cost, finished_at FROM claims WHERE id=?`,
+            [claim!.id],
+          ),
+        ).toEqual([claim!]);
+        expect((await f.coordinator.open(clock)).total).toBe(1);
+        expect((await f.coordinator.spend(clock)).total).toBeCloseTo(claim!.reserved_cost, 8);
+      }
+
+      f.answer();
+      const settled = [...(await f.wake().tick()).settled, ...(await f.wake().tick()).settled];
+      expect(asked).toHaveLength(2);
+      expect(asked[1]!.postingKey).toBe(runId);
+      if (expired) expect(asked[1]!.adoptOnly).toBe(true);
+      expect(f.code.posted).toHaveLength(1);
+      expect(f.code.cancelled).toEqual(expired ? ["job_code_review"] : []);
+      expect(settled.filter((row) => row.claimId === claim!.id)).toMatchObject([
+        { outcome: expired ? "failed" : "completed", cost: 0.12 },
+      ]);
+      expect(
+        await f.db.query(
+          `SELECT job_id, run_id, fence, actual_cost, outcome, finished_at IS NOT NULL finished
+             FROM claims WHERE id=?`,
+          [claim!.id],
+        ),
+      ).toEqual([
+        {
+          job_id: "job_code_review",
+          run_id: claim!.run_id,
+          fence: claim!.fence,
+          actual_cost: 0.12,
+          outcome: expired ? "failed" : "completed",
+          finished: 1n,
+        },
+      ]);
+      expect((await f.store.run(runId)).run).toMatchObject({
+        state: expired ? "failed" : "finished",
+        costUsd: 0.12,
+      });
+      expect(
+        await f.db.query(`SELECT vote FROM assessments WHERE record_id=?`, [ASSIGNMENT.recordId]),
+      ).toEqual(expired ? [] : [{ vote: null }]);
+      expect((await f.coordinator.spend(clock)).total).toBeCloseTo(0.12, 8);
+    } finally {
+      clock = started;
+    }
+  },
+);
+
+test("a refused drawn-review post retains its claim until adopt-only retirement is confirmed", async () => {
+  const started = clock;
+  try {
+    const f = await drawnReviewPosting();
+    const asked: SessionRequest[] = [];
+    const post = f.code.runSession.bind(f.code);
+    f.code.runSession = async (request) => {
+      asked.push(request);
+      if (asked.length === 1)
+        return refusedByCode("engine_stale_profile", "the profile moved under this invocation");
+      const answer = await post(request);
+      return asked.length === 2
+        ? refusedByCode("engine_unconfirmed", "the retirement answer was lost")
+        : answer;
+    };
+    await f.wake().tick();
+    expect(asked).toHaveLength(2);
+    expect(asked[1]!.adoptOnly).toBe(true);
+    expect(f.code.posted).toEqual([]);
+    const [claim] = await f.db.query<{ id: string; reserved_cost: number }>(
+      `SELECT id, reserved_cost FROM claims`,
+    );
+    const [run] = await f.db.query<{ id: string }>(`SELECT id FROM runs WHERE kind=?`, [
+      OPERATIONS.evaluate,
+    ]);
+    expect(f.code.retired.has(run!.id)).toBe(true);
+    expect(
+      await f.db.query(`SELECT job_id, actual_cost, finished_at FROM claims WHERE id=?`, [
+        claim!.id,
+      ]),
+    ).toEqual([{ job_id: null, actual_cost: null, finished_at: null }]);
+    expect(await f.db.query(`SELECT closure FROM runs WHERE id=?`, [run!.id])).toEqual([
+      { closure: null },
+    ]);
+
+    clock += POLICY.leaseSeconds * 4_000;
+    await f.db.run(`UPDATE policies SET payload=json_set(payload,'$.enabled',json('false'))`);
+    for (const chain of [principalChain("unrelated"), null]) {
+      await f.wake(chain).tick();
+      expect(asked).toHaveLength(2);
+      expect(
+        await f.db.query(`SELECT actual_cost, finished_at FROM claims WHERE id=?`, [claim!.id]),
+      ).toEqual([{ actual_cost: null, finished_at: null }]);
+      expect((await f.coordinator.spend(clock)).total).toBeCloseTo(claim!.reserved_cost, 8);
+    }
+    const settled = [...(await f.wake().tick()).settled, ...(await f.wake().tick()).settled];
+    expect(asked.at(-1)!.adoptOnly).toBe(true);
+    expect(new Set(asked.map((request) => request.postingKey))).toEqual(new Set([run!.id]));
+    expect(f.code.posted).toEqual([]);
+    expect(f.code.cancelled).toEqual([]);
+    expect(settled.filter((row) => row.claimId === claim!.id)).toMatchObject([
+      { outcome: "failed", cost: 0 },
+    ]);
+    expect(
+      await f.db.query(
+        `SELECT actual_cost, finished_at IS NOT NULL finished FROM claims WHERE id=?`,
+        [claim!.id],
+      ),
+    ).toEqual([{ actual_cost: 0, finished: 1n }]);
+    expect(await f.db.query(`SELECT job_id, closure FROM runs WHERE id=?`, [run!.id])).toEqual([
+      { job_id: null, closure: "failed" },
+    ]);
+    expect((await f.coordinator.spend(clock)).total).toBe(0);
+  } finally {
+    clock = started;
+  }
+});
+
+test("a null-chain initial review retires a definitive refusal without trapping its claim", async () => {
+  const f = await drawnReviewPosting();
+  const asked: SessionRequest[] = [];
+  const post = f.code.runSession.bind(f.code);
+  f.code.runSession = async (request) => {
+    asked.push(request);
+    return request.adoptOnly
+      ? await post(request)
+      : refusedByCode("engine_stale_profile", "the profile changed before admission");
+  };
+  const tick = await f.wake(null).tick();
+  expect(asked).toHaveLength(2);
+  expect(asked[0]!.postingKey).toBe(asked[1]!.postingKey);
+  expect(asked[1]!.adoptOnly).toBe(true);
+  expect(f.code.posted).toEqual([]);
+  expect(f.code.retired.has(asked[0]!.postingKey!)).toBe(true);
+  expect(tick.settled).toMatchObject([{ outcome: "failed", cost: 0 }]);
+  expect(
+    await f.db.query(`SELECT actual_cost,finished_at IS NOT NULL finished FROM claims`),
+  ).toEqual([{ actual_cost: 0, finished: 1n }]);
+  expect((await f.coordinator.open(clock)).total).toBe(0);
+});
+
+test("another account's unresolved review intents cannot starve owner recovery", async () => {
+  const f = await drawnReviewPosting();
+  const asked: SessionRequest[] = [];
+  const post = f.code.runSession.bind(f.code);
+  f.code.runSession = async (request) => {
+    asked.push(request);
+    const answer = await post(request);
+    return asked.length === 1
+      ? refusedByCode("engine_unconfirmed", "the posting wake lost its answer")
+      : answer;
+  };
+  await f.wake().tick();
+  const [original] = await f.db.query<{
+    id: string;
+    authority_id: string;
+    preparation: string;
+    profile: string;
+    machine_id: string;
+    payload: string;
+  }>(
+    `SELECT id,authority_id,preparation,profile,machine_id,payload
+       FROM runs WHERE kind=? AND closure IS NULL`,
+    [OPERATIONS.evaluate],
+  );
+  if (!original) throw new Error("review posting intent was not retained");
+  const input = JSON.parse(original.preparation) as {
+    review: { assignmentId: string; fence: number };
+  };
+  const older = new Date(clock - 60_000).toISOString();
+  const foreign = principalChain("unrelated");
+  const rows: SqlStatement[] = [];
+  for (let index = 0; index < 129; index++) {
+    const claimId = `clm_foreign_${index}`;
+    const runId = `run_foreign_${index}`;
+    rows.push(
+      {
+        sql: `INSERT INTO claims(id,record_id,role,lane,policy_version,run_id,fence,
+                   reserved_cost,granted_at,expires_at)
+                VALUES (?,?,'reception','coverage',?,?,1,0.5,?,?)`,
+        params: [
+          claimId,
+          ASSIGNMENT.recordId,
+          POLICY.version,
+          `cyc_foreign_${index}`,
+          older,
+          new Date(clock + POLICY.leaseSeconds * 1000).toISOString(),
+        ],
+      },
+      {
+        sql: `INSERT INTO runs(id,kind,machine_id,container_id,recipe_id,profile,
+                   authority_kind,authority_id,preparation,started_at,records,payload,chain)
+                VALUES (?,?,?,'ctr_union','babel-triages-the-queue',?,
+                        'conductor',?,?,?,0,?,?)`,
+        params: [
+          runId,
+          OPERATIONS.evaluate,
+          original.machine_id,
+          original.profile,
+          `cyc_foreign_${index}`,
+          JSON.stringify({ review: { ...input.review, assignmentId: claimId, fence: 1 } }),
+          older,
+          original.payload,
+          foreign,
+        ],
+      },
+    );
+  }
+  await f.db.batch(rows);
+  f.answer();
+  const settled = [...(await f.wake().tick()).settled, ...(await f.wake().tick()).settled];
+  expect(asked).toHaveLength(2);
+  expect(asked[1]!.postingKey).toBe(original.id);
+  expect(f.code.posted).toHaveLength(1);
+  expect(settled.filter((row) => row.claimId === input.review.assignmentId)).toMatchObject([
+    { outcome: "completed", cost: 0.12 },
+  ]);
+  expect(
+    await f.db.query(
+      `SELECT COUNT(*) AS n FROM claims WHERE actual_cost IS NULL AND finished_at IS NULL`,
+    ),
+  ).toEqual([{ n: 129n }]);
+});
+
+test("a late drawn-review answer cannot cancel the session its original chain already adopted", async () => {
+  const f = await drawnReviewPosting();
+  const post = f.code.runSession.bind(f.code);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let created!: () => void;
+  const posted = new Promise<void>((resolve) => (created = resolve));
+  let first = true;
+  f.code.runSession = async (request) => {
+    const answer = await post(request);
+    if (first) {
+      first = false;
+      created();
+      await held;
+    }
+    return answer;
+  };
+  const late = f.wake().tick();
+  await posted;
+  try {
+    await f.wake().tick();
+    expect(await f.db.query(`SELECT job_id FROM runs WHERE kind=?`, [OPERATIONS.evaluate])).toEqual(
+      [{ job_id: "job_code_review" }],
+    );
+  } finally {
+    release();
+    await late;
+  }
+  expect(f.code.posted).toHaveLength(1);
+  expect(f.code.cancelled).toEqual([]);
+  f.answer();
+  const settled = [...(await f.wake().tick()).settled, ...(await f.wake().tick()).settled];
+  expect(settled).toMatchObject([{ outcome: "completed", cost: 0.12 }]);
+  expect(await f.db.query(`SELECT actual_cost, outcome FROM claims`)).toEqual([
+    { actual_cost: 0.12, outcome: "completed" },
+  ]);
+  expect(await f.db.query(`SELECT vote FROM assessments`)).toEqual([{ vote: null }]);
+  expect(
+    await f.db.query(`SELECT closure, cost_usd FROM runs WHERE kind=?`, [OPERATIONS.evaluate]),
+  ).toEqual([{ closure: "completed", cost_usd: 0.12 }]);
+  expect(f.code.cancelled).toEqual([]);
+});
 
 test("an enabled policy without a review route reserves nothing", async () => {
   const db = openDatabase();

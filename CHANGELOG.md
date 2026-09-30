@@ -9,6 +9,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+- **A lost review-posting answer no longer purchases a second review (#490).** Review requests
+  retain Code's keyed identity before dispatch, recover only under their original account chain
+  and bind the recovered session atomically. Uncertain posts hold their reservation and machine
+  slot even after lease expiry; only a final retired-key absence releases them at zero cost.
+  Real-store regressions and a two-store, fresh-process crash/recovery smoke prove one synthetic
+  purchase, one accepted assessment and one settlement at its recorded cost.
+
 ## [0.5.8] - 2026-09-30
 
 ### Fixed

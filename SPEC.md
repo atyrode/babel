@@ -824,10 +824,17 @@ is not bought again merely because the policy version changes.
 An unsuccessful attempt known to cost nothing may retry within those same cooldowns and setback
 bounds; paid or completed unchanged work may not. If Code's posting response is lost or cannot be
 interpreted, Watch reports the run as unconfirmed and its reservation remains held. An absent job
-id is not proof that no session was bought, so that uncertain posting is never retried.
-Stop cannot safely release that slot while an unidentified Code job may still be live. The pinned
-Code API cannot recover its job id from Babel's request, so a permanently lost response can hold
-the slot indefinitely; neither timeout nor lease expiry proves the session ended.
+id is not proof that no session was bought. Each review, like analysis and mapping, retains its
+request and run-id posting key before calling Code. A later wake may ask for that same key only
+under the original non-null account chain, never another account's, a fresh enable's or a chainless
+wake's; it recovers the existing session rather than purchasing a replacement. A chainless initial
+review may complete on its originating call, but no later wake can recover it.
+Recovery rechecks the original claim, fence, lease and policy before it may post. If they no longer
+admit work, it can only retire the key through an adopt-only ask. Only Code's final
+`engine_posting_unknown` releases the claim at zero cost; a refusal or lost answer alone does not.
+A recovered job is recorded together with its claim binding, and a late job no longer admitted is
+recorded for accounting and stopped by its own chain. Neither timeout nor lease expiry releases
+an unresolved posting's reservation or concurrency slot.
 
 Admission is bounded by recorded spend plus outstanding reservations, across concurrent runs,
 through shared claims with a fence rather than a per-process budget copy. These are admission
@@ -1596,7 +1603,7 @@ records, not a place where knowledge accumulated.
 receipt's cost when the job exited, at the full reservation when it did not, because a job that
 died mid-flight may have spent all of it. A grant proven never posted can finish at zero cost.
 Expired orphan claims are abandoned by the cycle's own reaper, oldest first and a bounded number
-per cycle, before the cycle asks what it may draw. A retained analysis intent is not an orphan:
+per cycle, before the cycle asks what it may draw. A retained analysis or keyed review intent is not an orphan:
 an unconfirmed native or Code posting keeps its reservation and concurrency slot until its
 outcome is known, even if the lease expires.
 

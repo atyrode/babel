@@ -60,6 +60,7 @@ import {
   ActivityWeightsSchema,
   ANALYSIS_ROLES,
   CodeProfileSchema,
+  OPERATIONS,
   PolicyRecipeSchema,
   TranscriptMapConfigSchema,
   TRANSCRIPT_MAP_ROLES,
@@ -972,6 +973,13 @@ interface MappingCandidate {
 
 type WorkCandidate = Candidate | AnalysisCandidate | MappingCandidate;
 
+/** An unanswered review posting belongs to its original claim even after its lease expires. */
+const REVIEW_POSTING_CLAIM = `c.job_id IS NULL AND r.kind = '${OPERATIONS.evaluate}'
+  AND r.authority_kind = 'conductor' AND r.authority_id = c.run_id
+  AND json_extract(r.preparation, '$.review.assignmentId') = c.id
+  AND json_extract(r.preparation, '$.review.fence') = c.fence
+  AND json_extract(r.payload, '$.posting') = 1 AND r.closure IS NULL`;
+
 /**
  * A closed native preparation is not a closed parent; expiry is not job termination.
  * An analysis post whose retention and cancellation both failed may have no run row at all.
@@ -987,10 +995,10 @@ const RUNNING_CLAIM = `(EXISTS (
 ) OR ((c.role LIKE 'analysis:%' OR c.role LIKE 'mapping:%') AND c.job_id IS NOT NULL
   AND COALESCE(c.outcome, '') <> 'withdrawn' AND NOT EXISTS (
   SELECT 1 FROM runs known WHERE known.job_id = c.job_id OR known.prepare_job_id = c.job_id
-)))`;
-const OCCUPIED_CLAIM = `c.finished_at IS NULL AND c.job_id IS NOT NULL AND (
+)) OR EXISTS (SELECT 1 FROM runs r WHERE ${REVIEW_POSTING_CLAIM}))`;
+const OCCUPIED_CLAIM = `c.finished_at IS NULL AND (
   ${RUNNING_CLAIM}
-  OR (c.expires_at > ? AND NOT EXISTS (
+  OR (c.job_id IS NOT NULL AND c.expires_at > ? AND NOT EXISTS (
     SELECT 1 FROM runs closed WHERE closed.job_id = c.job_id AND closed.closure IS NOT NULL
   ))
 )`;
@@ -1215,7 +1223,8 @@ export function coordinator(
   async function openClaims(moment: number): Promise<OpenClaims> {
     const rows = await db.query(
       `SELECT COALESCE((SELECT r.machine_id FROM runs r
-                         WHERE (r.job_id = c.job_id OR r.prepare_job_id = c.job_id)
+                         WHERE (r.job_id = c.job_id OR r.prepare_job_id = c.job_id
+                           OR (${REVIEW_POSTING_CLAIM}))
                            AND r.machine_id IS NOT NULL
                          ORDER BY r.started_at DESC LIMIT 1), '') AS machine,
               COUNT(*) AS open
@@ -2949,7 +2958,8 @@ export function coordinator(
     // as the grant. Independent coordinators cannot both spend the last dollar or machine slot.
     const [, from, until] = dayWindow(moment);
     const machineOf = `COALESCE((SELECT r.machine_id FROM runs r
-      WHERE (r.job_id = c.job_id OR r.prepare_job_id = c.job_id) AND r.machine_id IS NOT NULL
+      WHERE (r.job_id = c.job_id OR r.prepare_job_id = c.job_id
+        OR (${REVIEW_POSTING_CLAIM})) AND r.machine_id IS NOT NULL
       ORDER BY r.started_at DESC LIMIT 1), '')`;
     let admissionSql = `
       (SELECT COALESCE(SUM(COALESCE(actual_cost, reserved_cost)), 0) FROM claims
@@ -3502,8 +3512,9 @@ export function coordinator(
     }
     const rows = await db.batch([
       {
-        sql: `UPDATE claims SET finished_at = ?, actual_cost = reserved_cost, outcome = 'abandoned'
+        sql: `UPDATE claims AS c SET finished_at = ?, actual_cost = reserved_cost, outcome = 'abandoned'
                WHERE id = ? AND fence = ? AND finished_at IS NULL
+                 AND NOT EXISTS (SELECT 1 FROM runs r WHERE ${REVIEW_POSTING_CLAIM})
                RETURNING reserved_cost`,
         params: [iso(moment), request.id, fence],
       },

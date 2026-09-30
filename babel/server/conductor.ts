@@ -9,6 +9,7 @@ import {
   AnalysisWorkSchema,
   type AnalysisBriefRecord,
   BeatChainSchema,
+  CodeProfileSchema,
   beatChainKey,
   CONDUCTOR_CYCLE_KEY,
   CONDUCTOR_TALLY_KEY,
@@ -1898,6 +1899,14 @@ type PendingRun = {
   profile: string | null;
   preparation: string | null;
   unreadable: number | bigint;
+};
+
+type ReviewPosting = {
+  readonly id: string;
+  readonly authorityId: string;
+  readonly chain: string | null;
+  readonly preparation: ReviewPreparation;
+  readonly request: SessionRequest;
 };
 /**
  * The `run_progress` row the fold carries between cycles. Every INTEGER column arrives as a
@@ -4544,7 +4553,14 @@ export function conductor(deps: ConductorDeps): Conductor {
     let acceptedRows: Readonly<Record<string, readonly Record<string, string | number | null>[]>> =
       {};
     const projection = await project(preparation.recordId);
-    if (session === null) {
+    const stopped = await store.db.query<{ reason: string | null }>(
+      `SELECT json_extract(payload,'$.stopReason') reason FROM runs
+        WHERE id=? AND json_extract(payload,'$.stopRequested')=1`,
+      [run.id],
+    );
+    if (stopped.length > 0) {
+      reason = `${REFUSALS.authority}: ${stopped[0]?.reason ?? "the review posting was stopped"}`;
+    } else if (session === null) {
       reason = unsealedReason("the review session", read);
     } else if (session.exitCode !== 0) {
       reason = `${REFUSALS.schema}: the review session exited ${String(session.exitCode)} and submitted no result`;
@@ -5359,6 +5375,23 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
     }
     const answered = await engine.readSession({ containerId, jobId: run.job_id });
+    if (
+      reviewPreparation(preparationOf(run.preparation)) !== null &&
+      (!answered.ok || TERMINAL_STATES[answered.value.job.state] !== true)
+    ) {
+      const stopped = await store.db.query<{ chain: string | null }>(
+        `SELECT chain FROM runs WHERE id=? AND json_extract(payload,'$.stopRequested')=1`,
+        [run.id],
+      );
+      if (stopped[0]?.chain != null && stopped[0].chain === deps.chain) {
+        try {
+          const cancelled = await engine.cancelSession({ containerId, jobId: run.job_id });
+          if (!cancelled.ok) notes.push(`review ${run.id}: ${cancelled.refused}`);
+        } catch (error) {
+          notes.push(`review ${run.id}: cancellation remains unconfirmed: ${message(error)}`);
+        }
+      }
+    }
     if (!answered.ok) {
       const silent = silence(silences, run.id, Number(run.unreadable), false);
       const note = `session ${run.job_id} in ${containerId} cannot be read: ${answered.refused}`;
@@ -5996,7 +6029,13 @@ export function conductor(deps: ConductorDeps): Conductor {
                         AND r.closure IS NULL) AS open_runs,
                       (SELECT MAX(r.unreadable) FROM runs r WHERE r.job_id = c.job_id) AS silent
                  FROM claims c
-                WHERE c.finished_at IS NULL AND (? IS NULL OR c.role LIKE 'mapping:%'))
+                WHERE c.finished_at IS NULL AND (? IS NULL OR c.role LIKE 'mapping:%')
+                  AND NOT (c.job_id IS NULL AND EXISTS (
+                    SELECT 1 FROM runs r WHERE r.kind='${OPERATIONS.evaluate}'
+                      AND r.authority_kind='conductor' AND r.authority_id=c.run_id
+                      AND json_extract(r.preparation,'$.review.assignmentId')=c.id
+                      AND json_extract(r.preparation,'$.review.fence')=c.fence
+                      AND json_extract(r.payload,'$.posting')=1 AND r.closure IS NULL)))
         WHERE NOT ((role LIKE 'analysis:%' OR role LIKE 'mapping:%') AND open_runs > 0)
           AND ((job_id IS NULL AND granted_at <= ?)
            OR (job_id IS NOT NULL AND runs = 0 AND granted_at <= ?)
@@ -6276,6 +6315,303 @@ export function conductor(deps: ConductorDeps): Conductor {
     };
   }
 
+  /** Admission can expire; the keyed posting and its original reservation cannot. */
+  function reviewPostingFence(run: ReviewPosting, jobId: string | null = null): SqlCondition {
+    return {
+      sql: `EXISTS (SELECT 1 FROM claims WHERE id=? AND run_id=? AND fence=?
+        AND finished_at IS NULL AND expires_at>? AND (job_id IS NULL OR job_id=?))
+        AND NOT EXISTS (SELECT 1 FROM policies WHERE seq=(SELECT max(seq) FROM policies)
+          AND (version!=? OR json_extract(payload,'$.enabled')=0
+            OR coalesce(json_extract(payload,'$.activityWeights.review'),0)<=0))`,
+      params: [
+        run.preparation.assignmentId,
+        run.authorityId,
+        run.preparation.fence,
+        new Date(deps.now()).toISOString(),
+        jobId,
+        run.preparation.policyVersion,
+      ],
+    };
+  }
+
+  async function reviewPostingAdmitted(
+    run: ReviewPosting,
+    jobId: string | null = null,
+  ): Promise<boolean> {
+    const policy = (await coordinator.policy(deps.now())).policy;
+    if (
+      !policy.enabled ||
+      policy.version !== run.preparation.policyVersion ||
+      policy.activityWeights.review <= 0 ||
+      policy.review === undefined
+    )
+      return false;
+    const fence = reviewPostingFence(run, jobId);
+    return (await store.db.query(`SELECT 1 WHERE ${fence.sql}`, fence.params)).length > 0;
+  }
+
+  async function unresolvedReviewPosting(
+    run: ReviewPosting,
+    detail: string,
+    notes: string[],
+  ): Promise<Started> {
+    const reason = `review session posting remains unconfirmed: ${detail}`;
+    await store.db.batch([
+      {
+        sql: `UPDATE runs SET payload=json_set(payload,'$.reason',?)
+          WHERE id=? AND closure IS NULL AND job_id IS NULL`,
+        params: [reason, run.id],
+      },
+      {
+        sql: `UPDATE run_progress SET message=? WHERE run_id=?
+          AND EXISTS (SELECT 1 FROM runs WHERE id=? AND closure IS NULL AND job_id IS NULL)`,
+        params: [reason, run.id, run.id],
+      },
+    ]);
+    notes.push(`review ${run.id}: ${reason}; its reservation stays held`);
+    store.touch();
+    return { refused: reason, code: ENGINE_REFUSALS.unconfirmed, pending: true };
+  }
+
+  async function retainedReviewPosting(run: ReviewPosting, jobId: string): Promise<Started | null> {
+    const held = await store.db.query<{ stopped: number | bigint; reason: string | null }>(
+      `SELECT coalesce(json_extract(payload,'$.stopRequested'),0) stopped,
+        json_extract(payload,'$.stopReason') reason FROM runs WHERE id=? AND job_id=?`,
+      [run.id, jobId],
+    );
+    const row = held[0];
+    return row === undefined
+      ? null
+      : Number(row.stopped) === 1
+        ? { refused: row.reason ?? "the review posting was stopped", pending: true }
+        : { runId: run.id, jobId };
+  }
+
+  async function answerReviewPosting(
+    run: ReviewPosting,
+    answered: EngineAnswer<CodeJob>,
+    notes: string[],
+    owner: boolean,
+  ): Promise<Started> {
+    if (!answered.ok) return await unresolvedReviewPosting(run, answered.refused, notes);
+    const jobId = answered.value.jobId;
+    // A late first answer cannot cancel the job another wake already adopted or settled.
+    const retained = await retainedReviewPosting(run, jobId);
+    if (retained !== null) return retained;
+    const fence = reviewPostingFence(run, jobId);
+    let stop =
+      answered.value.machineId !== run.request.machineId
+        ? "Code returned a different review execution boundary"
+        : (await reviewPostingAdmitted(run, jobId))
+          ? null
+          : "the original review claim or policy no longer admits this session";
+    const binding =
+      stop === null
+        ? [
+            coordinator.bindStatement({
+              id: run.preparation.assignmentId,
+              runId: run.authorityId,
+              fence: run.preparation.fence,
+              jobId,
+              now: deps.now(),
+            }),
+          ]
+        : [];
+    const stopReason =
+      stop ?? "the review claim or policy changed before its Code job could be retained";
+    // Binding and publication (including refusal to admit the returned job) are one write.
+    // No wake can observe either a published, unauthorized job or a bound, unpublished claim.
+    const written = await store.db.batch([
+      ...binding,
+      {
+        sql: `UPDATE runs SET job_id=?,payload=CASE WHEN ?=1 AND ${fence.sql}
+          AND EXISTS (SELECT 1 FROM claims WHERE id=? AND run_id=? AND fence=?
+            AND job_id=? AND finished_at IS NULL)
+          THEN payload ELSE json_set(payload,'$.stopRequested',json('true'),'$.stopReason',?) END
+          WHERE id=? AND closure IS NULL AND job_id IS NULL
+          RETURNING coalesce(json_extract(payload,'$.stopRequested'),0) stopped`,
+        params: [
+          jobId,
+          stop === null ? 1 : 0,
+          ...fence.params,
+          run.preparation.assignmentId,
+          run.authorityId,
+          run.preparation.fence,
+          jobId,
+          stopReason,
+          run.id,
+        ],
+      },
+      {
+        // This is attribution for terminal accounting, NOT renewed admission. An expired
+        // original fence owns what its posting spent but may accept no review result.
+        sql: `UPDATE claims SET job_id=? WHERE id=? AND run_id=? AND fence=?
+          AND finished_at IS NULL AND job_id IS NULL
+          AND EXISTS (SELECT 1 FROM runs WHERE id=? AND job_id=?
+            AND json_extract(payload,'$.stopRequested')=1)`,
+        params: [
+          jobId,
+          run.preparation.assignmentId,
+          run.authorityId,
+          run.preparation.fence,
+          run.id,
+          jobId,
+        ],
+      },
+    ]);
+    const recorded = written[binding.length]?.[0];
+    if (recorded === undefined) {
+      const decided = await retainedReviewPosting(run, jobId);
+      if (decided !== null) return decided;
+    }
+    stop = recorded !== undefined && Number(recorded["stopped"]) === 0 ? null : stopReason;
+    if (stop !== null && owner) {
+      try {
+        const cancelled = await engine.cancelSession({
+          containerId: run.request.profile.containerId,
+          jobId,
+        });
+        if (!cancelled.ok) notes.push(`review ${run.id}: ${cancelled.refused}`);
+      } catch (error) {
+        notes.push(`review ${run.id}: cancellation remains unconfirmed: ${message(error)}`);
+      }
+    }
+    await store.db.run(`DELETE FROM run_progress WHERE run_id=?`, [run.id]);
+    store.touch();
+    return stop === null
+      ? { runId: run.id, jobId }
+      : { refused: stop, code: "retention", pending: true };
+  }
+
+  /** As in analysis and mapping, only an adopt-only final miss proves no session was bought. */
+  async function postReview(
+    run: ReviewPosting,
+    settled: SettledClaim[],
+    notes: string[],
+    initial = false,
+  ): Promise<Started> {
+    // The initial caller owns its own immediate Code answer even without an account chain.
+    // A later wake may act only for the exact non-null chain that bought the session.
+    const owner = initial || (run.chain !== null && run.chain === deps.chain);
+    if (!initial && !owner) {
+      const reason = "the unresolved review posting waits for its original account chain";
+      notes.push(`review ${run.id}: ${reason}`);
+      return { refused: reason, pending: true };
+    }
+    try {
+      const admitted = await reviewPostingAdmitted(run);
+      const answered = admitted ? await engine.runSession(run.request) : null;
+      if (answered !== null && (answered.ok || answered.code === ENGINE_REFUSALS.unconfirmed))
+        return await answerReviewPosting(run, answered, notes, owner);
+      const reason =
+        answered !== null && !answered.ok
+          ? answered.refused
+          : "the original review claim or policy no longer admits posting";
+      if (!owner) return await unresolvedReviewPosting(run, reason, notes);
+      const retired = await engine.runSession({ ...run.request, adoptOnly: true });
+      if (retired.ok || retired.code !== ENGINE_REFUSALS.postingUnknown)
+        return await answerReviewPosting(run, retired, notes, owner);
+      const at = new Date(deps.now()).toISOString();
+      const closed = await store.db.batch([
+        {
+          sql: `UPDATE runs SET closure='failed',finished_at=?,cost_usd=0,
+            payload=json_set(payload,'$.closure','failed','$.reason',?,'$.postingRetired',json('true'))
+            WHERE id=? AND closure IS NULL AND job_id IS NULL RETURNING id`,
+          params: [at, reason, run.id],
+        },
+        {
+          sql: `UPDATE claims SET finished_at=?,actual_cost=0,outcome='failed'
+            WHERE id=? AND run_id=? AND fence=? AND finished_at IS NULL AND job_id IS NULL
+              AND EXISTS (SELECT 1 FROM runs WHERE id=? AND closure='failed' AND job_id IS NULL
+                AND json_extract(payload,'$.postingRetired')=1) RETURNING id`,
+          params: [
+            at,
+            run.preparation.assignmentId,
+            run.authorityId,
+            run.preparation.fence,
+            run.id,
+          ],
+        },
+        {
+          sql: `DELETE FROM run_progress WHERE run_id=?
+            AND EXISTS (SELECT 1 FROM runs WHERE id=? AND closure IS NOT NULL)`,
+          params: [run.id, run.id],
+        },
+      ]);
+      if ((closed[1]?.length ?? 0) > 0)
+        settled.push({
+          claimId: run.preparation.assignmentId,
+          outcome: "failed",
+          cost: 0,
+          overrun: false,
+          refused: null,
+          reason,
+        });
+      store.touch();
+      return {
+        refused: reason,
+        code: answered !== null && !answered.ok ? answered.code : ENGINE_REFUSALS.postingUnknown,
+      };
+    } catch (error) {
+      return await unresolvedReviewPosting(run, message(error), notes);
+    }
+  }
+
+  async function reconcileReviewPostings(
+    requested: RequestedJob[],
+    settled: SettledClaim[],
+    notes: string[],
+  ): Promise<void> {
+    if (deps.chain == null) return;
+    const pending = await store.db.query<{
+      id: string;
+      authority_id: string;
+      chain: string | null;
+      preparation: string;
+      profile: string;
+      machine_id: string;
+      payload: string;
+    }>(
+      `SELECT id,authority_id,chain,preparation,profile,machine_id,payload FROM runs
+        WHERE kind=? AND authority_kind='conductor' AND closure IS NULL AND job_id IS NULL
+          AND json_type(preparation,'$.review')='object' AND json_extract(payload,'$.posting')=1
+          AND chain=?
+        ORDER BY started_at LIMIT 128`,
+      [OPERATIONS.evaluate, deps.chain],
+    );
+    for (const row of pending) {
+      const preparation = reviewPreparation(preparationOf(row.preparation));
+      const profile = CodeProfileSchema.safeParse(jsonRecord(row.profile));
+      const prompt = jsonRecord(row.payload)?.["postingPrompt"];
+      if (preparation === null || !profile.success || typeof prompt !== "string" || prompt === "") {
+        notes.push(
+          `review ${row.id}: its unresolved posting has unreadable durable authority or input`,
+        );
+        continue;
+      }
+      const posted = await postReview(
+        {
+          id: row.id,
+          authorityId: row.authority_id,
+          chain: row.chain,
+          preparation,
+          request: { profile: profile.data, machineId: row.machine_id, prompt, postingKey: row.id },
+        },
+        settled,
+        notes,
+      );
+      if (!("refused" in posted))
+        requested.push({
+          ...posted,
+          machineId: row.machine_id,
+          claimId: preparation.assignmentId,
+          recordId: preparation.recordId,
+          role: preparation.role,
+          lane: preparation.lane,
+        });
+    }
+  }
+
   async function dispatchReviews(
     policy: Policy,
     at: number,
@@ -6283,6 +6619,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     requested: RequestedJob[],
     settled: SettledClaim[],
     refused: RefusedDraw[],
+    notes: string[],
   ): Promise<{ readonly stop: Stop | null; readonly gaps: readonly Gap[] }> {
     const route = policy.review;
     if (route === undefined) {
@@ -6482,68 +6819,50 @@ export function conductor(deps: ConductorDeps): Conductor {
         });
         return { stop: { reason: "dispatch-refused", detail }, gaps };
       }
-      const answered = await engine.runSession({
-        profile: route.profile,
-        machineId,
-        prompt,
-      });
-      if (!answered.ok) {
-        settled.push(await release(claimed.claim, answered.refused));
-        refused.push({
-          assignmentId: assignment.id,
-          recordId: assignment.recordId,
-          reason: answered.code,
-          detail: answered.refused,
-        });
-        return { stop: { reason: "dispatch-refused", detail: answered.refused }, gaps };
-      }
-      const boundClaim = await coordinator.bind({
-        id: claimed.claim.id,
-        runId: cycleRunId,
-        fence: claimed.claim.fence,
-        jobId: answered.value.jobId,
-      });
-      if (boundClaim.outcome === "refused") {
-        await engine.cancelSession({
-          containerId: route.profile.containerId,
-          jobId: answered.value.jobId,
-        });
-        const detail = `Code posted ${answered.value.jobId}, but its claim could not be bound: ${boundClaim.refusal.detail}`;
-        refused.push({
-          assignmentId: assignment.id,
-          recordId: assignment.recordId,
-          reason: boundClaim.refusal.reason,
-          detail,
-        });
-        return { stop: { reason: "dispatch-refused", detail }, gaps };
-      }
-      try {
-        await store.db.run(
-          `INSERT INTO runs(id, kind, machine_id, job_id, container_id, prepare_job_id,
-                            recipe_id, profile, authority_kind, authority_id, preparation,
-                            started_at, records, payload)
-           VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 'conductor', ?, ?, ?, 0, ?)`,
-          [
+      const posting: ReviewPosting = {
+        id: runId,
+        authorityId: claimed.claim.runId,
+        chain: deps.chain ?? null,
+        preparation,
+        request: { profile: route.profile, machineId, prompt, postingKey: runId },
+      };
+      const fence = reviewPostingFence(posting);
+      const retained = await store.db.batch([
+        {
+          sql: `INSERT INTO runs(id,kind,machine_id,container_id,recipe_id,profile,
+              authority_kind,authority_id,preparation,started_at,records,payload,chain)
+            SELECT ?,?,?,?,?,?,'conductor',?,?,?,0,?,? WHERE ${fence.sql}
+            ON CONFLICT(id) DO NOTHING RETURNING id`,
+          params: [
             runId,
             OPERATIONS.evaluate,
             machineId,
-            answered.value.jobId,
             route.profile.containerId,
             recipe.id,
             JSON.stringify(route.profile),
-            cycleRunId,
+            claimed.claim.runId,
             JSON.stringify({ review: preparation }),
             new Date(at).toISOString(),
-            JSON.stringify({ closure: null, requestedAt: at }),
+            JSON.stringify({
+              closure: null,
+              requestedAt: at,
+              posting: true,
+              postingPrompt: prompt,
+            }),
+            posting.chain,
+            ...fence.params,
           ],
-        );
-      } catch (error) {
-        await engine.cancelSession({
-          containerId: route.profile.containerId,
-          jobId: answered.value.jobId,
-        });
-        const detail = `Code posted ${answered.value.jobId}, but Babel could not retain its run: ${message(error)}`;
-        settled.push(await release(boundClaim.claim, detail));
+        },
+        {
+          sql: `INSERT INTO run_progress(run_id,job_id,stage,message,since,updated_at)
+            SELECT id,'','posting unconfirmed','Review Code posting unresolved; reservation held',?,''
+              FROM runs WHERE id=? AND closure IS NULL AND job_id IS NULL
+                AND json_extract(payload,'$.posting')=1 ON CONFLICT(run_id) DO NOTHING`,
+          params: [new Date(at).toISOString(), runId],
+        },
+      ]);
+      if ((retained[0]?.length ?? 0) === 0) {
+        const detail = "the review claim or policy changed before its posting intent was retained";
         refused.push({
           assignmentId: assignment.id,
           recordId: assignment.recordId,
@@ -6553,9 +6872,19 @@ export function conductor(deps: ConductorDeps): Conductor {
         return { stop: { reason: "dispatch-refused", detail }, gaps };
       }
       store.touch();
+      const started = await postReview(posting, settled, notes, true);
+      if ("refused" in started) {
+        refused.push({
+          assignmentId: assignment.id,
+          recordId: assignment.recordId,
+          reason: started.code ?? "posting",
+          detail: started.refused,
+        });
+        return { stop: { reason: "dispatch-refused", detail: started.refused }, gaps };
+      }
       requested.push({
         runId,
-        jobId: answered.value.jobId,
+        jobId: started.jobId,
         machineId,
         claimId: assignment.id,
         recordId: assignment.recordId,
@@ -6779,6 +7108,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       if (!policy.enabled) {
         await catalogReceipts(policy, at, notes);
         await reconcileMappingPreparations(settled, notes);
+        await reconcileReviewPostings(requested, settled, notes);
         // A disabled policy is the coordinator's own first stop reason, and the cycle never gets
         // as far as being told it: the loop counts it, so "why did nothing happen today" is
         // answered by the tally rather than by the absence of one.
@@ -6818,6 +7148,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       // coordinator what may be drawn, so a batch held by dead workers is a batch of free slots
       // by the time it answers rather than one cycle later.
       await reconcileMappingPreparations(settled, notes);
+      await reconcileReviewPostings(requested, settled, notes);
       await reapClaims(at, policy.leaseSeconds, settled, notes);
       await catalogReceipts(policy, at, notes);
       // What a reading just catalogued is folders; what they ARE is the host's to say, and it is
@@ -6834,7 +7165,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       await dispatchStandingMapping(policy, at, cycleRunId, requested, settled, refused, notes);
       const dispatched =
         parked === null
-          ? await dispatchReviews(policy, at, cycleRunId, requested, settled, refused)
+          ? await dispatchReviews(policy, at, cycleRunId, requested, settled, refused, notes)
           : { stop: null, gaps: [] as readonly Gap[] };
       // A mapping drain's window is its own fan, independent of the review batch and its park.
       await dispatchMapDrains(policy, at, cycleRunId, requested, settled, refused, notes);
