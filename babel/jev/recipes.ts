@@ -121,7 +121,8 @@ export const recipeStandingAction = defineServerAction({
   name: JEV_ACTIONS.recipeStanding,
   title: "Read partial cached-current standings by recipe without spending",
   // The existing service grant permits its metadata to be listed; this reader cannot invoke it.
-  caps: ["containers:read", "services:invoke"],
+  caps: ["containers:read"],
+  delegates: ["services:invoke"],
   input: z.strictObject({}),
   result: RecipeStandingSchema,
 });
