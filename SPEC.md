@@ -1232,14 +1232,20 @@ local-session fallback or newest-snapshot substitution. An explicitly retained s
 must resolve uniquely; when none was retained, identical digest-verified copies at the same
 archived path select a stable snapshot by id, never by recency. A competing capture that cannot
 be read or exceeds the capture-size bound prevents a unique-source verdict even after a readable
-match. Snapshot discovery stops while consuming the first entry beyond 2,048, before buffering
-the entire inventory; incomplete or over-bound discovery makes the batch unavailable. Exact
+match. Snapshot discovery stops while consuming the first entry beyond 2,048; each object is
+bounded to 1 MiB of UTF-8 bytes before it is retained or parsed, including JSON escapes.
+Incomplete, malformed or over-bound discovery makes the batch unavailable. Exact
 `babel` tag filtering still excludes store backups. Each task also stops after 64 candidate
 captures or 50,000 listed archive nodes. The cited raw capture digest is checked before any fact
 is available.
 Legacy locators use physical raw lines, byte offsets and bare per-record SHA-256; their historical
 classified-event source digest is recorded but cannot be compared to today's normalized-record
-digest. Modern locators require that normalized source digest as well.
+digest. Modern locators require that normalized source digest as well. Retained material resolves
+bare filenames, `sessions/<file>` and absolute material paths ending in `/sessions/<file>`.
+Recorded preflight modes retain their original `off`, `redact` or `refuse` provenance and detector
+identity. Both scanned modes replay the recorded supported detector set; `refuse` yields no fact
+excerpt if any record in the capture contains an identified secret. A successful `refuse` reading
+is scanned and clean, never relabeled as `off`.
 
 The result is a separate append-only `citation_facts` ledger keyed to record revision, payload
 field, ordinal and native attempt. It never edits the submitted citation, note, claim, ranking or

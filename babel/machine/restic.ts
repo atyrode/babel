@@ -1057,7 +1057,7 @@ async function consume(
  * counting entries before buffering them; malformed or incomplete discovery is never a
  * partial inventory. Braces inside escaped strings do not delimit snapshot identities.
  */
-async function* snapshotRows(
+export async function* snapshotRows(
   stream: ReadableStream<Uint8Array>,
   maxEntries: number | undefined,
 ): AsyncGenerator<Record<string, unknown>> {
@@ -1068,6 +1068,7 @@ async function* snapshotRows(
   let quoted = false;
   let escaped = false;
   let held = "";
+  let heldBytes = 0;
   let entries = 0;
   for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
     const text = decoder.decode(chunk, { stream: true });
@@ -1086,11 +1087,18 @@ async function* snapshotRows(
           state = "object";
           depth = 1;
           start = at;
+          heldBytes = 1;
         } else throw new ResticError("refused", "invalid snapshot discovery");
         continue;
       }
-      if (held.length + at - start + 1 > MAX_JSON_LINE)
+      // Fatal streaming UTF-8 decoding emits complete scalars, even across byte chunks.
+      // Count their original encoded width (JSON escapes remain ASCII), without re-encoding
+      // or retaining any slice that would exceed the object bound.
+      const scalar = text.codePointAt(at)!;
+      heldBytes += scalar <= 0x7f ? 1 : scalar <= 0x7ff ? 2 : scalar <= 0xffff ? 3 : 4;
+      if (heldBytes > MAX_JSON_LINE)
         throw new ResticError("refused", "snapshot discovery entry exceeded the byte bound");
+      if (scalar > 0xffff) at++;
       if (quoted) {
         if (escaped) escaped = false;
         else if (char === "\\") escaped = true;

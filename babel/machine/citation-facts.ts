@@ -49,7 +49,7 @@ export async function inspectArchivedCitation(
     sourceDigest: input.sourceDigest,
     sourceMode,
     sourceDetectors:
-      sourceMode === "redact" ? (input.sourceDetectors ?? PREFLIGHT_DETECTORS) : null,
+      sourceMode === "off" ? null : (input.sourceDetectors ?? PREFLIGHT_DETECTORS),
   };
   const disclosure: ArchivedCitationFacts["disclosure"] = {
     mode: "redact" as const,
@@ -131,6 +131,9 @@ export async function inspectArchivedCitation(
     matches++;
     selected = matches === 1 ? candidate : null;
   };
+  // Like preparation, both scanned modes redact before hashing; refuse publishes nothing
+  // when the complete capture's scan identifies a secret, even outside the cited record.
+  const sourceScan = sourceMode === "off" ? undefined : secretScan();
   const digester = sessionDigester(
     {
       write(chunk) {
@@ -175,7 +178,7 @@ export async function inspectArchivedCitation(
       },
       async close() {},
     },
-    sourceMode === "redact" ? secretScan() : undefined,
+    sourceScan,
   );
   const endRawRecord = (): void => {
     const digest = rawHasher.digest("hex");
@@ -241,6 +244,8 @@ export async function inspectArchivedCitation(
     return unavailable("source-unavailable");
   }
   if (measured.captureDigest !== input.captureDigest) return unavailable("capture-digest-mismatch");
+  if (sourceMode === "refuse" && sourceScan!.report().redactions > 0)
+    return unavailable("source-secrets-refused");
   if (!raw && measured.sourceDigest !== input.sourceDigest)
     return unavailable("source-digest-mismatch");
   if (ambiguous || matches > 1) return unavailable("record-ambiguous");

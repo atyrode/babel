@@ -92,8 +92,11 @@ function available(
       selector: task.source.selector,
       captureDigest: task.source.captureDigest,
       sourceDigest: task.source.sourceDigest,
-      sourceMode: "off",
-      sourceDetectors: null,
+      sourceMode: task.source.sourceMode ?? "off",
+      sourceDetectors:
+        task.source.sourceMode === "redact" || task.source.sourceMode === "refuse"
+          ? (task.source.sourceDetectors ?? PREFLIGHT_DETECTORS)
+          : null,
     },
     measured: {
       captureDigest: task.source.captureDigest,
@@ -351,7 +354,12 @@ test("changed task or preparation refuses before persistence; raw offset is neve
   expect(await readCitationFacts(fixture.db, "claim")).toEqual({ facts: [], nextAfter: null });
 });
 
-test("completed retained material provides exact snapshot and detector provenance", async () => {
+test.each([
+  ["0001-session.jsonl", "redact"],
+  ["sessions/0001-session.jsonl", "redact"],
+  ["/inputs/material/sessions/0001-session.jsonl", "redact"],
+  ["sessions/0001-session.jsonl", "refuse"],
+])("completed material resolves %s with %s provenance without rewriting the citation", async (path, mode) => {
   await run("consumer", []);
   await fixture.db.run("UPDATE runs SET prepare_job_id='prepared-job' WHERE id='consumer'");
   await insert(fixture.db, "runs", {
@@ -374,7 +382,7 @@ test("completed retained material provides exact snapshot and detector provenanc
           },
         ],
       },
-      preflight: { mode: "redact", detectors: "synthetic/1" },
+      preflight: { mode, detectors: PREFLIGHT_DETECTORS },
     }),
   });
   await record(
@@ -382,7 +390,8 @@ test("completed retained material provides exact snapshot and detector provenanc
     {
       evidence: [
         citation(undefined, {
-          path: "/inputs/material/sessions/0001-session.jsonl",
+          path,
+          digest: SOURCE,
           byte_offset: undefined,
         }),
       ],
@@ -397,10 +406,34 @@ test("completed retained material provides exact snapshot and detector provenanc
       snapshotId: SNAPSHOT,
       path: "/archive/exact.jsonl",
       label: "archived-host",
-      sourceMode: "redact",
-      sourceDetectors: "synthetic/1",
+      sourceMode: mode,
+      sourceDetectors: PREFLIGHT_DETECTORS,
     },
   });
+  const before = await fixture.db.query("SELECT payload FROM records WHERE id='claim'");
+  const result = available(task);
+  await expect(
+    appendCitationFact(
+      fixture.db,
+      task,
+      { ...result, source: { ...result.source!, sourceMode: "off", sourceDetectors: null } },
+      metadata("wrong-mode"),
+    ),
+  ).rejects.toThrow("invalid-fact");
+  await expect(
+    appendCitationFact(
+      fixture.db,
+      task,
+      { ...result, source: { ...result.source!, sourceDetectors: "unknown/99" } },
+      metadata("wrong-detectors"),
+    ),
+  ).rejects.toThrow("invalid-fact");
+  await appendCitationFact(fixture.db, task, result, metadata("retained"));
+  expect((await readCitationFacts(fixture.db, "claim")).facts[0]?.result.source).toMatchObject({
+    sourceMode: mode,
+    sourceDetectors: PREFLIGHT_DETECTORS,
+  });
+  expect(await fixture.db.query("SELECT payload FROM records WHERE id='claim'")).toEqual(before);
 });
 
 test("facts cannot convert unquoted to verified, confuse unreachable with absent, or store mismatched excerpts", async () => {

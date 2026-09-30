@@ -35,12 +35,33 @@ const measured = (mode: "off" | "redact" = "off") => {
 let fx: SyntheticArchive;
 let input: ArchivedCitationInput;
 let path: string;
+let cleanInput: ArchivedCitationInput;
 
 beforeAll(async () => {
   fx = await syntheticArchive();
   path = join(fx.sessionRoot("omp"), "synthetic-citation.jsonl");
   await writeFile(path, capture);
   const snapshot = await fx.snapshot("archive-host", [fx.sessionRoot("omp")]);
+  const cleanPath = join(fx.sessionRoot("omp"), "synthetic-clean-citation.jsonl");
+  await writeFile(cleanPath, first);
+  const cleanSnapshot = await fx.snapshot("archive-host", [fx.sessionRoot("omp")]);
+  const cleanDigester = sessionDigester(undefined, secretScan());
+  cleanDigester.write(encoder.encode(first));
+  const cleanDigests = cleanDigester.finish();
+  cleanInput = {
+    snapshotId: cleanSnapshot.id,
+    path: cleanPath,
+    label: "archive-host",
+    host: "historical-host",
+    harness: "omp",
+    selector: "omp/synthetic-clean-citation",
+    captureDigest: cleanDigests.captureDigest,
+    sourceDigest: cleanDigests.sourceDigest,
+    sourceMode: "refuse",
+    sourceDetectors: PREFLIGHT_DETECTORS,
+    locator: { line: 1, digest: cleanDigests.sourceDigest },
+    quote: "an unrelated historical record",
+  };
   const digests = measured();
   input = {
     snapshotId: snapshot.id,
@@ -268,6 +289,54 @@ test(
       sourceDetectors: "unknown/99",
     });
     expect(unknown.reason).toBe("source-reading-unsupported");
+  },
+  TIMEOUT,
+);
+
+test(
+  "successful refuse-mode preparation remains scanned and refuses secrets anywhere in its capture",
+  async () => {
+    const clean = await inspectArchivedCitation(fx.repo, cleanInput);
+    expect(ArchivedCitationFactsSchema.parse(clean)).toMatchObject({
+      status: "available",
+      check: { outcome: "verified" },
+      source: { sourceMode: "refuse", sourceDetectors: PREFLIGHT_DETECTORS },
+      measured: { sourceDigest: cleanInput.sourceDigest },
+      excerpt: { text: normalized[0] },
+    });
+    for (const coordinates of ["normalized", "raw"] as const) {
+      const refused = await inspectArchivedCitation(fx.repo, {
+        ...input,
+        sourceMode: "refuse",
+        sourceDetectors: PREFLIGHT_DETECTORS,
+        // The cited first record is clean; later records must still refuse the whole capture.
+        sourceDigest: measured("redact").sourceDigest,
+        locator:
+          coordinates === "raw"
+            ? { coordinates, line: 1, digest: digest(first) }
+            : { coordinates, line: 1 },
+        quote: cleanInput.quote,
+      });
+      expect(refused).toMatchObject({
+        status: "unavailable",
+        reason: "source-secrets-refused",
+        check: { outcome: "unchecked" },
+        source: { sourceMode: "refuse", sourceDetectors: PREFLIGHT_DETECTORS },
+        position: null,
+        excerpt: null,
+      });
+      expect(JSON.stringify(refused)).not.toContain(key);
+    }
+    const unsupported = await inspectArchivedCitation(fx.repo, {
+      ...cleanInput,
+      sourceDetectors: "unknown/99",
+    });
+    expect(unsupported).toMatchObject({
+      status: "unavailable",
+      reason: "source-reading-unsupported",
+      source: { sourceMode: "refuse", sourceDetectors: "unknown/99" },
+      excerpt: null,
+    });
   },
   TIMEOUT,
 );

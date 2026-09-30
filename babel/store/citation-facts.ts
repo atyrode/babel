@@ -6,6 +6,7 @@ import {
   CitationFactResultSchema,
   MAX_CITATION_QUOTE,
   OPERATIONS,
+  PreflightModeSchema,
   type CitationOutcome,
   type CitationField,
   type CitationUnavailable,
@@ -193,7 +194,11 @@ function candidates(row: PositionRow): readonly Candidate[] {
 }
 function matches(entry: ObjectValue, path: string): boolean {
   const file = text(entry["file"]);
-  if (file !== "" && (path === file || path.endsWith(`/sessions/${file}`))) return true;
+  if (
+    file !== "" &&
+    (path === file || path === `sessions/${file}` || path.endsWith(`/sessions/${file}`))
+  )
+    return true;
   const id = text(entry["sourceId"] ?? entry["source_id"]);
   const harness = text(entry["harness"]);
   const selector = text(entry["selector"]) || `${harness}/${id}`;
@@ -218,6 +223,7 @@ function resolved(candidate: Candidate): CitationFactSource | null {
     origin["snapshotId"] ?? e["snapshotId"] ?? e["snapshot_id"] ?? e["snapshot"],
   );
   const path = nullable(origin["path"] ?? e["archivePath"] ?? e["archive_path"]);
+  const mode = PreflightModeSchema.safeParse(candidate.mode);
   const parsed = CitationFactSourceSchema.safeParse({
     host,
     harness,
@@ -228,7 +234,7 @@ function resolved(candidate: Candidate): CitationFactSource | null {
     snapshotId,
     path,
     label: nullable(origin["label"] ?? e["label"]) ?? host,
-    sourceMode: candidate.mode === "off" || candidate.mode === "redact" ? candidate.mode : null,
+    sourceMode: mode.success ? mode.data : null,
     sourceDetectors: nullable(candidate.detectors),
   });
   return parsed.success ? parsed.data : null;
@@ -464,7 +470,7 @@ function validateResult(task: CitationFactTask, result: CitationFactResult): voi
     (expected.path !== null && source.path !== expected.path) ||
     (expected.label !== null && source.label !== expected.label) ||
     source.sourceMode !== (expected.sourceMode ?? "off") ||
-    (expected.sourceMode === "redact" &&
+    ((expected.sourceMode === "redact" || expected.sourceMode === "refuse") &&
       expected.sourceDetectors !== null &&
       source.sourceDetectors !== expected.sourceDetectors) ||
     measured.captureDigest !== expected.captureDigest ||

@@ -132,9 +132,11 @@ configures Recall's instance service and exact disclosure-class grant targets, n
 caller's native job.
 
 Citation discovery consumes restic's JSON snapshot array one bounded object at a time. Its
-2,048-entry ceiling is enforced before the full inventory can be buffered; excess or malformed
-output kills and settles the child while draining its diagnostic pipe. Citation lifecycle wakes
-use a receipt-only path scoped to the retained job identity, not the generic conductor cycle.
+2,048-entry ceiling is enforced before the full inventory can be buffered; each object's 1 MiB
+limit counts UTF-8 bytes, not UTF-16 string units, without re-encoding a second full object.
+Excess or malformed output kills and settles the child while draining its diagnostic pipe.
+Citation lifecycle wakes use a receipt-only path scoped to the retained job identity, not the
+generic conductor cycle.
 Synthetic streaming children exercise discovery refusal and process cleanup; synthetic restic
 and store consumers exercise archived source identity and immutable facts. None of those
 fixtures establishes real imported-corpus coverage or a deployed archive/disclosure grant.

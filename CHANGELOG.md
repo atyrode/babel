@@ -39,9 +39,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 - **Citation evidence stays unavailable when a competing capture cannot be checked.** An
   unreadable or oversized candidate cannot be silently discarded after a readable match.
-  Snapshot discovery enforces its 2,048-entry cap while consuming restic output and settles
-  both pipes and the child on refusal. Citation-job callbacks ingest only their retained job's
-  receipt, without entering scheduling, paid review draws or Code dispatch. Synthetic regressions
+  Snapshot discovery enforces its 2,048-entry cap and 1 MiB UTF-8-byte object bound while
+  consuming restic output and settles both pipes and the child on refusal. Served `sessions/`
+  paths resolve to retained material; successful secret-refusing preparations retain their
+  scanned `refuse` provenance, and detected secrets still refuse the reading.
+  Citation-job callbacks ingest only their retained job's receipt, without entering scheduling,
+  paid review draws or Code dispatch. Synthetic regressions
   cover discovery order, quote-free omissions, streaming bounds, cleanup and scoped settlement;
   actual imported-corpus operation and measured coverage remain separate, unperformed acceptance.
 

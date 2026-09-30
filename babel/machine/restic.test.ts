@@ -28,6 +28,7 @@ import {
   ResticError,
   openRepo,
   resticArgv,
+  snapshotRows as readSnapshotRows,
   type Repo,
   type ResticConfig,
 } from "./restic.ts";
@@ -177,6 +178,67 @@ for (const byte of bytes) await Bun.write(Bun.stdout, new Uint8Array([byte]));`,
     },
   );
 }, 10_000);
+
+test.each(["é", "€", "𐍈"])(
+  "snapshot object bounds count UTF-8 bytes across split %s scalars and JSON escapes",
+  async (scalar) => {
+    const prefix = `{"id":"${"d".repeat(64)}","hostname":"`;
+    const escaped = '\\u00e9\\"\\\\{}[]';
+    const suffix = '","paths":["/kept"],"tags":["babel"]}';
+    const room = (1 << 20) - Buffer.byteLength(prefix + escaped + suffix);
+    const width = Buffer.byteLength(scalar);
+    const host = scalar.repeat(Math.floor(room / width)) + " ".repeat(room % width);
+    const exact = prefix + escaped + host + suffix;
+    const bytes = Buffer.from(`[${exact}]`);
+    const scalarAt = bytes.indexOf(Buffer.from(scalar));
+    // Explicit stream chunks, not process writes that the pipe may coalesce: split an
+    // escape and every byte of the first multibyte scalar before the exact-bound object.
+    const splits = [
+      1 + prefix.length + 1,
+      ...Array.from({ length: width - 1 }, (_, at) => scalarAt + at + 1),
+      bytes.length,
+    ];
+    let start = 0;
+    let chunk = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const end = splits[chunk++];
+        if (end === undefined) controller.close();
+        else {
+          controller.enqueue(bytes.subarray(start, end));
+          start = end;
+        }
+      },
+    });
+    const rows = [];
+    for await (const row of readSnapshotRows(stream, 1)) rows.push(row);
+    expect(rows).toEqual([
+      {
+        id: "d".repeat(64),
+        hostname: 'é"\\{}[]' + host,
+        paths: ["/kept"],
+        tags: ["babel"],
+      },
+    ]);
+    // One extra ASCII byte makes this object oversized despite its much shorter UTF-16
+    // length. A valid preceding row must not escape as a partial inventory, and the child
+    // deliberately never finishes the array: refusal must cancel it and await its exit.
+    const oversized = prefix + escaped + host + "x" + suffix;
+    await withSnapshotChild(
+      `await Bun.write(Bun.stdout, ${JSON.stringify(`[${JSON.stringify(snapshotRows[0])},${oversized}`)});
+const remainder = Buffer.alloc(64 << 10, " ");
+while (true) await Bun.write(Bun.stdout, remainder);`,
+      async (streaming, pidFile) => {
+        await expect(streaming.snapshots([], { maxEntries: 2 })).rejects.toMatchObject({
+          kind: "refused",
+          message: "snapshot discovery entry exceeded the byte bound",
+        });
+        expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
+      },
+    );
+  },
+  10_000,
+);
 
 test("citation discovery stops at 2048 snapshots without waiting for EOF and reaps its child", async () => {
   await withSnapshotChild(

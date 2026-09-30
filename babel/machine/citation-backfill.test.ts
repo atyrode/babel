@@ -9,6 +9,7 @@ import {
 } from "../contract.ts";
 import { citationBackfill } from "./citation-backfill.ts";
 import { directorySink } from "./output.ts";
+import { PREFLIGHT_DETECTORS } from "./preflight.ts";
 import type { Repo } from "./restic.ts";
 import { sessionDigester } from "./session-records.ts";
 import { syntheticArchive } from "./test/restic-fixture.ts";
@@ -75,6 +76,17 @@ test("native backfill resolves one historical snapshot prefix and refuses an una
             ordinal: 1,
             source: { ...source, snapshotId: "00000000" },
           },
+          {
+            ...task,
+            ordinal: 2,
+            locator: { coordinates: "normalized", line: 1, digest: measured.sourceDigest },
+            source: {
+              ...source,
+              sourceMode: "refuse",
+              sourceDetectors: PREFLIGHT_DETECTORS,
+              sourceDigest: measured.sourceDigest,
+            },
+          },
         ],
       },
       directorySink(output),
@@ -84,7 +96,7 @@ test("native backfill resolves one historical snapshot prefix and refuses an una
       await Bun.file(join(output, JOB_OUTPUT_FILES.citationFacts)).json(),
     );
     expect(receipt.kind).toBe("citationBackfill");
-    expect(receipt.counts).toMatchObject({ available: 1, unavailable: 1 });
+    expect(receipt.counts).toMatchObject({ available: 2, unavailable: 1 });
     expect(rows[0]?.result).toMatchObject({
       status: "available",
       sourceReading: "historical-events",
@@ -99,6 +111,19 @@ test("native backfill resolves one historical snapshot prefix and refuses an una
       reason: "snapshot-unavailable",
       check: { outcome: "unchecked" },
       excerpt: null,
+    });
+    expect(rows[2]?.result).toMatchObject({
+      status: "available",
+      sourceReading: "normalized-records",
+      check: { outcome: "verified" },
+      source: {
+        snapshotId: first.id,
+        path,
+        sourceMode: "refuse",
+        sourceDetectors: PREFLIGHT_DETECTORS,
+        sourceDigest: measured.sourceDigest,
+      },
+      measured: { sourceDigest: measured.sourceDigest },
     });
     const copies = join(archive.home, "citation-copies");
     await citationBackfill(

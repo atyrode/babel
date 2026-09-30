@@ -2820,6 +2820,18 @@ export const VerifyResultSchema = z.strictObject({
   snapshotId: z.string(),
 });
 
+/**
+ * WHAT A PREPARATION DOES ABOUT A LIKELY SECRET, chosen per preparation.
+ *
+ * `redact` is the default and the answer for a corpus of years of transcripts: the span is
+ * replaced, the rest of the record is still evidence, and the run proceeds. `refuse` is for a
+ * scope that must not risk a disclosure at all — the whole preparation fails and seals no index,
+ * so no material is ever bound. `off` prepares the raw stream and is recorded as such: it is the
+ * operator's to choose and a reviewer's to see, which is the only reason it is nameable.
+ */
+export const PreflightModeSchema = z.enum(["redact", "refuse", "off"]);
+export type PreflightMode = z.infer<typeof PreflightModeSchema>;
+
 /** Historical citation facts: immutable task, bounded source evidence and explicit uncertainty. */
 export const CITATION_FACTS_VERSION = "babel.citation-facts/1";
 export const CITATION_CAPTURE_MAX_BYTES = 256 * 1024 * 1024;
@@ -2835,7 +2847,7 @@ const CitationArchivedSourceSchema = z.strictObject({
   selector: z.string().min(1).max(1024),
   captureDigest: CitationDigestSchema,
   sourceDigest: CitationDigestSchema,
-  sourceMode: z.enum(["off", "redact"]),
+  sourceMode: PreflightModeSchema,
   sourceDetectors: z.string().min(1).max(256).nullable(),
 });
 export const ArchivedCitationInputSchema = CitationArchivedSourceSchema.extend({
@@ -3356,18 +3368,6 @@ export const PolicyResultSchema = z.strictObject({
 
 /** The shape of a preflight report, recorded in it so a reader never guesses which layout it has. */
 export const PREFLIGHT_SCHEMA = "babel.preflight/1";
-
-/**
- * WHAT A PREPARATION DOES ABOUT A LIKELY SECRET, chosen per preparation.
- *
- * `redact` is the default and the answer for a corpus of years of transcripts: the span is
- * replaced, the rest of the record is still evidence, and the run proceeds. `refuse` is for a
- * scope that must not risk a disclosure at all — the whole preparation fails and seals no index,
- * so no material is ever bound. `off` prepares the raw stream and is recorded as such: it is the
- * operator's to choose and a reviewer's to see, which is the only reason it is nameable.
- */
-export const PreflightModeSchema = z.enum(["redact", "refuse", "off"]);
-export type PreflightMode = z.infer<typeof PreflightModeSchema>;
 
 /**
  * WHERE ONE REDACTED VALUE WAS. The class, the session, the record's 1-based ordinal in that
