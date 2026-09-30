@@ -40,6 +40,7 @@ import {
   conductor,
   describeHost,
   describeMapHost,
+  reconcileCitationBackfill,
   SCHEDULE_LIFETIME_MS,
   STANDING_RUN,
   type Conductor,
@@ -1378,7 +1379,17 @@ export const plugin: ServerPluginDef = {
             : { readingMetadata: { host: ctx.host, services: ctx.services } }),
         },
         async () => {
-          if (job.operationId === MACHINE_OPERATIONS.mapCatalog) {
+          if (job.operationId === MACHINE_OPERATIONS.citationBackfill) {
+            // This wake may ingest only its own native receipt, never authorize a paid cycle.
+            const result = await reconcileCitationBackfill(store, jobsSlice(ctx.jobs), {
+              kind: "job",
+              machineId: job.machineId,
+              operationId: job.operationId,
+              jobId: job.jobId,
+            });
+            for (const note of result?.notes ?? [])
+              console.warn(`${BABEL_PLUGIN_ID}: citation ${job.jobId}: ${note}`);
+          } else if (job.operationId === MACHINE_OPERATIONS.mapCatalog) {
             // The free lane: it carries no paid authority, so it never refills a paid drain.
             for (const note of await catalogCycle(jobsSlice(ctx.jobs), job.machineId))
               console.warn(`${BABEL_PLUGIN_ID}: catalog ${job.machineId}: ${note}`);

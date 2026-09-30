@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { JobLimitsSchema, type PluginRoster } from "@manifold/protocol";
 import { actionSchemas } from "@atyrode/manifold-code";
+import { PREFLIGHT_DETECTORS } from "./machine/preflight.ts";
 
 /*
   THE VOCABULARY OF THE atyrode.babel PLUGIN FAMILY, spelled once. Every id, door name, event
@@ -468,6 +469,12 @@ export const ACTIONS = {
    * is in it.
    */
   verify: "verify",
+  /** Size a historical citation backfill without opening any archived source or posting a job. */
+  citationPlan: "citationPlan",
+  /** Process one bounded batch against digest-identified archived captures; never invokes a model. */
+  citationBackfill: "citationBackfill",
+  /** Read redacted retrieved-source facts with owner authority, never through the public peel. */
+  citationFacts: "citationFacts",
   /**
    * THE SAVED CODE PROFILES, as Watch's Start section offers them. It is Babel's own door and
    * not a client-side call into Code, for one reason: the panel must read exactly the list the
@@ -2060,6 +2067,8 @@ export const MACHINE_OPERATIONS = {
    *  snapshot and proved byte-exact. It deletes nothing and cannot — `machine/restic.ts`
    *  admits a closed set of verbs that holds no `forget`, `prune`, `repair` or `unlock`. */
   verify: `${BABEL_PLUGIN_ID}.verify`,
+  /** Reconcile historical citation facts from exact archived captures, without model work. */
+  citationBackfill: `${BABEL_PLUGIN_ID}.citation-backfill`,
   /** Owner-managed service, never a caller-authorized archive job. */
   recall: `${BABEL_PLUGIN_ID}.recall`,
   mapCatalog: `${BABEL_PLUGIN_ID}.map-catalog`,
@@ -2812,6 +2821,233 @@ export const VerifyResultSchema = z.strictObject({
 });
 
 /**
+ * WHAT A PREPARATION DOES ABOUT A LIKELY SECRET, chosen per preparation.
+ *
+ * `redact` is the default and the answer for a corpus of years of transcripts: the span is
+ * replaced, the rest of the record is still evidence, and the run proceeds. `refuse` is for a
+ * scope that must not risk a disclosure at all — the whole preparation fails and seals no index,
+ * so no material is ever bound. `off` prepares the raw stream and is recorded as such: it is the
+ * operator's to choose and a reviewer's to see, which is the only reason it is nameable.
+ */
+export const PreflightModeSchema = z.enum(["redact", "refuse", "off"]);
+export type PreflightMode = z.infer<typeof PreflightModeSchema>;
+
+/** Historical citation facts: immutable task, bounded source evidence and explicit uncertainty. */
+export const CITATION_FACTS_VERSION = "babel.citation-facts/1";
+export const CITATION_CAPTURE_MAX_BYTES = 256 * 1024 * 1024;
+export const CITATION_EXCERPT_MAX_BYTES = 4096;
+const CitationDigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+const CitationIntegerSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const CitationArchivedSourceSchema = z.strictObject({
+  snapshotId: z.string().regex(/^[0-9a-f]{64}$/),
+  path: z.string().min(1).max(4096).startsWith("/"),
+  label: z.string().min(1).max(256),
+  host: z.string().min(1).max(256),
+  harness: HarnessSchema,
+  selector: z.string().min(1).max(1024),
+  captureDigest: CitationDigestSchema,
+  sourceDigest: CitationDigestSchema,
+  sourceMode: PreflightModeSchema,
+  sourceDetectors: z.string().min(1).max(256).nullable(),
+});
+export const ArchivedCitationInputSchema = CitationArchivedSourceSchema.extend({
+  sourceMode: CitationArchivedSourceSchema.shape.sourceMode.nullable().optional(),
+  sourceDetectors: CitationArchivedSourceSchema.shape.sourceDetectors.optional(),
+  maxCaptureBytes: CitationIntegerSchema.positive().optional(),
+  locator: z.strictObject({
+    coordinates: z.enum(["raw", "normalized"]).optional(),
+    line: CitationIntegerSchema.optional(),
+    byteOffset: CitationIntegerSchema.optional(),
+    digest: z.string().min(1).max(128).optional(),
+    recordDigest: CitationDigestSchema.optional(),
+  }),
+  quote: z.string().max(MAX_CITATION_QUOTE),
+});
+export type ArchivedCitationInput = z.infer<typeof ArchivedCitationInputSchema>;
+const CitationPositionSchema = z.strictObject({
+  line: CitationIntegerSchema.positive(),
+  byteOffset: CitationIntegerSchema,
+  byteLength: CitationIntegerSchema.positive(),
+  digest: CitationDigestSchema,
+  raw: z
+    .strictObject({
+      line: CitationIntegerSchema.positive(),
+      byteOffset: CitationIntegerSchema,
+      digest: z.string().regex(/^[0-9a-f]{64}$/),
+    })
+    .optional(),
+});
+export type CitationFactPosition = z.infer<typeof CitationPositionSchema>;
+const CitationExcerptSchema = z.strictObject({
+  text: z.string().max(CITATION_EXCERPT_MAX_BYTES),
+  bytes: CitationIntegerSchema.max(CITATION_EXCERPT_MAX_BYTES),
+  maxBytes: z.literal(CITATION_EXCERPT_MAX_BYTES),
+  truncated: z.boolean(),
+  trust: z.literal("archived-untrusted"),
+});
+export type CitationFactExcerpt = z.infer<typeof CitationExcerptSchema>;
+export const ArchivedCitationFactsSchema = z.strictObject({
+  status: z.enum(["available", "unavailable"]),
+  reason: z.string().min(1).max(128).nullable(),
+  check: z.strictObject({
+    outcome: z.enum(CITATION_OUTCOMES),
+    detail: z.string().max(1024),
+  }),
+  source: CitationArchivedSourceSchema,
+  sourceReading: z.enum(["historical-events", "normalized-records"]),
+  measured: z
+    .strictObject({
+      captureDigest: CitationDigestSchema,
+      sourceDigest: CitationDigestSchema,
+      bytes: CitationIntegerSchema,
+      records: CitationIntegerSchema,
+    })
+    .nullable(),
+  position: CitationPositionSchema.nullable(),
+  excerpt: CitationExcerptSchema.nullable(),
+  disclosure: z.strictObject({
+    mode: z.literal("redact"),
+    detectors: z.literal(PREFLIGHT_DETECTORS),
+    version: z.literal(CITATION_FACTS_VERSION),
+    redactions: CitationIntegerSchema,
+  }),
+});
+export type ArchivedCitationFacts = z.infer<typeof ArchivedCitationFactsSchema>;
+export const CitationFactResultSchema = ArchivedCitationFactsSchema.extend({
+  source: CitationArchivedSourceSchema.nullable(),
+});
+export type CitationFactResult = z.infer<typeof CitationFactResultSchema>;
+export const CitationFieldSchema = z.enum([
+  "evidence",
+  "counter_evidence",
+  "supporting",
+  "conflicting",
+]);
+export type CitationField = z.infer<typeof CitationFieldSchema>;
+export const CitationUnavailableSchema = z.enum([
+  "invalid-locator",
+  "missing-preparation",
+  "missing-source",
+  "ambiguous-source",
+  "invalid-source",
+]);
+export type CitationUnavailable = z.infer<typeof CitationUnavailableSchema>;
+export const CitationFactSourceSchema = CitationArchivedSourceSchema.extend({
+  sourceId: z.string().min(1).max(512),
+  snapshotId: z
+    .string()
+    .regex(/^[0-9a-f]{8,64}$/)
+    .nullable(),
+  path: CitationArchivedSourceSchema.shape.path.nullable(),
+  label: CitationArchivedSourceSchema.shape.label.nullable(),
+  sourceMode: CitationArchivedSourceSchema.shape.sourceMode.nullable(),
+});
+export type CitationFactSource = z.infer<typeof CitationFactSourceSchema>;
+export const CitationFactTaskSchema = z
+  .strictObject({
+    recordId: z.string().min(1),
+    field: CitationFieldSchema,
+    ordinal: CitationIntegerSchema,
+    citationDigest: CitationDigestSchema,
+    basisDigest: CitationDigestSchema,
+    path: z.string(),
+    quote: z.string().nullable(),
+    locator: z.strictObject({
+      coordinates: z.enum(["raw", "normalized"]),
+      line: CitationIntegerSchema.positive().optional(),
+      byteOffset: CitationIntegerSchema.optional(),
+      digest: z.string().optional(),
+      recordDigest: z.string().optional(),
+    }),
+    source: CitationFactSourceSchema.nullable(),
+    unavailable: CitationUnavailableSchema.nullable(),
+  })
+  .superRefine((task, context) => {
+    if ((task.quote?.length ?? 0) > MAX_CITATION_QUOTE && task.unavailable !== "invalid-locator")
+      context.addIssue({
+        code: "custom",
+        path: ["quote"],
+        message: "oversized historical quote is unavailable",
+      });
+  });
+export type CitationFactTask = z.infer<typeof CitationFactTaskSchema>;
+export const CitationBackfillIntentSchema = z.strictObject({
+  attemptId: z.string().min(1).max(120),
+  tasks: z.array(CitationFactTaskSchema).min(1).max(5),
+});
+export const CitationBackfillInputSchema = CitationBackfillIntentSchema.extend({
+  runId: z.string().min(1).max(120),
+  machineId: z.string().min(1).max(120),
+});
+export type CitationBackfillInput = z.infer<typeof CitationBackfillInputSchema>;
+export const CitationBackfillRowSchema = z.strictObject({
+  task: CitationFactTaskSchema,
+  result: CitationFactResultSchema,
+});
+export type CitationBackfillRow = z.infer<typeof CitationBackfillRowSchema>;
+export const CitationFactSchema = z.strictObject({
+  seq: CitationIntegerSchema,
+  attemptId: z.string().min(1),
+  createdAt: z.string().min(1),
+  task: CitationFactTaskSchema,
+  result: CitationFactResultSchema,
+});
+
+/** Owner-only historical citation operations: a plan reads the store, an apply posts one job. */
+export const CitationPlanInputSchema = z.strictObject({
+  recordId: z.string().min(1).max(200).optional(),
+  retryUnavailable: z.boolean().default(false),
+  limit: z.number().int().min(1).max(5).default(5),
+});
+export const CitationBackfillRequestSchema = CitationPlanInputSchema.extend({
+  machineId: bounded(120),
+  operation: OperationRefSchema,
+});
+export const CitationFactPageInputSchema = z.strictObject({
+  recordId: bounded(200),
+  after: z.number().int().nonnegative().default(0),
+  limit: z.number().int().min(1).max(100).default(25),
+});
+const CitationCoverageSchema = z.strictObject({
+  total: z.number().int().nonnegative(),
+  completed: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+  available: z.number().int().nonnegative(),
+  unavailable: z.number().int().nonnegative(),
+  quoteOutcomes: z.strictObject({
+    verified: z.number().int().nonnegative(),
+    moved: z.number().int().nonnegative(),
+    absent: z.number().int().nonnegative(),
+    unquoted: z.number().int().nonnegative(),
+    unchecked: z.number().int().nonnegative(),
+  }),
+  unavailableReasons: z.record(z.string(), z.number().int().nonnegative()),
+});
+export const CitationPlanResultSchema = z.strictObject({
+  plan: z.strictObject({
+    total: z.number().int().nonnegative(),
+    completed: z.number().int().nonnegative(),
+    pending: z.number().int().nonnegative(),
+    checkable: z.number().int().nonnegative(),
+    unknown: z.number().int().nonnegative(),
+    limit: z.number().int().min(1).max(5),
+    tasks: z.array(CitationFactTaskSchema).max(5),
+  }),
+  report: CitationCoverageSchema,
+});
+export const CitationBackfillResultSchema = z.strictObject({
+  runId: z.string(),
+  jobId: z.string(),
+  machineId: z.string(),
+  planned: z.number().int().min(1).max(5),
+  remaining: z.number().int().nonnegative(),
+});
+export const CitationFactPageResultSchema = z.strictObject({
+  facts: z.array(CitationFactSchema).max(100),
+  nextAfter: z.number().int().nonnegative().nullable(),
+});
+
+/**
  * What `stop` takes: the run to end, the JOB NODE the engine holds `jobs:cancel` at, and why —
  * the reason is recorded, never required. The node travels for the same reason `launch`'s does:
  * the requirement is discharged against the raw arguments, so the run row's `job_id` and
@@ -3134,18 +3370,6 @@ export const PolicyResultSchema = z.strictObject({
 export const PREFLIGHT_SCHEMA = "babel.preflight/1";
 
 /**
- * WHAT A PREPARATION DOES ABOUT A LIKELY SECRET, chosen per preparation.
- *
- * `redact` is the default and the answer for a corpus of years of transcripts: the span is
- * replaced, the rest of the record is still evidence, and the run proceeds. `refuse` is for a
- * scope that must not risk a disclosure at all — the whole preparation fails and seals no index,
- * so no material is ever bound. `off` prepares the raw stream and is recorded as such: it is the
- * operator's to choose and a reviewer's to see, which is the only reason it is nameable.
- */
-export const PreflightModeSchema = z.enum(["redact", "refuse", "off"]);
-export type PreflightMode = z.infer<typeof PreflightModeSchema>;
-
-/**
  * WHERE ONE REDACTED VALUE WAS. The class, the session, the record's 1-based ordinal in that
  * session's normalized stream — the same line number the material's own file has — and the range
  * inside that record before it was redacted. The length is evidence; the bytes are not here.
@@ -3294,6 +3518,7 @@ export const JOB_OUTPUT_FILES = {
   steeringReplies: "steering-replies.json",
   nextActions: "next-actions.json",
   sessions: "sessions.json",
+  citationFacts: "citation-facts.json",
   receipt: "receipt.json",
 } as const;
 
@@ -3421,6 +3646,7 @@ export const ReceiptSchema = z.strictObject({
     "catalog",
     "prepare",
     "verify",
+    "citationBackfill",
     "explore",
     "evaluate",
     "title",

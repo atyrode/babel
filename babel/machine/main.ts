@@ -1,6 +1,7 @@
 import { tmpdir } from "node:os";
 import {
   CatalogInputSchema,
+  CitationBackfillInputSchema,
   MACHINE_OPERATIONS,
   PrepareInputSchema,
   RESTIC_CREDENTIAL_FILE,
@@ -149,6 +150,18 @@ const DISPATCH: Record<
       // the tests — the system's own temporary directory is the honest default.
       scratchDir: process.env[VERIFY_ENV.scratchDir]?.trim() || tmpdir(),
     });
+  },
+  citationBackfill: async (raw, out) => {
+    try {
+      const { citationBackfill } = await import("./citation-backfill.ts");
+      const { openRepo, resticConfig } = await import("./restic.ts");
+      return await citationBackfill(CitationBackfillInputSchema.parse(raw), out, async () =>
+        openRepo(await resticConfig({ credentialFile: resticBinding(), env: process.env })),
+      );
+    } catch {
+      // Native diagnostics can contain private locators, quoted text and custody details.
+      throw new Error("Citation backfill could not be collected.");
+    }
   },
   prepare: async (raw, out, progress, material, invocation) => {
     const { PREPARE_ENV, prepare } = await import("./prepare.ts");

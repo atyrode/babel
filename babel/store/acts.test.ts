@@ -1823,6 +1823,7 @@ test("every record-identifier column of the migration is one the crossing guard 
     assessments: ["record_id", "revision_id"],
     claims: ["record_id"],
     record_vectors: ["record_id"],
+    citation_facts: ["record_id"],
   });
   // A `supersedes_id` that references its OWN table is not a record id, and the crossing must
   // still carry those rows: the name family is the columns whose meaning is fixed, and the

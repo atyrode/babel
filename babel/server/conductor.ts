@@ -7,6 +7,8 @@ import {
   ACTIVITIES,
   BABEL_PLUGIN_ID,
   AnalysisWorkSchema,
+  CitationBackfillIntentSchema,
+  CitationBackfillRowSchema,
   type AnalysisBriefRecord,
   BeatChainSchema,
   CodeProfileSchema,
@@ -94,6 +96,7 @@ import { refuseRow, type RowRefusal } from "../store/acts.ts";
 import { REFUSALS, refusalCode, type RefusalCode, type RefusedItem } from "../machine/results.ts";
 import type { BabelStore } from "../store/store.ts";
 import { upsertSessionRows } from "../store/sessions.ts";
+import { appendCitationFact } from "../store/citation-facts.ts";
 import {
   PROMPT_LIMIT,
   promptBytes,
@@ -1174,7 +1177,11 @@ export function tarMembers(bytes: Uint8Array): TarMember[] {
 }
 
 /** Reads one sealed output whole, in the chunks the engine serves. */
-async function readOutput(jobs: JobsSlice, node: OutputRef, bytes: number): Promise<Uint8Array> {
+async function readOutput(
+  jobs: Pick<JobsSlice, "output">,
+  node: OutputRef,
+  bytes: number,
+): Promise<Uint8Array> {
   if (bytes > MAX_OUTPUT_BYTES) {
     throw new Error(`output ${node.outputId} is ${String(bytes)} bytes, past what the hub ingests`);
   }
@@ -1260,9 +1267,11 @@ function runStatement(
     job_id: target.jobId,
     recipe_id: receipt?.recipeId,
     profile: receipt?.profile === undefined ? undefined : JSON.stringify(receipt.profile),
-    // Catalog intent/progress belongs to the hub; even a delayed native receipt cannot replace it.
+    // Native citation intent is retained on the hub and must survive receipt replay unchanged.
     preparation:
-      target.operationId === OPERATIONS.mapCatalog || receipt?.preparation === undefined
+      target.operationId === OPERATIONS.mapCatalog ||
+      target.operationId === MACHINE_OPERATIONS.citationBackfill ||
+      receipt?.preparation === undefined
         ? undefined
         : JSON.stringify(receipt.preparation),
     started_at: receipt?.startedAt ?? "",
@@ -1745,7 +1754,7 @@ async function ingestSessions(
  */
 export async function ingestOutputs(
   store: BabelStore,
-  jobs: JobsSlice,
+  jobs: Pick<JobsSlice, "output">,
   target: IngestTarget,
 ): Promise<IngestResult> {
   const files = new Map<string, unknown>();
@@ -1766,6 +1775,7 @@ export async function ingestOutputs(
       if (
         INGEST[member.name] === undefined &&
         member.name !== JOB_OUTPUT_FILES.sessions &&
+        member.name !== JOB_OUTPUT_FILES.citationFacts &&
         member.name !== JOB_OUTPUT_FILES.receipt
       ) {
         notes.push(`${output.name}/${member.name} is not a file this hub ingests`);
@@ -1782,7 +1792,10 @@ export async function ingestOutputs(
   const rows: Record<string, number> = {};
   let skipped = 0;
   const sessions = files.get(JOB_OUTPUT_FILES.sessions);
-  if (sessions !== undefined) {
+  if (sessions !== undefined && target.operationId === MACHINE_OPERATIONS.citationBackfill) {
+    notes.push("citation backfill cannot publish session rows");
+    skipped += Array.isArray(sessions) ? sessions.length : 1;
+  } else if (sessions !== undefined) {
     const ingested = await ingestSessions(store, sessions, notes);
     rows[JOB_OUTPUT_FILES.sessions] = ingested.written;
     skipped += ingested.skipped;
@@ -1791,9 +1804,17 @@ export async function ingestOutputs(
   for (const file of INGEST_ORDER) {
     if (
       target.operationId === OPERATIONS.mapPrepare ||
-      target.operationId === OPERATIONS.mapCatalog
-    )
+      target.operationId === OPERATIONS.mapCatalog ||
+      target.operationId === MACHINE_OPERATIONS.citationBackfill
+    ) {
+      if (target.operationId === MACHINE_OPERATIONS.citationBackfill && files.has(file)) {
+        notes.push(`${file} is not a citation backfill output`);
+        const unexpected = files.get(file);
+        skipped += Array.isArray(unexpected) ? unexpected.length : 1;
+        continue;
+      }
       break;
+    }
     const ingest = INGEST[file];
     const document = files.get(file);
     if (ingest === undefined || document === undefined) continue;
@@ -1842,6 +1863,61 @@ export async function ingestOutputs(
     notes.push(`the receipt calls this run ${receipt.runId}, the hub asked for ${target.runId}`);
   }
   const runId = target.runId ?? receipt?.runId ?? `run_${target.jobId}`;
+  const citationFile = files.get(JOB_OUTPUT_FILES.citationFacts);
+  if (citationFile !== undefined) {
+    const citationRows = CitationBackfillRowSchema.array().max(5).safeParse(citationFile);
+    const held =
+      target.runId === null
+        ? []
+        : await store.db.query<{
+            preparation: string | null;
+          }>(
+            `SELECT preparation FROM runs WHERE id=? AND job_id=? AND machine_id=?
+       AND kind=? AND (closure IS NULL OR closure='completed')`,
+            [target.runId, target.jobId, target.machineId, MACHINE_OPERATIONS.citationBackfill],
+          );
+    let intent: unknown = null;
+    try {
+      intent = JSON.parse(held[0]?.preparation ?? "null");
+    } catch {
+      /* no trusted intent */
+    }
+    const planned = CitationBackfillIntentSchema.safeParse(intent);
+    if (
+      target.operationId !== MACHINE_OPERATIONS.citationBackfill ||
+      target.closure !== "completed" ||
+      receipt?.closure !== "completed" ||
+      receipt.kind !== "citationBackfill" ||
+      receipt.runId !== target.runId ||
+      receipt.machineId !== target.machineId ||
+      !citationRows.success ||
+      !planned.success ||
+      citationRows.data.length !== planned.data.tasks.length ||
+      citationRows.data.some(
+        (row, i) => JSON.stringify(row.task) !== JSON.stringify(planned.data.tasks[i]),
+      )
+    ) {
+      notes.push(`${JOB_OUTPUT_FILES.citationFacts} is not a completed, matching citation batch`);
+      skipped += Array.isArray(citationFile) ? citationFile.length : 1;
+    } else {
+      let written = 0;
+      for (const [index, row] of citationRows.data.entries()) {
+        try {
+          const appended = await appendCitationFact(store.db, row.task, row.result, {
+            attemptId: planned.data.attemptId,
+            createdAt: receipt.finishedAt,
+          });
+          if (appended.outcome === "appended") written++;
+        } catch {
+          notes.push(
+            `${JOB_OUTPUT_FILES.citationFacts} row ${String(index)} was refused by the ledger`,
+          );
+          skipped++;
+        }
+      }
+      rows[JOB_OUTPUT_FILES.citationFacts] = written;
+    }
+  }
 
   statements.push(runStatement(runId, target, receipt, rows));
   for (let at = 0; at < statements.length; at += MAX_BATCH_STATEMENTS) {
@@ -1849,6 +1925,43 @@ export async function ingestOutputs(
   }
   store.touch();
   return { runId, rows, skipped, receipt, notes, refusals };
+}
+
+/**
+ * One owner-requested citation job, receipt only. No policy, claims, Code engine or posting
+ * capability belongs to this path. A failed read retains the exact intent for a later wake.
+ */
+export async function reconcileCitationBackfill(
+  store: BabelStore,
+  jobs: Pick<JobsSlice, "status" | "output">,
+  node: JobRef,
+): Promise<(IngestResult & { closure: string }) | null> {
+  if (node.operationId !== MACHINE_OPERATIONS.citationBackfill) return null;
+  const pending = await store.db.query<{ id: string }>(
+    `SELECT id FROM runs WHERE kind=? AND machine_id=? AND job_id=? AND closure IS NULL`,
+    [node.operationId, node.machineId, node.jobId],
+  );
+  const run = pending[0];
+  if (run === undefined) return null;
+  const state = await jobs.status(node);
+  if (state === null) return null;
+  if (
+    state.jobId !== node.jobId ||
+    state.machineId !== node.machineId ||
+    state.operationId !== node.operationId
+  )
+    throw new Error("citation job status does not match its retained identity");
+  if (TERMINAL_STATES[state.state] !== true) return null;
+  const result = await ingestOutputs(store, jobs, {
+    runId: run.id,
+    jobId: node.jobId,
+    machineId: node.machineId,
+    operationId: node.operationId,
+    outputs: state.result?.outputs ?? [],
+    closure: closureOf(state),
+    reason: nativeReason(state),
+  });
+  return { ...result, closure: result.receipt?.closure ?? closureOf(state) };
 }
 
 // ---------------------------------------------------------------------------- the loop
@@ -5814,6 +5927,32 @@ export function conductor(deps: ConductorDeps): Conductor {
     // no longer waited on is not selected, and one that answers is set back to zero in place.
     try {
       for (const run of pending) {
+        if (run.kind === MACHINE_OPERATIONS.citationBackfill) {
+          try {
+            const result = await reconcileCitationBackfill(store, jobs, {
+              kind: "job",
+              machineId: run.machine_id,
+              operationId: run.kind,
+              jobId: run.job_id,
+            });
+            if (result === null) inFlight++;
+            else {
+              notes.push(...result.notes);
+              ingested.push({
+                runId: result.runId,
+                jobId: run.job_id,
+                closure: result.closure,
+                costUsd: 0,
+                rows: result.rows,
+                skipped: result.skipped,
+              });
+            }
+          } catch {
+            notes.push(`citation job ${run.job_id} outputs remain pending`);
+            inFlight++;
+          }
+          continue;
+        }
         if (run.kind !== OPERATIONS.mapCatalog) await renewAnalysis(run.job_id, at, policy);
         // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
         // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it

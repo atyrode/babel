@@ -25,7 +25,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 14 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 15 } as const;
 
 /** Derived Recall attempts and outcomes contain no archived excerpt or provider attestation. */
 const RECALL_TRACE_SCHEMA: readonly string[] = [
@@ -87,6 +87,29 @@ const TRANSCRIPT_MAP_READ_SCHEMA: readonly string[] = [
     `CREATE TRIGGER transcript_map_${name}_no_delete BEFORE DELETE ON transcript_map_${name}
        BEGIN SELECT RAISE(ABORT,'immutable transcript map trace'); END`,
   ]),
+];
+
+/** #431: historical quote verdicts and retrieved excerpts never rewrite the cited revision. */
+const CITATION_FACT_SCHEMA: readonly string[] = [
+  `CREATE TABLE citation_facts(
+     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+     record_id TEXT NOT NULL REFERENCES records(id),
+     field TEXT NOT NULL CHECK(field IN ('evidence','counter_evidence','supporting','conflicting')),
+     ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+     attempt_id TEXT NOT NULL CHECK(length(attempt_id) > 0),
+     citation_digest TEXT NOT NULL,
+     task TEXT NOT NULL CHECK(json_valid(task)),
+     result TEXT NOT NULL CHECK(json_valid(result)),
+     status TEXT NOT NULL CHECK(status IN ('available','unavailable')),
+     quote_outcome TEXT NOT NULL CHECK(quote_outcome IN ('verified','moved','absent','unquoted','unchecked')),
+     created_at TEXT NOT NULL,
+     UNIQUE(record_id,field,ordinal,attempt_id)
+   ) STRICT`,
+  `CREATE INDEX citation_facts_by_position ON citation_facts(record_id,field,ordinal,seq DESC)`,
+  `CREATE TRIGGER citation_facts_no_update BEFORE UPDATE ON citation_facts
+     BEGIN SELECT RAISE(ABORT,'citation facts are append-only'); END`,
+  `CREATE TRIGGER citation_facts_no_delete BEFORE DELETE ON citation_facts
+     BEGIN SELECT RAISE(ABORT,'citation facts are append-only'); END`,
 ];
 
 /**
@@ -1165,6 +1188,7 @@ export const SCHEMA_V1: readonly string[] = [
   ...RECALL_TRACE_SCHEMA,
   ...TRANSCRIPT_MAP_SCHEMA,
   ...TRANSCRIPT_MAP_READ_SCHEMA,
+  ...CITATION_FACT_SCHEMA,
 
   // ---------------------------------------------------------------- a drain (#258)
   // No index, and now for one reason rather than two: a deployment accumulates drains at the
@@ -1340,6 +1364,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     sql: TRANSCRIPT_MAP_OWNER_COLUMN,
   },
   ...TRANSCRIPT_MAP_READ_SCHEMA.map(objectAddition),
+  ...CITATION_FACT_SCHEMA.map(objectAddition),
   // #169: the models that have answered a running job, JSON, in the order it first heard from
   // each. A column and not a table, because the table above already arrives by addition for a
   // store created before #261 — and an addition keyed only on the table's name would have left

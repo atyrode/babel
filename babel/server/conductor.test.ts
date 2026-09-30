@@ -13,6 +13,7 @@ import {
   CONDUCTOR_CYCLE_KEY,
   CONDUCTOR_TALLY_KEY,
   INPUT_FIELD,
+  MACHINE_OPERATIONS,
   JOB_OUTPUT_FILES,
   MATERIAL_OUTPUT,
   MATERIAL_SCHEMA,
@@ -49,6 +50,15 @@ import type {
   SessionUsage,
 } from "./engine/session.ts";
 import { omp } from "../machine/adapters/omp.ts";
+import { citationBackfill } from "../machine/citation-backfill.ts";
+import { directorySink } from "../machine/output.ts";
+import { sessionDigester } from "../machine/session-records.ts";
+import { syntheticArchive } from "../machine/test/restic-fixture.ts";
+import {
+  citationFactReport,
+  planCitationFacts,
+  readCitationFacts,
+} from "../store/citation-facts.ts";
 import { resolveRedaction } from "../machine/prepare.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import { transcriptMapCaptureId } from "../transcript-map-identity.ts";
@@ -65,6 +75,7 @@ import {
   type FollowEvent,
   type FollowRead,
   ingestOutputs,
+  reconcileCitationBackfill,
   type InferenceUsage,
   type JobLaunch,
   type JobOutput,
@@ -10414,3 +10425,176 @@ test("a completed material receipt cannot authorize inference after its native j
   ]);
   expect(await f.db.query(`SELECT id FROM transcript_map_summaries`)).toEqual([]);
 });
+
+test("archived citation job ingests a separately attributed fact and replays without changing its source record", async () => {
+  const archive = await syntheticArchive();
+  try {
+    const db = openDatabase();
+    const store = openStore(db);
+    const directory = join(archive.sessionRoot("omp"), "project");
+    mkdirSync(directory);
+    const path = join(directory, "retained.jsonl");
+    const record = JSON.stringify({ type: "user", text: "the documented archived behavior" });
+    const raw = `${record}\n`;
+    writeFileSync(path, raw);
+    const original = await archive.snapshot("archive-host", [archive.sessionRoot("omp")]);
+    const digester = sessionDigester();
+    digester.write(new TextEncoder().encode(raw));
+    const { captureDigest } = digester.finish();
+    writeFileSync(path, JSON.stringify({ type: "user", text: "the changed live behavior" }) + "\n");
+    await archive.snapshot("archive-host", [archive.sessionRoot("omp")]);
+    const at = "2026-09-29T00:00:00.000Z";
+    await db.run(`INSERT INTO runs(id,kind,started_at,preparation,payload) VALUES(?,?,?,?,?)`, [
+      "producer",
+      OPERATIONS.explore,
+      at,
+      JSON.stringify({
+        selection: [
+          {
+            host: "archive-host",
+            harness: "omp",
+            source_id: "project/retained",
+            capture_digest: captureDigest,
+            source_digest: `sha256:${createHash("sha256").update("historical classified events").digest("hex")}`,
+            snapshot: original.id.slice(0, 8),
+          },
+        ],
+      }),
+      "{}",
+    ]);
+    const payload = JSON.stringify({
+      evidence: [
+        {
+          locator: {
+            path,
+            line: 1,
+            byte_offset: 0,
+            digest: createHash("sha256").update(record).digest("hex"),
+            quote: "the documented archived behavior",
+          },
+          note: "this note is not an archive quote",
+        },
+      ],
+    });
+    await db.run(
+      `INSERT INTO records(id,root_id,kind,run_id,actor_kind,actor_id,title,created_at,payload)
+      VALUES(?,?,?,?,?,?,?,?,?)`,
+      [
+        "historical",
+        "historical",
+        "observation",
+        "producer",
+        "run",
+        "producer",
+        "historical",
+        at,
+        payload,
+      ],
+    );
+    const page = await planCitationFacts(db);
+    expect(page).toMatchObject({ total: 1, pending: 1, checkable: 1 });
+    const task = page.tasks[0]!;
+    expect(task).toMatchObject({
+      source: { snapshotId: original.id.slice(0, 8) },
+      locator: { coordinates: "raw", line: 1, byteOffset: 0 },
+    });
+    const jobId = "job_citation";
+    const runId = "run_citation";
+    const attemptId = runId;
+    await db.run(
+      `INSERT INTO runs(id,kind,machine_id,job_id,started_at,preparation,payload)
+      VALUES(?,?,?,?,?,?,?)`,
+      [
+        runId,
+        MACHINE_OPERATIONS.citationBackfill,
+        "machine-archive",
+        jobId,
+        at,
+        JSON.stringify({ attemptId, tasks: [task] }),
+        "{}",
+      ],
+    );
+    const output = join(archive.home, "citation-results");
+    await citationBackfill(
+      { runId, machineId: "machine-archive", attemptId, tasks: [task] },
+      directorySink(output),
+      async () => archive.repo,
+    );
+    const results: unknown = await Bun.file(join(output, JOB_OUTPUT_FILES.citationFacts)).json();
+    const receipt: unknown = await Bun.file(join(output, JOB_OUTPUT_FILES.receipt)).json();
+    const fleet = new Fleet();
+    fleet.running(jobId, "machine-archive", MACHINE_OPERATIONS.citationBackfill);
+    fleet.finish(jobId, 0, {
+      [JOB_OUTPUT_FILES.citationFacts]: results,
+      [JOB_OUTPUT_FILES.receipt]: receipt,
+    });
+    const target = {
+      runId,
+      jobId,
+      machineId: "machine-archive",
+      operationId: MACHINE_OPERATIONS.citationBackfill,
+      closure: "completed",
+      outputs: fleet.status({ jobId }).result!.outputs,
+    };
+    const node = { kind: "job" as const, ...target };
+    for (const fault of ["identity", "output"] as const) {
+      const interrupted: Pick<JobsSlice, "status" | "output"> = {
+        status: (asked) => ({
+          ...fleet.status(asked),
+          machineId: fault === "identity" ? "wrong-machine" : target.machineId,
+        }),
+        output: () => {
+          throw new Error("synthetic output lease interruption");
+        },
+      };
+      await expect(reconcileCitationBackfill(store, interrupted, node)).rejects.toThrow(
+        fault === "identity"
+          ? "citation job status does not match its retained identity"
+          : "synthetic output lease interruption",
+      );
+      expect(await citationFactReport(db)).toMatchObject({ total: 1, completed: 0, pending: 1 });
+      expect(await db.query("SELECT closure FROM runs WHERE id=?", [runId])).toEqual([
+        { closure: null },
+      ]);
+    }
+    const first = await reconcileCitationBackfill(store, fleet, node);
+    expect(first).toMatchObject({
+      skipped: 0,
+      notes: [],
+      rows: { [JOB_OUTPUT_FILES.citationFacts]: 1 },
+    });
+    const fact = (await readCitationFacts(db, "historical")).facts[0]!;
+    expect(fact.result).toMatchObject({
+      status: "available",
+      check: { outcome: "verified" },
+      sourceReading: "historical-events",
+      source: { snapshotId: original.id, path },
+      excerpt: { trust: "archived-untrusted" },
+    });
+    expect(fact.result.excerpt?.text).toContain("the documented archived behavior");
+    expect(fact.result.excerpt?.text).not.toContain("this note is not an archive quote");
+    expect(await citationFactReport(db)).toMatchObject({
+      total: 1,
+      completed: 1,
+      available: 1,
+      quoteOutcomes: { verified: 1 },
+    });
+    const repeated = await ingestOutputs(openStore(db), fleet, target);
+    expect(repeated).toMatchObject({
+      skipped: 0,
+      notes: [],
+      rows: { [JOB_OUTPUT_FILES.citationFacts]: 0 },
+    });
+    expect(
+      await reconcileCitationBackfill(openStore(db), fleet, { kind: "job", ...target }),
+    ).toBeNull();
+    expect((await readCitationFacts(db, "historical")).facts).toHaveLength(1);
+    expect(
+      (await db.query<{ payload: string }>(`SELECT payload FROM records WHERE id='historical'`))[0]
+        ?.payload,
+    ).toBe(payload);
+    expect(await archive.locks()).toBe(0);
+  } finally {
+    await archive.close();
+  }
+}, 60_000);

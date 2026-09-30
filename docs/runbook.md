@@ -890,6 +890,45 @@ Every SDK run confirmed cleanup. The managed `omp-stack` check proved byte-ident
 paths and OMP command discovery without activation or providers. This separate consumer proof
 does not claim real hub admission or a live storage binding.
 
+### 9.2 Historical citation fact backfill (#431)
+
+The owner-only `citationPlan` door counts the citation positions in retained record revisions
+without opening the archive. `citationBackfill` retains a page of at most five positions and
+posts the ready `atyrode.babel.citation-backfill` native operation on the named enrolled machine.
+Its output is an append-only side ledger, never a rewrite of an imported citation or a review.
+`citationFacts` pages one record's redacted, newly retrieved excerpts, positions, original-quote
+checks and versioned source attribution; aggregate coverage has no source text. A missing
+historical quote stays `unquoted`, and a note does not become a quote. The operation reads only
+digest-matched archived captures; unknown or ambiguous source identity is unavailable, not a
+guess from today's live sessions. An unreadable or oversized competing capture keeps the source
+unavailable even if another copy matches. Discovery consumes at most 2,048 snapshot entries
+before refusing the inventory; this bound applies before exact `babel` filtering. An incomplete
+or over-bound discovery reports `archive-unavailable`, never a checked negative. A task also
+stops at 64 candidate captures or 50,000 listed nodes. Its settlement ingests only that retained
+job, without scheduling, drawing reviews, settling unrelated claims or dispatching Code; a
+transient output-read failure leaves the exact intent pending for a later wake.
+
+> **OPERATOR STEP — cover the imported corpus; not executed on an enrolled hub.**
+> **Prerequisites:** the imported record revisions and producing-run preparations are retained
+> on the hub; the archive still has the referenced `babel` snapshots, machine host labels and
+> the existing `atyrode.babel.restic` storage binding; the native operation is ready at the
+> inspected installation revision; the owner holds its normal operation execution, output
+> location and storage-service consents. Do not change archive custody or create a new repository.
+> **Procedure:** read `citationPlan` as owner (optionally scope by `recordId`), inspect total,
+> checkable, unknown and pending counts. Post one `citationBackfill` page using the named
+> `machineId` and its matching
+> `{\"kind\":\"operation\",\"machineId\":\"<machine>\",\"operationId\":\"atyrode.babel.citation-backfill\"}`
+> reference. Retain the returned `runId` and `jobId`; if admission is uncertain, inspect the
+> retained run rather than posting a new attempt blindly. After its sealed result is ingested,
+> page `citationFacts` for sampled records and inspect its source-reading, snapshot, quote
+> outcome and new-excerpt disclosure. Continue pending pages; retry unavailable positions only
+> with `retryUnavailable: true`, preserving earlier attempts.
+> **Success:** `citationPlan` reports measured completion, with available versus unavailable and
+> unquoted versus checked outcomes stated separately; sampled exact historical sources resolve
+> to digest-identified captures and no source record or decision history changes. Record host,
+> date, corpus position totals and explicit unavailable reasons; synthetic fixture successes
+> are not real imported-corpus coverage.
+
 ---
 
 ## 10. Turning evaluation on

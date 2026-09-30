@@ -25,6 +25,31 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [0.5.8] - 2026-09-30
 
+### Added
+
+- **Historical citations can acquire separately attributed, archived source facts (#431).**
+  An owner-requested bounded native job checks exact tagged captures and raw or normalized
+  citation positions, records quote-free, verified, moved, absent and unavailable outcomes, and
+  stores mandatory-redacted new excerpts in an append-only owner-readable ledger. It never
+  rewrites imported claims, notes, rankings or rulings; retries preserve earlier attempts.
+  Real synthetic restic and SQLite regressions cover stale sources, restart and idempotent
+  sealed-output ingestion. Actual imported-corpus coverage remains an operator step.
+
+### Fixed
+
+- **Citation evidence stays unavailable when a competing capture cannot be checked.** An
+  unreadable or oversized candidate cannot be silently discarded after a readable match.
+  Snapshot discovery enforces its 2,048-entry cap and 1 MiB UTF-8-byte object bound while
+  consuming restic output and settles both pipes and the child on refusal. Served `sessions/`
+  paths resolve to retained material; successful secret-refusing preparations retain their
+  scanned `refuse` provenance, and detected secrets still refuse the reading.
+  Citation-job callbacks ingest only their retained job's receipt, without entering scheduling,
+  paid review draws or Code dispatch. Synthetic regressions
+  cover discovery order, quote-free omissions, streaming bounds, cleanup and scoped settlement;
+  actual imported-corpus operation and measured coverage remain separate, unperformed acceptance.
+
+## [0.5.8] - 2026-09-30
+
 ### Fixed
 
 - **The plugin closure follows Manifold's credential-bound lifecycle metadata.** The SDK and

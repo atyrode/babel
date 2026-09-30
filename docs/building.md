@@ -111,7 +111,8 @@ from the committed one, rather than silently accepting a local or CI restamp. Co
 alongside a genuine machine change. `test/bundle.test.ts` runs the packed member through the
 argv its manifest declares and checks the receipt it leaves.
 
-The one-shot operations are `catalog`, `archive`, `prepare` and `verify`; Recall adds a persistent
+The one-shot operations are `catalog`, `archive`, `prepare`, `verify` and the owner-requested
+`citation-backfill`; Recall adds a persistent
 native instance service. Each takes ONE input document — a JSON string materialized at
 `/inputs/input`, so `--input` is a path and never 64 KiB of argv. One-shot jobs write their
 results into sealed output leases read through `ctx.jobs.outputs`; Recall publishes no output
@@ -122,12 +123,23 @@ atyrode/manifold at `3e8510c473d84175568ac81012763635112ed7d3`,
 the owner's IPC and shuts down on owner disconnect. It uses private tmpfs for widening bytes
 and the managed cache only for rebuildable local indexes and metadata.
 Every Babel operation reads or writes the fleet archive, so each runs with `network: "host"` to
-reach its bound repository and storage service: `catalog`, `prepare`, `verify` and Recall only
-read it, every read verb with `--no-lock`, and `archive` is the one that writes. `scan`, which
+reach its bound repository and storage service: `catalog`, `prepare`, `verify`,
+`citation-backfill` and Recall only read it, every read verb with `--no-lock`, and `archive`
+is the one that writes. `scan`, which
 catalogued a machine's local session files with no network, is retired (#453); the store keeps
 its runs, and `RETIRED_OPERATIONS` in `contract.ts` is what still names them. The owner
 configures Recall's instance service and exact disclosure-class grant targets, not an outside
 caller's native job.
+
+Citation discovery consumes restic's JSON snapshot array one bounded object at a time. Its
+2,048-entry ceiling is enforced before the full inventory can be buffered; each object's 1 MiB
+limit counts UTF-8 bytes, not UTF-16 string units, without re-encoding a second full object.
+Excess or malformed output kills and settles the child while draining its diagnostic pipe.
+Citation lifecycle wakes use a receipt-only path scoped to the retained job identity, not the
+generic conductor cycle.
+Synthetic streaming children exercise discovery refusal and process cleanup; synthetic restic
+and store consumers exercise archived source identity and immutable facts. None of those
+fixtures establishes real imported-corpus coverage or a deployed archive/disclosure grant.
 
 **A MACHINE ANSWERS FOR TOOLS BY NAME, AND THE FLEET ADVERTISES TWO** (`development` and
 `system`, plus anchors). Until #303 this half asked for `bun`, `git` and `restic` by name, so
