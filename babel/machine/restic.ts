@@ -665,7 +665,12 @@ class ResticRepo implements Repo {
     }
     const code = await child.exited;
     if (code !== 0) {
-      throw new ResticError("exit", `restic snapshots failed (exit ${code})`, code, tail.toString());
+      throw new ResticError(
+        "exit",
+        `restic snapshots failed (exit ${code})`,
+        code,
+        tail.toString(),
+      );
     }
     return snapshots;
   }
@@ -1083,7 +1088,10 @@ export async function* snapshotRows(
         else if (state === "separator" && char === ",") state = "next";
         else if ((state === "first" || state === "next") && char === "{") {
           if (maxEntries !== undefined && ++entries > maxEntries)
-            throw new ResticError("refused", "snapshot discovery exceeded the requested entry bound");
+            throw new ResticError(
+              "refused",
+              "snapshot discovery exceeded the requested entry bound",
+            );
           state = "object";
           depth = 1;
           start = at;

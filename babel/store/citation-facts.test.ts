@@ -359,82 +359,89 @@ test.each([
   ["sessions/0001-session.jsonl", "redact"],
   ["/inputs/material/sessions/0001-session.jsonl", "redact"],
   ["sessions/0001-session.jsonl", "refuse"],
-])("completed material resolves %s with %s provenance without rewriting the citation", async (path, mode) => {
-  await run("consumer", []);
-  await fixture.db.run("UPDATE runs SET prepare_job_id='prepared-job' WHERE id='consumer'");
-  await insert(fixture.db, "runs", {
-    id: "prepared",
-    kind: OPERATIONS.prepare,
-    job_id: "prepared-job",
-    closure: "completed",
-    started_at: AT,
-    payload: JSON.stringify({
-      material: {
-        sessions: [
-          {
-            selector: "omp/session-one",
-            harness: "omp",
-            sourceId: "session-one",
-            file: "0001-session.jsonl",
-            captureDigest: CAPTURE,
-            sourceDigest: SOURCE,
-            origin: { label: "archived-host", snapshotId: SNAPSHOT, path: "/archive/exact.jsonl" },
-          },
+])(
+  "completed material resolves %s with %s provenance without rewriting the citation",
+  async (path, mode) => {
+    await run("consumer", []);
+    await fixture.db.run("UPDATE runs SET prepare_job_id='prepared-job' WHERE id='consumer'");
+    await insert(fixture.db, "runs", {
+      id: "prepared",
+      kind: OPERATIONS.prepare,
+      job_id: "prepared-job",
+      closure: "completed",
+      started_at: AT,
+      payload: JSON.stringify({
+        material: {
+          sessions: [
+            {
+              selector: "omp/session-one",
+              harness: "omp",
+              sourceId: "session-one",
+              file: "0001-session.jsonl",
+              captureDigest: CAPTURE,
+              sourceDigest: SOURCE,
+              origin: {
+                label: "archived-host",
+                snapshotId: SNAPSHOT,
+                path: "/archive/exact.jsonl",
+              },
+            },
+          ],
+        },
+        preflight: { mode, detectors: PREFLIGHT_DETECTORS },
+      }),
+    });
+    await record(
+      "claim",
+      {
+        evidence: [
+          citation(undefined, {
+            path,
+            digest: SOURCE,
+            byte_offset: undefined,
+          }),
         ],
       },
-      preflight: { mode, detectors: PREFLIGHT_DETECTORS },
-    }),
-  });
-  await record(
-    "claim",
-    {
-      evidence: [
-        citation(undefined, {
-          path,
-          digest: SOURCE,
-          byte_offset: undefined,
-        }),
-      ],
-    },
-    { run_id: "consumer" },
-  );
-  const task = (await planCitationFacts(fixture.db)).tasks[0]!;
-  expect(task).toMatchObject({
-    unavailable: null,
-    locator: { coordinates: "normalized" },
-    source: {
-      snapshotId: SNAPSHOT,
-      path: "/archive/exact.jsonl",
-      label: "archived-host",
+      { run_id: "consumer" },
+    );
+    const task = (await planCitationFacts(fixture.db)).tasks[0]!;
+    expect(task).toMatchObject({
+      unavailable: null,
+      locator: { coordinates: "normalized" },
+      source: {
+        snapshotId: SNAPSHOT,
+        path: "/archive/exact.jsonl",
+        label: "archived-host",
+        sourceMode: mode,
+        sourceDetectors: PREFLIGHT_DETECTORS,
+      },
+    });
+    const before = await fixture.db.query("SELECT payload FROM records WHERE id='claim'");
+    const result = available(task);
+    await expect(
+      appendCitationFact(
+        fixture.db,
+        task,
+        { ...result, source: { ...result.source!, sourceMode: "off", sourceDetectors: null } },
+        metadata("wrong-mode"),
+      ),
+    ).rejects.toThrow("invalid-fact");
+    await expect(
+      appendCitationFact(
+        fixture.db,
+        task,
+        { ...result, source: { ...result.source!, sourceDetectors: "unknown/99" } },
+        metadata("wrong-detectors"),
+      ),
+    ).rejects.toThrow("invalid-fact");
+    await appendCitationFact(fixture.db, task, result, metadata("retained"));
+    expect((await readCitationFacts(fixture.db, "claim")).facts[0]?.result.source).toMatchObject({
       sourceMode: mode,
       sourceDetectors: PREFLIGHT_DETECTORS,
-    },
-  });
-  const before = await fixture.db.query("SELECT payload FROM records WHERE id='claim'");
-  const result = available(task);
-  await expect(
-    appendCitationFact(
-      fixture.db,
-      task,
-      { ...result, source: { ...result.source!, sourceMode: "off", sourceDetectors: null } },
-      metadata("wrong-mode"),
-    ),
-  ).rejects.toThrow("invalid-fact");
-  await expect(
-    appendCitationFact(
-      fixture.db,
-      task,
-      { ...result, source: { ...result.source!, sourceDetectors: "unknown/99" } },
-      metadata("wrong-detectors"),
-    ),
-  ).rejects.toThrow("invalid-fact");
-  await appendCitationFact(fixture.db, task, result, metadata("retained"));
-  expect((await readCitationFacts(fixture.db, "claim")).facts[0]?.result.source).toMatchObject({
-    sourceMode: mode,
-    sourceDetectors: PREFLIGHT_DETECTORS,
-  });
-  expect(await fixture.db.query("SELECT payload FROM records WHERE id='claim'")).toEqual(before);
-});
+    });
+    expect(await fixture.db.query("SELECT payload FROM records WHERE id='claim'")).toEqual(before);
+  },
+);
 
 test("facts cannot convert unquoted to verified, confuse unreachable with absent, or store mismatched excerpts", async () => {
   await run();

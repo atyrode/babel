@@ -147,8 +147,7 @@ async function resolve(
   if (unreadable) return unavailable(task, "archive-unavailable");
   if (oversized) return unavailable(task, "capture-size-bound");
   return (
-    matched ??
-    unavailable(task, candidates === 0 ? "missing-source" : "capture-digest-mismatch")
+    matched ?? unavailable(task, candidates === 0 ? "missing-source" : "capture-digest-mismatch")
   );
 }
 

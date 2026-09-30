@@ -48,8 +48,7 @@ export async function inspectArchivedCitation(
     captureDigest: input.captureDigest,
     sourceDigest: input.sourceDigest,
     sourceMode,
-    sourceDetectors:
-      sourceMode === "off" ? null : (input.sourceDetectors ?? PREFLIGHT_DETECTORS),
+    sourceDetectors: sourceMode === "off" ? null : (input.sourceDetectors ?? PREFLIGHT_DETECTORS),
   };
   const disclosure: ArchivedCitationFacts["disclosure"] = {
     mode: "redact" as const,
