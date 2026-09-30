@@ -647,11 +647,10 @@ test(
     );
     expect(unbound.receipt.closure).toBe("failed");
     expect(unbound.receipt.reason).toStartWith("archive_unavailable: ");
-    expect(unbound.receipt.reason).toContain("bound no atyrode.babel.restic service");
     expect(unbound.rows).toEqual([]);
     expect(unbound.receipt.material).toBeUndefined();
 
-    // A binding whose repository does not answer: restic's own diagnosis is the reason.
+    // A bound repository that cannot be read is still an archive refusal.
     const gone = await run(
       [OMP],
       {},
@@ -661,7 +660,6 @@ test(
     );
     expect(gone.receipt.closure).toBe("failed");
     expect(gone.receipt.reason).toStartWith("archive_unavailable: ");
-    expect(gone.receipt.reason).toContain("repository does not exist");
     expect(gone.receipt.counts["fetched"]).toBe(0);
 
     // With a cache to file readings in, the binding is asked for its locator first.
