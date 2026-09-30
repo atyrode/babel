@@ -106,10 +106,9 @@ function Knob({
 }
 
 /**
- * The topic picker, which is the whole of `explore-topic`'s knob. Entities with nothing filed
- * are not topics (#248), so the list is what Babel has actually written about, and each option
- * carries how much is under it: "the topic with four posts" and "the topic with four hundred"
- * are different requests.
+ * The topic picker is the whole of `explore-topic`'s knob. An entity with no filed posts is
+ * still an explicit exploration target (#248). Each option carries its actual post count:
+ * starting an empty topic and extending an established one are different requests.
  */
 function TopicKnob({
   draft,

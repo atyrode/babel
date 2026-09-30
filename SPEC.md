@@ -1903,7 +1903,10 @@ record, recorded as a comment Babel's next review of the record must answer.
 
 **A topic is an entity.** A post's topics are the ledger entities it is filed under (§4.13); a
 topic page is the feed narrowed to one entity, the rail lists entities with active lifecycle first,
-and a record filed under nothing is in the feed as _unfiled_ rather than hidden.
+and a record filed under nothing is in the feed as _unfiled_ rather than hidden. The rail retains
+explicitly tracked entities even with zero filed posts; untracked empty entities do not fill it.
+Watch may select an empty entity as an exploration target. Both show the actual post count,
+including zero, without inventing activity.
 
 The rail plots seven UTC days of recorded creation and reception activity for currently filed
 posts, from oldest to newest. Older events contribute no bar; an event without a usable date is

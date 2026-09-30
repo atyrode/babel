@@ -594,6 +594,28 @@ describe("the rail", () => {
     await view.unmount();
   });
 
+  test("explicitly tracked empty entities remain selectable without inventing topic activity", async () => {
+    const empty = topics().topics.map((topic): ReturnType<typeof topics>["topics"][number] => ({
+      ...topic,
+      posts: 0,
+      awaiting: 0,
+      latestAt: "",
+      recentActivity: { ...topic.recentActivity, days: [0, 0, 0, 0, 0, 0, 0], unknownDates: 0 },
+    }));
+    const fake = hub({ topics: () => topics({ topics: empty }) });
+    const view = await mount(<HomePanel host={fake.host} />);
+    expect(
+      view.all(".babel-topic-list button").map((row) => row.getAttribute("data-topic")),
+    ).toEqual(["ent_0000beef"]);
+    expect(view.one('[data-topic="ent_0000beef"] .babel-topic-count').textContent).toBe("0");
+    expect(
+      view.one('[data-topic="ent_0000beef"] .babel-topic-trend').getAttribute("aria-label"),
+    ).toContain("0, 0, 0, 0, 0, 0, 0");
+    await view.press('[data-topic="ent_0000beef"]');
+    expect(looking().topic).toBe("ent_0000beef");
+    await view.unmount();
+  });
+
   test("topic trends show seven dated activity bins without treating unknown dates as zero", async () => {
     const view = await mount(<HomePanel host={hub().host} />);
     const trend = view.one('[data-topic="ent_0000beef"] .babel-topic-trend');

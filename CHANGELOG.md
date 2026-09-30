@@ -169,9 +169,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 - **The topics rail shows seven days of recorded activity (#248).** Small four-pixel-scale
   bars count post creation, reviewer events and operator feedback for currently filed topics, while unknown dates
-  remain explicit instead of looking like quiet days. Real SQLite and rendered interaction
-  regressions cover the UTC boundary, withdrawn filings and the seven-bin display; preview-hub
-  visual acceptance remains pending.
+  remain explicit instead of looking like quiet days. Explicitly tracked empty entities remain
+  navigable with their actual zero post count, and Watch can select them for exploration.
+  Real SQLite and rendered interaction regressions cover the UTC boundary, withdrawn filings,
+  seven-bin display and empty-target selection; preview-hub visual acceptance remains pending.
 
 ### Fixed
 

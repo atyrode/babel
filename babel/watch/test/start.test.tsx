@@ -5,7 +5,7 @@ import { GENERATOR_PLUGIN_ID, LAUNCHER_PANEL } from "@atyrode/manifold-code";
 import { ACTIONS, door } from "../../contract.ts";
 import { Watch } from "../web.tsx";
 import type { PROFILES } from "./host.ts";
-import { MACHINES, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
+import { MACHINES, TOPICS, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
 import { mount, settle, unmountAll } from "./render.tsx";
 
 /*
@@ -128,6 +128,55 @@ test("the button posts the launch carrying the chosen profile and the revision i
   expect(args["machineId"]).toBe("m-dev-01");
   // …and nothing about a model, a thinking level or an account travels with it.
   expect(args["session"]).toBeUndefined();
+});
+
+test("an empty entity remains an explicit exploration target with an honest zero count", async () => {
+  const fake = fakeHost(
+    watchDoors({
+      runs: () => runsResult([]),
+      topics: () => ({
+        ...TOPICS,
+        topics: [
+          {
+            ...TOPICS.topics[0]!,
+            posts: 0,
+            awaiting: 0,
+            latestAt: "",
+            recentActivity: {
+              since: "2026-09-06T00:00:00Z",
+              days: [0, 0, 0, 0, 0, 0, 0],
+              unknownDates: 0,
+            },
+          },
+        ],
+      }),
+    }),
+    MACHINES,
+  );
+  const root = await mount(<Watch host={fake.host} />);
+  await settle();
+  const start = section(root);
+  const explore = [
+    ...start.querySelectorAll<HTMLButtonElement>(".plugin-atyrode_babel_watch__preset"),
+  ].find((button) => button.textContent?.startsWith("Explore a topic"));
+  if (!explore) throw new Error("exploration preset absent");
+  explore.click();
+  await settle();
+  const machine = start.querySelector<HTMLSelectElement>("[data-field='machine']")!;
+  machine.value = "m-dev-01";
+  machine.dispatchEvent(new Event("change", { bubbles: true }));
+  start.querySelector<HTMLElement>("[data-container='ctr_workbench']")!.click();
+  await settle();
+  const launch = start.querySelector<HTMLButtonElement>(`[data-action='${door(ACTIONS.launch)}']`)!;
+  expect(launch.disabled).toBe(true);
+  const topic = start.querySelector<HTMLSelectElement>("[data-field='topic']")!;
+  expect(topic.options[1]!.textContent).toBe("babel · 0 posts");
+  topic.value = TOPICS.topics[0]!.id;
+  topic.dispatchEvent(new Event("change", { bubbles: true }));
+  await settle();
+  expect(topic.value).toBe(TOPICS.topics[0]!.id);
+  expect(launch.disabled).toBe(false);
+  expect(fake.callsTo(ACTIONS.launch)).toEqual([]);
 });
 
 test("a Code that could not be asked is the sentence it refused with, and no button that can post", async () => {
