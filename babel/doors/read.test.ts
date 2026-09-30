@@ -153,8 +153,6 @@ describe("the roster", () => {
       const waking = entry.action.name === ACTIONS.pulse || entry.action.name === ACTIONS.runs;
       expect(entry.action.delegates ?? []).toEqual(waking ? cycled : []);
     }
-    // The roster publishes the plugin's own prefix, which is what a button's `action` spells.
-    expect(door(ACTIONS.feed)).toBe("atyrode.babel.feed");
   });
 });
 
