@@ -1230,8 +1230,13 @@ the archive; each explicit `citationBackfill` request retains its exact task pag
 one native job. Jobs read only tagged captures from the bound restic repository, with no model,
 local-session fallback or newest-snapshot substitution. An explicitly retained snapshot prefix
 must resolve uniquely; when none was retained, identical digest-verified copies at the same
-archived path select a stable snapshot by id, never by recency. The cited raw capture digest
-is checked before any fact is available.
+archived path select a stable snapshot by id, never by recency. A competing capture that cannot
+be read or exceeds the capture-size bound prevents a unique-source verdict even after a readable
+match. Snapshot discovery stops while consuming the first entry beyond 2,048, before buffering
+the entire inventory; incomplete or over-bound discovery makes the batch unavailable. Exact
+`babel` tag filtering still excludes store backups. Each task also stops after 64 candidate
+captures or 50,000 listed archive nodes. The cited raw capture digest is checked before any fact
+is available.
 Legacy locators use physical raw lines, byte offsets and bare per-record SHA-256; their historical
 classified-event source digest is recorded but cannot be compared to today's normalized-record
 digest. Modern locators require that normalized source digest as well.
@@ -1245,8 +1250,11 @@ version as **new untrusted evidence**, not as text the historical author submitt
 ambiguous and invalid historical provenance remain explicit unavailable results. Only the owner
 reads excerpt pages; the aggregate coverage report contains counts and reasons, not text.
 Replaying a retained attempt writes no duplicate, and an explicit retry leaves prior unavailable
-attempts intact. The local synthetic archive and store tests prove these paths, not coverage of
-the deployment's imported corpus; that requires an owner-run archive backfill and measured report.
+attempts intact. A citation settlement reads only its own retained native job and receipt: it
+never enters policy scheduling, a review draw, claim settlement or Code dispatch. Transient
+output-read failures leave that exact intent pending. The local synthetic archive and store
+tests exercise these paths, not coverage of the deployment's imported corpus; that requires an
+owner-run archive backfill and measured report.
 
 ### 6.4 Deterministic preflight
 

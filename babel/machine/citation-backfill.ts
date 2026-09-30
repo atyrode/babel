@@ -66,7 +66,6 @@ async function resolve(
   // A retained prefix that names two immutable snapshots names neither one.
   if (source.snapshotId !== null && selected.length > 1)
     return unavailable(task, "snapshot-ambiguous");
-  if (selected.length > SNAPSHOT_LIMIT) return unavailable(task, "snapshot-search-bound");
 
   let candidates = 0;
   let listed = 0;
@@ -144,18 +143,12 @@ async function resolve(
       listed >= LISTING_LIMIT ? "listing-search-bound" : "archive-unavailable",
     );
   }
+  // A readable match cannot prove uniqueness while a competing capture is unknown.
+  if (unreadable) return unavailable(task, "archive-unavailable");
+  if (oversized) return unavailable(task, "capture-size-bound");
   return (
     matched ??
-    unavailable(
-      task,
-      unreadable
-        ? "archive-unavailable"
-        : oversized
-          ? "capture-size-bound"
-          : candidates === 0
-            ? "missing-source"
-            : "capture-digest-mismatch",
-    )
+    unavailable(task, candidates === 0 ? "missing-source" : "capture-digest-mismatch")
   );
 }
 
@@ -171,7 +164,7 @@ export async function citationBackfill(
   if (input.tasks.some((task) => task.unavailable === null && task.source !== null)) {
     try {
       repo = await archive();
-      snapshots = await repo.snapshots();
+      snapshots = await repo.snapshots([], { maxEntries: SNAPSHOT_LIMIT });
     } catch {
       // An inaccessible archive is explicit; known historical omissions still take precedence.
       repo = null;

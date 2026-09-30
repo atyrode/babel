@@ -75,6 +75,7 @@ import {
   type FollowEvent,
   type FollowRead,
   ingestOutputs,
+  reconcileCitationBackfill,
   type InferenceUsage,
   type JobLaunch,
   type JobOutput,
@@ -10535,7 +10536,28 @@ test("archived citation job ingests a separately attributed fact and replays wit
       closure: "completed",
       outputs: fleet.status({ jobId }).result!.outputs,
     };
-    const first = await ingestOutputs(store, fleet, target);
+    const node = { kind: "job" as const, ...target };
+    for (const fault of ["identity", "output"] as const) {
+      const interrupted: Pick<JobsSlice, "status" | "output"> = {
+        status: (asked) => ({
+          ...fleet.status(asked),
+          machineId: fault === "identity" ? "wrong-machine" : target.machineId,
+        }),
+        output: () => {
+          throw new Error("synthetic output lease interruption");
+        },
+      };
+      await expect(reconcileCitationBackfill(store, interrupted, node)).rejects.toThrow(
+        fault === "identity"
+          ? "citation job status does not match its retained identity"
+          : "synthetic output lease interruption",
+      );
+      expect(await citationFactReport(db)).toMatchObject({ total: 1, completed: 0, pending: 1 });
+      expect(await db.query("SELECT closure FROM runs WHERE id=?", [runId])).toEqual([
+        { closure: null },
+      ]);
+    }
+    const first = await reconcileCitationBackfill(store, fleet, node);
     expect(first).toMatchObject({
       skipped: 0,
       notes: [],
@@ -10563,6 +10585,9 @@ test("archived citation job ingests a separately attributed fact and replays wit
       notes: [],
       rows: { [JOB_OUTPUT_FILES.citationFacts]: 0 },
     });
+    expect(
+      await reconcileCitationBackfill(openStore(db), fleet, { kind: "job", ...target }),
+    ).toBeNull();
     expect((await readCitationFacts(db, "historical")).facts).toHaveLength(1);
     expect(
       (await db.query<{ payload: string }>(`SELECT payload FROM records WHERE id='historical'`))[0]

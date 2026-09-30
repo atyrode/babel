@@ -900,7 +900,13 @@ Its output is an append-only side ledger, never a rewrite of an imported citatio
 checks and versioned source attribution; aggregate coverage has no source text. A missing
 historical quote stays `unquoted`, and a note does not become a quote. The operation reads only
 digest-matched archived captures; unknown or ambiguous source identity is unavailable, not a
-guess from today's live sessions.
+guess from today's live sessions. An unreadable or oversized competing capture keeps the source
+unavailable even if another copy matches. Discovery consumes at most 2,048 snapshot entries
+before refusing the inventory; this bound applies before exact `babel` filtering. An incomplete
+or over-bound discovery reports `archive-unavailable`, never a checked negative. A task also
+stops at 64 candidate captures or 50,000 listed nodes. Its settlement ingests only that retained
+job, without scheduling, drawing reviews, settling unrelated claims or dispatching Code; a
+transient output-read failure leaves the exact intent pending for a later wake.
 
 > **OPERATOR STEP — cover the imported corpus; not executed on an enrolled hub.**
 > **Prerequisites:** the imported record revisions and producing-run preparations are retained

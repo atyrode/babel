@@ -14,7 +14,14 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import {
+  CitationBackfillInputSchema,
+  CitationBackfillRowSchema,
+  JOB_OUTPUT_FILES,
+} from "../contract.ts";
+import { citationBackfill } from "./citation-backfill.ts";
+import { directorySink } from "./output.ts";
 import {
   BABEL_TAG,
   RESTIC_VERBS,
@@ -99,6 +106,162 @@ process.exit(${exitCode});
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+/** Synthetic protocol failures cannot be produced by a healthy real restic repository. */
+async function withSnapshotChild(
+  script: string,
+  body: (repo: Repo, pidFile: string) => Promise<void>,
+): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "babel-snapshots-child-"));
+  const binary = join(root, "restic");
+  const pidFile = join(root, "pid");
+  writeFileSync(
+    binary,
+    `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+${script}
+`,
+    { mode: 0o755 },
+  );
+  try {
+    await body(
+      openRepo(config({ binary, repository: join(root, "repo"), cacheDir: join(root, "cache") })),
+      pidFile,
+    );
+  } finally {
+    try {
+      process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+    } catch {
+      // A settled child, or one whose launch was refused, has nothing left to kill.
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const snapshotRows = [
+  {
+    id: "a".repeat(64),
+    short_id: "aaaaaaaa",
+    parent: "c".repeat(64),
+    time: "2026-09-29T12:00:00.123456789Z",
+    hostname: "synthetic-host",
+    paths: ['/synthetic/é/{"escaped\\"}/sessions'],
+    tags: ["babel", "other"],
+  },
+  {
+    id: "b".repeat(64),
+    time: "2026-09-29T12:01:00Z",
+    hostname: "synthetic-store",
+    paths: ["/synthetic/store"],
+    tags: ["babel-store"],
+  },
+];
+
+test("snapshot discovery preserves identities and exact tags across stream framing at its bound", async () => {
+  await withSnapshotChild(
+    `const bytes = Buffer.from(${JSON.stringify(JSON.stringify(snapshotRows))});
+for (const byte of bytes) await Bun.write(Bun.stdout, new Uint8Array([byte]));`,
+    async (streaming) => {
+      expect(await streaming.snapshots([], { maxEntries: 2 })).toEqual(
+        snapshotRows.map((row) => ({
+          id: row.id,
+          shortId: row.id.slice(0, 8),
+          parentId: row.parent ?? null,
+          time: row.time,
+          host: row.hostname,
+          paths: row.paths,
+          tags: row.tags,
+        })),
+      );
+    },
+  );
+}, 10_000);
+
+test("citation discovery stops at 2048 snapshots without waiting for EOF and reaps its child", async () => {
+  await withSnapshotChild(
+    `await Bun.write(Bun.stderr, Buffer.alloc(2 << 20, "synthetic diagnostic\\n"));
+await Bun.write(Bun.stdout, "[");
+const row = ${JSON.stringify(snapshotRows[0])};
+for (let at = 0; at < 2048; at++) {
+  row.id = at.toString(16).padStart(64, "0");
+  await Bun.write(Bun.stdout, JSON.stringify(row) + ",");
+}
+await Bun.write(Bun.stdout, "{");
+const remainder = Buffer.alloc(64 << 10, " ");
+while (true) await Bun.write(Bun.stdout, remainder);`,
+    async (streaming, pidFile) => {
+      const digest = `sha256:${"a".repeat(64)}`;
+      const input = CitationBackfillInputSchema.parse({
+        runId: "run_bounded",
+        machineId: "machine_synthetic",
+        attemptId: "attempt_bounded",
+        tasks: [
+          {
+            recordId: "historical-record",
+            field: "evidence",
+            ordinal: 0,
+            citationDigest: digest,
+            basisDigest: digest,
+            path: "/synthetic/session.jsonl",
+            quote: "the submitted quotation",
+            locator: { coordinates: "raw", line: 1 },
+            source: {
+              host: "synthetic-host",
+              harness: "omp",
+              sourceId: "synthetic",
+              selector: "omp/synthetic",
+              captureDigest: digest,
+              sourceDigest: digest,
+              snapshotId: null,
+              path: null,
+              label: "synthetic-host",
+              sourceMode: "off",
+              sourceDetectors: null,
+            },
+            unavailable: null,
+          },
+        ],
+      });
+      const output = join(dirname(pidFile), "citation-output");
+      const receipt = await citationBackfill(input, directorySink(output), async () => streaming);
+      expect(receipt.counts).toMatchObject({ available: 0, unavailable: 1, unchecked: 1 });
+      const rows = CitationBackfillRowSchema.array().parse(
+        await Bun.file(join(output, JOB_OUTPUT_FILES.citationFacts)).json(),
+      );
+      expect(rows[0]?.result).toMatchObject({
+        status: "unavailable",
+        reason: "archive-unavailable",
+        check: { outcome: "unchecked" },
+        source: null,
+        excerpt: null,
+      });
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      expect(() => process.kill(pid, 0)).toThrow();
+    },
+  );
+}, 10_000);
+
+test.each([
+  `[${JSON.stringify(snapshotRows[0])}`,
+  `[${JSON.stringify(snapshotRows[0])},]`,
+  `[${JSON.stringify(snapshotRows[0])}] trailing`,
+  `[${JSON.stringify(snapshotRows[0])},null]`,
+  `[{"id":"${"x".repeat((1 << 20) + 1)}"}]`,
+])(
+  "snapshot discovery rejects incomplete or malformed inventories rather than returning a prefix %#",
+  async (document) => {
+    await withSnapshotChild(
+      `await Bun.write(Bun.stdout, ${JSON.stringify(document)});`,
+      async (streaming) => {
+        await expect(streaming.snapshots([], { maxEntries: 2 })).rejects.toMatchObject({
+          kind: "refused",
+        });
+      },
+    );
+  },
+  10_000,
+);
 
 beforeAll(
   whenRestic(async () => {

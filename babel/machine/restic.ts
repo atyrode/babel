@@ -360,7 +360,7 @@ export interface DumpOptions {
 }
 
 export interface ListingOptions {
-  /** Opt-in bound over parsed nodes: promptly terminate the child at the first excess node. */
+  /** Opt-in bound over discovered entries: promptly terminate the child at the first excess entry. */
   readonly maxEntries?: number;
 }
 
@@ -398,8 +398,9 @@ export interface Repo {
     attribution: { host: string; tags: readonly string[] },
   ): Promise<BackupOutcome>;
   /** Every snapshot the repository holds, restic's own order (newest last) — or, given ids,
-   *  only those of them it holds: an id it does not hold is left out, not refused. */
-  snapshots(ids?: readonly string[]): Promise<readonly Snapshot[]>;
+   *  only those of them it holds: an id it does not hold is left out, not refused. An optional
+   *  entry bound applies while streaming the inventory, before filtering or buffering it whole. */
+  snapshots(ids?: readonly string[], options?: ListingOptions): Promise<readonly Snapshot[]>;
   /**
    * Verifies the repository and reports what it found. Structure always; the stored bytes when
    * {@link CheckOptions.readData} asks for them.
@@ -616,26 +617,55 @@ class ResticRepo implements Repo {
     };
   }
 
-  async snapshots(ids: readonly string[] = []): Promise<readonly Snapshot[]> {
+  async snapshots(
+    ids: readonly string[] = [],
+    options: ListingOptions = {},
+  ): Promise<readonly Snapshot[]> {
+    if (
+      options.maxEntries !== undefined &&
+      (!Number.isSafeInteger(options.maxEntries) || options.maxEntries < 1)
+    )
+      throw new ResticError("refused", "snapshot entry bound must be a positive integer");
     const named = ids.length === 0 ? [] : ["--", ...ids.map(snapshotArgument)];
-    const stdout = await this.#run("list snapshots", resticArgv("snapshots", ["--json", ...named]));
-    const parsed: unknown = JSON.parse(stdout.trim() === "" ? "[]" : stdout);
-    if (!Array.isArray(parsed)) return [];
+    const child = this.#spawn(resticArgv("snapshots", ["--json", ...named]));
+    const tail = new Tail();
     const snapshots: Snapshot[] = [];
-    for (const row of parsed) {
-      if (!isRow(row)) continue;
-      const id = text(row, "id");
-      if (id === "") continue;
-      const parentId = text(row, "parent");
-      snapshots.push({
-        id,
-        shortId: text(row, "short_id") || id.slice(0, 8),
-        time: text(row, "time"),
-        parentId: parentId === "" ? null : parentId,
-        host: text(row, "hostname"),
-        paths: strings(row, "paths"),
-        tags: strings(row, "tags"),
-      });
+    const settle = async (consume: () => Promise<void>): Promise<void> => {
+      try {
+        await consume();
+      } catch (error) {
+        child.kill();
+        throw error;
+      }
+    };
+    const settled = await Promise.allSettled([
+      settle(async () => {
+        for await (const row of snapshotRows(child.stdout, options.maxEntries)) {
+          const id = text(row, "id");
+          if (id === "") throw new ResticError("refused", "snapshot has no identity");
+          const parentId = text(row, "parent");
+          snapshots.push({
+            id,
+            shortId: text(row, "short_id") || id.slice(0, 8),
+            time: text(row, "time"),
+            parentId: parentId === "" ? null : parentId,
+            host: text(row, "hostname"),
+            paths: strings(row, "paths"),
+            tags: strings(row, "tags"),
+          });
+        }
+      }),
+      settle(async () => {
+        for await (const line of readLines(child.stderr)) tail.push(line);
+      }),
+      child.exited,
+    ]);
+    for (const result of settled) {
+      if (result.status === "rejected") throw result.reason;
+    }
+    const code = await child.exited;
+    if (code !== 0) {
+      throw new ResticError("exit", `restic snapshots failed (exit ${code})`, code, tail.toString());
     }
     return snapshots;
   }
@@ -1020,6 +1050,67 @@ async function consume(
     }
   }
   return report;
+}
+
+/**
+ * restic snapshots is one JSON array, not NDJSON. Frame one bounded object at a time,
+ * counting entries before buffering them; malformed or incomplete discovery is never a
+ * partial inventory. Braces inside escaped strings do not delimit snapshot identities.
+ */
+async function* snapshotRows(
+  stream: ReadableStream<Uint8Array>,
+  maxEntries: number | undefined,
+): AsyncGenerator<Record<string, unknown>> {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let state: "start" | "first" | "next" | "object" | "separator" = "start";
+  let ended = false;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  let held = "";
+  let entries = 0;
+  for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
+    const text = decoder.decode(chunk, { stream: true });
+    let start = 0;
+    for (let at = 0; at < text.length; at++) {
+      const char = text[at]!;
+      if (state !== "object") {
+        if (char === " " || char === "\n" || char === "\r" || char === "\t") continue;
+        if (ended) throw new ResticError("refused", "data after snapshot discovery");
+        if (state === "start" && char === "[") state = "first";
+        else if ((state === "first" || state === "separator") && char === "]") ended = true;
+        else if (state === "separator" && char === ",") state = "next";
+        else if ((state === "first" || state === "next") && char === "{") {
+          if (maxEntries !== undefined && ++entries > maxEntries)
+            throw new ResticError("refused", "snapshot discovery exceeded the requested entry bound");
+          state = "object";
+          depth = 1;
+          start = at;
+        } else throw new ResticError("refused", "invalid snapshot discovery");
+        continue;
+      }
+      if (held.length + at - start + 1 > MAX_JSON_LINE)
+        throw new ResticError("refused", "snapshot discovery entry exceeded the byte bound");
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') quoted = false;
+      } else if (char === '"') quoted = true;
+      else if (char === "{" || char === "[") depth++;
+      else if (char === "}" || char === "]") {
+        if (--depth !== 0) continue;
+        held += text.slice(start, at + 1);
+        const row: unknown = JSON.parse(held);
+        if (!isRow(row)) throw new ResticError("refused", "invalid snapshot discovery entry");
+        yield row;
+        held = "";
+        state = "separator";
+      }
+    }
+    if (state === "object") held += text.slice(start);
+  }
+  decoder.decode();
+  if (!ended) throw new ResticError("refused", "incomplete snapshot discovery");
 }
 
 /**

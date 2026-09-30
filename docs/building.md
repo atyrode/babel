@@ -131,6 +131,14 @@ its runs, and `RETIRED_OPERATIONS` in `contract.ts` is what still names them. Th
 configures Recall's instance service and exact disclosure-class grant targets, not an outside
 caller's native job.
 
+Citation discovery consumes restic's JSON snapshot array one bounded object at a time. Its
+2,048-entry ceiling is enforced before the full inventory can be buffered; excess or malformed
+output kills and settles the child while draining its diagnostic pipe. Citation lifecycle wakes
+use a receipt-only path scoped to the retained job identity, not the generic conductor cycle.
+Synthetic streaming children exercise discovery refusal and process cleanup; synthetic restic
+and store consumers exercise archived source identity and immutable facts. None of those
+fixtures establishes real imported-corpus coverage or a deployed archive/disclosure grant.
+
 **A MACHINE ANSWERS FOR TOOLS BY NAME, AND THE FLEET ADVERTISES TWO** (`development` and
 `system`, plus anchors). Until #303 this half asked for `bun`, `git` and `restic` by name, so
 `engine.jobs.reviewDeployment` answered `resource_evidence_unknown` and Babel had **no native

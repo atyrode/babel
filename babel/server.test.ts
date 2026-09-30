@@ -448,6 +448,81 @@ test("a settled job of this plugin's ingests what finished, through its own hand
   expect(claim[0]).toMatchObject({ outcome: "failed", actual_cost: 0 });
 });
 
+test.each([
+  ["exited", "completed"],
+  ["cancelled", "stopped"],
+  ["refused", "failed"],
+] as const)(
+  "citation %s settlement closes only its retained job without drawing or dispatching paid work",
+  async (state, expected) => {
+    await pending();
+    await insert(harness.db, "records", {
+      id: "hyp_43100001",
+      root_id: "hyp_43100001",
+      kind: "hypothesis",
+      seq: 0,
+      actor_kind: "run",
+      actor_id: "seed",
+      title: "A candidate for the enabled paid review route",
+      created_at: stamp(Date.now() - HOUR),
+      payload: JSON.stringify({ statement: "An eligible synthetic claim" }),
+    });
+    for (const suffix of ["own", "other"]) {
+      await insert(harness.db, "runs", {
+        id: `run_citation_${suffix}`,
+        kind: MACHINE_OPERATIONS.citationBackfill,
+        machine_id: MACHINE,
+        job_id: `job_citation_${suffix}`,
+        started_at: stamp(NOW - HOUR),
+        records: 0,
+        payload: "{}",
+      });
+    }
+    const claims = await harness.db.query("SELECT * FROM claims ORDER BY id");
+    jobs.status = (node) => {
+      jobs.statuses++;
+      return {
+        ...node,
+        machineId: MACHINE,
+        operationId: MACHINE_OPERATIONS.citationBackfill,
+        state,
+        result: state === "refused" ? null : { state, exitCode: 0, reason: null, outputs: [] },
+      };
+    };
+    const fake = code();
+    const ctx = wake(harness.db as unknown as GuestDatabase, fake.actions);
+    const own = settled({
+      jobId: "job_citation_own",
+      operationId: MACHINE_OPERATIONS.citationBackfill,
+      state,
+    });
+    await plugin.lifecycle!.onJobSettled!(ctx as never, own);
+    expect(await harness.db.query("SELECT id, closure FROM runs ORDER BY id")).toEqual([
+      { id: "run_citation_other", closure: null },
+      { id: "run_citation_own", closure: expected },
+      { id: "run_live", closure: null },
+    ]);
+    expect(await harness.db.query("SELECT * FROM claims ORDER BY id")).toEqual(claims);
+    expect(fake.asked).toEqual([]);
+    expect(fake.bought).toBe(0);
+    expect(jobs.scheduled).toEqual([]);
+    expect(jobs.described).toBe(0);
+    expect(jobs.listed).toBe(0);
+    expect(jobs.statuses).toBe(1);
+
+    // Replay, an unretained job and a callback at another machine authorize no extra read.
+    for (const event of [
+      own,
+      { ...own, jobId: "job_unretained" },
+      { ...own, machineId: "other-machine", jobId: "job_citation_other" },
+    ])
+      await plugin.lifecycle!.onJobSettled!(ctx as never, event);
+    expect(jobs.statuses).toBe(1);
+    expect(await harness.db.query("SELECT * FROM claims ORDER BY id")).toEqual(claims);
+    expect(fake.bought).toBe(0);
+  },
+);
+
 test("a settled job of another plugin's is not this one's to ingest", async () => {
   await pending();
 

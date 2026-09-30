@@ -37,6 +37,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Citation evidence stays unavailable when a competing capture cannot be checked.** An
+  unreadable or oversized candidate cannot be silently discarded after a readable match.
+  Snapshot discovery enforces its 2,048-entry cap while consuming restic output and settles
+  both pipes and the child on refusal. Citation-job callbacks ingest only their retained job's
+  receipt, without entering scheduling, paid review draws or Code dispatch. Synthetic regressions
+  cover discovery order, quote-free omissions, streaming bounds, cleanup and scoped settlement;
+  actual imported-corpus operation and measured coverage remain separate, unperformed acceptance.
+
+## [0.5.8] - 2026-09-30
+
+### Fixed
+
 - **The plugin closure follows Manifold's credential-bound lifecycle metadata.** The SDK and
   both workflow refs move to `0701320`, with Code `4bae10b` and OMP `f67e4f1` on the same
   revision. It supplies the optional hook metadata and physical-core inventory needed by

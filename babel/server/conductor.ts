@@ -1177,7 +1177,11 @@ export function tarMembers(bytes: Uint8Array): TarMember[] {
 }
 
 /** Reads one sealed output whole, in the chunks the engine serves. */
-async function readOutput(jobs: JobsSlice, node: OutputRef, bytes: number): Promise<Uint8Array> {
+async function readOutput(
+  jobs: Pick<JobsSlice, "output">,
+  node: OutputRef,
+  bytes: number,
+): Promise<Uint8Array> {
   if (bytes > MAX_OUTPUT_BYTES) {
     throw new Error(`output ${node.outputId} is ${String(bytes)} bytes, past what the hub ingests`);
   }
@@ -1750,7 +1754,7 @@ async function ingestSessions(
  */
 export async function ingestOutputs(
   store: BabelStore,
-  jobs: JobsSlice,
+  jobs: Pick<JobsSlice, "output">,
   target: IngestTarget,
 ): Promise<IngestResult> {
   const files = new Map<string, unknown>();
@@ -1921,6 +1925,43 @@ export async function ingestOutputs(
   }
   store.touch();
   return { runId, rows, skipped, receipt, notes, refusals };
+}
+
+/**
+ * One owner-requested citation job, receipt only. No policy, claims, Code engine or posting
+ * capability belongs to this path. A failed read retains the exact intent for a later wake.
+ */
+export async function reconcileCitationBackfill(
+  store: BabelStore,
+  jobs: Pick<JobsSlice, "status" | "output">,
+  node: JobRef,
+): Promise<(IngestResult & { closure: string }) | null> {
+  if (node.operationId !== MACHINE_OPERATIONS.citationBackfill) return null;
+  const pending = await store.db.query<{ id: string }>(
+    `SELECT id FROM runs WHERE kind=? AND machine_id=? AND job_id=? AND closure IS NULL`,
+    [node.operationId, node.machineId, node.jobId],
+  );
+  const run = pending[0];
+  if (run === undefined) return null;
+  const state = await jobs.status(node);
+  if (state === null) return null;
+  if (
+    state.jobId !== node.jobId ||
+    state.machineId !== node.machineId ||
+    state.operationId !== node.operationId
+  )
+    throw new Error("citation job status does not match its retained identity");
+  if (TERMINAL_STATES[state.state] !== true) return null;
+  const result = await ingestOutputs(store, jobs, {
+    runId: run.id,
+    jobId: node.jobId,
+    machineId: node.machineId,
+    operationId: node.operationId,
+    outputs: state.result?.outputs ?? [],
+    closure: closureOf(state),
+    reason: nativeReason(state),
+  });
+  return { ...result, closure: result.receipt?.closure ?? closureOf(state) };
 }
 
 // ---------------------------------------------------------------------------- the loop
@@ -5886,6 +5927,32 @@ export function conductor(deps: ConductorDeps): Conductor {
     // no longer waited on is not selected, and one that answers is set back to zero in place.
     try {
       for (const run of pending) {
+        if (run.kind === MACHINE_OPERATIONS.citationBackfill) {
+          try {
+            const result = await reconcileCitationBackfill(store, jobs, {
+              kind: "job",
+              machineId: run.machine_id,
+              operationId: run.kind,
+              jobId: run.job_id,
+            });
+            if (result === null) inFlight++;
+            else {
+              notes.push(...result.notes);
+              ingested.push({
+                runId: result.runId,
+                jobId: run.job_id,
+                closure: result.closure,
+                costUsd: 0,
+                rows: result.rows,
+                skipped: result.skipped,
+              });
+            }
+          } catch {
+            notes.push(`citation job ${run.job_id} outputs remain pending`);
+            inFlight++;
+          }
+          continue;
+        }
         if (run.kind !== OPERATIONS.mapCatalog) await renewAnalysis(run.job_id, at, policy);
         // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
         // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it

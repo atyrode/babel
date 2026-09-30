@@ -119,6 +119,68 @@ test("native backfill resolves one historical snapshot prefix and refuses an una
       check: { outcome: "verified" },
       source: { snapshotId: [first.id, identical.id].sort()[0], path },
     });
+    // Discovery order cannot make an unreadable competing copy disappear after a match.
+    for (const failure of ["unreadable", "oversized"] as const) {
+      for (const order of ["before", "after"] as const) {
+        const readableId = (order === "before" ? "2" : "1").repeat(64);
+        const competingId = (order === "before" ? "1" : "2").repeat(64);
+        const destination = join(archive.home, `citation-${failure}-${order}`);
+        const competing: Pick<Repo, "snapshots" | "lsTo" | "dumpTo"> = {
+          snapshots: async () => [
+            { ...first, id: readableId },
+            { ...first, id: competingId },
+          ],
+          lsTo: async (id, sink) => {
+            await sink({
+              path,
+              type: "file",
+              size:
+                id === competingId && failure === "oversized"
+                  ? CITATION_CAPTURE_MAX_BYTES + 1
+                  : Buffer.byteLength(original) + 1,
+              modifiedAt: first.time,
+            });
+          },
+          dumpTo: async (id, named, sink, options) => {
+            if (id === readableId) return await archive.repo.dumpTo(first.id, named, sink, options);
+            // Even a child that emits apparently matching bytes before failing is unavailable.
+            await sink(new TextEncoder().encode(`${original}\n`));
+            throw new Error("synthetic inaccessible competitor");
+          },
+        };
+        const refused = await citationBackfill(
+          {
+            runId: "run_competing",
+            machineId: "machine_synthetic",
+            attemptId: "attempt_competing",
+            tasks: [
+              { ...task, source: { ...source, snapshotId: null } },
+              { ...task, ordinal: 1, quote: "", source: { ...source, snapshotId: null } },
+            ],
+          },
+          directorySink(destination),
+          async () => competing,
+        );
+        const results = CitationBackfillRowSchema.array().parse(
+          await Bun.file(join(destination, JOB_OUTPUT_FILES.citationFacts)).json(),
+        );
+        expect(refused.counts).toMatchObject({
+          available: 0,
+          unavailable: 2,
+          unchecked: 1,
+          unquoted: 1,
+        });
+        for (const [index, row] of results.entries()) {
+          expect(row.result).toMatchObject({
+            status: "unavailable",
+            reason: failure === "unreadable" ? "archive-unavailable" : "capture-size-bound",
+            check: { outcome: index === 0 ? "unchecked" : "unquoted" },
+            source: null,
+            excerpt: null,
+          });
+        }
+      }
+    }
     const oversized = join(archive.home, "citation-oversized");
     const oversizedRepo: Pick<Repo, "snapshots" | "lsTo" | "dumpTo"> = {
       snapshots: async () => [first],
