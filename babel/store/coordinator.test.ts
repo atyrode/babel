@@ -881,8 +881,9 @@ test("an unacknowledged review posting occupies its machine and cannot be taken 
   if (granted.outcome !== "granted") throw new Error(granted.refusal.detail);
   await db.run(
     `INSERT INTO runs(id,kind,machine_id,authority_kind,authority_id,preparation,started_at,records,payload)
-      VALUES ('pending-review','evaluate','review-machine','conductor','cycle_review',?,?,0,?)`,
+      VALUES ('pending-review',?,'review-machine','conductor','cycle_review',?,?,0,?)`,
     [
+      OPERATIONS.evaluate,
       JSON.stringify({ review: { assignmentId: assignment.id, fence: granted.claim.fence } }),
       new Date(NOW).toISOString(),
       JSON.stringify({
