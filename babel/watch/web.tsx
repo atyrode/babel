@@ -496,7 +496,7 @@ export function Watch({ host }: PanelProps) {
           onStart={onDrainStart}
           onStop={onDrainStop}
         />
-        <Recipes recipes={policy.value?.recipes ?? []} now={now} note={policyNote} />
+        <Recipes host={host} recipes={policy.value?.recipes ?? []} now={now} note={policyNote} />
         <Ceilings policy={policy.value} now={now} note={policyNote} />
         {/*
         LAST, under the ceilings, because it is the least frequent thing an operator does here:

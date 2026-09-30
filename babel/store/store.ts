@@ -493,7 +493,7 @@ const REFERENCE_URL =
  * asks for rather than the situation it describes: depth one is what a reader decides whether to
  * care about, and the problem is the first line of the case beneath it.
  */
-function claimOf(kind: string, payload: Record<string, unknown>, title: string): string {
+export function claimOf(kind: string, payload: Record<string, unknown>, title: string): string {
   switch (kind) {
     case "hypothesis":
       return stringField(payload, "statement") || title;
