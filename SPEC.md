@@ -515,6 +515,12 @@ edge, disposition or ranking. Readings in the panels last for the browser sessio
 suggestions are durable. A silent reading leaves no durable completion mark and can be offered
 again after the bounded process memo loses its answer.
 
+The shared review draw may consume cached current-revision Jev readings (§5.8). This is an
+explicit exception to the historical “out of credit means no reading” shorthand: a free readiness
+read cannot establish funding, so retained answers remain usable with funding **unknown**.
+No review draw probes credit or buys a judgement. Absence, disablement, a missing current answer
+or an unavailable metadata fence retains the baseline selection and cannot refuse a cycle.
+
 Pair maintenance is a separate bounded request over explicitly named anchors, not an exhaustive
 all-pairs claim. One ordered-pair judgement answers both contradiction and later-state questions.
 The caller supplies measured confidence cuts; an unstated cut is uncalibrated and cannot buy a
@@ -830,10 +836,50 @@ overrun is recorded in full and prevents further admission. Policy also supplies
 and a response to repeated skips, so unreachable items and persistent disagreement cannot create
 an unbounded retry obligation. An interrupted assignment does not count as a review.
 
-Periodic coverage checks complement random selection: reserve initial-review attention for the
-oldest due, eligible unreviewed artifacts, independently of their popularity. Exact weights,
-targets, cooldowns, shares and ceilings are configurable values of a documented policy version,
-recorded with each assignment so a selection can be replayed against its captured inputs.
+Periodic coverage checks complement random selection: reserve initial-review attention for
+eligible unreviewed artifacts, independently of feed popularity. Without optional current cached
+advice, coverage and discovery remain oldest-due and oldest-untouched respectively. Policy shares,
+cooldowns, budget ceilings, claims and eligibility are unchanged by advice.
+
+Jev publishes through the baseline's `reviewReadings` door, which authenticates the host's
+immediate plugin caller. This is explicitly **ephemeral advisory publication**, not a durable
+write or a scheduling grant. A completed sweep refreshes the named records automatically;
+`atyrode.babel.jev.refreshReviewReadings` can refresh named records from the existing memo only.
+The baseline never calls or imports Jev, and no provider gains a ruling, job or service grant.
+The handoff keeps `containers:read` as its caller gate. Its native service metadata delegates
+use only the manifests' existing authority: the refresh lends `services:invoke`, and the
+baseline lends `services:read`/`services:invoke`. The host still intersects these with the
+current principal's authority at the service operation. A reader without that authority gets
+the ordinary draw, not an invocation or a new permission. Cache-only helpers receive only
+`listInstances`, not an invocation handle, and publication arguments are opaque to host traces.
+
+The inbox holds at most 256 readings for five minutes after publication and dies with the
+baseline process. Current immutable record identity, revision and exact text digest bind the
+handoff; the memo key also includes the shipped bank, per-kind document and service-policy
+revision. Installed provider bytes and enablement epoch plus live service readiness/revision
+fence admission and consumption. TTL is checked again after asynchronous metadata reads.
+Missing metadata degrades to the ordinary draw rather than refusing. The pinned Manifold
+lifecycle context exposes neither `host` nor `services`: enable and job-settlement wakes
+therefore cannot consume advice yet. Automatic lifecycle consumption requires a current,
+read-only host/service metadata slice under the installer's or settled job's own credential;
+an earlier dispatch's captured context or caller-auth check cannot substitute for it. This
+is an outstanding #361 prerequisite, not evidence of automatic advice on this pin.
+Nothing is written to an assessment, record, disposition or feed-rank table.
+
+Within the existing lanes, descending net tally divided by admitted-panel size precedes age in
+coverage and discovery; ties, absent readings and answered zero retain age priority. The weighted
+lane multiplies its existing weight by two raised to that signed share, bounded between one half
+and twice baseline. This is an advisory scheduling rule, not a calibrated probability. Every
+eligible candidate remains drawable. Exploration stays uniform; filing and backlog keep their
+ordinary order. There is no separate Jev pool or eligibility threshold.
+
+Review preparation receipts record selection/degradation reasons, provider/policy revisions,
+coverage counts, a selected-reading digest and unknown funding when a handoff exists; the
+prompt remains blinded. Neither preparation nor receipt retains standing, tally, heard or
+roster. The input digest accounts for numeric advisory inputs, but the shared seed is derived
+only from baseline inputs: advice cannot change activity shares or lane reservations, even
+when the caller supplies no seed. There is one random stream, not a second draw. Receipts contain
+no reading payload and do not promise replay after the transient inputs expire.
 
 ## 6. Processing pipeline
 

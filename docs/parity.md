@@ -90,6 +90,25 @@ assumed from that row alone.
   far has been synthetic, so "Babel's reviewers vote" is proven against fixtures and not against
   a hub. That is an evidence boundary, not a defect, and `docs/runbook.md` states it.
 
+  The same draw now accepts optional cached Jev advice (#361), published by the authenticated
+  part through an ephemeral baseline inbox (`babel/server/review-readings.ts`). It is not a
+  second review pool: coverage/discovery add advisory priority and weighted review applies a
+  bounded positive multiplier, while exploration stays uniform. Missing, disabled, stale or
+  unavailable readings keep the original lane/age draw. The inbox is limited to 256 readings
+  for five minutes, fenced by record text/revision, provider installation and service policy;
+  it creates no durable assessments and changes no eligibility, claim or budget rule. A sweep
+  publishes its cached positions and `refreshReviewReadings` can refresh named cached records
+  without invoking Jev. Existing service delegates preserve the non-root caller ceiling;
+  missing service-operation authority remains absence rather than a grant. Funding is explicitly
+  unknown, including on a warm cache hit; no credit probe or inference allowance was added.
+  Selection reasons and digests travel in the existing review preparation receipt, never a
+  standing/tally/heard/roster copy or the blinded prompt. Implicit seeds preserve baseline
+  activity/lane entropy, and TTL is rechecked after metadata awaits.
+  **Automatic lifecycle consumption remains blocked on the pinned host:** enable and
+  job-settlement contexts expose neither host roster nor service metadata. They must gain a
+  read-only slice bound to their own current credential before #361 can claim automatic advice;
+  a dispatch context retained across wakes is not an acceptable substitute.
+
 ## What this document is for
 
 It is the evidence that deleting the Go tree lost nothing silently. A capability that is absent

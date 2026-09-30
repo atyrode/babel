@@ -229,6 +229,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The shared review draw can use cached current Jev advice without spending (#361).**
+  Sweeps and a cache-only refresh publish through an authenticated, one-way ephemeral handoff.
+  Its bounded, five-minute inbox is fenced by current text/revision, installed provider bytes
+  and service policy. Advisory priority stays inside the existing review lanes; exploration
+  remains uniform and no eligible record is vetoed. Missing, disabled, stale or inaccessible
+  readings preserve the original draw, claims and budgets. Advice no longer changes the
+  implicit seed for activity/lane reservations, and expiry is checked after metadata awaits.
+  Review preparations and receipts retain only reasons, provenance digests and unknown funding,
+  never the cached opinion. Cache-only doors use existing native service delegates without
+  widening either manifest or caller permission. No credit probe, inference budget, feed rank,
+  ruling, durable assessment store or Jev capability was added.
+  Automatic consumption on enable/job settlement is still blocked by the pinned host's missing
+  lifecycle host/service metadata slice; dispatch-only evidence does not close #361.
+
 - **Mapping is a standing, weighted activity.** A policy's `activityWeights` gains `map`, which
   defaults to 0; a policy written before it reads as 0. While `map` is above zero and the policy
   installs a mapping route, the conductor keeps mapping work in flight on its own, with no drain.

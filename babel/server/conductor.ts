@@ -6457,6 +6457,11 @@ export function conductor(deps: ConductorDeps): Conductor {
         ordinal: assignment.ordinal,
         seed: assignment.seed,
         inputDigest: assignment.inputDigest,
+        ...(assignment.reviewSelection === undefined
+          ? {}
+          : {
+              reviewSelection: assignment.reviewSelection,
+            }),
         refinementDepth,
         maxRefinementDepth: route.maxRefinementDepth ?? 2,
         blinded: true,

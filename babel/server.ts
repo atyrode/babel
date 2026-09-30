@@ -59,6 +59,7 @@ import {
   type BabelJobs,
 } from "./server/plan.ts";
 import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
+import { ReviewReadings, type ReadingMetadata } from "./server/review-readings.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { ensureTerms } from "./store/corpus.ts";
 import { activeDrains, deadlineOf, readDrain, type DrainRow } from "./store/drains.ts";
@@ -114,7 +115,11 @@ const SENTINEL_TABLE = "records";
  * for the process. In-realm the engine's handles are the same objects every time and the store
  * and the loop below never notice the difference.
  */
-type Bound = { readonly database: GuestDatabase; readonly storage: GuestStorage };
+type Bound = {
+  readonly database: GuestDatabase;
+  readonly storage: GuestStorage;
+  readonly readingMetadata?: ReadingMetadata;
+};
 
 const dispatched = new AsyncLocalStorage<Bound>();
 /** What the enable hook was given: what a lifecycle hook and a schedule read through. */
@@ -168,7 +173,13 @@ const CONCURRENT_JOBS = jobCeiling(manifest);
  * took `null` as "unbounded" would let one machine be asked for any number of jobs at once.
  */
 const DRAIN_FAN = CONCURRENT_JOBS ?? DRAIN_CONCURRENT_MAX;
-const coordinated = coordinator(store, () => store.now(), CONCURRENT_JOBS);
+const reviewReadings = new ReviewReadings(store, () => store.now());
+const coordinated = coordinator(
+  store,
+  () => store.now(),
+  CONCURRENT_JOBS,
+  async () => await reviewReadings.snapshot(dispatched.getStore()?.readingMetadata),
+);
 
 /**
  * WHAT A RUN OF AN OPERATION RUNS UNDER: its declared limits, and whether the owner may meter
@@ -1167,6 +1178,7 @@ const doors = babelDoors(
       admission.route.executorMachineId,
       admission,
     ),
+  reviewReadings,
 );
 
 /**
@@ -1186,28 +1198,38 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
   handlers[name] = async (ctx, args) => {
     const served = ctx.database;
     if (served === undefined) return await handler(ctx, args);
-    return await dispatched.run({ database: served, storage: ctx.storage }, async () => {
-      const produced = await handler(ctx, args);
-      const at = ctx.now();
-      const refused =
-        produced !== null && typeof produced === "object" && Object.hasOwn(produced, "refused");
-      if (wakes && !refused) {
-        const observing = Object.hasOwn(READ_WAKES, name);
-        if (!observing || at - observedAt >= WAKE_FLOOR_MS) {
-          if (observing) observedAt = at;
-          try {
-            const jobs = jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive));
-            const machines = machinesSlice(ctx.machines);
-            const chain = principalChain(ctx.principal.id);
-            if (observing) await observeCycle(jobs, machines, ctx.actions, chain, ctx.services);
-            else await cycle(jobs, machines, ctx.actions, chain, ctx.services);
-          } catch (error) {
-            console.warn(`${BABEL_PLUGIN_ID}: the cycle after ${name} failed: ${message(error)}`);
+    return await dispatched.run(
+      {
+        database: served,
+        storage: ctx.storage,
+        readingMetadata: {
+          host: ctx.host,
+          services: { listInstances: (input) => ctx.services.listInstances(input) },
+        },
+      },
+      async () => {
+        const produced = await handler(ctx, args);
+        const at = ctx.now();
+        const refused =
+          produced !== null && typeof produced === "object" && Object.hasOwn(produced, "refused");
+        if (wakes && !refused) {
+          const observing = Object.hasOwn(READ_WAKES, name);
+          if (!observing || at - observedAt >= WAKE_FLOOR_MS) {
+            if (observing) observedAt = at;
+            try {
+              const jobs = jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive));
+              const machines = machinesSlice(ctx.machines);
+              const chain = principalChain(ctx.principal.id);
+              if (observing) await observeCycle(jobs, machines, ctx.actions, chain, ctx.services);
+              else await cycle(jobs, machines, ctx.actions, chain, ctx.services);
+            } catch (error) {
+              console.warn(`${BABEL_PLUGIN_ID}: the cycle after ${name} failed: ${message(error)}`);
+            }
           }
         }
-      }
-      return produced;
-    });
+        return produced;
+      },
+    );
   };
 }
 

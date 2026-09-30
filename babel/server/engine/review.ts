@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { JOB_OUTPUT_FILES, REFINEMENT_KEY, ROLES, type Refinement } from "../../contract.ts";
+import {
+  JOB_OUTPUT_FILES,
+  REFINEMENT_KEY,
+  ROLES,
+  ReviewSelectionSchema,
+  type Refinement,
+  type ReviewSelection,
+} from "../../contract.ts";
 import {
   acceptReviewResult,
   contributionRefusal,
@@ -61,6 +68,7 @@ export interface ReviewPreparation {
   readonly inputDigest: string;
   readonly blinded: boolean;
   readonly recipe: { readonly id: string; readonly version: number };
+  readonly reviewSelection?: ReviewSelection | undefined;
 }
 
 const ReviewPreparationSchema = z.strictObject({
@@ -80,6 +88,7 @@ const ReviewPreparationSchema = z.strictObject({
   maxRefinementDepth: z.number().int().min(0),
   blinded: z.boolean(),
   recipe: z.strictObject({ id: z.string().min(1), version: z.number().int().min(0) }),
+  reviewSelection: ReviewSelectionSchema.optional(),
 });
 
 export function reviewPreparation(value: unknown): ReviewPreparation | null {
