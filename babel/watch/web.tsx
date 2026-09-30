@@ -47,6 +47,7 @@ import {
   type TopicsResult,
   type WatchPulse,
 } from "./api.ts";
+import { Allocation } from "./allocation.tsx";
 import { Archive } from "./archive.tsx";
 import { Ceilings } from "./ceilings.tsx";
 import { Cycle } from "./cycle.tsx";
@@ -498,6 +499,7 @@ export function Watch({ host }: PanelProps) {
         />
         <Recipes host={host} recipes={policy.value?.recipes ?? []} now={now} note={policyNote} />
         <Ceilings policy={policy.value} now={now} note={policyNote} />
+        <Allocation key={`${host.principal.id}:${host.containerId ?? ""}`} host={host} />
         {/*
         LAST, under the ceilings, because it is the least frequent thing an operator does here:
         a service policy is installed once per machine and then re-read only when something has
