@@ -2,7 +2,10 @@ import { ActionCallError } from "@manifold/plugin-kit/errors";
 import {
   CreateRunRequestSchema,
   CreateRunResultSchema,
+  GetAgentResultSchema,
   actionResultProjectionDigest,
+  type PluginRoster,
+  type CreateRunRequest,
 } from "@manifold/protocol";
 import {
   CODE_PLUGIN_ID,
@@ -16,12 +19,17 @@ import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   ENGINE_REFUSALS,
+  JEV_ACTIONS,
+  JEV_ASK_CAP,
+  JEV_PLUGIN_ID,
+  JEV_REVIEW_RESULT_PROJECTION,
   MATERIAL_OUTPUT,
   REVIEW_ACTION_CAP,
   REVIEW_ACTION_RESULT_PROJECTION,
   type CodeProfile,
   type EngineRefusalCode,
   type ProfileRow,
+  type ReviewRunAdmission,
 } from "../../contract.ts";
 
 /*
@@ -218,7 +226,7 @@ export interface CodeEngine {
   createReviewRun?(request: {
     agentId: string;
     lifetimeMs: number;
-  }): Promise<EngineAnswer<{ runId: string; agentId: string }>>;
+  }): Promise<EngineAnswer<ReviewRunAdmission>>;
   /** One session, posted by Code as an omp job. */
   runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>>;
   /** Where a posted session is, and what its transcript yielded. */
@@ -296,7 +304,10 @@ const RUN_ADMISSION_REFUSALS =
  * Code's schema. A refusal is a REJECTION the host raised, folded by {@link translate}; a
  * slice that is absent refuses every call by name rather than being asked.
  */
-export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
+export function codeEngine(
+  actions: ActionsSlice | undefined,
+  host?: { roster(): Promise<PluginRoster> },
+): CodeEngine {
   /** One refusal of this file's own, in the sentence every caller reports verbatim. */
   function refuse<T>(code: EngineCode, detail: string): EngineAnswer<T> {
     return { ok: false, code, refused: `${code}: ${detail}` };
@@ -458,85 +469,150 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
 
     createReviewRun: async ({ agentId, lifetimeMs }) => {
       if (actions === undefined) return refuse(ENGINE_REFUSALS.unavailable, ENGINE_WITHOUT_ACTIONS);
-      const request = CreateRunRequestSchema.safeParse({
-        agentId,
-        caps: [REVIEW_ACTION_CAP],
-        tools: [`${BABEL_PLUGIN_ID}.${ACTIONS.reviewAction}`],
-        target: "manifold://",
-        reach: "node",
-        lifetimeMs: Math.min(lifetimeMs, 3_600_000),
-        delegation: { maxDepth: 0, maxDescendants: 0 },
-      });
-      if (!request.success)
-        return refuse(
-          ENGINE_REFUSALS.refused,
-          "review Run lease or Agent is outside the admission bounds",
-        );
-      let answer: unknown;
+      const ordinary = `${BABEL_PLUGIN_ID}.${ACTIONS.reviewAction}`;
+      const optional = `${JEV_PLUGIN_ID}.${JEV_ACTIONS.ask}`;
+      const ordinaryDigest = await actionResultProjectionDigest(REVIEW_ACTION_RESULT_PROJECTION);
+      const optionalDigest = await actionResultProjectionDigest(JEV_REVIEW_RESULT_PROJECTION);
+      let jev = false;
+      // Discovery is not approval. Missing metadata, an old part or an existing Agent without
+      // this exact publication approval selects the ordinary typed Run, not text fallback.
       try {
-        answer = await actions.call({
-          plugin: "core.access",
-          action: "createRun",
-          input: request.data,
-        });
-      } catch (error) {
-        const text = error instanceof Error ? error.message : String(error);
-        const known =
-          error instanceof ActionCallError ||
-          (error instanceof Error && error.name === "ActionCallRefused");
-        const matched = known ? REFUSAL_SENTENCE.exec(text) : null;
-        const early = matched === null ? undefined : HOST_CLASSES[matched[1] ?? ""];
-        if (early !== undefined && matched?.[1] !== "refused")
-          return refuse(early, "governed review Run admission was refused before dispatch");
-        if (matched?.[1] === "refused" && RUN_ADMISSION_REFUSALS.test(matched[2] ?? ""))
-          return refuse(
-            ENGINE_REFUSALS.forbidden,
-            "the existing Agent grant does not admit this review Run",
+        const provider = (await host?.roster())?.find((row) => row.manifest.id === JEV_PLUGIN_ID);
+        const tool = provider?.actions.find((row) => row.name === optional);
+        if (
+          provider?.enabled &&
+          !provider.held &&
+          provider.install &&
+          !provider.install.refusal &&
+          provider.install.grantedCaps.includes(JEV_ASK_CAP) &&
+          tool?.resultProjection &&
+          tool.caps.length === 1 &&
+          tool.caps[0] === JEV_ASK_CAP &&
+          (await actionResultProjectionDigest(tool.resultProjection)) === optionalDigest
+        ) {
+          const observed = GetAgentResultSchema.safeParse(
+            await actions.call({
+              plugin: "core.access",
+              action: "getAgent",
+              input: { agentId },
+            }),
           );
-        // Do not retain an arbitrary error message: admission replies can carry credentials.
-        return refuse(
-          ENGINE_REFUSALS.unconfirmed,
-          "governed review Run creation is unresolved; no model session was posted",
-        );
+          if (observed.success && observed.data.agent.agentId === agentId) {
+            const grant = observed.data.agent.grant;
+            const approved = grant.tools?.find((row) => row.door === optional);
+            // Native delegates attenuate the caller; they never lend service authority. The
+            // single-target Run needs the existing root-subtree scope to reach an instance
+            // service on a machine other than its OMP worker. No standing grant is widened.
+            jev =
+              grant.caps.includes(JEV_ASK_CAP) &&
+              grant.caps.includes("services:invoke") &&
+              grant.targets.includes("manifold://") &&
+              grant.reach === "subtree" &&
+              approved?.contractDigest === optionalDigest &&
+              (approved.maxResultBytes === undefined ||
+                approved.maxResultBytes >= JEV_REVIEW_RESULT_PROJECTION.maxResultBytes);
+          }
+        }
+      } catch {
+        // Neither availability nor readiness proves remaining credit; no credit probe is made.
       }
-      const parsed = CreateRunResultSchema.safeParse(answer);
-      if (!parsed.success)
-        return refuse(
-          ENGINE_REFUSALS.unconfirmed,
-          "governed review Run creation returned an unconfirmed result",
-        );
-      const run = parsed.data.run;
-      if (
-        run.agentId !== agentId ||
-        run.session !== null ||
-        run.target !== "manifold://" ||
-        run.reach !== "node" ||
-        run.parentRunId !== null ||
-        run.caps.length !== 1 ||
-        run.caps[0] !== REVIEW_ACTION_CAP ||
-        run.tools?.length !== 1 ||
-        run.tools[0]?.door !== `${BABEL_PLUGIN_ID}.${ACTIONS.reviewAction}` ||
-        run.maxDepth !== 0 ||
-        run.maxDescendants !== 0 ||
-        run.expiresAt - run.createdAt > request.data.lifetimeMs! ||
-        !["pending_policy", "active"].includes(run.state)
-      )
-        return refuse(
-          ENGINE_REFUSALS.unconfirmed,
-          "governed review Run did not confirm the requested scope",
-        );
-      if (
-        run.tools![0]!.contractDigest !==
-          (await actionResultProjectionDigest(REVIEW_ACTION_RESULT_PROJECTION)) ||
-        (run.tools![0]!.maxResultBytes !== undefined &&
-          run.tools![0]!.maxResultBytes! < REVIEW_ACTION_RESULT_PROJECTION.maxResultBytes)
-      )
-        return refuse(
-          ENGINE_REFUSALS.forbidden,
-          "the Agent has not approved this review receipt publication",
-        );
-      // Only non-secret lineage leaves this boundary; never forward a credential or a model.
-      return { ok: true, value: { runId: run.id, agentId: run.agentId } };
+      const admit = async (withJev: boolean): Promise<EngineAnswer<ReviewRunAdmission>> => {
+        const caps: NonNullable<CreateRunRequest["caps"]> = withJev
+          ? [REVIEW_ACTION_CAP, JEV_ASK_CAP, "services:invoke"]
+          : [REVIEW_ACTION_CAP];
+        const tools = withJev ? [ordinary, optional] : [ordinary];
+        const reach = withJev ? "subtree" : "node";
+        const request = CreateRunRequestSchema.safeParse({
+          agentId,
+          caps,
+          tools,
+          target: "manifold://",
+          reach,
+          lifetimeMs: Math.min(lifetimeMs, 3_600_000),
+          delegation: { maxDepth: 0, maxDescendants: 0 },
+        });
+        if (!request.success)
+          return refuse(
+            ENGINE_REFUSALS.refused,
+            "review Run lease or Agent is outside the admission bounds",
+          );
+        let answer: unknown;
+        try {
+          answer = await actions.call({
+            plugin: "core.access",
+            action: "createRun",
+            input: request.data,
+          });
+        } catch (error) {
+          const text = error instanceof Error ? error.message : String(error);
+          const known =
+            error instanceof ActionCallError ||
+            (error instanceof Error && error.name === "ActionCallRefused");
+          const matched = known ? REFUSAL_SENTENCE.exec(text) : null;
+          const early = matched === null ? undefined : HOST_CLASSES[matched[1] ?? ""];
+          if (early !== undefined && matched?.[1] !== "refused")
+            return withJev
+              ? await admit(false)
+              : refuse(early, "governed review Run admission was refused before dispatch");
+          if (matched?.[1] === "refused" && RUN_ADMISSION_REFUSALS.test(matched[2] ?? ""))
+            return withJev
+              ? await admit(false)
+              : refuse(
+                  ENGINE_REFUSALS.forbidden,
+                  "the existing Agent grant does not admit this review Run",
+                );
+          // No replay after unknown completion; never retain a response carrying credentials.
+          return refuse(
+            ENGINE_REFUSALS.unconfirmed,
+            "governed review Run creation is unresolved; no model session was posted",
+          );
+        }
+        const parsed = CreateRunResultSchema.safeParse(answer);
+        if (!parsed.success)
+          return refuse(
+            ENGINE_REFUSALS.unconfirmed,
+            "governed review Run creation returned an unconfirmed result",
+          );
+        const run = parsed.data.run;
+        if (
+          run.agentId !== agentId ||
+          run.session !== null ||
+          run.target !== "manifold://" ||
+          run.reach !== reach ||
+          run.parentRunId !== null ||
+          run.caps.length !== caps.length ||
+          caps.some((cap) => !run.caps.includes(cap)) ||
+          run.tools?.length !== tools.length ||
+          tools.some((door) => !run.tools?.some((tool) => tool.door === door)) ||
+          run.maxDepth !== 0 ||
+          run.maxDescendants !== 0 ||
+          run.expiresAt - run.createdAt > request.data.lifetimeMs! ||
+          !["pending_policy", "active"].includes(run.state)
+        )
+          return refuse(
+            ENGINE_REFUSALS.unconfirmed,
+            "governed review Run did not confirm the requested scope",
+          );
+        for (const tool of run.tools!) {
+          const projection =
+            tool.door === ordinary ? REVIEW_ACTION_RESULT_PROJECTION : JEV_REVIEW_RESULT_PROJECTION;
+          const digest = tool.door === ordinary ? ordinaryDigest : optionalDigest;
+          if (
+            tool.contractDigest !== digest ||
+            (tool.maxResultBytes !== undefined && tool.maxResultBytes < projection.maxResultBytes)
+          )
+            return refuse(
+              ENGINE_REFUSALS.forbidden,
+              "the Agent has not approved this review receipt publication",
+            );
+        }
+        // Only non-secret lineage leaves this boundary. No implicit policy acknowledgement.
+        return {
+          ok: true,
+          value: { runId: run.id, agentId: run.agentId, ...(withJev ? { jev: true } : {}) },
+        };
+      };
+      return await admit(jev);
     },
 
     // Guard every posting path, including conductor reviews and prepared explorations.

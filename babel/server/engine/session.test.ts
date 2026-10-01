@@ -1,11 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
-import { actionResultProjectionDigest } from "@manifold/protocol";
+import {
+  actionResultProjectionDigest,
+  formatManifoldUri,
+  PluginManifestSchema,
+  type PluginRoster,
+  type ActionResultApproval,
+} from "@manifold/protocol";
+import jevManifest from "../../jev/manifest.json";
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   ENGINE_REFUSALS,
+  JEV_ACTIONS,
+  JEV_ASK_CAP,
+  JEV_PLUGIN_ID,
+  JEV_REVIEW_RESULT_PROJECTION,
   REVIEW_ACTION_CAP,
   REVIEW_ACTION_RESULT_PROJECTION,
 } from "../../contract.ts";
@@ -709,6 +720,170 @@ test.each([
     });
     expect(answer).toMatchObject({ ok: false, code: ENGINE_REFUSALS.unconfirmed });
     expect(answer).not.toHaveProperty("noToolSession");
+  },
+);
+
+async function optionalApproval() {
+  const ordinary = await reviewRunReply();
+  const approval: ActionResultApproval = {
+    door: `${JEV_PLUGIN_ID}.${JEV_ACTIONS.ask}`,
+    contractDigest: await actionResultProjectionDigest(JEV_REVIEW_RESULT_PROJECTION),
+  };
+  const tools: ActionResultApproval[] = [...ordinary.run.tools, approval];
+  const grant = {
+    caps: [REVIEW_ACTION_CAP, JEV_ASK_CAP, "services:invoke"],
+    tools,
+    targets: ["manifold://"],
+    reach: "subtree",
+    maxRunLifetimeMs: 60_000,
+    delegation: { maxDepth: 0, maxDescendants: 0 },
+    expiresAt: 100_000,
+  };
+  const agent = {
+    agentId: "reviewer",
+    principalId: "principal-reviewer",
+    sponsorPrincipalId: "operator",
+    name: "Reviewer",
+    purpose: "Review",
+    harness: "omp",
+    grant,
+    context: { profile: {} },
+    state: "idle",
+    activeRuns: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const roster: PluginRoster = [
+    {
+      manifest: PluginManifestSchema.parse(jevManifest),
+      enabled: true,
+      source: "plugin",
+      actions: [
+        {
+          name: approval.door,
+          title: "Optional judgment",
+          scope: "workspace",
+          caps: [JEV_ASK_CAP],
+          input: {},
+          result: {},
+          resultProjection: JEV_REVIEW_RESULT_PROJECTION,
+        },
+      ],
+      install: {
+        sha256: "c".repeat(64),
+        source: "synthetic",
+        installedBy: "operator",
+        installedAt: 1,
+        grantedCaps: [JEV_ASK_CAP],
+      },
+    },
+  ];
+  return { ordinary, approval, grant, agent, roster, host: { roster: async () => roster } };
+}
+
+test.each([
+  "absent",
+  "disabled",
+  "ungranted",
+  "no-service-cap",
+  "node-only",
+  "narrow-target",
+  "stale-approval",
+  "small-result",
+  "old-part",
+  "unavailable",
+] as const)(
+  "optional %s does not remove or broaden the ordinary typed review Run",
+  async (state) => {
+    const f = await optionalApproval();
+    if (state === "absent") f.roster.splice(0);
+    if (state === "disabled") f.roster[0]!.enabled = false;
+    if (state === "ungranted") f.grant.caps.splice(1);
+    if (state === "no-service-cap") f.grant.caps.splice(2);
+    if (state === "node-only") f.grant.reach = "node";
+    if (state === "narrow-target")
+      f.grant.targets = [formatManifoldUri({ kind: "machine", machineId: "another" })];
+    if (state === "stale-approval") f.approval.contractDigest = "f".repeat(64);
+    if (state === "small-result")
+      f.grant.tools = [f.ordinary.run.tools[0]!, { ...f.approval, maxResultBytes: 1 }];
+    if (state === "old-part") f.roster[0]!.actions.splice(0);
+    const slice = actions(({ action }) => {
+      if (action === "getAgent") {
+        if (state === "unavailable") throw new Error("grant observation unavailable");
+        return { agent: f.agent, canManage: false };
+      }
+      return f.ordinary;
+    });
+    expect(
+      await codeEngine(slice, f.host).createReviewRun!({ agentId: "reviewer", lifetimeMs: 60_000 }),
+    ).toEqual({ ok: true, value: { runId: "agent-run-review", agentId: "reviewer" } });
+    expect(
+      slice.calls.filter((call) => call.action === "createRun").map((call) => call.input),
+    ).toEqual([
+      {
+        agentId: "reviewer",
+        caps: [REVIEW_ACTION_CAP],
+        tools: [`${BABEL_PLUGIN_ID}.${ACTIONS.reviewAction}`],
+        target: "manifold://",
+        reach: "node",
+        lifetimeMs: 60_000,
+        delegation: { maxDepth: 0, maxDescendants: 0 },
+      },
+    ]);
+  },
+);
+
+test("an exact optional publication approval admits both tools on one Run without credentials or automatic policy acknowledgement", async () => {
+  const f = await optionalApproval();
+  const slice = actions(({ action }) =>
+    action === "getAgent"
+      ? { agent: f.agent, canManage: true }
+      : {
+          ...f.ordinary,
+          run: { ...f.ordinary.run, caps: f.grant.caps, tools: f.grant.tools, reach: "subtree" },
+          credential: { token: "synthetic-secret", expiresAt: 61_000 },
+        },
+  );
+  expect(
+    await codeEngine(slice, f.host).createReviewRun!({ agentId: "reviewer", lifetimeMs: 60_000 }),
+  ).toEqual({ ok: true, value: { runId: "agent-run-review", agentId: "reviewer", jev: true } });
+  expect(slice.calls.map((call) => call.action)).toEqual(["getAgent", "createRun"]);
+  expect(slice.calls[1]?.input).toMatchObject({
+    caps: [REVIEW_ACTION_CAP, JEV_ASK_CAP, "services:invoke"],
+    reach: "subtree",
+    tools: [`${BABEL_PLUGIN_ID}.${ACTIONS.reviewAction}`, `${JEV_PLUGIN_ID}.${JEV_ACTIONS.ask}`],
+  });
+});
+
+test.each(["known", "unknown", "malformed"] as const)(
+  "optional admission %s completion only retries after a proved pre-effect refusal",
+  async (state) => {
+    const f = await optionalApproval();
+    let admissions = 0;
+    const slice = actions(({ action }) => {
+      if (action === "getAgent") return { agent: f.agent, canManage: true };
+      admissions += 1;
+      if (admissions > 1) return f.ordinary;
+      if (state === "known")
+        return hostRefusal(
+          "refused: atyrode.babel -> core.access.createRun (tool_exceeds_grant)",
+        )();
+      if (state === "unknown") throw new Error("lost after creation");
+      return { run: { id: "possibly-created" } };
+    });
+    const result = await codeEngine(slice, f.host).createReviewRun!({
+      agentId: "reviewer",
+      lifetimeMs: 60_000,
+    });
+    expect(result).toMatchObject(
+      state === "known" ? { ok: true } : { ok: false, code: ENGINE_REFUSALS.unconfirmed },
+    );
+    expect(admissions).toBe(state === "known" ? 2 : 1);
+    if (state === "known")
+      expect(slice.calls.at(-1)?.input).toMatchObject({
+        caps: [REVIEW_ACTION_CAP],
+        tools: [`${BABEL_PLUGIN_ID}.${ACTIONS.reviewAction}`],
+      });
   },
 );
 

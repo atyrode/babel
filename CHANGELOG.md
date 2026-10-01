@@ -9,6 +9,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+- **Review Runs can explicitly opt into bounded Jev assistance without changing ordinary
+  review (#363).** The installed optional tool requires the existing Agent's exact capability
+  and result-publication approval; old or missing grants retain typed review alone. Jev grades
+  retrieved state through its existing reviewed service and bank, with host/store-bound
+  Agent/Run, role, record, stage and claim-fence correlation, a three-attempt allowance and
+  bounded input/result projection. Late Stop and stale fences discard answers; Jev cannot
+  write assessments, proposals, records or rulings. Both assisted and ordinary work use the
+  same durable review intake. Readiness cannot prove credit, and invocation refusal supplies
+  no judgment rather than failing review. Regression coverage exercises optional absence,
+  exact approvals, unknown-creation non-replay, attribution, bounds and late state changes.
+  These call/byte bounds are not dollar enforcement; live funded inference remains separate.
+
 - **Native admission shares one physical occupancy fence across direct and standing mapping
   work (#258, #526).** A typed direct pre-admission refusal, confirmed by authoritative
   `job_not_started` for every recorded native attempt, closes the intent and reservation once.

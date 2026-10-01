@@ -12,6 +12,9 @@ import {
   INGESTIBLE_TABLES,
   INPUT_FIELD,
   JEV_PLUGIN_ID,
+  JEV_ACTIONS,
+  JEV_ASK_CAP,
+  JEV_REVIEW_RESULT_PROJECTION,
   MATERIAL_EXPORT,
   MATERIAL_OUTPUT,
   MAX_MATERIAL_BYTES,
@@ -47,6 +50,7 @@ import feedManifest from "../babel/feed/manifest.json";
 import watchManifest from "../babel/watch/manifest.json";
 import jevManifest from "../babel/jev/manifest.json";
 import { JEV_SERVICE } from "../babel/jev/server/credential.ts";
+import { plugin as jevPlugin } from "../babel/jev/server.ts";
 
 /*
   A manifest is JSON and cannot import `contract.ts`, so every id it repeats is pinned here:
@@ -153,7 +157,7 @@ describe("the parts are parts of the baseline", () => {
     expect(watch.capabilities).toEqual([]);
   });
 
-  test("the judgement part: its id, the required edge, and its two authorities", () => {
+  test("the judgement part has explicit optional tool authority but no record or operator writer", () => {
     expect(jev.id).toBe(JEV_PLUGIN_ID);
     expect(jev.id.startsWith(`${BABEL_PLUGIN_ID}.`)).toBe(true);
     expect(jev.dependencies?.[BABEL_PLUGIN_ID]?.type).toBe("required");
@@ -183,7 +187,16 @@ describe("the parts are parts of the baseline", () => {
       may write at all is an open decision, not a manifest edit. A store, a machine block or a
       purge target would each be a part the operator cannot reason about the removal of.
     */
-    expect(jev.capabilities).toEqual(["containers:read", "services:invoke"]);
+    expect(jev.capabilities).toContain(JEV_ASK_CAP);
+    expect(jev.capabilities).not.toContain("containers:write");
+    expect(jev.capabilities).not.toContain(REVIEW_ACTION_CAP);
+    const judgment = jevPlugin.actions.find((action) => action.name === JEV_ACTIONS.ask);
+    expect(judgment?.caps).toEqual([JEV_ASK_CAP]);
+    expect(judgment?.delegates).toEqual(["services:invoke"]);
+    expect(judgment?.resultProjection).toEqual(JEV_REVIEW_RESULT_PROJECTION);
+    for (const action of jevPlugin.actions)
+      for (const cap of [...action.caps, ...(action.delegates ?? [])])
+        expect(jev.capabilities).toContain(cap);
     expect(jev.database).toBeUndefined();
     expect(jev.machine).toBeUndefined();
     expect(jev.purges).toBeUndefined();
