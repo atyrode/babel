@@ -76,7 +76,7 @@ import {
   type IndexEntry,
 } from "./feedindex.ts";
 import { FEED_FRESHNESS_MS, feedOrdering, feedQueryForSurface, sortFeed } from "./rank.ts";
-import { readNeighborhood } from "./neighborhood.ts";
+import { transcriptMaps } from "./transcript-maps.ts";
 import { supersededReviewProposalSql } from "./schema.ts";
 
 /**
@@ -2292,7 +2292,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       unfiled: (await index()).unfiled,
     }),
     topic,
-    neighborhood: async (query) => await readNeighborhood(db, query),
+    neighborhood: async (query) => await transcriptMaps({ db }).neighborhood(query),
     pulse,
     runs,
     run,

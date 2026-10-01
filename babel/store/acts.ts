@@ -2647,8 +2647,7 @@ const CONSTRAINT_WORDS: Record<string, true> = {
  * A COLUMN ADDED TO THE MIGRATION IS GUARDED WITHOUT ANYONE REMEMBERING TO GUARD IT, and one
  * that takes the shape while holding something else — a `repository_host` — is over-guarded
  * rather than under-: it refuses an import instead of admitting a row nothing can read back.
- * Either way the derived map changes, and `store/acts.test.ts` pins it, so the change is a
- * failing test rather than a quiet pass.
+ * The owner-only import door checks these values against the hub before any row is written.
  */
 let machines: Record<string, readonly string[]> | null = null;
 

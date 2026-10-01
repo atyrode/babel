@@ -161,6 +161,7 @@ const ASKED: Readonly<Partial<Record<ActionName, unknown>>> = {
   [ACTIONS.topics]: {},
   [ACTIONS.topic]: { topic: TOPIC_NAME },
   [ACTIONS.neighborhood]: { entityId: TOPIC },
+  [ACTIONS.neighborhoodSource]: { sourceId: `tmcap_${"0".repeat(64)}` },
   [ACTIONS.pulse]: {},
   [ACTIONS.runs]: {},
   [ACTIONS.run]: { id: RUN },

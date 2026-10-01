@@ -10,7 +10,7 @@ import {
   NeighborhoodRecordSchema,
   NeighborhoodSourceSchema,
   type NeighborhoodQuery,
-  type NeighborhoodResult,
+  type NeighborhoodRecords,
 } from "../contract.ts";
 import type { z } from "zod";
 
@@ -60,9 +60,9 @@ const NODE = object({
 export async function readNeighborhood(
   db: PluginDatabase,
   query: NeighborhoodQuery,
-): Promise<NeighborhoodResult> {
+): Promise<NeighborhoodRecords> {
   const { entityId, ...limits } = query;
-  const result: NeighborhoodResult = {
+  const result: NeighborhoodRecords = {
     entityId,
     state: "missing",
     limits,
@@ -94,7 +94,7 @@ export async function readNeighborhood(
   const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
   // Reserve room for changing counters and every possible reason; never cut a stored value.
   let remainingBytes = limits.maxBytes - bytes(result) - 512;
-  const reason = (value: NeighborhoodResult["coverage"]["reasons"][number]): void => {
+  const reason = (value: NeighborhoodRecords["coverage"]["reasons"][number]): void => {
     if (!coverage.reasons.includes(value)) coverage.reasons.push(value);
     coverage.truncated = true;
   };

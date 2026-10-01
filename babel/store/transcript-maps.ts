@@ -15,6 +15,14 @@ import {
   TranscriptMapSummarySchema,
   TranscriptMapVersionSchema,
   TranscriptMapWorkSchema,
+  NeighborhoodMapSourceSchema,
+  NeighborhoodSourceRecordSchema,
+  type NavigationMapPlan,
+  type NeighborhoodQuery,
+  type NeighborhoodResult,
+  type NeighborhoodSummary,
+  type NeighborhoodSourceQuery,
+  type NeighborhoodSourceResult,
   type TranscriptMapAccess,
   type TranscriptMapCatalogEntry,
   type TranscriptMapCapture,
@@ -39,6 +47,12 @@ import {
   transcriptMapNodeId,
   transcriptMapPlanId,
 } from "../transcript-map-identity.ts";
+import { readNeighborhood } from "./neighborhood.ts";
+import {
+  neighborhoodDigest,
+  neighborhoodMapSource,
+  neighborhoodRevision,
+} from "./neighborhood-map-source.ts";
 
 /** A terminal native proof refusal, unlike an interrupted database projection. */
 export class TranscriptMapProjectionRefusal extends Error {}
@@ -60,7 +74,7 @@ export interface TranscriptMapCondition {
 }
 export interface TranscriptMapWorkDetails {
   readonly work: TranscriptMapWork;
-  readonly plan: TranscriptMapPlan;
+  readonly plan: NavigationMapPlan;
   readonly node: TranscriptMapNode;
   readonly version: TranscriptMapVersion;
   readonly baseSummary: TranscriptMapSummary | null;
@@ -105,6 +119,10 @@ export interface TranscriptMapSettlementInput {
   readonly guard: TranscriptMapCondition;
 }
 export interface TranscriptMaps {
+  neighborhood(query: NeighborhoodQuery): Promise<NeighborhoodResult>;
+  neighborhoodSource(query: NeighborhoodSourceQuery): Promise<NeighborhoodSourceResult>;
+  sourceCurrent(details: TranscriptMapWorkDetails): Promise<boolean>;
+  materialText(details: TranscriptMapWorkDetails): Promise<string | null>;
   recordCatalog(input: TranscriptMapCatalogInput): Promise<void>;
   recordAccess(input: TranscriptMapAccessInput): Promise<void>;
   catalogState(machineId: string): Promise<TranscriptMapCatalogState>;
@@ -229,6 +247,12 @@ function emptyCoverage(): TranscriptMapCoverage {
 
 export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   const db = store.db;
+  const sourceClock = async (): Promise<number> => {
+    const rows = await db.query<{ revision: number }>(
+      "SELECT revision FROM transcript_map_neighborhood_clock WHERE id=1",
+    );
+    return Number(rows[0]?.revision ?? 0);
+  };
   async function one<T>(table: string, id: string): Promise<T | null> {
     const rows = await db.query<{ payload: string }>(`SELECT payload FROM ${table} WHERE id=?`, [
       id,
@@ -539,7 +563,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     store.touch?.();
     return { complete: true };
   }
-  async function verifyPlan(plan: TranscriptMapPlan): Promise<void> {
+  async function verifyPlan(plan: NavigationMapPlan): Promise<void> {
     const hash = createHash("sha256").update("[");
     let position = 0;
     let roots = 0;
@@ -640,7 +664,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       leafEnd !== plan.source.bytes ||
       recordEnd !== plan.source.records ||
       (plan.rootId === null) !== (plan.source.bytes === 0) ||
-      plan.direct !== plan.source.bytes <= plan.segmentation.directBytes
+      plan.direct !==
+        (!("kind" in plan.source) && plan.source.bytes <= plan.segmentation.directBytes)
     )
       throw new TranscriptMapProjectionRefusal("transcript plan manifest verification failed");
   }
@@ -651,14 +676,26 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     generation?: number,
   ): Promise<TranscriptMapVersion> {
     const policy = TranscriptMapPolicySchema.parse(raw);
-    const plan = await one<TranscriptMapPlan>("transcript_map_plans", planId);
+    const plan = await one<NavigationMapPlan>("transcript_map_plans", planId);
     if (!plan) throw new Error("unknown transcript map plan");
     const owner = await db.query<{ source_machine_id: string }>(
       `SELECT source_machine_id FROM transcript_map_captures WHERE id=?`,
       [plan.source.id],
     );
-    if (owner[0]?.source_machine_id !== policy.sourceMachineId)
-      throw new TranscriptMapProjectionRefusal("transcript plan belongs to another source owner");
+    const source = plan.source;
+    const owns =
+      "kind" in source
+        ? owner[0]?.source_machine_id === "" &&
+          source.id ===
+            identity("tmcap", [
+              "neighborhood",
+              policy.sourceMachineId,
+              source.query,
+              source.revision,
+            ])
+        : owner[0]?.source_machine_id === policy.sourceMachineId;
+    if (!owns)
+      throw new TranscriptMapProjectionRefusal("navigation plan belongs to another source route");
     const complete = await db.query<{ complete: number }>(
       `SELECT complete FROM transcript_map_plans WHERE id=?`,
       [planId],
@@ -755,15 +792,15 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     return inputs;
   }
   function inputKey(
-    plan: TranscriptMapPlan,
+    plan: NavigationMapPlan,
     item: TranscriptMapNode,
     version: TranscriptMapVersion,
     inputs: readonly TranscriptMapChildSummary[],
   ): string {
     return digest([
-      plan.source.host,
-      plan.source.harness,
-      plan.source.session,
+      ...("kind" in plan.source
+        ? ["neighborhood", plan.source.query, plan.source.revision]
+        : [plan.source.host, plan.source.harness, plan.source.session]),
       [
         version.sourceMachineId,
         version.profile,
@@ -780,19 +817,22 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       inputs.map((child) => [child.summaryId, child.gap]),
     ]);
   }
-  const liveAccess = `EXISTS (SELECT 1 FROM transcript_map_access a JOIN transcript_map_contexts c
+  const neighborhoodAccess = `EXISTS (SELECT 1 FROM transcript_map_neighborhood_heads nh
+    WHERE nh.capture_id=p.capture_id AND nh.machine_id=v.machine_id
+      AND nh.revision=coalesce((SELECT revision FROM transcript_map_neighborhood_clock WHERE id=1),0))`;
+  const liveAccess = `(${neighborhoodAccess} OR EXISTS (SELECT 1 FROM transcript_map_access a JOIN transcript_map_contexts c
     ON c.machine_id=a.machine_id AND c.digest=a.context_digest
     JOIN transcript_map_captures owned ON owned.id=a.capture_id AND owned.source_machine_id=a.machine_id
     WHERE a.capture_id=p.capture_id AND a.machine_id=v.machine_id AND a.sensitivity<=c.ceiling AND c.mapping=1
       AND NOT EXISTS (SELECT 1 FROM transcript_map_contexts newer WHERE newer.machine_id=c.machine_id
-        AND newer.observed_at>c.observed_at AND newer.digest!=c.digest))`;
+        AND newer.observed_at>c.observed_at AND newer.digest!=c.digest)))`;
   async function work(id: string): Promise<TranscriptMapWorkDetails | null> {
     const queued = await one<TranscriptMapWork>("transcript_map_work", id);
     if (!queued) return null;
     const version = await one<TranscriptMapVersion>("transcript_map_versions", queued.versionId);
     const item = await one<TranscriptMapNode>("transcript_map_nodes", queued.nodeId);
     const plan = version
-      ? await one<TranscriptMapPlan>("transcript_map_plans", version.planId)
+      ? await one<NavigationMapPlan>("transcript_map_plans", version.planId)
       : null;
     if (!version || !item || !plan) return null;
     const baseSummary = queued.baseSummaryId
@@ -860,6 +900,13 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       details.plan.direct ||
       details.work.attempt > policy.maxAttempts ||
       details.work.correctionDepth > policy.maxCorrections
+    )
+      return false;
+    const source = details.plan.source;
+    if (
+      "kind" in source &&
+      (!policy.neighborhoods.some((query) => json(query) === json(source.query)) ||
+        !(await sourceCurrent(details)))
     )
       return false;
     if (details.work.mode === "review") {
@@ -943,21 +990,135 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     );
     return result.changes;
   }
+  async function sourceCurrent(details: TranscriptMapWorkDetails): Promise<boolean> {
+    const source = details.plan.source;
+    if (!("kind" in source)) return true;
+    const clock = await sourceClock();
+    const heads = await db.query<{ revision: number }>(
+      "SELECT revision FROM transcript_map_neighborhood_heads WHERE machine_id=? AND capture_id=?",
+      [details.version.sourceMachineId, source.id],
+    );
+    if (!heads[0]) return false;
+    if (Number(heads[0].revision) === clock) return true;
+    const result = await readNeighborhood(db, source.query);
+    if ((await sourceClock()) !== clock || neighborhoodRevision(result) !== source.revision)
+      return false;
+    const updated = await db.run(
+      `UPDATE transcript_map_neighborhood_heads SET revision=? WHERE machine_id=? AND capture_id=?
+        AND coalesce((SELECT revision FROM transcript_map_neighborhood_clock WHERE id=1),0)=?`,
+      [clock, details.version.sourceMachineId, source.id, clock],
+    );
+    return updated.changes > 0;
+  }
+
+  async function materialText(details: TranscriptMapWorkDetails): Promise<string | null> {
+    if (!("kind" in details.plan.source) || details.node.children.length > 0) return null;
+    const rows = await db.query<{ text: string }>(
+      "SELECT text FROM transcript_map_neighborhood_inputs WHERE capture_id=?",
+      [details.plan.source.id],
+    );
+    if (!rows[0]) throw new Error("Navigation source is unavailable.");
+    const span = details.node.span;
+    const text = Buffer.from(rows[0].text)
+      .subarray(span.byteOffset, span.byteOffset + span.byteLength)
+      .toString("utf8");
+    if (`sha256:${createHash("sha256").update(text).digest("hex")}` !== span.digest)
+      throw new Error("Navigation source revision mismatch.");
+    return text;
+  }
+
+  /** Planning is free, but only explicit mapping targets enter the existing paid queue. */
+  async function refreshNeighborhoods(policy: TranscriptMapPolicy, now: string): Promise<void> {
+    for (const query of policy.neighborhoods) {
+      const queryKey = neighborhoodDigest(query);
+      const clock = await sourceClock();
+      const ready = await db.query(
+        `SELECT 1 FROM transcript_map_neighborhood_heads h JOIN transcript_map_plans p ON p.capture_id=h.capture_id
+          WHERE h.machine_id=? AND h.query_key=? AND h.revision=? AND p.complete=1
+          AND json_extract(p.payload,'$.segmentation')=json(?)`,
+        [policy.sourceMachineId, queryKey, clock, json(policy.segmentation)],
+      );
+      if (ready.length) continue;
+      const records = await readNeighborhood(db, query);
+      if (records.state !== "found" || (await sourceClock()) !== clock) continue;
+      const id = identity("tmcap", [
+        "neighborhood",
+        policy.sourceMachineId,
+        query,
+        neighborhoodRevision(records),
+      ]);
+      const held = await one<unknown>("transcript_map_captures", id);
+      const retained = held === null ? undefined : NeighborhoodMapSourceSchema.parse(held);
+      const tree = await neighborhoodMapSource(records, policy, now, retained);
+      const plan = tree.header;
+      await db.batch([
+        {
+          sql: `INSERT OR IGNORE INTO transcript_map_captures(id,host,harness,session,captured_at,payload,source_machine_id)
+            VALUES(?,'hub','neighborhood',?,?,?,'')`,
+          // Hub rows have no Recall owner. Older archive-only readers consequently ignore them;
+          // the producing route is bound by the source identity and version, not a forged grant.
+          params: [id, query.entityId, plan.source.capturedAt, json(plan.source)],
+        },
+        {
+          sql: `INSERT OR IGNORE INTO transcript_map_neighborhood_inputs(capture_id,query_key,text) VALUES(?,?,?)`,
+          params: [id, queryKey, tree.text],
+        },
+        {
+          sql: `INSERT OR IGNORE INTO transcript_map_plans(id,capture_id,payload,created_at) VALUES(?,?,?,?)`,
+          params: [plan.id, id, json(plan), now],
+        },
+      ]);
+      await batch(
+        tree.nodes.map((node, position) => ({
+          sql: `INSERT OR IGNORE INTO transcript_map_nodes(id,plan_id,position,parent_node_id,level,ordinal,byte_offset,byte_length,gap,payload)
+          VALUES(?,?,?,?,?,?,?,?,?,?)`,
+          params: [
+            node.id,
+            plan.id,
+            position,
+            node.parentId,
+            node.level,
+            node.ordinal,
+            node.span.byteOffset,
+            node.span.byteLength,
+            node.gap,
+            json(node),
+          ],
+        })),
+      );
+      await verifyPlan(plan);
+      await db.batch([
+        { sql: "UPDATE transcript_map_plans SET complete=1 WHERE id=?", params: [plan.id] },
+        {
+          sql: `INSERT INTO transcript_map_neighborhood_heads(machine_id,query_key,capture_id,revision)
+            SELECT ?,?,?,? WHERE coalesce((SELECT revision FROM transcript_map_neighborhood_clock WHERE id=1),0)=?
+            ON CONFLICT(machine_id,query_key) DO UPDATE SET capture_id=excluded.capture_id,revision=excluded.revision`,
+          params: [policy.sourceMachineId, queryKey, id, clock, clock],
+        },
+      ]);
+    }
+  }
+
   async function refreshWork(raw: TranscriptMapPolicy, now: string, limit = 32): Promise<number> {
     const policy = TranscriptMapPolicySchema.parse(raw);
     const key = contract(policy);
     const cap = bound(limit, MAX_SCAN);
+    await refreshNeighborhoods(policy, now);
     const plans = await db.query<{ id: string }>(
       `SELECT p.id FROM transcript_map_plans p
-      WHERE p.complete=1 AND EXISTS (SELECT 1 FROM transcript_map_access a
+      WHERE p.complete=1 AND (EXISTS (SELECT 1 FROM transcript_map_access a
         JOIN transcript_map_captures owned ON owned.id=a.capture_id AND owned.source_machine_id=a.machine_id
         WHERE a.capture_id=p.capture_id AND a.machine_id=?)
+        OR EXISTS (SELECT 1 FROM transcript_map_neighborhood_heads nh
+          WHERE nh.capture_id=p.capture_id AND nh.machine_id=?
+            AND nh.revision=coalesce((SELECT revision FROM transcript_map_neighborhood_clock WHERE id=1),0)))
       AND json_extract(p.payload,'$.segmentation')=json(?)
       AND NOT EXISTS (SELECT 1 FROM transcript_map_heads h JOIN transcript_map_versions v ON v.id=h.version_id
         WHERE h.plan_id=p.id AND h.machine_id=? AND v.contract_digest=?
           AND v.generation=(SELECT coalesce(max(generation),0) FROM transcript_map_regenerations WHERE capture_id=p.capture_id))
       ORDER BY p.created_at,p.id LIMIT ?`,
       [
+        policy.sourceMachineId,
         policy.sourceMachineId,
         json(policy.segmentation),
         policy.sourceMachineId,
@@ -989,7 +1150,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       const version = await one<TranscriptMapVersion>("transcript_map_versions", row.version_id);
       const item = await one<TranscriptMapNode>("transcript_map_nodes", row.node_id);
       const plan = version
-        ? await one<TranscriptMapPlan>("transcript_map_plans", version.planId)
+        ? await one<NavigationMapPlan>("transcript_map_plans", version.planId)
         : null;
       if (!version || !item || !plan || plan.direct || item.gap !== null) continue;
       const inputs = await childInputs(version.id, item);
@@ -1304,7 +1465,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   }
 
   async function versionCoverage(
-    plan: TranscriptMapPlan,
+    plan: NavigationMapPlan,
     versionId: string | null,
   ): Promise<TranscriptMapCoverage> {
     const out = emptyCoverage();
@@ -1548,7 +1709,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       input.nodeId === undefined
     ) {
       const rows = await db.query<{ payload: string }>(
-        `SELECT payload FROM transcript_map_captures WHERE id=? AND source_machine_id=?`,
+        `SELECT payload FROM transcript_map_captures WHERE id=? AND source_machine_id=?
+          AND NOT EXISTS (SELECT 1 FROM transcript_map_neighborhood_inputs i WHERE i.capture_id=transcript_map_captures.id)`,
         [input.captureId, machineId],
       );
       return rows.map((row) => TranscriptMapCaptureSchema.parse(JSON.parse(row.payload)));
@@ -1566,6 +1728,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           : ""
       }
       WHERE v.machine_id=? AND c.source_machine_id=v.machine_id AND p.complete=1
+      AND NOT EXISTS (SELECT 1 FROM transcript_map_neighborhood_inputs i WHERE i.capture_id=c.id)
       ${
         match
           ? `AND transcript_map_terms MATCH ?
@@ -1597,7 +1760,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       `SELECT p.payload plan,n.payload node
       FROM transcript_map_versions v JOIN transcript_map_plans p ON p.id=v.plan_id
       JOIN transcript_map_captures c ON c.id=p.capture_id AND c.source_machine_id=v.machine_id
-      JOIN transcript_map_nodes n ON n.plan_id=p.id WHERE v.machine_id=? AND v.id=? AND n.id=? AND p.complete=1`,
+      JOIN transcript_map_nodes n ON n.plan_id=p.id WHERE v.machine_id=? AND v.id=? AND n.id=? AND p.complete=1
+      AND NOT EXISTS (SELECT 1 FROM transcript_map_neighborhood_inputs i WHERE i.capture_id=c.id)`,
       [machineId, versionId, nodeId],
     );
     return rows[0]
@@ -1681,7 +1845,161 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     return Number(rows[0].generation);
   }
 
+  async function neighborhood(query: NeighborhoodQuery): Promise<NeighborhoodResult> {
+    const before = await sourceClock().catch(() => null);
+    const records = await readNeighborhood(db, query);
+    const empty = (state: NeighborhoodSummary["state"]): NeighborhoodSummary => ({
+      inference: true,
+      state,
+      source: null,
+      versionId: null,
+      producer: null,
+      coverage: null,
+      views: [],
+      omittedViews: 0,
+    });
+    const result: NeighborhoodResult = { ...records, summary: empty("missing") };
+    try {
+      if (before === null) throw new Error("Navigation source freshness is unavailable.");
+      const revision = neighborhoodRevision(records);
+      const selected = await db.query<{ plan_id: string; version_id: string }>(
+        `SELECT p.id plan_id,v.id version_id FROM transcript_map_neighborhood_inputs i
+          JOIN transcript_map_plans p ON p.capture_id=i.capture_id
+          JOIN transcript_map_heads h ON h.plan_id=p.id JOIN transcript_map_versions v ON v.id=h.version_id
+          WHERE i.query_key=? AND p.complete=1
+          ORDER BY EXISTS (SELECT 1 FROM transcript_map_bindings b WHERE b.version_id=v.id
+            AND NOT EXISTS (SELECT 1 FROM transcript_map_reviews r WHERE r.summary_id=b.summary_id AND r.verdict IN ('correct','reject'))) DESC,
+            (json_extract(p.payload,'$.source.revision')=?) DESC,v.created_at DESC,v.rowid DESC LIMIT 1`,
+        [neighborhoodDigest(query), revision],
+      );
+      const selectedRow = selected[0];
+      if (selectedRow) {
+        const plan = await one<NavigationMapPlan>("transcript_map_plans", selectedRow.plan_id);
+        const version = await one<TranscriptMapVersion>(
+          "transcript_map_versions",
+          selectedRow.version_id,
+        );
+        if (!plan || !version) throw new Error("Navigation version is unavailable.");
+        const source = NeighborhoodMapSourceSchema.parse(plan.source);
+        const coverage = await versionCoverage(plan, version.id);
+        coverage.stale ||= source.revision !== revision || (await sourceClock()) !== before;
+        coverage.partial ||= coverage.stale || !source.coverage.recordsComplete;
+        const summary: NeighborhoodSummary = {
+          inference: true,
+          state: coverage.stale ? "stale" : "available",
+          source,
+          versionId: version.id,
+          coverage,
+          producer: {
+            sourceMachineId: version.sourceMachineId,
+            executorMachineId: version.executorMachineId,
+            profile: version.profile,
+            contractDigest: version.contractDigest,
+            generation: version.generation,
+            createdAt: version.createdAt,
+          },
+          views: [],
+          omittedViews: 0,
+        };
+        const nodes = await db.query<{ payload: string }>(
+          `SELECT n.payload FROM transcript_map_nodes n JOIN transcript_map_bindings b ON b.node_id=n.id
+            WHERE b.version_id=? AND NOT EXISTS (SELECT 1 FROM transcript_map_reviews r
+              WHERE r.summary_id=b.summary_id AND r.verdict IN ('correct','reject'))
+            ORDER BY n.level DESC,n.ordinal LIMIT 530`,
+          [version.id],
+        );
+        for (const row of nodes) {
+          const node = TranscriptMapNodeSchema.parse(JSON.parse(row.payload));
+          if (
+            summary.views.some(
+              (view) =>
+                view.node.span.firstRecord <= node.span.firstRecord &&
+                view.node.span.lastRecord >= node.span.lastRecord,
+            )
+          )
+            continue;
+          if (summary.views.length === 4) {
+            summary.omittedViews++;
+            continue;
+          }
+          const generated = await boundSummary(version.id, node.id);
+          if (!generated) continue;
+          const { children, ...provenance } = generated;
+          summary.views.push({
+            node,
+            summary: {
+              ...provenance,
+              inputSummaryIds: children.flatMap((child) =>
+                child.summaryId ? [child.summaryId] : [],
+              ),
+            },
+          });
+        }
+        if (summary.views.length === 0 && !coverage.stale) summary.state = "missing";
+        result.summary = summary;
+      }
+      // Records always take precedence. Do not evict a fact to make room for generated prose.
+      if (Buffer.byteLength(json(result)) + 32 > query.maxBytes) result.summary = empty("bounded");
+      if (result.summary.views.length > 0)
+        await noteServed({
+          readId: crypto.randomUUID(),
+          summaryIds: result.summary.views.map((view) => view.summary.id),
+          now: new Date().toISOString(),
+        });
+    } catch {
+      result.summary = empty("unavailable");
+    }
+    let measured = Buffer.byteLength(json(result));
+    while (result.coverage.resultBytes !== measured) {
+      result.coverage.resultBytes = measured;
+      measured = Buffer.byteLength(json(result));
+    }
+    return result;
+  }
+
+  async function neighborhoodSource(
+    query: NeighborhoodSourceQuery,
+  ): Promise<NeighborhoodSourceResult> {
+    const rows = await db.query<{ payload: string; text: string }>(
+      `SELECT c.payload,i.text FROM transcript_map_neighborhood_inputs i
+        JOIN transcript_map_captures c ON c.id=i.capture_id WHERE i.capture_id=?`,
+      [query.sourceId],
+    );
+    const found = rows[0];
+    if (!found) return { source: null, rows: [], nextOffset: null, omittedRecords: 0 };
+    const source = NeighborhoodMapSourceSchema.parse(JSON.parse(found.payload));
+    const lines = found.text.trimEnd().split("\n");
+    const result: NeighborhoodSourceResult = {
+      source,
+      rows: [],
+      nextOffset: null,
+      omittedRecords: 0,
+    };
+    let remaining = query.maxBytes - Buffer.byteLength(json(result)) - 64;
+    let at = Math.min(query.offset, lines.length);
+    const end = Math.min(lines.length, at + query.maxRecords);
+    for (; at < end; at++) {
+      const row = {
+        record: at + 1,
+        source: NeighborhoodSourceRecordSchema.parse(JSON.parse(lines[at]!)),
+      };
+      const bytes = Buffer.byteLength(json(row)) + 1;
+      if (bytes > remaining) {
+        result.omittedRecords++;
+        continue;
+      }
+      remaining -= bytes;
+      result.rows.push(row);
+    }
+    result.nextOffset = at < lines.length ? at : null;
+    return result;
+  }
+
   return {
+    neighborhood,
+    neighborhoodSource,
+    sourceCurrent,
+    materialText,
     recordCatalog,
     recordAccess,
     catalogState,

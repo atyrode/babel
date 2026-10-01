@@ -931,6 +931,56 @@ transient output-read failure leaves the exact intent pending for a later wake.
 
 ---
 
+### 9.3 Generated neighbourhood navigation (#506)
+
+The agent's `neighborhood` action and the feed Topic panel's **Stored neighbourhood** section use
+one bounded projection. **Generated navigation summaries** is a separate inference section, never
+ledger facts or admissible evidence. Missing, unavailable and byte-omitted summaries leave the
+stored rows usable. Outdated prose is labelled, not silently substituted for a current source.
+
+**OPERATOR STEP — optional generation configuration; no live activation is implied.** On an
+already-authorized mapping route, add the exact bounded read queries to `mapping.neighborhoods`
+in the policy installed through `setPolicy`, for example:
+
+```json
+{
+  "neighborhoods": [
+    { "entityId": "ent_00005060", "depth": 2, "maxNodes": 32, "maxItems": 100, "maxBytes": 65536 }
+  ]
+}
+```
+
+This is the value inside the existing mapping configuration, not a replacement policy or a new
+provider route. The list is empty by default and limited to 32 queries. Query bounds are part of
+source identity: a differently bounded read may have no summary. Generation uses the route's
+versioned generation/review recipes and configured Code profile; native `map-prepare` still needs
+the route's reviewed executor/service pins and consent, even though this source adapter reads hub
+rows rather than Recall. Existing positive map weight or an explicitly started mapping drain,
+claim/lease fencing, concurrency, daily allowance and mapping subcap are required. Reading or
+adding the targets buys nothing by itself. Disable paid admission with the existing lane controls,
+not by deleting stored summaries.
+
+The input snapshot preserves each stored row's ID and revision digest, status, attribution and
+coverage, mandatory-redacted before sealing. The section reports disputed/stale inputs, source
+truncation and separately unmapped/gap bytes. **Open exact source records** reads up to 16 retained
+rows and 32 KiB per page through `neighborhoodSource`; **Next source records**, **Previous source
+records** and **Close exact source records** navigate that snapshot without fetching archive bytes.
+The original JSON is labelled source material. Record/entity buttons open their current panels;
+the retained input stays historical. Current-catalog source locators are not historical citation
+proof. A summary of incomplete records is never advertised as the whole project.
+
+For a disposable source qualification, use synthetic hub rows and a material-only synthetic model
+consumer, with no provider credentials or native enrollment. Exercise a missing summary first,
+generate through the existing map source/queue/preparation/settlement machinery, then open the
+Topic panel, inspect exact inputs and navigate to a record or child entity and back. Append a new
+status or source revision and refresh: old prose must become **Outdated**, current records must
+show the new revision, and old exact inputs must remain readable. Also request a smaller byte
+bound and a depth-limited scope through the public read door. `babel/store/neighborhood-summaries.test.ts`
+and the neighbourhood case in `babel/server/conductor.test.ts` retain the consumer and fenced-lane
+regressions; actual rendered `bun run dev` transitions remain the publication owner's required
+qualification, not something a passing store test proves. Do not run this fixture against a live
+store, enroll a real source, or spend on a provider to satisfy this synthetic proof.
+
 ## 10. Turning evaluation on
 
 Evaluation is off until one operator decision turns it on: `enabled` defaults to false in the

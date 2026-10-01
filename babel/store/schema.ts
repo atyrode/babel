@@ -25,7 +25,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 19 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 20 } as const;
 
 /** Named allocation intentions share this store, but never replace an active policy. */
 const ALLOCATION_PLAN_SCHEMA: readonly string[] = [
@@ -944,6 +944,52 @@ const TRANSCRIPT_MAP_SCHEMA: readonly string[] = [
      BEGIN SELECT RAISE(ABORT,'immutable transcript map plan'); END`,
 ];
 
+/** Additional source adapter for the existing versioned navigation-map store (#506). */
+const NEIGHBORHOOD_MAP_SCHEMA: readonly string[] = [
+  `CREATE TABLE transcript_map_neighborhood_inputs(
+    capture_id TEXT PRIMARY KEY REFERENCES transcript_map_captures(id),
+    query_key TEXT NOT NULL, text TEXT NOT NULL
+  ) STRICT`,
+  `CREATE TABLE transcript_map_neighborhood_heads(
+    machine_id TEXT NOT NULL, query_key TEXT NOT NULL,
+    capture_id TEXT NOT NULL REFERENCES transcript_map_captures(id),
+    revision INTEGER NOT NULL, PRIMARY KEY(machine_id,query_key)
+  ) STRICT`,
+  `CREATE TABLE transcript_map_neighborhood_clock(
+    id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL
+  ) STRICT`,
+  ...["INSERT", "UPDATE", "DELETE"].flatMap((event) =>
+    [
+      "entities",
+      "aliases",
+      "facts",
+      "fact_status",
+      "records",
+      "status_events",
+      "dispositions",
+      "filings",
+      "questions",
+      "question_events",
+      "answers",
+      "edges",
+      "sessions",
+    ].map(
+      (table) => `CREATE TRIGGER transcript_map_neighborhood_${table}_${event.toLowerCase()}
+        AFTER ${event} ON ${table} BEGIN
+          INSERT INTO transcript_map_neighborhood_clock(id,revision) VALUES(1,1)
+          ON CONFLICT(id) DO UPDATE SET revision=revision+1;
+        END`,
+    ),
+  ),
+  ...["UPDATE", "DELETE"].map(
+    (event) =>
+      `CREATE TRIGGER transcript_map_neighborhood_inputs_${event.toLowerCase()}
+      BEFORE ${event} ON transcript_map_neighborhood_inputs BEGIN
+        SELECT RAISE(ABORT,'immutable navigation source');
+      END`,
+  ),
+];
+
 /** Statements of the first migration, in order; each is one `run`. */
 export const SCHEMA_V1: readonly string[] = [
   // ---------------------------------------------------------------- the catalog
@@ -1423,6 +1469,7 @@ export const SCHEMA_V1: readonly string[] = [
   ...CORPUS_INDEX_SCHEMA,
   ...RECALL_TRACE_SCHEMA,
   ...TRANSCRIPT_MAP_SCHEMA,
+  ...NEIGHBORHOOD_MAP_SCHEMA,
   ...TRANSCRIPT_MAP_READ_SCHEMA,
   ...CITATION_FACT_SCHEMA,
   ...DUPLICATE_SCHEMA,
@@ -1604,6 +1651,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     sql: TRANSCRIPT_MAP_OWNER_COLUMN,
   },
   ...TRANSCRIPT_MAP_READ_SCHEMA.map(objectAddition),
+  ...NEIGHBORHOOD_MAP_SCHEMA.map(objectAddition),
   ...CITATION_FACT_SCHEMA.map(objectAddition),
   ...DUPLICATE_SCHEMA.map(objectAddition),
   ...ALLOCATION_PLAN_SCHEMA.map(objectAddition),

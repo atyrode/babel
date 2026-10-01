@@ -552,6 +552,16 @@ export function neighborhood(overrides: Partial<NeighborhoodResult> = {}): Neigh
     answers: [],
     links: [],
     sources: [],
+    summary: {
+      inference: true,
+      state: "missing",
+      source: null,
+      versionId: null,
+      producer: null,
+      coverage: null,
+      views: [],
+      omittedViews: 0,
+    },
     coverage: {
       scope: "stored-linked-material",
       traversalComplete: true,

@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import {
-  TranscriptMapSourceSchema,
+  NavigationMapSourceSchema,
   TranscriptMapSegmentationSchema,
   TranscriptMapSpanSchema,
   TranscriptMapNodeSchema,
   type TranscriptMapCapture,
-  type TranscriptMapSource,
+  type NavigationMapSource,
   type TranscriptMapSegmentation,
   type TranscriptMapSpan,
   type TranscriptMapNode,
@@ -19,10 +19,10 @@ export function transcriptMapCaptureId(
   return `tmcap_${hash([capture.host, capture.harness, capture.session, capture.snapshot, capture.path])}`;
 }
 export function transcriptMapPlanId(
-  source: TranscriptMapSource,
+  source: NavigationMapSource,
   segmentation: TranscriptMapSegmentation,
 ): string {
-  return `tmplan_${hash([TranscriptMapSourceSchema.parse(source), TranscriptMapSegmentationSchema.parse(segmentation)])}`;
+  return `tmplan_${hash([NavigationMapSourceSchema.parse(source), TranscriptMapSegmentationSchema.parse(segmentation)])}`;
 }
 export function transcriptMapNodeId(
   planId: string,

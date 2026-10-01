@@ -116,7 +116,12 @@ const DISPATCH: Record<
       const input = TranscriptMapPrepareJobInputSchema.parse(raw);
       if ("kind" in input) return mapDrainWake(input);
       if (!material) throw new Error("Missing material lease.");
-      return await mapPrepare(input, out, material, await openTranscriptMapClient());
+      return await mapPrepare(
+        input,
+        out,
+        material,
+        "node" in input ? undefined : await openTranscriptMapClient(),
+      );
     } catch {
       throw new Error("Mapping material could not be sealed.");
     }

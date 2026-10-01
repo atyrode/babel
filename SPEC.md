@@ -362,10 +362,11 @@ no fact, entity resolution or focus-policy change is derived from it without an 
 
 #### 4.8.1 Entity neighbourhoods
 
-The `neighborhood` read action is the shared agent/browser projection of stored linked material,
-not a generated summary or another store. It requires the same workspace read capability as the
-other record-reading doors and delegates no machine, archive or model operation. It creates no
-entity, fact, filing, inference or durable read trace.
+The `neighborhood` read action is the shared agent/browser projection of stored linked material
+and separately labelled, generated navigation summaries over those exact rows. It requires the
+same workspace read capability as the other record-reading doors and delegates no machine,
+archive or model operation. It creates no entity, fact, filing or inference. Serving existing
+prose records only the shared map mechanism's review eligibility, never a paid admission.
 
 Starting at an explicit entity ID, breadth-first traversal follows only entity `contains`
 edges from parent to child and entity `part-of` edges from parent to child in the inverse
@@ -397,7 +398,7 @@ Catalog sources are included through a direct filed-record citation or a stored
 **current catalog**, not necessarily the historical capture cited by a conclusion; exact
 historical locators and copied quotations, when present, remain in that record's stored payload.
 A dangling citation is still a labelled link, not an invented source. This read does not open
-raw transcripts, consult protected transcript-map caches or bypass Recall's separate grants.
+raw transcripts, consult protected transcript-map captures or bypass Recall's separate grants.
 
 Coverage is explicitly `stored-linked-material`, never the whole project. `traversalComplete`
 requires exhausting the reachable containment graph; stopping at a depth, node or byte boundary,
@@ -407,7 +408,43 @@ returned entities, while `omittedNodesAtLeast` is a lower bound at the visited f
 census of unseen descendants. Missing entity endpoints are counted separately. Unknown archive
 access and unreviewed inventory are returned as null: catalog presence or lack of a citation
 does not establish that material is accessible, exhaustively associated or never reviewed.
-Generated neighbourhood summaries remain outside this records-only read.
+Missing, rejected, stale or unavailable generated summaries never disable this records projection.
+
+Generation reuses §6.3.2's deterministic segmenter, versioned recipes, source provenance, summary
+bindings, coverage, served-only review, bounded corrections and existing map work queue in the same
+hub store. It is not a nearby transcript summary. The explicit policy list `mapping.neighborhoods`
+contains at most 32 ordinary bounded neighbourhood queries and defaults to empty. A mapping draw
+snapshots those underlying rows; neither a read nor a source drilldown adds a target. The existing
+authorized mapping lane, configured Code profile, native preparation admission, account lineage,
+claims, fences and shared daily/mapping ceilings govern generation. No second model route or
+additional allowance is introduced. Even a small neighbourhood can be summarized; transcript
+captures still retain their direct-read threshold.
+
+An immutable hub-record source retains its exact query, source/revision digests, capture time,
+stored row identifiers and per-row revision digests, attribution and status. Canonical input rows
+are mandatory-redacted before native material preparation. The source's full records-only coverage
+travels with the generated result, including depth/node/item/byte omissions and unavailable
+entities; summarized/unmapped/gap bytes report mapping coverage separately. Disputed and stale or
+replaced inputs remain included and counted. Current-catalog locators stay current-catalog
+metadata, never historical transcript evidence. Other links still do not extend the containment
+spine.
+
+Every neighbourhood read compares the current bounded source revision with the generated source.
+A changed row, status, filing, link or coverage cannot leave its old summary labelled current.
+A source-mutation clock also fences capture and publication; concurrent changes withhold a current
+result rather than manufacture one. Earlier versions and exact mandatory-redacted input rows remain
+readable. The `neighborhoodSource` door pages those retained rows with their source-record positions,
+IDs and revision digests: at most 16 complete rows and 32,768 JSON bytes per page, with explicit
+omissions and a continuation. This is reading stored source material, not reading an archive or
+serving more inference.
+
+At most four non-overlapping summary views from one producing version are returned, preferring the
+root when available. They retain run, recipe/profile revisions, configured source route, executor,
+node/span digests and correction lineage. The source is explicitly hub-owned records, not a Recall
+capture or a new archive grant. Reviews rejecting or correcting a summary withhold its prose;
+stale accepted prose remains explicitly historical. Summary omissions remain visible. Records
+have priority within the shared byte ceiling: a summary that cannot fit is labelled `bounded`,
+not substituted for records. Summary IDs still cannot satisfy an evidence contract.
 
 The feed plugin's **Topic** panel consumes this same typed read after resolving the topic's
 entity ID; it does not fetch descendants separately or recompute depth. **Stored neighbourhood**
@@ -436,8 +473,11 @@ depth/node/item/byte truncation reason, unavailable count, covered scope and fro
 lower bound. Missing entities, empty existing neighbourhoods, bounded responses returning no
 material, loading and unavailable reads are different states; a failed refresh does not leave
 old facts presented as a current successful read. Archive access and exhaustive unreviewed
-inventory remain unknown. Opening or refreshing this section performs only the shared read,
-never a model call, source fetch or store write.
+inventory remain unknown. The **Generated navigation summaries** section distinguishes inference
+from the records below it, reports missing/incomplete/outdated coverage, and opens exact retained
+source pages. Source-page record/entity actions open the existing panels; the retained historical
+row remains separately visible. Opening or refreshing performs only stored reads and, when prose
+is actually returned, records review eligibility; it never posts model work or fetches an archive.
 
 ### 4.9 Subjects, focus, and context
 
@@ -1312,10 +1352,13 @@ without bypassing input or held-credential checks. Installation grants no live c
 
 #### 6.3.2 Transcript maps: navigation at several levels of detail
 
-**Design contract — implementation in progress (#223).** A map belongs to an immutable capture
-of one transcript. Its root summarizes the session, progressively finer children summarize
-contiguous sections and steps, and the leaves lead to exact transcript spans. Cross-transcript
-search can find sessions or nodes; it does not replace this within-transcript hierarchy.
+A transcript map belongs to an immutable capture of one transcript. Its root summarizes the
+session, progressively finer children summarize contiguous sections and steps, and the leaves
+lead to exact transcript spans. Cross-transcript search can find sessions or nodes; it does not
+replace this within-transcript hierarchy. The same producer also accepts explicitly configured
+bounded hub-record neighbourhood snapshots (§4.8.1), with their own exact row/revision locators;
+those sources never enter Recall's protected transcript search or source-grant paths. Source
+implementation is separate from remaining live activation acceptance (#501).
 
 Maps are derived navigation artifacts in the existing hub database, not frontier records or a
 second storage service. A summary is model-produced inference, never evidence. It is labelled as

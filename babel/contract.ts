@@ -398,6 +398,7 @@ export const ACTIONS = {
   topics: "topics",
   topic: "topic",
   neighborhood: "neighborhood",
+  neighborhoodSource: "neighborhoodSource",
   pulse: "pulse",
   runs: "runs",
   run: "run",
@@ -1442,7 +1443,7 @@ export const NeighborhoodSourceSchema = z.strictObject({
   reviewState: z.literal("unknown"),
 });
 
-export const NeighborhoodResultSchema = z.strictObject({
+export const NeighborhoodRecordsSchema = z.strictObject({
   entityId: EntityIdSchema,
   state: z.enum(["found", "missing"]),
   limits: NeighborhoodQuerySchema.omit({ entityId: true }),
@@ -1473,7 +1474,7 @@ export const NeighborhoodResultSchema = z.strictObject({
     resultBytes: z.number().int().min(0),
   }),
 });
-export type NeighborhoodResult = z.infer<typeof NeighborhoodResultSchema>;
+export type NeighborhoodRecords = z.infer<typeof NeighborhoodRecordsSchema>;
 
 // -------------------------------------------- refinement (§4.7) and output projections (§4.6)
 
@@ -6213,6 +6214,28 @@ export const TranscriptMapSourceSchema = TranscriptMapCaptureSchema.extend({
 });
 export type TranscriptMapSource = z.infer<typeof TranscriptMapSourceSchema>;
 
+/** Hub records use the same map producer, not a fabricated archive capture or Recall grant. */
+export const NeighborhoodMapSourceSchema = z.strictObject({
+  kind: z.literal("neighborhood"),
+  id: TranscriptMapCaptureIdSchema,
+  query: NeighborhoodQuerySchema,
+  revision: recallDigest,
+  sourceDigest: recallDigest,
+  bytes: recallBytes,
+  records: recallBytes,
+  capturedAt: z.iso.datetime({ offset: true }),
+  coverage: NeighborhoodRecordsSchema.shape.coverage,
+  disputed: recallBytes,
+  stale: recallBytes,
+  redactions: recallBytes,
+});
+export type NeighborhoodMapSource = z.infer<typeof NeighborhoodMapSourceSchema>;
+export const NavigationMapSourceSchema = z.union([
+  TranscriptMapSourceSchema,
+  NeighborhoodMapSourceSchema,
+]);
+export type NavigationMapSource = z.infer<typeof NavigationMapSourceSchema>;
+
 /** Every node names a contiguous range of complete canonical records, including their newlines. */
 export const TranscriptMapSpanSchema = z
   .strictObject({
@@ -6260,6 +6283,10 @@ export const TranscriptMapPlanSchema = z.strictObject({
   gapBytes: recallBytes,
 });
 export type TranscriptMapPlan = z.infer<typeof TranscriptMapPlanSchema>;
+export const NavigationMapPlanSchema = TranscriptMapPlanSchema.extend({
+  source: NavigationMapSourceSchema,
+});
+export type NavigationMapPlan = z.infer<typeof NavigationMapPlanSchema>;
 
 /** Native attestations are invalidated by either classification or archive inventory changes. */
 export const TranscriptMapContextSchema = z.strictObject({
@@ -6296,6 +6323,8 @@ export const TranscriptMapPolicySchema = z.strictObject({
   maxAttempts: z.number().int().min(1).max(3).default(2),
   maxReviews: z.number().int().nonnegative().max(3).default(1),
   maxCorrections: z.number().int().nonnegative().max(2).default(1),
+  /** Explicit opt-in to bounded hub-record snapshots; reads never add generation targets. */
+  neighborhoods: z.array(NeighborhoodQuerySchema).max(32).default([]),
 });
 export type TranscriptMapPolicy = z.infer<typeof TranscriptMapPolicySchema>;
 /** Stored configuration names methods in the one authoritative policy.review.recipes library. */
@@ -6413,6 +6442,74 @@ export const TranscriptMapViewSchema = z.strictObject({
   coverage: TranscriptMapCoverageSchema,
 });
 export type TranscriptMapView = z.infer<typeof TranscriptMapViewSchema>;
+
+export const NeighborhoodSummarySchema = z.strictObject({
+  inference: z.literal(true),
+  state: z.enum(["missing", "available", "stale", "unavailable", "bounded"]),
+  source: NeighborhoodMapSourceSchema.nullable(),
+  versionId: TranscriptMapVersionIdSchema.nullable(),
+  coverage: TranscriptMapCoverageSchema.nullable(),
+  producer: TranscriptMapVersionSchema.pick({
+    sourceMachineId: true,
+    executorMachineId: true,
+    profile: true,
+    contractDigest: true,
+    generation: true,
+    createdAt: true,
+  }).nullable(),
+  views: z
+    .array(
+      z.strictObject({
+        node: TranscriptMapNodeSchema,
+        summary: TranscriptMapSummaryViewSchema,
+      }),
+    )
+    .max(4),
+  omittedViews: recallBytes,
+});
+export type NeighborhoodSummary = z.infer<typeof NeighborhoodSummarySchema>;
+export const NeighborhoodResultSchema = NeighborhoodRecordsSchema.extend({
+  summary: NeighborhoodSummarySchema,
+});
+export type NeighborhoodResult = z.infer<typeof NeighborhoodResultSchema>;
+export const NeighborhoodSourceQuerySchema = z.strictObject({
+  sourceId: TranscriptMapCaptureIdSchema,
+  offset: z.number().int().nonnegative().default(0),
+  maxRecords: z.number().int().min(1).max(16).default(16),
+  maxBytes: z.number().int().min(4096).max(32768).default(32768),
+});
+export type NeighborhoodSourceQuery = z.infer<typeof NeighborhoodSourceQuerySchema>;
+export const NeighborhoodSourceRecordSchema = z.strictObject({
+  kind: z.enum([
+    "nodes",
+    "facts",
+    "records",
+    "filings",
+    "questions",
+    "answers",
+    "links",
+    "sources",
+    "coverage",
+  ]),
+  id: z.string(),
+  revision: recallDigest,
+  /** Exact retained row, mandatory-redacted before model disclosure; never a summary. */
+  value: z.record(z.string(), z.unknown()),
+});
+export const NeighborhoodSourceResultSchema = z.strictObject({
+  source: NeighborhoodMapSourceSchema.nullable(),
+  rows: z
+    .array(
+      z.strictObject({
+        record: z.number().int().positive(),
+        source: NeighborhoodSourceRecordSchema,
+      }),
+    )
+    .max(16),
+  nextOffset: z.number().int().nonnegative().nullable(),
+  omittedRecords: recallBytes,
+});
+export type NeighborhoodSourceResult = z.infer<typeof NeighborhoodSourceResultSchema>;
 
 export const TRANSCRIPT_MAP_NATIVE_KINDS = [
   "map-context",
@@ -6588,6 +6685,15 @@ export const TranscriptMapPrepareInputSchema = z.strictObject({
   feedback: transcriptMapText.optional(),
 });
 export type TranscriptMapPrepareInput = z.infer<typeof TranscriptMapPrepareInputSchema>;
+export const NavigationMapPrepareInputSchema = z.union([
+  TranscriptMapPrepareInputSchema,
+  TranscriptMapPrepareInputSchema.omit({ expectedPolicyDigest: true }).extend({
+    source: NeighborhoodMapSourceSchema,
+    node: TranscriptMapNodeSchema,
+    text: z.string().max(TRANSCRIPT_MAP_MAX_MATERIAL_BYTES).nullable(),
+  }),
+]);
+export type NavigationMapPrepareInput = z.infer<typeof NavigationMapPrepareInputSchema>;
 /**
  * A paid mapping drain's own wake (#469): native scheduler liveness at the `map-prepare` node the
  * drain was admitted at, posted under the drain's credential so its settlement wakes Babel with
@@ -6600,7 +6706,7 @@ export const TranscriptMapDrainWakeInputSchema = z.strictObject({
 });
 export type TranscriptMapDrainWakeInput = z.infer<typeof TranscriptMapDrainWakeInputSchema>;
 export const TranscriptMapPrepareJobInputSchema = z.union([
-  TranscriptMapPrepareInputSchema,
+  NavigationMapPrepareInputSchema,
   TranscriptMapDrainWakeInputSchema,
 ]);
 export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
@@ -6620,9 +6726,9 @@ export const TranscriptMapJobReceiptSchema = z.discriminatedUnion("kind", [
     kind: z.literal("material"),
     sourceMachineId: refId,
     executorMachineId: refId,
-    context: TranscriptMapContextSchema,
-    access: TranscriptMapAccessSchema,
-    source: TranscriptMapSourceSchema,
+    context: TranscriptMapContextSchema.nullable(),
+    access: TranscriptMapAccessSchema.nullable(),
+    source: NavigationMapSourceSchema,
     node: TranscriptMapNodeSchema,
     mode: z.enum(TRANSCRIPT_MAP_MODES),
     inputDigest: recallDigest,
@@ -6693,14 +6799,14 @@ export const TranscriptMapRunSchema = z
     claim: z.strictObject({ id: refId, runId: refId, fence: z.number().int().positive() }),
     details: z.strictObject({
       work: TranscriptMapWorkSchema,
-      plan: TranscriptMapPlanSchema,
+      plan: NavigationMapPlanSchema,
       node: TranscriptMapNodeSchema,
       version: TranscriptMapVersionSchema,
       baseSummary: TranscriptMapSummarySchema.nullable(),
       feedback: z.string().nullable(),
       context: TranscriptMapContextSchema.nullable(),
     }),
-    input: TranscriptMapPrepareInputSchema,
+    input: NavigationMapPrepareInputSchema,
     resourceBindingDigest: z.string().regex(/^[0-9a-f]{64}$/),
     expectedServiceBindings: z.record(z.string(), TranscriptMapServiceBindingSchema),
     installationRevision: z.string(),
