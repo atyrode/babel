@@ -40,6 +40,7 @@ import {
   diffRunTraces,
   type MaterialIndex,
   type RunTrace,
+  type ReviewRunAdmission,
 } from "../contract.ts";
 import {
   finishDirectLaunch,
@@ -48,7 +49,11 @@ import {
   readDrain,
   reserveDirectLaunch,
 } from "../store/drains.ts";
-import { reviewAction, reviewActionStatus } from "../store/review-actions.ts";
+import {
+  reviewAction,
+  reviewActionStatus,
+  reviewJudgmentContext,
+} from "../store/review-actions.ts";
 import { ReviewActionInputSchema } from "../machine/results.ts";
 import { launchDoors, launchMachinery, principalChain, type Started } from "../doors/launch.ts";
 import { drainTick, endDrain, type DrainDeps } from "./drain.ts";
@@ -4213,7 +4218,7 @@ test("a stale review completion retains usage without writing or settling the ne
 });
 
 class GovernedReviewCode extends ReviewCode {
-  admission: EngineAnswer<{ runId: string; agentId: string }> = {
+  admission: EngineAnswer<ReviewRunAdmission> = {
     ok: true,
     value: { runId: "agent-run-review", agentId: "reviewer" },
   };
@@ -4222,7 +4227,7 @@ class GovernedReviewCode extends ReviewCode {
   beforePost?: (request: SessionRequest) => Promise<void>;
   answer?: EngineAnswer<CodeJob>;
 
-  async createReviewRun(): Promise<EngineAnswer<{ runId: string; agentId: string }>> {
+  async createReviewRun(): Promise<EngineAnswer<ReviewRunAdmission>> {
     this.admissions += 1;
     return this.admission;
   }
@@ -4319,6 +4324,46 @@ test("ordinary review without Jev commits before posting acknowledgement and sur
     await f.db.query(`SELECT count(*) n FROM review_actions WHERE run_id=?`, [f.runId]),
   ).toEqual([{ n: 1n }]);
   expect(f.draws.finished).toMatchObject([{ outcome: "failed", cost: 0.41 }]);
+});
+
+test("optional judgment permission is pinned before callbacks and does not replace durable review completion", async () => {
+  const f = await governedReviewFixture();
+  f.code.admission = {
+    ok: true,
+    value: { runId: "agent-run-review", agentId: "reviewer", jev: true },
+  };
+  f.code.beforePost = async () => {
+    const scope = await reviewJudgmentContext(
+      f.store,
+      { runId: "agent-run-review", agentId: "reviewer" },
+      { phase: "reserve", key: "optional", stateDigest: "a".repeat(64) },
+    );
+    expect(scope).toMatchObject({
+      runId: f.runId,
+      recordId: ASSIGNMENT.recordId,
+      role: ASSIGNMENT.role,
+      fence: 1,
+    });
+    await f.submit({ kind: "assessment", key: "assessment", result: { vote: "support" } });
+    await f.submit({ kind: "complete", key: "complete", actions: ["assessment"] });
+  };
+  await f.loop.tick();
+  f.code.read = sessionRead({
+    state: "exited",
+    jobId: "job_code_review",
+    finalMessage: '```json\n{"vote":"oppose"}\n```',
+    inference: SESSION_METER,
+  });
+  await f.loop.tick();
+  expect(await reviewActionStatus(f.store, f.runId)).toMatchObject({
+    state: "completed",
+    complete: true,
+    actions: 1,
+    judgments: [{ key: "optional", stateDigest: "a".repeat(64) }],
+  });
+  expect(await f.db.query("SELECT vote FROM assessments WHERE run_id=?", [f.runId])).toEqual([
+    { vote: "support" },
+  ]);
 });
 
 test.each([

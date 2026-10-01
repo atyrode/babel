@@ -651,6 +651,36 @@ Tool schemas constrain generation but do not guarantee a provider calls the tool
 once, or satisfies the role's semantic rules. Missing and invalid calls remain explicit
 incomplete work, not fabricated assessments.
 
+**Optional in-session Jev judgment uses that same Run, not another writer (#363).** An enabled,
+installed Jev part may offer `atyrode.babel.jev.ask` only when the existing Agent explicitly
+approves its own `atyrode.babel.jev:ask` capability and exact bounded result-publication digest,
+plus `services:invoke` at `manifold://` with subtree reach. Native delegates narrow the caller,
+not lend authority; the host's single Run target must cover the existing service's machine.
+Discovery never grants it. Without all those existing approvals the ordinary typed Run keeps
+its original root-node scope and sole review tool. No manifest gains a root or record-writing
+capability, no policy or service consent is automatically acknowledged, and baseline Babel
+neither imports Jev's implementation nor requires the part.
+
+The model supplies a fresh correlation key and the retrieved state it assembled. The host's
+authenticated Agent/Run and Babel's persisted review assignment supply the review role, stage,
+immutable record revision and claim fence; none is accepted from model arguments. Babel reserves
+at most three attempts per admitted Run, durably alongside its existing submission state, before
+Jev invokes the existing reviewed `judge` service and question bank. Inputs are capped at 8,192
+encoded JSON bytes, with no truncation; the result is at most 32 known bank scalar leaves and
+8,192 bytes, carrying the request/state digests and trusted lineage. These are call and size
+bounds, **not dollar ceilings or a new credit-accounting system**. A consumed key is never
+invoked again, even after a lost answer; a new key consumes another attempt. A late Stop, expired
+or reassigned claim, completed submission, or changed provider/service policy discards the answer.
+
+Readiness is not evidence of remaining credit. Absent, disabled, ungranted, unavailable or
+unfunded Jev supplies no fabricated judgment and does not block ordinary review or alter baseline
+reading doors, panels or result contracts. A cold invocation refusal, including out of credit,
+is explicit absence, never support or opposition. A current-policy memo may avoid an invocation;
+it is an existing answer, not a funding observation. Jev writes no assessment, proposal, record
+or operator ruling. Assisted and ordinary agents submit their own work through the same validated
+durable `reviewAction` intake. Unconfirmed Run creation is held, never replayed to acquire or
+remove optional authority. Actual funded-provider behavior requires separate authorized evidence.
+
 **Coverage is a first-class result, not an inference from score.** Distinguish **never reviewed**,
 **reviewed at this revision**, and **needs re-review**, with blocked or not-applicable reasons
 visible. A vote can satisfy a reception review but cannot stand in for evidence checking or

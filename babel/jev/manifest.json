@@ -2,8 +2,8 @@
   "id": "atyrode.babel.jev",
   "version": "0.1.0",
   "title": "Jev",
-  "description": "Optional judgement: record voters, pair relations and bounded duplicate proposals. Free plans precede paid judgement. No store, panel or write authority; suggestions need separate operator delivery. Cached readings may prioritize the review draw by authenticated ephemeral handoff. Missing or disabled readings retain baseline selection; funding is unknown. Jev cannot rule, apply links, change feed rank, withhold work or launch sessions.",
-  "capabilities": ["containers:read", "services:invoke"],
+  "description": "Optional judgement: record voters, pair relations, duplicate proposals and explicitly granted bounded review-Run assistance. No store, panel, record writer or operator authority. Ready service metadata does not prove credit; refused invocation is no judgment and ordinary review is unchanged. Cached readings may advise review selection. Jev cannot rule, apply links, change feed rank, withhold work or launch sessions.",
+  "capabilities": ["containers:read", "services:invoke", "atyrode.babel.jev:ask"],
   "dependencies": {
     "atyrode.babel": {
       "type": "required",

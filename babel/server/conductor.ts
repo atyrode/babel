@@ -57,6 +57,7 @@ import {
   type ParkReason,
   type SessionRow,
   type Receipt,
+  type ReviewRunAdmission,
   type RunCall,
   type RunTrace,
   type TallyReason,
@@ -7658,7 +7659,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
       store.touch();
       if (useTools) {
-        let admitted: EngineAnswer<{ runId: string; agentId: string }>;
+        let admitted: EngineAnswer<ReviewRunAdmission>;
         try {
           admitted = await engine.createReviewRun!({
             agentId: route.agentId!,
@@ -7689,6 +7690,7 @@ export function conductor(deps: ConductorDeps): Conductor {
               complete: false,
               agentRunId: admitted.value.runId,
               agentId: admitted.value.agentId,
+              ...(admitted.value.jev ? { judgments: [] } : {}),
             }
           : { mode: "text", state: "pending", actions: 0, reason: admitted.refused };
         prompt = composeReviewPrompt({
@@ -7697,6 +7699,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           recipe,
           projection,
           submissionMode: submission.mode,
+          optionalJudgment: submission.mode === "tools" && submission.judgments !== undefined,
         });
         bytes = promptBytes(prompt);
         if (bytes > PROMPT_LIMIT) {
