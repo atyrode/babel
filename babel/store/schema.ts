@@ -25,7 +25,22 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 20 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 21 } as const;
+
+/** Privacy acts are independent of the rebuildable catalog and never modify archived bytes. */
+const SESSION_EXCLUSION_SCHEMA: readonly string[] = [
+  `CREATE TABLE session_exclusions(
+     selector TEXT PRIMARY KEY,
+     actor_id TEXT NOT NULL,
+     recorded_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE TRIGGER session_exclusions_immutable BEFORE UPDATE ON session_exclusions BEGIN
+     SELECT RAISE(ABORT, 'a source exclusion is never edited');
+   END`,
+  `CREATE TRIGGER session_exclusions_kept BEFORE DELETE ON session_exclusions BEGIN
+     SELECT RAISE(ABORT, 'a source exclusion is never deleted');
+   END`,
+];
 
 /** Named allocation intentions share this store, but never replace an active policy. */
 const ALLOCATION_PLAN_SCHEMA: readonly string[] = [
@@ -1035,6 +1050,7 @@ export const SCHEMA_V1: readonly string[] = [
   `CREATE INDEX sessions_by_repository ON sessions(repository_identity)`,
   `CREATE INDEX sessions_by_host ON sessions(host, modified_at DESC)`,
   ...ARCHIVE_CATALOG_SCHEMA,
+  ...SESSION_EXCLUSION_SCHEMA,
 
   // ---------------------------------------------------------------- records and their relations
   // Every revision of every hypothesis, observation, finding and proposal is a row; the head of
@@ -1693,6 +1709,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   // a table once per row. Indexes only, derived from the same list.
   ...HISTORY_INDEX_SCHEMA.map(objectAddition),
   ...REVIEW_ACTION_SCHEMA.map(objectAddition),
+  ...SESSION_EXCLUSION_SCHEMA.map(objectAddition),
 ];
 
 /**

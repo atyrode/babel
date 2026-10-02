@@ -434,6 +434,8 @@ export const ACTIONS = {
   regenerateMap: "regenerateMap",
   previewRecall: "previewRecall",
   installRecall: "installRecall",
+  sessionExclusions: "sessionExclusions",
+  excludeSession: "excludeSession",
   // Governed run-authored review work; never an operator ruling.
   reviewAction: "reviewAction",
   /** Authenticated optional judgment reservation/check; never a review or record writer. */
@@ -4159,6 +4161,28 @@ export type CaptureGroup = z.infer<typeof CaptureGroupSchema>;
  */
 export const PREPARE_INPUT_MAX_BYTES = 60 * 1024;
 
+/** Durable owner exclusions are bounded so native privacy policy remains an input document. */
+export const MAX_SESSION_EXCLUSIONS = 64;
+export const SessionExclusionsSchema = z
+  .array(z.string().min(1).max(600))
+  .max(MAX_SESSION_EXCLUSIONS)
+  .refine((selectors) => new Set(selectors).size === selectors.length, "Exclusions must be unique.");
+export const ExcludeSessionInputSchema = z.strictObject({
+  selector: z.string().min(1).max(600),
+});
+export const SessionExclusionSchema = z.strictObject({
+  selector: z.string().min(1).max(600),
+  recordedAt: z.string(),
+});
+export const SessionExclusionsResultSchema = z.strictObject({
+  exclusions: z.array(SessionExclusionSchema).max(MAX_SESSION_EXCLUSIONS),
+});
+export const ExcludeSessionResultSchema = SessionExclusionSchema.extend({
+  excluded: z.literal(true),
+  recallEnforced: z.boolean(),
+  reason: z.string().max(512),
+});
+
 /**
  * WHAT A PREPARATION FROM THE ARCHIVE IS HANDED (#453): the exact captures the hub selected,
  * grouped by snapshot. There is no selector list and nothing is discovered: a preparation reads
@@ -4175,6 +4199,8 @@ export const PrepareInputSchema = z
     runId: z.string().trim().max(120).default(""),
     machineId: z.string().trim().min(1).max(120),
     captures: z.array(CaptureGroupSchema).max(500).default([]),
+    /** The hub's durable exclusions, never supplied by an analysis model. */
+    excludedSessions: SessionExclusionsSchema.optional(),
     query: SessionContentQuerySchema.optional(),
     agentSessions: z.boolean().default(false),
     preflight: PreflightModeSchema.default("redact"),
@@ -4221,6 +4247,7 @@ export const PREPARE_REFUSALS = {
   missing: "capture_missing",
   changed: "capture_changed",
   archive: "archive_unavailable",
+  excluded: "session_excluded",
 } as const;
 export type PrepareRefusal = (typeof PREPARE_REFUSALS)[keyof typeof PREPARE_REFUSALS];
 
@@ -5624,6 +5651,8 @@ export const RecallPolicySchema = z
     version: z.literal(1),
     /** Opt-in fixed worker route; ordinary disclosure-class read grants do not acquire it. */
     mappingClassId: recallId.optional(),
+    /** Hard source ban, independent of disclosure class and honoured before every cache/read. */
+    excludedSessions: SessionExclusionsSchema.optional(),
     classes: z
       .array(
         z.strictObject({
@@ -5841,6 +5870,7 @@ export const RecallResultSchema = z.strictObject({
   refusal: z
     .enum([
       "disclosure",
+      "excluded",
       "unclassified",
       "archive-unavailable",
       "index-busy",
