@@ -14,6 +14,7 @@ import {
   beatChainKey,
   CONDUCTOR_CYCLE_KEY,
   CONDUCTOR_TALLY_KEY,
+  ENGINE_REFUSALS,
   INPUT_FIELD,
   MACHINE_OPERATIONS,
   JOB_OUTPUT_FILES,
@@ -11793,3 +11794,91 @@ test("archived citation job ingests a separately attributed fact and replays wit
     await archive.close();
   }
 }, 60_000);
+
+test("a sealed transcript map excluded after preparation never reaches Code", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  const input = f.seal();
+  await f.db.run("INSERT INTO session_exclusions(selector,actor_id,recorded_at) VALUES(?,?,?)", [
+    input.source.session, "synthetic-owner", new Date(clock).toISOString(),
+  ]);
+  await f.tick();
+  expect(f.posted).toEqual([]);
+  expect(await f.db.query("SELECT closure,job_id FROM runs WHERE kind=?", [TRANSCRIPT_MAP_SESSION_OPERATION])).toEqual([
+    { closure: "failed", job_id: null },
+  ]);
+  expect(await f.db.query("SELECT id FROM transcript_map_captures WHERE id=?", [input.source.id])).toEqual([
+    { id: input.source.id },
+  ]);
+});
+
+test("mapping privacy prevents recovery and retirement disclosure while retaining an uncertain posting", async () => {
+  const f = await paidMapDeployment();
+  await f.tick();
+  const input = f.seal();
+  const requests: SessionRequest[] = [];
+  f.engine.runSession = async (request) => {
+    requests.push(request);
+    return refusedByCode(ENGINE_REFUSALS.unconfirmed, "synthetic interrupted mapping response");
+  };
+  await f.tick();
+  expect(requests).toHaveLength(1);
+  await f.db.run("INSERT INTO session_exclusions(selector,actor_id,recorded_at) VALUES(?,?,?)", [
+    input.source.session, "synthetic-owner", new Date(clock).toISOString(),
+  ]);
+  await f.tick();
+  expect(requests).toHaveLength(1);
+  expect(await f.db.query("SELECT closure,job_id,json_extract(payload,'$.posting') AS posting FROM runs WHERE kind=?", [TRANSCRIPT_MAP_SESSION_OPERATION])).toEqual([
+    { closure: null, job_id: null, posting: 1n },
+  ]);
+  expect(await f.db.query("SELECT finished_at,actual_cost FROM claims WHERE role='mapping:generate'")).toEqual([
+    { finished_at: null, actual_cost: null },
+  ]);
+});
+
+test("cached neighborhood preparation cannot disclose an uncited record from an excluded original source run", async () => {
+  const f = await paidMapDeployment();
+  const query = NeighborhoodQuerySchema.parse({ entityId: "ent_0000a060" });
+  const now = new Date(clock).toISOString();
+  await f.db.run(
+    "INSERT INTO entities(id,kind,name,canonical_id,created_by,created_at) VALUES(?,'project','Synthetic private neighborhood',?,'synthetic-owner',?)",
+    [query.entityId, query.entityId, now],
+  );
+  await f.db.run(
+    "INSERT INTO runs(id,kind,preparation,started_at,closure,payload) VALUES('run_private_neighborhood',?,?,?,'completed','{}')",
+    [OPERATIONS.explore, JSON.stringify({ selectors: ["omp/neighborhood-private-synthetic"] }), now],
+  );
+  await f.db.run(
+    `INSERT INTO records(id,kind,root_id,run_id,actor_kind,actor_id,title,created_at,payload)
+      VALUES('hyp_0000a060','hypothesis','hyp_0000a060','run_private_neighborhood','run','run_private_neighborhood','Synthetic private inference',?,?)`,
+    [now, JSON.stringify({ statement: "Synthetic withheld inference with no citation" })],
+  );
+  await f.db.run(
+    "INSERT INTO filings(id,record_id,entity_id,rationale,author_kind,author_id,created_at) VALUES('fil_private_neighborhood','hyp_0000a060',?,'Synthetic placement','operator','synthetic-owner',?)",
+    [query.entityId, now],
+  );
+  await f.db.run("UPDATE transcript_map_contexts SET mapping=0");
+  await f.db.run(
+    "UPDATE policies SET payload=json_set(payload,'$.mapping.neighborhoods',json(?),'$.mapping.segmentation.leafBytes',8192,'$.mapping.segmentation.directBytes',4096)",
+    [JSON.stringify([query])],
+  );
+  await f.wake();
+  const launch = f.fleet.launched[0]!;
+  const input = NavigationMapPrepareInputSchema.parse(JSON.parse(String(launch.input[INPUT_FIELD])));
+  expect("kind" in input.source).toBe(true);
+  const receipt = await mapPrepare(input, {
+    write: async () => { throw new Error("Synthetic navigation writes no records."); },
+    receipt: async () => {},
+  }, {
+    session: async () => { throw new Error("Synthetic neighborhood retrieves no archive session."); },
+    index: async () => { throw new Error("Synthetic neighborhood has no archive index."); },
+    document: async () => {},
+  });
+  f.fleet.finish(launch.jobId, 0, { [JOB_OUTPUT_FILES.receipt]: receipt });
+  await f.db.run("INSERT INTO session_exclusions(selector,actor_id,recorded_at) VALUES(?,?,?)", [
+    "omp/neighborhood-private-synthetic", "synthetic-owner", now,
+  ]);
+  await f.wake();
+  expect(f.posted).toEqual([]);
+  expect(await f.db.query("SELECT id FROM records WHERE id='hyp_0000a060'")).toEqual([{ id: "hyp_0000a060" }]);
+});

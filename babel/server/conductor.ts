@@ -107,6 +107,11 @@ import type { BabelStore } from "../store/store.ts";
 import { upsertSessionRows } from "../store/sessions.ts";
 import { appendCitationFact } from "../store/citation-facts.ts";
 import {
+  mappingSourceIsExcluded,
+  modelPrivacyGuard,
+  readExcludedRecordIds,
+} from "../store/source-privacy.ts";
+import {
   PROMPT_LIMIT,
   promptBytes,
   type CodeEngine,
@@ -2426,6 +2431,7 @@ export async function projectReview(
   store: Pick<BabelStore, "db">,
   recordId: string,
 ): Promise<ReviewProjection | null> {
+  if ((await readExcludedRecordIds(store.db)).has(recordId)) return null;
   const records = await store.db.query<{
     id: string;
     kind: string;
@@ -3065,11 +3071,15 @@ export function conductor(deps: ConductorDeps): Conductor {
     jobId: string,
     phase: "admission" | "bound",
   ): SqlCondition {
+    const source = intent.details.plan.source;
+    const privacy = "kind" in source
+      ? modelPrivacyGuard([], [], [], [source.id])
+      : modelPrivacyGuard([source.session], [], [], [source.id]);
     return {
       sql: `EXISTS (SELECT 1 FROM claims WHERE id=? AND run_id=? AND fence=? AND job_id=?
         AND finished_at IS NULL ${phase === "admission" ? "AND expires_at>?" : ""})
         AND NOT EXISTS (SELECT 1 FROM policies WHERE seq=(SELECT max(seq) FROM policies)
-          AND (version!=? OR json_extract(payload,'$.enabled')=0))`,
+          AND (version!=? OR json_extract(payload,'$.enabled')=0)) AND ${privacy.sql}`,
       params: [
         intent.claim.id,
         intent.claim.runId,
@@ -3077,6 +3087,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         jobId,
         ...(phase === "admission" ? [new Date(deps.now()).toISOString()] : []),
         intent.policyVersion,
+        ...privacy.params,
       ],
     };
   }
@@ -3145,6 +3156,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     phase: "admission" | "bound",
     runId: string,
   ): Promise<string | Unestablished | null> {
+    if (await mappingSourceIsExcluded(store.db, intent.details.plan.source))
+      return "session_excluded: mapping source privacy forbids this material";
     const policy = (await coordinator.policy()).policy;
     const configured = mappingPolicy(policy);
     const route = configured === null ? null : TranscriptMapPolicySchema.parse(configured);
@@ -3444,6 +3457,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     const details = await maps.work(assignment.work.id);
     if (!details || (!("kind" in details.plan.source) && !details.context))
       return "mapping source authority is unavailable";
+    if (await mappingSourceIsExcluded(store.db, details.plan.source))
+      return "session_excluded: mapping source privacy forbids this material";
     const described = await describeMapHost(jobs, route, OPERATIONS.mapPrepare);
     if ("refused" in described) return described.refused;
     const checked = await engine.checkProfile(route.profile);
@@ -3455,6 +3470,9 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (claimed.outcome === "refused") return claimed.refusal.detail;
     const runId = `run_${assignment.id}_${claimed.claim.fence}`;
     const installation = described.readiness.installation!;
+    const sourcePrivacy = "kind" in details.plan.source
+      ? modelPrivacyGuard([], [], [], [details.plan.source.id])
+      : modelPrivacyGuard([details.plan.source.session], [], [], [details.plan.source.id]);
     const intent = TranscriptMapRunSchema.parse({
       policyVersion: policy.version,
       route,
@@ -3514,7 +3532,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       ...reserve,
       {
         sql: `INSERT INTO runs(id,kind,machine_id,container_id,prepare_job_id,profile,authority_kind,authority_id,preparation,started_at,records,chain,payload)
-          SELECT ?,?,?,?,?,?,'conductor',?,?,?,0,?,? WHERE ${held.sql} RETURNING id`,
+          SELECT ?,?,?,?,?,?,'conductor',?,?,?,0,?,? WHERE ${held.sql} AND ${sourcePrivacy.sql} RETURNING id`,
         params: [
           runId,
           TRANSCRIPT_MAP_SESSION_OPERATION,
@@ -3530,6 +3548,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           deps.chain ?? null,
           JSON.stringify(drain ? {} : { standing: true }),
           ...held.params,
+          ...sourcePrivacy.params,
         ],
       },
       {
@@ -4061,6 +4080,10 @@ export function conductor(deps: ConductorDeps): Conductor {
     settled: SettledClaim[],
     notes: string[],
   ): Promise<void> {
+    if (await mappingSourceIsExcluded(store.db, prepared.details.plan.source)) {
+      notes.push(`mapping ${run.id}: source privacy blocks recovery; its reservation stays held`);
+      return;
+    }
     const refusal = await mappingAuthority(prepared, run.prepare_job_id, "admission", run.id);
     // Neither a post nor a retire on what this wake cannot see: the marker waits for one that can.
     if (unestablished(refusal)) {
@@ -4116,6 +4139,10 @@ export function conductor(deps: ConductorDeps): Conductor {
   ): Promise<void> {
     if (answered !== null && (answered.ok || answered.code === ENGINE_REFUSALS.unconfirmed)) {
       await answerMappingPosting(run, prepared, answered, notes);
+      return;
+    }
+    if (await mappingSourceIsExcluded(store.db, prepared.details.plan.source)) {
+      notes.push(`mapping ${run.id}: source privacy blocks retirement; its reservation stays held`);
       return;
     }
     const retired = await engine.runSession({
@@ -6998,6 +7025,7 @@ export function conductor(deps: ConductorDeps): Conductor {
 
   /** Admission can expire; the keyed posting and its original reservation cannot. */
   function reviewPostingFence(run: ReviewPosting, jobId: string | null = null): SqlCondition {
+    const privacy = modelPrivacyGuard([], [run.preparation.recordId], [run.id]);
     return {
       sql: `EXISTS (SELECT 1 FROM claims WHERE id=? AND run_id=? AND fence=?
         AND finished_at IS NULL AND expires_at>? AND (job_id IS NULL OR job_id=?))
@@ -7005,7 +7033,8 @@ export function conductor(deps: ConductorDeps): Conductor {
           AND (version!=? OR json_extract(payload,'$.enabled')=0
             OR coalesce(json_extract(payload,'$.activityWeights.review'),0)<=0))
         AND NOT EXISTS (SELECT 1 FROM runs WHERE id=?
-          AND (closure IS NOT NULL OR coalesce(json_extract(payload,'$.stopRequested'),0)=1))`,
+          AND (closure IS NOT NULL OR coalesce(json_extract(payload,'$.stopRequested'),0)=1))
+        AND ${privacy.sql}`,
       params: [
         run.preparation.assignmentId,
         run.authorityId,
@@ -7014,6 +7043,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         jobId,
         run.preparation.policyVersion,
         run.id,
+        ...privacy.params,
       ],
     };
   }
@@ -7228,6 +7258,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       return { refused: reason, pending: true };
     }
     try {
+      const privacy = modelPrivacyGuard([], [run.preparation.recordId], [run.id]);
+      if ((await store.db.query(`SELECT 1 WHERE NOT (${privacy.sql})`, privacy.params)).length > 0)
+        return await unresolvedReviewPosting(run, "session_excluded: source privacy blocks posting and retirement", notes);
       const [intent] = await store.db.query<{ retiring: number | bigint }>(
         `SELECT coalesce(json_extract(payload,'$.postingRetiring'),0) retiring
           FROM runs WHERE id=? AND closure IS NULL AND job_id IS NULL`,
@@ -7744,6 +7777,12 @@ export function conductor(deps: ConductorDeps): Conductor {
         }
       }
       let started: Started;
+      const privacy = modelPrivacyGuard([], [preparation.recordId], [posting.id]);
+      if ((await store.db.query(`SELECT 1 WHERE NOT (${privacy.sql})`, privacy.params)).length > 0) {
+        const detail = "session_excluded: source privacy blocks this review";
+        await closeUnpostedReview(posting, detail, settled);
+        return { stop: { reason: "dispatch-refused", detail }, gaps };
+      }
       if (submission.mode === "tools") {
         let answered: EngineAnswer<CodeJob>;
         try {

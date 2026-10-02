@@ -11,6 +11,7 @@ import {
   type ReviewSelection,
 } from "../contract.ts";
 import type { BabelStore } from "../store/store.ts";
+import { readExcludedRecordIds } from "../store/source-privacy.ts";
 
 export type ReadingMetadata = Pick<GuestCtx, "host"> & {
   readonly services: Pick<GuestServices, "listInstances">;
@@ -38,7 +39,9 @@ export class ReviewReadings {
 
   async records(ids: readonly string[]) {
     const records = [];
+    const excluded = await readExcludedRecordIds(this.store.db);
     for (const id of new Set(ids.slice(0, REVIEW_READINGS_HELD))) {
+      if (excluded.has(id)) continue;
       const rows = await this.store.db.query<{ seq: number; kind: string }>(
         `SELECT r.seq, r.kind FROM records r WHERE r.id = ?
          AND NOT EXISTS (SELECT 1 FROM records newer WHERE newer.root_id = r.root_id AND newer.seq > r.seq)`,
@@ -156,6 +159,8 @@ export class ReviewReadings {
       return { ...basis, readings: new Map(), reason };
     }
     // Metadata RPCs can outlive the remaining TTL. Validate freshness at consumption too.
+    const excluded = await readExcludedRecordIds(this.store.db);
+    for (const id of excluded) this.#held.delete(id);
     expired = this.prune() || expired;
     return {
       ...basis,

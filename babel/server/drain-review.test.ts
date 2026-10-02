@@ -501,3 +501,31 @@ test.each([1, 4])(
     }
   },
 );
+
+test("a newly excluded review source is not disclosed by retry or adopt-only retirement and its unknown reservation stays held", async () => {
+  const f = await fixture();
+  for (const id of ["hyp_00000001", "hyp_00000002"])
+    await insert(f.store.db, "edges", {
+      id: `edg_privacy_${id}`, kind: "cites", from_kind: "hypothesis", from_id: id,
+      to_kind: "session", to_id: "omp/direct-review-private-synthetic",
+      actor_kind: "run", actor_id: "run_seed", created_at: new Date(NOW).toISOString(),
+    });
+  f.behaviour.afterPost = async () => { throw new Error("synthetic lost acknowledgement"); };
+  expect(await startDrainReview(f.deps, f.row, f.identity)).toMatchObject({ pending: true });
+  expect(f.requests).toHaveLength(1);
+  await insert(f.store.db, "session_exclusions", {
+    selector: "omp/direct-review-private-synthetic", actor_id: "synthetic-owner",
+    recorded_at: new Date(NOW).toISOString(),
+  });
+  expect(await startDrainReview(f.deps, f.row, f.identity)).toMatchObject({
+    refused: expect.stringContaining("session_excluded"), pending: true,
+  });
+  expect((await stopDrainReview(f.deps, f.row, f.identity.runId, "synthetic stop")).cancelled).toBe(false);
+  expect(f.requests).toHaveLength(1);
+  expect(await f.store.db.query("SELECT closure,job_id FROM runs WHERE id=?", [f.identity.runId])).toEqual([
+    { closure: null, job_id: null },
+  ]);
+  expect(await f.store.db.query("SELECT finished_at,actual_cost FROM claims WHERE finished_at IS NULL")).toEqual([
+    { finished_at: null, actual_cost: null },
+  ]);
+});

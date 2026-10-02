@@ -3,6 +3,7 @@ import { MAX_SQL_BATCH_STATEMENTS } from "@manifold/plugin";
 import type { PluginDatabase, SqlStatement } from "@manifold/plugin";
 import { termsQuery } from "../contract.ts";
 import { nameableRecordSql, recordTextSql } from "./schema.ts";
+import { modelPrivacyGuard, sourcePrivacyCondition } from "./source-privacy.ts";
 
 /*
   THE CORPUS INDEX (#337): what the records say, in two indexes, and the one door that reads them.
@@ -80,7 +81,12 @@ export interface Embedding {
  * differed between them would be a caller whose behaviour changes when a card expires. `null`
  * writes no row, so the record stays pending and the next tick asks again.
  */
-export type Embedder = (text: string) => Promise<Embedding | null>;
+export interface EmbeddingSource {
+  readonly db: CorpusStore["db"];
+  readonly recordId: string;
+}
+
+export type Embedder = (text: string, source?: EmbeddingSource) => Promise<Embedding | null>;
 
 /**
  * The most text one embedding call carries, in bytes, measured as the host measures a service
@@ -186,11 +192,12 @@ async function keywordHits(
 ): Promise<readonly TermHit[]> {
   const match = termsQuery(query);
   if (match === "") return [];
+  const privacy = sourcePrivacyCondition("record", "record_id");
   const rows = await store.db.query<{ record_id: string; rank: number }>(
     `SELECT record_id, bm25(record_terms) AS rank
-       FROM record_terms WHERE record_terms MATCH ? AND ${nameableRecordSql("record_id")}
+       FROM record_terms WHERE record_terms MATCH ? AND ${nameableRecordSql("record_id")} AND ${privacy.sql}
        ORDER BY rank LIMIT ?`,
-    [match, limit],
+    [match, ...privacy.params, limit],
   );
   return rows.map((row) => ({ id: String(row.record_id), rank: Number(row.rank) }));
 }
@@ -288,17 +295,17 @@ export async function pendingVectors(
   model: string,
   limit: number,
 ): Promise<readonly PendingRecord[]> {
+  const privacy = sourcePrivacyCondition("record", "t.record_id");
   const rows = await store.db.query<{ record_id: string; title: string; body: string }>(
     `SELECT t.record_id AS record_id, t.title AS title, t.body AS body
        FROM record_terms t
        LEFT JOIN record_vectors v ON v.record_id = t.record_id AND v.model = ?
-      WHERE v.record_id IS NULL
+      WHERE v.record_id IS NULL AND ${privacy.sql}
       ORDER BY t.rowid LIMIT ?`,
-    [model, limit],
+    [model, ...privacy.params, limit],
   );
   return rows.map((row) => ({
-    id: String(row.record_id),
-    text: embedText(String(row.title ?? ""), String(row.body ?? "")),
+    id: row.record_id, text: embedText(String(row.title ?? ""), String(row.body ?? "")),
   }));
 }
 
@@ -387,8 +394,11 @@ export async function backfillVectors(
   // bound rather than split, and a pass that wrote nothing while reporting what it paid for is
   // the one failure the single transaction exists to prevent.
   const bound = Math.max(1, Math.min(limit, MAX_SQL_BATCH_STATEMENTS));
+  const newestPrivacy = sourcePrivacyCondition("record", "record_id");
   const newest = await store.db.query<{ model: string }>(
-    `SELECT model FROM record_vectors ORDER BY embedded_at DESC, record_id DESC LIMIT 1`,
+    `SELECT model FROM record_vectors WHERE ${newestPrivacy.sql}
+      ORDER BY embedded_at DESC, record_id DESC LIMIT 1`,
+    newestPrivacy.params,
   );
   const known = String(newest[0]?.model ?? "");
   let model = known;
@@ -404,7 +414,10 @@ export async function backfillVectors(
   // answer is the call this pass owed that record anyway.
   const sounding = pending.find((record) => record.text !== "");
   if (sounding !== undefined) {
-    const answer = await embed(sounding.text);
+    const privacy = modelPrivacyGuard([], [sounding.id]);
+    if ((await store.db.query(`SELECT 1 WHERE ${privacy.sql}`, privacy.params)).length === 0)
+      return { embedded: 0, empty: 0, unanswered: 0, remaining: 0, model: known };
+    const answer = await embed(sounding.text, { db: store.db, recordId: sounding.id });
     if (answer === null) {
       return { embedded: 0, empty: 0, unanswered: pending.length, remaining: 0, model: "" };
     }
@@ -416,6 +429,8 @@ export async function backfillVectors(
   }
   for (const record of pending) {
     if (record.id === sounding?.id) continue;
+    const privacy = modelPrivacyGuard([], [record.id]);
+    if ((await store.db.query(`SELECT 1 WHERE ${privacy.sql}`, privacy.params)).length === 0) continue;
     if (record.text === "") {
       // A record with no text is a permanent local fact, but the row still has to name a model,
       // because the pending query is per model and a row under `''` would be invisible to every
@@ -430,7 +445,7 @@ export async function backfillVectors(
       empty += 1;
       continue;
     }
-    const answer = await embed(record.text);
+    const answer = await embed(record.text, { db: store.db, recordId: record.id });
     if (answer === null) {
       unanswered += 1;
       continue;
@@ -445,11 +460,12 @@ export async function backfillVectors(
     writes.push(vectorStatement(record.id, model, answer.values, record.text, at));
   }
   if (writes.length > 0) await store.db.batch(writes);
+  const pendingPrivacy = sourcePrivacyCondition("record", "t.record_id");
   const left = await store.db.query<{ n: number }>(
     `SELECT COUNT(*) AS n FROM record_terms t
        LEFT JOIN record_vectors v ON v.record_id = t.record_id AND v.model = ?
-      WHERE v.record_id IS NULL`,
-    [model],
+      WHERE v.record_id IS NULL AND ${pendingPrivacy.sql}`,
+    [model, ...pendingPrivacy.params],
   );
   return {
     embedded: writes.length - empty,
@@ -522,7 +538,15 @@ export interface CorpusQuery {
 }
 
 async function coverageOf(store: CorpusStore, model: string): Promise<CorpusCoverage> {
-  const counted = await termCounts(store);
+  const recordPrivacy = sourcePrivacyCondition("record", "r.id");
+  const termPrivacy = sourcePrivacyCondition("record", "record_id");
+  const vectorPrivacy = sourcePrivacyCondition("record", "record_id");
+  const counts = await store.db.query<{ records: number; terms: number }>(
+    `SELECT (SELECT COUNT(*) FROM records r WHERE ${recordPrivacy.sql}) AS records,
+      (SELECT COUNT(*) FROM record_terms WHERE ${termPrivacy.sql}) AS terms`,
+    [...recordPrivacy.params, ...termPrivacy.params],
+  );
+  const counted = counts[0] ?? { records: 0, terms: 0 };
   const rows = await store.db.query<{
     embedded: number;
     empty: number;
@@ -532,9 +556,9 @@ async function coverageOf(store: CorpusStore, model: string): Promise<CorpusCove
     `SELECT COALESCE(SUM(CASE WHEN model = ? AND dims > 0 THEN 1 ELSE 0 END), 0) AS embedded,
             COALESCE(SUM(CASE WHEN model = ? AND dims = 0 THEN 1 ELSE 0 END), 0) AS empty,
             COALESCE(SUM(CASE WHEN model <> ? THEN 1 ELSE 0 END), 0) AS stale,
-            (SELECT COUNT(*) FROM records r WHERE NOT (${nameableRecordSql("r.id")})) AS unnameable
-       FROM record_vectors`,
-    [model, model, model],
+            (SELECT COUNT(*) FROM records r WHERE NOT (${nameableRecordSql("r.id")}) AND ${recordPrivacy.sql}) AS unnameable
+       FROM record_vectors WHERE ${vectorPrivacy.sql}`,
+    [model, model, model, ...recordPrivacy.params, ...vectorPrivacy.params],
   );
   const row = rows[0];
   return {
@@ -570,10 +594,11 @@ async function meaningHits(
   limit: number,
 ): Promise<MeaningHits> {
   const wanted = probeBits(query.values);
+  const privacy = sourcePrivacyCondition("record", "record_id");
   const sketches = await store.db.query<{ record_id: string; probe: Uint8Array }>(
     `SELECT record_id, probe FROM record_vectors WHERE model = ? AND dims = ?
-       AND ${nameableRecordSql("record_id")}`,
-    [query.model, query.values.length],
+       AND ${nameableRecordSql("record_id")} AND ${privacy.sql}`,
+    [query.model, query.values.length, ...privacy.params],
   );
   if (sketches.length === 0) {
     return { hits: new Map(), order: [], scanned: 0, rescored: 0 };
@@ -597,8 +622,8 @@ async function meaningHits(
   }
   const holes = ids.map(() => "?").join(",");
   const vectors = await store.db.query<{ record_id: string; vector: Uint8Array }>(
-    `SELECT record_id, vector FROM record_vectors WHERE record_id IN (${holes})`,
-    ids,
+    `SELECT record_id, vector FROM record_vectors WHERE record_id IN (${holes}) AND ${privacy.sql}`,
+    [...ids, ...privacy.params],
   );
   const scored = vectors
     .map((row) => ({
@@ -690,9 +715,10 @@ export async function searchCorpus(
   const holes = ids.map(() => "?").join(",");
   const kinds =
     query.kinds.length === 0 ? "" : ` AND kind IN (${query.kinds.map(() => "?").join(",")})`;
+  const privacy = sourcePrivacyCondition("record", "id");
   const rows = await store.db.query<{ id: string; title: string }>(
-    `SELECT id, title FROM records WHERE id IN (${holes})${kinds}`,
-    [...ids, ...query.kinds],
+    `SELECT id, title FROM records WHERE id IN (${holes})${kinds} AND ${privacy.sql}`,
+    [...ids, ...query.kinds, ...privacy.params],
   );
   const hits: CorpusHit[] = [];
   for (const row of rows) {
