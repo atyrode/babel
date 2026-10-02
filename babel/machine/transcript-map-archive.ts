@@ -53,6 +53,7 @@ interface Kept {
 }
 interface Preview {
   classId: string;
+  selector: string;
   text: string | null;
   bytes: number;
   offset: number;
@@ -77,6 +78,10 @@ export function transcriptMapArchive(options: {
   const kept = new Map<string, Kept>();
   const previews = new Map<string, Preview>();
   const policyDigest = digest(options.policy);
+  const excluded = new Set(options.policy.excludedSessions ?? []);
+  const authorize = (selector: string): void => {
+    if (excluded.has(selector)) throw new Refused("excluded");
+  };
   let directory: string | undefined;
   const drop = async (id: string, value: Kept): Promise<void> => {
     kept.delete(id);
@@ -112,6 +117,7 @@ export function transcriptMapArchive(options: {
     segmentation: TranscriptMapSegmentation,
     cost: RecallResult["cost"],
   ): Promise<Kept> => {
+    authorize(entry.capture.session);
     const reading = await entry.load(cost);
     let existing = kept.get(entry.capture.id);
     if (
@@ -213,6 +219,7 @@ export function transcriptMapArchive(options: {
     span: TranscriptMapSpan,
     cost: RecallResult["cost"],
   ): Promise<string> => {
+    authorize(source.session);
     if (JSON.stringify(source) !== JSON.stringify(value.source))
       throw new Refused("locator-mismatch");
     const first = position(value, span.firstRecord);
@@ -292,11 +299,14 @@ export function transcriptMapArchive(options: {
           (!privileged || options.policy.mappingClassId !== classId)
         )
           throw new Refused("disclosure");
+        if (request.kind === "map-plan") authorize(request.capture.session);
+        else if ("source" in request) authorize(request.source.session);
         await expire();
         if (request.kind === "map-page" || request.kind === "map-release") {
           const value = previews.get(request.previewId);
           if (!value) throw new Refused("preview-expired");
           if (value.classId !== classId) throw new Refused("disclosure");
+          authorize(value.selector);
           if (request.kind === "map-release") {
             release(value);
             previews.delete(request.previewId);
@@ -333,6 +343,9 @@ export function transcriptMapArchive(options: {
           return result;
         }
         const inventory = await options.inventory(disclosure.ceiling, result.cost);
+        inventory.captures = inventory.captures.filter(
+          (entry) => !excluded.has(entry.capture.session),
+        );
         inventory.captures.sort((a, b) => a.capture.id.localeCompare(b.capture.id));
         const context: TranscriptMapContext = {
           digest: digest([policyDigest, inventory.inventory]),
@@ -349,6 +362,7 @@ export function transcriptMapArchive(options: {
           sensitivity: entry.sensitivity,
         });
         const selected = (capture: TranscriptMapCapture): MappingCapture => {
+          authorize(capture.session);
           if (transcriptMapCaptureId(capture) !== capture.id) throw new Refused("locator-mismatch");
           const entry = inventory.captures.find((candidate) => candidate.capture.id === capture.id);
           if (!entry) throw new Refused("disclosure");
@@ -485,6 +499,7 @@ export function transcriptMapArchive(options: {
           const previewId = crypto.randomUUID();
           previews.set(previewId, {
             classId,
+            selector: entry.capture.session,
             text,
             bytes: request.span.byteLength,
             offset: 0,

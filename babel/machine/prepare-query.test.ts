@@ -6,7 +6,7 @@
   observable for "the archive was read".
 */
 
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -115,6 +115,136 @@ async function withFleet(body: (f: Fleet) => Promise<void>): Promise<void> {
 
 const selected = (receipt: Receipt) =>
   receipt.material?.sessions.map((session) => session.selector) ?? [];
+
+test(
+  "owner exclusions refuse an explicit scope before cold or warm source access, including own-run opt-in",
+  async () => {
+    await withFleet(async (f) => {
+      const denied = f.add("excluded-run.babel", "synthetic sealed-ban marker");
+      f.add("allowed-sibling", "synthetic allowed marker");
+      const captures = [await f.offered(await f.snapshot())];
+      const cacheSlot = new Bun.CryptoHasher("sha256").update(denied).digest("hex");
+      const deny = async () => {
+        const files = spyOn(Bun, "file");
+        let archiveAccess = 0;
+        let repositoryAccess = 0;
+        try {
+          const { receipt, material } = await f.run(
+            { captures, excludedSessions: [denied], agentSessions: true },
+            {
+              archive: async () => {
+                archiveAccess++;
+                throw new Error("Excluded scopes cannot open an archive");
+              },
+              repository: async () => {
+                repositoryAccess++;
+                throw new Error("Excluded scopes cannot open a cache");
+              },
+            },
+          );
+          expect(receipt.closure).toBe("failed");
+          expect(receipt.reason).toMatch(/^session_excluded:/);
+          expect(receipt.counts).toMatchObject({ selected: 0, fetched: 0, reused: 0 });
+          expect(receipt.material).toBeUndefined();
+          expect(receipt.preparation).toBeUndefined();
+          expect(archiveAccess).toBe(0);
+          expect(repositoryAccess).toBe(0);
+          expect(files.mock.calls.some(([path]) => String(path).includes(cacheSlot))).toBe(false);
+          expect(JSON.stringify(receipt)).not.toContain(denied);
+          expect(await Bun.file(join(material, MATERIAL_INDEX)).exists()).toBe(false);
+        } finally {
+          files.mockRestore();
+        }
+      };
+      await deny();
+      const warmed = await f.run({ captures, agentSessions: true });
+      expect(warmed.receipt.closure).toBe("completed");
+      expect(warmed.receipt.counts["fetched"]).toBe(2);
+      await deny();
+    });
+  },
+  TIMEOUT,
+);
+
+test(
+  "content selection omits excluded sources before cold fetch or warm index/cache reads without broadening",
+  async () => {
+    await withFleet(async (f) => {
+      const deniedText = "synthetic banneedle sharedneedle marker";
+      const denied = f.add("excluded-run.babel", deniedText);
+      const allowed = f.add("allowed-sibling", "synthetic sharedneedle siblingneedle");
+      const snapshot = await f.snapshot();
+      const captures = [await f.offered(snapshot)];
+      const forbiddenCapture = captures[0]!.sessions.find(
+        (session) => `omp/${session.sourceId}` === denied,
+      )!;
+      const cacheSlot = new Bun.CryptoHasher("sha256").update(denied).digest("hex");
+      const verify = async (warm: boolean) => {
+        const dumps = spyOn(f.fx.repo, "dumpTo");
+        const files = spyOn(Bun, "file");
+        try {
+          const shared = await f.run({
+            captures,
+            query: { text: "sharedneedle", limit: 24 },
+            excludedSessions: [denied],
+            agentSessions: true,
+          });
+          expect(shared.receipt.closure).toBe("completed");
+          expect(selected(shared.receipt)).toEqual([allowed]);
+          expect(shared.receipt.counts).toMatchObject({
+            offered: 2,
+            selected: 1,
+            excluded: 1,
+            agent: 0,
+            fetched: warm ? 0 : 1,
+          });
+          expect(shared.receipt.retrieval).toMatchObject({
+            eligible: 1,
+            indexed: warm ? 0 : 1,
+            reused: warm ? 1 : 0,
+            matches: 1,
+          });
+          const onlyDenied = await f.run({
+            captures,
+            query: { text: "banneedle", limit: 24 },
+            excludedSessions: [denied],
+            agentSessions: true,
+          });
+          expect(onlyDenied.receipt.closure).toBe("skipped");
+          expect(onlyDenied.receipt.retrieval).toMatchObject({
+            eligible: 1,
+            indexed: 0,
+            reused: 1,
+            matches: 0,
+          });
+          expect(selected(onlyDenied.receipt)).toEqual([]);
+          expect(onlyDenied.receipt.preparation).toBeUndefined();
+          expect(dumps.mock.calls.some(([, path]) => path === forbiddenCapture.path)).toBe(false);
+          expect(files.mock.calls.some(([path]) => String(path).includes(cacheSlot))).toBe(false);
+          for (const receipt of [shared.receipt, onlyDenied.receipt])
+            expect(JSON.stringify(receipt)).not.toContain(denied);
+        } finally {
+          files.mockRestore();
+          dumps.mockRestore();
+        }
+      };
+      await verify(false);
+      const warmed = await f.run({
+        captures,
+        query: { text: "sharedneedle", limit: 24 },
+        agentSessions: true,
+      });
+      expect(new Set(selected(warmed.receipt))).toEqual(new Set([denied, allowed]));
+      await verify(true);
+      const restore = join(f.fx.home, "restored-excluded-source");
+      await f.fx.repo.restore(snapshot.id, { target: restore, include: [forbiddenCapture.path] });
+      expect(readFileSync(join(restore, forbiddenCapture.path), "utf8")).toBe(
+        JSON.stringify({ type: "user", text: deniedText }) + "\n",
+      );
+    });
+  },
+  TIMEOUT,
+);
 
 test(
   "content retrieval accepts opaque redacted records and reuses their verified readings",

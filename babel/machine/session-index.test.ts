@@ -63,6 +63,37 @@ function content(entry: IndexedSession, text: string) {
     return { reading: reading(entry.seen), after: entry.seen };
   };
 }
+test("an exclusion-scoped term corpus cannot reuse tokens or coverage from its formerly warmed corpus", async () => {
+  const { index: previous, dir } = await open();
+  const denied = candidate("synthetic-denied");
+  const allowed = candidate("synthetic-allowed");
+  await previous.build(denied, content(denied, "banneedle sharedneedle"));
+  await previous.build(allowed, content(allowed, "siblingneedle sharedneedle"));
+  const exclusions = [denied.session.selector, "omp/synthetic-other-denied"];
+  const scoped = await sessionIndex(dir, CONTEXT, exclusions);
+  handles.push(scoped);
+  expect(scoped.holds(denied)).toBe(false);
+  expect(scoped.holds(allowed)).toBe(false);
+  expect(await scoped.build(allowed, content(allowed, "siblingneedle sharedneedle"))).toBe("indexed");
+  expect(scoped.searchRecords("banneedle", [allowed], 10)).toEqual({ hits: [], matches: 0 });
+  const found = scoped.searchRecords("sharedneedle", [allowed], 10);
+  expect(found.matches).toBe(1);
+  expect(found.hits.map((hit) => hit.candidate.session.selector)).toEqual([
+    allowed.session.selector,
+  ]);
+  expect(() => scoped.searchRecords("sharedneedle", [allowed, denied], 10)).toThrow(
+    SessionIndexError,
+  );
+  const restarted = await sessionIndex(dir, CONTEXT, [...exclusions].reverse());
+  handles.push(restarted);
+  expect(restarted.holds(allowed)).toBe(true);
+  expect(restarted.holds(denied)).toBe(false);
+  expect(restarted.searchRecords("sharedneedle", [allowed], 10)).toEqual(found);
+  expect(previous.searchRecords("banneedle", [denied], 10).hits[0]!.candidate.session.selector).toBe(
+    denied.session.selector,
+  );
+});
+
 
 test("verified digest repair replaces an exact capture transactionally and reuses an already repaired row", async () => {
   const { index, dir } = await open();

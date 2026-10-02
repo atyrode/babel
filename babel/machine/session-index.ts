@@ -298,11 +298,27 @@ function passages(text: string, parsed: unknown, insert: (text: string) => void)
 }
 
 /** The only filesystem opened here is the managed cache; source reads belong to the callback. */
-export async function sessionIndex(dir: string, context: ReadingContext): Promise<SessionIndex> {
+export async function sessionIndex(
+  dir: string,
+  context: ReadingContext,
+  excludedSessions: readonly string[] = [],
+): Promise<SessionIndex> {
   let db: Database | null = null;
   try {
     if (dir === "" || context.mode !== "redact") throw new SessionIndexError("unavailable");
-    const privateDir = join(dir, `session-index-v${VERSION}`);
+    // FTS rank depends on every indexed passage, even when SQL only returns eligible rows.
+    // A changed hard ban must therefore never open the old corpus's derived term database.
+    const scope =
+      excludedSessions.length === 0
+        ? dir
+        : join(
+            dir,
+            "exclusion-indexes",
+            new Bun.CryptoHasher("sha256")
+              .update(JSON.stringify([...excludedSessions].sort()))
+              .digest("hex"),
+          );
+    const privateDir = join(scope, `session-index-v${VERSION}`);
     await mkdir(privateDir, { recursive: true, mode: 0o700 });
     if (!(await lstat(privateDir)).isDirectory()) throw new SessionIndexError("unavailable");
     await chmod(privateDir, 0o700);
@@ -348,6 +364,10 @@ export async function sessionIndex(dir: string, context: ReadingContext): Promis
 function opened(db: Database, context: ReadingContext): SessionIndex {
   let closed = false;
   let active = false;
+  // Scope the SQL read itself, not just the returned hits: kept sources outside this request
+  // (including an owner-excluded source warmed under an older policy) are never candidates.
+  db.exec("CREATE TEMP TABLE selected_sources (id INTEGER PRIMARY KEY)");
+  const selectSource = db.query("INSERT OR IGNORE INTO selected_sources VALUES (?)");
   const lookup = db.query<
     { id: number },
     [string, string, string, string, string, string, number, number, number, string, string]
@@ -421,15 +441,19 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
     if (since !== null && until !== null && since > until)
       throw new SessionIndexError("unavailable");
     const query = termsQuery(text);
-    if (query === "") return empty;
+    if (query === "" || eligible.length === 0) return empty;
     active = true;
     try {
       db.exec("BEGIN");
+      db.exec("DELETE FROM selected_sources");
       const candidates = new Map<number, IndexedSession>();
       for (const candidate of eligible) {
         const id = current(candidate);
         if (id === null) throw new SessionIndexError("unavailable");
-        if (!candidates.has(id)) candidates.set(id, candidate);
+        if (!candidates.has(id)) {
+          candidates.set(id, candidate);
+          selectSource.run(id);
+        }
       }
       const rows = db.query<
         { source: number; record: number },
@@ -437,6 +461,7 @@ function opened(db: Database, context: ReadingContext): SessionIndex {
       >(
         `SELECT p.source, p.record FROM session_terms
          JOIN session_passages p ON p.id = session_terms.rowid
+         JOIN selected_sources selected ON selected.id = p.source
          JOIN session_sources s ON s.id = p.source
          JOIN session_records r ON r.id = p.record
          WHERE session_terms MATCH ? AND (? IS NULL OR r.time >= ?)

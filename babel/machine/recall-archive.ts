@@ -45,7 +45,12 @@ import { PREPARATION_SCHEMA } from "./prepare.ts";
 import { clipUtf8, recallRecordReader } from "./recall-records.ts";
 import { type Repo, type Snapshot } from "./restic.ts";
 import { sessionDigester } from "./session-records.ts";
-import { sessionIndex, SessionIndexError, type IndexedSession } from "./session-index.ts";
+import {
+  sessionIndex,
+  SessionIndexError,
+  type IndexedSession,
+  type SessionIndex,
+} from "./session-index.ts";
 
 const context: ReadingContext = {
   schema: PREPARATION_SCHEMA,
@@ -133,10 +138,16 @@ export async function createRecallArchive(options: {
   now?: () => number;
 }): Promise<RecallArchive> {
   const policy = RecallPolicySchema.parse(options.policy);
+  const excluded = new Set(policy.excludedSessions ?? []);
+  const authorize = (selector: string): void => {
+    if (excluded.has(selector)) throw new Refused("excluded");
+  };
   const now = options.now ?? Date.now;
   const root = join(options.cacheDir, "recall", hash(options.repo.repository));
   await mkdir(root, { recursive: true, mode: 0o700 });
-  const index = await sessionIndex(root, context);
+  let indexPromise: Promise<SessionIndex> | null = null;
+  const nativeIndex = (): Promise<SessionIndex> =>
+    (indexPromise ??= sessionIndex(root, context, policy.excludedSessions ?? []));
   // Beside the index, in the same owner-private directory: raw claims, never a policy's view.
   const listings = listingMemory(join(root, "listings"));
   const caches = new Map<string, ReadingCache>();
@@ -234,6 +245,7 @@ export async function createRecallArchive(options: {
     sink: RecordSink,
     result: Pick<RecallResult, "cost">,
   ): Promise<void> => {
+    authorize(entry.session.selector);
     let failed = false;
     let failure: unknown;
     try {
@@ -271,6 +283,7 @@ export async function createRecallArchive(options: {
     fetched: Set<Capture>,
     expected?: Pick<ReusedReading, "captureDigest" | "sourceDigest">,
   ): Promise<ReusedReading> => {
+    authorize(entry.session.selector);
     const reused = await entry.cache.reuse(entry.session, entry.seen);
     if (reused !== null) {
       if (
@@ -403,6 +416,7 @@ export async function createRecallArchive(options: {
         await listings.keep(snapshot.id, listing);
       }
       for (const { session, node } of listing.captures) {
+        if (excluded.has(session.selector)) continue;
         if (
           session.selector.length > 600 ||
           (filter.harness !== undefined && filter.harness !== session.harness)
@@ -612,12 +626,15 @@ export async function createRecallArchive(options: {
         const request = RecallRequestSchema.parse(input);
         const disclosure = policy.classes.find((entry) => entry.id === classId);
         if (disclosure === undefined) throw new Refused("disclosure");
+        if (request.kind !== "search" && request.kind !== "session")
+          authorize(request.locator.session);
         await expire();
         await mapping.expire();
         if (request.kind === "session") {
           const token = tokens.get(request.previewId);
           if (token === undefined) throw new Refused("preview-expired");
           if (token.classId !== classId) throw new Refused("disclosure");
+          authorize(token.hit.locator.session);
           if (token.previous?.offset === request.offset) {
             if (token.previous.hit.excerpt.bytes > request.maxBytes)
               throw new Refused("invalid-offset");
@@ -736,6 +753,12 @@ export async function createRecallArchive(options: {
         }
         if (request.kind === "search") {
           result.coverage.eligible = entries.length;
+          if (entries.length === 0) {
+            result.coverage.complete = true;
+            result.matches = 0;
+            return bounded(result);
+          }
+          const index = await nativeIndex();
           const covered: Capture[] = [];
           const readings = new Map<Capture, ReusedReading>();
           // Missing captures first: a finite cold budget makes progress on subsequent requests.
@@ -862,6 +885,7 @@ export async function createRecallArchive(options: {
             throw new Refused("locator-mismatch");
           result.coverage.eligible = 1;
           if (entry.seen.size > MAX_MATERIAL_BYTES) throw new Refused("fetch-bound");
+          const index = await nativeIndex();
           const held = index.digests(entry);
           // Locator hashes are claims, not cache invalidation authority. Without a held index,
           // a warm reading can still be verified and compared, but never evicted for that claim.
@@ -993,7 +1017,7 @@ export async function createRecallArchive(options: {
       closed = true;
       try {
         await mapping.close();
-        index.close();
+        if (indexPromise !== null) (await indexPromise.catch(() => null))?.close();
       } finally {
         tokens.clear();
         stagedBytes.clear();
