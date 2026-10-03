@@ -638,6 +638,8 @@ async function readStandings(db: PluginDatabase): Promise<Map<string, string>> {
  */
 async function readTallies(db: PluginDatabase): Promise<Map<string, Tally>> {
   const rows: SqlRow[] = [];
+  const privacy = sourcePrivacyCondition("record", "a.record_id");
+  const runPrivacy = sourcePrivacyCondition("run", "a.run_id");
   const superseded = new Set<string>();
   await scan<SqlRow>(
     db,
@@ -649,8 +651,9 @@ async function readTallies(db: PluginDatabase): Promise<Map<string, Tally>> {
                         WHERE TRIM(COALESCE(json_extract(c.value, '$.text'), '')) <> '')
                  ELSE 0 END AS prose
        FROM assessments a
+      WHERE ${privacy.sql} AND ${runPrivacy.sql}
       ORDER BY a.rowid`,
-    [],
+    [...privacy.params, ...runPrivacy.params],
     (row) => {
       const replaces = text(row["supersedes_id"]);
       if (replaces !== "") superseded.add(replaces);
@@ -787,12 +790,17 @@ async function readTallies(db: PluginDatabase): Promise<Map<string, Tally>> {
 async function readOpenClaims(db: PluginDatabase, nowMs: number): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   const now = stamp(nowMs);
+  const privacy = sourcePrivacyCondition("record", "record_id");
+  const questionPrivacy = sourcePrivacyCondition("question", "record_id");
+  const runPrivacy = sourcePrivacyCondition("run", "COALESCE(run_id, '')");
   await scan<SqlRow>(
     db,
     `SELECT record_id, granted_at FROM claims
       WHERE (finished_at IS NULL OR finished_at = '') AND expires_at > ? AND record_id <> ''
+        AND ${privacy.sql} AND ${questionPrivacy.sql} AND ${runPrivacy.sql}
+        AND NOT EXISTS (SELECT 1 FROM session_exclusions x WHERE x.selector = claims.record_id)
       ORDER BY record_id, granted_at, id`,
-    [now],
+    [now, ...privacy.params, ...questionPrivacy.params, ...runPrivacy.params],
     (row) => {
       const recordId = text(row["record_id"]);
       const at = instant(row["granted_at"]);
