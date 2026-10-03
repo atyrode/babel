@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { MAX_SQL_BATCH_STATEMENTS } from "@manifold/plugin";
 import type { PluginDatabase, SqlStatement } from "@manifold/plugin";
-import { termsQuery } from "../contract.ts";
+import { EMBEDDING_RUN_KIND, termsQuery } from "../contract.ts";
 import { nameableRecordSql, recordTextSql } from "./schema.ts";
 import { modelPrivacyGuard, sourcePrivacyCondition } from "./source-privacy.ts";
 
@@ -129,13 +129,15 @@ const NO_TEXT = "this record carries no text to embed";
  * writes, so a rebuilt row and a followed row cannot disagree.
  */
 export async function rebuildTerms(store: CorpusStore): Promise<number> {
+  const privacy = sourcePrivacyCondition("record", "r.id");
   await store.db.run("DELETE FROM record_terms");
   let after = 0;
   let written = 0;
   for (;;) {
     const chunk = await store.db.query<{ id: string; rowid: number }>(
-      `SELECT rowid AS rowid, id AS id FROM records WHERE rowid > ? ORDER BY rowid LIMIT ?`,
-      [after, REBUILD_CHUNK],
+      `SELECT r.rowid AS rowid, r.id AS id FROM records r
+        WHERE r.rowid > ? AND ${privacy.sql} ORDER BY r.rowid LIMIT ?`,
+      [after, ...privacy.params, REBUILD_CHUNK],
     );
     if (chunk.length === 0) break;
     const last = chunk[chunk.length - 1];
@@ -143,8 +145,8 @@ export async function rebuildTerms(store: CorpusStore): Promise<number> {
     await store.db.run(
       `INSERT INTO record_terms(record_id, title, body)
        SELECT r.id, r.title, ${recordTextSql("r.")}
-         FROM records r WHERE r.rowid > ? AND r.rowid <= ?`,
-      [after, last.rowid],
+         FROM records r WHERE r.rowid > ? AND r.rowid <= ? AND ${privacy.sql}`,
+      [after, last.rowid, ...privacy.params],
     );
     written += chunk.length;
     after = last.rowid;
@@ -154,9 +156,11 @@ export async function rebuildTerms(store: CorpusStore): Promise<number> {
 
 /** How many records exist and how many the keyword index holds. */
 async function termCounts(store: CorpusStore): Promise<{ records: number; terms: number }> {
+  const privacy = sourcePrivacyCondition("record", "r.id");
   const rows = await store.db.query<{ records: number; terms: number }>(
-    `SELECT (SELECT COUNT(*) FROM records) AS records,
+    `SELECT (SELECT COUNT(*) FROM records r WHERE ${privacy.sql}) AS records,
             (SELECT COUNT(*) FROM record_terms) AS terms`,
+    privacy.params,
   );
   const row = rows[0];
   return { records: Number(row?.records ?? 0), terms: Number(row?.terms ?? 0) };
@@ -174,6 +178,8 @@ async function termCounts(store: CorpusStore): Promise<{ records: number; terms:
  * rebuild, which is a decision rather than a drift.
  */
 export async function ensureTerms(store: CorpusStore): Promise<number> {
+  const privacy = sourcePrivacyCondition("record", "record_terms.record_id");
+  await store.db.run(`DELETE FROM record_terms WHERE NOT (${privacy.sql})`, privacy.params);
   const counted = await termCounts(store);
   if (counted.terms >= counted.records) return 0;
   return await rebuildTerms(store);
@@ -193,6 +199,7 @@ async function keywordHits(
   const match = termsQuery(query);
   if (match === "") return [];
   const privacy = sourcePrivacyCondition("record", "record_id");
+  await store.db.run(`DELETE FROM record_terms WHERE NOT (${privacy.sql})`, privacy.params);
   const rows = await store.db.query<{ record_id: string; rank: number }>(
     `SELECT record_id, bm25(record_terms) AS rank
        FROM record_terms WHERE record_terms MATCH ? AND ${nameableRecordSql("record_id")} AND ${privacy.sql}
@@ -301,11 +308,15 @@ export async function pendingVectors(
        FROM record_terms t
        LEFT JOIN record_vectors v ON v.record_id = t.record_id AND v.model = ?
       WHERE v.record_id IS NULL AND ${privacy.sql}
+      AND NOT EXISTS (SELECT 1 FROM runs pending WHERE pending.kind=?
+        AND pending.closure IS NULL
+        AND json_extract(pending.preparation,'$.embedding.recordId')=t.record_id)
       ORDER BY t.rowid LIMIT ?`,
-    [model, ...privacy.params, limit],
+    [model, ...privacy.params, EMBEDDING_RUN_KIND, limit],
   );
   return rows.map((row) => ({
-    id: row.record_id, text: embedText(String(row.title ?? ""), String(row.body ?? "")),
+    id: row.record_id,
+    text: embedText(String(row.title ?? ""), String(row.body ?? "")),
   }));
 }
 
@@ -430,7 +441,8 @@ export async function backfillVectors(
   for (const record of pending) {
     if (record.id === sounding?.id) continue;
     const privacy = modelPrivacyGuard([], [record.id]);
-    if ((await store.db.query(`SELECT 1 WHERE ${privacy.sql}`, privacy.params)).length === 0) continue;
+    if ((await store.db.query(`SELECT 1 WHERE ${privacy.sql}`, privacy.params)).length === 0)
+      continue;
     if (record.text === "") {
       // A record with no text is a permanent local fact, but the row still has to name a model,
       // because the pending query is per model and a row under `''` would be invisible to every
@@ -562,8 +574,8 @@ async function coverageOf(store: CorpusStore, model: string): Promise<CorpusCove
   );
   const row = rows[0];
   return {
-    records: counted.records,
-    keyworded: counted.terms,
+    records: Number(counted.records),
+    keyworded: Number(counted.terms),
     embedded: Number(row?.embedded ?? 0),
     empty: Number(row?.empty ?? 0),
     stale: Number(row?.stale ?? 0),
@@ -652,6 +664,13 @@ async function meaningHits(
  */
 const RRF_K = 60;
 
+async function exclusionEpoch(store: CorpusStore): Promise<number> {
+  const rows = await store.db.query<{ epoch: number }>(
+    "SELECT count(*) AS epoch FROM session_exclusions",
+  );
+  return Number(rows[0]?.epoch ?? 0);
+}
+
 /**
  * Searches the corpus by words and by meaning, and says which half answered.
  *
@@ -666,6 +685,7 @@ export async function searchCorpus(
   embed: Embedder | null,
   query: CorpusQuery,
 ): Promise<CorpusSearch> {
+  const epoch = await exclusionEpoch(store);
   const width = Math.max(query.limit * 4, 32);
   const keyword = await keywordHits(store, query.query, width);
   let meaning: MeaningHits = { hits: new Map(), order: [], scanned: 0, rescored: 0 };
@@ -700,6 +720,8 @@ export async function searchCorpus(
   const bm25 = new Map(keyword.map((hit) => [hit.id, hit.rank]));
   const ids = [...scores.keys()];
   if (ids.length === 0) {
+    if ((await exclusionEpoch(store)) !== epoch)
+      throw new Error("Conversation privacy policy changed during search.");
     return {
       hits: [],
       coverage,
@@ -735,6 +757,8 @@ export async function searchCorpus(
     });
   }
   hits.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  if ((await exclusionEpoch(store)) !== epoch)
+    throw new Error("Conversation privacy policy changed during search.");
   return {
     hits: hits.slice(0, query.limit),
     coverage,

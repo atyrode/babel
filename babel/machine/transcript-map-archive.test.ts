@@ -229,7 +229,6 @@ test("an excluded retained selector denies cached map catalog and source materia
   }
 });
 
-
 test("mapping enumerates retained history while raw Recall stays newest-only", async () => {
   const f = await fixture();
   try {

@@ -515,9 +515,15 @@ test("uncited prepared sources quarantine whole records and later run lineage wh
     closure: "completed",
     payload: "{}",
   });
-  await record("obs_000000a1", "observation", "Synthetic private summary", {
-    claim: "Synthetic withheld material",
-  }, "run_private_source");
+  await record(
+    "obs_000000a1",
+    "observation",
+    "Synthetic private summary",
+    {
+      claim: "Synthetic withheld material",
+    },
+    "run_private_source",
+  );
   await insert(harness.db, "runs", {
     id: "run_later_source",
     kind: OPERATIONS.explore,
@@ -526,29 +532,55 @@ test("uncited prepared sources quarantine whole records and later run lineage wh
     closure: "completed",
     payload: "{}",
   });
-  await record("fnd_000000a2", "finding", "Synthetic later summary", {
-    pattern: "Synthetic derivative",
-  }, "run_later_source");
-  await record("obs_000000a3", "observation", "Independent synthetic sibling", {
-    claim: "Allowed independent claim",
-  }, "run_allowed_source");
+  await record(
+    "fnd_000000a2",
+    "finding",
+    "Synthetic later summary",
+    {
+      pattern: "Synthetic derivative",
+    },
+    "run_later_source",
+  );
+  await record(
+    "obs_000000a3",
+    "observation",
+    "Independent synthetic sibling",
+    {
+      claim: "Allowed independent claim",
+    },
+    "run_allowed_source",
+  );
   expect(await readExcludedRecordIds(harness.db)).toEqual(new Set());
   expect(await readExcludedRecordIds(harness.db, [selector])).toEqual(
     new Set(["obs_000000a1", "fnd_000000a2"]),
   );
-  expect(await excludeSessionWhenQuiescent(harness.db, selector, "synthetic-owner", new Date(NOW).toISOString())).toBe(true);
+  expect(
+    await excludeSessionWhenQuiescent(
+      harness.db,
+      selector,
+      "synthetic-owner",
+      new Date(NOW).toISOString(),
+    ),
+  ).toBe(true);
   expect(await projectReview(harness.store, "obs_000000a1")).toBeNull();
   expect((await projectReview(harness.store, "obs_000000a3"))?.target["id"]).toBe("obs_000000a3");
   const service = host({ roster: [READY] });
   await rebuildTerms(corpus);
-  const report = await backfillVectors(corpus, embedder(service.services), new Date(NOW).toISOString(), 1);
+  const report = await backfillVectors(
+    corpus,
+    embedder(service.services),
+    new Date(NOW).toISOString(),
+    1,
+  );
   expect(report.embedded).toBe(1);
   expect(service.asks).toHaveLength(1);
   expect(await harness.db.query("SELECT record_id FROM record_vectors")).toEqual([
     { record_id: "obs_000000a3" },
   ]);
   expect(await harness.db.query("SELECT id FROM records ORDER BY id")).toEqual([
-    { id: "fnd_000000a2" }, { id: "obs_000000a1" }, { id: "obs_000000a3" },
+    { id: "fnd_000000a2" },
+    { id: "obs_000000a1" },
+    { id: "obs_000000a3" },
   ]);
 });
 
@@ -562,39 +594,90 @@ test("source exclusion refuses an affected unknown reservation but not an unrela
     payload: JSON.stringify({ posting: true }),
   });
   expect(await readExcludedRunIds(harness.db, [selector])).toContain("run_uncertain_private");
-  expect(await excludeSessionWhenQuiescent(harness.db, selector, "synthetic-owner", new Date(NOW).toISOString())).toBe(false);
-  expect(await excludeSessionWhenQuiescent(harness.db, "omp/independent-synthetic", "synthetic-owner", new Date(NOW).toISOString())).toBe(true);
-  expect(await harness.db.query("SELECT closure,json_extract(payload,'$.posting') AS posting FROM runs WHERE id='run_uncertain_private'")).toEqual([
-    { closure: null, posting: 1n },
-  ]);
+  expect(
+    await excludeSessionWhenQuiescent(
+      harness.db,
+      selector,
+      "synthetic-owner",
+      new Date(NOW).toISOString(),
+    ),
+  ).toBe(false);
+  expect(
+    await excludeSessionWhenQuiescent(
+      harness.db,
+      "omp/independent-synthetic",
+      "synthetic-owner",
+      new Date(NOW).toISOString(),
+    ),
+  ).toBe(true);
+  expect(
+    await harness.db.query(
+      "SELECT closure,json_extract(payload,'$.posting') AS posting FROM runs WHERE id='run_uncertain_private'",
+    ),
+  ).toEqual([{ closure: null, posting: 1n }]);
 });
 
 test("an exclusion recorded during embedding readiness blocks the actual service admission", async () => {
-  await record("obs_000000b1", "observation", "Synthetic held embedding", { claim: "Synthetic private claim" }, "run_embedding_fixture");
+  await record(
+    "obs_000000b1",
+    "observation",
+    "Synthetic held embedding",
+    { claim: "Synthetic private claim" },
+    "run_embedding_fixture",
+  );
   await insert(harness.db, "edges", {
-    id: "edg_embedding_private", kind: "cites", from_kind: "observation", from_id: "obs_000000b1",
-    to_kind: "session", to_id: "omp/embed-race-synthetic", actor_kind: "run",
-    actor_id: "run_embedding_fixture", created_at: new Date(NOW).toISOString(),
+    id: "edg_embedding_private",
+    kind: "cites",
+    from_kind: "observation",
+    from_id: "obs_000000b1",
+    to_kind: "session",
+    to_id: "omp/embed-race-synthetic",
+    actor_kind: "run",
+    actor_id: "run_embedding_fixture",
+    created_at: new Date(NOW).toISOString(),
   });
   await rebuildTerms(corpus);
   const service = host({ roster: [READY] });
   const roster = service.services.listInstances;
   service.services.listInstances = async (request) => {
-    expect(await excludeSessionWhenQuiescent(harness.db, "omp/embed-race-synthetic", "synthetic-owner", new Date(NOW).toISOString())).toBe(true);
+    expect(
+      await excludeSessionWhenQuiescent(
+        harness.db,
+        "omp/embed-race-synthetic",
+        "synthetic-owner",
+        new Date(NOW).toISOString(),
+      ),
+    ).toBe(true);
     return await roster(request);
   };
-  const report = await backfillVectors(corpus, embedder(service.services), new Date(NOW).toISOString());
+  const report = await backfillVectors(
+    corpus,
+    embedder(service.services),
+    new Date(NOW).toISOString(),
+  );
   expect(report.embedded).toBe(0);
   expect(service.asks).toEqual([]);
   expect(await harness.db.query("SELECT record_id FROM record_vectors")).toEqual([]);
 });
 
 test("an ambiguous embedding invocation retains its source reservation and is not replayed", async () => {
-  await record("obs_000000b2", "observation", "Synthetic uncertain embedding", { claim: "Synthetic claim" }, "run_embedding_uncertain");
+  await record(
+    "obs_000000b2",
+    "observation",
+    "Synthetic uncertain embedding",
+    { claim: "Synthetic claim" },
+    "run_embedding_uncertain",
+  );
   await insert(harness.db, "edges", {
-    id: "edg_embedding_uncertain", kind: "cites", from_kind: "observation", from_id: "obs_000000b2",
-    to_kind: "session", to_id: "omp/embed-uncertain-synthetic", actor_kind: "run",
-    actor_id: "run_embedding_uncertain", created_at: new Date(NOW).toISOString(),
+    id: "edg_embedding_uncertain",
+    kind: "cites",
+    from_kind: "observation",
+    from_id: "obs_000000b2",
+    to_kind: "session",
+    to_id: "omp/embed-uncertain-synthetic",
+    actor_kind: "run",
+    actor_id: "run_embedding_uncertain",
+    created_at: new Date(NOW).toISOString(),
   });
   await rebuildTerms(corpus);
   const service = host({ roster: [READY] });
@@ -604,10 +687,46 @@ test("an ambiguous embedding invocation retains its source reservation and is no
     throw new Error("synthetic interrupted response");
   };
   await backfillVectors(corpus, embedder(service.services), new Date(NOW).toISOString());
+  await record(
+    "obs_000000b3",
+    "observation",
+    "Independent embedding after uncertain delivery",
+    { claim: "An unrelated record still gets its vector" },
+    "run_embedding_independent",
+  );
+  service.services.invokeInstance = async () => {
+    calls++;
+    return {
+      type: "service_result",
+      requestId: "synthetic-sibling",
+      ok: true,
+      result: { embedding: [0.5, -0.5], model: "stub-embed-v1" },
+    };
+  };
+  const resumed = await backfillVectors(
+    corpus,
+    embedder(service.services),
+    new Date(NOW).toISOString(),
+  );
+  expect(resumed.embedded).toBe(1);
   await backfillVectors(corpus, embedder(service.services), new Date(NOW).toISOString());
-  expect(calls).toBe(1);
-  expect(await excludeSessionWhenQuiescent(harness.db, "omp/embed-uncertain-synthetic", "synthetic-owner", new Date(NOW).toISOString())).toBe(false);
-  expect(await harness.db.query("SELECT closure FROM runs WHERE kind=?", [EMBEDDING_RUN_KIND])).toEqual([{ closure: null }]);
+  expect(calls).toBe(2);
+  expect(await harness.db.query("SELECT record_id FROM record_vectors")).toEqual([
+    { record_id: "obs_000000b3" },
+  ]);
+  expect(
+    await excludeSessionWhenQuiescent(
+      harness.db,
+      "omp/embed-uncertain-synthetic",
+      "synthetic-owner",
+      new Date(NOW).toISOString(),
+    ),
+  ).toBe(false);
+  expect(
+    await harness.db.query("SELECT closure FROM runs WHERE kind=? AND closure IS NULL", [
+      EMBEDDING_RUN_KIND,
+    ]),
+  ).toEqual([{ closure: null }]);
 });
 
 test("private generated metadata and typed saved graph references cannot re-enter reader or model context", async () => {
@@ -618,30 +737,63 @@ test("private generated metadata and typed saved graph references cannot re-ente
     preparation: JSON.stringify({ selectors: ["omp/metadata-synthetic"] }),
     started_at: at,
     closure: "completed",
-    closed_at: at,
+    finished_at: at,
+    payload: "{}",
   });
-  await record("obs_000000b1", "obs", "Synthetic source-derived observation", {}, "run_metadata_private");
-  await record("obs_000000b2", "obs", "Synthetic fact-linked observation", {}, "run_fact_linked");
-  await record("obs_000000b3", "obs", "Synthetic independent observation", {}, "run_independent_metadata");
+  await record(
+    "obs_000000b1",
+    "observation",
+    "Synthetic source-derived observation",
+    {},
+    "run_metadata_private",
+  );
+  await record(
+    "obs_000000b2",
+    "observation",
+    "Synthetic fact-linked observation",
+    {},
+    "run_fact_linked",
+  );
+  await record(
+    "obs_000000b3",
+    "observation",
+    "Synthetic independent observation",
+    {},
+    "run_independent_metadata",
+  );
   for (const [id, createdBy] of [
     ["ent_000000b1", "run_metadata_private"],
     ["ent_000000b2", "synthetic-owner"],
     ["ent_000000b3", "synthetic-owner"],
   ] as const) {
     await insert(harness.db, "entities", {
-      id, kind: "topic", name: "Synthetic topic", canonical_id: id,
-      created_by: createdBy, created_at: at,
+      id,
+      kind: "topic",
+      name: "Synthetic topic",
+      canonical_id: id,
+      created_by: createdBy,
+      created_at: at,
     });
   }
   await insert(harness.db, "facts", {
-    id: "fact_private_synthetic", entity_id: "ent_000000b2", predicate: "description",
-    value: "Synthetic generated fact", valid_from: at, observed_at: at,
-    authority_kind: "run", authority_id: "run_metadata_private", recorded_at: at,
+    id: "fact_private_synthetic",
+    entity_id: "ent_000000b2",
+    predicate: "description",
+    value: "Synthetic generated fact",
+    valid_from: at,
+    observed_at: at,
+    authority_kind: "run",
+    authority_id: "run_metadata_private",
+    recorded_at: at,
   });
   await insert(harness.db, "filings", {
-    id: "fil_synthetic_metadata", record_id: "obs_000000b2", entity_id: "ent_000000b2",
-    rationale: "Synthetic relationship", author_kind: "operator",
-    author_id: "synthetic-owner", created_at: at,
+    id: "fil_synthetic_metadata",
+    record_id: "obs_000000b2",
+    entity_id: "ent_000000b2",
+    rationale: "Synthetic relationship",
+    author_kind: "operator",
+    author_id: "synthetic-owner",
+    created_at: at,
   });
   for (const [id, raisedBy, payload] of [
     ["qst_000000b1", "run_metadata_private", {}],
@@ -649,36 +801,59 @@ test("private generated metadata and typed saved graph references cannot re-ente
     ["qst_000000b3", "synthetic-owner", { work: [{ kind: "observation", id: "obs_000000b3" }] }],
   ] as const) {
     await insert(harness.db, "questions", {
-      id, kind: "acquire-context", class: "curiosity", text: "Synthetic question",
-      why: "Synthetic reason", raised_by_kind: raisedBy === "synthetic-owner" ? "operator" : "run",
-      raised_by_id: raisedBy, payload: JSON.stringify(payload), created_at: at,
+      id,
+      kind: "acquire-context",
+      class: "curiosity",
+      text: "Synthetic question",
+      why: "Synthetic reason",
+      raised_by_kind: raisedBy === "synthetic-owner" ? "operator" : "run",
+      raised_by_id: raisedBy,
+      payload: JSON.stringify(payload),
+      created_at: at,
     });
   }
   for (const [id, value] of [
     ["capture_synthetic_entity", { entityId: "ent_000000b1" }],
     ["capture_synthetic_question", { questionId: "qst_000000b2" }],
     ["capture_synthetic_public", { entityId: "ent_000000b3", questionId: "qst_000000b3" }],
+    [
+      "capture_synthetic_run",
+      { fromKind: "entity", fromId: "ent_000000b3", toKind: "run", toId: "run_metadata_private" },
+    ],
+    ["capture_synthetic_root", { kind: "root", id: "obs_000000b1" }],
   ] as const) {
     await insert(harness.db, "transcript_map_captures", {
-      id, host: "synthetic-host", harness: "babel-neighborhood",
-      session: `neighborhood/${id}`, captured_at: at, payload: "{}",
+      id,
+      host: "synthetic-host",
+      harness: "babel-neighborhood",
+      session: `neighborhood/${id}`,
+      captured_at: at,
+      payload: "{}",
     });
     await insert(harness.db, "transcript_map_neighborhood_inputs", {
-      capture_id: id, query_key: id,
+      capture_id: id,
+      query_key: id,
       text: `${JSON.stringify({ kind: "nodes", value })}\n`,
     });
   }
-  expect(await excludeSessionWhenQuiescent(harness.db, "omp/metadata-synthetic", "synthetic-owner", at)).toBe(true);
+  expect(
+    await excludeSessionWhenQuiescent(harness.db, "omp/metadata-synthetic", "synthetic-owner", at),
+  ).toBe(true);
   for (const [kind, table, allowed] of [
     ["entity", "entities", "ent_000000b3"],
     ["question", "questions", "qst_000000b3"],
     ["record", "records", "obs_000000b3"],
   ] as const) {
     const privacy = sourcePrivacyCondition(kind, "id");
-    expect(await harness.db.query(`SELECT id FROM ${table} WHERE ${privacy.sql}`, privacy.params)).toEqual([{ id: allowed }]);
+    expect(
+      await harness.db.query(`SELECT id FROM ${table} WHERE ${privacy.sql}`, privacy.params),
+    ).toEqual([{ id: allowed }]);
   }
-  expect([...await readExcludedCaptureIds(harness.db)].sort()).toEqual([
-    "capture_synthetic_entity", "capture_synthetic_question",
+  expect([...(await readExcludedCaptureIds(harness.db))].sort()).toEqual([
+    "capture_synthetic_entity",
+    "capture_synthetic_question",
+    "capture_synthetic_root",
+    "capture_synthetic_run",
   ]);
 });
 
@@ -686,59 +861,294 @@ test("typed payload citations and later private annotations quarantine whole rec
   const at = new Date(NOW).toISOString();
   const source = "omp/attachments-synthetic";
   await insert(harness.db, "runs", {
-    id: "run_private_attachments", kind: OPERATIONS.explore,
-    preparation: JSON.stringify({ selectors: [source] }), started_at: at,
-    closure: "completed", closed_at: at,
+    id: "run_private_attachments",
+    kind: OPERATIONS.explore,
+    preparation: JSON.stringify({ selectors: [source] }),
+    started_at: at,
+    closure: "completed",
+    finished_at: at,
+    payload: "{}",
   });
   for (let index = 1; index <= 7; index++) {
-    const payload = index === 1
-      ? { evidence: [{ selector: source }] }
-      : index === 2
-        ? { counter_evidence: [{ source: { harness: "omp", sourceId: "attachments-synthetic" } }] }
-        : {};
-    await record(`obs_000000c${index}`, "obs", "Synthetic session archive record", payload, `run_original_attachment_${index}`);
+    const payload =
+      index === 1
+        ? { evidence: [{ selector: source }] }
+        : index === 2
+          ? {
+              counter_evidence: [{ source: { harness: "omp", sourceId: "attachments-synthetic" } }],
+            }
+          : {};
+    await record(
+      `obs_000000c${index}`,
+      "observation",
+      "Synthetic session archive record",
+      payload,
+      `run_original_attachment_${index}`,
+    );
   }
   await insert(harness.db, "assessments", {
-    id: "assessment_private_synthetic", record_id: "obs_000000c3", revision_id: "obs_000000c3",
-    run_id: "run_private_attachments", role: "judge",
-    payload: JSON.stringify({ rationale: "Synthetic private assessment" }), recorded_at: at,
+    id: "assessment_private_synthetic",
+    record_id: "obs_000000c3",
+    revision_id: "obs_000000c3",
+    run_id: "run_private_attachments",
+    role: "judge",
+    payload: JSON.stringify({ rationale: "Synthetic private assessment" }),
+    recorded_at: at,
   });
   await insert(harness.db, "entities", {
-    id: "ent_000000c1", kind: "topic", name: "Synthetic annotation topic",
-    canonical_id: "ent_000000c1", created_by: "synthetic-owner", created_at: at,
+    id: "ent_000000c1",
+    kind: "topic",
+    name: "Synthetic annotation topic",
+    canonical_id: "ent_000000c1",
+    created_by: "synthetic-owner",
+    created_at: at,
   });
   await insert(harness.db, "filings", {
-    id: "fil_private_annotation", record_id: "obs_000000c4", entity_id: "ent_000000c1",
-    rationale: "Synthetic private filing", author_kind: "run",
-    author_id: "run_private_attachments", created_at: at,
+    id: "fil_private_annotation",
+    record_id: "obs_000000c4",
+    entity_id: "ent_000000c1",
+    rationale: "Synthetic private filing",
+    author_kind: "run",
+    author_id: "run_private_attachments",
+    created_at: at,
   });
   await insert(harness.db, "next_actions", {
-    id: "nxt_private_annotation", record_id: "obs_000000c5", kind: "draft-issue",
-    proposed_by_kind: "run", proposed_by_id: "run_private_attachments",
-    summary: "Synthetic private proposal", created_at: at, payload: "{}",
+    id: "nxt_private_annotation",
+    record_id: "obs_000000c5",
+    kind: "draft-issue",
+    proposed_by_kind: "run",
+    proposed_by_id: "run_private_attachments",
+    summary: "Synthetic private proposal",
+    created_at: at,
+    payload: "{}",
   });
   await insert(harness.db, "status_events", {
-    id: "status_private_annotation", record_id: "obs_000000c6", seq: 0, status: "open",
-    run_id: "run_private_attachments", actor_kind: "run", actor_id: "run_private_attachments",
-    reason: "Synthetic private status", recorded_at: at,
+    id: "status_private_annotation",
+    record_id: "obs_000000c6",
+    seq: 0,
+    status: "open",
+    run_id: "run_private_attachments",
+    actor_kind: "run",
+    actor_id: "run_private_attachments",
+    reason: "Synthetic private status",
+    recorded_at: at,
   });
   await rebuildTerms(corpus);
   await backfillVectors(corpus, stubEmbedder("stub-source-privacy"), at, 10);
   expect(await excludeSessionWhenQuiescent(harness.db, source, "synthetic-owner", at)).toBe(true);
-  expect([...await readExcludedRecordIds(harness.db)].sort()).toEqual([
-    "obs_000000c1", "obs_000000c2", "obs_000000c3", "obs_000000c4", "obs_000000c5", "obs_000000c6",
+  expect([...(await readExcludedRecordIds(harness.db))].sort()).toEqual([
+    "obs_000000c1",
+    "obs_000000c2",
+    "obs_000000c3",
+    "obs_000000c4",
+    "obs_000000c5",
+    "obs_000000c6",
   ]);
   const answer = await searchCorpus(corpus, stubEmbedder("stub-source-privacy"), {
-    query: "session archive", limit: 1, kinds: [],
+    query: "session archive",
+    limit: 1,
+    kinds: [],
   });
   expect(answer.hits.map((hit) => hit.id)).toEqual(["obs_000000c7"]);
   expect(answer).toMatchObject({
-    scanned: 1, rescored: 1, coverage: { records: 1, keyworded: 1, embedded: 1 },
+    scanned: 1,
+    rescored: 1,
+    coverage: { records: 1, keyworded: 1, embedded: 1 },
   });
   const retained = await harness.db.query<{ records: number; vectors: number }>(
     "SELECT (SELECT COUNT(*) FROM records) AS records, (SELECT COUNT(*) FROM record_vectors) AS vectors",
   );
   expect({ records: Number(retained[0]?.records), vectors: Number(retained[0]?.vectors) }).toEqual({
-    records: 7, vectors: 7,
+    records: 7,
+    vectors: 7,
   });
+});
+
+test("canonical exclusions cover legacy bare session citations without removing their records", async () => {
+  const at = new Date(NOW).toISOString();
+  await insert(harness.db, "sessions", {
+    selector: "omp/legacy-private-synthetic",
+    host: "synthetic-host",
+    harness: "omp",
+    source_id: "legacy-private-synthetic",
+    seen_at: at,
+  });
+  await record(
+    "obs_000000d1",
+    "observation",
+    "Legacy private citation",
+    {
+      claim: "Synthetic forbidden corpus material",
+    },
+    "run_legacy_private_synthetic",
+  );
+  await record(
+    "obs_000000d2",
+    "observation",
+    "Independent corpus material",
+    {
+      claim: "Synthetic allowed corpus material",
+    },
+    "run_legacy_public_synthetic",
+  );
+  await insert(harness.db, "edges", {
+    id: "edg_legacy_source_synthetic",
+    kind: "cites",
+    from_kind: "observation",
+    from_id: "obs_000000d1",
+    to_kind: "session",
+    to_id: "legacy-private-synthetic",
+    actor_kind: "operator",
+    actor_id: "synthetic-owner",
+    created_at: at,
+  });
+  expect(
+    await excludeSessionWhenQuiescent(
+      harness.db,
+      "omp/legacy-private-synthetic",
+      "synthetic-owner",
+      at,
+    ),
+  ).toBe(true);
+  expect(await projectReview(harness.store, "obs_000000d1")).toBeNull();
+  expect(
+    (await searchCorpus(corpus, null, { query: "corpus material", limit: 10, kinds: [] })).hits.map(
+      (hit) => hit.id,
+    ),
+  ).toEqual(["obs_000000d2"]);
+  expect(await harness.db.query("SELECT record_id FROM record_terms")).toEqual([
+    { record_id: "obs_000000d2" },
+  ]);
+  expect(await harness.db.query("SELECT id FROM records ORDER BY id")).toEqual([
+    { id: "obs_000000d1" },
+    { id: "obs_000000d2" },
+  ]);
+});
+
+test("a concurrent exclusion discards ranks derived from the previous private keyword corpus", async () => {
+  const at = new Date(NOW).toISOString();
+  await record(
+    "obs_000000f1",
+    "observation",
+    "Private keyword statistics",
+    {
+      claim: "Synthetic corpus material corpus material",
+      evidence: [{ selector: "omp/ranking-private-synthetic" }],
+    },
+    "run_ranking_private_synthetic",
+  );
+  await record(
+    "obs_000000f2",
+    "observation",
+    "Independent keyword match",
+    {
+      claim: "Synthetic corpus material",
+    },
+    "run_ranking_public_synthetic",
+  );
+  await expect(
+    searchCorpus(
+      corpus,
+      async () => {
+        expect(
+          await excludeSessionWhenQuiescent(
+            harness.db,
+            "omp/ranking-private-synthetic",
+            "synthetic-owner",
+            at,
+          ),
+        ).toBe(true);
+        return null;
+      },
+      { query: "corpus material", limit: 10, kinds: [] },
+    ),
+  ).rejects.toThrow("Conversation privacy policy changed during search.");
+  const current = await searchCorpus(corpus, null, {
+    query: "corpus material",
+    limit: 10,
+    kinds: [],
+  });
+  expect(current.hits.map((hit) => hit.id)).toEqual(["obs_000000f2"]);
+  expect(current.coverage.records).toBe(1);
+});
+
+test("recorded source titles remain usable while historical consumers of excluded inferred titles stay quarantined", async () => {
+  const at = new Date(NOW).toISOString();
+  await insert(harness.db, "runs", {
+    id: "run_title_batch_synthetic",
+    kind: OPERATIONS.title,
+    started_at: at,
+    closure: "completed",
+    preparation: JSON.stringify({
+      titles: { selectors: ["omp/title-private-synthetic", "omp/title-public-synthetic"] },
+    }),
+    payload: "{}",
+  });
+  await insert(harness.db, "sessions", {
+    selector: "omp/title-public-synthetic",
+    host: "synthetic-host",
+    harness: "omp",
+    source_id: "title-public-synthetic",
+    title: "Recorded public source title",
+    title_provenance: "recorded",
+    seen_at: at,
+  });
+  await insert(harness.db, "session_titles", {
+    selector: "omp/title-public-synthetic",
+    title: "Old generated source title",
+    reason: "",
+    run_id: "run_title_batch_synthetic",
+    inferred_at: at,
+  });
+  await record(
+    "obs_000000e1",
+    "observation",
+    "Fresh independent source record",
+    { claim: "Fresh independently observed material" },
+    "run_fresh_title_source_synthetic",
+  );
+  await insert(harness.db, "edges", {
+    id: "edg_fresh_title_synthetic",
+    kind: "cites",
+    from_kind: "observation",
+    from_id: "obs_000000e1",
+    to_kind: "session",
+    to_id: "omp/title-public-synthetic",
+    actor_kind: "operator",
+    actor_id: "synthetic-owner",
+    created_at: at,
+  });
+  await insert(harness.db, "runs", {
+    id: "run_historical_title_consumer_synthetic",
+    kind: OPERATIONS.evaluate,
+    started_at: at,
+    closure: "completed",
+    payload: "{}",
+    preparation: JSON.stringify({
+      review: {
+        recordId: "obs_000000e1",
+        titleRunIds: ["run_title_batch_synthetic"],
+      },
+    }),
+  });
+  await record(
+    "obs_000000e2",
+    "observation",
+    "Historical generated-title consumer",
+    { claim: "Synthetic historical derivation" },
+    "run_historical_title_consumer_synthetic",
+  );
+  expect(
+    await excludeSessionWhenQuiescent(
+      harness.db,
+      "omp/title-private-synthetic",
+      "synthetic-owner",
+      at,
+    ),
+  ).toBe(true);
+  expect([...(await readExcludedRecordIds(harness.db))]).toEqual(["obs_000000e2"]);
+  const projected = await projectReview(harness.store, "obs_000000e1");
+  expect(projected?.titleRunIds).toEqual([]);
+  expect(projected?.sources[0]?.["title"]).toBe("Recorded public source title");
+  expect(await projectReview(harness.store, "obs_000000e2")).toBeNull();
 });

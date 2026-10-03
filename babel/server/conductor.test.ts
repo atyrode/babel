@@ -11800,16 +11800,20 @@ test("a sealed transcript map excluded after preparation never reaches Code", as
   await f.tick();
   const input = f.seal();
   await f.db.run("INSERT INTO session_exclusions(selector,actor_id,recorded_at) VALUES(?,?,?)", [
-    input.source.session, "synthetic-owner", new Date(clock).toISOString(),
+    input.source.session,
+    "synthetic-owner",
+    new Date(clock).toISOString(),
   ]);
   await f.tick();
   expect(f.posted).toEqual([]);
-  expect(await f.db.query("SELECT closure,job_id FROM runs WHERE kind=?", [TRANSCRIPT_MAP_SESSION_OPERATION])).toEqual([
-    { closure: "failed", job_id: null },
-  ]);
-  expect(await f.db.query("SELECT id FROM transcript_map_captures WHERE id=?", [input.source.id])).toEqual([
-    { id: input.source.id },
-  ]);
+  expect(
+    await f.db.query("SELECT closure,job_id FROM runs WHERE kind=?", [
+      TRANSCRIPT_MAP_SESSION_OPERATION,
+    ]),
+  ).toEqual([{ closure: "failed", job_id: null }]);
+  expect(
+    await f.db.query("SELECT id FROM transcript_map_captures WHERE id=?", [input.source.id]),
+  ).toEqual([{ id: input.source.id }]);
 });
 
 test("mapping privacy prevents recovery and retirement disclosure while retaining an uncertain posting", async () => {
@@ -11824,16 +11828,21 @@ test("mapping privacy prevents recovery and retirement disclosure while retainin
   await f.tick();
   expect(requests).toHaveLength(1);
   await f.db.run("INSERT INTO session_exclusions(selector,actor_id,recorded_at) VALUES(?,?,?)", [
-    input.source.session, "synthetic-owner", new Date(clock).toISOString(),
+    input.source.session,
+    "synthetic-owner",
+    new Date(clock).toISOString(),
   ]);
   await f.tick();
   expect(requests).toHaveLength(1);
-  expect(await f.db.query("SELECT closure,job_id,json_extract(payload,'$.posting') AS posting FROM runs WHERE kind=?", [TRANSCRIPT_MAP_SESSION_OPERATION])).toEqual([
-    { closure: null, job_id: null, posting: 1n },
-  ]);
-  expect(await f.db.query("SELECT finished_at,actual_cost FROM claims WHERE role='mapping:generate'")).toEqual([
-    { finished_at: null, actual_cost: null },
-  ]);
+  expect(
+    await f.db.query(
+      "SELECT closure,job_id,json_extract(payload,'$.posting') AS posting FROM runs WHERE kind=?",
+      [TRANSCRIPT_MAP_SESSION_OPERATION],
+    ),
+  ).toEqual([{ closure: null, job_id: null, posting: 1n }]);
+  expect(
+    await f.db.query("SELECT finished_at,actual_cost FROM claims WHERE role='mapping:generate'"),
+  ).toEqual([{ finished_at: null, actual_cost: null }]);
 });
 
 test("cached neighborhood preparation cannot disclose an uncited record from an excluded original source run", async () => {
@@ -11846,7 +11855,11 @@ test("cached neighborhood preparation cannot disclose an uncited record from an 
   );
   await f.db.run(
     "INSERT INTO runs(id,kind,preparation,started_at,closure,payload) VALUES('run_private_neighborhood',?,?,?,'completed','{}')",
-    [OPERATIONS.explore, JSON.stringify({ selectors: ["omp/neighborhood-private-synthetic"] }), now],
+    [
+      OPERATIONS.explore,
+      JSON.stringify({ selectors: ["omp/neighborhood-private-synthetic"] }),
+      now,
+    ],
   );
   await f.db.run(
     `INSERT INTO records(id,kind,root_id,run_id,actor_kind,actor_id,title,created_at,payload)
@@ -11864,21 +11877,37 @@ test("cached neighborhood preparation cannot disclose an uncited record from an 
   );
   await f.wake();
   const launch = f.fleet.launched[0]!;
-  const input = NavigationMapPrepareInputSchema.parse(JSON.parse(String(launch.input[INPUT_FIELD])));
+  const input = NavigationMapPrepareInputSchema.parse(
+    JSON.parse(String(launch.input[INPUT_FIELD])),
+  );
   expect("kind" in input.source).toBe(true);
-  const receipt = await mapPrepare(input, {
-    write: async () => { throw new Error("Synthetic navigation writes no records."); },
-    receipt: async () => {},
-  }, {
-    session: async () => { throw new Error("Synthetic neighborhood retrieves no archive session."); },
-    index: async () => { throw new Error("Synthetic neighborhood has no archive index."); },
-    document: async () => {},
-  });
+  const receipt = await mapPrepare(
+    input,
+    {
+      write: async () => {
+        throw new Error("Synthetic navigation writes no records.");
+      },
+      receipt: async () => {},
+    },
+    {
+      session: async () => {
+        throw new Error("Synthetic neighborhood retrieves no archive session.");
+      },
+      index: async () => {
+        throw new Error("Synthetic neighborhood has no archive index.");
+      },
+      document: async () => {},
+    },
+  );
   f.fleet.finish(launch.jobId, 0, { [JOB_OUTPUT_FILES.receipt]: receipt });
   await f.db.run("INSERT INTO session_exclusions(selector,actor_id,recorded_at) VALUES(?,?,?)", [
-    "omp/neighborhood-private-synthetic", "synthetic-owner", now,
+    "omp/neighborhood-private-synthetic",
+    "synthetic-owner",
+    now,
   ]);
   await f.wake();
   expect(f.posted).toEqual([]);
-  expect(await f.db.query("SELECT id FROM records WHERE id='hyp_0000a060'")).toEqual([{ id: "hyp_0000a060" }]);
+  expect(await f.db.query("SELECT id FROM records WHERE id='hyp_0000a060'")).toEqual([
+    { id: "hyp_0000a060" },
+  ]);
 });

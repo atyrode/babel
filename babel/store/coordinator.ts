@@ -1595,16 +1595,17 @@ export function coordinator(
     gaps: Gap[];
     readings: ReviewReadingSnapshot | undefined;
   }> {
-    const [records, status, ruling, filed, stance, reviews, claims, excludedRecords] = await Promise.all([
-      heads(),
-      statuses(),
-      rulings(),
-      filings(),
-      stances(moment),
-      roleFacts(),
-      claimFacts(moment),
-      readExcludedRecordIds(db),
-    ]);
+    const [records, status, ruling, filed, stance, reviews, claims, excludedRecords] =
+      await Promise.all([
+        heads(),
+        statuses(),
+        rulings(),
+        filings(),
+        stances(moment),
+        roleFacts(),
+        claimFacts(moment),
+        readExcludedRecordIds(db),
+      ]);
 
     const candidates: Candidate[] = [];
     const gaps: Gap[] = [];
@@ -2151,16 +2152,17 @@ export function coordinator(
     );
     const route = policy.review;
     if (stages.length === 0 || route === undefined) return { candidates: [], gaps: [] };
-    const [records, filed, stance, status, ruling, claims, reviews, excludedRecords] = await Promise.all([
-      heads(),
-      filings(),
-      stances(moment),
-      statuses(),
-      rulings(),
-      claimFacts(moment),
-      roleFacts(),
-      readExcludedRecordIds(db),
-    ]);
+    const [records, filed, stance, status, ruling, claims, reviews, excludedRecords] =
+      await Promise.all([
+        heads(),
+        filings(),
+        stances(moment),
+        statuses(),
+        rulings(),
+        claimFacts(moment),
+        roleFacts(),
+        readExcludedRecordIds(db),
+      ]);
     const recordsById = new Map(records.map((head) => [head.id, head]));
     /*
       A BRIEF IS CHOSEN TO FIT THE PROMPT IT WILL BE POSTED IN. The stage's recipe, whole, and

@@ -129,7 +129,7 @@ test(
     const deniedContents =
       HEADER.replace("Archived title", deniedTitle) + message("sharedneedle banneedle synthetic");
     await fixture(
-      async ({ archive, repo, cacheDir, home, clock, sources }) => {
+      async ({ archive, repo, cacheDir, home, clock }) => {
         const original = await archive.execute("private", search({ query: "sharedneedle" }));
         expect(original.hits).toHaveLength(2);
         const denied = original.hits.find((hit) => hit.title === deniedTitle)!.locator;
@@ -233,10 +233,7 @@ test(
             );
             expect(stalePreview.hits).toEqual([]);
             expect(stalePreview.refusal).toBe("preview-expired");
-            const found = await restricted.execute(
-              "private",
-              search({ query: "sharedneedle" }),
-            );
+            const found = await restricted.execute("private", search({ query: "sharedneedle" }));
             expect(found.refusal).toBeNull();
             expect(found.coverage).toEqual({
               eligible: 1,
@@ -284,9 +281,16 @@ test(
             await restricted.close();
           }
         }
-        const restored = join(home, "restored-owner-excluded");
-        await repo.restore(denied.snapshot, { target: restored, include: [denied.path] });
-        expect(await Bun.file(join(restored, sources[0]!)).text()).toBe(deniedContents);
+        let retained = "";
+        await repo.dumpTo(
+          denied.snapshot,
+          denied.path,
+          (chunk) => {
+            retained += new TextDecoder().decode(chunk);
+          },
+          { maxBytes: Buffer.byteLength(deniedContents) },
+        );
+        expect(retained).toBe(deniedContents);
       },
       {
         contents: [deniedContents, HEADER + message("sharedneedle siblingneedle synthetic")],
@@ -296,7 +300,6 @@ test(
   },
   TIMEOUT,
 );
-
 
 test(
   "cold and warm search use immutable redacted archive bytes, never changed live sources",
@@ -1087,6 +1090,38 @@ test(
       const recovered = await archive.execute("public", search({ maxFetchBytes: 0 }));
       expect(recovered.refusal).toBeNull();
       expect(recovered.matches).toBe(1);
+    });
+  },
+  TIMEOUT,
+);
+
+test(
+  "a transient lazy index initialization failure does not poison subsequent Recall requests",
+  async () => {
+    await fixture(async ({ archive }) => {
+      const execute = Database.prototype.exec;
+      const fault = spyOn(Database.prototype, "exec").mockImplementation(function (
+        this: Database,
+        ...args: Parameters<Database["exec"]>
+      ) {
+        if (args[0].startsWith("PRAGMA busy_timeout"))
+          throw Object.assign(new Error("PRIVATE synthetic initialization cause"), {
+            code: "SQLITE_BUSY",
+          });
+        return execute.apply(this, args);
+      });
+      try {
+        const refused = await archive.execute("public", search());
+        expect(refused.refusal).toBe("index-busy");
+        expect(refused.hits).toEqual([]);
+        expect(JSON.stringify(refused)).not.toContain("PRIVATE");
+      } finally {
+        fault.mockRestore();
+      }
+      const recovered = await archive.execute("public", search());
+      expect(recovered.refusal).toBeNull();
+      expect(recovered.hits[0]?.excerpt.text).toContain("needle");
+      expect(recovered.coverage.complete).toBe(true);
     });
   },
   TIMEOUT,

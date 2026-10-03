@@ -34,6 +34,11 @@ import {
   startRecall,
 } from "../store/recall.ts";
 import type { BabelStore } from "../store/store.ts";
+import {
+  readSessionExclusions,
+  recallEnforcesSessionExclusions,
+  sessionIsExcluded,
+} from "../store/exclusions.ts";
 import { defineDoor, type Door } from "./door.ts";
 
 const READ = {
@@ -48,7 +53,11 @@ const READ = {
   "caps" | "delegates" | "requirements" | "trace" | "result" | "resultProjection"
 >;
 
-async function currentRevision(ctx: GuestCtx, target: RecallTarget): Promise<string | null> {
+async function currentRevision(
+  ctx: GuestCtx,
+  store: BabelStore,
+  target: RecallTarget,
+): Promise<string | null> {
   if (!(await ctx.auth.allows("services:invoke", target))) return null;
   const description = await ctx.services.describeInstance({ serviceId: RECALL_SERVICE_ID });
   if (
@@ -57,6 +66,7 @@ async function currentRevision(ctx: GuestCtx, target: RecallTarget): Promise<str
     !description.configuration.enabled
   )
     return null;
+  if (!(await recallEnforcesSessionExclusions(store.db, description))) return null;
   return description.configuration.revision;
 }
 
@@ -68,6 +78,7 @@ async function invoke(
   frame: RecallServiceRequest,
   operation: RecallRequest["kind"],
 ): Promise<RecallReply> {
+  const exclusions = new Set(await readSessionExclusions(store.db));
   let reply: RecallReply;
   try {
     const body = RecallServiceBodySchema.parse({ request: JSON.stringify(frame) });
@@ -95,6 +106,13 @@ async function invoke(
     // under another id or pretend the archive incurred zero cost.
     reply = { requestId: frame.requestId, state: "unavailable" };
   }
+  if (
+    (await currentRevision(ctx, store, target)) !== revision ||
+    (reply.result !== undefined &&
+      reply.result.hits.some((hit) => exclusions.has(hit.locator.session)))
+  ) {
+    reply = { requestId: frame.requestId, state: "expired" };
+  }
   try {
     await recordRecallOutcome(store, reply);
   } catch {
@@ -111,9 +129,11 @@ async function begin(
   request: RecallRequest,
 ): Promise<RecallReply | { refused: string }> {
   try {
-    const revision = await currentRevision(ctx, target);
+    const revision = await currentRevision(ctx, store, target);
     if (revision === null)
       return { refused: "Recall requires an authorized owner-configured disclosure class." };
+    if ("locator" in request && (await sessionIsExcluded(store.db, request.locator.session)))
+      return { refused: "This conversation is excluded from Babel." };
     if (
       request.kind === "session" &&
       !(await ownsRecallPreview(store, ctx.auth.principal.id, target, revision, request.previewId))
@@ -200,7 +220,7 @@ export function recallDoors(store: BabelStore): readonly Door[] {
           if (owned === null || JSON.stringify(owned.target) !== JSON.stringify(target))
             return { refused: "Unknown Recall request for this caller and disclosure class." };
           const { requestId } = owned;
-          const revision = await currentRevision(ctx, target);
+          const revision = await currentRevision(ctx, store, target);
           if (revision === null) return { refused: "Recall disclosure authority is unavailable." };
           if (revision !== owned.revision) {
             const reply: RecallReply = { requestId, state: "expired" };

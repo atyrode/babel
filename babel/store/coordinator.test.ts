@@ -1797,13 +1797,14 @@ async function analysisRecord(
 ): Promise<void> {
   await db.run(
     `INSERT INTO records(id, root_id, kind, parent_id, run_id, seq, actor_kind, actor_id, title, created_at, payload)
-     VALUES(?,?,?,?,?,0,'run','fixture',?,?,?)`,
+     VALUES(?,?,?,?,?,0,'run',?,?,?,?)`,
     [
       id,
       id,
       id.startsWith("obs_") ? "observation" : "hypothesis",
       parent,
       runId,
+      runId ?? "fixture",
       id,
       ago(ageDays),
       JSON.stringify(payload),
@@ -3322,45 +3323,79 @@ test("a review-only draw never substitutes eligible exploration or changes stand
 });
 
 test("source privacy withholds uncited source-run records from exploration, challenge, synthesis and review", async () => {
-  const { db, coord } = await deployment(stagePolicy("explore", {
-    activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0, map: 0 },
-  }));
+  const { db, coord } = await deployment(
+    stagePolicy("explore", {
+      activityWeights: { review: 1, explore: 0, challenge: 0, synthesize: 0, map: 0 },
+    }),
+  );
   await catalog(db, "omp/privacy-private");
   await catalog(db, "omp/privacy-public");
   await db.run(
     `INSERT INTO runs(id,kind,job_id,closure,started_at,payload)
       VALUES('run_privacy_material',?,'job_privacy_material','completed',?,?)`,
-    [OPERATIONS.prepare, ago(1), JSON.stringify({ material: { sessions: [{ selector: "omp/privacy-private" }] } })],
+    [
+      OPERATIONS.prepare,
+      ago(1),
+      JSON.stringify({ material: { sessions: [{ selector: "omp/privacy-private" }] } }),
+    ],
   );
   await db.run(
     `INSERT INTO runs(id,kind,prepare_job_id,closure,started_at,payload)
       VALUES('run_privacy_original',?,'job_privacy_material','completed',?,'{}')`,
     [OPERATIONS.explore, ago(1)],
   );
-  await analysisRecord(db, "hyp_000000a1", "run_privacy_original", null, { statement: "Synthetic private claim" });
-  await analysisRecord(db, "obs_000000a1", "run_privacy_original", "hyp_000000a1", { claim: "Synthetic uncited inference" });
+  await analysisRecord(db, "hyp_000000a1", "run_privacy_original", null, {
+    statement: "Synthetic private claim",
+  });
+  await analysisRecord(db, "obs_000000a1", "run_privacy_original", "hyp_000000a1", {
+    claim: "Synthetic uncited inference",
+  });
   // A permitted citation does not sanitize the material this record's original run was served.
   await citation(db, "hyp_000000a1", "omp/privacy-public");
-  await analysisRecord(db, "hyp_000000a2", null, null, { statement: "Synthetic independent claim" });
+  await analysisRecord(db, "hyp_000000a2", null, null, {
+    statement: "Synthetic independent claim",
+  });
   await citation(db, "hyp_000000a2", "omp/privacy-public");
-  await analysisRecord(db, "obs_000000a2", "run_public_a", "hyp_000000a2", { claim: "Synthetic public observation A" });
-  await analysisRecord(db, "obs_000000a3", "run_public_b", "hyp_000000a2", { claim: "Synthetic public observation B" });
+  await analysisRecord(db, "obs_000000a2", "run_public_a", "hyp_000000a2", {
+    claim: "Synthetic public observation A",
+  });
+  await analysisRecord(db, "obs_000000a3", "run_public_b", "hyp_000000a2", {
+    claim: "Synthetic public observation B",
+  });
   await citation(db, "obs_000000a2", "omp/privacy-public");
   await citation(db, "obs_000000a3", "omp/privacy-public");
-  await db.run(
-    "INSERT INTO session_exclusions(selector,actor_id,recorded_at) VALUES(?,?,?)",
-    ["omp/privacy-private", "synthetic-owner", ago(0)],
+  await db.run("INSERT INTO session_exclusions(selector,actor_id,recorded_at) VALUES(?,?,?)", [
+    "omp/privacy-private",
+    "synthetic-owner",
+    ago(0),
+  ]);
+  const offers = await Array.fromAsync(
+    analysisOffers(
+      db,
+      "synthetic-machine",
+      1,
+      ["explore", "challenge", "synthesize"],
+      new Set(["hyp_000000a1", "obs_000000a1", "hyp_000000a2", "obs_000000a2", "obs_000000a3"]),
+      new Map(),
+      new Set(),
+      { limit: PROMPT_LIMIT, bytes: () => 0 },
+    ),
   );
-  const offers = await Array.fromAsync(analysisOffers(
-    db, "synthetic-machine", 1, ["explore", "challenge", "synthesize"],
-    new Set(["hyp_000000a1", "obs_000000a1", "hyp_000000a2", "obs_000000a2", "obs_000000a3"]),
-    new Map(), new Set(), { limit: PROMPT_LIMIT, bytes: () => 0 },
-  ));
-  const admitted = offers.filter((offer) => !("missing" in offer));
-  expect(new Set(admitted.map((offer) => offer.stage))).toEqual(new Set(["explore", "challenge", "synthesize"]));
-  expect(admitted.every((offer) => offer.selectors.every((selector) => selector === "omp/privacy-public"))).toBe(true);
-  expect(admitted.flatMap((offer) => offer.brief.map((entry) => entry.id))).not.toContain("hyp_000000a1");
-  expect(admitted.flatMap((offer) => offer.brief.map((entry) => entry.id))).not.toContain("obs_000000a1");
+  const admitted = offers.flatMap((offer) => ("missing" in offer ? [] : [offer]));
+  expect(new Set(admitted.map((offer) => offer.stage))).toEqual(
+    new Set(["explore", "challenge", "synthesize"]),
+  );
+  expect(
+    admitted.every((offer) =>
+      offer.selectors.every((selector) => selector === "omp/privacy-public"),
+    ),
+  ).toBe(true);
+  expect(admitted.flatMap((offer) => offer.brief.map((entry) => entry.id))).not.toContain(
+    "hyp_000000a1",
+  );
+  expect(admitted.flatMap((offer) => offer.brief.map((entry) => entry.id))).not.toContain(
+    "obs_000000a1",
+  );
   const review = drawn(await coord.draw({ runId: "privacy-review", only: "review", seed: 1n }));
   expect(["hyp_000000a2", "obs_000000a2", "obs_000000a3"]).toContain(review.recordId);
 });

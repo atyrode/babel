@@ -890,6 +890,55 @@ Every SDK run confirmed cleanup. The managed `omp-stack` check proved byte-ident
 paths and OMP command discovery without activation or providers. This separate consumer proof
 does not claim real hub admission or a live storage binding.
 
+#### 9.1.1 Exclude a conversation without deleting its backups
+
+`excludeSession` and `sessionExclusions` are root-owner doors, not model tools. A selector is the
+catalog's exact canonical `harness/sourceId`, including any source-id path components; it is not
+a transcript filename, substring, title or bare UUID. Keep real selectors and observations in
+private operator state, never in public issues, commands, logs or repository fixtures.
+
+> **OPERATOR STEP — install and verify an owner exclusion.**
+> **Prerequisites:** the hub and enrolled Recall owner have this artifact; the conversation is
+> already catalogued; Babel is disabled, drains are stopped and this source's retained work has
+> settled or been authoritatively cancelled. Preserve unrelated unknown postings. Read the
+> catalog identity without opening transcript contents and keep the existing archive/storage
+> service, native owner and grants unchanged.
+> **Procedure:** through the supported owner action API, call `excludeSession` with the private
+> selector. The door first disables Recall, atomically records the durable ban and invalidates
+> derived keyword statistics and current contaminated inferred titles, then CAS-installs the
+> merged native policy. Check `excluded: true`; `recallEnforced: false` is containment, not
+> completed cutover. After the service reaches ready, read `sessionExclusions` and require
+> `recallEnforced: true`. If activation fails, keep Babel paused; repeat the same exclusion only
+> after repairing the existing runtime, or use the ordinary preview/install Recall procedure,
+> which also merges the ledger. Do not undo the ban or clear an uncertain posting to force success.
+> **Success:** the private selector is present in the immutable ledger; exact ready-policy
+> enforcement is proven; catalog/archive fingerprints remain unchanged; the native owner,
+> broker and unrelated reservations are preserved. Exercise a bounded denied route before
+> resuming authorized model work. A metadata-only lineage audit can establish recorded prior
+> uses on that hub, not undisclosed activity outside it or unrecorded historical consumers.
+
+The ledger survives recataloguing and every later owner Recall installation. Explicit forbidden
+preparations refuse rather than silently shrinking their scope; query selection and native
+Recall exclude the source before cache/index access. Persisted derived lineage is quarantined,
+including whole source-run outputs, record roots, inference titles, graph annotations and saved
+map inputs. Original history and archive snapshots remain retained. There is no unexclude door.
+
+**Executed synthetic command evidence — dev-01, 2026-10-02.** The actual native `prepare` command,
+under isolated HOME/XDG state and an absent archive binding, refused a synthetic forbidden scope
+with `session_excluded`, zero selected/fetched/reused sessions and no sealed material despite
+own-run opt-in and preflight off. This proves the early software fence, not a live owner's
+activation or real-corpus exposure history.
+
+**Executed synthetic HTTP evidence — dev-01, 2026-10-03.** The actual native archive and Recall
+HTTP modules were exercised over two sources in a disposable restic 0.19.1 repository, with
+the original source files removed before reading. Previously warmed locators, previews, map
+proofs and managed caches could not disclose the excluded source at the highest class:
+seven source routes refused with zero logical fetch/cache/replay cost and old preview pages
+expired. Broad search and exact reads still served the independent source. Lock-free dumps
+before and after compared the forbidden archive bytes exactly, with zero repository locks.
+The listener and all generated resources were removed. This proves the native HTTP data path,
+not packed-artifact launch IPC, live provisioning or a real conversation's exposure history.
+
 ### 9.2 Historical citation fact backfill (#431)
 
 The owner-only `citationPlan` door counts the citation positions in retained record revisions

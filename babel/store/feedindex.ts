@@ -44,6 +44,7 @@ import {
 } from "../contract.ts";
 import { standingOf } from "./acts.ts";
 import { supersededReviewProposalSql } from "./schema.ts";
+import { sourcePrivacyCondition } from "./source-privacy.ts";
 import {
   controversialRank,
   establishedOf,
@@ -231,6 +232,8 @@ async function scan<Row extends SqlRow>(
  * one answer uses the same instant.
  */
 export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise<FeedIndex> {
+  const privateRecords = sourcePrivacyCondition("record", "r.id");
+  const privateQuestions = sourcePrivacyCondition("question", "q.id");
   const topics = await readTopics(db);
   const membership = await readFilings(db, topics);
   const standings = await readStandings(db);
@@ -249,8 +252,9 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
          ON h.root_id = r.root_id AND h.head_seq = r.seq
       WHERE r.kind IN (${POST_KIND_LIST})
         AND NOT ${supersededReviewProposalSql("r.id")}
+        AND ${privateRecords.sql}
       ORDER BY r.id`,
-    [],
+    privateRecords.params,
     (row) => {
       const entry = recordEntry(
         row,
@@ -278,8 +282,8 @@ export async function buildFeedIndex(db: PluginDatabase, nowMs: number): Promise
                        WHERE e.question_id = q.id ORDER BY e.seq DESC LIMIT 1), 'open') AS state,
             (SELECT COUNT(*) FROM answers a WHERE a.question_id = q.id) AS answers
        FROM questions q
-      ORDER BY q.id`,
-    [],
+      WHERE ${privateQuestions.sql} ORDER BY q.id`,
+    privateQuestions.params,
     (row) => {
       const entry = questionEntry(
         row,
@@ -307,6 +311,7 @@ export async function readChallenges(
   db: PluginDatabase,
   target?: string,
 ): Promise<Map<string, { summary: FeedPost["challenges"]; details: RecordPeel["challenges"] }>> {
+  const privacy = sourcePrivacyCondition("record", "r.id");
   const out = new Map<
     string,
     { summary: FeedPost["challenges"]; details: RecordPeel["challenges"] }
@@ -323,9 +328,10 @@ export async function readChallenges(
         AND e.from_id <> e.to_id
         AND r.kind IN ('observation', 'hypothesis')
         AND e.actor_kind = 'run' AND e.actor_id = r.run_id AND r.run_id <> ''
+        AND ${privacy.sql}
         ${target === undefined ? "" : "AND e.to_id = ?"}
       ORDER BY r.created_at DESC, r.id DESC, e.id DESC`,
-    target === undefined ? [CHALLENGE_RELATION] : [CHALLENGE_RELATION, target],
+    [CHALLENGE_RELATION, ...privacy.params, ...(target === undefined ? [] : [target])],
     (row) => {
       const id = text(row["target"]);
       if (!isRecordId(id)) return;
@@ -373,12 +379,13 @@ export async function readChallenges(
  * no longer a place records live.
  */
 async function readTopics(db: PluginDatabase): Promise<IndexTopic[]> {
+  const privacy = sourcePrivacyCondition("entity", "id");
   const facts = await readEntityFacts(db);
   const topics: IndexTopic[] = [];
   await scan<SqlRow>(
     db,
-    `SELECT id, kind, name, canonical_id FROM entities ORDER BY id`,
-    [],
+    `SELECT id, kind, name, canonical_id FROM entities WHERE ${privacy.sql} ORDER BY id`,
+    privacy.params,
     (row) => {
       const id = text(row["id"]);
       const canonical = text(row["canonical_id"]);
@@ -425,6 +432,7 @@ export interface EntityFacts {
  * the only one.
  */
 async function readEntityFacts(db: PluginDatabase): Promise<Map<string, EntityFacts>> {
+  const privacy = sourcePrivacyCondition("entity", "f.entity_id");
   const rows: SqlRow[] = [];
   const superseded = new Set<string>();
   await scan<SqlRow>(
@@ -436,8 +444,9 @@ async function readEntityFacts(db: PluginDatabase): Promise<Map<string, EntityFa
                        WHERE s.fact_id = f.id ORDER BY s.seq DESC LIMIT 1), 'active') AS status
        FROM facts f
       WHERE f.predicate IN (${TOPIC_PREDICATES})
+        AND ${privacy.sql}
       ORDER BY f.entity_id, f.predicate, f.recorded_at, f.id`,
-    [],
+    privacy.params,
     (row) => {
       const replaces = text(row["supersedes_id"]);
       if (replaces !== "") superseded.add(replaces);

@@ -11,6 +11,7 @@ import { MAX_TITLE_RUNES, boundedTitle } from "../../machine/adapters/codex-titl
 import { REFUSALS } from "../../machine/results.ts";
 import { ANSWER_FENCE, answerOf } from "./prompts.ts";
 
+import { modelPrivacyGuard } from "../../store/source-privacy.ts";
 /*
   NAMING THE SESSIONS WHOSE OWN LOGS CARRY NO TITLE (#342).
 
@@ -111,9 +112,11 @@ export function titleStatements(input: {
       params: [answer.selector, answer.title, answer.reason, input.runId, input.at],
     });
     if (answer.title === "") continue;
+    const privacy = modelPrivacyGuard([answer.selector], [], [input.runId]);
     statements.push({
-      sql: `UPDATE sessions SET title = ?, title_provenance = ? WHERE selector = ? AND title IS NULL`,
-      params: [answer.title, TITLE_INFERRED, answer.selector],
+      sql: `UPDATE sessions SET title = ?, title_provenance = ?
+        WHERE selector = ? AND title IS NULL AND ${privacy.sql}`,
+      params: [answer.title, TITLE_INFERRED, answer.selector, ...privacy.params],
     });
   }
   return statements;

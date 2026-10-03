@@ -2440,8 +2440,14 @@ export async function projectReview(
     title: string;
     created_at: string;
     payload: string;
+    title_runs: string;
   }>(
-    `SELECT id, kind, root_id, parent_id, title, created_at, payload
+    `SELECT id, kind, root_id, parent_id, title, created_at, payload,
+       (SELECT json_group_array(t.run_id) FROM edges e
+        JOIN sessions s ON s.selector=e.to_id
+        JOIN session_titles t ON t.selector=s.selector
+        WHERE e.from_id=records.id AND e.to_kind='session' AND e.kind='cites'
+          AND s.title_provenance='inferred' AND s.title=t.title) AS title_runs
          FROM records WHERE id = ? LIMIT 1`,
     [recordId],
   );
@@ -2470,6 +2476,10 @@ export async function projectReview(
         ORDER BY e.position, s.selector`,
     [recordId],
   );
+  const titleRunIds = JSON.parse(record.title_runs) as string[];
+  const privacy = modelPrivacyGuard([], [recordId], titleRunIds);
+  if ((await store.db.query(`SELECT 1 WHERE ${privacy.sql}`, privacy.params)).length === 0)
+    return null;
   return {
     target: {
       id: record.id,
@@ -2481,6 +2491,7 @@ export async function projectReview(
       payload,
     },
     sources,
+    titleRunIds,
   };
 }
 
@@ -3072,9 +3083,10 @@ export function conductor(deps: ConductorDeps): Conductor {
     phase: "admission" | "bound",
   ): SqlCondition {
     const source = intent.details.plan.source;
-    const privacy = "kind" in source
-      ? modelPrivacyGuard([], [], [], [source.id])
-      : modelPrivacyGuard([source.session], [], [], [source.id]);
+    const privacy =
+      "kind" in source
+        ? modelPrivacyGuard([], [], [], [source.id])
+        : modelPrivacyGuard([source.session], [], [], [source.id]);
     return {
       sql: `EXISTS (SELECT 1 FROM claims WHERE id=? AND run_id=? AND fence=? AND job_id=?
         AND finished_at IS NULL ${phase === "admission" ? "AND expires_at>?" : ""})
@@ -3470,9 +3482,10 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (claimed.outcome === "refused") return claimed.refusal.detail;
     const runId = `run_${assignment.id}_${claimed.claim.fence}`;
     const installation = described.readiness.installation!;
-    const sourcePrivacy = "kind" in details.plan.source
-      ? modelPrivacyGuard([], [], [], [details.plan.source.id])
-      : modelPrivacyGuard([details.plan.source.session], [], [], [details.plan.source.id]);
+    const sourcePrivacy =
+      "kind" in details.plan.source
+        ? modelPrivacyGuard([], [], [], [details.plan.source.id])
+        : modelPrivacyGuard([details.plan.source.session], [], [], [details.plan.source.id]);
     const intent = TranscriptMapRunSchema.parse({
       policyVersion: policy.version,
       route,
@@ -7260,7 +7273,11 @@ export function conductor(deps: ConductorDeps): Conductor {
     try {
       const privacy = modelPrivacyGuard([], [run.preparation.recordId], [run.id]);
       if ((await store.db.query(`SELECT 1 WHERE NOT (${privacy.sql})`, privacy.params)).length > 0)
-        return await unresolvedReviewPosting(run, "session_excluded: source privacy blocks posting and retirement", notes);
+        return await unresolvedReviewPosting(
+          run,
+          "session_excluded: source privacy blocks posting and retirement",
+          notes,
+        );
       const [intent] = await store.db.query<{ retiring: number | bigint }>(
         `SELECT coalesce(json_extract(payload,'$.postingRetiring'),0) retiring
           FROM runs WHERE id=? AND closure IS NULL AND job_id IS NULL`,
@@ -7578,6 +7595,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         maxRefinementDepth: route.maxRefinementDepth ?? 2,
         blinded: true,
         recipe: { id: recipe.id, version: recipe.version },
+        titleRunIds: projection.titleRunIds,
       };
       const checked = await engine.checkProfile(route.profile);
       if (!checked.ok) {
@@ -7778,7 +7796,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
       let started: Started;
       const privacy = modelPrivacyGuard([], [preparation.recordId], [posting.id]);
-      if ((await store.db.query(`SELECT 1 WHERE NOT (${privacy.sql})`, privacy.params)).length > 0) {
+      if (
+        (await store.db.query(`SELECT 1 WHERE NOT (${privacy.sql})`, privacy.params)).length > 0
+      ) {
         const detail = "session_excluded: source privacy blocks this review";
         await closeUnpostedReview(posting, detail, settled);
         return { stop: { reason: "dispatch-refused", detail }, gaps };

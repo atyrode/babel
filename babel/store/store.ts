@@ -78,6 +78,11 @@ import {
 import { FEED_FRESHNESS_MS, feedOrdering, feedQueryForSurface, sortFeed } from "./rank.ts";
 import { transcriptMaps } from "./transcript-maps.ts";
 import { supersededReviewProposalSql } from "./schema.ts";
+import {
+  readExcludedRecordIds,
+  readExcludedRunIds,
+  sourcePrivacyCondition,
+} from "./source-privacy.ts";
 
 /**
  * THE STORE'S HALF OF THE PULSE: what today's tables say. The door answers a wider shape — it
@@ -1027,11 +1032,12 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * cite it, and it is reachable there; the door refuses it by name and says why.
    */
   const record = async (id: string): Promise<RecordPeel | null> => {
+    const privacy = sourcePrivacyCondition("record", "id");
     const row = await one(
       `SELECT id, kind, root_id, seq, supersedes_id, parent_id, run_id, recipe_id,
               recipe_version, actor_kind, actor_id, title, created_at, payload
-         FROM records WHERE id = ?`,
-      [id],
+         FROM records WHERE id = ? AND ${privacy.sql}`,
+      [id, ...privacy.params],
     );
     if (row === null) return await questionPeel(id);
     const kind = text(row["kind"]);
@@ -1654,9 +1660,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     supersedesId: string,
   ): Promise<RecordPeel["related"]> => {
     const out: RecordPeel["related"] = [];
+    const excluded = await readExcludedRecordIds(db);
     const seen: Record<string, true> = { [id]: true };
     const add = (relation: string, otherId: string, kind: string, title: string): void => {
-      if (otherId === "" || title === "" || seen[otherId] === true) return;
+      if (otherId === "" || title === "" || seen[otherId] === true || excluded.has(otherId)) return;
       if (
         kind !== "hypothesis" &&
         kind !== "observation" &&
@@ -1744,6 +1751,14 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * conversation that says nothing.
    */
   const thread = async (id: string): Promise<ThreadResult> => {
+    const recordPrivacy = sourcePrivacyCondition("record", "?");
+    const questionPrivacy = sourcePrivacyCondition("question", "?");
+    const readable = await db.query(
+      `SELECT 1 WHERE ${recordPrivacy.sql} AND ${questionPrivacy.sql}`,
+      [id, ...recordPrivacy.params, id, ...questionPrivacy.params],
+    );
+    if (readable.length === 0) return { comments: [], acts: [], total: 0 };
+    const excludedRuns = await readExcludedRunIds(db);
     const flat: Comment[] = [];
     const contributions = await db.query(
       `SELECT a.id AS id, a.run_id AS run_id, a.role AS role, a.recorded_at AS at,
@@ -1758,6 +1773,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       [id],
     );
     for (const row of contributions) {
+      if (excludedRuns.has(text(row["run_id"]))) continue;
       flat.push({
         // A contribution has no identity of its own in the store, and a thread whose rows shared
         // one id could not nest or be replied to.
@@ -1962,8 +1978,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   const runs = async (query: RunsQuery): Promise<RunsResult> => {
-    const clauses: string[] = [];
-    const params: SqlParam[] = [];
+    const privacy = sourcePrivacyCondition("run", "r.id");
+    const clauses: string[] = [privacy.sql];
+    const params: SqlParam[] = [...privacy.params];
     if (query.state !== undefined) clauses.push(`(${RUN_STATE_WHERE[query.state]})`);
     if (query.machineId !== undefined) {
       clauses.push(`r.machine_id = ?`);
@@ -1984,9 +2001,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   const run = async (id: string): Promise<RunResult> => {
+    const privacy = sourcePrivacyCondition("run", "r.id");
     const row = await one(
-      `SELECT ${RUN_COLUMNS}, r.payload AS payload FROM ${RUN_FROM} WHERE r.id = ?`,
-      [id],
+      `SELECT ${RUN_COLUMNS}, r.payload AS payload FROM ${RUN_FROM} WHERE r.id = ? AND ${privacy.sql}`,
+      [id, ...privacy.params],
     );
     if (row === null) return { run: null, receipt: null };
     const receipt = document(row["payload"]);

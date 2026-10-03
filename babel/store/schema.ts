@@ -40,6 +40,19 @@ const SESSION_EXCLUSION_SCHEMA: readonly string[] = [
   `CREATE TRIGGER session_exclusions_kept BEFORE DELETE ON session_exclusions BEGIN
      SELECT RAISE(ABORT, 'a source exclusion is never deleted');
    END`,
+  `CREATE TABLE session_exclusion_enforcements(
+     policy_sha256 TEXT PRIMARY KEY,
+     selectors TEXT NOT NULL CHECK(json_valid(selectors)),
+     recorded_at TEXT NOT NULL
+   ) STRICT`,
+  `CREATE TRIGGER session_exclusion_enforcements_immutable
+     BEFORE UPDATE ON session_exclusion_enforcements BEGIN
+     SELECT RAISE(ABORT, 'privacy enforcement evidence is never edited');
+   END`,
+  `CREATE TRIGGER session_exclusion_enforcements_kept
+     BEFORE DELETE ON session_exclusion_enforcements BEGIN
+     SELECT RAISE(ABORT, 'privacy enforcement evidence is never deleted');
+   END`,
 ];
 
 /** Named allocation intentions share this store, but never replace an active policy. */

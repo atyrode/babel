@@ -147,7 +147,10 @@ export async function createRecallArchive(options: {
   await mkdir(root, { recursive: true, mode: 0o700 });
   let indexPromise: Promise<SessionIndex> | null = null;
   const nativeIndex = (): Promise<SessionIndex> =>
-    (indexPromise ??= sessionIndex(root, context, policy.excludedSessions ?? []));
+    (indexPromise ??= sessionIndex(root, context, policy.excludedSessions ?? []).catch((error) => {
+      indexPromise = null;
+      throw error;
+    }));
   // Beside the index, in the same owner-private directory: raw claims, never a policy's view.
   const listings = listingMemory(join(root, "listings"));
   const caches = new Map<string, ReadingCache>();
@@ -348,6 +351,7 @@ export async function createRecallArchive(options: {
         // The refetched immutable bytes settle a cache/index disagreement. Repair derived
         // index rows with a verified replay, not with any digest supplied by a request.
         let refused: Refused | undefined;
+        const index = await nativeIndex();
         const built = await index
           .build(
             entry,

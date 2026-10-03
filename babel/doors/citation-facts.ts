@@ -19,6 +19,8 @@ import {
   readCitationFacts,
 } from "../store/citation-facts.ts";
 import type { BabelStore } from "../store/store.ts";
+import { readSessionExclusions } from "../store/exclusions.ts";
+import { modelPrivacyGuard } from "../store/source-privacy.ts";
 import type { LaunchDeps } from "./launch.ts";
 import { POSTING_DELEGATES } from "./launch.ts";
 import { defineDoor, type Door } from "./door.ts";
@@ -114,9 +116,16 @@ export function citationFactDoors(store: BabelStore, deps: LaunchDeps): readonly
       const jobId = `job_${minted}`;
       const attemptId = runId;
       const tasks = [...page.tasks];
+      const excludedSessions = await readSessionExclusions(store.db);
       let document = "";
       while (tasks.length > 0) {
-        document = JSON.stringify({ runId, machineId: input.machineId, attemptId, tasks });
+        document = JSON.stringify({
+          runId,
+          machineId: input.machineId,
+          attemptId,
+          tasks,
+          excludedSessions,
+        });
         if (
           new TextEncoder().encode(JSON.stringify({ [INPUT_FIELD]: document })).byteLength <=
           MAX_JOB_INPUT
@@ -128,10 +137,18 @@ export function citationFactDoors(store: BabelStore, deps: LaunchDeps): readonly
         return { refused: "one citation position exceeds the native input bound" };
       const at = new Date(deps.now()).toISOString();
       const intention = JSON.stringify({ attemptId, tasks });
-      await store.db.run(
+      const privacy = modelPrivacyGuard(
+        tasks.flatMap((task) =>
+          task.source === null
+            ? []
+            : [task.source.selector, `${task.source.harness}/${task.source.sourceId}`],
+        ),
+        tasks.map((task) => task.recordId),
+      );
+      const admitted = await store.db.run(
         `INSERT INTO runs
       (id,kind,machine_id,job_id,recipe_id,authority_kind,authority_id,preparation,started_at,records,chain,payload)
-      VALUES (?,?,?,?,?,?,?,?,?,0,?,?)`,
+      SELECT ?,?,?,?,?,?,?,?,?,0,?,? WHERE ${privacy.sql}`,
         [
           runId,
           MACHINE_OPERATIONS.citationBackfill,
@@ -144,8 +161,10 @@ export function citationFactDoors(store: BabelStore, deps: LaunchDeps): readonly
           at,
           `principal:${ctx.principal.id}`,
           JSON.stringify({ closure: null, requestedAt: deps.now() }),
+          ...privacy.params,
         ],
       );
+      if (Number(admitted.changes) === 0) return { refused: "citation sources are excluded" };
       store.touch();
       try {
         await jobs.execute({

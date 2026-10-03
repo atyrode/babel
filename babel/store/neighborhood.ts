@@ -13,6 +13,7 @@ import {
   type NeighborhoodRecords,
 } from "../contract.ts";
 import type { z } from "zod";
+import { sourcePrivacyCTE } from "./source-privacy.ts";
 
 /** SQL identifiers and expressions below are fixed by this module, never caller input. */
 function object(fields: Record<string, string>): string {
@@ -62,6 +63,7 @@ export async function readNeighborhood(
   query: NeighborhoodQuery,
 ): Promise<NeighborhoodRecords> {
   const { entityId, ...limits } = query;
+  const privacy = sourcePrivacyCTE();
   const result: NeighborhoodRecords = {
     entityId,
     state: "missing",
@@ -104,9 +106,10 @@ export async function readNeighborhood(
 
   const node = async (id: string, depth: number): Promise<boolean> => {
     const rows = await db.query<{ item: string | null }>(
-      `WITH candidate AS (SELECT ${NODE} AS item FROM entities e WHERE e.id = ?)
+      `${privacy.sql}, candidate AS (SELECT ${NODE} AS item FROM entities e WHERE e.id = ?
+         AND e.id NOT IN (SELECT id FROM tainted WHERE kind = 'entity'))
        SELECT CASE WHEN length(CAST(item AS BLOB)) <= ? THEN item END AS item FROM candidate`,
-      [depth, id, remainingBytes],
+      [...privacy.params, depth, id, remainingBytes],
     );
     const row = rows[0];
     if (row === undefined || !EntityIdSchema.safeParse(id).success) {
@@ -136,14 +139,15 @@ export async function readNeighborhood(
       const parent = result.nodes[cursor]!;
       const excluded = JSON.stringify([...visited, ...omittedNodes, ...unavailable]);
       const children = await db.query<{ id: string }>(
-        `SELECT id FROM (
+        `${privacy.sql} SELECT id FROM (
            SELECT to_id AS id FROM edges WHERE from_kind = 'entity' AND to_kind = 'entity'
              AND from_id = ? AND kind = 'contains'
            UNION
            SELECT from_id AS id FROM edges WHERE from_kind = 'entity' AND to_kind = 'entity'
              AND to_id = ? AND kind = 'part-of'
-         ) WHERE id NOT IN (SELECT value FROM json_each(?)) ORDER BY id LIMIT ?`,
-        [parent.id, parent.id, excluded, limits.maxNodes + 1],
+         ) WHERE id NOT IN (SELECT value FROM json_each(?))
+           AND id NOT IN (SELECT id FROM tainted WHERE kind = 'entity') ORDER BY id LIMIT ?`,
+        [...privacy.params, parent.id, parent.id, excluded, limits.maxNodes + 1],
       );
       for (const child of children) {
         // A dangling endpoint is unavailable, not a silently absent leaf. Check existence
@@ -176,12 +180,13 @@ export async function readNeighborhood(
   }
 
   const nodeIds = JSON.stringify(result.nodes.map((entry) => entry.id));
-  const scope = `WITH selected AS (SELECT value AS id FROM json_each(?)),
+  const scope = `${privacy.sql}, selected AS (SELECT value AS id FROM json_each(?)
+      WHERE value NOT IN (SELECT id FROM tainted WHERE kind = 'entity')),
     filed AS (SELECT f.* FROM filings f WHERE f.entity_id IN (SELECT id FROM selected)
-      AND ${ACTIVE_FILING}),
+      AND ${ACTIVE_FILING} AND f.record_id NOT IN (SELECT id FROM tainted WHERE kind = 'record')),
     associated AS (SELECT r.* FROM records r WHERE EXISTS (
       SELECT 1 FROM filed f WHERE f.record_id = r.id)),
-    relevant_questions AS (SELECT q.* FROM questions q WHERE
+    relevant_questions AS (SELECT q.* FROM questions q WHERE (
       EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(q.payload) THEN q.payload ELSE '{}' END, '$.entities') target
         WHERE target.value IN (SELECT id FROM selected))
       OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(q.payload) THEN q.payload ELSE '{}' END, '$.subjects') target
@@ -193,7 +198,8 @@ export async function readNeighborhood(
       OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(q.payload) THEN q.payload ELSE '{}' END, '$.work') work
         WHERE EXISTS (SELECT 1 FROM associated r
           WHERE r.id = json_extract(CASE WHEN work.type = 'object' THEN work.value ELSE '{}' END, '$.id')
-            AND r.kind = json_extract(CASE WHEN work.type = 'object' THEN work.value ELSE '{}' END, '$.kind'))))`;
+            AND r.kind = json_extract(CASE WHEN work.type = 'object' THEN work.value ELSE '{}' END, '$.kind'))))
+      AND q.id NOT IN (SELECT id FROM tainted WHERE kind = 'question'))`;
 
   /** Each category has an exact omitted count within the returned entities, never the unseen tree. */
   const collect = async <T>(
@@ -203,7 +209,7 @@ export async function readNeighborhood(
     from: string,
     order: string,
   ): Promise<void> => {
-    const params: SqlParam[] = [nodeIds];
+    const params: SqlParam[] = [...privacy.params, nodeIds];
     const counted = await db.query<{ total: bigint | number }>(
       `${scope} SELECT COUNT(*) AS total ${from}`,
       params,
@@ -375,7 +381,10 @@ export async function readNeighborhood(
         parentId: `CASE WHEN ${containment} AND e.kind = 'contains' THEN e.from_id WHEN ${containment} AND e.kind = 'part-of' THEN e.to_id END`,
         childId: `CASE WHEN ${containment} AND e.kind = 'contains' THEN e.to_id WHEN ${containment} AND e.kind = 'part-of' THEN e.from_id END`,
       }),
-      `FROM edges e WHERE ${incident}`,
+      `FROM edges e WHERE (${incident})
+         AND e.from_id NOT IN (SELECT id FROM tainted)
+         AND e.to_id NOT IN (SELECT id FROM tainted)
+         AND e.actor_id NOT IN (SELECT id FROM tainted WHERE kind = 'run')`,
       "e.kind, e.from_kind, e.from_id, e.to_kind, e.to_id, e.id",
     );
 
@@ -396,14 +405,30 @@ export async function readNeighborhood(
         authority: "'current-catalog'",
         reviewState: "'unknown'",
       }),
-      `FROM sessions s WHERE EXISTS (SELECT 1 FROM edges e JOIN associated r
+      `FROM sessions s WHERE s.selector NOT IN (SELECT id FROM tainted WHERE kind = 'session')
+       AND (EXISTS (SELECT 1 FROM edges e JOIN associated r
         ON r.id = e.from_id AND r.kind = e.from_kind
         WHERE e.kind = 'cites' AND e.to_kind = 'session' AND e.to_id = s.selector)
-      OR EXISTS (SELECT 1 FROM facts f WHERE f.entity_id IN (SELECT id FROM selected)
-        AND f.predicate = 'repository-remote' AND f.value = s.repository_remote)`,
+       OR EXISTS (SELECT 1 FROM facts f WHERE f.entity_id IN (SELECT id FROM selected)
+        AND f.predicate = 'repository-remote' AND f.value = s.repository_remote))`,
       "s.selector",
     );
   }
+
+  // A ban recorded during asynchronous traversal invalidates the whole observation, not just
+  // the source rows. Already-read private node/annotation prose must not escape in a late reply.
+  const disclosed = [
+    ...result.nodes.map((row) => row.id),
+    ...result.records.map((row) => row.id),
+    ...result.questions.map((row) => row.id),
+    ...result.sources.map((row) => row.selector),
+    ...result.links.flatMap((row) => [row.fromId, row.toId, row.actorId]),
+  ];
+  const changed = await db.query(
+    `${privacy.sql} SELECT 1 FROM tainted WHERE id IN (SELECT value FROM json_each(?)) LIMIT 1`,
+    [...privacy.params, JSON.stringify(disclosed)],
+  );
+  if (changed.length !== 0) throw new Error("Source privacy changed during the neighborhood read.");
 
   coverage.visitedNodes = visited.size;
   coverage.omittedNodesAtLeast = omittedNodes.size;

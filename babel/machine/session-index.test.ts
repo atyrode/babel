@@ -74,7 +74,9 @@ test("an exclusion-scoped term corpus cannot reuse tokens or coverage from its f
   handles.push(scoped);
   expect(scoped.holds(denied)).toBe(false);
   expect(scoped.holds(allowed)).toBe(false);
-  expect(await scoped.build(allowed, content(allowed, "siblingneedle sharedneedle"))).toBe("indexed");
+  expect(await scoped.build(allowed, content(allowed, "siblingneedle sharedneedle"))).toBe(
+    "indexed",
+  );
   expect(scoped.searchRecords("banneedle", [allowed], 10)).toEqual({ hits: [], matches: 0 });
   const found = scoped.searchRecords("sharedneedle", [allowed], 10);
   expect(found.matches).toBe(1);
@@ -89,11 +91,10 @@ test("an exclusion-scoped term corpus cannot reuse tokens or coverage from its f
   expect(restarted.holds(allowed)).toBe(true);
   expect(restarted.holds(denied)).toBe(false);
   expect(restarted.searchRecords("sharedneedle", [allowed], 10)).toEqual(found);
-  expect(previous.searchRecords("banneedle", [denied], 10).hits[0]!.candidate.session.selector).toBe(
-    denied.session.selector,
-  );
+  expect(
+    previous.searchRecords("banneedle", [denied], 10).hits[0]!.candidate.session.selector,
+  ).toBe(denied.session.selector);
 });
-
 
 test("verified digest repair replaces an exact capture transactionally and reuses an already repaired row", async () => {
   const { index, dir } = await open();

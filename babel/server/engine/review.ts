@@ -50,6 +50,7 @@ export const REVIEW_PARAM = {
 export interface ReviewProjection {
   readonly target: Readonly<Record<string, unknown>>;
   readonly sources: readonly Readonly<Record<string, unknown>>[];
+  readonly titleRunIds: readonly string[];
 }
 
 export interface ReviewRoute {
@@ -76,6 +77,7 @@ export interface ReviewPreparation {
   readonly blinded: boolean;
   readonly recipe: { readonly id: string; readonly version: number };
   readonly reviewSelection?: ReviewSelection | undefined;
+  readonly titleRunIds?: readonly string[] | undefined;
 }
 
 const ReviewPreparationSchema = z.strictObject({
@@ -96,6 +98,7 @@ const ReviewPreparationSchema = z.strictObject({
   blinded: z.boolean(),
   recipe: z.strictObject({ id: z.string().min(1), version: z.number().int().min(0) }),
   reviewSelection: ReviewSelectionSchema.optional(),
+  titleRunIds: z.array(z.string().min(1)).optional(),
 });
 
 export function reviewPreparation(value: unknown): ReviewPreparation | null {

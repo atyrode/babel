@@ -753,13 +753,16 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         ? null
         : directDrainAdmission(run.drain.id, run.drain.runId, deps.now());
     const selfOwned = run.drain?.runId === run.runId;
-    const privacy = launch.operationId === OPERATIONS.prepare
-      ? modelPrivacyGuard(
-          Array.isArray(run.preparation["selectors"]) ? run.preparation["selectors"] as string[] : [],
-          [],
-          typeof run.preparation["for"] === "string" ? [run.preparation["for"]] : [],
-        )
-      : null;
+    const privacy =
+      launch.operationId === OPERATIONS.prepare
+        ? modelPrivacyGuard(
+            Array.isArray(run.preparation["selectors"])
+              ? (run.preparation["selectors"] as string[])
+              : [],
+            [],
+            typeof run.preparation["for"] === "string" ? [run.preparation["for"]] : [],
+          )
+        : null;
     const retain = async () =>
       await store.db.run(
         `INSERT INTO runs(id, kind, machine_id, job_id, recipe_id, authority_kind,
@@ -800,13 +803,19 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       );
     // Governed and direct-drain work retain pollable native intent before execute. A direct
     // drain's parent already holds the exact request, including its original installation pin.
-    const durable = launch.operationId === OPERATIONS.prepare || run.authorityKind === "conductor" || run.drain !== undefined;
+    const durable =
+      launch.operationId === OPERATIONS.prepare ||
+      run.authorityKind === "conductor" ||
+      run.drain !== undefined;
     let existing = false;
     if (durable) {
       try {
         existing = (await retain()).changes === 0;
-        if (existing && privacy !== null &&
-            (await store.db.query("SELECT 1 FROM runs WHERE id = ?", [run.runId])).length === 0)
+        if (
+          existing &&
+          privacy !== null &&
+          (await store.db.query("SELECT 1 FROM runs WHERE id = ?", [run.runId])).length === 0
+        )
           return { refused: "session_excluded: source privacy forbids this preparation" };
       } catch (error) {
         return {
@@ -874,13 +883,22 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         return { refused: "its drain no longer admits this preparation", pending: true };
     }
     if (launch.operationId === OPERATIONS.prepare) {
-      const input = documentOf(launch.input[INPUT_FIELD] ?? null);
+      const rawInput = launch.input[INPUT_FIELD];
+      const input = documentOf(typeof rawInput === "string" ? rawInput : null);
       const excludedSessions = await readSessionExclusions(store.db);
       const excluded = new Set(excludedSessions);
       const captures = input["captures"] as CaptureGroup[] | undefined;
-      if (captures?.some((capture) =>
-        capture.sessions.some((session) => excluded.has(`${session.harness}/${session.sourceId}`))))
-        return { refused: "session_excluded: the retained preparation names forbidden material", pending: durable };
+      if (
+        captures?.some((capture) =>
+          capture.sessions.some((session) =>
+            excluded.has(`${session.harness}/${session.sourceId}`),
+          ),
+        )
+      )
+        return {
+          refused: "session_excluded: the retained preparation names forbidden material",
+          pending: durable,
+        };
       const built = document({ ...input, excludedSessions });
       if ("refused" in built) return built;
       launch = { ...launch, input: built.input };
@@ -1592,8 +1610,11 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       if (!sealed.pending)
         await store.db.run(
           `UPDATE runs SET closure='failed',finished_at=?,payload=? WHERE id=? AND closure IS NULL`,
-          [new Date(deps.now()).toISOString(),
-            JSON.stringify({ closure: "failed", reason: sealed.refused }), runId],
+          [
+            new Date(deps.now()).toISOString(),
+            JSON.stringify({ closure: "failed", reason: sealed.refused }),
+            runId,
+          ],
         );
       return { runId, refused: sealed.refused };
     }
@@ -1645,9 +1666,14 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       analysis = parsed.data;
     }
     if (analysis !== undefined) {
-      const privacy = modelPrivacyGuard(analysis.selectors, analysis.brief.map((record) => record.id));
+      const privacy = modelPrivacyGuard(
+        analysis.selectors,
+        analysis.brief.map((record) => record.id),
+      );
       if ((await store.db.query(`SELECT 1 WHERE NOT (${privacy.sql})`, privacy.params)).length > 0)
-        return { refused: "session_excluded: the exact analysis scope contains forbidden source material" };
+        return {
+          refused: "session_excluded: the exact analysis scope contains forbidden source material",
+        };
     }
     const profile = input.profile;
     if (profile === undefined) {
@@ -1769,7 +1795,10 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         : directDrainAdmission(identity.drainId, identity.runId, deps.now());
     // Governed intent precedes native execution. Analysis contends with its claim's reaper;
     // a direct drain contends with stop and retains the exact first request for recovery.
-    const privacy = modelPrivacyGuard(prepared.selectors, analysis?.brief.map((record) => record.id) ?? []);
+    const privacy = modelPrivacyGuard(
+      prepared.selectors,
+      analysis?.brief.map((record) => record.id) ?? [],
+    );
     const retainParent = async () =>
       await store.db.run(
         `INSERT INTO runs(id, kind, machine_id, container_id, prepare_job_id, recipe_id, profile,
@@ -2717,7 +2746,8 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         const claimed: PreparedRun = { ...run, preparation: JSON.stringify(composed.preparation) };
         const request = { ...target, prompt: composed.prompt };
         modelRequested = true;
-        const refusal = (await sourceRefusal(claimed)) ?? (drain === null ? null : await continuing(claimed));
+        const refusal =
+          (await sourceRefusal(claimed)) ?? (drain === null ? null : await continuing(claimed));
         const answered =
           refusal === null ? await engine.runSession({ ...request, postingKey: run.id }) : null;
         posted.push(

@@ -7,6 +7,7 @@ import {
   type ExportSession,
 } from "../server/engine/projections.ts";
 import type { ActsStore } from "../store/acts.ts";
+import { readExcludedRecordIds, sourcePrivacyCondition } from "../store/source-privacy.ts";
 import { defineDoor, type Door } from "./door.ts";
 
 /*
@@ -51,10 +52,11 @@ interface RecordRow extends SqlRow {
 export function exportDoors(store: ActsStore): readonly Door[] {
   return [
     defineDoor(exportAction, async (_ctx, { id, projection }) => {
+      const privacy = sourcePrivacyCondition("record", "records.id");
       const rows = await store.db.query<RecordRow>(
         `SELECT id, kind, root_id, seq, supersedes_id, title, created_at, run_id, payload
-           FROM records WHERE id = ? LIMIT 1`,
-        [id],
+           FROM records WHERE id = ? AND ${privacy.sql} LIMIT 1`,
+        [id, ...privacy.params],
       );
       const row = rows[0];
       // A record this deployment does not hold is a refusal naming the identifier: an empty
@@ -112,6 +114,8 @@ export function exportDoors(store: ActsStore): readonly Door[] {
             : {},
         sessions,
       };
+      if ((await readExcludedRecordIds(store.db)).has(id))
+        return { refused: "record excluded from Babel use" };
       const projected = projectRecord(record, projection);
       if ("refused" in projected) return projected;
       return {

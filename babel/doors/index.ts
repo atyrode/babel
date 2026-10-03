@@ -13,6 +13,7 @@ import { launchDoors, mapCatalogDoor, type LaunchDeps } from "./launch.ts";
 import { readDoors } from "./read.ts";
 import { recallDoors } from "./recall.ts";
 import { recallServiceDoors } from "./recall-services.ts";
+import { sessionExclusionDoors } from "./session-exclusions.ts";
 import { reviewActionDoors } from "./review-actions.ts";
 import { searchDoors } from "./search.ts";
 import { serviceDoors, type DeclaredService } from "./services.ts";
@@ -86,7 +87,8 @@ export function babelDoors(
     mapCatalogDoor(deps.coordinator, advanceCatalog),
     ...drainDoors(store, drain),
     ...serviceDoors(services),
-    ...recallServiceDoors(),
+    ...recallServiceDoors(store),
+    ...sessionExclusionDoors(store),
   ];
   for (const door of doors) {
     const { name } = door.action;

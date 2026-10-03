@@ -8,8 +8,9 @@ import { defineDoor, type Door } from "./door.ts";
 /*
   THE DOOR THAT RETRIEVES OVER THE CORPUS (#337).
 
-  It is one door and it is beside the reads, because it writes nothing, publishes nothing and
-  spends nothing an operator has to authorize. What it does that no other read does is reach an
+  It is one door and it is beside the reads, because it changes no authoritative record, publishes
+  nothing and spends nothing an operator has to authorize. The keyword cache excludes quarantined
+  text, including its corpus statistics. What this read also does is reach an
   origin — once, for the query's own embedding — and only when the operator installed a service
   that says it may.
 

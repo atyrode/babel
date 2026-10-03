@@ -3504,31 +3504,61 @@ test("lost direct Code postings wait for current capacity without retiring paid 
 test("an excluded source stays archived after catalog refresh but never enters an explicit launch", async () => {
   await archived("omp/privacy-allowed", { archive_path: "/synthetic/privacy-allowed.jsonl" });
   await insert(harness.db, "session_exclusions", {
-    selector: "omp/s1", actor_id: "synthetic-owner", recorded_at: stamp(NOW),
+    selector: "omp/s1",
+    actor_id: "synthetic-owner",
+    recorded_at: stamp(NOW),
   });
-  await upsertSessionRows(harness.store, [SessionRowSchema.parse({
-    selector: "omp/s1", harness: "omp", source_id: "s1", kind: "operator",
-    archive_label: "synthetic-label", archive_path: "/synthetic/private-new-capture.jsonl",
-    snapshot_id: "e".repeat(64), archived_at: stamp(NOW), modified_at: stamp(NOW - HOUR), size: 2000,
-  })], stamp(NOW));
+  await upsertSessionRows(
+    harness.store,
+    [
+      SessionRowSchema.parse({
+        selector: "omp/s1",
+        harness: "omp",
+        source_id: "s1",
+        kind: "operator",
+        archive_label: "synthetic-label",
+        archive_path: "/synthetic/private-new-capture.jsonl",
+        snapshot_id: "e".repeat(64),
+        archived_at: new Date(NOW).toISOString(),
+        modified_at: new Date(NOW - HOUR).toISOString(),
+        size: 2000,
+      }),
+    ],
+    stamp(NOW),
+  );
   const answer = await start({
-    preset: "read-whats-new", sinceDays: 1,
+    preset: "read-whats-new",
+    sinceDays: 1,
     profile: { containerId: "ctr_workbench", expectedRevision: 7 },
   });
   expect(answer["refused"]).toBeUndefined();
   expect(handed(fleet.executed[0])).toEqual(["omp/privacy-allowed"]);
-  const input = PrepareInputSchema.parse(JSON.parse(fleet.executed[0]!.input["input"]!));
+  const rawInput = fleet.executed[0]!.input["input"];
+  if (typeof rawInput !== "string") throw new Error("Expected a serialized preparation input");
+  const input = PrepareInputSchema.parse(JSON.parse(rawInput));
   expect(input.excludedSessions).toEqual(["omp/s1"]);
-  expect(await harness.db.query("SELECT snapshot_id,archive_path,kind FROM sessions WHERE selector='omp/s1'")).toEqual([
-    { snapshot_id: "e".repeat(64), archive_path: "/synthetic/private-new-capture.jsonl", kind: "operator" },
+  expect(
+    await harness.db.query(
+      "SELECT snapshot_id,archive_path,kind FROM sessions WHERE selector='omp/s1'",
+    ),
+  ).toEqual([
+    {
+      snapshot_id: "e".repeat(64),
+      archive_path: "/synthetic/private-new-capture.jsonl",
+      kind: "operator",
+    },
   ]);
-  expect(await harness.db.query("SELECT selector FROM session_exclusions")).toEqual([{ selector: "omp/s1" }]);
+  expect(await harness.db.query("SELECT selector FROM session_exclusions")).toEqual([
+    { selector: "omp/s1" },
+  ]);
 });
 
 test("an exact explicit analysis refuses excluded material rather than silently reducing scope", async () => {
   const { start: analysis } = await stageLaunch();
   await insert(harness.db, "session_exclusions", {
-    selector: "omp/s1", actor_id: "synthetic-owner", recorded_at: stamp(NOW),
+    selector: "omp/s1",
+    actor_id: "synthetic-owner",
+    recorded_at: stamp(NOW),
   });
   expect(await analysis()).toMatchObject({ refused: expect.stringContaining("session_excluded") });
   expect(fleet.executed).toEqual([]);
@@ -3540,12 +3570,19 @@ test("sealed queued analysis is privacy-checked again before any new Code reques
   await analysis();
   await sealStage();
   await insert(harness.db, "session_exclusions", {
-    selector: "omp/s1", actor_id: "synthetic-owner", recorded_at: stamp(NOW),
+    selector: "omp/s1",
+    actor_id: "synthetic-owner",
+    recorded_at: stamp(NOW),
   });
   let calls = 0;
-  code.posting = () => { calls++; return stageJob(); };
+  code.posting = () => {
+    calls++;
+    return stageJob();
+  };
   const result = await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
-  expect(result).toMatchObject([{ runId: "run_stage", refused: expect.stringContaining("session_excluded") }]);
+  expect(result).toMatchObject([
+    { runId: "run_stage", refused: expect.stringContaining("session_excluded") },
+  ]);
   expect(calls).toBe(0);
   expect(await harness.db.query("SELECT closure,job_id FROM runs WHERE id='run_stage'")).toEqual([
     { closure: "failed", job_id: null },
@@ -3566,19 +3603,23 @@ test("privacy blocks recovery and adopt-only disclosure without releasing an unk
   await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
   expect(calls).toBe(1);
   await insert(harness.db, "session_exclusions", {
-    selector: "omp/s1", actor_id: "synthetic-owner", recorded_at: stamp(NOW),
+    selector: "omp/s1",
+    actor_id: "synthetic-owner",
+    recorded_at: stamp(NOW),
   });
   await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
   expect(await machinery.retirePosting("run_stage", code)).toMatchObject({
     refused: expect.stringContaining("session_excluded"),
   });
   expect(calls).toBe(1);
-  expect(await harness.db.query("SELECT closure,job_id,json_extract(payload,'$.posting') AS posting FROM runs WHERE id='run_stage'")).toEqual([
-    { closure: null, job_id: null, posting: 1n },
-  ]);
-  expect(await harness.db.query("SELECT finished_at,actual_cost FROM claims WHERE id='asg_stage'")).toEqual([
-    { finished_at: null, actual_cost: null },
-  ]);
+  expect(
+    await harness.db.query(
+      "SELECT closure,job_id,json_extract(payload,'$.posting') AS posting FROM runs WHERE id='run_stage'",
+    ),
+  ).toEqual([{ closure: null, job_id: null, posting: 1n }]);
+  expect(
+    await harness.db.query("SELECT finished_at,actual_cost FROM claims WHERE id='asg_stage'"),
+  ).toEqual([{ finished_at: null, actual_cost: null }]);
 });
 
 test("a source exclusion racing the model intent transaction prevents dispatch", async () => {
@@ -3588,17 +3629,24 @@ test("a source exclusion racing the model intent transaction prevents dispatch",
   const batch = harness.db.batch.bind(harness.db);
   let excluded = false;
   harness.db.batch = async (statements) => {
-    if (!excluded && statements.some((statement) =>
-      statement.sql.includes("UPDATE runs SET preparation = ?"))) {
+    if (
+      !excluded &&
+      statements.some((statement) => statement.sql.includes("UPDATE runs SET preparation = ?"))
+    ) {
       excluded = true;
       await insert(harness.db, "session_exclusions", {
-        selector: "omp/s1", actor_id: "synthetic-owner", recorded_at: stamp(NOW),
+        selector: "omp/s1",
+        actor_id: "synthetic-owner",
+        recorded_at: stamp(NOW),
       });
     }
     return await batch(statements);
   };
   let calls = 0;
-  code.posting = () => { calls++; return stageJob(); };
+  code.posting = () => {
+    calls++;
+    return stageJob();
+  };
   try {
     await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
   } finally {
@@ -3606,9 +3654,11 @@ test("a source exclusion racing the model intent transaction prevents dispatch",
   }
   expect(excluded).toBe(true);
   expect(calls).toBe(0);
-  expect(await harness.db.query("SELECT job_id,json_extract(payload,'$.posting') AS posting FROM runs WHERE id='run_stage'")).toEqual([
-    { job_id: null, posting: null },
-  ]);
+  expect(
+    await harness.db.query(
+      "SELECT job_id,json_extract(payload,'$.posting') AS posting FROM runs WHERE id='run_stage'",
+    ),
+  ).toEqual([{ job_id: null, posting: null }]);
 });
 
 test("title inference neither selects nor posts a newly excluded sealed batch", async () => {
@@ -3616,14 +3666,25 @@ test("title inference neither selects nor posts a newly excluded sealed batch", 
   await nameless("privacy-private");
   await nameless("privacy-public");
   await insert(harness.db, "session_exclusions", {
-    selector: "codex/privacy-private", actor_id: "synthetic-owner", recorded_at: stamp(NOW),
+    selector: "codex/privacy-private",
+    actor_id: "synthetic-owner",
+    recorded_at: stamp(NOW),
   });
   await machinery.inferTitles(fleet, code, "cyc_privacy", WAKE);
   expect(handed(fleet.executed[0])).toEqual(["codex/privacy-public"]);
   await preparedTitles(["codex/privacy-private"]);
   let calls = 0;
-  code.posting = () => { calls++; return stageJob(); };
-  const result = await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE, new Set(["run_title_1"]));
+  code.posting = () => {
+    calls++;
+    return stageJob();
+  };
+  const result = await machinery.postPrepared(
+    fleet,
+    code,
+    ANALYSIS_PLAN,
+    WAKE,
+    new Set(["run_title_1"]),
+  );
   expect(result).toMatchObject([{ refused: expect.stringContaining("session_excluded") }]);
   expect(calls).toBe(0);
 });

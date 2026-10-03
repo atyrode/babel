@@ -3333,6 +3333,15 @@ export const VerifyResultSchema = z.strictObject({
 export const PreflightModeSchema = z.enum(["redact", "refuse", "off"]);
 export type PreflightMode = z.infer<typeof PreflightModeSchema>;
 
+/** Durable owner exclusions are bounded so native privacy policy remains an input document. */
+export const MAX_SESSION_EXCLUSIONS = 64;
+export const SessionExclusionsSchema = z
+  .array(z.string().min(1).max(600))
+  .max(MAX_SESSION_EXCLUSIONS)
+  .refine(
+    (selectors) => new Set(selectors).size === selectors.length,
+    "Exclusions must be unique.",
+  );
 /** Historical citation facts: immutable task, bounded source evidence and explicit uncertainty. */
 export const CITATION_FACTS_VERSION = "babel.citation-facts/1";
 export const CITATION_CAPTURE_MAX_BYTES = 256 * 1024 * 1024;
@@ -3479,6 +3488,7 @@ export const CitationBackfillIntentSchema = z.strictObject({
 export const CitationBackfillInputSchema = CitationBackfillIntentSchema.extend({
   runId: z.string().min(1).max(120),
   machineId: z.string().min(1).max(120),
+  excludedSessions: SessionExclusionsSchema.optional(),
 });
 export type CitationBackfillInput = z.infer<typeof CitationBackfillInputSchema>;
 export const CitationBackfillRowSchema = z.strictObject({
@@ -4161,12 +4171,6 @@ export type CaptureGroup = z.infer<typeof CaptureGroupSchema>;
  */
 export const PREPARE_INPUT_MAX_BYTES = 60 * 1024;
 
-/** Durable owner exclusions are bounded so native privacy policy remains an input document. */
-export const MAX_SESSION_EXCLUSIONS = 64;
-export const SessionExclusionsSchema = z
-  .array(z.string().min(1).max(600))
-  .max(MAX_SESSION_EXCLUSIONS)
-  .refine((selectors) => new Set(selectors).size === selectors.length, "Exclusions must be unique.");
 export const ExcludeSessionInputSchema = z.strictObject({
   selector: z.string().min(1).max(600),
 });
@@ -4176,11 +4180,19 @@ export const SessionExclusionSchema = z.strictObject({
 });
 export const SessionExclusionsResultSchema = z.strictObject({
   exclusions: z.array(SessionExclusionSchema).max(MAX_SESSION_EXCLUSIONS),
+  recallEnforced: z.boolean(),
+  reason: z.string().max(512),
 });
 export const ExcludeSessionResultSchema = SessionExclusionSchema.extend({
   excluded: z.literal(true),
   recallEnforced: z.boolean(),
   reason: z.string().max(512),
+});
+
+/** An embedding disclosure reserves its exact source record before the provider can be called. */
+export const EMBEDDING_RUN_KIND = "embedding";
+export const EmbeddingRunPreparationSchema = z.strictObject({
+  embedding: z.strictObject({ recordId: RecordIdSchema }),
 });
 
 /**

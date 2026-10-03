@@ -43,6 +43,13 @@ const TAINT = `WITH RECURSIVE
       FROM documents d, json_each(d.document, '$.captures') c, json_each(c.value, '$.sessions') j
     UNION ALL
     SELECT d.run_id, json_extract(d.document, '$.mapping.details.plan.source.session') FROM documents d
+    UNION ALL
+    SELECT d.run_id, json_extract(j.value, '$.source.selector')
+      FROM documents d, json_each(d.document, '$.tasks') j
+    UNION ALL
+    SELECT d.run_id, json_extract(j.value, '$.source.harness') || '/' ||
+      json_extract(j.value, '$.source.sourceId')
+      FROM documents d, json_each(d.document, '$.tasks') j
   ),
   record_inputs(run_id, record_id) AS (
     SELECT d.run_id, json_extract(j.value, '$.id')
@@ -53,6 +60,9 @@ const TAINT = `WITH RECURSIVE
     SELECT d.run_id, json_extract(d.document, '$.review.revisionId') FROM documents d
     UNION ALL
     SELECT d.run_id, json_extract(d.document, '$.embedding.recordId') FROM documents d
+    UNION ALL
+    SELECT d.run_id, json_extract(j.value, '$.recordId')
+      FROM documents d, json_each(d.document, '$.tasks') j
   ),
   neighborhood_rows(capture_id, document) AS (
     SELECT n.capture_id, j.value FROM transcript_map_neighborhood_inputs n,
@@ -82,6 +92,12 @@ const TAINT = `WITH RECURSIVE
     SELECT 'record', r.id, 'session', j.value FROM records r,
       json_tree(CASE WHEN json_valid(r.payload) THEN r.payload ELSE '{}' END) j
       WHERE j.type = 'text' AND j.key IN ('session', 'selector', 'sessionRef')
+    UNION ALL
+    SELECT 'record', record_id, 'session', json_extract(task, '$.source.selector')
+      FROM citation_facts
+    UNION ALL
+    SELECT 'record', record_id, 'session', json_extract(task, '$.source.harness') || '/' ||
+      json_extract(task, '$.source.sourceId') FROM citation_facts
     UNION ALL
     SELECT 'record', record_id, 'run', run_id FROM assessments
     UNION ALL
@@ -119,7 +135,25 @@ const TAINT = `WITH RECURSIVE
     UNION ALL
     SELECT 'record', r.id, 'run', title.run_id FROM edges e
       JOIN records r ON r.id = e.from_id AND r.kind = e.from_kind
-      JOIN session_titles title ON title.selector = e.to_id WHERE e.to_kind = 'session'
+      JOIN session_titles title ON title.selector = e.to_id
+      JOIN sessions s ON s.selector=title.selector
+      WHERE e.to_kind = 'session' AND s.title_provenance='inferred' AND s.title=title.title
+    UNION ALL
+    SELECT 'run', d.run_id, 'run', j.value FROM documents d,
+      json_each(d.document, '$.review.titleRunIds') j
+    UNION ALL
+    SELECT 'run', d.run_id, 'run', title.run_id FROM documents d
+      JOIN runs consumer ON consumer.id=d.run_id
+      JOIN edges e ON e.from_id=json_extract(d.document,'$.review.recordId') AND e.to_kind='session'
+      JOIN session_titles title ON title.selector=e.to_id
+      WHERE json_type(d.document,'$.review.titleRunIds') IS NULL
+        AND consumer.started_at>=title.inferred_at
+    UNION ALL
+    SELECT 'run', d.run_id, 'run', title.run_id FROM documents d,
+      json_tree(d.document) j JOIN session_titles title
+        ON title.selector=coalesce(json_extract(CASE WHEN j.type='object' THEN j.value ELSE '{}' END,'$.selector'),
+          json_extract(CASE WHEN j.type='object' THEN j.value ELSE '{}' END,'$.sessionRef'))
+      WHERE j.type='object' AND json_extract(CASE WHEN j.type='object' THEN j.value ELSE '{}' END,'$.title')=title.title
     UNION ALL
     SELECT 'entity', id, 'run', created_by FROM entities
     UNION ALL
@@ -264,6 +298,7 @@ const TAINT = `WITH RECURSIVE
     SELECT 'capture', n.capture_id, 'run', title.run_id FROM neighborhood_rows n
       JOIN session_titles title ON title.selector = json_extract(n.document, '$.value.selector')
       WHERE json_extract(n.document, '$.kind') = 'sources'
+        AND json_extract(n.document,'$.value.title')=title.title
     UNION ALL
     SELECT 'capture', n.capture_id, 'entity', e.id FROM neighborhood_rows n,
       json_tree(n.document, '$.value') j JOIN entities e ON e.id = j.value
@@ -272,20 +307,58 @@ const TAINT = `WITH RECURSIVE
     SELECT 'capture', n.capture_id, 'question', q.id FROM neighborhood_rows n,
       json_tree(n.document, '$.value') j JOIN questions q ON q.id = j.value
       WHERE j.type = 'text' AND j.key IN ('id', 'questionId', 'question_id', 'fromId', 'toId')
+    UNION ALL
+    SELECT 'capture', capture_id, json_extract(document, '$.value.fromKind'),
+      json_extract(document, '$.value.fromId') FROM neighborhood_rows
+    UNION ALL
+    SELECT 'capture', capture_id, json_extract(document, '$.value.toKind'),
+      json_extract(document, '$.value.toId') FROM neighborhood_rows
+    UNION ALL
+    SELECT 'record', r.id, json_extract(j.value, '$.kind'), json_extract(j.value, '$.id')
+      FROM records r, json_tree(CASE WHEN json_valid(r.payload) THEN r.payload ELSE '{}' END) j
+      WHERE j.type = 'object'
+    UNION ALL
+    SELECT 'question', q.id, json_extract(j.value, '$.kind'), json_extract(j.value, '$.id')
+      FROM questions q, json_tree(CASE WHEN json_valid(q.payload) THEN q.payload ELSE '{}' END) j
+      WHERE j.type = 'object'
+    UNION ALL
+    SELECT 'capture', n.capture_id, json_extract(j.value, '$.kind'), json_extract(j.value, '$.id')
+      FROM neighborhood_rows n, json_tree(n.document, '$.value') j WHERE j.type = 'object'
+  ),
+  normalized_dependencies(consumer_kind, consumer_id, input_kind, input_id) AS (
+    SELECT d.consumer_kind, d.consumer_id,
+      CASE WHEN d.input_kind IN ('session','run','record','root','capture','map','entity','question')
+        THEN d.input_kind
+        WHEN EXISTS (SELECT 1 FROM records r WHERE r.id=d.input_id AND r.kind=d.input_kind)
+          THEN 'record'
+        WHEN EXISTS (SELECT 1 FROM transcript_map_captures c WHERE c.id=d.input_id) THEN 'capture'
+        WHEN EXISTS (SELECT 1 FROM transcript_map_nodes n WHERE n.id=d.input_id)
+          OR EXISTS (SELECT 1 FROM transcript_map_summaries s WHERE s.id=d.input_id)
+          OR EXISTS (SELECT 1 FROM transcript_map_versions v WHERE v.id=d.input_id)
+          OR EXISTS (SELECT 1 FROM transcript_map_plans p WHERE p.id=d.input_id) THEN 'map'
+        ELSE d.input_kind END,
+      CASE WHEN d.input_kind='session'
+        AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.selector=d.input_id)
+        THEN coalesce((SELECT min(s.selector) FROM sessions s WHERE s.source_id=d.input_id
+          HAVING count(*)=1),d.input_id)
+        ELSE d.input_id END
+      FROM dependencies d
+      WHERE d.consumer_id IS NOT NULL AND d.input_id IS NOT NULL
   ),
   tainted(kind, id) AS (
     SELECT 'session', selector FROM session_exclusions
     UNION
     SELECT 'session', value FROM json_each(?)
     UNION
-    SELECT d.consumer_kind, d.consumer_id FROM dependencies d
+    SELECT d.consumer_kind, d.consumer_id FROM normalized_dependencies d
       JOIN tainted t ON t.kind = d.input_kind AND t.id = d.input_id
   )`;
 
 /** One shared closure for compound, fixed-alias readers of the retained ledger. */
-export function sourcePrivacyCTE(
-  additionalSelectors: readonly string[] = [],
-): { readonly sql: string; readonly params: readonly GuestSqlParam[] } {
+export function sourcePrivacyCTE(additionalSelectors: readonly string[] = []): {
+  readonly sql: string;
+  readonly params: readonly GuestSqlParam[];
+} {
   return { sql: TAINT, params: [JSON.stringify(additionalSelectors)] };
 }
 
@@ -295,8 +368,11 @@ async function readExcludedIds(
   additionalSelectors: readonly string[],
 ): Promise<ReadonlySet<string>> {
   const ids = new Set<string>();
-  if (additionalSelectors.length === 0 &&
-      (await db.query("SELECT 1 FROM session_exclusions LIMIT 1")).length === 0) return ids;
+  if (
+    additionalSelectors.length === 0 &&
+    (await db.query("SELECT 1 FROM session_exclusions LIMIT 1")).length === 0
+  )
+    return ids;
   let cursor = "";
   for (;;) {
     const rows = await db.query<{ id: string }>(
@@ -357,30 +433,50 @@ export function modelPrivacyGuard(
          OR (kind = 'record' AND id IN (SELECT value FROM json_each(?)))
          OR (kind = 'run' AND id IN (SELECT value FROM json_each(?)))
          OR (kind = 'capture' AND id IN (SELECT value FROM json_each(?))))`,
-    params: ["[]", JSON.stringify(selectors), JSON.stringify(recordIds),
-      JSON.stringify(runIds), JSON.stringify(captureIds)],
+    params: [
+      "[]",
+      JSON.stringify(selectors),
+      JSON.stringify(recordIds),
+      JSON.stringify(runIds),
+      JSON.stringify(captureIds),
+    ],
   };
 }
 
 /** A concurrent source-bearing reservation wins first or the immutable owner ban does. */
 export async function excludeSessionWhenQuiescent(
-  db: Database,
+  db: Pick<GuestDatabase, "query" | "batch">,
   selector: string,
   actorId: string,
   recordedAt: string,
 ): Promise<boolean> {
-  const inserted = await db.query(
-    `INSERT INTO session_exclusions(selector,actor_id,recorded_at)
+  const privacy = sourcePrivacyCondition("record", "record_terms.record_id");
+  const titlePrivacy = sourcePrivacyCondition("run", "title.run_id");
+  await db.batch([
+    {
+      sql: `INSERT INTO session_exclusions(selector,actor_id,recorded_at)
       SELECT ?,?,? WHERE NOT EXISTS (
         ${TAINT} SELECT 1 FROM tainted t JOIN runs r ON r.id = t.id
           WHERE t.kind = 'run' AND r.closure IS NULL)
       AND coalesce((SELECT json_extract(payload,'$.enabled') FROM policies ORDER BY seq DESC LIMIT 1),0) != 1
       AND NOT EXISTS (SELECT 1 FROM drains WHERE state IN ('running','closing'))
       AND (SELECT count(*) FROM session_exclusions) < ?
-      ON CONFLICT(selector) DO NOTHING RETURNING selector`,
-    [selector, actorId, recordedAt, JSON.stringify([selector]), MAX_SESSION_EXCLUSIONS],
-  );
-  return inserted.length !== 0 || await sessionIsExcluded(db, selector);
+      ON CONFLICT(selector) DO NOTHING`,
+      params: [selector, actorId, recordedAt, JSON.stringify([selector]), MAX_SESSION_EXCLUSIONS],
+    },
+    {
+      sql: `UPDATE sessions SET title=NULL,title_provenance=NULL
+      WHERE title_provenance='inferred' AND selector IN (
+        SELECT title.selector FROM session_titles title WHERE NOT (${titlePrivacy.sql}))`,
+      params: titlePrivacy.params,
+    },
+    {
+      // Keyword corpus statistics must stop depending on quarantined text in the same commit.
+      sql: `DELETE FROM record_terms WHERE NOT (${privacy.sql})`,
+      params: privacy.params,
+    },
+  ]);
+  return await sessionIsExcluded(db, selector);
 }
 
 /** Saved neighborhood input is indivisible: summaries may have consumed any of its rows. */

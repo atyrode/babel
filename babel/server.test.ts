@@ -933,6 +933,7 @@ test("the doors that ask a machine what it can run are lent that read, and no ot
     [ACTIONS.rehostSessions]: true,
     [ACTIONS.previewRecall]: true,
     [ACTIONS.installRecall]: true,
+    [ACTIONS.excludeSession]: true,
     [ACTIONS.startMapCatalog]: true,
     [ACTIONS.mapDrainStart]: true,
   };
