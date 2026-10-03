@@ -954,6 +954,15 @@ original coordinator deadlines were retained: eight affected catalog/mapping cas
 4.10 seconds total after lazy empty-ledger guards removed unnecessary recursive graph work.
 These are software-path proofs, not live-owner activation or a real conversation's audit.
 
+**Executed packed owner evidence — dev-01, 2026-10-03.** On a disposable engine at the pinned
+SDK, the dependency-ordered shipped bundles served actual owner HTTP actions. An unsettled
+synthetic source refused exclusion without recording a ban. After authoritative fixture
+settlement, exclusion withheld its uncited original and downstream records while an independent
+record remained readable and searchable; catalog and original rows were retained. The same ban
+and withholding survived owner disable/re-enable and actual packed replacement. The engine and
+private fixture home were removed. Recall stayed unconfigured and its request was denied:
+this proves packed hub containment and persistence, not native readiness or live provisioning.
+
 ### 9.2 Historical citation fact backfill (#431)
 
 The owner-only `citationPlan` door counts the citation positions in retained record revisions
