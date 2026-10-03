@@ -16,6 +16,7 @@ import {
   type RecallLocator,
   type RecallPolicy,
   type RecallRequest,
+  type TranscriptMapNativeRequest,
 } from "../contract.ts";
 import { claim } from "./adapters/index.ts";
 import { createRecallArchive, type RecallArchive } from "./recall-archive.ts";
@@ -116,6 +117,189 @@ async function fixture(
     await rm(home, { recursive: true, force: true });
   }
 }
+test(
+  "owner exclusions deny cold and warmed Recall and mapping proofs even at the highest class",
+  async () => {
+    const ownerPolicy: RecallPolicy = {
+      ...POLICY,
+      mappingClassId: "private",
+      subjects: [{ ...POLICY.subjects[0]!, sensitivity: 3 }],
+    };
+    const deniedTitle = "Synthetic excluded title";
+    const deniedContents =
+      HEADER.replace("Archived title", deniedTitle) + message("sharedneedle banneedle synthetic");
+    await fixture(
+      async ({ archive, repo, cacheDir, home, clock }) => {
+        const original = await archive.execute("private", search({ query: "sharedneedle" }));
+        expect(original.hits).toHaveLength(2);
+        const denied = original.hits.find((hit) => hit.title === deniedTitle)!.locator;
+        const allowed = original.hits.find((hit) => hit.title !== deniedTitle)!.locator;
+        const inventory = await archive.executeMap("private", {
+          kind: "map-inventory",
+          maxCaptures: 64,
+        });
+        const capture = inventory.entries.find(
+          (entry) => entry.capture.session === denied.session,
+        )!.capture;
+        const segmentation = TranscriptMapSegmentationSchema.parse({});
+        const planned = await archive.executeMap(
+          "private",
+          { kind: "map-plan", capture, segmentation, offset: 0, maxNodes: 128 },
+          true,
+        );
+        const proof = planned.plan!;
+        expect(planned.refusal).toBeNull();
+        const preview = await archive.execute(
+          "private",
+          request({ kind: "preview", locator: denied }),
+        );
+        expect(preview.refusal).toBeNull();
+        const cacheSlot = new Bun.CryptoHasher("sha256").update(denied.session).digest("hex");
+        await archive.close();
+        const policy = { ...ownerPolicy, excludedSessions: [denied.session] };
+        for (const warm of [false, true]) {
+          const restricted = await createRecallArchive({
+            repo,
+            cacheDir: warm ? cacheDir : join(home, "cold-denial"),
+            temporaryDir: home,
+            policy,
+            now: () => clock.now,
+          });
+          const dumps = spyOn(repo, "dumpTo");
+          const snapshots = spyOn(repo, "snapshots");
+          const listings = spyOn(repo, "lsTo");
+          const files = spyOn(Bun, "file");
+          try {
+            for (const kind of ["show", "preview"] as const) {
+              const result = await restricted.execute(
+                "private",
+                request({ kind, locator: denied }),
+              );
+              expect(RecallResultSchema.parse(result).refusal).toBe("excluded");
+              expect(result.hits).toEqual([]);
+              expect(result.preview).toBeUndefined();
+              expect(result.cost).toMatchObject({
+                fetchedFiles: 0,
+                cacheHits: 0,
+                replayedBytes: 0,
+                indexedFiles: 0,
+              });
+              for (const value of [denied.session, denied.path, deniedTitle, "banneedle"])
+                expect(JSON.stringify(result)).not.toContain(value);
+            }
+            const nativeRequests: TranscriptMapNativeRequest[] = [
+              { kind: "map-plan", capture, segmentation, offset: 0, maxNodes: 128 },
+              {
+                kind: "map-node",
+                source: proof.header.source,
+                segmentation,
+                nodeId: proof.nodes[0]!.id,
+              },
+              {
+                kind: "map-span",
+                source: proof.header.source,
+                span: proof.nodes[0]!.span,
+                maxBytes: 8192,
+              },
+              {
+                kind: "map-preview",
+                source: proof.header.source,
+                span: proof.nodes[0]!.span,
+              },
+            ];
+            for (const nativeRequest of nativeRequests) {
+              const result = await restricted.executeMap("private", nativeRequest, true);
+              expect(result.refusal).toBe("excluded");
+              expect(result.accesses).toEqual([]);
+              expect(result.entries).toEqual([]);
+              expect(result.plan).toBeUndefined();
+              expect(result.span).toBeUndefined();
+              expect(result.preview).toBeUndefined();
+              expect(result.context).toBeUndefined();
+              expect(result.cost).toMatchObject({
+                fetchedFiles: 0,
+                cacheHits: 0,
+                replayedBytes: 0,
+              });
+              for (const value of [denied.session, denied.path, deniedTitle, "banneedle"])
+                expect(JSON.stringify(result)).not.toContain(value);
+            }
+            expect(snapshots).not.toHaveBeenCalled();
+            expect(listings).not.toHaveBeenCalled();
+            expect(dumps).not.toHaveBeenCalled();
+            const stalePreview = await restricted.execute(
+              "private",
+              request({ kind: "session", previewId: preview.preview!.previewId, offset: 0 }),
+            );
+            expect(stalePreview.hits).toEqual([]);
+            expect(stalePreview.refusal).toBe("preview-expired");
+            const found = await restricted.execute("private", search({ query: "sharedneedle" }));
+            expect(found.refusal).toBeNull();
+            expect(found.coverage).toEqual({
+              eligible: 1,
+              indexed: 1,
+              complete: true,
+              overBound: 0,
+            });
+            expect(found.matches).toBe(1);
+            expect(found.hits.map((hit) => hit.locator.session)).toEqual([allowed.session]);
+            expect(found.cost.fetchedFiles).toBe(warm ? 0 : 1);
+            const onlyDenied = await restricted.execute(
+              "private",
+              search({ query: "banneedle", maxFetchBytes: 0 }),
+            );
+            expect(onlyDenied.matches).toBe(0);
+            expect(onlyDenied.hits).toEqual([]);
+            const mapped = await restricted.executeMap("private", {
+              kind: "map-inventory",
+              maxCaptures: 64,
+            });
+            expect(mapped.entries.map((entry) => entry.capture.session)).toEqual([allowed.session]);
+            const authorized = await restricted.executeMap("private", {
+              kind: "map-authorize",
+              captures: [capture, mapped.entries[0]!.capture],
+            });
+            expect(authorized.accesses.map((access) => access.captureId)).toEqual([
+              mapped.entries[0]!.capture.id,
+            ]);
+            const shown = await restricted.execute(
+              "private",
+              request({ kind: "show", locator: allowed }),
+            );
+            expect(shown.refusal).toBeNull();
+            expect(shown.hits[0]!.excerpt.text).toContain("siblingneedle");
+            expect(dumps.mock.calls.some(([, path]) => path === denied.path)).toBe(false);
+            expect(files.mock.calls.some(([path]) => String(path).includes(cacheSlot))).toBe(false);
+            for (const result of [found, onlyDenied, mapped, authorized, shown])
+              for (const value of [denied.session, denied.path, deniedTitle, "banneedle"])
+                expect(JSON.stringify(result)).not.toContain(value);
+          } finally {
+            files.mockRestore();
+            listings.mockRestore();
+            snapshots.mockRestore();
+            dumps.mockRestore();
+            await restricted.close();
+          }
+        }
+        let retained = "";
+        await repo.dumpTo(
+          denied.snapshot,
+          denied.path,
+          (chunk) => {
+            retained += new TextDecoder().decode(chunk);
+          },
+          { maxBytes: Buffer.byteLength(deniedContents) },
+        );
+        expect(retained).toBe(deniedContents);
+      },
+      {
+        contents: [deniedContents, HEADER + message("sharedneedle siblingneedle synthetic")],
+        policy: ownerPolicy,
+      },
+    );
+  },
+  TIMEOUT,
+);
 
 test(
   "cold and warm search use immutable redacted archive bytes, never changed live sources",
@@ -906,6 +1090,38 @@ test(
       const recovered = await archive.execute("public", search({ maxFetchBytes: 0 }));
       expect(recovered.refusal).toBeNull();
       expect(recovered.matches).toBe(1);
+    });
+  },
+  TIMEOUT,
+);
+
+test(
+  "a transient lazy index initialization failure does not poison subsequent Recall requests",
+  async () => {
+    await fixture(async ({ archive }) => {
+      const execute = Database.prototype.exec;
+      const fault = spyOn(Database.prototype, "exec").mockImplementation(function (
+        this: Database,
+        ...args: Parameters<Database["exec"]>
+      ) {
+        if (args[0].startsWith("PRAGMA busy_timeout"))
+          throw Object.assign(new Error("PRIVATE synthetic initialization cause"), {
+            code: "SQLITE_BUSY",
+          });
+        return execute.apply(this, args);
+      });
+      try {
+        const refused = await archive.execute("public", search());
+        expect(refused.refusal).toBe("index-busy");
+        expect(refused.hits).toEqual([]);
+        expect(JSON.stringify(refused)).not.toContain("PRIVATE");
+      } finally {
+        fault.mockRestore();
+      }
+      const recovered = await archive.execute("public", search());
+      expect(recovered.refusal).toBeNull();
+      expect(recovered.hits[0]?.excerpt.text).toContain("needle");
+      expect(recovered.coverage.complete).toBe(true);
     });
   },
   TIMEOUT,

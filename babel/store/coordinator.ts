@@ -80,6 +80,7 @@ import {
 } from "./analysis.ts";
 import { transcriptMaps } from "./transcript-maps.ts";
 import type { ReviewReadingSnapshot } from "../server/review-readings.ts";
+import { readExcludedRecordIds } from "./source-privacy.ts";
 
 /** The store handle this reads through; `BabelStore` satisfies it. */
 export interface CoordinatorStore {
@@ -1594,15 +1595,17 @@ export function coordinator(
     gaps: Gap[];
     readings: ReviewReadingSnapshot | undefined;
   }> {
-    const [records, status, ruling, filed, stance, reviews, claims] = await Promise.all([
-      heads(),
-      statuses(),
-      rulings(),
-      filings(),
-      stances(moment),
-      roleFacts(),
-      claimFacts(moment),
-    ]);
+    const [records, status, ruling, filed, stance, reviews, claims, excludedRecords] =
+      await Promise.all([
+        heads(),
+        statuses(),
+        rulings(),
+        filings(),
+        stances(moment),
+        roleFacts(),
+        claimFacts(moment),
+        readExcludedRecordIds(db),
+      ]);
 
     const candidates: Candidate[] = [];
     const gaps: Gap[] = [];
@@ -1611,6 +1614,15 @@ export function coordinator(
 
     for (const head of records) {
       if ((ROLES_FOR_KIND[head.kind] ?? []).length === 0) continue;
+      if (excludedRecords.has(head.id)) {
+        gaps.push({
+          recordId: head.id,
+          role: "",
+          reason: "excluded",
+          detail: "source privacy withholds this whole derived record",
+        });
+        continue;
+      }
       const filing = filed.get(head.rootId) ?? { filed: false, topics: [] };
       const topics = filing.topics;
 
@@ -2140,15 +2152,17 @@ export function coordinator(
     );
     const route = policy.review;
     if (stages.length === 0 || route === undefined) return { candidates: [], gaps: [] };
-    const [records, filed, stance, status, ruling, claims, reviews] = await Promise.all([
-      heads(),
-      filings(),
-      stances(moment),
-      statuses(),
-      rulings(),
-      claimFacts(moment),
-      roleFacts(),
-    ]);
+    const [records, filed, stance, status, ruling, claims, reviews, excludedRecords] =
+      await Promise.all([
+        heads(),
+        filings(),
+        stances(moment),
+        statuses(),
+        rulings(),
+        claimFacts(moment),
+        roleFacts(),
+        readExcludedRecordIds(db),
+      ]);
     const recordsById = new Map(records.map((head) => [head.id, head]));
     /*
       A BRIEF IS CHOSEN TO FIT THE PROMPT IT WILL BE POSTED IN. The stage's recipe, whole, and
@@ -2181,6 +2195,15 @@ export function coordinator(
     const gaps: Gap[] = [];
     const attention = new Map<string, number>();
     for (const head of records) {
+      if (excludedRecords.has(head.id)) {
+        gaps.push({
+          recordId: head.id,
+          role: "",
+          reason: "excluded",
+          detail: "source privacy withholds this whole derived record",
+        });
+        continue;
+      }
       const topics = filed.get(head.rootId)?.topics ?? [];
       const blocked = topics.find(
         (topic) => WITHHOLDING[stance.get(topic) ?? "working"] !== undefined,

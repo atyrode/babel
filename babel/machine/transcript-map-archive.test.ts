@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -105,6 +105,129 @@ async function fixture(source?: string) {
     },
   };
 }
+test("an excluded retained selector denies cached map catalog and source material preparation", async () => {
+  const f = await fixture();
+  try {
+    const inventory = await f.archive.executeMap("private", {
+      kind: "map-inventory",
+      maxCaptures: 64,
+    });
+    const capture = inventory.entries.find((entry) =>
+      entry.capture.snapshot.startsWith("a"),
+    )!.capture;
+    const segmentation = TranscriptMapSegmentationSchema.parse({});
+    const planned = await f.archive.executeMap(
+      "private",
+      { kind: "map-plan", capture, segmentation, offset: 0, maxNodes: 128 },
+      true,
+    );
+    const source = planned.plan!.header.source;
+    const leaf = planned.plan!.nodes.find((node) => node.children.length === 0)!;
+    const oldPreview = await f.archive.executeMap(
+      "private",
+      { kind: "map-preview", source, span: leaf.span },
+      true,
+    );
+    expect(oldPreview.refusal).toBeNull();
+    const dumps = f.dumps();
+    await f.archive.close();
+    const selectorHash = new Bun.CryptoHasher("sha256").update(capture.session).digest("hex");
+    for (const warm of [false, true]) {
+      const restricted = await createRecallArchive({
+        repo: f.repo,
+        cacheDir: warm ? f.directory : join(f.directory, "cold-exclusion"),
+        temporaryDir: f.directory,
+        now: () => f.clock.now,
+        policy: {
+          ...policy,
+          excludedSessions: [capture.session],
+          subjects: [{ ...policy.subjects[0]!, sensitivity: 3 }],
+        },
+      });
+      const files = spyOn(Bun, "file");
+      try {
+        const client = (request: TranscriptMapNativeRequest) =>
+          restricted.executeMap("private", request, true);
+        const filtered = await client({ kind: "map-inventory", maxCaptures: 64 });
+        expect(filtered.refusal).toBeNull();
+        expect(filtered.entries).toEqual([]);
+        expect(filtered.context?.eligibleCaptures).toBe(0);
+        const authorized = await client({ kind: "map-authorize", captures: [capture] });
+        expect(authorized.accesses).toEqual([]);
+        const planRequest = {
+          kind: "map-plan" as const,
+          capture,
+          segmentation,
+          offset: 0,
+          maxNodes: 128,
+        };
+        const deniedPlan = await client(planRequest);
+        expect(deniedPlan.refusal).toBe("excluded");
+        expect(deniedPlan.plan).toBeUndefined();
+        expect(deniedPlan.context).toBeUndefined();
+        await expect(
+          mapCatalog(
+            {
+              runId: "synthetic-excluded-catalog",
+              sourceMachineId: "synthetic-source-machine",
+              executorMachineId: "synthetic-executor-machine",
+              request: planRequest,
+            },
+            directorySink(join(f.directory, `excluded-catalog-${warm}`)),
+            client,
+          ),
+        ).rejects.toBeInstanceOf(Error);
+        const material = join(f.directory, `excluded-material-${warm}`);
+        await expect(
+          mapPrepare(
+            {
+              runId: "synthetic-excluded-material",
+              sourceMachineId: "synthetic-source-machine",
+              executorMachineId: "synthetic-executor-machine",
+              source,
+              nodeId: leaf.id,
+              segmentation,
+              expectedPolicyDigest: inventory.context!.policyDigest,
+              mode: "generate",
+              children: [],
+            },
+            directorySink(join(f.directory, `excluded-output-${warm}`)),
+            materialSink(material),
+            client,
+          ),
+        ).rejects.toBeInstanceOf(Error);
+        expect(await Bun.file(join(material, "transcript-map.json")).exists()).toBe(false);
+        const oldPage = await client({
+          kind: "map-page",
+          previewId: oldPreview.preview!.previewId,
+          offset: 0,
+          maxBytes: 32768,
+        });
+        expect(oldPage.refusal).toBe("preview-expired");
+        expect(oldPage.page).toBeUndefined();
+        const raw = await restricted.execute(
+          "private",
+          RecallRequestSchema.parse({ kind: "search", query: "historicalneedle" }),
+        );
+        expect(raw.coverage).toEqual({ eligible: 0, indexed: 0, complete: true, overBound: 0 });
+        expect(raw.matches).toBe(0);
+        expect(raw.hits).toEqual([]);
+        expect(f.dumps()).toBe(dumps);
+        expect(files.mock.calls.some(([path]) => String(path).includes(selectorHash))).toBe(false);
+        for (const result of [filtered, authorized, deniedPlan, oldPage, raw]) {
+          expect(JSON.stringify(result)).not.toContain(capture.session);
+          expect(JSON.stringify(result)).not.toContain(capture.path);
+          expect(JSON.stringify(result)).not.toContain("historicalneedle");
+        }
+      } finally {
+        files.mockRestore();
+        await restricted.close();
+      }
+    }
+  } finally {
+    await f.close();
+  }
+});
 
 test("mapping enumerates retained history while raw Recall stays newest-only", async () => {
   const f = await fixture();

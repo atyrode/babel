@@ -12,6 +12,7 @@ import {
   type CitationBackfillRow,
   type Receipt,
 } from "../contract.ts";
+import { PREPARE_REFUSALS } from "../contract.ts";
 import { checkQuote } from "../server/engine/citations.ts";
 import { babelSnapshot, capturesOf } from "./archive-listing.ts";
 import { inspectArchivedCitation } from "./citation-facts.ts";
@@ -158,9 +159,18 @@ export async function citationBackfill(
   archive: () => Promise<Pick<Repo, "snapshots" | "lsTo" | "dumpTo">>,
 ): Promise<Receipt> {
   const startedAt = new Date().toISOString();
+  const excluded = new Set(input.excludedSessions ?? []);
+  const forbidden = (task: CitationFactTask): boolean =>
+    task.source !== null &&
+    (excluded.has(task.source.selector) ||
+      excluded.has(`${task.source.harness}/${task.source.sourceId}`));
   let repo: Pick<Repo, "snapshots" | "lsTo" | "dumpTo"> | null = null;
   let snapshots: readonly Snapshot[] = [];
-  if (input.tasks.some((task) => task.unavailable === null && task.source !== null)) {
+  if (
+    input.tasks.some(
+      (task) => task.unavailable === null && task.source !== null && !forbidden(task),
+    )
+  ) {
     try {
       repo = await archive();
       snapshots = await repo.snapshots([], { maxEntries: SNAPSHOT_LIMIT });
@@ -176,8 +186,9 @@ export async function citationBackfill(
     unavailable: 0,
   };
   for (const task of input.tasks) {
-    const result =
-      task.unavailable !== null || task.source === null
+    const result = forbidden(task)
+      ? unavailable(task, PREPARE_REFUSALS.excluded)
+      : task.unavailable !== null || task.source === null
         ? unavailable(task, task.unavailable ?? "invalid-source")
         : repo === null
           ? unavailable(task, "archive-unavailable")

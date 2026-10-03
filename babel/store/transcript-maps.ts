@@ -53,6 +53,11 @@ import {
   neighborhoodMapSource,
   neighborhoodRevision,
 } from "./neighborhood-map-source.ts";
+import {
+  mappingSourceIsExcluded,
+  sourcePrivacyCTE,
+  sourcePrivacyCondition,
+} from "./source-privacy.ts";
 
 /** A terminal native proof refusal, unlike an interrupted database projection. */
 export class TranscriptMapProjectionRefusal extends Error {}
@@ -992,6 +997,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   }
   async function sourceCurrent(details: TranscriptMapWorkDetails): Promise<boolean> {
     const source = details.plan.source;
+    if (await mappingSourceIsExcluded(db, source)) return false;
     if (!("kind" in source)) return true;
     const clock = await sourceClock();
     const heads = await db.query<{ revision: number }>(
@@ -1012,6 +1018,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   }
 
   async function materialText(details: TranscriptMapWorkDetails): Promise<string | null> {
+    if (await mappingSourceIsExcluded(db, details.plan.source))
+      throw new TranscriptMapProjectionRefusal("Navigation source is excluded.");
     if (!("kind" in details.plan.source) || details.node.children.length > 0) return null;
     const rows = await db.query<{ text: string }>(
       "SELECT text FROM transcript_map_neighborhood_inputs WHERE capture_id=?",
@@ -1103,10 +1111,12 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     const policy = TranscriptMapPolicySchema.parse(raw);
     const key = contract(policy);
     const cap = bound(limit, MAX_SCAN);
+    const privacy = sourcePrivacyCondition("capture", "p.capture_id");
+    const closure = sourcePrivacyCTE();
     await refreshNeighborhoods(policy, now);
     const plans = await db.query<{ id: string }>(
       `SELECT p.id FROM transcript_map_plans p
-      WHERE p.complete=1 AND (EXISTS (SELECT 1 FROM transcript_map_access a
+      WHERE p.complete=1 AND ${privacy.sql} AND (EXISTS (SELECT 1 FROM transcript_map_access a
         JOIN transcript_map_captures owned ON owned.id=a.capture_id AND owned.source_machine_id=a.machine_id
         WHERE a.capture_id=p.capture_id AND a.machine_id=?)
         OR EXISTS (SELECT 1 FROM transcript_map_neighborhood_heads nh
@@ -1118,6 +1128,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           AND v.generation=(SELECT coalesce(max(generation),0) FROM transcript_map_regenerations WHERE capture_id=p.capture_id))
       ORDER BY p.created_at,p.id LIMIT ?`,
       [
+        ...privacy.params,
         policy.sourceMachineId,
         policy.sourceMachineId,
         json(policy.segmentation),
@@ -1136,10 +1147,11 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
        JOIN transcript_map_versions v ON v.id=h.version_id JOIN transcript_map_plans p ON p.id=v.plan_id
        JOIN transcript_map_nodes n ON n.plan_id=p.id
        WHERE h.machine_id=? AND v.contract_digest=? AND p.complete=1 AND ${liveAccess}
-       AND (v.rowid,n.rowid)>(?,?) ORDER BY v.rowid,n.rowid LIMIT ?`,
+       AND ${privacy.sql} AND (v.rowid,n.rowid)>(?,?) ORDER BY v.rowid,n.rowid LIMIT ?`,
       [
         policy.sourceMachineId,
         key,
+        ...privacy.params,
         cursor[0]?.version_cursor ?? 0,
         cursor[0]?.node_cursor ?? 0,
         cap,
@@ -1163,10 +1175,11 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       );
       let boundKey = binding[0]?.input_key;
       const reusable = await db.query<{ id: string }>(
-        `SELECT s.id FROM transcript_map_summaries s WHERE s.reuse_key=?
+        `${closure.sql} SELECT s.id FROM transcript_map_summaries s WHERE s.reuse_key=?
+        AND s.id NOT IN (SELECT id FROM tainted WHERE kind = 'map')
         AND NOT EXISTS (SELECT 1 FROM transcript_map_reviews r WHERE r.summary_id=s.id AND r.verdict IN ('correct','reject'))
         ORDER BY CAST(json_extract(s.payload,'$.correctionDepth') AS INTEGER) DESC,s.created_at DESC,s.id DESC LIMIT 1`,
-        [reuseKey],
+        [...closure.params, reuseKey],
       );
       if (reusable[0] && reusable[0].id !== base?.id) {
         await db.run(
@@ -1258,13 +1271,21 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     limit = 32,
   ): Promise<TranscriptMapWork[]> {
     const policy = TranscriptMapPolicySchema.parse(raw);
+    const privacy = sourcePrivacyCondition("capture", "p.capture_id");
     const rows = await db.query<{ id: string }>(
       `SELECT w.id FROM transcript_map_work w JOIN transcript_map_versions v ON v.id=w.version_id
       JOIN transcript_map_heads h ON h.version_id=v.id JOIN transcript_map_plans p ON p.id=v.plan_id
       WHERE v.machine_id=? AND v.contract_digest=? AND w.state='queued' AND w.ready_at<=? AND w.attempt<=?
-      AND p.complete=1 AND ${liveAccess}
+      AND p.complete=1 AND ${liveAccess} AND ${privacy.sql}
       ORDER BY w.ready_at,w.created_at,w.id LIMIT ?`,
-      [policy.sourceMachineId, contract(policy), now, policy.maxAttempts, MAX_SCAN],
+      [
+        policy.sourceMachineId,
+        contract(policy),
+        now,
+        policy.maxAttempts,
+        ...privacy.params,
+        MAX_SCAN,
+      ],
     );
     const result: TranscriptMapWork[] = [];
     for (const row of rows) {
@@ -1702,6 +1723,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     input: { query?: string; captureId?: string; versionId?: string; nodeId?: string },
     limit = TRANSCRIPT_MAP_MAX_CAPTURES,
   ): Promise<TranscriptMapCapture[]> {
+    const privacy = sourcePrivacyCondition("capture", "c.id");
+    const exactPrivacy = sourcePrivacyCondition("capture", "transcript_map_captures.id");
     if (
       input.captureId &&
       input.query === undefined &&
@@ -1710,8 +1733,9 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     ) {
       const rows = await db.query<{ payload: string }>(
         `SELECT payload FROM transcript_map_captures WHERE id=? AND source_machine_id=?
-          AND NOT EXISTS (SELECT 1 FROM transcript_map_neighborhood_inputs i WHERE i.capture_id=transcript_map_captures.id)`,
-        [input.captureId, machineId],
+          AND NOT EXISTS (SELECT 1 FROM transcript_map_neighborhood_inputs i WHERE i.capture_id=transcript_map_captures.id)
+          AND ${exactPrivacy.sql}`,
+        [input.captureId, machineId, ...exactPrivacy.params],
       );
       return rows.map((row) => TranscriptMapCaptureSchema.parse(JSON.parse(row.payload)));
     }
@@ -1729,6 +1753,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       }
       WHERE v.machine_id=? AND c.source_machine_id=v.machine_id AND p.complete=1
       AND NOT EXISTS (SELECT 1 FROM transcript_map_neighborhood_inputs i WHERE i.capture_id=c.id)
+      AND ${privacy.sql}
       ${
         match
           ? `AND transcript_map_terms MATCH ?
@@ -1742,6 +1767,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       ORDER BY c.id LIMIT ?`,
       [
         machineId,
+        ...privacy.params,
         ...(match ? [match] : []),
         ...(input.captureId ? [input.captureId] : []),
         ...(input.versionId ? [input.versionId] : []),
@@ -1861,16 +1887,18 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     const result: NeighborhoodResult = { ...records, summary: empty("missing") };
     try {
       if (before === null) throw new Error("Navigation source freshness is unavailable.");
+      const privacy = sourcePrivacyCondition("capture", "p.capture_id");
       const revision = neighborhoodRevision(records);
       const selected = await db.query<{ plan_id: string; version_id: string }>(
         `SELECT p.id plan_id,v.id version_id FROM transcript_map_neighborhood_inputs i
           JOIN transcript_map_plans p ON p.capture_id=i.capture_id
           JOIN transcript_map_heads h ON h.plan_id=p.id JOIN transcript_map_versions v ON v.id=h.version_id
           WHERE i.query_key=? AND p.complete=1
+          AND ${privacy.sql}
           ORDER BY EXISTS (SELECT 1 FROM transcript_map_bindings b WHERE b.version_id=v.id
             AND NOT EXISTS (SELECT 1 FROM transcript_map_reviews r WHERE r.summary_id=b.summary_id AND r.verdict IN ('correct','reject'))) DESC,
             (json_extract(p.payload,'$.source.revision')=?) DESC,v.created_at DESC,v.rowid DESC LIMIT 1`,
-        [neighborhoodDigest(query), revision],
+        [neighborhoodDigest(query), ...privacy.params, revision],
       );
       const selectedRow = selected[0];
       if (selectedRow) {
@@ -1946,6 +1974,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           summaryIds: result.summary.views.map((view) => view.summary.id),
           now: new Date().toISOString(),
         });
+      if (result.summary.source && (await mappingSourceIsExcluded(db, result.summary.source)))
+        result.summary = empty("unavailable");
     } catch {
       result.summary = empty("unavailable");
     }
@@ -1960,10 +1990,12 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   async function neighborhoodSource(
     query: NeighborhoodSourceQuery,
   ): Promise<NeighborhoodSourceResult> {
+    const privacy = sourcePrivacyCondition("capture", "c.id");
     const rows = await db.query<{ payload: string; text: string }>(
       `SELECT c.payload,i.text FROM transcript_map_neighborhood_inputs i
-        JOIN transcript_map_captures c ON c.id=i.capture_id WHERE i.capture_id=?`,
-      [query.sourceId],
+        JOIN transcript_map_captures c ON c.id=i.capture_id
+        WHERE i.capture_id=? AND ${privacy.sql}`,
+      [query.sourceId, ...privacy.params],
     );
     const found = rows[0];
     if (!found) return { source: null, rows: [], nextOffset: null, omittedRecords: 0 };
@@ -1992,6 +2024,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       result.rows.push(row);
     }
     result.nextOffset = at < lines.length ? at : null;
+    if (await mappingSourceIsExcluded(db, source))
+      return { source: null, rows: [], nextOffset: null, omittedRecords: 0 };
     return result;
   }
 

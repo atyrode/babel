@@ -339,8 +339,10 @@ test("summary and exact-source pages respect byte bounds and missing/unavailable
     NeighborhoodSourceQuerySchema.parse({ sourceId: `tmcap_${"0".repeat(64)}` }),
   );
   expect(absent.source).toBeNull();
-  await db.db.run("DROP TABLE transcript_map_terms");
-  await db.db.run("DROP TABLE transcript_map_neighborhood_inputs");
+  // Lose optional summary routing, not the retained source provenance privacy still needs.
+  await db.db.run(
+    "ALTER TABLE transcript_map_neighborhood_inputs RENAME COLUMN query_key TO unavailable_query_key",
+  );
   const unavailable = await db.store.neighborhood(tight);
   expect(unavailable.summary.state).toBe("unavailable");
   expect(unavailable.facts[0]?.status?.state).toBe("disputed");

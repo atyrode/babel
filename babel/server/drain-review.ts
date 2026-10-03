@@ -4,6 +4,7 @@ import { CodeProfileSchema, ENGINE_REFUSALS, LaunchInputSchema, OPERATIONS } fro
 import type { LaunchIdentity, Started } from "../doors/launch.ts";
 import type { Policy, ReviewAssignment } from "../store/coordinator.ts";
 import { directDrainAdmission, finishDirectLaunch, type DrainRow } from "../store/drains.ts";
+import { modelPrivacyGuard } from "../store/source-privacy.ts";
 import {
   finishClosedReview,
   projectReview,
@@ -171,6 +172,7 @@ export async function startDrainReview(
     const refinementDepth =
       typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : 0;
     const guard = admission(row, identity.runId, policy.version, deps.now());
+    const privacy = modelPrivacyGuard([], [assignment.recordId], projection.titleRunIds);
     const claimed = await deps.coordinator
       .claim({
         assignment,
@@ -179,17 +181,20 @@ export async function startDrainReview(
         now: deps.now(),
         publication: {
           guard: {
-            sql: `${guard.sql} AND NOT EXISTS (SELECT 1 FROM runs WHERE id=?)`,
-            params: [...guard.params, identity.runId],
+            sql: `${guard.sql} AND ${privacy.sql} AND NOT EXISTS (SELECT 1 FROM runs WHERE id=?)`,
+            params: [...guard.params, ...privacy.params, identity.runId],
           },
           statements(fence): readonly SqlStatement[] {
-            const review = preparation(
-              assignment,
-              fence,
-              recipe,
-              refinementDepth,
-              route.maxRefinementDepth ?? 2,
-            );
+            const review: ReviewPreparation = {
+              ...preparation(
+                assignment,
+                fence,
+                recipe,
+                refinementDepth,
+                route.maxRefinementDepth ?? 2,
+              ),
+              titleRunIds: projection.titleRunIds,
+            };
             const prompt = composeReviewPrompt({
               assignment,
               preparation: review,
@@ -289,6 +294,12 @@ export async function startDrainReview(
   if (intent.chain === null ? !published : intent.chain !== deps.chain)
     return { refused: "review posting waits for its original account chain", pending: true };
   const review = reviewPreparation(document(run.preparation))!;
+  const privacy = modelPrivacyGuard([], [review.recordId], [run.id]);
+  if ((await deps.store.db.query(`SELECT 1 WHERE NOT (${privacy.sql})`, privacy.params)).length > 0)
+    return {
+      refused: "session_excluded: source privacy blocks review posting; reservation stays held",
+      pending: true,
+    };
   const guard = admission(row, run.id, intent.policyVersion, deps.now());
   const allowed = await deps.store.db.query(
     `SELECT 1 WHERE ${guard.sql}
@@ -392,6 +403,14 @@ export async function stopDrainReview(
       return {
         cancelled: false,
         notes: [`${runId}: unresolved review posting needs its original account chain`],
+      };
+    const privacy = modelPrivacyGuard([], [], [run.id]);
+    if (
+      (await deps.store.db.query(`SELECT 1 WHERE NOT (${privacy.sql})`, privacy.params)).length > 0
+    )
+      return {
+        cancelled: false,
+        notes: ["source privacy blocks review retirement; reservation stays held"],
       };
     const retired = await deps.engine.runSession({ ...intent.request, adoptOnly: true });
     if (!retired.ok) {

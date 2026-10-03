@@ -400,6 +400,8 @@ export async function prepare(
     records: 0,
     /** Babel's own run transcripts a content query left out of its eligible set. */
     agent: 0,
+    /** Owner-excluded captures rejected before any source read. */
+    excluded: 0,
     /** Spans the secret preflight replaced, over every session in the scope (#339). */
     redacted: 0,
     /**
@@ -494,18 +496,23 @@ export async function prepare(
   try {
     const offered = captures(input);
     counts.offered = offered.length;
-    const invalid = offered.find(
+    const excluded = new Set(input.excludedSessions ?? []);
+    const permitted = offered.filter((capture) => !excluded.has(capture.ref.selector));
+    counts.excluded = offered.length - permitted.length;
+    if (input.query === undefined && counts.excluded > 0) {
+      throw new Refused(PREPARE_REFUSALS.excluded, "the named scope includes an excluded session");
+    }
+    const invalid = permitted.find(
       (capture) => !validSourceId(capture.ref.sourceId) || capture.ref.primaryPath.includes("\0"),
     );
     if (invalid !== undefined) {
       throw new Refused(null, `${invalid.ref.selector} is not a session a preparation can name`);
     }
-    // A capture NAMED for a scope and excluded from it is refused, never dropped: what was
-    // asked for is not what would be prepared. A content query only offers candidates, so in a
-    // query Babel's own transcripts are left out of what is eligible and counted instead.
+    // Explicit scopes refuse whole; query candidates may be omitted before any cache or fetch.
+    // Own-run opt-in grants no authority over owner-excluded sessions.
     const own = (capture: Capture): boolean =>
       !input.agentSessions && babelOwnLog(capture.ref.primaryPath);
-    const named = input.query === undefined ? offered.find(own) : undefined;
+    const named = input.query === undefined ? permitted.find(own) : undefined;
     if (named !== undefined) {
       throw new Refused(
         null,
@@ -513,11 +520,15 @@ export async function prepare(
           `the operator's work does not read`,
       );
     }
-    const eligible = offered.filter((capture) => !own(capture));
-    counts.agent = offered.length - eligible.length;
+    const eligible = permitted.filter((capture) => !own(capture));
+    counts.agent = permitted.length - eligible.length;
     if (offered.length === 0) {
       closure = "skipped";
       reason = "no capture was offered to prepare";
+    } else if (input.query !== undefined && eligible.length === 0) {
+      closure = "skipped";
+      reason = "no eligible session matches the content query within the material bounds";
+      retrieval!.matches = 0;
     } else {
       // NOTHING IS FETCHED BEFORE THE MATERIAL IS KNOWN TO FIT. A named scope is sized from the
       // catalogued bytes; a content query does not know its selection yet, so the same figures
@@ -586,7 +597,7 @@ export async function prepare(
         return cache;
       };
 
-      const archivedAt = await snapshotTimes(input, repositoryDir, archive);
+      const archivedAt = await snapshotTimes(eligible, repositoryDir, archive);
 
       let chosen: readonly Capture[] = offered;
       if (input.query !== undefined && retrieval !== undefined && repositoryDir !== null) {
@@ -598,6 +609,7 @@ export async function prepare(
           Math.max(0, room - materialNeed(0, eligible.length)),
           retrieval,
           repositoryDir,
+          input.excludedSessions ?? [],
           (label) => cacheFor(label, "redact"),
           fetch,
         );
@@ -911,7 +923,7 @@ function captures(input: PrepareInput): Capture[] {
  * fetched.
  */
 async function snapshotTimes(
-  input: PrepareInput,
+  captures: readonly Capture[],
   repositoryDir: string | null,
   archive: () => Promise<PrepareRepo>,
 ): Promise<ReadonlyMap<string, string>> {
@@ -919,7 +931,7 @@ async function snapshotTimes(
   const known = new Map<string, z.infer<typeof SnapshotMemorySchema>>();
   const unknown = new Set<string>();
   const memory = repositoryDir === null ? null : join(repositoryDir, "snapshots");
-  for (const { snapshotId } of input.captures) {
+  for (const { snapshotId } of captures) {
     if (known.has(snapshotId) || unknown.has(snapshotId)) continue;
     const kept = memory === null ? null : await recallSnapshot(join(memory, `${snapshotId}.json`));
     if (kept === null) unknown.add(snapshotId);
@@ -952,7 +964,7 @@ async function snapshotTimes(
     }
   }
   const times = new Map<string, string>();
-  for (const { snapshotId, label } of input.captures) {
+  for (const { snapshotId, label } of captures) {
     const held = known.get(snapshotId)!;
     if (held.label !== label) {
       throw new Refused(
@@ -1049,6 +1061,7 @@ async function contentSelection(
   bound: number,
   retrieval: SessionRetrieval,
   repositoryDir: string,
+  excludedSessions: readonly string[],
   cacheFor: (label: string) => ReadingCache | null,
   fetch: (
     capture: Capture,
@@ -1071,7 +1084,7 @@ async function contentSelection(
   /** A refusal a reading raised inside the index's builder, which reports only that it failed. */
   let refused: Refused | null = null;
   try {
-    index = await sessionIndex(repositoryDir, context);
+    index = await sessionIndex(repositoryDir, context, excludedSessions);
     for (const [at, candidate] of candidates.entries()) {
       if (index.holds(candidate)) {
         retrieval.reused++;

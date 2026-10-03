@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
 import {
   type ConfigureInstanceServiceArgs,
@@ -11,6 +11,9 @@ import {
   BABEL_PLUGIN_ID,
   MACHINE_OPERATIONS,
   RECALL_SERVICE_ID,
+  INPUT_FIELD,
+  ExcludeSessionResultSchema,
+  RecallRuntimeInputSchema,
   RecallInstalledSchema,
   RecallSetupPreviewSchema,
   type RecallPolicy,
@@ -21,6 +24,25 @@ import {
   type RecallRuntime,
 } from "./recall-services.ts";
 
+import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
+import { digestOf } from "./services.ts";
+import { sessionExclusionDoors } from "./session-exclusions.ts";
+import { recallEnforcesSessionExclusions } from "../store/exclusions.ts";
+
+const fixtures = new WeakMap<GuestCtx, TestStore>();
+const opened: TestStore[] = [];
+afterEach(() => {
+  for (const fixture of opened.splice(0)) fixture.close();
+});
+
+async function database(ctx: GuestCtx): Promise<TestStore> {
+  const held = fixtures.get(ctx);
+  if (held !== undefined) return held;
+  const created = await openTestStore(Date.UTC(2026, 9, 2));
+  fixtures.set(ctx, created);
+  opened.push(created);
+  return created;
+}
 const MACHINE = "recall-owner";
 const REVISION = "a".repeat(64);
 const MOVED = "b".repeat(64);
@@ -100,7 +122,7 @@ function owner(isRoot = true): OwnerFixture {
   };
   const control = { configureError: "" };
   const ctx = {
-    auth: { isRoot },
+    auth: { isRoot, principal: { id: "synthetic-owner" }, allows: async () => true },
     jobs: {
       describe: async () => {
         reads.push("runtime");
@@ -108,6 +130,7 @@ function owner(isRoot = true): OwnerFixture {
       },
     },
     services: {
+      describeInstance: async () => installed.description,
       readConfiguration: async () => {
         reads.push("native");
         return native;
@@ -127,7 +150,7 @@ function owner(isRoot = true): OwnerFixture {
           revision: REVISION,
           pluginId: BABEL_PLUGIN_ID,
           enabled: args.enabled,
-          policySha256: "e".repeat(64),
+          policySha256: digestOf(args.policy),
         };
         installed.description.state = "starting";
         return installed.description;
@@ -138,7 +161,10 @@ function owner(isRoot = true): OwnerFixture {
 }
 
 async function knock(name: string, ctx: GuestCtx, args: unknown): Promise<unknown> {
-  const door = recallServiceDoors().find((candidate) => candidate.action.name === name);
+  const fixture = await database(ctx);
+  const door = [...recallServiceDoors(fixture.store), ...sessionExclusionDoors(fixture.store)].find(
+    (candidate) => candidate.action.name === name,
+  );
   if (!door) throw new Error("Missing Recall configuration door");
   return door.handler(ctx, door.action.input.parse(args) as never);
 }
@@ -335,4 +361,70 @@ test("mapping exports require owner opt-in and never widen either invocable read
   expect(() =>
     composeRecallServicePolicy({ ...POLICY, mappingClassId: "missing" }, RUNTIME),
   ).toThrow();
+});
+
+test("the durable owner ban survives native policy replacement and denies stale enforcement", async () => {
+  const fleet = owner();
+  const fixture = await database(fleet.ctx);
+  const selector = "omp/synthetic-confidential-source";
+  await insert(fixture.db, "sessions", {
+    selector,
+    host: "synthetic-host",
+    harness: "omp",
+    source_id: "synthetic-confidential-source",
+    seen_at: new Date(fixture.store.now()).toISOString(),
+  });
+  await install(fleet.ctx, await preview(fleet.ctx));
+  fleet.installed.description.state = "ready";
+  const result = ExcludeSessionResultSchema.parse(
+    await knock(ACTIONS.excludeSession, fleet.ctx, { selector }),
+  );
+  expect(result.excluded).toBe(true);
+  expect(result.recallEnforced).toBe(false);
+  expect(await fixture.db.query("SELECT selector FROM sessions")).toEqual([{ selector }]);
+  expect(await fixture.db.query("SELECT selector FROM session_exclusions")).toEqual([{ selector }]);
+  const literal = fleet.installed.policy!.runtime!.input[INPUT_FIELD]!;
+  if (!("literal" in literal)) throw new Error("Expected an owner-controlled runtime input");
+  const enforced = RecallRuntimeInputSchema.parse(JSON.parse(String(literal.literal))).policy;
+  expect(enforced.excludedSessions).toEqual([selector]);
+  expect(enforced.classes).toEqual(POLICY.classes);
+  expect(enforced.subjects).toEqual(POLICY.subjects);
+  fleet.installed.description.state = "ready";
+  expect(await recallEnforcesSessionExclusions(fixture.db, fleet.installed.description)).toBe(true);
+  // Omitting the ban from another owner install cannot erase the canonical ledger.
+  await install(fleet.ctx, await preview(fleet.ctx, POLICY), POLICY);
+  fleet.installed.description.state = "ready";
+  expect(await recallEnforcesSessionExclusions(fixture.db, fleet.installed.description)).toBe(true);
+  fleet.installed.description.configuration!.policySha256 = MOVED;
+  expect(await recallEnforcesSessionExclusions(fixture.db, fleet.installed.description)).toBe(
+    false,
+  );
+  expectRefusal(await knock(ACTIONS.excludeSession, owner(false).ctx, { selector }));
+});
+
+test("a failed native cutover retains the ban with Recall disabled", async () => {
+  const fleet = owner();
+  const fixture = await database(fleet.ctx);
+  const selector = "omp/synthetic-cutover-source";
+  await insert(fixture.db, "sessions", {
+    selector,
+    host: "synthetic-host",
+    harness: "omp",
+    source_id: "synthetic-cutover-source",
+    seen_at: new Date(fixture.store.now()).toISOString(),
+  });
+  await install(fleet.ctx, await preview(fleet.ctx));
+  fleet.installed.description.state = "ready";
+  const configure = fleet.ctx.services.configureInstance;
+  fleet.ctx.services.configureInstance = async (args) => {
+    if (args.enabled) throw new Error("synthetic failed native activation");
+    return await configure(args);
+  };
+  const result = ExcludeSessionResultSchema.parse(
+    await knock(ACTIONS.excludeSession, fleet.ctx, { selector }),
+  );
+  expect(result.excluded).toBe(true);
+  expect(result.recallEnforced).toBe(false);
+  expect(fleet.installed.description.configuration?.enabled).toBe(false);
+  expect(await fixture.db.query("SELECT selector FROM session_exclusions")).toEqual([{ selector }]);
 });

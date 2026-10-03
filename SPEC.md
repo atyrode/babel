@@ -201,6 +201,32 @@ one, because an absent field must not read as clean. What the rule table does no
 travels: the boundary is a named list of formats, and `docs/sandbox-threat-model.md` §5 states the
 residual that remains.
 
+**Conversation exclusions are owner-controlled software policy, separate from backup retention.**
+The owner-only `excludeSession` door records an immutable canonical `harness/sourceId` selector
+in the hub's exclusion ledger; `sessionExclusions` reports that ledger and current native Recall
+enforcement. Catalog replacement cannot erase it. At most 64 exact selectors are admitted. The
+archive, its original captures and catalog inventory remain retained; exclusion neither forgets
+a snapshot nor changes custody.
+
+Explicit preparations containing a forbidden selector refuse the whole scope before source or
+cache access. Queried preparations filter forbidden captures before indexing or ranking.
+Own-run opt-in, preflight mode, launch presets and later snapshots cannot override the ban.
+Titles, exploration, challenge, synthesis, reviews, mapping and record embeddings apply the
+same source policy at selection and atomic retained-intent admission. Persisted source lineage
+also quarantines whole derived runs, record revisions and roots, inferred metadata, graph
+annotations, maps and saved neighbourhood inputs from later readers and model context. Human-
+recorded metadata remains distinct from inference. Keyword corpus statistics are purged of
+quarantined text in the same transaction as the exclusion; authoritative history is retained.
+
+Recording a new exclusion requires paused Babel, no active drain and no unsettled work depending
+on that source. An unconfirmed source-bearing posting is not assumed cancelled or replayed.
+Native Recall is disabled before the ledger/native-policy cutover. Its owner policy merges every
+durable exclusion and refuses all search, show, preview, page and transcript-map routes before
+reading forbidden source data, including warm caches. Hub reader doors fail closed until an
+enabled, ready service reports the exact policy digest with a receipt covering the complete
+ledger. Failed activation leaves the ban durable and disclosure unavailable. Later owner policy
+installation cannot omit the ledger's exclusions. `docs/runbook.md` §9.1.1 owns the procedure.
+
 ### 3.1 Repository subjects
 
 Repositories are the first pointed subject kind (§4.9). The operator's local checkouts and GitHub

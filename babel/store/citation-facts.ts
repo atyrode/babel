@@ -15,6 +15,11 @@ import {
   type CitationFactSource,
 } from "../contract.ts";
 import { claim } from "../machine/adapters/index.ts";
+import {
+  modelPrivacyGuard,
+  readExcludedRecordIds,
+  sourcePrivacyCondition,
+} from "./source-privacy.ts";
 
 export const CITATION_FACT_PAGE_SIZE = 25;
 export const CITATION_FACT_MAX_PAGE_SIZE = 100;
@@ -96,6 +101,7 @@ const number = (value: unknown, minimum: number): number | undefined =>
 const MATERIALS_SQL = `(SELECT json_group_array(json_object('id',p.id,'payload',p.payload))
   FROM (SELECT p.id,p.payload FROM runs p WHERE p.job_id=producer.prepare_job_id
     AND p.kind='${OPERATIONS.prepare}' AND p.closure='completed' ORDER BY p.id) p)`;
+const RECORD_PRIVACY = sourcePrivacyCondition("record", "r.id");
 const POSITIONS_SQL = `WITH positions AS (
   SELECT r.id AS record_id,producer.id AS producer_id,
     fields.key AS field,CAST(citation.key AS INTEGER) AS ordinal,
@@ -103,7 +109,7 @@ const POSITIONS_SQL = `WITH positions AS (
   FROM records r LEFT JOIN runs producer ON producer.id=r.run_id
   JOIN json_each(CASE WHEN json_valid(r.payload) THEN r.payload ELSE '{}' END) fields
   JOIN json_each(CASE WHEN fields.type='array' THEN fields.value ELSE '[]' END) citation
-  WHERE fields.type='array' AND (
+  WHERE ${RECORD_PRIVACY.sql} AND fields.type='array' AND (
     (r.kind='observation' AND fields.key IN ('evidence','counter_evidence')) OR
     (r.kind='finding' AND fields.key='counter_evidence') OR
     (r.kind='proposal' AND fields.key IN ('supporting','conflicting')))
@@ -315,7 +321,7 @@ async function* positions(db: PluginDatabase, recordId?: string): AsyncGenerator
           AND previous.field=p.field AND previous.ordinal=p.ordinal)
       WHERE (? IS NULL OR p.record_id=?) AND (p.record_id,p.field,p.ordinal) > (?,?,?)
       ORDER BY p.record_id,p.field,p.ordinal LIMIT 32`,
-      [recordId ?? null, recordId ?? null, ...after],
+      [...RECORD_PRIVACY.params, recordId ?? null, recordId ?? null, ...after],
     );
     const metadata = new Map<string, SourceMetadata>();
     for (const row of rows) {
@@ -538,10 +544,11 @@ export async function readCitationFacts(
     throw new CitationFactError("invalid-fact");
   }
   const limit = Math.min(requested, CITATION_FACT_MAX_PAGE_SIZE);
+  const privacy = sourcePrivacyCondition("record", "record_id");
   const rows = await db.query<FactRow>(
     `SELECT seq,attempt_id,created_at,task,result FROM citation_facts
-    WHERE record_id=? AND seq>? ORDER BY seq LIMIT ?`,
-    [recordId, after, limit],
+    WHERE record_id=? AND seq>? AND ${privacy.sql} ORDER BY seq LIMIT ?`,
+    [recordId, after, ...privacy.params, limit],
   );
   const facts = rows.map(factOf);
   const last = facts.at(-1);
@@ -552,6 +559,7 @@ export async function readCitationFacts(
           recordId,
           last.seq,
         ]);
+  if ((await readExcludedRecordIds(db)).has(recordId)) return { facts: [], nextAfter: null };
   return { facts, nextAfter: remaining.length === 0 ? null : last!.seq };
 }
 
@@ -605,7 +613,7 @@ export async function appendCitationFact(
   const rows = await db.query<IndexedPositionRow>(
     `${POSITIONS_SQL} SELECT *,NULL AS latest_status FROM positions
     WHERE record_id=? AND field=? AND ordinal=?`,
-    [task.recordId, task.field, task.ordinal],
+    [...RECORD_PRIVACY.params, task.recordId, task.field, task.ordinal],
   );
   const indexed = rows[0];
   const row =
@@ -616,12 +624,19 @@ export async function appendCitationFact(
     throw new CitationFactError("task-mismatch");
   const settled = await terminal();
   if (settled !== null) return { outcome: "duplicate", fact: settled };
+  const privacy = modelPrivacyGuard(
+    task.source === null
+      ? []
+      : [task.source.selector, `${task.source.harness}/${task.source.sourceId}`],
+    [task.recordId],
+  );
   const written = await db.run(
     `INSERT INTO citation_facts
     (record_id,field,ordinal,attempt_id,citation_digest,task,result,status,quote_outcome,created_at)
     SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (
       SELECT 1 FROM records r LEFT JOIN runs producer ON producer.id=r.run_id WHERE r.id=?
       AND producer.preparation IS ? AND ${MATERIALS_SQL}=?)
+    AND ${privacy.sql}
     AND NOT EXISTS (SELECT 1 FROM citation_facts
       WHERE record_id=? AND field=? AND ordinal=? AND task=? AND status='available')
     ON CONFLICT(record_id,field,ordinal,attempt_id) DO NOTHING`,
@@ -636,6 +651,7 @@ export async function appendCitationFact(
       task.recordId,
       row.preparation,
       row.materials,
+      ...privacy.params,
       task.recordId,
       task.field,
       task.ordinal,

@@ -37,6 +37,8 @@ import {
 import { transcriptMapReads, type MapReadRequest } from "../store/transcript-map-reads.ts";
 import { transcriptMaps } from "../store/transcript-maps.ts";
 import type { BabelStore } from "../store/store.ts";
+import { recallEnforcesSessionExclusions, readSessionExclusions } from "../store/exclusions.ts";
+import { readExcludedCaptureIds } from "../store/source-privacy.ts";
 import { defineDoor, type Door } from "./door.ts";
 
 const READ = {
@@ -50,7 +52,11 @@ const REGENERATE_PROJECTION = {
   fields: [["requestId"], ["state"], ["generation"]],
 };
 
-async function currentRevision(ctx: GuestCtx, target: TranscriptMapTarget): Promise<string | null> {
+async function currentRevision(
+  ctx: GuestCtx,
+  store: BabelStore,
+  target: TranscriptMapTarget,
+): Promise<string | null> {
   if (
     !TranscriptMapTargetSchema.safeParse(target).success ||
     !(await ctx.auth.allows("services:invoke", target))
@@ -63,6 +69,7 @@ async function currentRevision(ctx: GuestCtx, target: TranscriptMapTarget): Prom
     !description.configuration.enabled
   )
     return null;
+  if (!(await recallEnforcesSessionExclusions(store.db, description))) return null;
   return description.configuration.revision;
 }
 class Interrupted extends Error {
@@ -83,7 +90,7 @@ export function transcriptMapDoors(store: BabelStore): readonly Door[] {
     let held: MapReadRequest | undefined;
     let round = 0;
     try {
-      const revision = await currentRevision(ctx, input.target);
+      const revision = await currentRevision(ctx, store, input.target);
       if (
         revision === null ||
         (input.operation === "regenerate" && !(await ctx.auth.allows("containers:write")))
@@ -159,6 +166,14 @@ export function transcriptMapDoors(store: BabelStore): readonly Door[] {
       const requestedReference = referenceInput
         ? await maps.reference(target.machineId, referenceInput.versionId, referenceInput.nodeId)
         : null;
+      const excludedSessions = new Set(await readSessionExclusions(store.db));
+      const excludedCaptures = await readExcludedCaptureIds(store.db);
+      if (
+        requestedReference &&
+        (excludedSessions.has(requestedReference.source.session) ||
+          excludedCaptures.has(requestedReference.source.id))
+      )
+        throw new Interrupted("expired");
       let captures: TranscriptMapCapture[];
       let inventoryPartial = false;
       if (
@@ -205,6 +220,9 @@ export function transcriptMapDoors(store: BabelStore): readonly Door[] {
         );
         inventoryPartial = input.operation === "read" && input.request.kind === "search";
       }
+      captures = captures.filter(
+        (capture) => !excludedSessions.has(capture.session) && !excludedCaptures.has(capture.id),
+      );
       while (captures.length > 0) {
         const body = {
           request: JSON.stringify({
@@ -277,7 +295,7 @@ export function transcriptMapDoors(store: BabelStore): readonly Door[] {
         current.digest !== context.digest ||
         current.classId !== context.classId ||
         current.ceiling !== context.ceiling ||
-        (await currentRevision(ctx, target)) !== revision
+        (await currentRevision(ctx, store, target)) !== revision
       )
         throw new Interrupted("expired");
       const scope = {
@@ -314,6 +332,11 @@ export function transcriptMapDoors(store: BabelStore): readonly Door[] {
           result: sourceResult,
         });
         const span = sourceResult!.span;
+        if (
+          (await currentRevision(ctx, store, target)) !== revision ||
+          (span && (await readExcludedCaptureIds(store.db)).has(span.source.id))
+        )
+          throw new Interrupted("expired");
         await traces.outcome(owned.id, round, {
           state: "complete",
           summaries: [],
@@ -414,6 +437,11 @@ export function transcriptMapDoors(store: BabelStore): readonly Door[] {
         })),
       };
       await traces.outcome(owned.id, round, outcome);
+      if ((await currentRevision(ctx, store, target)) !== revision)
+        throw new Interrupted("expired");
+      const nowExcluded = await readExcludedCaptureIds(store.db);
+      if (final.result!.views.some((view) => nowExcluded.has(view.source.id)))
+        throw new Interrupted("expired");
       return final;
     } catch (error) {
       if (!held) return { refused: "Transcript map request could not be recorded or authorized." };
@@ -473,7 +501,7 @@ export function transcriptMapDoors(store: BabelStore): readonly Door[] {
           const owned = await traces.locate(ctx.auth.principal.id, reference);
           if (!owned || JSON.stringify(owned.target) !== JSON.stringify(target))
             return { refused: "Unknown map request for this caller and class." };
-          const revision = await currentRevision(ctx, target);
+          const revision = await currentRevision(ctx, store, target);
           if (revision === null)
             return { refused: "Transcript map disclosure authority is unavailable." };
           if (revision !== owned.revision) {

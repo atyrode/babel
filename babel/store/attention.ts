@@ -1,5 +1,6 @@
-import type { PluginDatabase, SqlRow } from "@manifold/plugin";
+import type { PluginDatabase, SqlParam, SqlRow } from "@manifold/plugin";
 import { ObjectionGroundSchema, OPERATIONS, type PostAttention } from "../contract.ts";
+import { sourcePrivacyCondition } from "./source-privacy.ts";
 
 /** Attention is an ordering projection, never a change to standing or evidence weight. */
 export interface AttentionIndex {
@@ -24,12 +25,17 @@ const text = (value: unknown): string => (typeof value === "string" ? value : ""
 
 /** Metadata only, in bounded pages to exhaustion. In particular there is no history cap:
  * forgetting an old citation would turn the next copy into apparently new evidence. */
-async function scan(db: PluginDatabase, sql: string, visit: (row: SqlRow) => void): Promise<void> {
+async function scan(
+  db: PluginDatabase,
+  sql: string,
+  visit: (row: SqlRow) => void,
+  params: readonly SqlParam[] = [],
+): Promise<void> {
   let after: number | bigint = 0;
   for (;;) {
     const page: readonly (SqlRow & { cursor: number | bigint })[] = await db.query(
       `${sql} LIMIT ?`,
-      [after, PAGE],
+      [after, ...params, PAGE],
     );
     const last = page[page.length - 1];
     if (last === undefined) return;
@@ -66,6 +72,8 @@ export async function readAttention(db: PluginDatabase, nowMs: number): Promise<
   const questions = new Map<string, PostAttention>();
   const metadata = new Map<string, RecordMetadata>();
   const citations = new Map<string, Sources>();
+  const recordPrivacy = sourcePrivacyCondition("record", "id");
+  const questionPrivacy = sourcePrivacyCondition("question", "id");
   const relations = new Map<string, Sources>();
   const renew = (
     map: Map<string, PostAttention>,
@@ -84,7 +92,7 @@ export async function readAttention(db: PluginDatabase, nowMs: number): Promise<
   await scan(
     db,
     `SELECT rowid AS cursor, id, root_id, kind, parent_id, run_id, actor_kind, created_at
-    FROM records WHERE rowid > ? ORDER BY rowid`,
+    FROM records WHERE rowid > ? AND ${recordPrivacy.sql} ORDER BY rowid`,
     (row) => {
       const root = text(row["root_id"]);
       const held: RecordMetadata = {
@@ -99,6 +107,7 @@ export async function readAttention(db: PluginDatabase, nowMs: number): Promise<
       if (!records.has(root)) records.set(root, UNKNOWN);
       if (held.actor === "operator") renew(records, root, held.at, "operator");
     },
+    recordPrivacy.params,
   );
   const rootOf = (id: unknown): string =>
     metadata.get(text(id))?.root ?? (records.has(text(id)) ? text(id) : "");
@@ -243,12 +252,14 @@ export async function readAttention(db: PluginDatabase, nowMs: number): Promise<
   );
   await scan(
     db,
-    `SELECT rowid AS cursor, id, created_at FROM questions WHERE rowid > ? ORDER BY rowid`,
+    `SELECT rowid AS cursor, id, created_at FROM questions
+    WHERE rowid > ? AND ${questionPrivacy.sql} ORDER BY rowid`,
     (row) => {
       const id = text(row["id"]);
       questions.set(id, UNKNOWN);
       renew(questions, id, date(row["created_at"]), "question");
     },
+    questionPrivacy.params,
   );
   await scan(
     db,

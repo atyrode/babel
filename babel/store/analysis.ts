@@ -15,6 +15,8 @@ import {
   type Stage,
 } from "../contract.ts";
 import type { StandingRemark } from "../server/engine/prompts.ts";
+import { ANALYSABLE_SESSION } from "./exclusions.ts";
+import { readExcludedRecordIds } from "./source-privacy.ts";
 
 /**
  * A SESSION A PREPARATION CAN READ (#453), as a predicate over `sessions s`: one whose row names
@@ -181,6 +183,7 @@ export async function* analysisOffers(
   wants: (stage: Stage) => boolean = () => true,
 ): AsyncGenerator<AnalysisOffer | AnalysisRefusal> {
   const bound = await materialBound(db, machineId, share);
+  const excludedRecords = await readExcludedRecordIds(db);
   const sources = new Map<string, Promise<GuestSqlRow | undefined>>();
   const source = (selector: string): Promise<GuestSqlRow | undefined> => {
     const cached = sources.get(selector);
@@ -188,7 +191,7 @@ export async function* analysisOffers(
     const pending = db
       .query(
         `SELECT s.selector, s.content_digest, s.snapshot_id, s.modified_at, s.size FROM sessions s
-          WHERE s.selector = ? AND ${ARCHIVED_CAPTURE} AND s.kind = 'operator'`,
+          WHERE s.selector = ? AND ${ARCHIVED_CAPTURE} AND ${ANALYSABLE_SESSION} AND s.kind = 'operator'`,
         [selector],
       )
       .then((rows) => rows[0]);
@@ -256,7 +259,7 @@ export async function* analysisOffers(
     explore: for (;;) {
       if (!wants("explore")) break;
       const page = await db.query(
-        `SELECT s.selector FROM sessions s WHERE ${ARCHIVED_CAPTURE} AND s.kind = 'operator'
+        `SELECT s.selector FROM sessions s WHERE ${ARCHIVED_CAPTURE} AND ${ANALYSABLE_SESSION} AND s.kind = 'operator'
           AND s.selector > ? ORDER BY s.selector LIMIT ?`,
         [cursor, FRONTIER_LIMIT],
       );
@@ -311,6 +314,7 @@ export async function* analysisOffers(
       )
         continue;
       const id = string(row["id"]);
+      if (excludedRecords.has(id)) continue;
       const edges = await db.query(
         `SELECT kind, to_kind, to_id FROM edges WHERE from_id = ? AND from_kind = ?
           AND kind IN ('cites', 'contradicts', ?) ORDER BY kind, to_id LIMIT ?`,

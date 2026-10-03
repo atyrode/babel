@@ -1,6 +1,13 @@
+import { randomUUID } from "node:crypto";
 import type { GuestServices } from "@manifold/plugin-kit/server";
-import { EMBEDDING_SERVICE, type EmbeddingOperationId } from "../contract.ts";
-import type { Embedder, Embedding } from "../store/corpus.ts";
+import {
+  EMBEDDING_SERVICE,
+  EMBEDDING_RUN_KIND,
+  EmbeddingRunPreparationSchema,
+  type EmbeddingOperationId,
+} from "../contract.ts";
+import type { Embedder, Embedding, EmbeddingSource } from "../store/corpus.ts";
+import { modelPrivacyGuard } from "../store/source-privacy.ts";
 
 /*
   THE BASELINE'S ONE CALL OUT, AND THE KEY IS NEVER IN IT (#337).
@@ -74,6 +81,7 @@ export async function askEmbedding(
   services: EmbeddingServices,
   text: string,
   operationId: EmbeddingOperationId = EMBEDDING_SERVICE.operations.embed,
+  source?: EmbeddingSource,
 ): Promise<Embedding | null> {
   if (text === "") return null;
   const input = { [EMBEDDING_SERVICE.textField]: text };
@@ -85,6 +93,30 @@ export async function askEmbedding(
     );
     const configuration = bound?.state === "ready" ? bound.configuration : null;
     if (configuration === null) return null;
+    let reservation: string | undefined;
+    if (source !== undefined) {
+      reservation = `run_embedding_${randomUUID()}`;
+      const privacy = modelPrivacyGuard([], [source.recordId]);
+      const admitted = await source.db.query(
+        `INSERT INTO runs(id,kind,preparation,started_at,payload)
+          SELECT ?,?,?,?,? WHERE ${privacy.sql}
+            AND NOT EXISTS (SELECT 1 FROM runs WHERE kind=? AND closure IS NULL
+              AND json_extract(preparation,'$.embedding.recordId')=?) RETURNING id`,
+        [
+          reservation,
+          EMBEDDING_RUN_KIND,
+          JSON.stringify(
+            EmbeddingRunPreparationSchema.parse({ embedding: { recordId: source.recordId } }),
+          ),
+          new Date().toISOString(),
+          JSON.stringify({ closure: null }),
+          ...privacy.params,
+          EMBEDDING_RUN_KIND,
+          source.recordId,
+        ],
+      );
+      if (admitted.length === 0) return null;
+    }
     const reply = await services.invokeInstance({
       serviceId: EMBEDDING_SERVICE.serviceId,
       // The revision the roster just reported: a policy edited between these two statements is a
@@ -94,6 +126,16 @@ export async function askEmbedding(
       // The input and nothing else.
       input,
     });
+    if (source !== undefined && reservation !== undefined)
+      await source.db.run(
+        `UPDATE runs SET closure=?,finished_at=?,payload=? WHERE id=? AND closure IS NULL`,
+        [
+          reply.ok ? "completed" : "failed",
+          new Date().toISOString(),
+          JSON.stringify({ closure: reply.ok ? "completed" : "failed" }),
+          reservation,
+        ],
+      );
     if (!reply.ok) return null;
     const answer = reply.result;
     if (typeof answer !== "object" || answer === null || Array.isArray(answer)) return null;
@@ -120,5 +162,6 @@ export async function askEmbedding(
  * absence as an uninstalled policy.
  */
 export function embedder(services: EmbeddingServices): Embedder {
-  return async (text: string) => await askEmbedding(services, text);
+  return async (text, source) =>
+    await askEmbedding(services, text, EMBEDDING_SERVICE.operations.embed, source);
 }

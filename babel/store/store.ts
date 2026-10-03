@@ -78,6 +78,11 @@ import {
 import { FEED_FRESHNESS_MS, feedOrdering, feedQueryForSurface, sortFeed } from "./rank.ts";
 import { transcriptMaps } from "./transcript-maps.ts";
 import { supersededReviewProposalSql } from "./schema.ts";
+import {
+  readExcludedRecordIds,
+  readExcludedRunIds,
+  sourcePrivacyCondition,
+} from "./source-privacy.ts";
 
 /**
  * THE STORE'S HALF OF THE PULSE: what today's tables say. The door answers a wider shape — it
@@ -773,13 +778,50 @@ function groupLabel(face: IndexEntry, group: FeedGrouping, key: string): string 
 export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   const clock = now ?? Date.now;
   let built: FeedIndex | null = null;
+  let invalidation = 0;
+  type Generation = { invalidation: number; exclusions: number };
+  let builtGeneration: Generation | null = null;
+
+  // The exclusion ledger is immutable: its count is a durable generation, including bans
+  // committed through another store handle. touch() additionally fences ordinary local acts.
+  const generation = async (): Promise<Generation> => {
+    const before = invalidation;
+    const rows = await db.query(`SELECT COUNT(*) AS n FROM session_exclusions`, []);
+    return { invalidation: before, exclusions: count(rows[0]?.["n"]) };
+  };
+  const sameGeneration = (before: Generation, after: Generation): boolean =>
+    before.invalidation === after.invalidation &&
+    after.invalidation === invalidation &&
+    before.exclusions === after.exclusions;
+
+  // A predicate on the first query cannot protect projections assembled by later awaits.
+  // Discard the whole response, including derived counts/context, if a ban completed meanwhile.
+  const fenced = async <Result>(read: () => Promise<Result>): Promise<Result> => {
+    for (;;) {
+      const before = await generation();
+      const result = await read();
+      if (sameGeneration(before, await generation())) return result;
+    }
+  };
 
   /** The current projection, rebuilt when it has aged past its freshness or been touched. */
   const index = async (): Promise<FeedIndex> => {
-    const at = clock();
-    if (built !== null && at - built.builtAt < FEED_FRESHNESS_MS) return built;
-    built = await buildFeedIndex(db, at);
-    return built;
+    for (;;) {
+      const before = await generation();
+      const at = clock();
+      if (
+        built !== null &&
+        builtGeneration !== null &&
+        sameGeneration(builtGeneration, before) &&
+        at - built.builtAt < FEED_FRESHNESS_MS
+      )
+        return built;
+      const candidate = await buildFeedIndex(db, at);
+      if (!sameGeneration(before, await generation())) continue;
+      built = candidate;
+      builtGeneration = before;
+      return candidate;
+    }
   };
 
   /** One row by id, or nothing. */
@@ -859,14 +901,16 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     }
     const names: Record<string, string> = {};
     for (const topic of current.topics) names[topic.id] = topic.name;
+    const privacy = sourcePrivacyCondition("run", "p.proposed_by_id");
     const rows = await db.query(
       `SELECT p.subject_id AS subject_id, p.operation AS operation, p.payload AS payload,
               p.proposed_by_id AS proposed_by_id
          FROM plans p
         WHERE p.kind = 'topic' AND p.state = 'open' AND p.subject_kind = 'proposal'
+          AND ${privacy.sql}
         ORDER BY p.created_at, p.id
         LIMIT 200`,
-      [],
+      privacy.params,
     );
     const out: TopicProposal[] = [];
     for (const row of rows) {
@@ -1027,11 +1071,12 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * cite it, and it is reachable there; the door refuses it by name and says why.
    */
   const record = async (id: string): Promise<RecordPeel | null> => {
+    const privacy = sourcePrivacyCondition("record", "id");
     const row = await one(
       `SELECT id, kind, root_id, seq, supersedes_id, parent_id, run_id, recipe_id,
               recipe_version, actor_kind, actor_id, title, created_at, payload
-         FROM records WHERE id = ?`,
-      [id],
+         FROM records WHERE id = ? AND ${privacy.sql}`,
+      [id, ...privacy.params],
     );
     if (row === null) return await questionPeel(id);
     const kind = text(row["kind"]);
@@ -1480,6 +1525,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * whether its evidence holds is two reviewers agreeing about different things.
    */
   const receptionOf = async (id: string): Promise<RecordPeel["reception"]> => {
+    const assessmentPrivacy = sourcePrivacyCondition("run", "a.run_id");
+    const reviewPrivacy = sourcePrivacyCondition("run", "id");
     const rows = await db.query(
       `SELECT a.role AS role, a.vote AS vote, a.run_id AS run_id, a.recorded_at AS recorded_at,
               CASE WHEN json_valid(a.payload)
@@ -1490,9 +1537,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
                    ELSE NULL END AS rationale
          FROM assessments a
         WHERE a.record_id = ?
+          AND ${assessmentPrivacy.sql}
           AND NOT EXISTS (SELECT 1 FROM assessments s WHERE s.supersedes_id = a.id)
         ORDER BY a.recorded_at, a.id`,
-      [id],
+      [id, ...assessmentPrivacy.params],
     );
     // One vote per run per role, newest wins: a re-granted review is a changed vote, not a
     // second one. The order above is commit order, so a later row replaces an earlier one.
@@ -1557,8 +1605,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
           AND json_extract(preparation, '$.review.recordId') = ?
           AND json_valid(payload)
           AND json_type(payload, '$.reviewSubmission') = 'object'
+          AND ${reviewPrivacy.sql}
         ORDER BY started_at DESC, id DESC LIMIT 50`,
-      [id],
+      [id, ...reviewPrivacy.params],
     );
     const reviewRuns: NonNullable<RecordPeel["reception"]["reviewRuns"]> = [];
     for (const review of reviews) {
@@ -1654,9 +1703,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     supersedesId: string,
   ): Promise<RecordPeel["related"]> => {
     const out: RecordPeel["related"] = [];
+    const excluded = await readExcludedRecordIds(db);
     const seen: Record<string, true> = { [id]: true };
     const add = (relation: string, otherId: string, kind: string, title: string): void => {
-      if (otherId === "" || title === "" || seen[otherId] === true) return;
+      if (otherId === "" || title === "" || seen[otherId] === true || excluded.has(otherId)) return;
       if (
         kind !== "hypothesis" &&
         kind !== "observation" &&
@@ -1714,13 +1764,15 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
 
   /** The plan this record carries, if an interpreter proposed one and nobody has ruled yet. */
   const planOf = async (id: string): Promise<RecordPeel["plan"]> => {
+    const privacy = sourcePrivacyCondition("run", "proposed_by_id");
     const row = await one(
       `SELECT kind, operation,
               CASE WHEN ${supersededReviewProposalSql("plans.subject_id")}
                    THEN 'superseded' ELSE state END AS state FROM plans
         WHERE subject_id = ? AND kind IN ('topic','backlog')
+          AND ${privacy.sql}
         ORDER BY created_at DESC, id DESC LIMIT 1`,
-      [id],
+      [id, ...privacy.params],
     );
     if (row === null) return null;
     const kind = text(row["kind"]);
@@ -1744,6 +1796,14 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    * conversation that says nothing.
    */
   const thread = async (id: string): Promise<ThreadResult> => {
+    const recordPrivacy = sourcePrivacyCondition("record", "?");
+    const questionPrivacy = sourcePrivacyCondition("question", "?");
+    const readable = await db.query(
+      `SELECT 1 WHERE ${recordPrivacy.sql} AND ${questionPrivacy.sql}`,
+      [id, ...recordPrivacy.params, id, ...questionPrivacy.params],
+    );
+    if (readable.length === 0) return { comments: [], acts: [], total: 0 };
+    const excludedRuns = await readExcludedRunIds(db);
     const flat: Comment[] = [];
     const contributions = await db.query(
       `SELECT a.id AS id, a.run_id AS run_id, a.role AS role, a.recorded_at AS at,
@@ -1758,6 +1818,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       [id],
     );
     for (const row of contributions) {
+      if (excludedRuns.has(text(row["run_id"]))) continue;
       flat.push({
         // A contribution has no identity of its own in the store, and a thread whose rows shared
         // one id could not nest or be replied to.
@@ -1838,9 +1899,16 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   const pulse = async (): Promise<PulseResult> => {
     const at = clock();
     const since = stamp(Math.floor(at / 86_400_000) * 86_400_000);
+    const recordPrivacy = sourcePrivacyCondition("record", "id");
+    const voteRecordPrivacy = sourcePrivacyCondition("record", "a.record_id");
+    const voteRunPrivacy = sourcePrivacyCondition("run", "a.run_id");
+    const rulingPrivacy = sourcePrivacyCondition("record", "d.record_id");
+    const proposalPrivacy = sourcePrivacyCondition("record", "r.id");
+    const planRunPrivacy = sourcePrivacyCondition("run", "p.proposed_by_id");
     const written = await db.query(
-      `SELECT kind, COUNT(*) AS n FROM records WHERE created_at >= ? GROUP BY kind`,
-      [since],
+      `SELECT kind, COUNT(*) AS n FROM records
+        WHERE created_at >= ? AND ${recordPrivacy.sql} GROUP BY kind`,
+      [since, ...recordPrivacy.params],
     );
     let records = 0;
     let proposals = 0;
@@ -1849,21 +1917,24 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       if (text(row["kind"]) === "proposal") proposals += count(row["n"]);
     }
     const votes = await one(
-      `SELECT COUNT(*) AS n FROM assessments WHERE recorded_at >= ? AND vote IS NOT NULL`,
-      [since],
+      `SELECT COUNT(*) AS n FROM assessments a
+        WHERE a.recorded_at >= ? AND a.vote IS NOT NULL
+          AND ${voteRecordPrivacy.sql} AND ${voteRunPrivacy.sql}`,
+      [since, ...voteRecordPrivacy.params, ...voteRunPrivacy.params],
     );
     const ruled = await one(
       `SELECT COUNT(*) AS n FROM (
          SELECT d.record_id FROM dispositions d
           JOIN (SELECT record_id, MAX(seq) AS head_seq FROM dispositions GROUP BY record_id) n
             ON n.record_id = d.record_id AND n.head_seq = d.seq
-         WHERE d.recorded_at >= ?)`,
-      [since],
+         WHERE d.recorded_at >= ? AND ${rulingPrivacy.sql})`,
+      [since, ...rulingPrivacy.params],
     );
     const topicPlans = await one(
       `SELECT COUNT(*) AS n FROM plans p JOIN records r ON r.id = p.subject_id
-        WHERE p.kind = 'topic' AND p.state = 'open' AND r.created_at >= ?`,
-      [since],
+        WHERE p.kind = 'topic' AND p.state = 'open' AND r.created_at >= ?
+          AND ${proposalPrivacy.sql} AND ${planRunPrivacy.sql}`,
+      [since, ...proposalPrivacy.params, ...planRunPrivacy.params],
     );
     // The receipts rather than the citations of today's records, which is the honest half as
     // well as the cheap one: a record cites the sessions its evidence came from, which is the
@@ -1901,8 +1972,13 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       // rather than a post, and a superseded wording is reached from its replacement. One read,
       // bounded by the open claims, is what it costs to name them.
       const rows = await db.query(
-        `SELECT id, kind, title FROM records WHERE id IN (${unnamed.map(() => "?").join(",")})`,
-        unnamed.slice(0, 500),
+        `SELECT id, kind, title FROM records
+          WHERE id IN (${unnamed
+            .slice(0, 500)
+            .map(() => "?")
+            .join(",")})
+            AND ${recordPrivacy.sql}`,
+        [...unnamed.slice(0, 500), ...recordPrivacy.params],
       );
       const named: Record<string, { kind: string; title: string }> = {};
       for (const row of rows) {
@@ -1937,6 +2013,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
          SELECT s.archive_label AS label, COUNT(*) AS n FROM sessions s
           WHERE s.archive_label IS NOT NULL
             AND NOT EXISTS (SELECT 1 FROM archive_labels m WHERE m.label = s.archive_label)
+            AND NOT EXISTS (SELECT 1 FROM session_exclusions x WHERE x.selector = s.selector)
           GROUP BY s.archive_label)
         ORDER BY n DESC, label LIMIT ?`,
       [ARCHIVE_LABELS_REPORTED],
@@ -1962,8 +2039,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   const runs = async (query: RunsQuery): Promise<RunsResult> => {
-    const clauses: string[] = [];
-    const params: SqlParam[] = [];
+    const privacy = sourcePrivacyCondition("run", "r.id");
+    const clauses: string[] = [privacy.sql];
+    const params: SqlParam[] = [...privacy.params];
     if (query.state !== undefined) clauses.push(`(${RUN_STATE_WHERE[query.state]})`);
     if (query.machineId !== undefined) {
       clauses.push(`r.machine_id = ?`);
@@ -1984,9 +2062,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   const run = async (id: string): Promise<RunResult> => {
+    const privacy = sourcePrivacyCondition("run", "r.id");
     const row = await one(
-      `SELECT ${RUN_COLUMNS}, r.payload AS payload FROM ${RUN_FROM} WHERE r.id = ?`,
-      [id],
+      `SELECT ${RUN_COLUMNS}, r.payload AS payload FROM ${RUN_FROM} WHERE r.id = ? AND ${privacy.sql}`,
+      [id, ...privacy.params],
     );
     if (row === null) return { run: null, receipt: null };
     const receipt = document(row["payload"]);
@@ -2061,13 +2140,16 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       `SELECT COALESCE(SUM(actual_cost), 0) AS spent FROM claims WHERE granted_at >= ?`,
       [since],
     );
+    const privacy = sourcePrivacyCondition("run", "id");
     const ran = await db.query(
-      `SELECT recipe_id AS id, COUNT(*) AS runs, MAX(started_at) AS last_ran_at,
-              (SELECT id FROM runs inner_runs WHERE inner_runs.recipe_id = runs.recipe_id
+      `WITH visible_runs AS (SELECT * FROM runs WHERE ${privacy.sql})
+       SELECT recipe_id AS id, COUNT(*) AS runs, MAX(started_at) AS last_ran_at,
+              (SELECT id FROM visible_runs inner_runs
+                WHERE inner_runs.recipe_id = visible_runs.recipe_id
                 ORDER BY started_at DESC, id DESC LIMIT 1) AS last_run_id
-         FROM runs WHERE recipe_id IS NOT NULL AND recipe_id <> ''
+         FROM visible_runs WHERE recipe_id IS NOT NULL AND recipe_id <> ''
         GROUP BY recipe_id ORDER BY recipe_id LIMIT 200`,
-      [],
+      privacy.params,
     );
     /*
       THE DECLARED LIST IS THE LEFT SIDE (#344).
@@ -2206,6 +2288,8 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
    */
   const coverageOf = async (entityId: string): Promise<TopicResult["coverage"]> => {
     const recipes = await declaredRecipes();
+    const filedPrivacy = sourcePrivacyCondition("record", "f.record_id");
+    const reachedPrivacy = sourcePrivacyCondition("record", "r.id");
     const reached =
       entityId === ""
         ? []
@@ -2214,6 +2298,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
                SELECT f.record_id AS id FROM filings f
                 WHERE f.entity_id = ? AND f.withdrawn = 0
                   AND NOT EXISTS (SELECT 1 FROM filings later WHERE later.supersedes_id = f.id)
+                  AND ${filedPrivacy.sql}
              ),
              reach(root, id, depth) AS (
                SELECT id, id, 0 FROM filed
@@ -2225,8 +2310,9 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
              SELECT r.recipe_id AS recipe, COUNT(DISTINCT reach.root) AS records
                FROM reach JOIN records r ON r.id = reach.id
               WHERE r.recipe_id IS NOT NULL AND r.recipe_id <> ''
+                AND ${reachedPrivacy.sql}
               GROUP BY r.recipe_id`,
-            [entityId],
+            [entityId, ...filedPrivacy.params, ...reachedPrivacy.params],
           );
     const counted = new Map<string, number>();
     for (const row of reached) counted.set(text(row["recipe"]), count(row["records"]));
@@ -2280,23 +2366,27 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     db,
     now: clock,
     touch: () => {
+      invalidation++;
+      builtGeneration = null;
       built = null;
     },
     index,
-    feed,
-    record,
-    thread,
-    topics: async () => ({
-      topics: await topicRows(),
-      proposed: await topicProposals(),
-      unfiled: (await index()).unfiled,
-    }),
-    topic,
-    neighborhood: async (query) => await transcriptMaps({ db }).neighborhood(query),
-    pulse,
-    runs,
-    run,
-    policy,
+    feed: async (query) => await fenced(async () => await feed(query)),
+    record: async (id) => await fenced(async () => await record(id)),
+    thread: async (id) => await fenced(async () => await thread(id)),
+    topics: async () =>
+      await fenced(async () => ({
+        topics: await topicRows(),
+        proposed: await topicProposals(),
+        unfiled: (await index()).unfiled,
+      })),
+    topic: async (name) => await fenced(async () => await topic(name)),
+    neighborhood: async (query) =>
+      await fenced(async () => await transcriptMaps({ db }).neighborhood(query)),
+    pulse: async () => await fenced(pulse),
+    runs: async (query) => await fenced(async () => await runs(query)),
+    run: async (id) => await fenced(async () => await run(id)),
+    policy: async () => await fenced(policy),
   };
 }
 

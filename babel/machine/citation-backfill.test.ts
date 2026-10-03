@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   JOB_OUTPUT_FILES,
   CITATION_CAPTURE_MAX_BYTES,
+  PREPARE_REFUSALS,
   CitationBackfillRowSchema,
   type CitationFactTask,
 } from "../contract.ts";
@@ -63,6 +64,33 @@ test("native backfill resolves one historical snapshot prefix and refuses an una
       source,
       unavailable: null,
     };
+    const deniedOutput = join(archive.home, "citation-excluded");
+    let archiveCalls = 0;
+    await citationBackfill(
+      {
+        runId: "run_denied_synthetic",
+        machineId: "machine_synthetic",
+        attemptId: "attempt_denied_synthetic",
+        tasks: [task],
+        excludedSessions: [source.selector],
+      },
+      directorySink(deniedOutput),
+      async () => {
+        archiveCalls++;
+        return archive.repo;
+      },
+    );
+    const denied = CitationBackfillRowSchema.array().parse(
+      await Bun.file(join(deniedOutput, JOB_OUTPUT_FILES.citationFacts)).json(),
+    );
+    expect(archiveCalls).toBe(0);
+    expect(denied[0]?.result).toMatchObject({
+      status: "unavailable",
+      reason: PREPARE_REFUSALS.excluded,
+      source: null,
+      measured: null,
+      excerpt: null,
+    });
     const output = join(archive.home, "citation-output");
     const receipt = await citationBackfill(
       {

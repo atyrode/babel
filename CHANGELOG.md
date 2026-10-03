@@ -9,6 +9,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+- **Owners can durably exclude a conversation from Babel without deleting its backups.**
+  One immutable source ledger fences preparation, title inference, analysis, reviews, mapping,
+  embeddings and later reuse of persisted derived lineage. Native Recall policy merges every
+  exclusion, rejects cold and warm source routes, and fails closed throughout policy cutover;
+  recataloguing and later policy installs cannot erase the ban. Unknown source-bearing postings
+  remain held rather than replayed. Synthetic archive/store regressions cover retained originals,
+  concurrent native cutovers, catalog collisions, accepted-plan lineage and mid-read/cache-build
+  quarantine; an isolated actual native preparation refused before archive access even with
+  own-run opt-in and scanning disabled.
+
 - **Neighbourhoods gain generated navigation summaries over their own stored records (#506).**
   Explicit bounded policy targets reuse transcript-map segmentation, versioned provenance, coverage,
   served-only review/corrections and the existing authorized mapping queue, profile and budget fences.

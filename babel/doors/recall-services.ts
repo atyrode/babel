@@ -23,12 +23,71 @@ import {
   RecallPolicySchema,
   RecallSetupInputSchema,
   RecallSetupPreviewSchema,
+  SessionExclusionsSchema,
   RecallRuntimeInputSchema,
   transcriptMapReadTarget,
   type RecallPolicy,
 } from "../contract.ts";
 import { defineDoor, type Door } from "./door.ts";
 import { digestOf } from "./services.ts";
+import type { BabelStore } from "../store/store.ts";
+import { readSessionExclusions, recordSessionExclusionEnforcement } from "../store/exclusions.ts";
+
+type PrivacyStore = Pick<BabelStore, "db" | "now">;
+
+const policyCutovers = new WeakMap<PrivacyStore["db"], Promise<void>>();
+
+/**
+ * One ledger shares one native Recall policy. Acquire once around the whole pause/ledger/
+ * enforcement receipt cutover, or around an owner install; the helpers inside never reacquire.
+ * A failed change releases its turn without rejecting or poisoning the next queued change.
+ */
+export async function withRecallPolicyCutover<T>(
+  store: PrivacyStore,
+  change: () => Promise<T>,
+): Promise<T> {
+  const previous = policyCutovers.get(store.db) ?? Promise.resolve();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  policyCutovers.set(store.db, held);
+  await previous;
+  try {
+    return await change();
+  } finally {
+    release();
+    if (policyCutovers.get(store.db) === held) policyCutovers.delete(store.db);
+  }
+}
+
+async function effectiveRecallPolicy(
+  store: PrivacyStore,
+  policy: RecallPolicy,
+): Promise<RecallPolicy> {
+  const canonical = await readSessionExclusions(store.db);
+  if (canonical.length === 0) return policy;
+  return RecallPolicySchema.parse({
+    ...policy,
+    excludedSessions: SessionExclusionsSchema.parse(
+      [...new Set([...(policy.excludedSessions ?? []), ...canonical])].sort(),
+    ),
+  });
+}
+
+async function recordEnforcement(
+  store: PrivacyStore,
+  policy: RecallPolicy,
+  policySha256: string | undefined,
+): Promise<void> {
+  if (policySha256 === undefined) throw new Error("Recall configuration has no privacy receipt.");
+  await recordSessionExclusionEnforcement(
+    store.db,
+    policySha256,
+    policy.excludedSessions ?? [],
+    new Date(store.now()).toISOString(),
+  );
+}
 
 export type RecallRuntime = Pick<
   ServiceRuntime,
@@ -242,55 +301,104 @@ const installRecallAction = defineServerAction({
   result: RecallInstalledSchema,
 });
 
-export function recallServiceDoors(): readonly Door[] {
+export function recallServiceDoors(store: PrivacyStore): readonly Door[] {
   return [
     defineDoor(previewRecallAction, async (ctx, args) => {
       if (!ctx.auth.isRoot) return { refused: "Recall configuration requires the owner." };
       try {
-        return (await composePreview(ctx, args)).preview;
+        const policy = await effectiveRecallPolicy(store, args.policy);
+        return (await composePreview(ctx, { ...args, policy })).preview;
       } catch {
         return { refused: "Recall configuration could not be read." };
       }
     }),
     defineDoor(installRecallAction, async (ctx, args) => {
       if (!ctx.auth.isRoot) return { refused: "Recall configuration requires the owner." };
-      try {
-        // No cached preview is trusted: re-read the live tuple and service revision immediately
-        // before the native compare-and-swap, which rechecks both the revision and runtime tuple.
-        const { preview, policy } = await composePreview(ctx, args);
-        if (
-          preview.expectedRevision !== args.expectedRevision ||
-          preview.previewDigest !== args.previewDigest
-        ) {
-          return { refused: "Recall configuration changed; preview it again before installing." };
-        }
-        if (!preview.ready || policy === null) return { refused: preview.reason };
-        if (!preview.changed) {
+      return await withRecallPolicyCutover(store, async () => {
+        try {
+          // The ledger and native tuple are re-read inside the same cutover as exclusions.
+          // The native compare-and-swap still rechecks the revision and runtime tuple.
+          const ownerPolicy = await effectiveRecallPolicy(store, args.policy);
+          const { preview, policy } = await composePreview(ctx, { ...args, policy: ownerPolicy });
+          if (
+            preview.expectedRevision !== args.expectedRevision ||
+            preview.previewDigest !== args.previewDigest
+          ) {
+            return { refused: "Recall configuration changed; preview it again before installing." };
+          }
+          if (!preview.ready || policy === null) return { refused: preview.reason };
+          if (!preview.changed) {
+            const installed = await ctx.services.describeInstance({ serviceId: RECALL_SERVICE_ID });
+            await recordEnforcement(store, ownerPolicy, installed.configuration?.policySha256);
+            return {
+              serviceId: RECALL_SERVICE_ID,
+              revision: preview.expectedRevision,
+              installed: false,
+              reason: "",
+            } as const;
+          }
+          const configured = await ctx.services.configureInstance({
+            serviceId: RECALL_SERVICE_ID,
+            expectedRevision: args.expectedRevision,
+            machineId: args.machineId,
+            policy,
+            enabled: true,
+          });
+          await recordEnforcement(store, ownerPolicy, configured.configuration?.policySha256);
           return {
             serviceId: RECALL_SERVICE_ID,
-            revision: preview.expectedRevision,
-            installed: false,
+            revision: configured.configuration?.revision ?? null,
+            installed: true,
             reason: "",
           } as const;
+        } catch {
+          return {
+            refused:
+              "Recall configuration could not be installed; preview it again before retrying.",
+          };
         }
-        const configured = await ctx.services.configureInstance({
-          serviceId: RECALL_SERVICE_ID,
-          expectedRevision: args.expectedRevision,
-          machineId: args.machineId,
-          policy,
-          enabled: true,
-        });
-        return {
-          serviceId: RECALL_SERVICE_ID,
-          revision: configured.configuration?.revision ?? null,
-          installed: true,
-          reason: "",
-        } as const;
-      } catch {
-        return {
-          refused: "Recall configuration could not be installed; preview it again before retrying.",
-        };
-      }
+      });
     }),
   ];
+}
+
+/**
+ * Stop disclosure before recording a new ban, then replace only Recall's immutable policy.
+ * This does not restart the native owner, modify grants or touch archive/storage authority.
+ */
+export async function pauseRecallDisclosure(ctx: GuestCtx): Promise<void> {
+  const installed = await ctx.services.readInstanceConfiguration({ serviceId: RECALL_SERVICE_ID });
+  if (!installed.description.configuration?.enabled) return;
+  if (installed.policy === null) throw new Error("Recall policy is unavailable.");
+  const machineId = installed.description.owner?.machineId;
+  if (machineId === undefined) throw new Error("Recall owner is unavailable.");
+  await ctx.services.configureInstance({
+    serviceId: RECALL_SERVICE_ID,
+    machineId,
+    expectedRevision: installed.description.configuration.revision,
+    policy: installed.policy,
+    enabled: false,
+  });
+}
+
+export async function enforceSessionExclusions(ctx: GuestCtx, store: PrivacyStore): Promise<void> {
+  const installed = await ctx.services.readInstanceConfiguration({ serviceId: RECALL_SERVICE_ID });
+  // An unconfigured service cannot disclose anything. Any later owner install merges the ledger.
+  if (installed.policy === null && installed.description.configuration === null) return;
+  const machineId = installed.description.owner?.machineId;
+  const input = installed.policy?.runtime?.input[INPUT_FIELD];
+  if (machineId === undefined || input === undefined || !("literal" in input))
+    throw new Error("Recall owner policy is unavailable.");
+  const held = RecallRuntimeInputSchema.parse(JSON.parse(String(input.literal))).policy;
+  const ownerPolicy = await effectiveRecallPolicy(store, held);
+  const { preview, policy } = await composePreview(ctx, { machineId, policy: ownerPolicy });
+  if (!preview.ready || policy === null) throw new Error("Recall privacy runtime is unavailable.");
+  const configured = await ctx.services.configureInstance({
+    serviceId: RECALL_SERVICE_ID,
+    machineId,
+    expectedRevision: preview.expectedRevision,
+    policy,
+    enabled: true,
+  });
+  await recordEnforcement(store, ownerPolicy, configured.configuration?.policySha256);
 }
