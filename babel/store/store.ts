@@ -1973,7 +1973,10 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       // bounded by the open claims, is what it costs to name them.
       const rows = await db.query(
         `SELECT id, kind, title FROM records
-          WHERE id IN (${unnamed.slice(0, 500).map(() => "?").join(",")})
+          WHERE id IN (${unnamed
+            .slice(0, 500)
+            .map(() => "?")
+            .join(",")})
             AND ${recordPrivacy.sql}`,
         [...unnamed.slice(0, 500), ...recordPrivacy.params],
       );

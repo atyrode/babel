@@ -923,6 +923,13 @@ Recall exclude the source before cache/index access. Persisted derived lineage i
 including whole source-run outputs, record roots, inference titles, graph annotations and saved
 map inputs. Original history and archive snapshots remain retained. There is no unexclude door.
 
+Owner policy installations and exclusions serialize the complete native cutover, so a concurrent
+installation cannot re-enable a stale ban set. Bare legacy source references remain quarantined
+when another harness later catalogs the same identifier; operator acceptance of a model proposal
+does not erase the copied facts' or plans' provenance. Reader responses and feed caches discard
+work assembled across an exclusion, including derived counts and attention. Genuine historical
+spend and session-read receipts remain authoritative rather than being rewritten.
+
 **Executed synthetic command evidence — dev-01, 2026-10-02.** The actual native `prepare` command,
 under isolated HOME/XDG state and an absent archive binding, refused a synthetic forbidden scope
 with `session_excluded`, zero selected/fetched/reused sessions and no sealed material despite
@@ -938,6 +945,14 @@ expired. Broad search and exact reads still served the independent source. Lock-
 before and after compared the forbidden archive bytes exactly, with zero repository locks.
 The listener and all generated resources were removed. This proves the native HTTP data path,
 not packed-artifact launch IPC, live provisioning or a real conversation's exposure history.
+
+**Executed synthetic lineage and race evidence — dev-01, 2026-10-03.** Twenty-eight focused cases
+exercise concurrent native policy cutovers, catalog collisions, actual proposal application and
+mid-read/cache-build exclusions against temporary stores. The pre-repair feature failed 26 of
+those cases; all 28 passed after repair, alongside the ten existing Recall policy cases. The
+original coordinator deadlines were retained: eight affected catalog/mapping cases passed in
+4.10 seconds total after lazy empty-ledger guards removed unnecessary recursive graph work.
+These are software-path proofs, not live-owner activation or a real conversation's audit.
 
 ### 9.2 Historical citation fact backfill (#431)
 

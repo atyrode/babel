@@ -1,5 +1,10 @@
 import type { GuestDatabase, GuestSqlParam } from "@manifold/plugin-kit";
-import { HARNESSES, INPUT_FIELD, MAX_SESSION_EXCLUSIONS, type NavigationMapSource } from "../contract.ts";
+import {
+  HARNESSES,
+  INPUT_FIELD,
+  MAX_SESSION_EXCLUSIONS,
+  type NavigationMapSource,
+} from "../contract.ts";
 import { sessionIsExcluded } from "./exclusions.ts";
 
 type Database = Pick<GuestDatabase, "query">;

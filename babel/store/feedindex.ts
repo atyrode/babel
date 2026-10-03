@@ -44,7 +44,7 @@ import {
 } from "../contract.ts";
 import { standingOf } from "./acts.ts";
 import { supersededReviewProposalSql } from "./schema.ts";
-import { sourcePrivacyCondition } from "./source-privacy.ts";
+import { sourcePrivacyCondition, sourcePrivacyCTE } from "./source-privacy.ts";
 import {
   controversialRank,
   establishedOf,
@@ -790,17 +790,19 @@ async function readTallies(db: PluginDatabase): Promise<Map<string, Tally>> {
 async function readOpenClaims(db: PluginDatabase, nowMs: number): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   const now = stamp(nowMs);
-  const privacy = sourcePrivacyCondition("record", "record_id");
-  const questionPrivacy = sourcePrivacyCondition("question", "record_id");
-  const runPrivacy = sourcePrivacyCondition("run", "COALESCE(run_id, '')");
+  const privacy = sourcePrivacyCTE();
   await scan<SqlRow>(
     db,
-    `SELECT record_id, granted_at FROM claims
+    `${privacy.sql}
+      SELECT record_id, granted_at FROM claims
       WHERE (finished_at IS NULL OR finished_at = '') AND expires_at > ? AND record_id <> ''
-        AND ${privacy.sql} AND ${questionPrivacy.sql} AND ${runPrivacy.sql}
+        AND CASE WHEN NOT EXISTS (SELECT 1 FROM session_exclusions) THEN 1
+          ELSE NOT EXISTS (SELECT 1 FROM tainted
+            WHERE (kind IN ('record', 'question') AND id = claims.record_id)
+               OR (kind = 'run' AND id = claims.run_id)) END
         AND NOT EXISTS (SELECT 1 FROM session_exclusions x WHERE x.selector = claims.record_id)
       ORDER BY record_id, granted_at, id`,
-    [now, ...privacy.params, ...questionPrivacy.params, ...runPrivacy.params],
+    [...privacy.params, now],
     (row) => {
       const recordId = text(row["record_id"]);
       const at = instant(row["granted_at"]);

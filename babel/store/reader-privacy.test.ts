@@ -272,7 +272,8 @@ function noPrivate(result: unknown): void {
     PRIVATE_OBSERVATION,
     PRIVATE_QUESTION,
     PRIVATE_TOPIC,
-  ]) expect(serialized).not.toContain(value);
+  ])
+    expect(serialized).not.toContain(value);
 }
 
 async function publicFeed(): Promise<void> {
@@ -357,7 +358,9 @@ test("a cached index notices an exclusion committed through another store handle
 
 test("topic lists discard pre-ban names and counts held across a later plan query", async () => {
   excludeAfterQuery((sql) =>
-    sql.startsWith("SELECT p.subject_id AS subject_id, p.operation AS operation, p.payload AS payload"),
+    sql.startsWith(
+      "SELECT p.subject_id AS subject_id, p.operation AS operation, p.payload AS payload",
+    ),
   );
   const result = await store.topics();
   noPrivate(result);
@@ -412,10 +415,13 @@ test("fresh privacy-bearing pulse and coverage projections omit excluded context
   noPrivate(policy);
   expect(policy.spentTodayUsd).toBe(7.5);
   expect(
-    policy.recipes.map(({ id, runs, lastRunId, lastRanAt }) => ({ id, runs, lastRunId, lastRanAt })),
-  ).toEqual([
-    { id: RECIPE, runs: 1, lastRunId: PUBLIC_RUN, lastRanAt: stamp(NOW - HOUR) },
-  ]);
+    policy.recipes.map(({ id, runs, lastRunId, lastRanAt }) => ({
+      id,
+      runs,
+      lastRunId,
+      lastRanAt,
+    })),
+  ).toEqual([{ id: RECIPE, runs: 1, lastRunId: PUBLIC_RUN, lastRanAt: stamp(NOW - HOUR) }]);
   // Read filtering never releases protected unknown work or rewrites genuine historical spend.
   expect(
     await fixture.db.query(
@@ -432,9 +438,9 @@ test("fresh privacy-bearing pulse and coverage projections omit excluded context
     { id: "clm_reader_null_unknown", finished_at: null, actual_cost: 0.5 },
     { id: "clm_reader_unknown", finished_at: null, actual_cost: 1 },
   ]);
-  expect(await fixture.db.query("SELECT title FROM records WHERE id = ?", [PRIVATE_RECORD])).toEqual([
-    { title: `${WITHHELD} hypothesis` },
-  ]);
+  expect(
+    await fixture.db.query("SELECT title FROM records WHERE id = ?", [PRIVATE_RECORD]),
+  ).toEqual([{ title: `${WITHHELD} hypothesis` }]);
 });
 
 test("pulse assembly retries when exclusion completes after its final catalog-label query", async () => {
@@ -502,7 +508,15 @@ test("private corrective evidence cannot renew an independent post's attention a
     payload: "{}",
   });
   for (const [edge, from, fromKind, to, toKind, kind, at] of [
-    ["edg_reader_public_citation", id, "hypothesis", PUBLIC_SOURCE, "session", "cites", NOW - 2 * HOUR],
+    [
+      "edg_reader_public_citation",
+      id,
+      "hypothesis",
+      PUBLIC_SOURCE,
+      "session",
+      "cites",
+      NOW - 2 * HOUR,
+    ],
     [
       "edg_reader_private_citation",
       PRIVATE_OBSERVATION,

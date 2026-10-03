@@ -106,7 +106,8 @@ export function sessionExclusionDoors(store: BabelStore): readonly Door[] {
               if (!recorded) {
                 await enforceSessionExclusions(ctx, store);
                 return {
-                  refused: "Conversation work changed; keep Babel paused and retry after it settles.",
+                  refused:
+                    "Conversation work changed; keep Babel paused and retry after it settles.",
                 };
               }
               store.touch();
@@ -117,7 +118,9 @@ export function sessionExclusionDoors(store: BabelStore): readonly Door[] {
             // A durable ban is never rolled back because the native owner is unavailable. Reader
             // doors fail closed until the exact privacy policy is installed and ready.
             if (!(await sessionIsExcluded(store.db, selector)))
-              return { refused: "Conversation exclusion could not be recorded; keep Babel paused." };
+              return {
+                refused: "Conversation exclusion could not be recorded; keep Babel paused.",
+              };
           }
           const observed = await status(ctx, store);
           const exclusion = observed.exclusions.find((item) => item.selector === selector);

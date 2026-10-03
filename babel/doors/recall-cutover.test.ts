@@ -181,7 +181,11 @@ async function owner() {
           throw new Error("synthetic failed native activation");
         }
         installed.policy = structuredClone(args.policy);
-        installed.description.owner = { machineId: args.machineId!, name: "Synthetic", online: true };
+        installed.description.owner = {
+          machineId: args.machineId!,
+          name: "Synthetic",
+          online: true,
+        };
         installed.description.configuration = {
           revision: (++revision).toString(16).padStart(64, "0"),
           pluginId: BABEL_PLUGIN_ID,
@@ -203,9 +207,10 @@ async function owner() {
   };
   async function knock(name: string, args: unknown) {
     // Recreate doors on each request, as separate callers do; the lock cannot live on a door.
-    const door = [...recallServiceDoors(fixture.store), ...sessionExclusionDoors(fixture.store)].find(
-      (candidate) => candidate.action.name === name,
-    );
+    const door = [
+      ...recallServiceDoors(fixture.store),
+      ...sessionExclusionDoors(fixture.store),
+    ].find((candidate) => candidate.action.name === name);
     if (door === undefined) throw new Error("Synthetic configuration door is missing");
     return await door.handler(ctx, door.action.input.parse(args) as never);
   }
@@ -268,18 +273,25 @@ test("concurrent exclusions never enable an A-only policy after B becomes durabl
     held.release();
   }
   const results = await Promise.all([first, second]);
-  expect(results.map((result) => ExcludeSessionResultSchema.parse(result).selector)).toEqual([A, B]);
+  expect(results.map((result) => ExcludeSessionResultSchema.parse(result).selector)).toEqual([
+    A,
+    B,
+  ]);
   expect(await readSessionExclusions(fleet.fixture.db)).toEqual([A, B]);
   expect(fleet.policy().excludedSessions).toEqual([A, B]);
   expect(fleet.violations).toEqual([]);
   fleet.installed.description.state = "ready";
-  expect(await recallEnforcesSessionExclusions(fleet.fixture.db, fleet.installed.description)).toBe(true);
+  expect(await recallEnforcesSessionExclusions(fleet.fixture.db, fleet.installed.description)).toBe(
+    true,
+  );
 
   const replacement = { ...POLICY, excludedSessions: [OWNER_ONLY] };
   RecallInstalledSchema.parse(await fleet.install(await fleet.preview(replacement), replacement));
   expect(fleet.policy().excludedSessions).toEqual([A, B, OWNER_ONLY].sort());
   fleet.installed.description.state = "ready";
-  expect(await recallEnforcesSessionExclusions(fleet.fixture.db, fleet.installed.description)).toBe(true);
+  expect(await recallEnforcesSessionExclusions(fleet.fixture.db, fleet.installed.description)).toBe(
+    true,
+  );
 });
 
 test("an owner install cannot reopen Recall between the exclusion pause and ledger commit", async () => {
@@ -340,5 +352,7 @@ test("failed enforcement preserves the durable ban and pause while releasing a q
   RecallInstalledSchema.parse(await fleet.install(await fleet.preview()));
   expect(fleet.policy().excludedSessions).toEqual([A]);
   fleet.installed.description.state = "ready";
-  expect(await recallEnforcesSessionExclusions(fleet.fixture.db, fleet.installed.description)).toBe(true);
+  expect(await recallEnforcesSessionExclusions(fleet.fixture.db, fleet.installed.description)).toBe(
+    true,
+  );
 });

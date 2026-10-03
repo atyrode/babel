@@ -353,7 +353,8 @@ export function recallServiceDoors(store: PrivacyStore): readonly Door[] {
           } as const;
         } catch {
           return {
-            refused: "Recall configuration could not be installed; preview it again before retrying.",
+            refused:
+              "Recall configuration could not be installed; preview it again before retrying.",
           };
         }
       });
