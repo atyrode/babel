@@ -1,5 +1,5 @@
 import type { GuestDatabase, GuestSqlParam } from "@manifold/plugin-kit";
-import { INPUT_FIELD, MAX_SESSION_EXCLUSIONS, type NavigationMapSource } from "../contract.ts";
+import { HARNESSES, INPUT_FIELD, MAX_SESSION_EXCLUSIONS, type NavigationMapSource } from "../contract.ts";
 import { sessionIsExcluded } from "./exclusions.ts";
 
 type Database = Pick<GuestDatabase, "query">;
@@ -67,6 +67,32 @@ const TAINT = `WITH RECURSIVE
   neighborhood_rows(capture_id, document) AS (
     SELECT n.capture_id, j.value FROM transcript_map_neighborhood_inputs n,
       json_each('[' || rtrim(replace(n.text, char(10), ','), ',') || ']') j
+  ),
+  applied_plans(id, kind, subject_kind, subject_id, proposed_by_kind, proposed_by_id,
+    result, result_document, payload) AS (
+    SELECT id, kind, subject_kind, subject_id, proposed_by_kind, proposed_by_id, result,
+      CASE WHEN json_valid(result) THEN result ELSE '{}' END,
+      CASE WHEN json_valid(payload) THEN payload ELSE '{}' END
+      FROM plans WHERE state = 'applied'
+  ),
+  applied_results(plan_id, result_id) AS (
+    SELECT id, json_extract(result_document, '$.entityId') FROM applied_plans
+    UNION ALL
+    SELECT id, json_extract(result_document, '$.resolutionId') FROM applied_plans
+    UNION ALL
+    SELECT id, json_extract(result_document, '$.factId') FROM applied_plans
+    UNION ALL
+    SELECT p.id, j.value FROM applied_plans p, json_each(p.result_document, '$.filed') j
+      WHERE j.type = 'text'
+    UNION ALL
+    SELECT p.id, j.value FROM applied_plans p, json_each(p.result_document, '$.settled') j
+      WHERE j.type = 'text'
+    UNION ALL
+    SELECT id, result FROM applied_plans WHERE kind = 'topic'
+    UNION ALL
+    SELECT p.id, json_extract(j.value, '$.result_id')
+      FROM applied_plans p, json_each(p.payload, '$.actions') j
+      WHERE p.kind = 'answer' AND j.type = 'object'
   ),
   dependencies(consumer_kind, consumer_id, input_kind, input_id) AS (
     SELECT 'run', run_id, 'session', selector FROM session_inputs WHERE selector IS NOT NULL
@@ -324,6 +350,34 @@ const TAINT = `WITH RECURSIVE
     UNION ALL
     SELECT 'capture', n.capture_id, json_extract(j.value, '$.kind'), json_extract(j.value, '$.id')
       FROM neighborhood_rows n, json_tree(n.document, '$.value') j WHERE j.type = 'object'
+    UNION ALL
+    -- Acceptance attributes copied wording to an operator without replacing its source.
+    -- Native applications keep named result fields; imported topics keep a raw entity ID,
+    -- and imported answer actions keep result_id. Resolve those persisted output identities.
+    SELECT 'plan', id, subject_kind, subject_id FROM applied_plans
+    UNION ALL
+    SELECT 'plan', id, 'run', proposed_by_id FROM applied_plans WHERE proposed_by_kind = 'run'
+    UNION ALL
+    SELECT 'entity', e.id, 'plan', p.plan_id FROM applied_results p
+      JOIN entities e ON e.id = p.result_id
+    UNION ALL
+    SELECT 'entity', f.entity_id, 'plan', p.plan_id FROM applied_results p
+      JOIN facts f ON f.id = p.result_id
+    UNION ALL
+    SELECT 'entity', m.entity_id, 'plan', p.plan_id FROM applied_results p
+      JOIN resolution_members m ON m.resolution_id = p.result_id
+    UNION ALL
+    SELECT 'record', f.record_id, 'plan', p.plan_id FROM applied_results p
+      JOIN filings f ON f.id = p.result_id
+    UNION ALL
+    SELECT 'entity', f.entity_id, 'plan', p.plan_id FROM applied_results p
+      JOIN filings f ON f.id = p.result_id
+    UNION ALL
+    SELECT 'record', r.id, 'plan', p.plan_id FROM applied_results p
+      JOIN records r ON r.id = p.result_id
+    UNION ALL
+    SELECT 'question', q.id, 'plan', p.plan_id FROM applied_results p
+      JOIN questions q ON q.id = p.result_id
   ),
   normalized_dependencies(consumer_kind, consumer_id, input_kind, input_id) AS (
     SELECT d.consumer_kind, d.consumer_id,
@@ -337,13 +391,17 @@ const TAINT = `WITH RECURSIVE
           OR EXISTS (SELECT 1 FROM transcript_map_versions v WHERE v.id=d.input_id)
           OR EXISTS (SELECT 1 FROM transcript_map_plans p WHERE p.id=d.input_id) THEN 'map'
         ELSE d.input_kind END,
-      CASE WHEN d.input_kind='session'
-        AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.selector=d.input_id)
-        THEN coalesce((SELECT min(s.selector) FROM sessions s WHERE s.source_id=d.input_id
-          HAVING count(*)=1),d.input_id)
-        ELSE d.input_id END
-      FROM dependencies d
+      d.input_id FROM dependencies d
       WHERE d.consumer_id IS NOT NULL AND d.input_id IS NOT NULL
+    UNION ALL
+    -- Bare legacy IDs retain every candidate as the catalog grows. Canonical references
+    -- remain exact even before their catalog row arrives; source IDs can themselves contain /.
+    SELECT d.consumer_kind, d.consumer_id, 'session', s.selector
+      FROM dependencies d JOIN sessions s ON s.source_id = d.input_id
+      WHERE d.input_kind = 'session' AND d.consumer_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM sessions exact WHERE exact.selector = d.input_id)
+        AND substr(d.input_id, 1, instr(d.input_id, '/') - 1)
+          NOT IN (${HARNESSES.map((harness) => `'${harness}'`).join(",")})
   ),
   tainted(kind, id) AS (
     SELECT 'session', selector FROM session_exclusions
@@ -415,7 +473,10 @@ export function sourcePrivacyCondition(
   idSql: string,
 ): { readonly sql: string; readonly params: readonly GuestSqlParam[] } {
   return {
-    sql: `${idSql} NOT IN (${TAINT} SELECT id FROM tainted WHERE kind = ?)`,
+    // SQLite evaluates only the selected CASE arm. Read the immutable ledger in this same
+    // statement: the first ban immediately enables the full fence, without a cached bypass.
+    sql: `CASE WHEN NOT EXISTS (SELECT 1 FROM session_exclusions) THEN 1
+      ELSE ${idSql} NOT IN (${TAINT} SELECT id FROM tainted WHERE kind = ?) END`,
     params: ["[]", kind],
   };
 }
@@ -428,11 +489,12 @@ export function modelPrivacyGuard(
   captureIds: readonly string[] = [],
 ): { readonly sql: string; readonly params: readonly GuestSqlParam[] } {
   return {
-    sql: `NOT EXISTS (${TAINT} SELECT 1 FROM tainted
+    sql: `CASE WHEN NOT EXISTS (SELECT 1 FROM session_exclusions) THEN 1
+      ELSE NOT EXISTS (${TAINT} SELECT 1 FROM tainted
       WHERE (kind = 'session' AND id IN (SELECT value FROM json_each(?)))
          OR (kind = 'record' AND id IN (SELECT value FROM json_each(?)))
          OR (kind = 'run' AND id IN (SELECT value FROM json_each(?)))
-         OR (kind = 'capture' AND id IN (SELECT value FROM json_each(?))))`,
+         OR (kind = 'capture' AND id IN (SELECT value FROM json_each(?)))) END`,
     params: [
       "[]",
       JSON.stringify(selectors),
