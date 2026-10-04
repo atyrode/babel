@@ -36,6 +36,8 @@ import {
   transcriptMapPlanId,
 } from "../transcript-map-identity.ts";
 import { transcriptMaps, type TranscriptMaps } from "./transcript-maps.ts";
+import { modelPrivacyGuard } from "./source-privacy.ts";
+import { frozenSourcePrivacyReference } from "./source-privacy-reference.fixture.ts";
 import { openTestStore, type TestStore } from "./testdb.ts";
 import { transcriptMapDoors } from "../doors/transcript-maps.ts";
 import { projectJson, compileJsonProjection } from "@manifold/protocol";
@@ -321,6 +323,63 @@ test("a draft capture with no recorded source owner is never adopted by a new ro
       capture.id,
     ]),
   ).toEqual([{ source_machine_id: "" }]);
+});
+
+test("an exclusion committed between map write pages fences the rest of the plan", async () => {
+  const db = await setup();
+  const data = fixture(64);
+  await db.db.run(
+    "INSERT INTO sessions(selector,host,harness,source_id,seen_at) VALUES(?,?,?,?,?)",
+    [
+      `${data.plan.source.harness}/${data.plan.source.session}`,
+      data.plan.source.host,
+      data.plan.source.harness,
+      data.plan.source.session,
+      NOW,
+    ],
+  );
+  const guard = modelPrivacyGuard([], [], [], [data.plan.source.id]);
+  const excluded = new Promise<number>((resolve, reject) => {
+    const observe = async () => {
+      try {
+        const rows = await db.db.query<{ n: number | bigint }>(
+          "SELECT count(*) n FROM transcript_map_nodes WHERE plan_id=?",
+          [data.plan.id],
+        );
+        const count = Number(rows[0]?.n ?? 0);
+        if (count === 0) {
+          setImmediate(() => void observe());
+          return;
+        }
+        await db.db.run(
+          "INSERT INTO session_exclusions(selector,actor_id,recorded_at) VALUES(?,?,?)",
+          [`${data.plan.source.harness}/${data.plan.source.session}`, "map-owner", LATER],
+        );
+        resolve(count);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    setImmediate(() => void observe());
+  });
+  const [projected, nodesAtExclusion] = await Promise.all([
+    db.maps.recordPlan({ ...scope, ...data, offset: 0, nextOffset: null, now: NOW, guard }),
+    excluded,
+  ]);
+  expect(nodesAtExclusion).toBeGreaterThan(0);
+  expect(nodesAtExclusion).toBeLessThan(data.nodes.length);
+  expect(projected).toEqual({ complete: false });
+  await expect(db.maps.ensureVersion(data.plan.id, policy, LATER)).rejects.toThrow();
+  expect(await db.db.query(`SELECT 1 AS eligible WHERE ${guard.sql}`, guard.params)).toEqual([]);
+  const reference = frozenSourcePrivacyReference;
+  const [persisted, recursive] = await db.db.batch([
+    { sql: "SELECT kind,id FROM source_taint ORDER BY kind,id" },
+    {
+      sql: `${reference.sql} SELECT kind,id FROM tainted ORDER BY kind,id`,
+      params: reference.params,
+    },
+  ]);
+  expect(persisted).toEqual(recursive);
 });
 
 test("paged plans stay invisible until manifest verification and never authorize another class", async () => {

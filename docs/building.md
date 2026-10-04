@@ -108,6 +108,15 @@ they never run recursive graph SQL. Rare ban/destructive privacy-maintenance wri
 the graph and must remain bounded by the host's five-second batch deadline, unlike the ordinary
 hot-path batches targeted below 250 ms.
 
+Navigation-map projection similarly uses at most 32 node rows per SQL statement and one such
+statement per transaction. The in-realm SDK executes database calls synchronously, so awaiting
+their already-resolved promises alone does not serve hub I/O: map write batches and verification
+pages explicitly yield an event-loop turn. Related-node verification reads at most 32 indexed
+rows per call, preserving the complete manifest, parent/child and terminal-span checks. Each
+inserted row still fires the original privacy triggers. Each subsequent write reevaluates its
+retained guard in that same statement; privacy guards consult the current exclusion ledger,
+never an in-memory authorization snapshot.
+
 Fresh stores start ready. Upgrades create the graph projection cheaply and advance durable
 per-table cursors in five-row chunks, yielding between batches: enable and existing conductor
 cycles spend about 100 ms per turn, and the owner exclusion door spends about one second.
