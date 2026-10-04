@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import type { PluginDatabase, SqlParam, SqlStatement } from "@manifold/plugin";
+import {
+  MAX_SQL_PARAMS,
+  type PluginDatabase,
+  type SqlParam,
+  type SqlStatement,
+} from "@manifold/plugin";
 import {
   termsQuery,
   TRANSCRIPT_MAP_JOB_PAGE_NODES,
@@ -264,10 +269,56 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     ]);
     return rows[0] ? (JSON.parse(rows[0].payload) as T) : null;
   }
-  async function batch(statements: readonly SqlStatement[]): Promise<void> {
-    for (let start = 0; start < statements.length; start += PAGE)
-      await db.batch(statements.slice(start, start + PAGE));
+  async function batch(statements: readonly SqlStatement[], size = PAGE): Promise<void> {
+    for (let start = 0; start < statements.length; start += size) {
+      await db.batch(statements.slice(start, start + size));
+      // The in-realm database resolves synchronously; awaiting it alone never serves hub I/O.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
     if (statements.length) store.touch?.();
+  }
+  function nodeStatements(
+    nodes: readonly TranscriptMapNode[],
+    offset: number,
+    guard?: TranscriptMapCondition,
+  ): SqlStatement[] {
+    const rowsPerStatement = Math.max(
+      1,
+      Math.min(PAGE, Math.floor((MAX_SQL_PARAMS - (guard?.params.length ?? 0)) / 10)),
+    );
+    const insertNodes = (rows: number): string =>
+      `INSERT OR IGNORE INTO transcript_map_nodes(id,plan_id,position,parent_node_id,level,ordinal,byte_offset,byte_length,gap,payload)
+       SELECT column1,column2,column3,column4,column5,column6,column7,column8,column9,column10
+       FROM (VALUES ${"(?,?,?,?,?,?,?,?,?,?),".repeat(rows).slice(0, -1)})
+       WHERE (${guard?.sql ?? "1"})`;
+    const fullInsert = insertNodes(rowsPerStatement);
+    const statements: SqlStatement[] = [];
+    let params: SqlParam[] = [];
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index]!;
+      params.push(
+        node.id,
+        node.planId,
+        offset + index,
+        node.parentId,
+        node.level,
+        node.ordinal,
+        node.span.byteOffset,
+        node.span.byteLength,
+        node.gap,
+        json(node),
+      );
+      if ((index + 1) % rowsPerStatement === 0 || index + 1 === nodes.length) {
+        const rows = params.length / 10;
+        params.push(...(guard?.params ?? []));
+        statements.push({
+          sql: rows === rowsPerStatement ? fullInsert : insertNodes(rows),
+          params,
+        });
+        if (index + 1 < nodes.length) params = [];
+      }
+    }
+    return statements;
   }
   function authorization(scope: TranscriptMapScope, captureColumn: string): TranscriptMapCondition {
     const context = TranscriptMapContextSchema.parse(scope.context);
@@ -504,9 +555,8 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         SELECT ?,?,?,? WHERE (${input.guard?.sql ?? "1"})`,
       [plan.id, plan.source.id, json(plan), input.now, ...(input.guard?.params ?? [])],
     );
-    const statements: SqlStatement[] = [];
-    for (let index = 0; index < input.nodes.length; index += 1) {
-      const node = TranscriptMapNodeSchema.parse(input.nodes[index]);
+    const nodes = input.nodes.map((raw) => {
+      const node = TranscriptMapNodeSchema.parse(raw);
       if (
         node.planId !== plan.id ||
         node.level >= plan.segmentation.maxDepth ||
@@ -531,25 +581,10 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         node.children.length > plan.segmentation.fanout
       )
         throw new TranscriptMapProjectionRefusal("invalid transcript map node");
-      statements.push({
-        sql: `INSERT OR IGNORE INTO transcript_map_nodes(id,plan_id,position,parent_node_id,level,ordinal,byte_offset,byte_length,gap,payload)
-          SELECT ?,?,?,?,?,?,?,?,?,? WHERE (${input.guard?.sql ?? "1"})`,
-        params: [
-          node.id,
-          plan.id,
-          input.offset + index,
-          node.parentId,
-          node.level,
-          node.ordinal,
-          node.span.byteOffset,
-          node.span.byteLength,
-          node.gap,
-          json(node),
-          ...(input.guard?.params ?? []),
-        ],
-      });
-    }
-    await batch(statements);
+      return node;
+    });
+    // One bounded node statement per transaction, not 32 statements of 32 rows each.
+    await batch(nodeStatements(nodes, input.offset, input.guard), 1);
     const count = await db.query<{ n: number }>(
       `SELECT count(*) n FROM transcript_map_nodes WHERE plan_id=?`,
       [plan.id],
@@ -583,8 +618,24 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         [plan.id, position, PAGE],
       );
       if (!rows.length) throw new TranscriptMapProjectionRefusal("missing transcript plan page");
-      for (const row of rows) {
-        const node = TranscriptMapNodeSchema.parse(JSON.parse(row.payload));
+      const links = new Set<string>();
+      const nodes = rows.map((row) => TranscriptMapNodeSchema.parse(JSON.parse(row.payload)));
+      for (const node of nodes) {
+        if (node.parentId !== null) links.add(node.parentId);
+        for (const child of node.children) links.add(child);
+      }
+      const related = new Map<string, TranscriptMapNode>();
+      const linkedIds = [...links];
+      for (let start = 0; start < linkedIds.length; start += PAGE) {
+        const linked = await db.query<{ id: string; payload: string }>(
+          `SELECT id,payload FROM transcript_map_nodes WHERE id IN (SELECT value FROM json_each(?))`,
+          [json(linkedIds.slice(start, start + PAGE))],
+        );
+        for (const row of linked) related.set(row.id, JSON.parse(row.payload) as TranscriptMapNode);
+      }
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index]!;
+        const node = nodes[index]!;
         if (
           Number(row.position) !== position ||
           node.level < previousLevel ||
@@ -607,7 +658,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           )
             throw new TranscriptMapProjectionRefusal("invalid transcript root");
         } else {
-          const parent = await one<TranscriptMapNode>("transcript_map_nodes", node.parentId);
+          const parent = related.get(node.parentId);
           if (
             !parent ||
             parent.planId !== plan.id ||
@@ -623,7 +674,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           let byteEnd = node.span.byteOffset;
           let lastRecord = node.span.firstRecord - 1;
           for (const id of node.children) {
-            const child = await one<TranscriptMapNode>("transcript_map_nodes", id);
+            const child = related.get(id);
             if (
               !child ||
               child.parentId !== node.id ||
@@ -643,6 +694,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
             throw new TranscriptMapProjectionRefusal("transcript children do not cover parent");
         }
       }
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     let after = -1;
     for (;;) {
@@ -661,6 +713,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
         after = Number(row.byte_offset);
       }
       if (leaves.length < PAGE) break;
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     if (
       `sha256:${hash.update("]").digest("hex")}` !== plan.digest ||
@@ -1076,24 +1129,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
           params: [plan.id, id, json(plan), now],
         },
       ]);
-      await batch(
-        tree.nodes.map((node, position) => ({
-          sql: `INSERT OR IGNORE INTO transcript_map_nodes(id,plan_id,position,parent_node_id,level,ordinal,byte_offset,byte_length,gap,payload)
-          VALUES(?,?,?,?,?,?,?,?,?,?)`,
-          params: [
-            node.id,
-            plan.id,
-            position,
-            node.parentId,
-            node.level,
-            node.ordinal,
-            node.span.byteOffset,
-            node.span.byteLength,
-            node.gap,
-            json(node),
-          ],
-        })),
-      );
+      await batch(nodeStatements(tree.nodes, 0), 1);
       await verifyPlan(plan);
       await db.batch([
         { sql: "UPDATE transcript_map_plans SET complete=1 WHERE id=?", params: [plan.id] },

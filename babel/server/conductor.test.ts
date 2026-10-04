@@ -9321,9 +9321,12 @@ test.each(["captures", "nodes"] as const)(
     };
     await f.tick();
     expect(f.fleet.launched).toHaveLength(launched);
-    expect(await f.db.query(`SELECT count(*) n FROM transcript_map_${boundary}`)).toEqual([
-      { n: 1n },
-    ]);
+    expect(
+      await f.db.query(
+        `SELECT json_extract(preparation,'$.progress') AS progress FROM runs WHERE job_id=?`,
+        [f.fleet.launched.at(-1)!.jobId],
+      ),
+    ).toEqual([{ progress: null }]);
     await f.tick();
     expect(await f.db.query(`SELECT count(*) n FROM transcript_map_${boundary}`)).toEqual([
       { n: 3n },
