@@ -1884,6 +1884,68 @@ test("a settled job's every output file lands in the store, and its run and clai
   expect(claim[0]).toEqual({ actual_cost: 0.42, outcome: "completed" });
 });
 
+test("a mapping wake settles retained preparations with tied timestamps and defers a concurrent append", async () => {
+  const db = openDatabase();
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const startedAt = new Date(clock).toISOString();
+  async function retain(suffix: string): Promise<void> {
+    const runId = `run_preparation_${suffix}`;
+    const jobId = `job_preparation_${suffix}`;
+    await db.run(
+      `INSERT INTO runs(id,kind,machine_id,job_id,started_at,payload) VALUES(?,?,?,?,?,'{}')`,
+      [runId, OPERATIONS.mapPrepare, MACHINE, jobId, startedAt],
+    );
+    fleet.running(jobId, MACHINE, OPERATIONS.mapPrepare);
+    fleet.finish(jobId, 0, {
+      [JOB_OUTPUT_FILES.receipt]: {
+        runId,
+        kind: "mapPrepare",
+        machineId: MACHINE,
+        startedAt,
+        finishedAt: startedAt,
+        closure: "completed",
+        counts: {},
+      },
+    });
+  }
+  const suffixes = Array.from({ length: 300 }, (_, index) => String(index).padStart(4, "0"));
+  for (const suffix of suffixes) await retain(suffix);
+  let appended = false;
+  const jobs: JobsSlice = {
+    ...hookWoken(fleet),
+    async status(node) {
+      if (!appended) {
+        appended = true;
+        await retain("late");
+      }
+      return fleet.status(node);
+    },
+  };
+  const loop = conductor({
+    store,
+    coordinator: governed(store, () => clock, null),
+    jobs,
+    machines: new Folders(),
+    engine: NO_CODE,
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  await loop.tickMapDrains();
+  const first = await db.query<{ id: string; closure: string | null }>(
+    `SELECT id,closure FROM runs ORDER BY id`,
+  );
+  expect(first).toEqual([
+    ...suffixes.map((suffix) => ({ id: `run_preparation_${suffix}`, closure: "completed" })),
+    { id: "run_preparation_late", closure: null },
+  ]);
+  await loop.tickMapDrains();
+  expect(await db.query(`SELECT closure FROM runs WHERE id='run_preparation_late'`)).toEqual([
+    { closure: "completed" },
+  ]);
+}, 30_000);
+
 test("a job that died with no receipt abandons its claim at the reservation and closes its run", async () => {
   const db = openDatabase();
   await seed(db);

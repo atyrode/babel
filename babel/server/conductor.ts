@@ -75,6 +75,7 @@ import type {
 } from "../store/coordinator.ts";
 import { mappingPolicy, perMachineBound } from "../store/coordinator.ts";
 import { transcriptMaps, TranscriptMapProjectionRefusal } from "../store/transcript-maps.ts";
+import { PENDING_MAP_CATALOG_SQL } from "../store/schema.ts";
 import {
   reviewActionStatus,
   reviewSubmission,
@@ -3829,22 +3830,40 @@ export function conductor(deps: ConductorDeps): Conductor {
   ): Promise<void> {
     // Receipt projection and ledger accounting are separate durable transactions. Recover the
     // latter after a crash; operator Stop can also have closed the row before work cleanup.
-    const closed = await store.db.query<{
-      id: string;
-      job_id: string;
-      prepare_job_id: string;
-      preparation: string;
-      closure: string;
-      cost_usd: number | null;
-    }>(
-      `SELECT r.id,r.job_id,r.prepare_job_id,r.preparation,r.closure,r.cost_usd FROM runs r
-      WHERE r.kind=? AND r.closure IS NOT NULL AND r.job_id IS NOT NULL AND
-        (EXISTS (SELECT 1 FROM claims c WHERE (c.job_id=r.job_id OR c.job_id=r.prepare_job_id) AND c.finished_at IS NULL)
-         OR EXISTS (SELECT 1 FROM transcript_map_work w WHERE w.run_id=r.id AND w.state='running'))
-      ORDER BY r.started_at LIMIT 128`,
+    const closed = await store.db.query<{ id: string }>(
+      `WITH pending AS MATERIALIZED (
+         SELECT r.id FROM claims c INDEXED BY claims_unfinished
+         CROSS JOIN runs r ON r.job_id=c.job_id WHERE c.finished_at IS NULL
+         UNION
+         SELECT r.id FROM claims c INDEXED BY claims_unfinished
+         CROSS JOIN runs r ON r.prepare_job_id=c.job_id WHERE c.finished_at IS NULL
+         UNION
+         SELECT r.id FROM transcript_map_work w INDEXED BY transcript_map_work_running_run
+         CROSS JOIN runs r ON r.id=w.run_id WHERE w.state='running'
+       )
+       SELECT r.id FROM pending JOIN runs r ON r.id=pending.id
+        WHERE r.kind=? AND r.closure IS NOT NULL AND r.job_id IS NOT NULL
+        ORDER BY r.started_at LIMIT 128`,
       [TRANSCRIPT_MAP_SESSION_OPERATION],
     );
-    for (const run of closed) {
+    let turnAt = performance.now();
+    for (const retained of closed) {
+      if (performance.now() - turnAt >= 50) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        turnAt = performance.now();
+      }
+      const rows = await store.db.query<{
+        id: string;
+        job_id: string;
+        prepare_job_id: string;
+        preparation: string;
+        closure: string;
+        cost_usd: number | null;
+      }>(`SELECT id,job_id,prepare_job_id,preparation,closure,cost_usd FROM runs WHERE id=?`, [
+        retained.id,
+      ]);
+      const run = rows[0];
+      if (run === undefined) continue;
       const intent = mappingIntent(run.preparation);
       if (!intent) continue;
       await store.db.batch(
@@ -3867,7 +3886,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         { jobId: run.job_id, previousJobId: run.prepare_job_id },
       );
     }
-    const parents = await store.db.query<{
+    type MappingParent = {
       id: string;
       prepare_job_id: string;
       preparation: string;
@@ -3875,13 +3894,71 @@ export function conductor(deps: ConductorDeps): Conductor {
       payload: string;
       prepare_closure: string | null;
       prepare_payload: string | null;
-    }>(`SELECT r.id,r.prepare_job_id,r.preparation,r.closure,r.payload,
-        p.closure prepare_closure,p.payload prepare_payload FROM runs r
-        LEFT JOIN runs p ON p.job_id=r.prepare_job_id
-        WHERE r.job_id IS NULL AND json_type(r.preparation,'$.mapping')='object'
-          AND (r.closure IS NULL OR EXISTS (SELECT 1 FROM claims c WHERE c.job_id=r.prepare_job_id AND c.finished_at IS NULL))
-        ORDER BY r.started_at LIMIT 128`);
-    for (const run of parents) {
+      prepare_rowid: string | null;
+    };
+    async function* parents(): AsyncGenerator<MappingParent> {
+      const watermark = await store.db.query<{ rowid: string }>(
+        `SELECT CAST(coalesce(max(rowid),0) AS TEXT) rowid FROM runs`,
+      );
+      let afterStarted: string | null = null;
+      let afterId = "";
+      let retained = 0;
+      while (retained < 128) {
+        const page: readonly { id: string; started_at: string }[] = await store.db.query(
+          `SELECT r.id,r.started_at FROM runs r
+             WHERE r.job_id IS NULL AND r.preparation IS NOT NULL AND r.rowid<=CAST(? AS INTEGER)
+               AND (r.closure IS NULL OR EXISTS (
+                 SELECT 1 FROM claims c WHERE c.job_id=r.prepare_job_id AND c.finished_at IS NULL
+               ))
+               ${afterStarted === null ? "" : "AND (r.started_at>? OR (r.started_at=? AND r.id>?))"}
+             ORDER BY r.started_at,r.id LIMIT 16`,
+          afterStarted === null
+            ? [watermark[0]?.rowid ?? "0"]
+            : [watermark[0]?.rowid ?? "0", afterStarted, afterStarted, afterId],
+        );
+        if (page.length === 0) return;
+        // Bound raw candidates before inspecting preparation JSON; material stays in the ledger
+        // until one eligible parent is read, not in a 128-document settlement response.
+        const eligible = await store.db.query<{ id: string }>(
+          `SELECT r.id FROM json_each(?) page JOIN runs r ON r.id=page.value
+             WHERE json_type(r.preparation,'$.mapping')='object' ORDER BY page.key`,
+          [JSON.stringify(page.map((row) => row.id))],
+        );
+        for (const candidate of eligible) {
+          let afterPreparation: string | null = null;
+          while (retained < 128) {
+            const rows: readonly MappingParent[] = await store.db.query(
+              `SELECT r.id,r.prepare_job_id,r.preparation,r.closure,r.payload,
+                      p.closure prepare_closure,p.payload prepare_payload,
+                      CAST(p.rowid AS TEXT) prepare_rowid
+                 FROM runs r LEFT JOIN runs p ON p.job_id=r.prepare_job_id
+                WHERE r.id=? AND (p.rowid IS NULL OR p.rowid<=CAST(? AS INTEGER))
+                  ${afterPreparation === null ? "" : "AND p.rowid>CAST(? AS INTEGER)"}
+                ORDER BY p.rowid LIMIT 1`,
+              afterPreparation === null
+                ? [candidate.id, watermark[0]?.rowid ?? "0"]
+                : [candidate.id, watermark[0]?.rowid ?? "0", afterPreparation],
+            );
+            const row = rows[0];
+            if (row === undefined) break;
+            retained++;
+            yield row;
+            if (row.prepare_rowid === null) break;
+            afterPreparation = row.prepare_rowid;
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          }
+        }
+        const last = page[page.length - 1]!;
+        afterStarted = last.started_at;
+        afterId = last.id;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    for await (const run of parents()) {
+      if (performance.now() - turnAt >= 50) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        turnAt = performance.now();
+      }
       const intent = mappingIntent(run.preparation);
       if (!intent) continue; // Corrupt authority is never reconstructed from current policy.
       const payload = JSON.parse(run.payload) as { posting?: boolean; nativeAttempts?: number };
@@ -4585,18 +4662,30 @@ export function conductor(deps: ConductorDeps): Conductor {
       policy.enabled && policy.mapping !== undefined
         ? TranscriptMapConfigSchema.parse(policy.mapping)
         : null;
-    const rows = await store.db.query<{
-      id: string;
-      preparation: string | null;
-      payload: string;
-      closure: string;
-    }>(
-      `SELECT id,preparation,payload,closure FROM runs WHERE kind=? AND closure IS NOT NULL
-       AND json_extract(preparation,'$.progress') IS NULL
-       AND (? IS NULL OR machine_id=?) ORDER BY started_at,id LIMIT 8`,
-      [OPERATIONS.mapCatalog, machineId ?? null, machineId ?? null],
+    const retained = await store.db.query<{ id: string }>(
+      `SELECT id FROM runs WHERE ${PENDING_MAP_CATALOG_SQL}
+         AND json_extract(preparation,'$.progress') IS NULL
+         AND (? IS NULL OR machine_id=?) ORDER BY started_at,id LIMIT 8`,
+      [machineId ?? null, machineId ?? null],
     );
-    for (const row of rows) {
+    async function* receipts() {
+      for (const row of retained) {
+        const projected = await store.db.query<{
+          id: string;
+          preparation: string | null;
+          payload: string;
+          closure: string;
+        }>(`SELECT id,preparation,payload,closure FROM runs WHERE id=?`, [row.id]);
+        if (projected[0] !== undefined) yield projected[0];
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    let turnAt = performance.now();
+    for await (const row of receipts()) {
+      if (performance.now() - turnAt >= 50) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        turnAt = performance.now();
+      }
       const intent = catalogIntent(row.preparation);
       if (!intent) {
         notes.push(`catalog ${row.id}: retained intent is unavailable; projection remains pending`);
@@ -4927,7 +5016,10 @@ export function conductor(deps: ConductorDeps): Conductor {
           newestSilences.delete(observation.runId);
           if (observation.statement !== null) statements.push(observation.statement);
         }
-        if (statements.length > 0) await store.db.batch(statements);
+        if (statements.length > 0) {
+          await store.db.batch(statements);
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
       }
     } catch (error) {
       // A closed data lease must not retain identities for batches it could not submit,
@@ -6412,32 +6504,74 @@ export function conductor(deps: ConductorDeps): Conductor {
     // A crash after the terminal receipt but before claim accounting must not abandon earned
     // work at its reservation, nor replay any accepted tool action.
     if (scope === undefined) {
-      const closed = await store.db.query<{
-        job_id: string;
-        cost_usd: number | null;
-        closure: string;
-        authority_id: string;
-        preparation: string;
-      }>(`SELECT r.job_id,r.cost_usd,r.closure,r.authority_id,r.preparation FROM runs r
-        JOIN claims c ON (c.job_id=r.job_id OR c.job_id IS NULL) AND c.run_id=r.authority_id
-          AND c.id=json_extract(r.preparation,'$.review.assignmentId')
-          AND c.fence=json_extract(r.preparation,'$.review.fence')
-        WHERE r.closure IS NOT NULL AND r.job_id IS NOT NULL AND c.finished_at IS NULL
-          AND json_extract(r.payload,'$.reviewSubmission.mode')='tools'`);
-      for (const row of closed) {
-        const preparation = reviewPreparation(preparationOf(row.preparation));
-        if (preparation !== null)
-          await settleClaims(
-            row.job_id,
-            row.cost_usd,
-            row.closure === "completed" ? "completed" : "failed",
-            settled,
-            {
-              id: preparation.assignmentId,
-              runId: row.authority_id,
-              fence: preparation.fence,
-            },
-          );
+      const watermark = await store.db.query<{ claims: string; runs: string }>(
+        `SELECT CAST(coalesce((SELECT max(rowid) FROM claims),0) AS TEXT) claims,
+                CAST(coalesce((SELECT max(rowid) FROM runs),0) AS TEXT) runs`,
+      );
+      let afterClaim: string | null = null;
+      while (true) {
+        const claims: readonly { id: string }[] = await store.db.query(
+          `SELECT id FROM claims WHERE finished_at IS NULL AND rowid<=CAST(? AS INTEGER)
+             ${afterClaim === null ? "" : "AND id>?"} ORDER BY id LIMIT 16`,
+          afterClaim === null
+            ? [watermark[0]?.claims ?? "0"]
+            : [watermark[0]?.claims ?? "0", afterClaim],
+        );
+        if (claims.length === 0) break;
+        for (const claim of claims) {
+          let afterRun: string | null = null;
+          while (true) {
+            // Start from one unfinished claim, not every retained run document. The pure-column
+            // authority index bounds even an unconfirmed claim whose job_id is still NULL.
+            const candidates: readonly { id: string; rowid: string }[] = await store.db.query(
+              `SELECT id,CAST(rowid AS TEXT) rowid FROM runs
+                 WHERE authority_id=(SELECT run_id FROM claims WHERE id=?)
+                   AND closure IS NOT NULL AND job_id IS NOT NULL AND rowid<=CAST(? AS INTEGER)
+                   ${afterRun === null ? "" : "AND rowid>CAST(? AS INTEGER)"}
+                 ORDER BY runs.rowid LIMIT 16`,
+              afterRun === null
+                ? [claim.id, watermark[0]?.runs ?? "0"]
+                : [claim.id, watermark[0]?.runs ?? "0", afterRun],
+            );
+            if (candidates.length === 0) break;
+            const closed = await store.db.query<{
+              job_id: string;
+              cost_usd: number | null;
+              closure: string;
+              authority_id: string;
+              preparation: string;
+            }>(
+              `SELECT r.job_id,r.cost_usd,r.closure,r.authority_id,r.preparation
+                 FROM json_each(?) page JOIN runs r ON r.id=page.value
+                 JOIN claims c ON (c.job_id=r.job_id OR c.job_id IS NULL) AND c.run_id=r.authority_id
+                   AND c.id=json_extract(r.preparation,'$.review.assignmentId')
+                   AND c.fence=json_extract(r.preparation,'$.review.fence')
+                 WHERE c.id=? AND r.closure IS NOT NULL AND r.job_id IS NOT NULL
+                   AND c.finished_at IS NULL
+                   AND json_extract(r.payload,'$.reviewSubmission.mode')='tools'`,
+              [JSON.stringify(candidates.map((row) => row.id)), claim.id],
+            );
+            for (const row of closed) {
+              const preparation = reviewPreparation(preparationOf(row.preparation));
+              if (preparation !== null)
+                await settleClaims(
+                  row.job_id,
+                  row.cost_usd,
+                  row.closure === "completed" ? "completed" : "failed",
+                  settled,
+                  {
+                    id: preparation.assignmentId,
+                    runId: row.authority_id,
+                    fence: preparation.fence,
+                  },
+                );
+            }
+            afterRun = candidates[candidates.length - 1]?.rowid ?? null;
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          }
+        }
+        afterClaim = claims[claims.length - 1]?.id ?? null;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
     }
     const lane: SqlCondition =
@@ -6449,159 +6583,186 @@ export function conductor(deps: ConductorDeps): Conductor {
               sql: "(kind=? OR json_type(preparation,'$.mapping')='object')",
               params: [OPERATIONS.mapPrepare],
             };
-    const pending = await store.db.query<PendingRun>(
-      `SELECT id, job_id, machine_id, kind, container_id, prepare_job_id, started_at,
-              profile, preparation, unreadable
-         FROM runs
-        WHERE closure IS NULL AND job_id IS NOT NULL AND machine_id IS NOT NULL
-          AND (coalesce(container_id, '') <> '' OR kind IN (${NATIVE_KINDS.map(() => "?").join(", ")}))
-          AND ${lane.sql}
-        ORDER BY started_at`,
-      [...NATIVE_KINDS, ...lane.params],
-    );
     let inFlight = 0;
     let atModel = 0;
     let stalled = 0;
     const silences: SilenceObservation[] = [];
+    // A wake reconciles the retained store it entered, not jobs later wakes append forever.
+    const highWater = await store.db.query<{ rowid: string }>(
+      `SELECT CAST(coalesce(max(rowid),0) AS TEXT) rowid FROM runs`,
+    );
+    let afterStarted: string | null = null;
+    let afterId = "";
+    let turnAt = performance.now();
     // The count of silent cycles is on the row now, so nothing is pruned here: a run that is
     // no longer waited on is not selected, and one that answers is set back to zero in place.
     try {
-      for (const run of pending) {
-        if (run.kind === MACHINE_OPERATIONS.citationBackfill) {
+      // Drain every retained run, but never materialize a whole-store result or keep chaining
+      // synchronous SDK promises without a host turn. The cursor survives terminal row writes.
+      while (true) {
+        const pending: readonly PendingRun[] = await store.db.query(
+          `SELECT id, job_id, machine_id, kind, container_id, prepare_job_id, started_at,
+                  profile, preparation, unreadable
+             FROM runs
+            WHERE closure IS NULL AND job_id IS NOT NULL AND machine_id IS NOT NULL AND rowid<=CAST(? AS INTEGER)
+              AND (coalesce(container_id, '') <> '' OR kind IN (${NATIVE_KINDS.map(() => "?").join(", ")}))
+              AND ${lane.sql} ${afterStarted === null ? "" : "AND (started_at,id)>(?,?)"}
+            ORDER BY started_at,id LIMIT 128`,
+          [
+            highWater[0]?.rowid ?? "0",
+            ...NATIVE_KINDS,
+            ...lane.params,
+            ...(afterStarted === null ? [] : [afterStarted, afterId]),
+          ],
+        );
+        if (pending.length === 0) break;
+        for (const run of pending) {
+          if (performance.now() - turnAt >= 50) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            turnAt = performance.now();
+          }
+          if (run.kind === MACHINE_OPERATIONS.citationBackfill) {
+            try {
+              const result = await reconcileCitationBackfill(store, jobs, {
+                kind: "job",
+                machineId: run.machine_id,
+                operationId: run.kind,
+                jobId: run.job_id,
+              });
+              if (result === null) inFlight++;
+              else {
+                notes.push(...result.notes);
+                ingested.push({
+                  runId: result.runId,
+                  jobId: run.job_id,
+                  closure: result.closure,
+                  costUsd: 0,
+                  rows: result.rows,
+                  skipped: result.skipped,
+                });
+              }
+            } catch {
+              notes.push(`citation job ${run.job_id} outputs remain pending`);
+              inFlight++;
+            }
+            continue;
+          }
+          if (run.kind !== OPERATIONS.mapCatalog) await renewAnalysis(run.job_id, at, policy);
+          // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
+          // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it
+          // answers nothing useful at best; Code is asked instead, through the door that owns it.
+          if (
+            run.kind !== OPERATIONS.mapCatalog &&
+            run.container_id !== null &&
+            run.container_id !== ""
+          ) {
+            const reconciled = await reconcileSession(
+              at,
+              run,
+              silences,
+              ingested,
+              settled,
+              notes,
+              refusals,
+            );
+            if (reconciled.inFlight) {
+              inFlight += 1;
+              if (reconciled.stage === RUN_STAGES.atModel) atModel += 1;
+              if (reconciled.stalled === true) stalled += 1;
+            }
+            continue;
+          }
+          let state: JobRunState | null = null;
           try {
-            const result = await reconcileCitationBackfill(store, jobs, {
+            state = await jobs.status({
               kind: "job",
               machineId: run.machine_id,
               operationId: run.kind,
               jobId: run.job_id,
             });
-            if (result === null) inFlight++;
-            else {
-              notes.push(...result.notes);
-              ingested.push({
-                runId: result.runId,
-                jobId: run.job_id,
-                closure: result.closure,
-                costUsd: 0,
-                rows: result.rows,
-                skipped: result.skipped,
-              });
+          } catch (error) {
+            notes.push(`job ${run.job_id} cannot be read: ${message(error)}`);
+            if (
+              scope?.lane === "catalog" &&
+              scope.machineId === run.machine_id &&
+              run.kind === OPERATIONS.mapCatalog &&
+              neverRetained(error)
+            ) {
+              const intent = catalogIntent(run.preparation);
+              if (intent) await postCatalog(run.id, run.job_id, intent, notes);
             }
-          } catch {
-            notes.push(`citation job ${run.job_id} outputs remain pending`);
-            inFlight++;
+            // Retrying a preparation is a new spend: only a wake carrying the run's lane does it
+            // (`postMappingNative` asks). Any other wake leaves the intent untouched for that one
+            // (#469).
+            if (
+              (deps.mappingDrainId !== undefined || deps.nativeDispatch === true) &&
+              run.kind === OPERATIONS.mapPrepare &&
+              neverRetained(error)
+            ) {
+              const parents = await store.db.query<{ id: string; preparation: string }>(
+                `SELECT id,preparation FROM runs WHERE prepare_job_id=? AND closure IS NULL AND job_id IS NULL`,
+                [run.job_id],
+              );
+              for (const parent of parents) {
+                const intent = mappingIntent(parent.preparation);
+                if (intent !== null)
+                  await postMappingNative(parent.id, run.job_id, intent, settled, notes);
+              }
+            }
           }
-          continue;
-        }
-        if (run.kind !== OPERATIONS.mapCatalog) await renewAnalysis(run.job_id, at, policy);
-        // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
-        // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it
-        // answers nothing useful at best; Code is asked instead, through the door that owns it.
-        if (
-          run.kind !== OPERATIONS.mapCatalog &&
-          run.container_id !== null &&
-          run.container_id !== ""
-        ) {
-          const reconciled = await reconcileSession(
+          // A status the hub cannot answer — it threw, or it does not know this job — leaves the run
+          // in flight for this cycle and is remembered: a machine that vanished would otherwise keep
+          // its claims "running" for ever, and the reaper below counts the cycles.
+          if (state === null) {
+            silence(silences, run.id, Number(run.unreadable), false);
+            inFlight += 1;
+            continue;
+          }
+          silence(silences, run.id, Number(run.unreadable), true);
+          if (TERMINAL_STATES[state.state] !== true) {
+            inFlight += 1;
+            const folded = await foldRun(at, run, notes);
+            if (folded.stage === RUN_STAGES.atModel) atModel += 1;
+            if (folded.stalled) stalled += 1;
+            continue;
+          }
+          // THE LAST READ OF THE FOLD, taken before the settlement deletes it. Which models
+          // answered is not in `state.result` — the hub's `usage.inference` is five numbers and no
+          // name — so this row is the only place it was ever written, and the receipt is the only
+          // place it can survive (#169).
+          const heard = await store.db.query<{ models: string }>(
+            `SELECT models FROM run_progress WHERE run_id = ?`,
+            [run.id],
+          );
+          await settle(
             at,
-            run,
-            silences,
+            {
+              runId: run.id,
+              jobId: run.job_id,
+              machineId: run.machine_id,
+              operationId: run.kind,
+              outputs: state.result?.outputs ?? [],
+              closure: closureOf(state),
+              reason: nativeReason(state),
+              inference: state.result?.usage?.inference ?? null,
+              models: modelList(heard[0]?.models),
+            },
             ingested,
             settled,
             notes,
             refusals,
           );
-          if (reconciled.inFlight) {
-            inFlight += 1;
-            if (reconciled.stage === RUN_STAGES.atModel) atModel += 1;
-            if (reconciled.stalled === true) stalled += 1;
-          }
-          continue;
+          // The receipt is the record now. A settled run keeps no in-flight row: the panel reads a
+          // finished run's spend off the run itself, and a `run_progress` row left behind would be
+          // a second, staler answer to the same question.
+          await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
         }
-        let state: JobRunState | null = null;
-        try {
-          state = await jobs.status({
-            kind: "job",
-            machineId: run.machine_id,
-            operationId: run.kind,
-            jobId: run.job_id,
-          });
-        } catch (error) {
-          notes.push(`job ${run.job_id} cannot be read: ${message(error)}`);
-          if (
-            scope?.lane === "catalog" &&
-            scope.machineId === run.machine_id &&
-            run.kind === OPERATIONS.mapCatalog &&
-            neverRetained(error)
-          ) {
-            const intent = catalogIntent(run.preparation);
-            if (intent) await postCatalog(run.id, run.job_id, intent, notes);
-          }
-          // Retrying a preparation is a new spend: only a wake carrying the run's lane does it
-          // (`postMappingNative` asks). Any other wake leaves the intent untouched for that one
-          // (#469).
-          if (
-            (deps.mappingDrainId !== undefined || deps.nativeDispatch === true) &&
-            run.kind === OPERATIONS.mapPrepare &&
-            neverRetained(error)
-          ) {
-            const parents = await store.db.query<{ id: string; preparation: string }>(
-              `SELECT id,preparation FROM runs WHERE prepare_job_id=? AND closure IS NULL AND job_id IS NULL`,
-              [run.job_id],
-            );
-            for (const parent of parents) {
-              const intent = mappingIntent(parent.preparation);
-              if (intent !== null)
-                await postMappingNative(parent.id, run.job_id, intent, settled, notes);
-            }
-          }
-        }
-        // A status the hub cannot answer — it threw, or it does not know this job — leaves the run
-        // in flight for this cycle and is remembered: a machine that vanished would otherwise keep
-        // its claims "running" for ever, and the reaper below counts the cycles.
-        if (state === null) {
-          silence(silences, run.id, Number(run.unreadable), false);
-          inFlight += 1;
-          continue;
-        }
-        silence(silences, run.id, Number(run.unreadable), true);
-        if (TERMINAL_STATES[state.state] !== true) {
-          inFlight += 1;
-          const folded = await foldRun(at, run, notes);
-          if (folded.stage === RUN_STAGES.atModel) atModel += 1;
-          if (folded.stalled) stalled += 1;
-          continue;
-        }
-        // THE LAST READ OF THE FOLD, taken before the settlement deletes it. Which models
-        // answered is not in `state.result` — the hub's `usage.inference` is five numbers and no
-        // name — so this row is the only place it was ever written, and the receipt is the only
-        // place it can survive (#169).
-        const heard = await store.db.query<{ models: string }>(
-          `SELECT models FROM run_progress WHERE run_id = ?`,
-          [run.id],
-        );
-        await settle(
-          at,
-          {
-            runId: run.id,
-            jobId: run.job_id,
-            machineId: run.machine_id,
-            operationId: run.kind,
-            outputs: state.result?.outputs ?? [],
-            closure: closureOf(state),
-            reason: nativeReason(state),
-            inference: state.result?.usage?.inference ?? null,
-            models: modelList(heard[0]?.models),
-          },
-          ingested,
-          settled,
-          notes,
-          refusals,
-        );
-        // The receipt is the record now. A settled run keeps no in-flight row: the panel reads a
-        // finished run's spend off the run itself, and a `run_progress` row left behind would be
-        // a second, staler answer to the same question.
-        await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+        const last = pending[pending.length - 1]!;
+        afterStarted = last.started_at;
+        afterId = last.id;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        turnAt = performance.now();
+        if (pending.length < 128) break;
       }
     } finally {
       await writeSilences(silences);
@@ -7355,24 +7516,35 @@ export function conductor(deps: ConductorDeps): Conductor {
     notes: string[],
   ): Promise<void> {
     if (deps.chain == null) return;
-    const pending = await store.db.query<{
-      id: string;
-      authority_id: string;
-      chain: string | null;
-      preparation: string;
-      profile: string;
-      machine_id: string;
-      payload: string;
-    }>(
-      `SELECT id,authority_id,chain,preparation,profile,machine_id,payload FROM runs
+    const pending = await store.db.query<{ id: string }>(
+      `SELECT id FROM runs
         WHERE kind=? AND authority_kind='conductor' AND closure IS NULL AND job_id IS NULL
+          AND preparation IS NOT NULL
           AND json_type(preparation,'$.review')='object' AND json_extract(payload,'$.posting')=1
           AND coalesce(json_extract(payload,'$.reviewSubmission.mode'),'text')='text'
           AND json_type(payload,'$.reviewAdmission') IS NULL AND chain=?
         ORDER BY started_at LIMIT 128`,
       [OPERATIONS.evaluate, deps.chain],
     );
-    for (const row of pending) {
+    async function* postings() {
+      for (const row of pending) {
+        const retained = await store.db.query<{
+          id: string;
+          authority_id: string;
+          chain: string | null;
+          preparation: string;
+          profile: string;
+          machine_id: string;
+          payload: string;
+        }>(
+          `SELECT id,authority_id,chain,preparation,profile,machine_id,payload FROM runs WHERE id=?`,
+          [row.id],
+        );
+        if (retained[0] !== undefined) yield retained[0];
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    for await (const row of postings()) {
       const preparation = reviewPreparation(preparationOf(row.preparation));
       const profile = CodeProfileSchema.safeParse(jsonRecord(row.profile));
       const prompt = jsonRecord(row.payload)?.["postingPrompt"];

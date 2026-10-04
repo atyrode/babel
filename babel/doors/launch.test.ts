@@ -48,6 +48,7 @@ import {
   type SessionRequest,
 } from "../server/engine/session.ts";
 import type { Recipe } from "../server/engine/prompts.ts";
+import { materialBound } from "../store/analysis.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { closeDrain } from "../store/drains.ts";
 import { stamp } from "../store/feedindex.ts";
@@ -1112,6 +1113,45 @@ test("a drain-owned wake posts only its prepared run, not another ready run of t
   ).toEqual([{ runId: otherId, jobId: "job_code_2" }]);
 });
 
+test("prepared recovery reconciles every retained parent page and leaves unsealed material waiting", async () => {
+  const ready: string[] = [];
+  for (let i = 0; i < 35; i++) {
+    const suffix = String(i).padStart(2, "0");
+    const runId = `run_prepared_page_${suffix}`;
+    const jobId = `job_prepared_page_${suffix}`;
+    await harness.db.run(
+      `INSERT INTO runs(rowid,id,kind,machine_id,job_id,started_at,closure,payload)
+       VALUES(CAST(? AS INTEGER),?,?,?,?,?,?,'{}')`,
+      [
+        i === 0 ? "-9223372036854775808" : null,
+        `run_preparation_page_${suffix}`,
+        MACHINE_OPERATIONS.prepare,
+        MACHINE,
+        jobId,
+        stamp(NOW - HOUR),
+        i === 34 ? null : "completed",
+      ],
+    );
+    await harness.db.run(
+      `INSERT INTO runs(rowid,id,kind,machine_id,container_id,prepare_job_id,started_at,payload)
+       VALUES(CAST(? AS INTEGER),?,'fixture',?,'ctr_workbench',?,?,'{}')`,
+      [i === 33 ? "-1" : null, runId, MACHINE, jobId, stamp(NOW)],
+    );
+    if (i < 34) ready.push(runId);
+  }
+  const posted = await machinery.postPrepared(fleet, code, ANALYSIS_PLAN, WAKE);
+  expect(posted.map((row) => row.runId).sort()).toEqual(ready);
+  expect(
+    await harness.db.query(
+      `SELECT id,closure FROM runs WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id`,
+      [JSON.stringify(ready)],
+    ),
+  ).toEqual(ready.map((id) => ({ id, closure: "failed" })));
+  expect(
+    await harness.db.query(`SELECT job_id,closure FROM runs WHERE id='run_prepared_page_34'`),
+  ).toEqual([{ job_id: null, closure: null }]);
+});
+
 test("an explicit explore posts its preparation within prepare's own declared ceiling", async () => {
   /*
     THE LIMITS THE HUB JUDGES A POSTING AGAINST ARE THE MANIFEST'S (#449). This file's fixed plan
@@ -1494,6 +1534,110 @@ test("the material bound is the machine's measured scratch, shared by the lane's
   );
   expect(JSON.parse(String(fan[0]?.preparation))).toMatchObject({ selected: 1, overBound: 1 });
 });
+
+test("capacity selection preserves newest integer across timestamp ties and negative rowids", async () => {
+  const capacity = async (
+    rowId: string,
+    id: string,
+    at: number,
+    payload: string,
+    machine = MACHINE,
+  ) =>
+    await harness.db.run(
+      `INSERT INTO runs(rowid,id,kind,machine_id,started_at,payload)
+        VALUES(CAST(? AS INTEGER),?,?,?,?,?)`,
+      [rowId, id, BEAT, machine, stamp(at), payload],
+    );
+  for (let i = 0; i < 19; i++)
+    await capacity(
+      String(10_000 + i),
+      `run_no_capacity_${i}`,
+      NOW,
+      i === 18
+        ? JSON.stringify({
+            outputCapacity: { bytes: MATERIAL_HEADROOM_BYTES + 48 * 1024 * 1024 + 0.5 },
+          })
+        : "{}",
+    );
+  await capacity("-9223372036854775808", "run_minimum_capacity_cursor", NOW - HOUR, "{}");
+  await capacity(
+    "-2",
+    "run_string_capacity",
+    NOW - HOUR,
+    JSON.stringify({ outputCapacity: { bytes: "large" } }),
+  );
+  await capacity(
+    "-1",
+    "run_integer_capacity",
+    NOW - HOUR,
+    JSON.stringify({ outputCapacity: { bytes: MATERIAL_HEADROOM_BYTES + 12 * 1024 * 1024 } }),
+  );
+  await archived("omp/four", { size: 4 * 1024 * 1024, modified_at: stamp(NOW - HOUR) });
+  await archived("omp/two", { size: 2 * 1024 * 1024, modified_at: stamp(NOW - HOUR) });
+  const result = await machinery.startExplore(
+    {
+      runId: "run_capacity_cursor",
+      jobId: "job_capacity_cursor",
+      authorityId: "operator",
+      chain: WAKE,
+    },
+    fleet,
+    code,
+    {
+      preset: "read-whats-new",
+      machineId: MACHINE,
+      sinceDays: 1,
+      profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+      recipes: [],
+    },
+    { ...ANALYSIS_PLAN, materials: 2 },
+  );
+  expect(result).toHaveProperty("jobId");
+  expect(handed(fleet.executed[0]).sort()).toEqual(["omp/s1", "omp/two"]);
+});
+
+test.each(["earlier", "later", "other-machine"] as const)(
+  "capacity discovery preserves %s malformed legacy receipt precedence",
+  async (placement) => {
+    // Legacy stores can predate the typed-review JSON index and JSON-parsing insert triggers.
+    // Seed that historical shape, then restore the exact triggers before capacity discovery.
+    await harness.db.run(`DROP INDEX review_agent_run`);
+    const triggers = (
+      await harness.db.query<{ name: string; sql: string }>(
+        `SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name='runs'`,
+      )
+    ).filter((row) => /\b(?:BEFORE|AFTER)\s+INSERT\b/i.test(row.sql));
+    try {
+      for (const trigger of triggers)
+        await harness.db.run(`DROP TRIGGER "${trigger.name.replaceAll('"', '""')}"`);
+      await harness.db.run(
+        `INSERT INTO runs(id,kind,machine_id,started_at,payload) VALUES(?,?,?,?,?)`,
+        [
+          "run_legacy_capacity",
+          BEAT,
+          MACHINE,
+          stamp(NOW - HOUR),
+          JSON.stringify({ outputCapacity: { bytes: MATERIAL_HEADROOM_BYTES + 12 * 1024 * 1024 } }),
+        ],
+      );
+      await harness.db.run(
+        `INSERT INTO runs(id,kind,machine_id,started_at,payload) VALUES(?,?,?,?,?)`,
+        [
+          "run_legacy_malformed",
+          BEAT,
+          placement === "other-machine" ? "another-machine" : MACHINE,
+          stamp(placement === "later" ? NOW - 2 * HOUR : NOW),
+          "{",
+        ],
+      );
+    } finally {
+      for (const trigger of triggers) await harness.db.run(trigger.sql);
+    }
+    if (placement === "earlier")
+      await expect(materialBound(harness.db, MACHINE, 2)).rejects.toThrow("malformed JSON");
+    else expect(await materialBound(harness.db, MACHINE, 2)).toBe(3 * 1024 * 1024);
+  },
+);
 
 test("without a capacity report, source selection keeps smaller captures within declared scratch", async () => {
   await archived("omp/over-scratch", {

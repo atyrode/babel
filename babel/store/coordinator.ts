@@ -1363,35 +1363,47 @@ export function coordinator(
         params,
       );
       out.push(...page);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       if (page.length < SCAN_PAGE) return out;
     }
   }
 
   /**
-   * The head of every record: the newest revision of each root, picked by a window. SQLite
-   * answers it with one scan of `records` in `records_by_root(root_id, seq)` order plus a sort
-   * within each root, so a draw pays for the table once rather than once per row. It
-   * deliberately does not ask `NOT EXISTS (… supersedes_id = r.id)`, which scans the whole table
-   * once per row when no index is behind it. The review tally below still asks that question,
-   * of records and of assessments, and `records_by_supersedes` and `assessments_by_supersedes`
-   * (`HISTORY_INDEX_SCHEMA`) answer it with one index lookup per row.
+   * Each indexed root page chooses the same newest revision by sequence, timestamp and id.
+   * Ranking the complete ledger before every OFFSET page repeated its full sort during each
+   * draw. The root index now supplies at most one page, and each root's newest row is a seek.
+   * Filtering a superseded proposal follows that choice: it never revives an older revision.
    */
   async function heads(): Promise<readonly Head[]> {
-    const rows = await scan(
-      `SELECT id, root_id, kind, created_at FROM (
-         SELECT r.id AS id, r.root_id AS root_id, r.kind AS kind, r.created_at AS created_at,
-                ROW_NUMBER() OVER (PARTITION BY r.root_id
-                                   ORDER BY r.seq DESC, r.created_at DESC, r.id DESC) AS rn
-           FROM records r
-       ) WHERE rn = 1 AND NOT ${supersededReviewProposalSql("id")}`,
-      "root_id",
-    );
-    return rows.map((row) => ({
-      id: text(row["id"]),
-      rootId: text(row["root_id"]),
-      kind: text(row["kind"]),
-      createdAt: at(row["created_at"]),
-    }));
+    const out: Head[] = [];
+    let afterRoot: string | null = null;
+    while (true) {
+      const rows = await db.query(
+        `WITH roots AS MATERIALIZED (
+           SELECT DISTINCT root_id FROM records ${afterRoot === null ? "" : "WHERE root_id>?"}
+            ORDER BY root_id LIMIT ${String(SCAN_PAGE)}
+         )
+         SELECT r.id,r.root_id,r.kind,r.created_at,
+                NOT ${supersededReviewProposalSql("r.id")} visible
+           FROM roots JOIN records r ON r.rowid=(
+             SELECT latest.rowid FROM records latest WHERE latest.root_id=roots.root_id
+              ORDER BY latest.seq DESC,latest.created_at DESC,latest.id DESC LIMIT 1
+           )
+          ORDER BY roots.root_id`,
+        afterRoot === null ? [] : [afterRoot],
+      );
+      for (const row of rows)
+        if (Number(row["visible"]) === 1)
+          out.push({
+            id: text(row["id"]),
+            rootId: text(row["root_id"]),
+            kind: text(row["kind"]),
+            createdAt: at(row["created_at"]),
+          });
+      if (rows.length < SCAN_PAGE) return out;
+      afterRoot = text(rows[rows.length - 1]?.["root_id"]);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
   }
 
   async function statuses(): Promise<Map<string, { status: string; at: number }>> {
@@ -2237,6 +2249,7 @@ export function coordinator(
     const candidates: AnalysisCandidate[] = [];
     const offeredStages = new Set<Stage>();
     const admitted = new Map<Stage, number>();
+    let turnAt = performance.now();
     for await (const offer of analysisOffers(
       db,
       route.machineId,
@@ -2248,6 +2261,10 @@ export function coordinator(
       prompt,
       (stage) => target !== undefined || (admitted.get(stage) ?? 0) < 64,
     )) {
+      if (performance.now() - turnAt >= 50) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        turnAt = performance.now();
+      }
       if ("missing" in offer) {
         if (offer.bound === "material") {
           gaps.push({

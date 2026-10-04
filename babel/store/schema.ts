@@ -44,7 +44,7 @@ const SOURCE_DEPENDENCY_SCHEMA = sourceDependencySchema({
   before: sourceTaintCatalogBefore,
   after: sourceTaintCatalogAfter,
 });
-export const STORE_DATA_VERSION = { major: 1, minor: 23 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 24 } as const;
 
 /** Privacy acts are independent of the rebuildable catalog and never modify archived bytes. */
 const SESSION_EXCLUSION_SCHEMA: readonly string[] = [
@@ -718,6 +718,10 @@ const ARCHIVE_CATALOG_SCHEMA: readonly string[] = [
   `CREATE INDEX sessions_by_modified ON sessions(modified_at DESC)`,
 ];
 
+/** Invalid legacy intents remain pending so their reader, rather than index DDL, reports JSON errors. */
+export const PENDING_MAP_CATALOG_SQL = `kind='atyrode.babel.map-catalog' AND closure IS NOT NULL AND
+  CASE WHEN json_valid(preparation) THEN json_extract(preparation,'$.progress') IS NULL ELSE 1 END`;
+
 /**
  * THE LOOKUPS A DRAW MAKES INTO ITS OWN HISTORY — spelled once and created twice, for the reason
  * `budgets`, `drains`, `next_actions`, `run_calls` and `session_titles` are.
@@ -739,6 +743,8 @@ const ARCHIVE_CATALOG_SCHEMA: readonly string[] = [
  *   analysis offers ask the first once per brief record, and the open-slot count asks the second
  *   once per open claim.
  * - "which claims does this job hold?" (`claims.job_id = ?`), asked per settlement.
+ * - "which native runs remain open?" over ordered `(started_at,id)` reconciliation pages,
+ *   excluding the retained closed history before the page cursor is considered.
  *
  * On a copy of the 2026-09-28 preview store (6,231 records, 7,762 runs), one draw issued 14,006
  * statements and took 36.7 s: 22.7 s went to 2,616 receipt joins and 11.8 s to two review
@@ -753,7 +759,17 @@ const HISTORY_INDEX_SCHEMA: readonly string[] = [
   `CREATE INDEX facts_by_supersedes ON facts(supersedes_id) WHERE supersedes_id IS NOT NULL`,
   `CREATE INDEX runs_by_job ON runs(job_id) WHERE job_id IS NOT NULL`,
   `CREATE INDEX runs_by_prepare_job ON runs(prepare_job_id) WHERE prepare_job_id IS NOT NULL`,
+  `CREATE INDEX runs_by_kind_started ON runs(kind,started_at,id)`,
+  `CREATE INDEX runs_unposted_prepared ON runs(started_at,id)
+     WHERE job_id IS NULL AND preparation IS NOT NULL`,
+  `CREATE INDEX runs_pending_map_catalog ON runs(started_at,id) WHERE ${PENDING_MAP_CATALOG_SQL}`,
+  `CREATE INDEX runs_open_reconcile ON runs(started_at,id)
+     WHERE closure IS NULL AND job_id IS NOT NULL AND machine_id IS NOT NULL`,
+  `CREATE INDEX runs_prepared_intents ON runs(started_at DESC)
+     WHERE closure IS NULL AND job_id IS NULL AND container_id IS NOT NULL`,
+  `CREATE INDEX runs_by_authority ON runs(authority_id) WHERE authority_id IS NOT NULL`,
   `CREATE INDEX claims_by_job ON claims(job_id) WHERE job_id IS NOT NULL`,
+  `CREATE INDEX claims_unfinished ON claims(id) WHERE finished_at IS NULL`,
 ];
 
 /**
@@ -902,6 +918,7 @@ const TRANSCRIPT_MAP_SCHEMA: readonly string[] = [
      context_digest TEXT NOT NULL, sensitivity INTEGER NOT NULL CHECK(sensitivity BETWEEN 0 AND 3),
      PRIMARY KEY(machine_id,capture_id,context_digest)
    ) STRICT`,
+  `CREATE INDEX transcript_map_access_context_capture ON transcript_map_access(machine_id,context_digest,capture_id)`,
   `CREATE TABLE transcript_map_plans(
      id TEXT PRIMARY KEY, capture_id TEXT NOT NULL REFERENCES transcript_map_captures(id),
      payload TEXT NOT NULL, complete INTEGER NOT NULL DEFAULT 0 CHECK(complete IN (0,1)),
@@ -915,6 +932,7 @@ const TRANSCRIPT_MAP_SCHEMA: readonly string[] = [
      UNIQUE(plan_id,position), UNIQUE(plan_id,level,ordinal)
    ) STRICT`,
   `CREATE INDEX transcript_map_nodes_parent ON transcript_map_nodes(plan_id,parent_node_id,ordinal)`,
+  `CREATE INDEX transcript_map_nodes_span ON transcript_map_nodes(plan_id,byte_offset)`,
   `CREATE TABLE transcript_map_versions(
      id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES transcript_map_plans(id),
      machine_id TEXT NOT NULL, contract_digest TEXT NOT NULL, generation INTEGER NOT NULL,
@@ -925,6 +943,7 @@ const TRANSCRIPT_MAP_SCHEMA: readonly string[] = [
      version_id TEXT NOT NULL REFERENCES transcript_map_versions(id),
      PRIMARY KEY(machine_id,plan_id)
    ) STRICT`,
+  `CREATE INDEX transcript_map_heads_version ON transcript_map_heads(version_id)`,
   `CREATE TABLE transcript_map_summaries(
      id TEXT PRIMARY KEY, version_id TEXT NOT NULL REFERENCES transcript_map_versions(id),
      node_id TEXT NOT NULL REFERENCES transcript_map_nodes(id), reuse_key TEXT NOT NULL,
@@ -953,6 +972,7 @@ const TRANSCRIPT_MAP_SCHEMA: readonly string[] = [
   `CREATE INDEX transcript_map_work_ready ON transcript_map_work(state,ready_at,created_at,id)`,
   `CREATE INDEX transcript_map_work_input ON transcript_map_work(input_key,mode,state)`,
   `CREATE INDEX transcript_map_work_base ON transcript_map_work(base_summary_id,mode,served_seq)`,
+  `CREATE INDEX transcript_map_work_running_run ON transcript_map_work(run_id) WHERE state='running'`,
   `CREATE TABLE transcript_map_reviews(
      work_id TEXT PRIMARY KEY REFERENCES transcript_map_work(id),
      summary_id TEXT NOT NULL REFERENCES transcript_map_summaries(id),

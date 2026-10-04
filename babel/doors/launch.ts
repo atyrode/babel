@@ -2062,7 +2062,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     //
     // The composition is the one the coordinator measured the brief against when it chose it
     // (`analysisPromptBytes`), so a brief chosen to fit is posted whole.
-    const told = (await store.policy()).steering;
+    const told = await store.steering();
     const { prompt, params } = composeAnalysisPrompt({
       stage: analysis?.stage ?? "explore",
       recipes,
@@ -2562,24 +2562,70 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     void jobs;
     void plan;
     if (onlyRunIds?.size === 0) return [];
-    const ids = onlyRunIds === undefined ? [] : [...onlyRunIds];
     const selected =
-      onlyRunIds === undefined ? "" : ` AND r.id IN (${ids.map(() => "?").join(",")})`;
-    const waiting = await store.db.query<PreparedRun>(
-      `SELECT r.id AS id, r.kind AS kind, r.machine_id AS machine_id,
-              r.container_id AS container_id, r.prepare_job_id AS prepare_job_id,
-              r.profile AS profile, r.preparation AS preparation, r.payload AS payload,
-              COALESCE(json_extract(r.payload, '$.posting'), 0) AS posting,
-              p.closure AS prepare_closure, p.payload AS prepare_payload
-         FROM runs r JOIN runs p ON p.job_id = r.prepare_job_id
-        WHERE r.closure IS NULL AND r.job_id IS NULL AND r.container_id IS NOT NULL
-          AND p.closure IS NOT NULL
-          AND r.kind != '${TRANSCRIPT_MAP_SESSION_OPERATION}'${selected}
-        ORDER BY r.started_at`,
-      ids,
-    );
+      onlyRunIds === undefined ? "" : " AND r.id IN (SELECT value FROM json_each(?))";
+    const ids = onlyRunIds === undefined ? [] : [JSON.stringify([...onlyRunIds])];
+    async function* prepared(): AsyncGenerator<PreparedRun> {
+      const watermark = await store.db.query<{ rowid: string }>(
+        `SELECT CAST(coalesce(max(rowid),0) AS TEXT) rowid FROM runs`,
+      );
+      let afterStarted: string | null = null;
+      let afterRow: string | null = null;
+      while (true) {
+        const parents: readonly { id: string; started_at: string; rowid: string }[] =
+          await store.db.query(
+            `SELECT r.id,r.started_at,CAST(r.rowid AS TEXT) rowid FROM runs r
+             WHERE r.closure IS NULL AND r.job_id IS NULL AND r.container_id IS NOT NULL
+               AND r.kind!='${TRANSCRIPT_MAP_SESSION_OPERATION}'
+               AND r.rowid<=CAST(? AS INTEGER)${selected}
+               ${
+                 afterStarted === null
+                   ? ""
+                   : "AND r.started_at>=? AND (r.started_at>? OR (r.started_at=? AND r.rowid<CAST(? AS INTEGER)))"
+               }
+             ORDER BY r.started_at,r.rowid DESC LIMIT 16`,
+            [
+              watermark[0]?.rowid ?? "0",
+              ...ids,
+              ...(afterStarted === null
+                ? []
+                : [afterStarted, afterStarted, afterStarted, afterRow]),
+            ],
+          );
+        if (parents.length === 0) return;
+        for (const parent of parents) {
+          let afterPreparation: string | null = null;
+          while (true) {
+            const waiting: readonly (PreparedRun & { prepare_rowid: string })[] =
+              await store.db.query(
+                `SELECT r.id AS id,r.kind AS kind,r.machine_id AS machine_id,
+                      r.container_id AS container_id,r.prepare_job_id AS prepare_job_id,
+                      r.profile AS profile,r.preparation AS preparation,r.payload AS payload,
+                      COALESCE(json_extract(r.payload,'$.posting'),0) AS posting,
+                      p.closure AS prepare_closure,p.payload AS prepare_payload,
+                      CAST(p.rowid AS TEXT) prepare_rowid
+                 FROM runs r JOIN runs p ON p.job_id=r.prepare_job_id
+                WHERE r.id=? AND p.closure IS NOT NULL AND p.rowid<=CAST(? AS INTEGER)
+                  ${afterPreparation === null ? "" : "AND p.rowid>CAST(? AS INTEGER)"}
+                ORDER BY p.rowid LIMIT 8`,
+                afterPreparation === null
+                  ? [parent.id, watermark[0]?.rowid ?? "0"]
+                  : [parent.id, watermark[0]?.rowid ?? "0", afterPreparation],
+              );
+            if (waiting.length === 0) break;
+            for (const run of waiting) yield run;
+            afterPreparation = waiting[waiting.length - 1]?.prepare_rowid ?? null;
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          }
+        }
+        const last = parents[parents.length - 1]!;
+        afterStarted = last.started_at;
+        afterRow = last.rowid;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    }
     const posted: Posted[] = [];
-    for (const run of waiting) {
+    for await (const run of prepared()) {
       const at = new Date(deps.now()).toISOString();
       let modelRequested = false;
       try {
@@ -2766,6 +2812,8 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         // it asks again under the same key, which never buys a second session.
         if (modelRequested) posted.push(...(await unresolved(run, message(error))));
         else posted.push(...(await close(run, at, message(error))));
+      } finally {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
     }
     return posted;

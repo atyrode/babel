@@ -93,8 +93,10 @@ ordinary run-status updates do not touch the graph. Imports cannot supply derive
 tables as authority.
 Late catalog arrivals revisit consumer-record guards as well as input references, and a legacy
 review's changed start time reconsiders its title-lineage inputs. Unchanged session catalog facts
-skip privacy maintenance. Catalog ingestion retains row order in 48-row chunks, yielding between
-batches rather than compiling all 240 statements of an 80-row refresh on the host thread.
+skip privacy maintenance. Catalog ingestion fuses each page of at most 48 distinct selectors
+into three statements, rather than compiling three statements per row. A repeated selector
+starts the next page so observation order, recency and retained facts are unchanged. Committed
+pages yield a real event-loop turn before continuing.
 
 The compact `source_taint` primary key holds the exact closure, not an in-memory snapshot.
 The ban insert and new graph edges propagate taint transitively, skipping already retained
@@ -112,10 +114,29 @@ Navigation-map projection similarly uses at most 32 node rows per SQL statement 
 statement per transaction. The in-realm SDK executes database calls synchronously, so awaiting
 their already-resolved promises alone does not serve hub I/O: map write batches and verification
 pages explicitly yield an event-loop turn. Related-node verification reads at most 32 indexed
-rows per call, preserving the complete manifest, parent/child and terminal-span checks. Each
-inserted row still fires the original privacy triggers. Each subsequent write reevaluates its
-retained guard in that same statement; privacy guards consult the current exclusion ledger,
-never an in-memory authorization snapshot.
+rows per call. Plan cardinality and terminal spans use indexed keyset pages as well, preserving
+the complete manifest, parent/child and terminal-span checks without repeated whole-plan scans.
+Coverage and status page their nodes, bindings and authorized capture candidates before joining
+history. Each inserted row still fires the original privacy triggers. Each subsequent write
+reevaluates its retained guard in that same statement; privacy guards consult the current
+exclusion ledger, never an in-memory authorization snapshot.
+
+Complete catalog and mapping wakes also page retained open runs and prepared parents through
+partial indexes. Catalog recovery first selects indexed pending receipt IDs, then copies one
+receipt at a time; its index retains malformed legacy intents so the reader still rejects
+invalid JSON. Closed mapping recovery starts from unfinished claims and running work, and
+closed typed-review recovery from unfinished claims and indexed authority matches, instead of
+scanning historical run documents. Real event-loop turns separate settlement pages and
+prepared-session postings; the lane still reconciles every retained eligible result rather
+than dropping work at a time limit.
+
+Analysis chooses record heads through indexed root pages, groups bounded edge reads, and decodes
+each immutable brief record once within its offer search. The record update/delete triggers
+make those decoded facts immutable; no taint, current-capture or model-admission decision is
+memoized. Capacity discovery reads bounded raw run pages before walking their JSON, preserving
+the first integer declaration and the existing fallback. Policy recipe projection likewise
+pages physical recipe rows before aggregation. Launch composition reads operator steering
+directly instead of rebuilding a complete recipe projection merely to obtain those remarks.
 
 Fresh stores start ready. Upgrades create the graph projection cheaply and advance durable
 per-table cursors in five-row chunks, yielding between batches: enable and existing conductor

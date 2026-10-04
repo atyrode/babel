@@ -458,6 +458,179 @@ test("a receipt larger than the engine batch limit publishes without truncating 
   expect(coverage.partial).toBe(true);
 });
 
+test("coverage includes every leaf and notices a rejected tail beyond the first page", async () => {
+  const db = await setup();
+  const data = fixture(65);
+  const version = await publish(db.maps, data);
+  await generate(db, db.maps);
+  expect(await db.maps.coverage(scope)).toEqual({
+    sourceBytes: 66560,
+    summarizedBytes: 66560,
+    directBytes: 0,
+    unmappedBytes: 0,
+    gapBytes: 0,
+    levels: [0, 1, 2],
+    partial: false,
+    stale: false,
+    tailBytes: 0,
+  });
+  expect(await db.maps.status(scope)).toEqual({
+    eligibleCaptures: 1,
+    verifiedMappedCaptures: 1,
+    observedAt: NOW,
+    partial: false,
+  });
+  const tail = await db.maps.node(scope, version.id, data.nodes[64]!.id);
+  const summaryId = tail?.summary?.id;
+  if (!summaryId) throw new Error("missing tail summary");
+  await db.maps.noteServed({ readId: "read-tail", summaryIds: [summaryId], now: NOW });
+  await db.maps.refreshWork(policy, NOW, 128);
+  const review = (await db.maps.offers(policy, NOW)).find(
+    (item) => item.mode === "review" && item.baseSummaryId === summaryId,
+  );
+  if (!review) throw new Error("missing tail review");
+  await settle(db, db.maps, review, {
+    kind: "review",
+    verdict: "reject",
+    reason: "The final span summary is unsupported.",
+  });
+  expect(await db.maps.coverage(scope)).toEqual({
+    sourceBytes: 66560,
+    summarizedBytes: 65536,
+    directBytes: 0,
+    unmappedBytes: 1024,
+    gapBytes: 0,
+    levels: [0, 1, 2],
+    partial: true,
+    stale: true,
+    tailBytes: 1024,
+  });
+  expect((await db.maps.status(scope)).verifiedMappedCaptures).toBe(0);
+});
+
+test("coverage preserves its capture limit while status counts every authorized latest plan", async () => {
+  const db = await setup();
+  const expanded = { ...scope, context: { ...context, eligibleCaptures: 129 } };
+  const captureIds: string[] = [];
+  for (let index = 0; index < 129; index += 1) {
+    const data = fixture(1, index.toString(16).padStart(64, "0"));
+    const segmentation = { ...policy.segmentation, directBytes: 1024 };
+    const planId = transcriptMapPlanId(data.plan.source, segmentation);
+    const node = {
+      ...data.nodes[0]!,
+      id: transcriptMapNodeId(planId, 0, 0, data.nodes[0]!.span, [], null),
+      planId,
+    };
+    const plan = {
+      ...data.plan,
+      id: planId,
+      segmentation,
+      rootId: node.id,
+      digest: transcriptMapManifestDigest([node]),
+      direct: true,
+    };
+    await db.maps.recordPlan({
+      ...expanded,
+      plan,
+      nodes: [node],
+      access: data.access,
+      offset: 0,
+      nextOffset: null,
+      now: NOW,
+    });
+    captureIds.push(plan.source.id);
+  }
+  expect(await db.maps.coverage(expanded)).toEqual({
+    sourceBytes: 131072,
+    summarizedBytes: 0,
+    directBytes: 131072,
+    unmappedBytes: 0,
+    gapBytes: 0,
+    levels: [],
+    partial: true,
+    stale: false,
+    tailBytes: null,
+  });
+  expect(await db.maps.status(expanded)).toEqual({
+    eligibleCaptures: 129,
+    verifiedMappedCaptures: 129,
+    observedAt: NOW,
+    partial: false,
+  });
+  const selected = {
+    ...scope,
+    captureIds: [captureIds[128]!],
+  };
+  expect(await db.maps.coverage(selected)).toEqual({
+    sourceBytes: 1024,
+    summarizedBytes: 0,
+    directBytes: 1024,
+    unmappedBytes: 0,
+    gapBytes: 0,
+    levels: [],
+    partial: false,
+    stale: false,
+    tailBytes: 0,
+  });
+  expect((await db.maps.status(selected)).verifiedMappedCaptures).toBe(1);
+});
+
+test("an incomplete newer segmentation replaces historical direct coverage and status", async () => {
+  const db = await setup();
+  const data = fixture();
+  const segmentation = { ...policy.segmentation, leafBytes: 4096, directBytes: 4096 };
+  const planId = transcriptMapPlanId(data.plan.source, segmentation);
+  const root = data.nodes.find((node) => node.parentId === null);
+  if (!root) throw new Error("missing direct source span");
+  const node = {
+    ...root,
+    id: transcriptMapNodeId(planId, 0, 0, root.span, [], null),
+    planId,
+    level: 0,
+    ordinal: 0,
+    children: [],
+  };
+  const plan = {
+    ...data.plan,
+    id: planId,
+    segmentation,
+    rootId: node.id,
+    nodeCount: 1,
+    digest: transcriptMapManifestDigest([node]),
+    direct: true,
+  };
+  await db.maps.recordPlan({
+    ...scope,
+    plan,
+    nodes: [node],
+    access: data.access,
+    offset: 0,
+    nextOffset: null,
+    now: NOW,
+  });
+  expect((await db.maps.status(scope)).verifiedMappedCaptures).toBe(1);
+  await db.maps.recordPlan({
+    ...scope,
+    ...data,
+    nodes: data.nodes.slice(0, 1),
+    offset: 0,
+    nextOffset: 1,
+    now: LATER,
+  });
+  expect(await db.maps.coverage(scope)).toEqual({
+    sourceBytes: 2048,
+    summarizedBytes: 0,
+    directBytes: 0,
+    unmappedBytes: 2048,
+    gapBytes: 0,
+    levels: [],
+    partial: true,
+    stale: false,
+    tailBytes: 2048,
+  });
+  expect((await db.maps.status(scope)).verifiedMappedCaptures).toBe(0);
+});
+
 test("a corrupt final manifest cannot publish previously ingested nodes", async () => {
   const db = await setup();
   const data = fixture();

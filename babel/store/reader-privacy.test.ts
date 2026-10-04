@@ -248,6 +248,7 @@ async function exclude(touch = true): Promise<void> {
 function excludeAfterQuery(
   matches: (sql: string, params: readonly SqlParam[]) => boolean,
   touch = true,
+  afterExclusion?: () => Promise<void>,
 ): void {
   const query = fixture.db.query.bind(fixture.db);
   let armed = true;
@@ -256,6 +257,7 @@ function excludeAfterQuery(
     if (armed && matches(sql, params)) {
       armed = false;
       await exclude(touch);
+      await afterExclusion?.();
     }
     return rows;
   };
@@ -465,6 +467,34 @@ test("policy context assembled before a ban is discarded but historical spend re
   expect(policy.spentTodayUsd).toBe(7.5);
   expect(policy.recipes.map(({ runs, lastRunId }) => ({ runs, lastRunId }))).toEqual([
     { runs: 1, lastRunId: PUBLIC_RUN },
+  ]);
+});
+
+test("scoped steering context retries across a completed exclusion", async () => {
+  const tell = async (id: string, text: string, at: number) =>
+    await insert(fixture.db, "steering", {
+      id,
+      root_id: id,
+      reply_to_id: null,
+      seq: 0,
+      actor_kind: "operator",
+      actor_id: "synthetic-owner",
+      target_kind: null,
+      target_id: null,
+      text,
+      recorded_at: stamp(at),
+    });
+  await tell("str_reader_earlier", "Independent earlier guidance", NOW - HOUR);
+  excludeAfterQuery(
+    (sql) => sql.includes("FROM steering") && sql.includes("ORDER BY recorded_at DESC"),
+    true,
+    async () => await tell("str_reader_latest", "Independent latest guidance", NOW),
+  );
+  const steering = await store.steering();
+  noPrivate(steering);
+  expect(steering.map(({ id, text }) => ({ id, text }))).toEqual([
+    { id: "str_reader_latest", text: "Independent latest guidance" },
+    { id: "str_reader_earlier", text: "Independent earlier guidance" },
   ]);
 });
 

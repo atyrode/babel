@@ -1538,6 +1538,31 @@ describe("runs and the policy", () => {
     expect(answer.spentTodayUsd).toBe(0.25);
   });
 
+  test("policy recipe history includes negative rowids and resolves timestamp ties in binary id order", async () => {
+    const latest = stamp(NOW);
+    for (const [rowid, id, at] of [
+      ["-9223372036854775808", "run_boundary_\uE000", latest],
+      ["-2", "run_boundary_\u{10000}", latest],
+      ["-1", "run_boundary_old", stamp(NOW - HOUR)],
+    ]) {
+      await harness.db.run(
+        `INSERT INTO runs(rowid,id,kind,machine_id,recipe_id,started_at,payload)
+         VALUES(CAST(? AS INTEGER),?,'fixture','fixture-machine','recipe-boundary',?,'{}')`,
+        [rowid!, id!, at!],
+      );
+    }
+    const answer = await harness.store.policy();
+    expect(answer.recipes.find((recipe) => recipe.id === "recipe-boundary")).toEqual({
+      id: "recipe-boundary",
+      title: "",
+      looksFor: "",
+      enabled: true,
+      runs: 3,
+      lastRanAt: latest,
+      lastRunId: "run_boundary_\u{10000}",
+    });
+  });
+
   test("explicit zero review shares take precedence over legacy shares independently of activity weights", async () => {
     const activityWeights = { review: 0, explore: 0.2, challenge: 0.6, synthesize: 0.3 };
     await insert(harness.db, "policies", {
