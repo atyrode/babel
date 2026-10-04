@@ -3,6 +3,7 @@ import type { SqlParam, SqlStatement } from "@manifold/plugin";
 import {
   NeighborhoodQuerySchema,
   OPERATIONS,
+  SessionRowSchema,
   PRIVACY_PROJECTION_BUILDING,
   type Harness,
 } from "../contract.ts";
@@ -15,8 +16,9 @@ import {
   sourcePrivacyCondition,
 } from "./source-privacy.ts";
 import { backfillSourceDependencies, sourceDependenciesReady } from "./source-dependencies.ts";
-import { sourcePrivacyClosure } from "./source-taint.ts";
+import { frozenSourcePrivacyReference } from "./source-privacy-reference.fixture.ts";
 import { insert, openTestStore, type TestStore } from "./testdb.ts";
+import { upsertSessionRows } from "./sessions.ts";
 
 const NOW = Date.UTC(2026, 9, 3, 12);
 const AT = new Date(NOW).toISOString();
@@ -195,7 +197,7 @@ function privacyProbe(kind: PrivacyProbe["kind"], id: string): PrivacyProbe {
 }
 
 async function expectPersistedTaint(): Promise<void> {
-  const reference = sourcePrivacyClosure();
+  const reference = frozenSourcePrivacyReference;
   const [persisted, recursive] = await harness.db.batch([
     { sql: "SELECT kind,id FROM source_taint ORDER BY kind,id" },
     {
@@ -212,7 +214,7 @@ async function commitPrivacyStep(
   statements: readonly SqlStatement[],
   probes: readonly PrivacyProbe[] = [],
 ): Promise<void> {
-  const reference = sourcePrivacyClosure();
+  const reference = frozenSourcePrivacyReference;
   const results = await harness.db.batch([
     ...statements,
     { sql: "SELECT kind,id FROM source_taint ORDER BY kind,id" },
@@ -773,6 +775,138 @@ test("imported answer action fact results retain question lineage without a run 
   expect(await retainedLedger()).toEqual(originals);
 });
 
+test("an imported session edge fences a source record that arrives later", async () => {
+  await session("omp", "synthetic-applied-plan-source");
+  await commitPrivacyStep([
+    insertion("session_exclusions", { selector: PRIVATE, actor_id: OWNER, recorded_at: AT }),
+    insertion("edges", {
+      id: "edge_before_guarded_record",
+      kind: "cites",
+      from_kind: "observation",
+      from_id: "obs_000000f1",
+      to_kind: "session",
+      to_id: PRIVATE,
+      actor_kind: "operator",
+      actor_id: OWNER,
+      created_at: AT,
+    }),
+  ]);
+  await commitPrivacyStep(
+    [
+      insertion("records", {
+        id: "obs_000000f1",
+        kind: "observation",
+        root_id: "obs_000000f1",
+        seq: 0,
+        actor_kind: "operator",
+        actor_id: OWNER,
+        title: "Synthetic late edge source",
+        payload: "{}",
+        created_at: AT,
+      }),
+    ],
+    [privacyProbe("record", "obs_000000f1")],
+  );
+  expect(await harness.store.record("obs_000000f1")).toBeNull();
+});
+
+test("ordinary catalog KEEP refreshes do not rebuild taint for cited sessions", async () => {
+  const captured = SessionRowSchema.parse({
+    selector: "codex/synthetic-catalog-refresh",
+    harness: "codex",
+    source_id: "synthetic-catalog-refresh",
+    kind: "operator",
+    archive_label: "synthetic-lineage-host",
+    archive_path: "/synthetic/codex/catalog-refresh.jsonl",
+    snapshot_id: "a".repeat(64),
+    archived_at: AT,
+    size: 1000,
+    modified_at: AT,
+  });
+  await record("obs_000000f2", "observation", {
+    evidence: [{ selector: PRIVATE }, { selector: captured.selector }],
+  });
+  expect(await exclude(PRIVATE)).toBe(true);
+  await harness.db.batch([
+    { sql: "CREATE TABLE taint_rebuild_probe(rewrites INTEGER NOT NULL)" },
+    { sql: "INSERT INTO taint_rebuild_probe VALUES(0)" },
+    {
+      sql: `CREATE TRIGGER count_taint_rebuild AFTER DELETE ON source_taint BEGIN
+        UPDATE taint_rebuild_probe SET rewrites=rewrites+1; END`,
+    },
+  ]);
+  expect(await upsertSessionRows(harness.store, [captured], AT)).toMatchObject({
+    inserted: 1,
+    kept: 0,
+    moved: 0,
+  });
+  const seen = new Date(NOW + 1000).toISOString();
+  expect(
+    await upsertSessionRows(
+      harness.store,
+      [{ ...captured, workspace: "/synthetic/refreshed" }],
+      seen,
+    ),
+  ).toMatchObject({ kept: 1, inserted: 0, moved: 0 });
+  expect(await harness.db.query("SELECT rewrites FROM taint_rebuild_probe")).toEqual([
+    { rewrites: 0n },
+  ]);
+  expect(
+    await harness.db.query("SELECT seen_at,workspace FROM sessions WHERE selector=?", [
+      captured.selector,
+    ]),
+  ).toEqual([{ seen_at: seen, workspace: "/synthetic/refreshed" }]);
+  expect(await harness.store.record("obs_000000f2")).toBeNull();
+  await expectPersistedTaint();
+});
+
+test("a legacy review becomes private when its start crosses the title inference instant", async () => {
+  const titled = await session("codex", "synthetic-legacy-threshold");
+  await run("run_legacy_threshold_title", [PRIVATE]);
+  await record("obs_000000f3");
+  await insert(harness.db, "session_titles", {
+    selector: titled,
+    title: MODEL_VALUE,
+    run_id: "run_legacy_threshold_title",
+    inferred_at: AT,
+  });
+  await insert(harness.db, "edges", {
+    id: "edge_legacy_threshold",
+    kind: "cites",
+    from_kind: "observation",
+    from_id: "obs_000000f3",
+    to_kind: "session",
+    to_id: titled,
+    actor_kind: "operator",
+    actor_id: OWNER,
+    created_at: AT,
+  });
+  await insert(harness.db, "runs", {
+    id: "run_legacy_threshold_consumer",
+    kind: OPERATIONS.explore,
+    preparation: JSON.stringify({ review: { recordId: "obs_000000f3" } }),
+    started_at: new Date(NOW - 1).toISOString(),
+    finished_at: AT,
+    closure: "completed",
+    payload: "{}",
+  });
+  await record("obs_000000f4", "observation", {}, "run_legacy_threshold_consumer");
+  expect(await exclude(PRIVATE)).toBe(true);
+  expect(await harness.store.record("obs_000000f4")).toMatchObject({
+    post: { id: "obs_000000f4" },
+  });
+  await commitPrivacyStep(
+    [
+      {
+        sql: "UPDATE runs SET started_at=? WHERE id='run_legacy_threshold_consumer'",
+        params: [AT],
+      },
+    ],
+    [privacyProbe("run", "run_legacy_threshold_consumer"), privacyProbe("record", "obs_000000f4")],
+  );
+  expect(await harness.store.record("obs_000000f4")).toBeNull();
+});
+
 for (const seed of [0x541, 0xa11ce]) {
   test(`persisted taint matches recursive privacy through seeded mutable graph writes (${seed})`, async () => {
     let random = seed;
@@ -907,6 +1041,166 @@ for (const seed of [0x541, 0xa11ce]) {
     );
     expect(await readExcludedRecordIds(harness.db)).toEqual(new Set());
 
+    const arrivalOrders = [
+      ["edges", "record", "session", "run"],
+      ["edges", "run", "record", "session"],
+      ["edges", "session", "run", "record"],
+      ["record", "edges", "run", "session"],
+      ["session", "edges", "record", "run"],
+      ["run", "session", "edges", "record"],
+    ] as const;
+    const orderIndices = arrivalOrders.map((_, index) => index);
+    for (let index = orderIndices.length - 1; index > 0; index--) {
+      const other = choose(index + 1);
+      [orderIndices[index], orderIndices[other]] = [orderIndices[other]!, orderIndices[index]!];
+    }
+    for (const orderIndex of orderIndices) {
+      const lateRecord = `obs_${(200 + orderIndex).toString(16).padStart(8, "0")}`;
+      const lateRun = `run_random_arrival_${orderIndex}`;
+      const bare = `synthetic-random-arrival-${seed}-${orderIndex}`;
+      const selector = `omp/${bare}`;
+      const lateProbes = [privacyProbe("record", lateRecord), privacyProbe("run", lateRun)];
+      const rows = {
+        edges: [
+          insertion("edges", {
+            id: `edge_random_arrival_session_${orderIndex}`,
+            kind: "cites",
+            from_kind: "observation",
+            from_id: lateRecord,
+            to_kind: "session",
+            to_id: bare,
+            actor_kind: "operator",
+            actor_id: OWNER,
+            created_at: AT,
+          }),
+          insertion("edges", {
+            id: `edge_random_arrival_run_${orderIndex}`,
+            kind: "cites",
+            from_kind: "observation",
+            from_id: lateRecord,
+            to_kind: "run",
+            to_id: lateRun,
+            actor_kind: "operator",
+            actor_id: OWNER,
+            created_at: AT,
+          }),
+        ],
+        record: [
+          insertion("records", {
+            id: lateRecord,
+            kind: "observation",
+            root_id: lateRecord,
+            seq: 0,
+            actor_kind: "operator",
+            actor_id: OWNER,
+            title: "Synthetic shuffled catalog arrival",
+            payload: "{}",
+            created_at: AT,
+          }),
+        ],
+        session: [
+          insertion("sessions", {
+            selector,
+            harness: "omp",
+            source_id: bare,
+            host: "synthetic-lineage-host",
+            seen_at: AT,
+          }),
+        ],
+        run: [runRow(lateRun, { selectors: [PRIVATE] })],
+      };
+      await commitPrivacyStep(
+        [insertion("session_exclusions", { selector, actor_id: OWNER, recorded_at: AT })],
+        probes,
+      );
+      const arrived = new Set<string>();
+      for (const phase of arrivalOrders[orderIndex]!) {
+        arrived.add(phase);
+        const availableProbes = lateProbes.filter(({ kind }) => arrived.has(kind));
+        for (const statement of rows[phase])
+          await commitPrivacyStep([statement], [...probes, ...availableProbes]);
+      }
+      probes.push(...lateProbes);
+      expect(await harness.store.record(lateRecord)).toBeNull();
+    }
+
+    const thresholdSession = `codex/synthetic-random-threshold-${seed}`;
+    const thresholdTimes = [
+      new Date(NOW - 1).toISOString(),
+      AT,
+      new Date(NOW + 1).toISOString(),
+    ] as const;
+    const thresholdRun = "run_random_legacy_threshold";
+    const thresholdRows = [
+      insertion("sessions", {
+        selector: thresholdSession,
+        harness: "codex",
+        source_id: `synthetic-random-threshold-${seed}`,
+        host: "synthetic-lineage-host",
+        seen_at: AT,
+      }),
+      insertion("session_titles", {
+        selector: thresholdSession,
+        title: MODEL_VALUE,
+        run_id: "run_random_source",
+        inferred_at: AT,
+      }),
+      insertion("records", {
+        id: "obs_0000012a",
+        kind: "observation",
+        root_id: "obs_0000012a",
+        seq: 0,
+        actor_kind: "operator",
+        actor_id: OWNER,
+        title: "Synthetic legacy threshold input",
+        payload: "{}",
+        created_at: AT,
+      }),
+      insertion("edges", {
+        id: "edge_random_legacy_threshold",
+        kind: "cites",
+        from_kind: "observation",
+        from_id: "obs_0000012a",
+        to_kind: "session",
+        to_id: thresholdSession,
+        actor_kind: "operator",
+        actor_id: OWNER,
+        created_at: AT,
+      }),
+      insertion("runs", {
+        id: thresholdRun,
+        kind: OPERATIONS.explore,
+        preparation: JSON.stringify({ review: { recordId: "obs_0000012a" } }),
+        started_at: thresholdTimes[0],
+        finished_at: AT,
+        closure: "completed",
+        payload: "{}",
+      }),
+      insertion("records", {
+        id: "obs_0000012b",
+        kind: "observation",
+        root_id: "obs_0000012b",
+        seq: 0,
+        actor_kind: "run",
+        actor_id: thresholdRun,
+        run_id: thresholdRun,
+        title: "Synthetic threshold descendant",
+        payload: "{}",
+        created_at: AT,
+      }),
+    ];
+    for (const statement of thresholdRows) await commitPrivacyStep([statement], probes);
+    probes.push(
+      privacyProbe("run", thresholdRun),
+      privacyProbe("record", "obs_0000012a"),
+      privacyProbe("record", "obs_0000012b"),
+    );
+    for (const startedAt of thresholdTimes)
+      await commitPrivacyStep(
+        [{ sql: "UPDATE runs SET started_at=? WHERE id=?", params: [startedAt, thresholdRun] }],
+        probes,
+      );
+
     for (let step = 0; step < 56; step++) {
       const slot = choose(runIds.length);
       const id = runIds[slot]!;
@@ -1004,6 +1298,15 @@ for (const seed of [0x541, 0xa11ce]) {
               {
                 sql: "UPDATE runs SET cost_usd=? WHERE id='run_random_source'",
                 params: [step / 1000],
+              },
+            ],
+            probes,
+          );
+          await commitPrivacyStep(
+            [
+              {
+                sql: "UPDATE runs SET started_at=? WHERE id=?",
+                params: [thresholdTimes[choose(thresholdTimes.length)]!, thresholdRun],
               },
             ],
             probes,

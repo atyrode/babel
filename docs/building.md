@@ -91,6 +91,10 @@ input identities. Base-row triggers maintain their references in the same transa
 the `source_dependency_rows` write view. Replacing a source row preserves unchanged edges;
 ordinary run-status updates do not touch the graph. Imports cannot supply derived privacy
 tables as authority.
+Late catalog arrivals revisit consumer-record guards as well as input references, and a legacy
+review's changed start time reconsiders its title-lineage inputs. Unchanged session catalog facts
+skip privacy maintenance. Catalog ingestion retains row order in 48-row chunks, yielding between
+batches rather than compiling all 240 statements of an 80-row refresh on the host thread.
 
 The compact `source_taint` primary key holds the exact closure, not an in-memory snapshot.
 The ban insert and new graph edges propagate taint transitively, skipping already retained

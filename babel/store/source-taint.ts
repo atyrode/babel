@@ -25,9 +25,10 @@ const ROW_GUARD = `(d.consumer_record_kind IS NULL OR EXISTS (
     WHEN 'map_node_summary' THEN EXISTS (SELECT 1 FROM transcript_map_nodes n WHERE n.id=d.input_id)
       OR EXISTS (SELECT 1 FROM transcript_map_summaries s WHERE s.id=d.input_id)
     ELSE 1 END`;
-const BARE_SESSION = `NOT EXISTS (SELECT 1 FROM sessions exact WHERE exact.selector=d.input_id)
-  AND substr(d.input_id,1,instr(d.input_id,'/')-1)
+const UNQUALIFIED_SESSION = `substr(d.input_id,1,instr(d.input_id,'/')-1)
     NOT IN (${HARNESSES.map((harness) => `'${harness}'`).join(",")})`;
+const BARE_SESSION = `NOT EXISTS (SELECT 1 FROM sessions exact WHERE exact.selector=d.input_id)
+  AND ${UNQUALIFIED_SESSION}`;
 
 interface DependencyArm {
   readonly kind: string;
@@ -189,6 +190,7 @@ const CATALOG_KEYS: Readonly<Record<string, string>> = {
 };
 const CATALOG_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   runs: ["job_id", "prepare_job_id", "started_at"],
+  records: ["kind"],
   facts: ["entity_id"],
   filings: ["record_id", "entity_id"],
   sessions: ["source_id", "title", "title_provenance"],
@@ -220,15 +222,16 @@ function affectedCatalog(table: string): string {
       ON t.kind=d.consumer_kind AND t.id=d.consumer_id
       WHERE d.relation IN ('dependency','title','current_title','legacy_review','binding_capture','applied_result') AND d.input_id=OLD.${key})`;
 }
+function catalogChanged(table: string): string {
+  return [CATALOG_KEYS[table]!, ...(CATALOG_COLUMNS[table] ?? [])]
+    .map((column) => `OLD.${column} IS NOT NEW.${column}`)
+    .join(" OR ");
+}
+
 export function sourceTaintCatalogBefore(table: string, event: "update" | "delete"): string {
   const key = CATALOG_KEYS[table];
   if (key === undefined) return "";
-  const changed =
-    event === "delete"
-      ? "1"
-      : [key, ...(CATALOG_COLUMNS[table] ?? [])]
-          .map((column) => `OLD.${column} IS NOT NEW.${column}`)
-          .join(" OR ");
+  const changed = event === "delete" ? "1" : catalogChanged(table);
   return `UPDATE source_taint_state SET dirty=1 WHERE id=1 AND ready=1
     AND EXISTS (SELECT 1 FROM session_exclusions) AND (${changed}) AND (${affectedCatalog(table)});`;
 }
@@ -236,8 +239,18 @@ export function sourceTaintCatalogAfter(table: string): string {
   const key = CATALOG_KEYS[table];
   if (key === undefined) return "";
   const candidates = [{ condition: `d.input_id=NEW.${key}`, index: "source_dependency_edges_id" }];
+  if (table === "records")
+    candidates.push({
+      condition:
+        "d.consumer_kind='record' AND d.consumer_id=NEW.id AND d.consumer_record_kind=NEW.kind",
+      index: "source_taint_guarded_consumer",
+    });
   if (table === "runs")
     candidates.push(
+      {
+        condition: "d.relation='legacy_review' AND d.consumer_id=NEW.id",
+        index: "source_taint_legacy_consumer",
+      },
       { condition: "d.producer_run_id=NEW.id", index: "source_taint_producer" },
       {
         condition: "d.producer_run_id IN (SELECT id FROM runs WHERE job_id=NEW.prepare_job_id)",
@@ -275,7 +288,7 @@ export function sourceTaintCatalogAfter(table: string): string {
     table === "records"
       ? `d.input_kind=NEW.kind`
       : table === "sessions"
-        ? `d.input_kind='session'`
+        ? `d.input_kind='session' AND ${UNQUALIFIED_SESSION}`
         : [
               "transcript_map_captures",
               "transcript_map_nodes",
@@ -303,6 +316,8 @@ export const SOURCE_TAINT_SCHEMA: readonly string[] = [
   `CREATE INDEX source_taint_legacy_titles ON edges(from_id,to_id) WHERE to_kind='session'`,
   `CREATE INDEX source_taint_producer ON source_dependency_edges(producer_run_id,edge_id) WHERE producer_run_id IS NOT NULL`,
   `CREATE INDEX source_taint_binding ON source_dependency_edges(consumer_id,input_id) WHERE relation='binding_capture'`,
+  `CREATE INDEX source_taint_guarded_consumer ON source_dependency_edges(consumer_id,consumer_record_kind,input_id) WHERE consumer_record_kind IS NOT NULL`,
+  `CREATE INDEX source_taint_legacy_consumer ON source_dependency_edges(consumer_id,input_id,producer_run_id) WHERE relation='legacy_review'`,
   `CREATE TRIGGER source_taint_propagate AFTER UPDATE OF propagation ON source_taint_state WHEN (${SOURCE_TAINT_READY}) AND EXISTS (SELECT 1 FROM session_exclusions) BEGIN
     INSERT OR IGNORE INTO source_taint(kind,id) ${closure("SELECT kind,id FROM source_taint_seeds", true)} SELECT kind,id FROM active_taint;
     UPDATE source_taint_state SET generation=generation+1 WHERE id=1 AND changes()>0;
@@ -326,11 +341,15 @@ export const SOURCE_TAINT_SCHEMA: readonly string[] = [
         OR (kind IN (${KINDS},'plan') AND id=OLD.input_id));
     ${INSERT_EDGE_TAINT}
     ${SOURCE_TAINT_END} END`,
-  ...EXTRA_CATALOGS.flatMap((table) => [
-    `CREATE TRIGGER source_taint_${table}_insert AFTER INSERT ON ${table} BEGIN ${SOURCE_TAINT_BEGIN} ${sourceTaintCatalogAfter(table)} ${SOURCE_TAINT_END} END`,
-    `CREATE TRIGGER source_taint_${table}_update AFTER UPDATE ON ${table} BEGIN ${SOURCE_TAINT_BEGIN} ${sourceTaintCatalogBefore(table, "update")} ${sourceTaintCatalogAfter(table)} ${SOURCE_TAINT_END} END`,
-    `CREATE TRIGGER source_taint_${table}_delete AFTER DELETE ON ${table} BEGIN ${SOURCE_TAINT_BEGIN} ${sourceTaintCatalogBefore(table, "delete")} ${SOURCE_TAINT_END} END`,
-  ]),
+  ...EXTRA_CATALOGS.flatMap((table) => {
+    const columns = [CATALOG_KEYS[table]!, ...(CATALOG_COLUMNS[table] ?? [])];
+    return [
+      `CREATE TRIGGER source_taint_${table}_insert AFTER INSERT ON ${table} BEGIN ${SOURCE_TAINT_BEGIN} ${sourceTaintCatalogAfter(table)} ${SOURCE_TAINT_END} END`,
+      `CREATE TRIGGER source_taint_${table}_update AFTER UPDATE OF ${columns.join(",")} ON ${table}
+        WHEN ${catalogChanged(table)} BEGIN ${SOURCE_TAINT_BEGIN} ${sourceTaintCatalogBefore(table, "update")} ${sourceTaintCatalogAfter(table)} ${SOURCE_TAINT_END} END`,
+      `CREATE TRIGGER source_taint_${table}_delete AFTER DELETE ON ${table} BEGIN ${SOURCE_TAINT_BEGIN} ${sourceTaintCatalogBefore(table, "delete")} ${SOURCE_TAINT_END} END`,
+    ];
+  }),
 ];
 export const SOURCE_TAINT_FRESH: readonly string[] = [
   "INSERT INTO source_taint_state(id,ready) VALUES(1,1)",
