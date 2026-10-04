@@ -9,7 +9,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
-- **Large navigation-map receipts no longer monopolize the hub's event loop.**
+- **Large navigation-map receipts no longer monopolize the hub's event loop (#543).**
   Projection fuses node inserts into bounded 32-row SQL statements, one per transaction, and
   serves a real event-loop turn between map write and verification pages. Hierarchy verification
   loads related nodes in bounded indexed groups rather than repeating one query per link.
