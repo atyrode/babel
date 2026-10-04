@@ -3335,6 +3335,8 @@ export type PreflightMode = z.infer<typeof PreflightModeSchema>;
 
 /** Durable owner exclusions are bounded so native privacy policy remains an input document. */
 export const MAX_SESSION_EXCLUSIONS = 64;
+/** An exclusion cannot be recorded while historical input identities are still being indexed. */
+export const PRIVACY_PROJECTION_BUILDING = "privacy_projection_building";
 export const SessionExclusionsSchema = z
   .array(z.string().min(1).max(600))
   .max(MAX_SESSION_EXCLUSIONS)

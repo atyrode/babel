@@ -2542,8 +2542,13 @@ export function importableTables(): Record<string, readonly string[]> {
     const head = /^\s*CREATE TABLE\s+(\w+)\s*\(/.exec(statement);
     if (head === null) continue;
     const name = head[1];
-    // An application is an operator act through its guarded door, never importable authority.
-    if (name === undefined || name === "duplicate_applications") continue;
+    // Operator applications and trigger-owned privacy projections are not imported authority.
+    if (
+      name === undefined ||
+      name === "duplicate_applications" ||
+      name.startsWith("source_dependenc")
+    )
+      continue;
     tables[name] = columnParts(statement.slice(head[0].length)).map((column) => column.name);
   }
   importable = tables;

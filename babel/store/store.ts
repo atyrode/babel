@@ -83,6 +83,7 @@ import {
   readExcludedRunIds,
   sourcePrivacyCondition,
 } from "./source-privacy.ts";
+import { SOURCE_DEPENDENCY_READY } from "./source-dependencies.ts";
 
 /**
  * THE STORE'S HALF OF THE PULSE: what today's tables say. The door answers a wider shape — it
@@ -779,20 +780,29 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   const clock = now ?? Date.now;
   let built: FeedIndex | null = null;
   let invalidation = 0;
-  type Generation = { invalidation: number; exclusions: number };
+  type Generation = { invalidation: number; exclusions: number; projectionReady: number };
   let builtGeneration: Generation | null = null;
 
-  // The exclusion ledger is immutable: its count is a durable generation, including bans
-  // committed through another store handle. touch() additionally fences ordinary local acts.
+  // The immutable ledger count fences bans from other handles. The durable readiness flag
+  // invalidates a conservatively hidden projection when resumable backfill finishes.
+  // touch() additionally fences ordinary local acts.
   const generation = async (): Promise<Generation> => {
     const before = invalidation;
-    const rows = await db.query(`SELECT COUNT(*) AS n FROM session_exclusions`, []);
-    return { invalidation: before, exclusions: count(rows[0]?.["n"]) };
+    const rows = await db.query(
+      `SELECT COUNT(*) AS n, ${SOURCE_DEPENDENCY_READY} AS ready FROM session_exclusions`,
+      [],
+    );
+    return {
+      invalidation: before,
+      exclusions: count(rows[0]?.["n"]),
+      projectionReady: count(rows[0]?.["ready"]),
+    };
   };
   const sameGeneration = (before: Generation, after: Generation): boolean =>
     before.invalidation === after.invalidation &&
     after.invalidation === invalidation &&
-    before.exclusions === after.exclusions;
+    before.exclusions === after.exclusions &&
+    before.projectionReady === after.projectionReady;
 
   // A predicate on the first query cannot protect projections assembled by later awaits.
   // Discard the whole response, including derived counts/context, if a ban completed meanwhile.

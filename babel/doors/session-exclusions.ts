@@ -2,6 +2,7 @@ import { defineServerAction, type GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
   RECALL_SERVICE_ID,
+  PRIVACY_PROJECTION_BUILDING,
   ExcludeSessionInputSchema,
   ExcludeSessionResultSchema,
   SessionExclusionsResultSchema,
@@ -14,6 +15,7 @@ import {
 } from "../store/exclusions.ts";
 import { activeDrains } from "../store/drains.ts";
 import { excludeSessionWhenQuiescent, readExcludedRunIds } from "../store/source-privacy.ts";
+import { backfillSourceDependencies } from "../store/source-dependencies.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
 import {
@@ -71,6 +73,8 @@ export function sessionExclusionDoors(store: BabelStore): readonly Door[] {
       }),
       async (ctx, { selector }) => {
         if (!ctx.auth.isRoot) return { refused: "Conversation exclusions require the owner." };
+        if (!(await backfillSourceDependencies(store.db)))
+          return { refused: PRIVACY_PROJECTION_BUILDING };
         return await withRecallPolicyCutover(store, async () => {
           try {
             if (!(await sessionIsExcluded(store.db, selector))) {

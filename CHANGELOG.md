@@ -9,6 +9,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+- **Conversation privacy no longer reparses the complete store for each guarded read.**
+  Same-transaction SQLite triggers maintain a deduplicated, indexed dependency projection;
+  every admission still resolves current catalog facts and reads the immutable exclusion ledger
+  in its own statement. Historical backfill resumes in small bounded chunks, with named
+  `privacy_projection_building` refusals and conservative quarantine while incomplete.
+  Regression coverage includes late citations/catalog arrivals, shared-edge refcounts, rowid
+  boundaries, writes during backfill and readiness-driven feed-cache invalidation.
+
 - **Owners can durably exclude a conversation from Babel without deleting its backups.**
   One immutable source ledger fences preparation, title inference, analysis, reviews, mapping,
   embeddings and later reuse of persisted derived lineage. Native Recall policy merges every
