@@ -904,7 +904,10 @@ private operator state, never in public issues, commands, logs or repository fix
 > catalog identity without opening transcript contents and keep the existing archive/storage
 > service, native owner and grants unchanged.
 > **Procedure:** through the supported owner action API, call `excludeSession` with the private
-> selector. The door first disables Recall, atomically records the durable ban and invalidates
+> selector. After an upgrade, `privacy_projection_building` means the bounded historical
+> dependency backfill is still advancing; repeat the same action, keeping Babel paused.
+> That refusal changes neither the ban ledger nor native Recall configuration. Once ready,
+> the door first disables Recall, atomically records the durable ban and invalidates
 > derived keyword statistics and current contaminated inferred titles, then CAS-installs the
 > merged native policy. Check `excluded: true`; `recallEnforced: false` is containment, not
 > completed cutover. After the service reaches ready, read `sessionExclusions` and require
@@ -929,6 +932,14 @@ when another harness later catalogs the same identifier; operator acceptance of 
 does not erase the copied facts' or plans' provenance. Reader responses and feed caches discard
 work assembled across an exclusion, including derived counts and attention. Genuine historical
 spend and session-read receipts remain authoritative rather than being rewritten.
+
+Privacy guards traverse an indexed dependency projection maintained by SQLite in each base
+write transaction, never an in-memory taint snapshot. Backfill uses durable cursors and small
+chunks, advanced by enable, existing conductor maintenance and owner exclusion attempts.
+New rows are covered immediately even while old history is incomplete. If a ban already exists,
+incomplete history conservatively hides derived reads and refuses model admission until ready;
+without a ban ordinary guards retain their cheap short circuit. Do not bypass readiness with
+SQL edits, an external projection import or a reduced privacy graph.
 
 **Executed synthetic command evidence — dev-01, 2026-10-02.** The actual native `prepare` command,
 under isolated HOME/XDG state and an absent archive binding, refused a synthetic forbidden scope

@@ -64,6 +64,7 @@ import {
 import { coordinator, perMachineBound, type Policy } from "./store/coordinator.ts";
 import { ReviewReadings, type ReadingMetadata } from "./server/review-readings.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
+import { backfillSourceDependencies } from "./store/source-dependencies.ts";
 import { ensureTerms } from "./store/corpus.ts";
 import { activeDrains, deadlineOf, readDrain, type DrainRow } from "./store/drains.ts";
 import { openStore } from "./store/store.ts";
@@ -104,7 +105,7 @@ import manifestJson from "./manifest.json";
  * `2026-09-29-store-v1-review-actions` — recorded under the same key by the enable before it — is
  * its predecessor.
  */
-const STORE_MIGRATION = "2026-10-02-store-v1-session-exclusions";
+const STORE_MIGRATION = "2026-10-04-store-v1-source-dependencies";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -883,6 +884,7 @@ async function cycle(
   // post native work; a door's bridge is attenuated to that door's delegates.
   nativeDispatch = false,
 ): Promise<void> {
+  await backfillSourceDependencies(database, 100);
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
   // limits are read for; a run that reaches a model is Code's to post (#279). Mapping's native
@@ -1264,10 +1266,13 @@ export const plugin: ServerPluginDef = {
         "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
         [SENTINEL_TABLE],
       );
-      // One batch, so a store either exists whole or was never begun; 65 statements against a
-      // bound of 256, which is the reason the schema may stay one list.
+      // Projection triggers extend the schema beyond the engine's 256-statement bound.
+      // The base shape precedes the additive projection; interrupted enable resumes missing
+      // objects, while guarded reads stay fenced until bounded backfill reaches completion.
       if (Number(created[0]?.n ?? 0) === 0) {
-        await database.batch(SCHEMA_V1.map((sql) => ({ sql })));
+        for (let start = 0; start < SCHEMA_V1.length; start += 256) {
+          await database.batch(SCHEMA_V1.slice(start, start + 256).map((sql) => ({ sql })));
+        }
       } else {
         // A store an earlier shape created reaches this one by what it is missing and nothing
         // else. SQLite has no `ADD COLUMN IF NOT EXISTS` and no `CREATE TABLE IF NOT EXISTS`
@@ -1303,6 +1308,7 @@ export const plugin: ServerPluginDef = {
         }
         if (pending.length > 0) await database.batch(pending);
       }
+      await backfillSourceDependencies(database, 100);
       await ctx.storage.set(SCHEMA_KEY, STORE_MIGRATION);
       /*
         THE KEYWORD INDEX IS BROUGHT CURRENT HERE (#337), because an enable is the one moment

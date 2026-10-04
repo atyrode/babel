@@ -72,8 +72,9 @@ export async function openTestStore(nowMs: number): Promise<TestStore> {
     dataDir,
     pluginId: "atyrode.babel",
   });
-  // One batch, as the plugin's own enable hook applies it: a half-created schema is not a store.
-  await db.batch(SCHEMA_V1.map((sql) => ({ sql })));
+  for (let start = 0; start < SCHEMA_V1.length; start += 256) {
+    await db.batch(SCHEMA_V1.slice(start, start + 256).map((sql) => ({ sql })));
+  }
   let clock = nowMs;
   return {
     db,

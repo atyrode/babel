@@ -24,8 +24,9 @@
   - the operator is the boundary: `actor_kind` is `operator`, `run` or `engine` on every row that
     something wrote, so "who did this" is a column and never an inference.
  */
+import { SOURCE_DEPENDENCY_FRESH, SOURCE_DEPENDENCY_SCHEMA } from "./source-dependencies.ts";
 
-export const STORE_DATA_VERSION = { major: 1, minor: 21 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 22 } as const;
 
 /** Privacy acts are independent of the rebuildable catalog and never modify archived bytes. */
 const SESSION_EXCLUSION_SCHEMA: readonly string[] = [
@@ -1521,6 +1522,8 @@ export const SCHEMA_V1: readonly string[] = [
      rows INTEGER NOT NULL,
      imported_at TEXT NOT NULL
    ) STRICT`,
+  ...SOURCE_DEPENDENCY_SCHEMA,
+  ...SOURCE_DEPENDENCY_FRESH,
 ];
 
 /**
@@ -1723,6 +1726,7 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   ...HISTORY_INDEX_SCHEMA.map(objectAddition),
   ...REVIEW_ACTION_SCHEMA.map(objectAddition),
   ...SESSION_EXCLUSION_SCHEMA.map(objectAddition),
+  ...SOURCE_DEPENDENCY_SCHEMA.map(objectAddition),
 ];
 
 /**
@@ -1747,7 +1751,7 @@ export interface SchemaAddition {
  */
 function objectAddition(sql: string): SchemaAddition {
   const named =
-    /^\s*CREATE\s+(?:VIRTUAL\s+|UNIQUE\s+)?(?:TABLE|INDEX|TRIGGER)\s+([a-z_][a-z_0-9]*)/iu.exec(
+    /^\s*CREATE\s+(?:VIRTUAL\s+|UNIQUE\s+)?(?:TABLE|INDEX|TRIGGER|VIEW)\s+([a-z_][a-z_0-9]*)/iu.exec(
       sql,
     );
   const object = named?.[1];

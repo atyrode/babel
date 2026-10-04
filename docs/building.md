@@ -69,9 +69,9 @@ manifest and served as `ctx.database`. Three consequences worth knowing before r
 
 - **The shape is made by the enable hook, not by a migration.** A fresh install has no stored
   data version, and `planDataMigration` answers `ok` for that case — a migration chain exists for
-  a MAJOR bump over data that already exists. So `onEnable` runs the 58 statements of `SCHEMA_V1`
-  as one `batch` (all or none) when the file has no tables, and records the shape's name,
-  `2026-09-12-store-v1`, as a storage key for the next one to read.
+  a MAJOR bump over data that already exists. So `onEnable` creates `SCHEMA_V1` in batches no
+  larger than the host's 256-statement bound and records the current shape as a storage key.
+  Existing stores receive missing additive objects by name; interrupted enable resumes them.
 - **`batch` is the transaction.** There is no open handle: read, decide, then a batch whose first
   statements are its own guards. Bounds are the engine's — 10,000 rows and 4 MiB a call, 256
   statements a batch, a 5-second deadline — and every refusal is a rejection.
@@ -85,6 +85,21 @@ knobs are retained; malformed or non-object knobs are kept under `legacyKnobs`. 
 history, not runnable authority: an old model/account choice is never invented into a Code
 profile. Fresh stores already have the final shape, and repeated enables leave it alone. A
 store that previously dropped the column cannot recover its contents from this migration.
+
+Conversation privacy's `source_dependencies` and `source_dependency_edges` are derived input
+identities, not a cached taint set. Base-row triggers maintain their references in the same
+transaction, through the `source_dependency_rows` write view; imports cannot supply those
+derived tables as authority. Guards resolve current catalog-dependent references and read the
+immutable exclusion ledger in the same statement.
+
+Fresh stores start ready. Upgrades create the projection cheaply and advance durable per-table
+cursors in five-row chunks, yielding between batches: enable and existing conductor cycles
+spend about 100 ms per turn, and the owner exclusion door spends about one second. The door
+returns `privacy_projection_building` before native cutover until all history is covered.
+An empty exclusion ledger retains its cheap guard bypass; an existing ledger conservatively
+hides derived reads and refuses model admission during backfill. There is no full-store SQL
+fallback or imported/in-memory taint snapshot. Finishing backfill invalidates cached hidden
+feeds through the durable readiness generation.
 
 ## The machine half: one bundled file, no pinned engine, two tools the machine provides
 

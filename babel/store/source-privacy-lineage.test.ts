@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { NeighborhoodQuerySchema, OPERATIONS, type Harness } from "../contract.ts";
+import {
+  NeighborhoodQuerySchema,
+  OPERATIONS,
+  PRIVACY_PROJECTION_BUILDING,
+  type Harness,
+} from "../contract.ts";
 import { rule } from "./acts.ts";
 import {
   excludeSessionWhenQuiescent,
@@ -8,6 +13,7 @@ import {
   readExcludedRunIds,
   sourcePrivacyCondition,
 } from "./source-privacy.ts";
+import { backfillSourceDependencies, sourceDependenciesReady } from "./source-dependencies.ts";
 import { insert, openTestStore, type TestStore } from "./testdb.ts";
 
 const NOW = Date.UTC(2026, 9, 3, 12);
@@ -167,6 +173,168 @@ test("the first durable ban activates reused reader and model guards without byp
   expect(await exclude(PRIVATE)).toBe(true);
   expect(await subjects()).toEqual([{ id: "obs_00000061" }]);
   expect(await admission()).toEqual([]);
+});
+
+test("a newly appended citation is quarantined in its write transaction without refreshing a taint cache", async () => {
+  await run("run_projected_private", [PRIVATE]);
+  await record("obs_00000070", "observation", {}, "run_projected_private");
+  const guard = modelPrivacyGuard([], ["obs_00000071"]);
+  expect(await exclude(PRIVATE)).toBe(true);
+  expect(await harness.db.query(`SELECT 1 AS eligible WHERE ${guard.sql}`, guard.params)).toEqual([
+    { eligible: 1n },
+  ]);
+
+  await record("obs_00000071", "observation", {
+    evidence: [{ kind: "observation", id: "obs_00000070" }],
+  });
+  expect(await harness.db.query(`SELECT 1 AS eligible WHERE ${guard.sql}`, guard.params)).toEqual(
+    [],
+  );
+  expect(await readExcludedRecordIds(harness.db)).toEqual(
+    new Set(["obs_00000070", "obs_00000071"]),
+  );
+});
+
+test("removing one of two mutable provenance rows keeps the shared privacy edge until both change", async () => {
+  await run("run_shared_private", [PRIVATE]);
+  await record("obs_00000072");
+  for (const id of ["fil_shared_first", "fil_shared_second"]) {
+    await insert(harness.db, "filings", {
+      id,
+      record_id: "obs_00000072",
+      entity_id: "ent_00000072",
+      rationale: "Synthetic shared provenance",
+      author_kind: "run",
+      author_id: "run_shared_private",
+      created_at: AT,
+    });
+  }
+  expect(await exclude(PRIVATE)).toBe(true);
+  const guard = modelPrivacyGuard([], ["obs_00000072"]);
+  const admission = async () =>
+    await harness.db.query(`SELECT 1 AS eligible WHERE ${guard.sql}`, guard.params);
+  expect(await admission()).toEqual([]);
+
+  await harness.db.run(
+    "UPDATE filings SET author_kind='operator',author_id=? WHERE id='fil_shared_first'",
+    [OWNER],
+  );
+  expect(await admission()).toEqual([]);
+  await harness.db.run(
+    "UPDATE filings SET author_kind='operator',author_id=? WHERE id='fil_shared_second'",
+    [OWNER],
+  );
+  expect(await admission()).toEqual([{ eligible: 1n }]);
+});
+
+test("a catalog-dependent reference activates when its record arrives after the ban", async () => {
+  await run("run_late_record", [PRIVATE]);
+  await insert(harness.db, "assessments", {
+    id: "asm_late_record",
+    record_id: "obs_00000073",
+    revision_id: "obs_00000073",
+    run_id: "run_late_record",
+    role: "synthetic",
+    payload: "{}",
+    recorded_at: AT,
+  });
+  await insert(harness.db, "questions", {
+    id: "qst_00000073",
+    kind: "acquire-context",
+    class: "curiosity",
+    text: "Synthetic late record question",
+    why: "Synthetic catalog arrival",
+    raised_by_kind: "operator",
+    raised_by_id: OWNER,
+    payload: JSON.stringify({ subjects: ["obs_00000073"] }),
+    created_at: AT,
+  });
+  expect(await exclude(PRIVATE)).toBe(true);
+  const privacy = sourcePrivacyCondition("question", "id");
+  const visible = async () =>
+    await harness.db.query(`SELECT id FROM questions WHERE ${privacy.sql}`, privacy.params);
+  expect(await visible()).toEqual([{ id: "qst_00000073" }]);
+  await record("obs_00000073");
+  expect(await visible()).toEqual([]);
+});
+
+test("resumable backfill fences incomplete history, covers concurrent writes and preserves rowid boundaries", async () => {
+  for (const [rowid, id] of [
+    ["-9223372036854775808", "run_historical_min"],
+    ["9223372036854775807", "run_historical_max"],
+  ]) {
+    await harness.db.run(
+      `INSERT INTO runs(rowid,id,kind,preparation,started_at,closure,payload)
+        VALUES(CAST(? AS INTEGER),?,?,?,?,?,?)`,
+      [
+        rowid!,
+        id!,
+        OPERATIONS.explore,
+        JSON.stringify({ selectors: [PRIVATE] }),
+        AT,
+        "completed",
+        "{}",
+      ],
+    );
+  }
+  await record("obs_00000074", "observation", {}, "run_historical_min");
+  await record("obs_00000075", "observation", {}, "run_historical_max");
+  await record("fnd_00000076", "finding");
+  await record("obs_00000077");
+  expect((await harness.store.index()).posts.map(({ post }) => post.id)).toEqual(["fnd_00000076"]);
+  // The old base rows predate projection installation; only its new triggers are active.
+  await harness.db.run("UPDATE source_dependency_progress SET complete=0,last_rowid=NULL");
+  await harness.db.run("DELETE FROM source_dependencies");
+  const independent = modelPrivacyGuard([], ["fnd_00000076"]);
+  const admission = async () =>
+    await harness.db.query(`SELECT 1 AS eligible WHERE ${independent.sql}`, independent.params);
+  expect(await admission()).toEqual([{ eligible: 1n }]);
+  expect(await backfillSourceDependencies(harness.db, 0)).toBe(false);
+  await expect(readExcludedRunIds(harness.db, [PRIVATE])).rejects.toThrow(
+    PRIVACY_PROJECTION_BUILDING,
+  );
+
+  await run("run_during_backfill", [PRIVATE]);
+  await record("obs_00000078", "observation", {}, "run_during_backfill");
+  await insert(harness.db, "filings", {
+    id: "fil_during_backfill",
+    record_id: "obs_00000077",
+    entity_id: "ent_00000077",
+    rationale: "Synthetic provenance written before history is complete",
+    author_kind: "run",
+    author_id: "run_during_backfill",
+    created_at: AT,
+  });
+  await insert(harness.db, "session_exclusions", {
+    selector: PRIVATE,
+    actor_id: OWNER,
+    recorded_at: AT,
+  });
+  // An existing ledger activates the conservative fence, including unrelated model work.
+  expect(await admission()).toEqual([]);
+  expect(await harness.store.record("fnd_00000076")).toBeNull();
+  expect((await harness.store.index()).posts).toEqual([]);
+
+  expect(await backfillSourceDependencies(harness.db)).toBe(true);
+  expect(await sourceDependenciesReady(harness.db)).toBe(true);
+  expect(await readExcludedRecordIds(harness.db)).toEqual(
+    new Set(["obs_00000074", "obs_00000075", "obs_00000077", "obs_00000078"]),
+  );
+  expect(await admission()).toEqual([{ eligible: 1n }]);
+  // No touch or clock advance: durable readiness invalidates the previously empty feed.
+  expect((await harness.store.index()).posts.map(({ post }) => post.id)).toEqual(["fnd_00000076"]);
+
+  await harness.db.run(
+    "UPDATE filings SET author_kind='operator',author_id=? WHERE id='fil_during_backfill'",
+    [OWNER],
+  );
+  const previouslyFiled = modelPrivacyGuard([], ["obs_00000077"]);
+  expect(
+    await harness.db.query(
+      `SELECT 1 AS eligible WHERE ${previouslyFiled.sql}`,
+      previouslyFiled.params,
+    ),
+  ).toEqual([{ eligible: 1n }]);
 });
 
 test("a ban keeps bare legacy records hidden when a colliding source joins the catalog", async () => {
