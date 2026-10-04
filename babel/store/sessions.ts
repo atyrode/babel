@@ -60,8 +60,8 @@ export interface SessionsStore {
   touch(): void;
 }
 
-/** Rows per batch: three statements each, under the engine's 256-statement bound. */
-const ROWS_PER_BATCH = 80;
+/** Three ordered statements per row; leave room below the ordinary 250 ms host-thread target. */
+const ROWS_PER_BATCH = 48;
 /** Labels per lookup, under the engine's 999-parameter bound. */
 const LABELS_PER_QUERY = 900;
 

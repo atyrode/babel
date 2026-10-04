@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import type { SqlParam, SqlStatement } from "@manifold/plugin";
 import {
   NeighborhoodQuerySchema,
   OPERATIONS,
+  SessionRowSchema,
   PRIVACY_PROJECTION_BUILDING,
   type Harness,
 } from "../contract.ts";
@@ -14,7 +16,9 @@ import {
   sourcePrivacyCondition,
 } from "./source-privacy.ts";
 import { backfillSourceDependencies, sourceDependenciesReady } from "./source-dependencies.ts";
+import { frozenSourcePrivacyReference } from "./source-privacy-reference.fixture.ts";
 import { insert, openTestStore, type TestStore } from "./testdb.ts";
+import { upsertSessionRows } from "./sessions.ts";
 
 const NOW = Date.UTC(2026, 9, 3, 12);
 const AT = new Date(NOW).toISOString();
@@ -150,6 +154,86 @@ async function retainedLedger() {
   return await Promise.all(
     tables.map(async (table) => await harness.db.query(`SELECT * FROM ${table} ORDER BY rowid`)),
   );
+}
+
+function insertion(table: string, row: Readonly<Record<string, SqlParam>>): SqlStatement {
+  const columns = Object.keys(row);
+  return {
+    sql: `INSERT INTO ${table}(${columns.join(",")}) VALUES(${columns.map(() => "?").join(",")})`,
+    params: columns.map((column) => row[column] as SqlParam),
+  };
+}
+
+interface PrivacyProbe {
+  readonly kind: "record" | "run" | "capture" | "entity";
+  readonly id: string;
+  readonly queries: readonly SqlStatement[];
+}
+
+function privacyProbe(kind: PrivacyProbe["kind"], id: string): PrivacyProbe {
+  const table = {
+    record: "records",
+    run: "runs",
+    capture: "transcript_map_captures",
+    entity: "entities",
+  }[kind];
+  const condition = sourcePrivacyCondition(kind, "id");
+  const queries: SqlStatement[] = [
+    {
+      sql: `SELECT id FROM ${table} WHERE id=? AND (${condition.sql})`,
+      params: [id, ...condition.params],
+    },
+  ];
+  if (kind !== "entity") {
+    const guard = modelPrivacyGuard(
+      [],
+      kind === "record" ? [id] : [],
+      kind === "run" ? [id] : [],
+      kind === "capture" ? [id] : [],
+    );
+    queries.push({ sql: `SELECT ? AS id WHERE ${guard.sql}`, params: [id, ...guard.params] });
+  }
+  return { kind, id, queries };
+}
+
+async function expectPersistedTaint(): Promise<void> {
+  const reference = frozenSourcePrivacyReference;
+  const [persisted, recursive] = await harness.db.batch([
+    { sql: "SELECT kind,id FROM source_taint ORDER BY kind,id" },
+    {
+      sql: `${reference.sql} SELECT kind,id FROM tainted ORDER BY kind,id`,
+      params: reference.params,
+    },
+  ]);
+  expect(persisted).toEqual(recursive);
+}
+
+// Keep the guard/reader statements reusable, and observe them before the mutation commits.
+// The recursive reference supplies the expected privacy decision, not the maintained table.
+async function commitPrivacyStep(
+  statements: readonly SqlStatement[],
+  probes: readonly PrivacyProbe[] = [],
+): Promise<void> {
+  const reference = frozenSourcePrivacyReference;
+  const results = await harness.db.batch([
+    ...statements,
+    { sql: "SELECT kind,id FROM source_taint ORDER BY kind,id" },
+    {
+      sql: `${reference.sql} SELECT kind,id FROM tainted ORDER BY kind,id`,
+      params: reference.params,
+    },
+    ...probes.flatMap(({ queries }) => queries),
+  ]);
+  const recursive = results[statements.length + 1]!;
+  expect(results[statements.length]).toEqual(recursive);
+  let index = statements.length + 2;
+  for (const probe of probes) {
+    const denied = recursive.some(({ kind, id }) => kind === probe.kind && id === probe.id);
+    for (let query = 0; query < probe.queries.length; query++) {
+      expect(results[index++]).toEqual(denied ? [] : [{ id: probe.id }]);
+    }
+  }
+  await expectPersistedTaint();
 }
 
 test("the first durable ban activates reused reader and model guards without bypassing prospective taint", async () => {
@@ -317,6 +401,7 @@ test("resumable backfill fences incomplete history, covers concurrent writes and
 
   expect(await backfillSourceDependencies(harness.db)).toBe(true);
   expect(await sourceDependenciesReady(harness.db)).toBe(true);
+  await expectPersistedTaint();
   expect(await readExcludedRecordIds(harness.db)).toEqual(
     new Set(["obs_00000074", "obs_00000075", "obs_00000077", "obs_00000078"]),
   );
@@ -328,6 +413,7 @@ test("resumable backfill fences incomplete history, covers concurrent writes and
     "UPDATE filings SET author_kind='operator',author_id=? WHERE id='fil_during_backfill'",
     [OWNER],
   );
+  await expectPersistedTaint();
   const previouslyFiled = modelPrivacyGuard([], ["obs_00000077"]);
   expect(
     await harness.db.query(
@@ -335,6 +421,28 @@ test("resumable backfill fences incomplete history, covers concurrent writes and
       previouslyFiled.params,
     ),
   ).toEqual([{ eligible: 1n }]);
+});
+
+test("restoring a removed progress row rebuilds bans retained while history was incomplete", async () => {
+  await session("omp", "synthetic-applied-plan-source");
+  await record("obs_00000180", "observation", { evidence: [{ selector: PRIVATE }] });
+  await record("obs_00000181");
+  expect(await harness.store.record("obs_00000180")).toMatchObject({
+    post: { id: "obs_00000180" },
+  });
+  await harness.db.run("DELETE FROM source_dependency_progress WHERE origin='runs'");
+  await insert(harness.db, "session_exclusions", {
+    selector: PRIVATE,
+    actor_id: OWNER,
+    recorded_at: AT,
+  });
+  expect(await harness.store.record("obs_00000181")).toBeNull();
+  await harness.db.run("INSERT INTO source_dependency_progress(origin,complete) VALUES('runs',1)");
+  await expectPersistedTaint();
+  expect(await harness.store.record("obs_00000180")).toBeNull();
+  expect(await harness.store.record("obs_00000181")).toMatchObject({
+    post: { id: "obs_00000181" },
+  });
 });
 
 test("a ban keeps bare legacy records hidden when a colliding source joins the catalog", async () => {
@@ -665,4 +773,981 @@ test("imported answer action fact results retain question lineage without a run 
   expect((await context("ent_00000050")).state).toBe("missing");
   expect((await context("ent_00000051")).nodes.map(({ id }) => id)).toEqual(["ent_00000051"]);
   expect(await retainedLedger()).toEqual(originals);
+});
+
+test("an imported session edge fences a source record that arrives later", async () => {
+  await session("omp", "synthetic-applied-plan-source");
+  await commitPrivacyStep([
+    insertion("session_exclusions", { selector: PRIVATE, actor_id: OWNER, recorded_at: AT }),
+    insertion("edges", {
+      id: "edge_before_guarded_record",
+      kind: "cites",
+      from_kind: "observation",
+      from_id: "obs_000000f1",
+      to_kind: "session",
+      to_id: PRIVATE,
+      actor_kind: "operator",
+      actor_id: OWNER,
+      created_at: AT,
+    }),
+  ]);
+  await commitPrivacyStep(
+    [
+      insertion("records", {
+        id: "obs_000000f1",
+        kind: "observation",
+        root_id: "obs_000000f1",
+        seq: 0,
+        actor_kind: "operator",
+        actor_id: OWNER,
+        title: "Synthetic late edge source",
+        payload: "{}",
+        created_at: AT,
+      }),
+    ],
+    [privacyProbe("record", "obs_000000f1")],
+  );
+  expect(await harness.store.record("obs_000000f1")).toBeNull();
+});
+
+test("ordinary catalog KEEP refreshes do not rebuild taint for cited sessions", async () => {
+  const captured = SessionRowSchema.parse({
+    selector: "codex/synthetic-catalog-refresh",
+    harness: "codex",
+    source_id: "synthetic-catalog-refresh",
+    kind: "operator",
+    archive_label: "synthetic-lineage-host",
+    archive_path: "/synthetic/codex/catalog-refresh.jsonl",
+    snapshot_id: "a".repeat(64),
+    archived_at: AT,
+    size: 1000,
+    modified_at: AT,
+  });
+  await record("obs_000000f2", "observation", {
+    evidence: [{ selector: PRIVATE }, { selector: captured.selector }],
+  });
+  expect(await exclude(PRIVATE)).toBe(true);
+  await harness.db.batch([
+    { sql: "CREATE TABLE taint_rebuild_probe(rewrites INTEGER NOT NULL)" },
+    { sql: "INSERT INTO taint_rebuild_probe VALUES(0)" },
+    {
+      sql: `CREATE TRIGGER count_taint_rebuild AFTER DELETE ON source_taint BEGIN
+        UPDATE taint_rebuild_probe SET rewrites=rewrites+1; END`,
+    },
+  ]);
+  expect(await upsertSessionRows(harness.store, [captured], AT)).toMatchObject({
+    inserted: 1,
+    kept: 0,
+    moved: 0,
+  });
+  const seen = new Date(NOW + 1000).toISOString();
+  expect(
+    await upsertSessionRows(
+      harness.store,
+      [{ ...captured, workspace: "/synthetic/refreshed" }],
+      seen,
+    ),
+  ).toMatchObject({ kept: 1, inserted: 0, moved: 0 });
+  expect(await harness.db.query("SELECT rewrites FROM taint_rebuild_probe")).toEqual([
+    { rewrites: 0n },
+  ]);
+  expect(
+    await harness.db.query("SELECT seen_at,workspace FROM sessions WHERE selector=?", [
+      captured.selector,
+    ]),
+  ).toEqual([{ seen_at: seen, workspace: "/synthetic/refreshed" }]);
+  expect(await harness.store.record("obs_000000f2")).toBeNull();
+  await expectPersistedTaint();
+});
+
+test("a legacy review becomes private when its start crosses the title inference instant", async () => {
+  const titled = await session("codex", "synthetic-legacy-threshold");
+  await run("run_legacy_threshold_title", [PRIVATE]);
+  await record("obs_000000f3");
+  await insert(harness.db, "session_titles", {
+    selector: titled,
+    title: MODEL_VALUE,
+    run_id: "run_legacy_threshold_title",
+    inferred_at: AT,
+  });
+  await insert(harness.db, "edges", {
+    id: "edge_legacy_threshold",
+    kind: "cites",
+    from_kind: "observation",
+    from_id: "obs_000000f3",
+    to_kind: "session",
+    to_id: titled,
+    actor_kind: "operator",
+    actor_id: OWNER,
+    created_at: AT,
+  });
+  await insert(harness.db, "runs", {
+    id: "run_legacy_threshold_consumer",
+    kind: OPERATIONS.explore,
+    preparation: JSON.stringify({ review: { recordId: "obs_000000f3" } }),
+    started_at: new Date(NOW - 1).toISOString(),
+    finished_at: AT,
+    closure: "completed",
+    payload: "{}",
+  });
+  await record("obs_000000f4", "observation", {}, "run_legacy_threshold_consumer");
+  expect(await exclude(PRIVATE)).toBe(true);
+  expect(await harness.store.record("obs_000000f4")).toMatchObject({
+    post: { id: "obs_000000f4" },
+  });
+  await commitPrivacyStep(
+    [
+      {
+        sql: "UPDATE runs SET started_at=? WHERE id='run_legacy_threshold_consumer'",
+        params: [AT],
+      },
+    ],
+    [privacyProbe("run", "run_legacy_threshold_consumer"), privacyProbe("record", "obs_000000f4")],
+  );
+  expect(await harness.store.record("obs_000000f4")).toBeNull();
+});
+
+for (const seed of [0x541, 0xa11ce]) {
+  test(`persisted taint matches recursive privacy through seeded mutable graph writes (${seed})`, async () => {
+    let random = seed;
+    const choose = (count: number) => {
+      random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
+      return (random >>> 16) % count;
+    };
+    const runIds = Array.from({ length: 8 }, (_, index) => `run_random_${index}`);
+    const recordIds = Array.from(
+      { length: 8 },
+      (_, index) => `obs_${(100 + index).toString(16).padStart(8, "0")}`,
+    );
+    const probes = recordIds.map((id) => privacyProbe("record", id));
+    const activeRuns = new Set(runIds);
+    const activeQuestions = new Set<string>();
+    const runRow = (id: string, preparation: Record<string, unknown>) =>
+      insertion("runs", {
+        id,
+        kind: OPERATIONS.explore,
+        preparation: JSON.stringify(preparation),
+        started_at: AT,
+        finished_at: AT,
+        closure: "completed",
+        payload: "{}",
+      });
+    const questionRow = (id: string, subject: string, runId: string) =>
+      insertion("questions", {
+        id,
+        kind: "acquire-context",
+        class: "curiosity",
+        text: "Synthetic randomized question",
+        why: "Synthetic mutable graph",
+        raised_by_kind: "run",
+        raised_by_id: runId,
+        payload: JSON.stringify({ subjects: [subject] }),
+        created_at: AT,
+      });
+    await commitPrivacyStep(
+      [
+        runRow("run_random_source", { selectors: [PRIVATE] }),
+        ...runIds.map((id, index) =>
+          runRow(id, index < 3 ? { review: { titleRunIds: [runIds[(index + 2) % 3]] } } : {}),
+        ),
+        ...recordIds.map((id, index) =>
+          insertion("records", {
+            id,
+            kind: "observation",
+            root_id: id,
+            seq: 0,
+            actor_kind: "run",
+            actor_id: runIds[index]!,
+            run_id: runIds[index]!,
+            title: "Synthetic randomized descendant",
+            payload: "{}",
+            created_at: AT,
+          }),
+        ),
+        insertion("entities", {
+          id: "ent_00000064",
+          kind: "project",
+          name: "Synthetic shared filing target",
+          canonical_id: "ent_00000064",
+          created_by: OWNER,
+          created_at: AT,
+        }),
+        ...["fil_random_first", "fil_random_second"].map((id) =>
+          insertion("filings", {
+            id,
+            record_id: recordIds[0]!,
+            entity_id: "ent_00000064",
+            rationale: "Synthetic shared source",
+            author_kind: "run",
+            author_id: "run_random_source",
+            created_at: AT,
+          }),
+        ),
+      ],
+      probes,
+    );
+    await commitPrivacyStep(
+      [insertion("session_exclusions", { selector: PRIVATE, actor_id: OWNER, recorded_at: AT })],
+      probes,
+    );
+    expect(await readExcludedRecordIds(harness.db)).toEqual(new Set(recordIds.slice(0, 3)));
+    expect(await harness.store.record(recordIds[2]!)).toBeNull();
+
+    // The duplicate provenance row must survive removal of the first support.
+    await commitPrivacyStep(
+      [
+        {
+          sql: "UPDATE filings SET author_kind='operator',author_id=? WHERE id='fil_random_first'",
+          params: [OWNER],
+        },
+      ],
+      probes,
+    );
+    expect(await harness.store.record(recordIds[2]!)).toBeNull();
+    await commitPrivacyStep(
+      [
+        {
+          sql: "UPDATE filings SET author_kind='operator',author_id=? WHERE id='fil_random_second'",
+          params: [OWNER],
+        },
+      ],
+      probes,
+    );
+    expect(await readExcludedRecordIds(harness.db)).toEqual(new Set());
+    expect(await harness.store.record(recordIds[2]!)).toMatchObject({ post: { id: recordIds[2] } });
+
+    // A new tainted input must reach pre-existing descendants and their cycle.
+    await commitPrivacyStep(
+      [
+        {
+          sql: "UPDATE runs SET preparation=? WHERE id=?",
+          params: [
+            JSON.stringify({ review: { titleRunIds: [runIds[2], "run_random_source"] } }),
+            runIds[0]!,
+          ],
+        },
+      ],
+      probes,
+    );
+    expect(await readExcludedRecordIds(harness.db)).toEqual(new Set(recordIds.slice(0, 3)));
+    await commitPrivacyStep(
+      [
+        {
+          sql: "UPDATE runs SET preparation=? WHERE id=?",
+          params: [JSON.stringify({ review: { titleRunIds: [runIds[2]] } }), runIds[0]!],
+        },
+      ],
+      probes,
+    );
+    expect(await readExcludedRecordIds(harness.db)).toEqual(new Set());
+
+    const arrivalOrders = [
+      ["edges", "record", "session", "run"],
+      ["edges", "run", "record", "session"],
+      ["edges", "session", "run", "record"],
+      ["record", "edges", "run", "session"],
+      ["session", "edges", "record", "run"],
+      ["run", "session", "edges", "record"],
+    ] as const;
+    const orderIndices = arrivalOrders.map((_, index) => index);
+    for (let index = orderIndices.length - 1; index > 0; index--) {
+      const other = choose(index + 1);
+      [orderIndices[index], orderIndices[other]] = [orderIndices[other]!, orderIndices[index]!];
+    }
+    for (const orderIndex of orderIndices) {
+      const lateRecord = `obs_${(200 + orderIndex).toString(16).padStart(8, "0")}`;
+      const lateRun = `run_random_arrival_${orderIndex}`;
+      const bare = `synthetic-random-arrival-${seed}-${orderIndex}`;
+      const selector = `omp/${bare}`;
+      const lateProbes = [privacyProbe("record", lateRecord), privacyProbe("run", lateRun)];
+      const rows = {
+        edges: [
+          insertion("edges", {
+            id: `edge_random_arrival_session_${orderIndex}`,
+            kind: "cites",
+            from_kind: "observation",
+            from_id: lateRecord,
+            to_kind: "session",
+            to_id: bare,
+            actor_kind: "operator",
+            actor_id: OWNER,
+            created_at: AT,
+          }),
+          insertion("edges", {
+            id: `edge_random_arrival_run_${orderIndex}`,
+            kind: "cites",
+            from_kind: "observation",
+            from_id: lateRecord,
+            to_kind: "run",
+            to_id: lateRun,
+            actor_kind: "operator",
+            actor_id: OWNER,
+            created_at: AT,
+          }),
+        ],
+        record: [
+          insertion("records", {
+            id: lateRecord,
+            kind: "observation",
+            root_id: lateRecord,
+            seq: 0,
+            actor_kind: "operator",
+            actor_id: OWNER,
+            title: "Synthetic shuffled catalog arrival",
+            payload: "{}",
+            created_at: AT,
+          }),
+        ],
+        session: [
+          insertion("sessions", {
+            selector,
+            harness: "omp",
+            source_id: bare,
+            host: "synthetic-lineage-host",
+            seen_at: AT,
+          }),
+        ],
+        run: [runRow(lateRun, { selectors: [PRIVATE] })],
+      };
+      await commitPrivacyStep(
+        [insertion("session_exclusions", { selector, actor_id: OWNER, recorded_at: AT })],
+        probes,
+      );
+      const arrived = new Set<string>();
+      for (const phase of arrivalOrders[orderIndex]!) {
+        arrived.add(phase);
+        const availableProbes = lateProbes.filter(({ kind }) => arrived.has(kind));
+        for (const statement of rows[phase])
+          await commitPrivacyStep([statement], [...probes, ...availableProbes]);
+      }
+      probes.push(...lateProbes);
+      expect(await harness.store.record(lateRecord)).toBeNull();
+    }
+
+    const thresholdSession = `codex/synthetic-random-threshold-${seed}`;
+    const thresholdTimes = [
+      new Date(NOW - 1).toISOString(),
+      AT,
+      new Date(NOW + 1).toISOString(),
+    ] as const;
+    const thresholdRun = "run_random_legacy_threshold";
+    const thresholdRows = [
+      insertion("sessions", {
+        selector: thresholdSession,
+        harness: "codex",
+        source_id: `synthetic-random-threshold-${seed}`,
+        host: "synthetic-lineage-host",
+        seen_at: AT,
+      }),
+      insertion("session_titles", {
+        selector: thresholdSession,
+        title: MODEL_VALUE,
+        run_id: "run_random_source",
+        inferred_at: AT,
+      }),
+      insertion("records", {
+        id: "obs_0000012a",
+        kind: "observation",
+        root_id: "obs_0000012a",
+        seq: 0,
+        actor_kind: "operator",
+        actor_id: OWNER,
+        title: "Synthetic legacy threshold input",
+        payload: "{}",
+        created_at: AT,
+      }),
+      insertion("edges", {
+        id: "edge_random_legacy_threshold",
+        kind: "cites",
+        from_kind: "observation",
+        from_id: "obs_0000012a",
+        to_kind: "session",
+        to_id: thresholdSession,
+        actor_kind: "operator",
+        actor_id: OWNER,
+        created_at: AT,
+      }),
+      insertion("runs", {
+        id: thresholdRun,
+        kind: OPERATIONS.explore,
+        preparation: JSON.stringify({ review: { recordId: "obs_0000012a" } }),
+        started_at: thresholdTimes[0],
+        finished_at: AT,
+        closure: "completed",
+        payload: "{}",
+      }),
+      insertion("records", {
+        id: "obs_0000012b",
+        kind: "observation",
+        root_id: "obs_0000012b",
+        seq: 0,
+        actor_kind: "run",
+        actor_id: thresholdRun,
+        run_id: thresholdRun,
+        title: "Synthetic threshold descendant",
+        payload: "{}",
+        created_at: AT,
+      }),
+    ];
+    for (const statement of thresholdRows) await commitPrivacyStep([statement], probes);
+    probes.push(
+      privacyProbe("run", thresholdRun),
+      privacyProbe("record", "obs_0000012a"),
+      privacyProbe("record", "obs_0000012b"),
+    );
+    for (const startedAt of thresholdTimes)
+      await commitPrivacyStep(
+        [{ sql: "UPDATE runs SET started_at=? WHERE id=?", params: [startedAt, thresholdRun] }],
+        probes,
+      );
+
+    for (let step = 0; step < 56; step++) {
+      const slot = choose(runIds.length);
+      const id = runIds[slot]!;
+      const questionId = `qst_random_${choose(4)}`;
+      const preparation = {
+        selectors: choose(3) === 0 ? [PRIVATE] : ["codex/synthetic-unrelated-random"],
+        review: { titleRunIds: [runIds[choose(runIds.length)], runIds[choose(runIds.length)]] },
+      };
+      switch (step % 7) {
+        case 0:
+        case 1:
+          if (activeRuns.has(id)) {
+            await commitPrivacyStep(
+              [
+                {
+                  sql: "UPDATE runs SET preparation=?,payload=? WHERE id=?",
+                  params: [
+                    JSON.stringify(preparation),
+                    JSON.stringify(
+                      choose(2) === 0 ? {} : { review: { titleRunIds: ["run_random_source"] } },
+                    ),
+                    id,
+                  ],
+                },
+              ],
+              probes,
+            );
+          } else {
+            await commitPrivacyStep([runRow(id, preparation)], probes);
+            activeRuns.add(id);
+          }
+          break;
+        case 2:
+          if (activeRuns.has(id)) {
+            await commitPrivacyStep([{ sql: "DELETE FROM runs WHERE id=?", params: [id] }], probes);
+            activeRuns.delete(id);
+          } else {
+            await commitPrivacyStep([runRow(id, preparation)], probes);
+            activeRuns.add(id);
+          }
+          break;
+        case 3: {
+          const subject = choose(2) === 0 ? recordIds[choose(recordIds.length)]! : PRIVATE;
+          if (activeQuestions.has(questionId)) {
+            await commitPrivacyStep(
+              [
+                {
+                  sql: "UPDATE questions SET payload=?,raised_by_id=? WHERE id=?",
+                  params: [JSON.stringify({ subjects: [subject] }), id, questionId],
+                },
+              ],
+              probes,
+            );
+          } else {
+            await commitPrivacyStep([questionRow(questionId, subject, id)], probes);
+            activeQuestions.add(questionId);
+          }
+          break;
+        }
+        case 4:
+          if (activeQuestions.has(questionId)) {
+            await commitPrivacyStep(
+              [{ sql: "DELETE FROM questions WHERE id=?", params: [questionId] }],
+              probes,
+            );
+            activeQuestions.delete(questionId);
+          } else {
+            await commitPrivacyStep([questionRow(questionId, recordIds[slot]!, id)], probes);
+            activeQuestions.add(questionId);
+          }
+          break;
+        case 5:
+          await commitPrivacyStep(
+            [
+              {
+                sql: "UPDATE filings SET record_id=?,author_kind=?,author_id=? WHERE id=?",
+                params: [
+                  recordIds[slot]!,
+                  choose(2) === 0 ? "operator" : "run",
+                  id,
+                  choose(2) === 0 ? "fil_random_first" : "fil_random_second",
+                ],
+              },
+            ],
+            probes,
+          );
+          break;
+        case 6:
+          await commitPrivacyStep(
+            [
+              {
+                sql: "UPDATE entities SET name=? WHERE id='ent_00000064'",
+                params: [`Synthetic unrelated rename ${step}`],
+              },
+              {
+                sql: "UPDATE runs SET cost_usd=? WHERE id='run_random_source'",
+                params: [step / 1000],
+              },
+            ],
+            probes,
+          );
+          await commitPrivacyStep(
+            [
+              {
+                sql: "UPDATE runs SET started_at=? WHERE id=?",
+                params: [thresholdTimes[choose(thresholdTimes.length)]!, thresholdRun],
+              },
+            ],
+            probes,
+          );
+          break;
+      }
+    }
+  });
+}
+
+test("persisted taint follows delayed sessions, title history and mutable prepare bindings", async () => {
+  const bare = "synthetic-delayed-live-source";
+  const selector = `omp/${bare}`;
+  const titled = "codex/synthetic-live-title";
+  const job = "job_synthetic_live_prepare";
+  const probes = [
+    privacyProbe("record", "obs_00000080"),
+    privacyProbe("record", "obs_00000081"),
+    privacyProbe("record", "obs_00000082"),
+    privacyProbe("record", "obs_00000083"),
+  ];
+  await commitPrivacyStep(
+    [
+      insertion("runs", {
+        id: "run_live_source",
+        kind: OPERATIONS.explore,
+        preparation: JSON.stringify({ selectors: [selector] }),
+        started_at: AT,
+        closure: "completed",
+        payload: "{}",
+      }),
+      insertion("runs", {
+        id: "run_live_producer",
+        kind: OPERATIONS.prepare,
+        started_at: AT,
+        closure: "completed",
+        payload: JSON.stringify({ material: { sessions: [{ selector }] } }),
+      }),
+      insertion("runs", {
+        id: "run_live_consumer",
+        kind: OPERATIONS.explore,
+        prepare_job_id: job,
+        started_at: AT,
+        closure: "completed",
+        payload: "{}",
+      }),
+      insertion("runs", {
+        id: "run_live_title",
+        kind: OPERATIONS.explore,
+        preparation: JSON.stringify({
+          material: { sessions: [{ selector: titled, title: MODEL_VALUE }] },
+        }),
+        started_at: AT,
+        closure: "completed",
+        payload: "{}",
+      }),
+      ...[
+        ["obs_00000080", "run_live_consumer"],
+        ["obs_00000081", "run_live_title"],
+        ["obs_00000082", null],
+        ["obs_00000083", null],
+      ].map(([id, runId]) =>
+        insertion("records", {
+          id: id!,
+          kind: "observation",
+          root_id: id!,
+          actor_kind: runId === null ? "operator" : "run",
+          actor_id: runId ?? OWNER,
+          run_id: runId ?? null,
+          title: "Synthetic live join descendant",
+          payload: JSON.stringify(
+            id === "obs_00000083" ? { evidence: [{ kind: "session", id: bare }] } : {},
+          ),
+          created_at: AT,
+        }),
+      ),
+      insertion("sessions", {
+        selector: titled,
+        harness: "codex",
+        source_id: "synthetic-live-title",
+        host: "synthetic-lineage-host",
+        title: MODEL_VALUE,
+        title_provenance: "recorded",
+        seen_at: AT,
+      }),
+      insertion("edges", {
+        id: "edg_live_current_title",
+        kind: "cites",
+        from_kind: "observation",
+        from_id: "obs_00000082",
+        to_kind: "session",
+        to_id: titled,
+        actor_kind: "operator",
+        actor_id: OWNER,
+        created_at: AT,
+      }),
+    ],
+    probes,
+  );
+  await commitPrivacyStep(
+    [insertion("session_exclusions", { selector, actor_id: OWNER, recorded_at: AT })],
+    probes,
+  );
+  expect(await readExcludedRecordIds(harness.db)).toEqual(new Set());
+  await commitPrivacyStep(
+    [{ sql: "UPDATE runs SET job_id=? WHERE id='run_live_producer'", params: [job] }],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000080")).toBeNull();
+  await commitPrivacyStep(
+    [{ sql: "UPDATE runs SET prepare_job_id=NULL WHERE id='run_live_consumer'" }],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000080")).not.toBeNull();
+  await commitPrivacyStep(
+    [
+      { sql: "UPDATE runs SET prepare_job_id=? WHERE id='run_live_consumer'", params: [job] },
+      { sql: "UPDATE runs SET payload='{}' WHERE id='run_live_producer'" },
+    ],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000080")).not.toBeNull();
+  await commitPrivacyStep(
+    [
+      {
+        sql: "UPDATE runs SET payload=? WHERE id='run_live_producer'",
+        params: [JSON.stringify({ material: { sessions: [{ selector }] } })],
+      },
+    ],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000080")).toBeNull();
+
+  await commitPrivacyStep(
+    [
+      insertion("sessions", {
+        selector,
+        harness: "omp",
+        source_id: bare,
+        host: "synthetic-lineage-host",
+        seen_at: AT,
+      }),
+    ],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000083")).toBeNull();
+  await commitPrivacyStep(
+    [{ sql: "DELETE FROM sessions WHERE selector=?", params: [selector] }],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000083")).not.toBeNull();
+  await commitPrivacyStep(
+    [
+      insertion("sessions", {
+        selector,
+        harness: "omp",
+        source_id: bare,
+        host: "synthetic-lineage-host",
+        seen_at: AT,
+      }),
+      insertion("session_titles", {
+        selector: titled,
+        title: MODEL_VALUE,
+        run_id: "run_live_source",
+        inferred_at: AT,
+      }),
+    ],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000081")).toBeNull();
+  expect(await harness.store.record("obs_00000082")).not.toBeNull();
+  await commitPrivacyStep(
+    [{ sql: "UPDATE sessions SET title_provenance='inferred' WHERE selector=?", params: [titled] }],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000082")).toBeNull();
+  await commitPrivacyStep(
+    [
+      {
+        sql: "UPDATE session_titles SET title=? WHERE selector=?",
+        params: ["Synthetic replacement title", titled],
+      },
+    ],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000081")).not.toBeNull();
+  expect(await harness.store.record("obs_00000082")).not.toBeNull();
+  await commitPrivacyStep(
+    [{ sql: "UPDATE session_titles SET title=? WHERE selector=?", params: [MODEL_VALUE, titled] }],
+    probes,
+  );
+  await commitPrivacyStep(
+    [
+      {
+        sql: "UPDATE session_titles SET run_id='run_live_title' WHERE selector=?",
+        params: [titled],
+      },
+    ],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000081")).not.toBeNull();
+  expect(await harness.store.record("obs_00000082")).not.toBeNull();
+  await commitPrivacyStep(
+    [{ sql: "DELETE FROM session_titles WHERE selector=?", params: [titled] }],
+    probes,
+  );
+  await commitPrivacyStep(
+    [
+      insertion("session_titles", {
+        selector: titled,
+        title: MODEL_VALUE,
+        run_id: "run_live_source",
+        inferred_at: AT,
+      }),
+    ],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000082")).toBeNull();
+});
+
+test("persisted taint follows shared map bindings and replaced applied-output catalogs", async () => {
+  const probes = [
+    privacyProbe("capture", "cap_synthetic_public"),
+    privacyProbe("record", "obs_00000090"),
+    privacyProbe("entity", "ent_00000090"),
+    privacyProbe("entity", "ent_00000091"),
+  ];
+  await commitPrivacyStep(
+    [
+      insertion("runs", {
+        id: "run_map_source",
+        kind: OPERATIONS.explore,
+        preparation: JSON.stringify({ selectors: [PRIVATE] }),
+        started_at: AT,
+        closure: "completed",
+        payload: "{}",
+      }),
+      insertion("records", {
+        id: "pro_00000090",
+        kind: "proposal",
+        root_id: "pro_00000090",
+        actor_kind: "run",
+        actor_id: "run_map_source",
+        run_id: "run_map_source",
+        title: "Synthetic applied map source",
+        payload: "{}",
+        created_at: AT,
+      }),
+      insertion("records", {
+        id: "obs_00000090",
+        kind: "observation",
+        root_id: "obs_00000090",
+        actor_kind: "operator",
+        actor_id: OWNER,
+        title: "Synthetic map descendant",
+        payload: JSON.stringify({ captureId: "cap_synthetic_public" }),
+        created_at: AT,
+      }),
+      ...["private", "public"].flatMap((label) => [
+        insertion("transcript_map_captures", {
+          id: `cap_synthetic_${label}`,
+          host: "synthetic-lineage-host",
+          harness: "omp",
+          session: label === "private" ? PRIVATE : "omp/synthetic-independent-map",
+          captured_at: AT,
+          payload: "{}",
+        }),
+        insertion("transcript_map_plans", {
+          id: `map_synthetic_${label}`,
+          capture_id: `cap_synthetic_${label}`,
+          payload: "{}",
+          complete: 1,
+          created_at: AT,
+        }),
+        ...[0, 1].map((position) =>
+          insertion("transcript_map_nodes", {
+            id: `node_synthetic_${label}_${position}`,
+            plan_id: `map_synthetic_${label}`,
+            position,
+            level: 0,
+            ordinal: position,
+            byte_offset: position,
+            byte_length: 1,
+            payload: "{}",
+          }),
+        ),
+        insertion("transcript_map_versions", {
+          id: `version_synthetic_${label}`,
+          plan_id: `map_synthetic_${label}`,
+          machine_id: "synthetic-lineage-host",
+          contract_digest: "synthetic-contract",
+          generation: 1,
+          payload: "{}",
+          policy: "{}",
+          created_at: AT,
+        }),
+        insertion("transcript_map_summaries", {
+          id: `summary_synthetic_${label}`,
+          version_id: `version_synthetic_${label}`,
+          node_id: `node_synthetic_${label}_0`,
+          reuse_key: `synthetic-reuse-${label}`,
+          payload: "{}",
+          text: "Synthetic reusable summary",
+          created_at: AT,
+        }),
+      ]),
+      ...["ent_00000090", "ent_00000091"].map((id) =>
+        insertion("entities", {
+          id,
+          kind: "project",
+          name: "Synthetic mutable applied target",
+          canonical_id: id,
+          created_by: OWNER,
+          created_at: AT,
+        }),
+      ),
+      insertion("plans", {
+        id: "pln_mutable_output",
+        kind: "topic",
+        subject_kind: "proposal",
+        subject_id: "pro_00000090",
+        operation: "create",
+        proposed_by_kind: "operator",
+        proposed_by_id: OWNER,
+        state: "applied",
+        payload: "{}",
+        result: JSON.stringify({ factId: "fct_delayed_output" }),
+        created_at: AT,
+      }),
+    ],
+    probes,
+  );
+  await commitPrivacyStep(
+    [insertion("session_exclusions", { selector: PRIVATE, actor_id: OWNER, recorded_at: AT })],
+    probes,
+  );
+  await commitPrivacyStep(
+    [
+      ...[0, 1].map((position) =>
+        insertion("transcript_map_bindings", {
+          version_id: "version_synthetic_public",
+          node_id: `node_synthetic_public_${position}`,
+          summary_id: "summary_synthetic_private",
+          input_key: "synthetic-binding-input",
+        }),
+      ),
+    ],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000090")).toBeNull();
+  await commitPrivacyStep(
+    [{ sql: "DELETE FROM transcript_map_bindings WHERE node_id='node_synthetic_public_0'" }],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000090")).toBeNull();
+  await commitPrivacyStep(
+    [
+      {
+        sql: "UPDATE transcript_map_bindings SET summary_id='summary_synthetic_public' WHERE node_id='node_synthetic_public_1'",
+      },
+    ],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000090")).not.toBeNull();
+  await commitPrivacyStep(
+    [
+      {
+        sql: "UPDATE transcript_map_bindings SET summary_id='summary_synthetic_private' WHERE node_id='node_synthetic_public_1'",
+      },
+    ],
+    probes,
+  );
+  await commitPrivacyStep(
+    [
+      {
+        sql: "UPDATE transcript_map_bindings SET input_key='synthetic-unrelated-key' WHERE node_id='node_synthetic_public_1'",
+      },
+    ],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000090")).toBeNull();
+  await commitPrivacyStep(
+    [{ sql: "DELETE FROM transcript_map_bindings WHERE node_id='node_synthetic_public_1'" }],
+    probes,
+  );
+  expect(await harness.store.record("obs_00000090")).not.toBeNull();
+
+  const fact = {
+    id: "fct_delayed_output",
+    entity_id: "ent_00000090",
+    predicate: "owner",
+    value: MODEL_VALUE,
+    valid_from: AT,
+    observed_at: AT,
+    authority_kind: "operator",
+    authority_id: OWNER,
+    recorded_at: AT,
+  };
+  await commitPrivacyStep([insertion("facts", fact)], probes);
+  expect((await context("ent_00000090")).state).toBe("missing");
+  await commitPrivacyStep(
+    [{ sql: "UPDATE facts SET entity_id='ent_00000091' WHERE id='fct_delayed_output'" }],
+    probes,
+  );
+  expect((await context("ent_00000090")).nodes.map(({ id }) => id)).toEqual(["ent_00000090"]);
+  expect((await context("ent_00000091")).state).toBe("missing");
+  await commitPrivacyStep([{ sql: "DELETE FROM facts WHERE id='fct_delayed_output'" }], probes);
+  await commitPrivacyStep([insertion("facts", fact)], probes);
+  await commitPrivacyStep(
+    [{ sql: "UPDATE plans SET result='ent_00000091' WHERE id='pln_mutable_output'" }],
+    probes,
+  );
+  expect((await context("ent_00000090")).nodes.map(({ id }) => id)).toEqual(["ent_00000090"]);
+  expect((await context("ent_00000091")).state).toBe("missing");
+  await commitPrivacyStep(
+    [{ sql: "UPDATE plans SET state='declined' WHERE id='pln_mutable_output'" }],
+    probes,
+  );
+  expect((await context("ent_00000091")).nodes.map(({ id }) => id)).toEqual(["ent_00000091"]);
+  await commitPrivacyStep(
+    [{ sql: "UPDATE plans SET state='applied' WHERE id='pln_mutable_output'" }],
+    probes,
+  );
+  await commitPrivacyStep([{ sql: "DELETE FROM plans WHERE id='pln_mutable_output'" }], probes);
+  await commitPrivacyStep(
+    [
+      insertion("plans", {
+        id: "pln_mutable_output",
+        kind: "topic",
+        subject_kind: "observation",
+        subject_id: "obs_00000090",
+        operation: "create",
+        proposed_by_kind: "operator",
+        proposed_by_id: OWNER,
+        state: "applied",
+        payload: "{}",
+        result: "ent_00000091",
+        created_at: AT,
+      }),
+    ],
+    probes,
+  );
+  expect((await context("ent_00000091")).nodes.map(({ id }) => id)).toEqual(["ent_00000091"]);
 });

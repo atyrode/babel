@@ -2546,7 +2546,8 @@ export function importableTables(): Record<string, readonly string[]> {
     if (
       name === undefined ||
       name === "duplicate_applications" ||
-      name.startsWith("source_dependenc")
+      name.startsWith("source_dependenc") ||
+      name.startsWith("source_taint")
     )
       continue;
     tables[name] = columnParts(statement.slice(head[0].length)).map((column) => column.name);

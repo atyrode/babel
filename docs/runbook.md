@@ -933,11 +933,14 @@ does not erase the copied facts' or plans' provenance. Reader responses and feed
 work assembled across an exclusion, including derived counts and attention. Genuine historical
 spend and session-read receipts remain authoritative rather than being rewritten.
 
-Privacy guards traverse an indexed dependency projection maintained by SQLite in each base
-write transaction, never an in-memory taint snapshot. Backfill uses durable cursors and small
-chunks, advanced by enable, existing conductor maintenance and owner exclusion attempts.
-New rows are covered immediately even while old history is incomplete. If a ban already exists,
-incomplete history conservatively hides derived reads and refuses model admission until ready;
+Privacy guards read the immutable ledger in the same statement and seek the persisted
+`source_taint` primary key; ordinary reads and admission never recursively traverse the graph.
+SQLite updates that exact set in the original base-write transaction, including late catalog
+arrivals, title history and prepare bindings. New taint propagates incrementally; affected
+removals rebuild before commit. The durable generation invalidates reused reader/feed caches.
+Graph backfill uses durable cursors and small chunks, advanced by enable, existing conductor
+maintenance and owner exclusion attempts; readiness includes the atomic taint rebuild.
+If a ban exists, incomplete history conservatively hides derived reads and refuses admission;
 without a ban ordinary guards retain their cheap short circuit. Do not bypass readiness with
 SQL edits, an external projection import or a reduced privacy graph.
 

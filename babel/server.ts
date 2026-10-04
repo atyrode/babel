@@ -65,6 +65,7 @@ import { coordinator, perMachineBound, type Policy } from "./store/coordinator.t
 import { ReviewReadings, type ReadingMetadata } from "./server/review-readings.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { backfillSourceDependencies } from "./store/source-dependencies.ts";
+import { backfillSourceTaint } from "./store/source-taint.ts";
 import { ensureTerms } from "./store/corpus.ts";
 import { activeDrains, deadlineOf, readDrain, type DrainRow } from "./store/drains.ts";
 import { openStore } from "./store/store.ts";
@@ -105,7 +106,7 @@ import manifestJson from "./manifest.json";
  * `2026-09-29-store-v1-review-actions` — recorded under the same key by the enable before it — is
  * its predecessor.
  */
-const STORE_MIGRATION = "2026-10-04-store-v1-source-dependencies";
+const STORE_MIGRATION = "2026-10-04-store-v1-source-taint";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -885,6 +886,7 @@ async function cycle(
   nativeDispatch = false,
 ): Promise<void> {
   await backfillSourceDependencies(database, 100);
+  await backfillSourceTaint(database);
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
   // limits are read for; a run that reaches a model is Code's to post (#279). Mapping's native
@@ -1309,6 +1311,7 @@ export const plugin: ServerPluginDef = {
         if (pending.length > 0) await database.batch(pending);
       }
       await backfillSourceDependencies(database, 100);
+      await backfillSourceTaint(database);
       await ctx.storage.set(SCHEMA_KEY, STORE_MIGRATION);
       /*
         THE KEYWORD INDEX IS BROUGHT CURRENT HERE (#337), because an enable is the one moment
