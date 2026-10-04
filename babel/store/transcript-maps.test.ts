@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
+import type { SqlParam, SqlRow } from "@manifold/plugin";
 import {
   ACTIONS,
   ArchiveServiceRequestSchema,
@@ -181,6 +182,39 @@ function fixture(
   const access = { captureId: source.id, contextDigest: context.digest, sensitivity: 2 };
   return { plan, nodes, access };
 }
+function directFixture(data: MapFixture, directBytes: number): MapFixture {
+  const root = data.nodes.find((node) => node.id === data.plan.rootId);
+  if (!root) throw new Error("missing direct fixture source span");
+  const segmentation = {
+    ...data.plan.segmentation,
+    leafBytes: Math.max(data.plan.segmentation.leafBytes, directBytes),
+    directBytes,
+  };
+  const planId = transcriptMapPlanId(data.plan.source, segmentation);
+  const node = {
+    ...root,
+    id: transcriptMapNodeId(planId, 0, 0, root.span, [], null),
+    planId,
+    parentId: null,
+    level: 0,
+    ordinal: 0,
+    children: [],
+  };
+  return {
+    plan: {
+      ...data.plan,
+      id: planId,
+      segmentation,
+      rootId: node.id,
+      nodeCount: 1,
+      digest: transcriptMapManifestDigest([node]),
+      direct: true,
+    },
+    nodes: [node],
+    access: data.access,
+  };
+}
+
 async function publish(maps: TranscriptMaps, data: MapFixture) {
   await maps.recordPlan({ ...scope, ...data, offset: 0, nextOffset: null, now: NOW });
   return maps.ensureVersion(data.plan.id, policy, NOW);
@@ -443,6 +477,44 @@ test("paged plans stay invisible until manifest verification and never authorize
   });
 });
 
+test("plan cardinality counts immutable positions once while the remaining page publishes", async () => {
+  const db = await setup();
+  const data = fixture(64);
+  const firstPage = {
+    ...scope,
+    ...data,
+    nodes: data.nodes.slice(0, 32),
+    offset: 0,
+    nextOffset: 32,
+    now: NOW,
+  };
+  expect(await db.maps.recordPlan(firstPage)).toEqual({ complete: false });
+  let cardinalityPages = 0;
+  const interleaved = transcriptMaps({
+    ...db.store,
+    db: {
+      ...db.db,
+      query: async <Row extends SqlRow>(sql: string, params?: readonly SqlParam[]) => {
+        if (sql.includes("CAST(n.position AS TEXT) position") && ++cardinalityPages === 2)
+          await db.maps.recordPlan({
+            ...scope,
+            ...data,
+            nodes: data.nodes.slice(32),
+            offset: 32,
+            nextOffset: null,
+            now: LATER,
+          });
+        return db.db.query<Row>(sql, params);
+      },
+    },
+  });
+  expect(await interleaved.recordPlan(firstPage)).toEqual({ complete: true });
+  const version = await db.maps.ensureVersion(data.plan.id, policy, LATER);
+  expect((await db.maps.node(scope, version.id, data.plan.rootId!))?.node.span).toEqual(
+    data.nodes[data.nodes.length - 1]!.span,
+  );
+});
+
 test("a receipt larger than the engine batch limit publishes without truncating its graph", async () => {
   const db = await setup();
   const data = fixture(300);
@@ -513,27 +585,11 @@ test("coverage preserves its capture limit while status counts every authorized 
   const expanded = { ...scope, context: { ...context, eligibleCaptures: 129 } };
   const captureIds: string[] = [];
   for (let index = 0; index < 129; index += 1) {
-    const data = fixture(1, index.toString(16).padStart(64, "0"));
-    const segmentation = { ...policy.segmentation, directBytes: 1024 };
-    const planId = transcriptMapPlanId(data.plan.source, segmentation);
-    const node = {
-      ...data.nodes[0]!,
-      id: transcriptMapNodeId(planId, 0, 0, data.nodes[0]!.span, [], null),
-      planId,
-    };
-    const plan = {
-      ...data.plan,
-      id: planId,
-      segmentation,
-      rootId: node.id,
-      digest: transcriptMapManifestDigest([node]),
-      direct: true,
-    };
+    const data = directFixture(fixture(1, index.toString(16).padStart(64, "0")), 1024);
+    const plan = data.plan;
     await db.maps.recordPlan({
       ...expanded,
-      plan,
-      nodes: [node],
-      access: data.access,
+      ...data,
       offset: 0,
       nextOffset: null,
       now: NOW,
@@ -574,6 +630,68 @@ test("coverage preserves its capture limit while status counts every authorized 
   });
   expect((await db.maps.status(selected)).verifiedMappedCaptures).toBe(1);
 });
+test.each(["status", "coverage"] as const)(
+  "%s counts each capture once when its replacement segmentation publishes between pages",
+  async (reader) => {
+    const db = await setup();
+    const expanded = { ...scope, context: { ...context, eligibleCaptures: 32 } };
+    const originals = Array.from({ length: 32 }, (_, index) =>
+      directFixture(fixture(1, index.toString(16).padStart(64, "0")), 1024),
+    );
+    for (const data of originals)
+      await db.maps.recordPlan({
+        ...expanded,
+        ...data,
+        offset: 0,
+        nextOffset: null,
+        now: NOW,
+      });
+    const replacement = directFixture(originals[0]!, 2048);
+    let capturePages = 0;
+    const interleaved = transcriptMaps({
+      ...db.store,
+      db: {
+        ...db.db,
+        query: async <Row extends SqlRow>(sql: string, params?: readonly SqlParam[]) => {
+          // Publish at the page boundary, after every original capture already contributed.
+          if (sql.includes(" candidate") && ++capturePages === 2)
+            await db.maps.recordPlan({
+              ...expanded,
+              ...replacement,
+              offset: 0,
+              nextOffset: null,
+              now: LATER,
+            });
+          return db.db.query<Row>(sql, params);
+        },
+      },
+    });
+    if (reader === "status")
+      expect(await interleaved.status(expanded)).toEqual({
+        eligibleCaptures: 32,
+        verifiedMappedCaptures: 32,
+        observedAt: NOW,
+        partial: false,
+      });
+    else
+      expect(await interleaved.coverage(expanded)).toEqual({
+        sourceBytes: 32768,
+        summarizedBytes: 0,
+        directBytes: 32768,
+        unmappedBytes: 0,
+        gapBytes: 0,
+        levels: [],
+        partial: false,
+        stale: false,
+        tailBytes: 0,
+      });
+    const latest = await db.db.query<{ id: string }>(
+      `SELECT id FROM transcript_map_plans WHERE capture_id=? ORDER BY rowid DESC LIMIT 1`,
+      [replacement.plan.source.id],
+    );
+    expect(latest[0]?.id).toBe(replacement.plan.id);
+  },
+);
 
 test("an incomplete newer segmentation replaces historical direct coverage and status", async () => {
   const db = await setup();

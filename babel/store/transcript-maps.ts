@@ -1723,23 +1723,29 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     const currentGeneration = `v.id IS NOT NULL AND v.generation=
       coalesce((SELECT generation FROM transcript_map_regenerations WHERE capture_id=p.capture_id
         ORDER BY generation DESC LIMIT 1),0)`;
-    let cursor = 0;
+    // Seek unique capture identities, not appended plan rows. A replacement published after
+    // a page may change that capture's latest plan, but can never contribute it a second time.
+    let cursor = "";
     let verifiedMappedCaptures = 0;
     for (;;) {
       const plans = await db.query<{
-        cursor: number;
-        id: string;
+        cursor: string;
+        id: string | null;
         direct: number;
         version_id: string | null;
         candidate: number;
       }>(
-        `WITH page AS MATERIALIZED (
-          SELECT rowid cursor,id FROM transcript_map_plans WHERE rowid>? ORDER BY rowid LIMIT ?
-        ) SELECT page.cursor,p.id,json_extract(p.payload,'$.direct') direct,h.version_id,
+        `WITH candidate AS MATERIALIZED (
+          SELECT DISTINCT capture_id FROM transcript_map_plans WHERE capture_id>?
+          ORDER BY capture_id LIMIT ?
+        )
+        SELECT candidate.capture_id cursor,p.id,json_extract(p.payload,'$.direct') direct,h.version_id,
           (${currentPlan}) AND (json_extract(p.payload,'$.direct')=1 OR (${currentGeneration})) candidate
-        FROM page JOIN transcript_map_plans p ON p.id=page.id
+        FROM candidate
+        LEFT JOIN transcript_map_plans p ON p.rowid=(SELECT latest.rowid FROM transcript_map_plans latest
+          WHERE latest.capture_id=candidate.capture_id ORDER BY latest.rowid DESC LIMIT 1)
         LEFT JOIN transcript_map_heads h ON h.plan_id=p.id AND h.machine_id=?
-        LEFT JOIN transcript_map_versions v ON v.id=h.version_id ORDER BY page.cursor`,
+        LEFT JOIN transcript_map_versions v ON v.id=h.version_id ORDER BY candidate.capture_id`,
         [cursor, PAGE, ...auth.params, scope.machineId],
       );
       for (const plan of plans) {
@@ -1783,7 +1789,7 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       if (plans.length < PAGE) break;
-      cursor = Number(plans[plans.length - 1]!.cursor);
+      cursor = plans[plans.length - 1]!.cursor;
     }
     const known = await db.query(
       `SELECT 1 FROM transcript_map_contexts WHERE machine_id=? AND digest=? LIMIT 1`,

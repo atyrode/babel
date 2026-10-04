@@ -116,10 +116,12 @@ their already-resolved promises alone does not serve hub I/O: map write batches 
 pages explicitly yield an event-loop turn. Related-node verification reads at most 32 indexed
 rows per call. Plan cardinality and terminal spans use indexed keyset pages as well, preserving
 the complete manifest, parent/child and terminal-span checks without repeated whole-plan scans.
-Coverage and status page their nodes, bindings and authorized capture candidates before joining
-history. Each inserted row still fires the original privacy triggers. Each subsequent write
-reevaluates its retained guard in that same statement; privacy guards consult the current
-exclusion ledger, never an in-memory authorization snapshot.
+Coverage and status page unique authorized capture identities before selecting each capture's
+latest plan; replacement segmentation published between pages cannot count one capture twice.
+Their node and binding pages seek immutable node identities as well. Each inserted row still
+fires the original privacy triggers. Each subsequent write reevaluates its retained guard in
+that same statement; privacy guards consult the current exclusion ledger, never an in-memory
+authorization snapshot.
 
 Complete catalog and mapping wakes also page retained open runs and prepared parents through
 partial indexes. Catalog recovery first selects indexed pending receipt IDs, then copies one

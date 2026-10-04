@@ -12,7 +12,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - **Complete catalog and navigation-map continuations page their retained store work.**
   Catalog ingestion fuses unchanged observations into bounded ordered SQL batches. Run settlement,
   prepared-session recovery, plan cardinality, terminal spans, coverage and status use indexed
-  metadata pages before copying payloads, with real host turns between continuations. Analysis
+  metadata pages before copying payloads, with real host turns between continuations. Status
+  visits each capture once even when replacement segmentation publishes between pages. Analysis
   reuses only immutable decoded brief facts; recipe history and capacity discovery retain their
   complete selection semantics without unbounded document scans. The frozen privacy closure and
   same-statement model-admission fences are unchanged.
