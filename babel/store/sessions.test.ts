@@ -292,3 +292,73 @@ test("a catalog larger than one batch lands whole, and replaying it writes nothi
   );
   expect(Number(counted?.n)).toBe(205);
 });
+
+test("a label remapped between catalogue pages hosts later observations on its new machine", async () => {
+  const store = await openStore();
+  await map(store, "dev-01", "old-machine");
+  const rows = Array.from({ length: 205 }, (_, at) => captured(`s${String(at)}`));
+  let writing = true;
+  const remapped = new Promise<void>((resolve, reject) => {
+    const observe = () => {
+      void store.db
+        .query("SELECT 1 FROM sessions WHERE selector=?", [rows[0]!.selector])
+        .then((found) => {
+          if (found.length === 0) {
+            if (!writing) {
+              reject(new Error("Catalogue finished without committing its first observation"));
+              return;
+            }
+            setImmediate(observe);
+            return;
+          }
+          void store.db
+            .run("UPDATE archive_labels SET machine_id=? WHERE label=?", ["new-machine", "dev-01"])
+            .then(() => resolve(), reject);
+        }, reject);
+    };
+    setImmediate(observe);
+  });
+  const written = upsertSessionRows(store, rows, SEEN).finally(() => {
+    writing = false;
+  });
+  await Promise.all([written, remapped]);
+  expect((await session(store, "s0")).host).toBe("old-machine");
+  expect((await session(store, "s204")).host).toBe("new-machine");
+});
+
+test("successive duplicate observations retain order across fused catalogue statements", async () => {
+  const store = await openStore();
+  await map(store, "dev-01", "mapped-machine");
+  const result = await upsertSessionRows(
+    store,
+    [
+      captured("s1", { title: "First reading", title_provenance: "recorded", workspace: "/first" }),
+      captured("s2"),
+      captured("s1", {
+        snapshot_id: SNAPSHOT.b,
+        archived_at: "2026-09-24T23:00:00.000Z",
+        size: 2000,
+        modified_at: "2026-09-24T22:59:00.000Z",
+      }),
+      captured("s1", {
+        snapshot_id: SNAPSHOT.c,
+        archived_at: "2026-09-25T00:00:00.000Z",
+        size: 2000,
+        modified_at: "2026-09-24T22:59:00.000Z",
+        content_digest: DIGEST,
+        workspace: "/last",
+      }),
+    ],
+    SEEN,
+  );
+  expect(result).toEqual({ inserted: 2, moved: 1, kept: 1, ignored: 0, unmapped: 0 });
+  expect(await session(store, "s1")).toMatchObject({
+    snapshot_id: SNAPSHOT.b,
+    size: 2000,
+    title: "First reading",
+    title_provenance: "recorded",
+    workspace: "/last",
+    content_digest: DIGEST,
+    host: "mapped-machine",
+  });
+});

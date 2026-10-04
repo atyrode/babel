@@ -585,11 +585,21 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     });
     // One bounded node statement per transaction, not 32 statements of 32 rows each.
     await batch(nodeStatements(nodes, input.offset, input.guard), 1);
-    const count = await db.query<{ n: number }>(
-      `SELECT count(*) n FROM transcript_map_nodes WHERE plan_id=?`,
-      [plan.id],
-    );
-    if (Number(count[0]?.n) !== plan.nodeCount) return { complete: false };
+    let count = 0;
+    let countedPosition: string | null = null;
+    for (;;) {
+      const rows: readonly { position: string }[] = await db.query(
+        `SELECT CAST(n.position AS TEXT) position FROM transcript_map_nodes n WHERE n.plan_id=?
+          ${countedPosition === null ? "" : "AND n.position>CAST(? AS INTEGER)"}
+          ORDER BY n.position LIMIT ?`,
+        [plan.id, ...(countedPosition === null ? [] : [countedPosition]), PAGE],
+      );
+      count += rows.length;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (count > plan.nodeCount || rows.length < PAGE) break;
+      countedPosition = rows[rows.length - 1]!.position;
+    }
+    if (count !== plan.nodeCount) return { complete: false };
     const published = await db.query<{ complete: number }>(
       `SELECT complete FROM transcript_map_plans WHERE id=?`,
       [plan.id],
@@ -1535,60 +1545,86 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
       return { ...out, unmappedBytes: out.sourceBytes, partial: true, tailBytes: out.sourceBytes };
     if (plan.direct) return { ...out, directBytes: plan.source.bytes };
     out.gapBytes = plan.gapBytes;
-    const accepted = `b.summary_id IS NOT NULL AND NOT EXISTS
-      (SELECT 1 FROM transcript_map_reviews r WHERE r.summary_id=b.summary_id AND r.verdict IN ('correct','reject'))`;
-    const rows = await db.query<{ summarized: number; tail: number; missing: number }>(
-      `SELECT
-      coalesce(sum(CASE WHEN n.gap IS NULL AND ${accepted} AND json_array_length(json_extract(n.payload,'$.children'))=0 THEN n.byte_length ELSE 0 END),0) summarized,
-      coalesce(max(CASE WHEN n.gap IS NOT NULL OR (${accepted} AND json_array_length(json_extract(n.payload,'$.children'))=0) THEN n.byte_offset+n.byte_length ELSE 0 END),0) tail,
-      coalesce(sum(CASE WHEN n.gap IS NULL AND NOT (${accepted}) THEN 1 ELSE 0 END),0) missing
-      FROM transcript_map_nodes n LEFT JOIN transcript_map_bindings b ON b.node_id=n.id AND b.version_id=?
-      WHERE n.plan_id=?`,
-      [versionId, plan.id],
-    );
-    out.summarizedBytes = Number(rows[0]?.summarized ?? 0);
+    const levels = new Set<number>();
+    let position = -1;
+    let tail = 0;
+    let missing = false;
+    for (;;) {
+      const rows = await db.query<{
+        position: number;
+        level: number;
+        gap: string | null;
+        byte_offset: number;
+        byte_length: number;
+        leaf: number;
+        accepted: number;
+      }>(
+        `WITH page AS MATERIALIZED (
+          SELECT * FROM transcript_map_nodes WHERE plan_id=? AND position>? ORDER BY position LIMIT ?
+        ) SELECT n.position,n.level,n.gap,n.byte_offset,n.byte_length,
+          json_array_length(json_extract(n.payload,'$.children'))=0 leaf,
+          b.summary_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM transcript_map_reviews r
+            WHERE r.summary_id=b.summary_id AND r.verdict IN ('correct','reject')) accepted
+        FROM page n LEFT JOIN transcript_map_bindings b ON b.node_id=n.id AND b.version_id=?
+        ORDER BY n.position`,
+        [plan.id, position, PAGE, versionId],
+      );
+      for (const row of rows) {
+        const accepted = Number(row.accepted) === 1;
+        const leaf = Number(row.leaf) === 1;
+        if (row.gap === null && accepted && leaf) out.summarizedBytes += Number(row.byte_length);
+        if (row.gap !== null || (accepted && leaf))
+          tail = Math.max(tail, Number(row.byte_offset) + Number(row.byte_length));
+        if (row.gap === null && !accepted) missing = true;
+        if (accepted) levels.add(Number(row.level));
+      }
+      // Database promises can resolve synchronously in the host. A microtask is not a turn.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (rows.length < PAGE) break;
+      position = Number(rows[rows.length - 1]!.position);
+    }
     out.unmappedBytes = Math.max(0, out.sourceBytes - out.gapBytes - out.summarizedBytes);
-    out.tailBytes = Math.max(0, out.sourceBytes - Number(rows[0]?.tail ?? 0));
-    out.partial = out.gapBytes > 0 || out.unmappedBytes > 0 || Number(rows[0]?.missing ?? 0) > 0;
-    const levels = await db.query<{ level: number }>(
-      `SELECT DISTINCT n.level FROM transcript_map_nodes n
-      JOIN transcript_map_bindings b ON b.node_id=n.id AND b.version_id=? WHERE n.plan_id=? AND ${accepted} ORDER BY n.level LIMIT 4`,
-      [versionId, plan.id],
-    );
-    out.levels = levels.map((row) => Number(row.level));
+    out.tailBytes = Math.max(0, out.sourceBytes - tail);
+    out.partial = out.gapBytes > 0 || out.unmappedBytes > 0 || missing;
+    out.levels = [...levels].sort((a, b) => a - b).slice(0, 4);
     // A parent retains its actual historical inputs. Changed child bindings make that parent
     // stale until a bounded correction is published; they never silently rewrite its provenance.
-    const stale = await db.query<{ n: number }>(
-      `SELECT count(*) n FROM transcript_map_bindings b
-      JOIN transcript_map_summaries s ON s.id=b.summary_id WHERE b.version_id=? AND EXISTS
-      (SELECT 1 FROM json_each(json_extract(s.payload,'$.children')) child
-       WHERE json_extract(child.value,'$.summaryId') IS NOT NULL AND NOT EXISTS
-       (SELECT 1 FROM transcript_map_nodes parent JOIN transcript_map_bindings cb
-          ON cb.node_id=json_extract(parent.payload,'$.children[' || child.key || ']') AND cb.version_id=b.version_id
-        WHERE parent.id=b.node_id AND cb.summary_id=json_extract(child.value,'$.summaryId')
-          AND NOT EXISTS (SELECT 1 FROM transcript_map_reviews r WHERE r.summary_id=cb.summary_id AND r.verdict IN ('correct','reject'))))`,
-      [versionId],
-    );
-    out.stale = Number(stale[0]?.n ?? 0) > 0;
-    const pending = await db.query<{ n: number }>(
-      `SELECT count(*) n FROM transcript_map_bindings b
-      WHERE b.version_id=? AND EXISTS (SELECT 1 FROM transcript_map_reviews r
-        WHERE r.summary_id=b.summary_id AND r.verdict IN ('correct','reject'))`,
-      [versionId],
-    );
-    out.stale ||= Number(pending[0]?.n ?? 0) > 0;
+    let binding = "";
+    for (;;) {
+      const rows = await db.query<{ node_id: string; stale: number }>(
+        `WITH page AS MATERIALIZED (
+          SELECT * FROM transcript_map_bindings WHERE version_id=? AND node_id>? ORDER BY node_id LIMIT ?
+        ) SELECT b.node_id,EXISTS (SELECT 1 FROM transcript_map_reviews r
+            WHERE r.summary_id=b.summary_id AND r.verdict IN ('correct','reject'))
+          OR EXISTS (SELECT 1 FROM json_each(json_extract(s.payload,'$.children')) child
+            WHERE json_extract(child.value,'$.summaryId') IS NOT NULL AND NOT EXISTS
+              (SELECT 1 FROM transcript_map_nodes parent JOIN transcript_map_bindings cb
+                ON cb.node_id=json_extract(parent.payload,'$.children[' || child.key || ']')
+                AND cb.version_id=b.version_id
+               WHERE parent.id=b.node_id AND cb.summary_id=json_extract(child.value,'$.summaryId')
+                AND NOT EXISTS (SELECT 1 FROM transcript_map_reviews r
+                  WHERE r.summary_id=cb.summary_id AND r.verdict IN ('correct','reject')))) stale
+        FROM page b LEFT JOIN transcript_map_summaries s ON s.id=b.summary_id ORDER BY b.node_id`,
+        [versionId, binding, PAGE],
+      );
+      out.stale ||= rows.some((row) => Number(row.stale) === 1);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (out.stale || rows.length < PAGE) break;
+      binding = rows[rows.length - 1]!.node_id;
+    }
     if (versionId) {
-      const current = await db.query<{ n: number }>(
-        `SELECT count(*) n FROM transcript_map_heads WHERE version_id=?`,
+      const current = await db.query(
+        `SELECT 1 FROM transcript_map_heads WHERE version_id=? LIMIT 1`,
         [versionId],
       );
-      out.stale ||= Number(current[0]?.n ?? 0) === 0;
-      const generation = await db.query<{ n: number }>(
-        `SELECT count(*) n FROM transcript_map_versions v
-        WHERE v.id=? AND v.generation<(SELECT coalesce(max(generation),0) FROM transcript_map_regenerations WHERE capture_id=?)`,
+      out.stale ||= current.length === 0;
+      const generation = await db.query(
+        `SELECT 1 FROM transcript_map_versions v WHERE v.id=? AND v.generation<
+          coalesce((SELECT generation FROM transcript_map_regenerations WHERE capture_id=?
+            ORDER BY generation DESC LIMIT 1),0) LIMIT 1`,
         [versionId, plan.source.id],
       );
-      out.stale ||= Number(generation[0]?.n ?? 0) > 0;
+      out.stale ||= generation.length > 0;
     }
     out.partial ||= out.stale;
     return out;
@@ -1597,53 +1633,82 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
     scope: TranscriptMapScope,
     captureId?: string,
   ): Promise<TranscriptMapCoverage> {
-    const auth = authorization(scope, "c.id");
-    // There is one selected plan per capture, not the sum of every historical segmentation.
-    // Header bytes of incomplete plans remain explicitly unmapped.
-    const rows = await db.query<{
-      capture_id: string;
-      plan_id: string | null;
-      version_id: string | null;
-    }>(
-      `SELECT c.id capture_id,p.id plan_id,h.version_id FROM transcript_map_captures c
-       LEFT JOIN transcript_map_plans p ON p.rowid=(SELECT max(p2.rowid) FROM transcript_map_plans p2 WHERE p2.capture_id=c.id)
-       LEFT JOIN transcript_map_heads h ON h.plan_id=p.id AND h.machine_id=?
-       WHERE ${auth.sql} ${captureId === undefined ? "" : "AND c.id=?"} ORDER BY c.id LIMIT ?`,
-      [
-        scope.machineId,
-        ...auth.params,
-        ...(captureId === undefined ? [] : [captureId]),
-        MAX_SCAN + 1,
-      ],
-    );
+    const auth = authorization(scope, "candidate.capture_id");
     const out = emptyCoverage();
     const levels = new Set<number>();
-    for (const row of rows.slice(0, MAX_SCAN)) {
-      const plan = row.plan_id
-        ? await one<TranscriptMapPlan>("transcript_map_plans", row.plan_id)
-        : null;
-      if (!plan) {
-        out.partial = true;
-        out.tailBytes = null;
-        continue;
+    const candidates =
+      scope.captureIds === undefined
+        ? `SELECT capture_id FROM transcript_map_access
+          WHERE machine_id=? AND context_digest=? AND capture_id>?
+            ${captureId === undefined ? "" : "AND capture_id=?"}
+          ORDER BY capture_id LIMIT ?`
+        : `SELECT DISTINCT value capture_id FROM json_each(?) WHERE value>?
+            ${captureId === undefined ? "" : "AND value=?"}
+          ORDER BY value LIMIT ?`;
+    let cursor = "";
+    let visible = 0;
+    // Page attestations before applying visibility, so denied captures cannot turn a LIMIT
+    // into an unbounded scan. Keep the original first 128 visible captures and overflow probe.
+    for (;;) {
+      const rows = await db.query<{
+        capture_id: string;
+        authorized: number;
+        plan_id: string | null;
+        version_id: string | null;
+      }>(
+        `WITH candidate AS MATERIALIZED (${candidates})
+        SELECT candidate.capture_id,${auth.sql} authorized,p.id plan_id,h.version_id
+        FROM candidate
+        LEFT JOIN transcript_map_plans p ON p.rowid=(SELECT latest.rowid FROM transcript_map_plans latest
+          WHERE latest.capture_id=candidate.capture_id ORDER BY latest.rowid DESC LIMIT 1)
+        LEFT JOIN transcript_map_heads h ON h.plan_id=p.id AND h.machine_id=?
+        ORDER BY candidate.capture_id`,
+        [
+          ...(scope.captureIds === undefined
+            ? [scope.machineId, scope.context.digest]
+            : [json(scope.captureIds)]),
+          cursor,
+          ...(captureId === undefined ? [] : [captureId]),
+          PAGE,
+          ...auth.params,
+          scope.machineId,
+        ],
+      );
+      for (const row of rows) {
+        if (Number(row.authorized) !== 1) continue;
+        visible += 1;
+        if (visible > MAX_SCAN) break;
+        // There is one selected plan per capture, not every historical segmentation.
+        // Header bytes of incomplete plans remain explicitly unmapped.
+        const plan = row.plan_id
+          ? await one<TranscriptMapPlan>("transcript_map_plans", row.plan_id)
+          : null;
+        if (!plan) {
+          out.partial = true;
+          out.tailBytes = null;
+          continue;
+        }
+        const part = await versionCoverage(plan, row.version_id);
+        out.sourceBytes += part.sourceBytes;
+        out.summarizedBytes += part.summarizedBytes;
+        out.directBytes += part.directBytes;
+        out.unmappedBytes += part.unmappedBytes;
+        out.gapBytes += part.gapBytes;
+        out.partial ||= part.partial;
+        out.stale ||= part.stale;
+        if (out.tailBytes !== null)
+          out.tailBytes = part.tailBytes === null ? null : out.tailBytes + part.tailBytes;
+        for (const level of part.levels) levels.add(level);
       }
-      const part = await versionCoverage(plan, row.version_id);
-      out.sourceBytes += part.sourceBytes;
-      out.summarizedBytes += part.summarizedBytes;
-      out.directBytes += part.directBytes;
-      out.unmappedBytes += part.unmappedBytes;
-      out.gapBytes += part.gapBytes;
-      out.partial ||= part.partial;
-      out.stale ||= part.stale;
-      if (out.tailBytes !== null)
-        out.tailBytes = part.tailBytes === null ? null : out.tailBytes + part.tailBytes;
-      for (const level of part.levels) levels.add(level);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (visible > MAX_SCAN || rows.length < PAGE) break;
+      cursor = rows[rows.length - 1]!.capture_id;
     }
     out.levels = [...levels].sort((a, b) => a - b);
     if (
-      rows.length > MAX_SCAN ||
-      (captureId === undefined && rows.length < scope.context.eligibleCaptures) ||
-      (captureId !== undefined && rows.length === 0)
+      visible > MAX_SCAN ||
+      (captureId === undefined && visible < scope.context.eligibleCaptures) ||
+      (captureId !== undefined && visible === 0)
     ) {
       out.partial = true;
       out.tailBytes = null;
@@ -1652,37 +1717,89 @@ export function transcriptMaps(store: TranscriptMapStore): TranscriptMaps {
   }
   async function status(scope: TranscriptMapScope): Promise<TranscriptMapStatus> {
     const auth = authorization(scope, "p.capture_id");
-    const rows = await db.query<{ n: number }>(
-      `SELECT count(*) n FROM transcript_map_plans p
-      LEFT JOIN transcript_map_heads h ON h.plan_id=p.id AND h.machine_id=?
-      LEFT JOIN transcript_map_versions v ON v.id=h.version_id
-      WHERE p.complete=1 AND p.rowid=(SELECT max(latest.rowid) FROM transcript_map_plans latest WHERE latest.capture_id=p.capture_id)
-      AND ${auth.sql} AND json_extract(p.payload,'$.gapBytes')=0
-      AND (json_extract(p.payload,'$.direct')=1 OR (v.id IS NOT NULL
-        AND v.generation=(SELECT coalesce(max(generation),0) FROM transcript_map_regenerations WHERE capture_id=p.capture_id)
-        AND NOT EXISTS (SELECT 1 FROM transcript_map_nodes n
-          LEFT JOIN transcript_map_bindings b ON b.node_id=n.id AND b.version_id=v.id
-          LEFT JOIN transcript_map_summaries s ON s.id=b.summary_id
-          WHERE n.plan_id=p.id AND (b.summary_id IS NULL OR EXISTS
-            (SELECT 1 FROM transcript_map_reviews r WHERE r.summary_id=b.summary_id AND r.verdict IN ('correct','reject'))
-            OR EXISTS (SELECT 1 FROM json_each(json_extract(s.payload,'$.children')) child
-              WHERE json_extract(child.value,'$.summaryId') IS NOT NULL AND NOT EXISTS
-                (SELECT 1 FROM transcript_map_bindings cb WHERE cb.version_id=v.id
-                  AND cb.node_id=json_extract(n.payload,'$.children[' || child.key || ']')
-                  AND cb.summary_id=json_extract(child.value,'$.summaryId')))))))`,
-      [scope.machineId, ...auth.params],
-    );
-    const known = await db.query<{ n: number }>(
-      `SELECT count(*) n FROM transcript_map_contexts WHERE machine_id=? AND digest=?`,
+    const currentPlan = `p.complete=1 AND p.rowid=(SELECT latest.rowid FROM transcript_map_plans latest
+        WHERE latest.capture_id=p.capture_id ORDER BY latest.rowid DESC LIMIT 1)
+      AND ${auth.sql} AND json_extract(p.payload,'$.gapBytes')=0`;
+    const currentGeneration = `v.id IS NOT NULL AND v.generation=
+      coalesce((SELECT generation FROM transcript_map_regenerations WHERE capture_id=p.capture_id
+        ORDER BY generation DESC LIMIT 1),0)`;
+    // Seek unique capture identities, not appended plan rows. A replacement published after
+    // a page may change that capture's latest plan, but can never contribute it a second time.
+    let cursor = "";
+    let verifiedMappedCaptures = 0;
+    for (;;) {
+      const plans = await db.query<{
+        cursor: string;
+        id: string | null;
+        direct: number;
+        version_id: string | null;
+        candidate: number;
+      }>(
+        `WITH candidate AS MATERIALIZED (
+          SELECT DISTINCT capture_id FROM transcript_map_plans WHERE capture_id>?
+          ORDER BY capture_id LIMIT ?
+        )
+        SELECT candidate.capture_id cursor,p.id,json_extract(p.payload,'$.direct') direct,h.version_id,
+          (${currentPlan}) AND (json_extract(p.payload,'$.direct')=1 OR (${currentGeneration})) candidate
+        FROM candidate
+        LEFT JOIN transcript_map_plans p ON p.rowid=(SELECT latest.rowid FROM transcript_map_plans latest
+          WHERE latest.capture_id=candidate.capture_id ORDER BY latest.rowid DESC LIMIT 1)
+        LEFT JOIN transcript_map_heads h ON h.plan_id=p.id AND h.machine_id=?
+        LEFT JOIN transcript_map_versions v ON v.id=h.version_id ORDER BY candidate.capture_id`,
+        [cursor, PAGE, ...auth.params, scope.machineId],
+      );
+      for (const plan of plans) {
+        if (Number(plan.candidate) !== 1) continue;
+        let mapped = true;
+        if (Number(plan.direct) !== 1) {
+          let position = -1;
+          for (;;) {
+            const nodes = await db.query<{ position: number; invalid: number }>(
+              `WITH page AS MATERIALIZED (
+                SELECT * FROM transcript_map_nodes WHERE plan_id=? AND position>?
+                ORDER BY position LIMIT ?
+              ) SELECT n.position,b.summary_id IS NULL OR EXISTS (SELECT 1 FROM transcript_map_reviews r
+                  WHERE r.summary_id=b.summary_id AND r.verdict IN ('correct','reject'))
+                OR EXISTS (SELECT 1 FROM json_each(json_extract(s.payload,'$.children')) child
+                  WHERE json_extract(child.value,'$.summaryId') IS NOT NULL AND NOT EXISTS
+                    (SELECT 1 FROM transcript_map_bindings cb WHERE cb.version_id=?
+                      AND cb.node_id=json_extract(n.payload,'$.children[' || child.key || ']')
+                      AND cb.summary_id=json_extract(child.value,'$.summaryId'))) invalid
+              FROM page n LEFT JOIN transcript_map_bindings b ON b.node_id=n.id AND b.version_id=?
+              LEFT JOIN transcript_map_summaries s ON s.id=b.summary_id ORDER BY n.position`,
+              [plan.id, position, PAGE, plan.version_id, plan.version_id],
+            );
+            mapped = !nodes.some((node) => Number(node.invalid) === 1);
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            if (!mapped || nodes.length < PAGE) break;
+            position = Number(nodes[nodes.length - 1]!.position);
+          }
+        }
+        if (!mapped) continue;
+        // Recheck authority and the selected head after yielding to another callback.
+        const current = await db.query(
+          `SELECT 1 FROM transcript_map_plans p
+          LEFT JOIN transcript_map_heads h ON h.plan_id=p.id AND h.machine_id=?
+          LEFT JOIN transcript_map_versions v ON v.id=h.version_id
+          WHERE p.id=? AND ${currentPlan} AND (json_extract(p.payload,'$.direct')=1
+            OR (h.version_id=? AND (${currentGeneration}))) LIMIT 1`,
+          [scope.machineId, plan.id, ...auth.params, plan.version_id],
+        );
+        verifiedMappedCaptures += current.length;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (plans.length < PAGE) break;
+      cursor = plans[plans.length - 1]!.cursor;
+    }
+    const known = await db.query(
+      `SELECT 1 FROM transcript_map_contexts WHERE machine_id=? AND digest=? LIMIT 1`,
       [scope.machineId, scope.context.digest],
     );
-    const verifiedMappedCaptures = Number(rows[0]?.n ?? 0);
     return {
       eligibleCaptures: scope.context.eligibleCaptures,
       verifiedMappedCaptures,
       observedAt: scope.context.observedAt,
-      partial:
-        Number(known[0]?.n ?? 0) === 0 || verifiedMappedCaptures !== scope.context.eligibleCaptures,
+      partial: known.length === 0 || verifiedMappedCaptures !== scope.context.eligibleCaptures,
     };
   }
 

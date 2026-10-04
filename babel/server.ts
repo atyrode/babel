@@ -902,6 +902,7 @@ async function cycle(
     nativeDispatch,
     chain,
   ).tick();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   /*
     WHY THIS CYCLE DID WHAT IT DID. The loop's own verdict was visible nowhere: a cycle that
     drew nothing, or stopped on a gap, or refused a dispatch, left no trace outside the tick
@@ -944,6 +945,7 @@ async function cycle(
       console.warn(`${BABEL_PLUGIN_ID}: run ${posted.runId}: ${posted.waiting}`);
     }
   }
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   /*
     …AND ONE TITLING RUN, IF THIS CYCLE MAY AFFORD ONE (#342). A session whose own log records
     no title never gets one from its capture, so the only way it gets one at all is a model — which
@@ -955,11 +957,13 @@ async function cycle(
   if (named !== null && "refused" in named) {
     console.warn(`${BABEL_PLUGIN_ID}: no session was named this cycle: ${named.refused}`);
   }
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   for (const report of await drainTick(draining(jobs, actions, chain, services))) {
     for (const note of report.notes) {
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
     }
   }
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   // After the controller, so a drain it just ended loses its cadence on this same wake.
   for (const note of await mapDrainWakes(jobs, policy, undefined))
     console.warn(`${BABEL_PLUGIN_ID}: ${note}`);
@@ -1091,11 +1095,13 @@ async function mapDrainCycle(
     mappingDrainId,
   ).tickMapDrains();
   for (const note of moved.notes) console.warn(`${BABEL_PLUGIN_ID}: mapping: ${note}`);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   for (const report of await drainTick(draining(jobs, actions, null), MAP_DRAIN_PRESET)) {
     for (const note of report.notes) {
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
     }
   }
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   // After the controller, so a drain it just ended loses its cadence on this same wake.
   for (const note of await mapDrainWakes(jobs, policy, mappingDrainId))
     console.warn(`${BABEL_PLUGIN_ID}: ${note}`);

@@ -9,7 +9,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
-- **Large navigation-map receipts no longer monopolize the hub's event loop (#543).**
+- **Complete catalog and navigation-map continuations page their retained store work.**
+  Catalog ingestion fuses unchanged observations into bounded ordered SQL batches. Run settlement,
+  prepared-session recovery, plan cardinality, terminal spans, coverage and status use indexed
+  metadata pages before copying payloads, with real host turns between continuations. Status
+  visits each capture once even when replacement segmentation publishes between pages. Analysis
+  reuses only immutable decoded brief facts; recipe history and capacity discovery retain their
+  complete selection semantics without unbounded document scans. The frozen privacy closure and
+  same-statement model-admission fences are unchanged.
+
+- **Navigation-map node projection and verification use bounded host turns (#543).**
   Projection fuses node inserts into bounded 32-row SQL statements, one per transaction, and
   serves a real event-loop turn between map write and verification pages. Hierarchy verification
   loads related nodes in bounded indexed groups rather than repeating one query per link.

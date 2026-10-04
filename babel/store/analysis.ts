@@ -48,13 +48,82 @@ export async function materialBound(
   machineId: string,
   share: number,
 ): Promise<number> {
-  const reported = await db.query(
-    `SELECT json_extract(payload, '$.outputCapacity.bytes') AS bytes FROM runs
-      WHERE machine_id = ? AND json_type(payload, '$.outputCapacity.bytes') = 'integer'
-      ORDER BY started_at DESC LIMIT 1`,
-    [machineId],
+  const watermark = String(
+    (await db.query(`SELECT CAST(coalesce(max(rowid), 0) AS TEXT) AS row_id FROM runs`))[0]?.[
+      "row_id"
+    ] ?? "0",
   );
-  const capacity = reported[0]?.["bytes"];
+  let cursor: { rowId: string; startedAt: string } | null = null;
+  let capacity: unknown;
+  // Decode only this physical page, stopping at its first integer capacity. A later malformed
+  // receipt must not turn an earlier successful LIMIT 1 selection into a JSON error.
+  let turnAt = performance.now();
+  for (;;) {
+    // Seek the remaining timestamp ties separately from older rows. Both are covered by
+    // runs_by_machine, including its implicit ascending rowid tie-breaker.
+    const preceding: string =
+      cursor === null
+        ? ""
+        : `same_time AS MATERIALIZED (
+            SELECT rowid AS row_number, started_at FROM runs
+              WHERE machine_id = ? AND started_at = ? AND rowid > CAST(? AS INTEGER)
+                AND rowid <= CAST(? AS INTEGER)
+              ORDER BY rowid LIMIT 8
+          ), older AS MATERIALIZED (
+            SELECT rowid AS row_number, started_at FROM runs
+              WHERE machine_id = ? AND started_at < ? AND rowid <= CAST(? AS INTEGER)
+              ORDER BY started_at DESC, rowid ASC
+              LIMIT (8 - (SELECT count(*) FROM same_time))
+          ),`;
+    const page: string =
+      cursor === null
+        ? `SELECT rowid AS row_number, started_at FROM runs
+            WHERE machine_id = ? AND rowid <= CAST(? AS INTEGER)
+            ORDER BY started_at DESC, rowid ASC LIMIT 8`
+        : `SELECT row_number, started_at FROM same_time
+            UNION ALL SELECT row_number, started_at FROM older`;
+    const rows: readonly Readonly<Record<string, unknown>>[] = await db.query(
+      `WITH RECURSIVE ${preceding}
+        page AS MATERIALIZED (${page}),
+        ordered AS MATERIALIZED (
+          SELECT row_number, started_at,
+            row_number() OVER (ORDER BY started_at DESC, row_number ASC) AS position FROM page
+        ), capacity AS (
+          SELECT p.row_number, p.started_at, p.position,
+            CASE WHEN json_type(r.payload, '$.outputCapacity.bytes') = 'integer'
+              THEN json_extract(r.payload, '$.outputCapacity.bytes') END AS bytes
+            FROM ordered p JOIN runs r ON r.rowid = p.row_number WHERE p.position = 1
+          UNION ALL
+          SELECT p.row_number, p.started_at, p.position,
+            CASE WHEN json_type(r.payload, '$.outputCapacity.bytes') = 'integer'
+              THEN json_extract(r.payload, '$.outputCapacity.bytes') END AS bytes
+            FROM capacity previous JOIN ordered p ON p.position = previous.position + 1
+            JOIN runs r ON r.rowid = p.row_number WHERE previous.bytes IS NULL
+        )
+        SELECT CAST(row_number AS TEXT) AS row_id, started_at, bytes FROM capacity
+          ORDER BY position DESC LIMIT 1`,
+      cursor === null
+        ? [machineId, watermark]
+        : [
+            machineId,
+            cursor.startedAt,
+            cursor.rowId,
+            watermark,
+            machineId,
+            cursor.startedAt,
+            watermark,
+          ],
+    );
+    const row = rows[0];
+    if (row === undefined) break;
+    capacity = row["bytes"];
+    if (capacity !== undefined && capacity !== null) break;
+    cursor = { rowId: String(row["row_id"]), startedAt: String(row["started_at"]) };
+    if (performance.now() - turnAt >= 50) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      turnAt = performance.now();
+    }
+  }
   const available =
     capacity === undefined || capacity === null ? RUNTIME_SCRATCH_BYTES : Number(capacity);
   const shared = Math.floor(
@@ -184,6 +253,7 @@ export async function* analysisOffers(
 ): AsyncGenerator<AnalysisOffer | AnalysisRefusal> {
   const bound = await materialBound(db, machineId, share);
   const excludedRecords = await readExcludedRecordIds(db);
+  let turnAt = performance.now();
   const sources = new Map<string, Promise<GuestSqlRow | undefined>>();
   const source = (selector: string): Promise<GuestSqlRow | undefined> => {
     const cached = sources.get(selector);
@@ -263,26 +333,44 @@ export async function* analysisOffers(
           AND s.selector > ? ORDER BY s.selector LIMIT ?`,
         [cursor, FRONTIER_LIMIT],
       );
-      for (const row of page) {
+      for (let start = 0; start < page.length; start += 8) {
         if (!wants("explore")) break explore;
-        const selector = string(row["selector"]);
-        const linked = await db.query(
-          `SELECT DISTINCT r.root_id, parent.root_id AS parent_root
-             FROM edges e JOIN records r ON r.id = e.from_id AND r.kind = e.from_kind
-             LEFT JOIN records parent ON parent.id = r.parent_id
-            WHERE e.kind = 'cites' AND e.to_kind = 'session' AND e.to_id = ? LIMIT ?`,
-          [selector, FRONTIER_LIMIT + 1],
+        const chunk = page.slice(start, start + 8);
+        // Each indexed inner read keeps its own frontier bound before aggregation.
+        const links = await db.query(
+          `SELECT input.key slot,json_extract(link.value,'$[0]') root_id,
+                  json_extract(link.value,'$[1]') parent_root
+             FROM json_each(?) input JOIN json_each((
+               SELECT json_group_array(json_array(root_id,parent_root)) FROM (
+                 SELECT DISTINCT r.root_id,parent.root_id parent_root
+                   FROM edges e JOIN records r ON r.id=e.from_id AND r.kind=e.from_kind
+                   LEFT JOIN records parent ON parent.id=r.parent_id
+                  WHERE e.kind='cites' AND e.to_kind='session' AND e.to_id=input.value LIMIT ?
+               )
+             )) link ORDER BY input.key,link.key`,
+          [JSON.stringify(chunk.map((row) => string(row["selector"]))), FRONTIER_LIMIT + 1],
         );
-        if (
-          linked.length > FRONTIER_LIMIT ||
-          linked.some(
-            (link) =>
-              !eligible.has(string(link["root_id"])) ||
-              (string(link["parent_root"]) !== "" && !eligible.has(string(link["parent_root"]))),
+        const grouped: GuestSqlRow[][] = Array.from({ length: chunk.length }, () => []);
+        for (const link of links) grouped[Number(link["slot"])]!.push(link);
+        for (let index = 0; index < chunk.length; index++) {
+          if (performance.now() - turnAt >= 50) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            turnAt = performance.now();
+          }
+          if (!wants("explore")) break explore;
+          const selector = string(chunk[index]!["selector"]);
+          const linked = grouped[index]!;
+          if (
+            linked.length > FRONTIER_LIMIT ||
+            linked.some(
+              (link) =>
+                !eligible.has(string(link["root_id"])) ||
+                (string(link["parent_root"]) !== "" && !eligible.has(string(link["parent_root"]))),
+            )
           )
-        )
-          continue;
-        yield await offer("explore", selector, [], [selector]);
+            continue;
+          yield await offer("explore", selector, [], [selector]);
+        }
       }
       if (page.length < FRONTIER_LIMIT) break;
       cursor = string(page[page.length - 1]!["selector"]);
@@ -306,7 +394,46 @@ export async function* analysisOffers(
         ORDER BY r.id LIMIT ?`,
       [cursor, ANALYSIS_BRIEF_BYTE_LIMIT, RECORD_SCAN_LIMIT],
     );
+    const edgePages = new Map<string, GuestSqlRow[]>();
+    const eligibleRows = page.filter((row) => {
+      const root = string(row["root_id"]);
+      return (
+        eligible.has(root) &&
+        (string(row["parent_id"]) === "" || eligible.has(string(row["parent_root"]))) &&
+        !excludedRecords.has(string(row["id"]))
+      );
+    });
+    for (let start = 0; start < eligibleRows.length; start += 8) {
+      if (performance.now() - turnAt >= 50) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        turnAt = performance.now();
+      }
+      const chunk = eligibleRows.slice(start, start + 8);
+      for (const row of chunk) edgePages.set(string(row["id"]), []);
+      const edges = await db.query(
+        `SELECT input.key slot,json_extract(edge.value,'$[0]') kind,
+                json_extract(edge.value,'$[1]') to_kind,json_extract(edge.value,'$[2]') to_id
+           FROM json_each(?) input JOIN json_each((
+             SELECT json_group_array(json_array(kind,to_kind,to_id)) FROM (
+               SELECT kind,to_kind,to_id FROM edges
+                WHERE from_id=json_extract(input.value,'$.id') AND from_kind=json_extract(input.value,'$.kind')
+                  AND kind IN ('cites','contradicts',?) ORDER BY kind,to_id LIMIT ?
+             )
+           )) edge ORDER BY input.key,edge.key`,
+        [
+          JSON.stringify(chunk.map((row) => ({ id: row["id"], kind: row["kind"] }))),
+          CHALLENGE_RELATION,
+          FRONTIER_LIMIT + 1,
+        ],
+      );
+      for (const edge of edges)
+        edgePages.get(string(chunk[Number(edge["slot"])]!["id"]))!.push(edge);
+    }
     for (const row of page) {
+      if (performance.now() - turnAt >= 50) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        turnAt = performance.now();
+      }
       const root = string(row["root_id"]);
       if (
         !eligible.has(root) ||
@@ -315,11 +442,7 @@ export async function* analysisOffers(
         continue;
       const id = string(row["id"]);
       if (excludedRecords.has(id)) continue;
-      const edges = await db.query(
-        `SELECT kind, to_kind, to_id FROM edges WHERE from_id = ? AND from_kind = ?
-          AND kind IN ('cites', 'contradicts', ?) ORDER BY kind, to_id LIMIT ?`,
-        [id, string(row["kind"]), CHALLENGE_RELATION, FRONTIER_LIMIT + 1],
-      );
+      const edges = edgePages.get(id)!;
       if (edges.length > FRONTIER_LIMIT) continue;
       heads.set(id, {
         id,
@@ -374,6 +497,70 @@ export async function* analysisOffers(
     }
     return [...selectors];
   };
+  // Records' title/payload cannot change or disappear: records_immutable/records_kept enforce
+  // that ledger property. Decode each whole brief fact once per offer search, not once per trial
+  // pair. No exclusion, capture-currentness or admission decision is retained here.
+  type DecodedBrief = { readonly record: AnalysisBriefRecord; readonly bytes: number };
+  const decoded = new Map<string, DecodedBrief | undefined>();
+  const briefRecord = (id: string, row: GuestSqlRow | undefined): DecodedBrief | undefined => {
+    if (decoded.has(id)) return decoded.get(id);
+    const head = heads.get(id);
+    if (head === undefined) return undefined;
+    const payload = object(row?.["payload"]);
+    const parsed =
+      payload === null
+        ? null
+        : AnalysisBriefRecordSchema.safeParse({
+            id,
+            kind: head.kind,
+            runId: head.runId,
+            summary: string(row?.["title"]),
+            payload,
+            objectionTo: head.objectionTo,
+          });
+    const fact =
+      parsed?.success === true
+        ? { record: parsed.data, bytes: encoder.encode(JSON.stringify(parsed.data)).byteLength }
+        : undefined;
+    decoded.set(id, fact);
+    return fact;
+  };
+  async function* briefFacts(
+    ids: Iterable<string>,
+    seen: Set<string>,
+    out: readonly AnalysisBriefRecord[],
+  ): AsyncGenerator<DecodedBrief | undefined> {
+    const iterator = ids[Symbol.iterator]();
+    let done = false;
+    while (!done && out.length < ANALYSIS_BRIEF_LIMIT) {
+      const page: string[] = [];
+      const room = Math.min(8, ANALYSIS_BRIEF_LIMIT - out.length);
+      while (page.length < room) {
+        const next = iterator.next();
+        if (next.done === true) {
+          done = true;
+          break;
+        }
+        if (seen.has(next.value)) continue;
+        seen.add(next.value);
+        if (heads.has(next.value)) page.push(next.value);
+      }
+      const missing = page.filter((id) => !decoded.has(id));
+      if (missing.length > 0) {
+        // A title exceeding the whole brief bound cannot fit even alone. Together with the
+        // metadata page's payload bound, eight whole rows stay below the SDK result budget.
+        const rows = await db.query(
+          `SELECT id,title,payload FROM records
+             WHERE id IN (SELECT value FROM json_each(?)) AND length(CAST(title AS BLOB))<=?`,
+          [JSON.stringify(missing), ANALYSIS_BRIEF_BYTE_LIMIT],
+        );
+        const byId = new Map<string, GuestSqlRow>();
+        for (const row of rows) byId.set(string(row["id"]), row);
+        for (const id of missing) briefRecord(id, byId.get(id));
+      }
+      for (const id of page) yield decoded.get(id);
+    }
+  }
   /*
     WHOLE RECORDS, IN `ids` ORDER AFTER `initial`, while the brief is within its count and byte
     bounds AND the stage's prompt over it — with the sessions it would prepare — still fits.
@@ -393,27 +580,16 @@ export async function* analysisOffers(
     const crowded: { readonly id: string; readonly bytes: number }[] = [];
     const seen = new Set(initial.map((row) => row.id));
     let bytes = encoder.encode(JSON.stringify(initial)).byteLength;
-    for (const id of ids) {
-      if (out.length === ANALYSIS_BRIEF_LIMIT) break;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const head = heads.get(id);
-      if (head === undefined) continue;
-      const rows = await db.query(`SELECT title, payload FROM records WHERE id = ?`, [id]);
-      const payload = object(rows[0]?.["payload"]);
-      if (payload === null) continue;
-      const parsed = AnalysisBriefRecordSchema.safeParse({
-        id,
-        kind: head.kind,
-        runId: head.runId,
-        summary: string(rows[0]?.["title"]),
-        payload,
-        objectionTo: head.objectionTo,
-      });
-      if (!parsed.success) continue;
-      const size = encoder.encode(JSON.stringify(parsed.data)).byteLength + (out.length ? 1 : 0);
+    for await (const fact of briefFacts(ids, seen, out)) {
+      if (performance.now() - turnAt >= 50) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        turnAt = performance.now();
+      }
+      if (fact === undefined) continue;
+      const record = fact.record;
+      const size = fact.bytes + (out.length ? 1 : 0);
       if (bytes + size > ANALYSIS_BRIEF_BYTE_LIMIT) continue;
-      const brief = [...out, parsed.data];
+      const brief = [...out, record];
       const sessions = await selection(await material(brief));
       const composed = prompt.bytes(
         stage,
@@ -421,10 +597,10 @@ export async function* analysisOffers(
         sessions.map((row) => string(row["selector"])),
       );
       if (composed > prompt.limit) {
-        crowded.push({ id, bytes: composed });
+        crowded.push({ id: record.id, bytes: composed });
         continue;
       }
-      out.push(parsed.data);
+      out.push(record);
       bytes += size;
     }
     return { brief: out, crowded };
@@ -474,6 +650,10 @@ export async function* analysisOffers(
   if (stages.includes("synthesize") && wants("synthesize")) {
     const groups = new Map<string, string[]>();
     for (const head of heads.values()) {
+      if (performance.now() - turnAt >= 50) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        turnAt = performance.now();
+      }
       if (head.kind !== "observation" || head.runId === null) continue;
       const parent = heads.get(head.parent);
       const keys = [

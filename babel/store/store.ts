@@ -300,6 +300,7 @@ export interface BabelStore {
   runs(query: RunsQuery): Promise<RunsResult>;
   run(id: string): Promise<RunResult>;
   policy(): Promise<PolicyResult>;
+  steering(): Promise<PolicyResult["steering"]>;
 }
 
 // ---------------------------------------------------------------------------- column readers
@@ -308,6 +309,20 @@ function text(value: SqlParam | undefined): string {
   if (typeof value === "string") return value;
   if (value === null || value === undefined || value instanceof Uint8Array) return "";
   return String(value);
+}
+
+/** SQLite's UTF-8 BINARY order, including ids outside the BMP, without allocating encoded keys. */
+function binaryOrder(left: string, right: string): number {
+  let first = 0;
+  let second = 0;
+  while (first < left.length && second < right.length) {
+    const a = left.codePointAt(first)!;
+    const b = right.codePointAt(second)!;
+    if (a !== b) return a < b ? -1 : 1;
+    first += a > 0xffff ? 2 : 1;
+    second += b > 0xffff ? 2 : 1;
+  }
+  return left.length - right.length;
 }
 
 function count(value: SqlParam | undefined): number {
@@ -2158,17 +2173,63 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       `SELECT COALESCE(SUM(actual_cost), 0) AS spent FROM claims WHERE granted_at >= ?`,
       [since],
     );
-    const privacy = sourcePrivacyCondition("run", "id");
-    const ran = await db.query(
-      `WITH visible_runs AS (SELECT * FROM runs WHERE ${privacy.sql})
-       SELECT recipe_id AS id, COUNT(*) AS runs, MAX(started_at) AS last_ran_at,
-              (SELECT id FROM visible_runs inner_runs
-                WHERE inner_runs.recipe_id = visible_runs.recipe_id
-                ORDER BY started_at DESC, id DESC LIMIT 1) AS last_run_id
-         FROM visible_runs WHERE recipe_id IS NOT NULL AND recipe_id <> ''
-        GROUP BY recipe_id ORDER BY recipe_id LIMIT 200`,
-      privacy.params,
+    const privacy = sourcePrivacyCondition("run", "r.id");
+    // Bound the physical scan before applying privacy, so an excluded or recipe-less frontier
+    // cannot turn one page into a whole-table read. Hidden rows return only the seek cursor.
+    const watermark = await db.query<{ row_id: string }>(
+      `SELECT CAST(coalesce(max(rowid),0) AS TEXT) row_id FROM runs`,
     );
+    const performed = new Map<
+      string,
+      { id: string; runs: number; last_ran_at: string; last_run_id: string }
+    >();
+    const ids: string[] = [];
+    let cursor: string | null = null;
+    for (;;) {
+      const page: readonly {
+        row_id: string;
+        id: string | null;
+        recipe_id: string | null;
+        started_at: string | null;
+      }[] = await db.query(
+        `WITH page AS MATERIALIZED (
+           SELECT rowid row_number FROM runs
+            WHERE rowid<=CAST(? AS INTEGER) ${cursor === null ? "" : "AND rowid>CAST(? AS INTEGER)"}
+            ORDER BY rowid LIMIT 128
+         ) SELECT CAST(page.row_number AS TEXT) row_id,r.id,r.recipe_id,r.started_at
+           FROM page LEFT JOIN runs r ON r.rowid=page.row_number AND ${privacy.sql}
+          ORDER BY page.row_number`,
+        [watermark[0]?.row_id ?? "0", ...(cursor === null ? [] : [cursor]), ...privacy.params],
+      );
+      for (const run of page) {
+        if (!run.recipe_id || run.id === null || run.started_at === null) continue;
+        let entry = performed.get(run.recipe_id);
+        if (entry === undefined) {
+          let low = 0;
+          let high = ids.length;
+          while (low < high) {
+            const middle = (low + high) >>> 1;
+            if (binaryOrder(ids[middle]!, run.recipe_id) < 0) low = middle + 1;
+            else high = middle;
+          }
+          if (low >= 200) continue;
+          ids.splice(low, 0, run.recipe_id);
+          if (ids.length > 200) performed.delete(ids.pop()!);
+          entry = { id: run.recipe_id, runs: 0, last_ran_at: run.started_at, last_run_id: run.id };
+          performed.set(run.recipe_id, entry);
+        }
+        entry.runs++;
+        const newer = binaryOrder(run.started_at, entry.last_ran_at);
+        if (newer > 0 || (newer === 0 && binaryOrder(run.id, entry.last_run_id) > 0)) {
+          entry.last_ran_at = run.started_at;
+          entry.last_run_id = run.id;
+        }
+      }
+      if (page.length < 128) break;
+      cursor = page[page.length - 1]!.row_id;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    const ran = ids.map((id) => performed.get(id)!);
     /*
       THE DECLARED LIST IS THE LEFT SIDE (#344).
 
@@ -2181,8 +2242,6 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       So the policy's own list is the axis and the runs are joined onto it. Zero is a number:
       a recipe with no runs is a row saying zero, never a row left out.
     */
-    const performed = new Map<string, Record<string, SqlParam>>();
-    for (const entry of ran) performed.set(text(entry["id"]), entry);
     // The fields are named rather than spread: a declaration also carries whether the lens can
     // be RUN, which is the coverage grid's business and not this roster's, and the door parses
     // its answer strictly.
@@ -2405,6 +2464,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     runs: async (query) => await fenced(async () => await runs(query)),
     run: async (id) => await fenced(async () => await run(id)),
     policy: async () => await fenced(policy),
+    steering: async () => await fenced(async () => await operatorRemarks(db)),
   };
 }
 
