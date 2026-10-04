@@ -83,7 +83,7 @@ import {
   readExcludedRunIds,
   sourcePrivacyCondition,
 } from "./source-privacy.ts";
-import { SOURCE_DEPENDENCY_READY } from "./source-dependencies.ts";
+import { SOURCE_TAINT_READY } from "./source-taint.ts";
 
 /**
  * THE STORE'S HALF OF THE PULSE: what today's tables say. The door answers a wider shape — it
@@ -780,7 +780,12 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   const clock = now ?? Date.now;
   let built: FeedIndex | null = null;
   let invalidation = 0;
-  type Generation = { invalidation: number; exclusions: number; projectionReady: number };
+  type Generation = {
+    invalidation: number;
+    exclusions: number;
+    projectionReady: number;
+    privacyRevision: number;
+  };
   let builtGeneration: Generation | null = null;
 
   // The immutable ledger count fences bans from other handles. The durable readiness flag
@@ -789,20 +794,23 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   const generation = async (): Promise<Generation> => {
     const before = invalidation;
     const rows = await db.query(
-      `SELECT COUNT(*) AS n, ${SOURCE_DEPENDENCY_READY} AS ready FROM session_exclusions`,
+      `SELECT COUNT(*) AS n, ${SOURCE_TAINT_READY} AS ready,
+        coalesce((SELECT generation FROM source_taint_state WHERE id=1),0) AS privacy_revision FROM session_exclusions`,
       [],
     );
     return {
       invalidation: before,
       exclusions: count(rows[0]?.["n"]),
       projectionReady: count(rows[0]?.["ready"]),
+      privacyRevision: count(rows[0]?.["privacy_revision"]),
     };
   };
   const sameGeneration = (before: Generation, after: Generation): boolean =>
     before.invalidation === after.invalidation &&
     after.invalidation === invalidation &&
     before.exclusions === after.exclusions &&
-    before.projectionReady === after.projectionReady;
+    before.projectionReady === after.projectionReady &&
+    before.privacyRevision === after.privacyRevision;
 
   // A predicate on the first query cannot protect projections assembled by later awaits.
   // Discard the whole response, including derived counts/context, if a ban completed meanwhile.

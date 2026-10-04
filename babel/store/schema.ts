@@ -24,9 +24,27 @@
   - the operator is the boundary: `actor_kind` is `operator`, `run` or `engine` on every row that
     something wrote, so "who did this" is a column and never an inference.
  */
-import { SOURCE_DEPENDENCY_FRESH, SOURCE_DEPENDENCY_SCHEMA } from "./source-dependencies.ts";
+import {
+  SOURCE_DEPENDENCY_FRESH,
+  SOURCE_DEPENDENCY_RETIRED,
+  sourceDependencySchema,
+} from "./source-dependencies.ts";
+import {
+  SOURCE_TAINT_BEGIN,
+  SOURCE_TAINT_END,
+  SOURCE_TAINT_FRESH,
+  SOURCE_TAINT_SCHEMA,
+  sourceTaintCatalogBefore,
+  sourceTaintCatalogAfter,
+} from "./source-taint.ts";
 
-export const STORE_DATA_VERSION = { major: 1, minor: 22 } as const;
+const SOURCE_DEPENDENCY_SCHEMA = sourceDependencySchema({
+  begin: SOURCE_TAINT_BEGIN,
+  end: SOURCE_TAINT_END,
+  before: sourceTaintCatalogBefore,
+  after: sourceTaintCatalogAfter,
+});
+export const STORE_DATA_VERSION = { major: 1, minor: 23 } as const;
 
 /** Privacy acts are independent of the rebuildable catalog and never modify archived bytes. */
 const SESSION_EXCLUSION_SCHEMA: readonly string[] = [
@@ -1523,7 +1541,9 @@ export const SCHEMA_V1: readonly string[] = [
      imported_at TEXT NOT NULL
    ) STRICT`,
   ...SOURCE_DEPENDENCY_SCHEMA,
+  ...SOURCE_TAINT_SCHEMA,
   ...SOURCE_DEPENDENCY_FRESH,
+  ...SOURCE_TAINT_FRESH,
 ];
 
 /**
@@ -1726,7 +1746,23 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   ...HISTORY_INDEX_SCHEMA.map(objectAddition),
   ...REVIEW_ACTION_SCHEMA.map(objectAddition),
   ...SESSION_EXCLUSION_SCHEMA.map(objectAddition),
+  ...SOURCE_DEPENDENCY_RETIRED.map((object): SchemaAddition => ({
+    object,
+    removes: true,
+    sql: `DROP TRIGGER ${object}`,
+  })),
+  {
+    object: "source_dependencies_origin",
+    removes: true,
+    sql: "DROP INDEX source_dependencies_origin",
+  },
   ...SOURCE_DEPENDENCY_SCHEMA.map(objectAddition),
+  {
+    object: "source_dependencies",
+    column: "seen",
+    sql: "ALTER TABLE source_dependencies ADD COLUMN seen INTEGER NOT NULL DEFAULT 1",
+  },
+  ...SOURCE_TAINT_SCHEMA.map(objectAddition),
 ];
 
 /**

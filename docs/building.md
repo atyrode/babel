@@ -86,20 +86,32 @@ history, not runnable authority: an old model/account choice is never invented i
 profile. Fresh stores already have the final shape, and repeated enables leave it alone. A
 store that previously dropped the column cannot recover its contents from this migration.
 
-Conversation privacy's `source_dependencies` and `source_dependency_edges` are derived input
-identities, not a cached taint set. Base-row triggers maintain their references in the same
-transaction, through the `source_dependency_rows` write view; imports cannot supply those
-derived tables as authority. Guards resolve current catalog-dependent references and read the
-immutable exclusion ledger in the same statement.
+Conversation privacy's `source_dependencies` and `source_dependency_edges` retain deduplicated
+input identities. Base-row triggers maintain their references in the same transaction through
+the `source_dependency_rows` write view. Replacing a source row preserves unchanged edges;
+ordinary run-status updates do not touch the graph. Imports cannot supply derived privacy
+tables as authority.
 
-Fresh stores start ready. Upgrades create the projection cheaply and advance durable per-table
-cursors in five-row chunks, yielding between batches: enable and existing conductor cycles
-spend about 100 ms per turn, and the owner exclusion door spends about one second. The door
-returns `privacy_projection_building` before native cutover until all history is covered.
-An empty exclusion ledger retains its cheap guard bypass; an existing ledger conservatively
-hides derived reads and refuses model admission during backfill. There is no full-store SQL
-fallback or imported/in-memory taint snapshot. Finishing backfill invalidates cached hidden
-feeds through the durable readiness generation.
+The compact `source_taint` primary key holds the exact closure, not an in-memory snapshot.
+The ban insert and new graph edges propagate taint transitively, skipping already retained
+identities. Removing affected support and changing live catalog/title/prepare bindings rebuild
+the closure within that same write transaction. `source_taint_state` fences incomplete history
+and invalidates reused feed/read projections when taint changes. One shared incremental trigger
+consumes and clears SQL-staged seeds before the source write returns; recursion is not duplicated
+in every catalog trigger. Ordinary read and model guards read the immutable exclusion ledger in
+their own statement, then use indexed taint lookups;
+they never run recursive graph SQL. Rare ban/destructive privacy-maintenance writes do traverse
+the graph and must remain bounded by the host's five-second batch deadline, unlike the ordinary
+hot-path batches targeted below 250 ms.
+
+Fresh stores start ready. Upgrades create the graph projection cheaply and advance durable
+per-table cursors in five-row chunks, yielding between batches: enable and existing conductor
+cycles spend about 100 ms per turn, and the owner exclusion door spends about one second.
+After graph backfill, taint rebuild and its readiness publication are atomic. The door returns
+`privacy_projection_building` before native cutover until both are ready. An empty exclusion
+ledger retains its cheap bypass; an existing ledger conservatively hides derived reads and
+refuses model admission during backfill. There is no slow guarded-read fallback, imported
+privacy authority, or asynchronous interval in which stale taint can permit admission.
 
 ## The machine half: one bundled file, no pinned engine, two tools the machine provides
 

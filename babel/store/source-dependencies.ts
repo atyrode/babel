@@ -1,8 +1,8 @@
 import type { GuestDatabase } from "@manifold/plugin-kit";
 import { INPUT_FIELD, RECORD_KINDS } from "../contract.ts";
 
-// Persist input identities, never a taint snapshot. ANY preserves JSON scalar types
-// and SQLite equality; catalog joins remain live in source-privacy.ts.
+// Persist input identities with transaction-maintained references. ANY preserves JSON scalar
+// types; source-taint.ts resolves current catalog joins when maintaining the persisted closure.
 interface Projection {
   readonly prefix: string;
   readonly rows: string;
@@ -448,63 +448,99 @@ function project(table: string, where: string): string {
 // Coalescing equal edges avoids repeated work from many ledger rows citing the same input.
 // Refcounts change only through source-row triggers in the original write transaction.
 
-export const SOURCE_DEPENDENCY_SCHEMA: readonly string[] = [
-  `CREATE TABLE source_dependencies(
+export interface SourceDependencyMaintenance {
+  readonly begin: string;
+  readonly end: string;
+  before(table: string, event: "update" | "delete"): string;
+  after(table: string): string;
+}
+
+export const SOURCE_DEPENDENCY_RETIRED = [
+  "source_dependency_rows_insert",
+  ...SOURCES.flatMap((table) =>
+    ["insert", "update", "delete"].map((event) => `source_dependencies_${table}_${event}`),
+  ),
+];
+
+export function sourceDependencySchema(
+  maintenance: SourceDependencyMaintenance,
+): readonly string[] {
+  return [
+    `CREATE TABLE source_dependencies(
     origin TEXT NOT NULL, origin_rowid INTEGER NOT NULL,
-    edge_id INTEGER NOT NULL REFERENCES source_dependency_edges(edge_id)
+    edge_id INTEGER NOT NULL REFERENCES source_dependency_edges(edge_id),
+    seen INTEGER NOT NULL DEFAULT 1
   ) STRICT`,
-  `CREATE TABLE source_dependency_edges(
+    `CREATE TABLE source_dependency_edges(
     edge_id INTEGER PRIMARY KEY,edge_key BLOB NOT NULL UNIQUE,
     consumer_kind ANY NOT NULL,consumer_id ANY NOT NULL,input_kind ANY,input_id ANY NOT NULL,
     consumer_record_kind ANY,input_catalog TEXT,input_record_kind ANY,
     relation TEXT NOT NULL,detail ANY,producer_run_id ANY,
     refs INTEGER NOT NULL CHECK (refs>=0)
   ) STRICT`,
-  `CREATE VIEW source_dependency_rows AS SELECT o.origin,o.origin_rowid,
+    `CREATE VIEW source_dependency_rows AS SELECT o.origin,o.origin_rowid,
     ${EDGE_COLUMNS.filter((column) => column !== "producer_run_id")
       .map((column) => `e.${column}`)
       .join(",")},
     CASE WHEN e.producer_run_id IS NULL THEN 0 ELSE 1 END AS payload_document
     FROM source_dependencies o JOIN source_dependency_edges e ON e.edge_id=o.edge_id`,
-  `CREATE INDEX source_dependency_edges_id ON source_dependency_edges(
+    `CREATE INDEX source_dependency_edges_id ON source_dependency_edges(
     relation,input_id,input_kind,consumer_kind,consumer_id,consumer_record_kind,input_catalog,input_record_kind,detail,producer_run_id)`,
-  `CREATE INDEX source_dependency_edges_consumer ON source_dependency_edges(consumer_id,input_id)
+    `CREATE INDEX source_dependency_edges_consumer ON source_dependency_edges(consumer_id,input_id)
     WHERE relation='applied_result'`,
-  `CREATE INDEX source_dependency_edges_linked ON source_dependency_edges(input_kind,input_id,producer_run_id)
+    `CREATE INDEX source_dependency_edges_linked ON source_dependency_edges(input_kind,input_id,producer_run_id)
     WHERE relation='dependency' AND producer_run_id IS NOT NULL`,
-  `CREATE INDEX source_dependency_edges_generic ON source_dependency_edges(
+    `CREATE INDEX source_dependency_edges_generic ON source_dependency_edges(
     input_id,input_kind,consumer_kind,consumer_id,consumer_record_kind,input_catalog,input_record_kind)
     WHERE relation='dependency' AND (input_kind IS NULL OR input_kind NOT IN (${SOURCE_DEPENDENCY_KINDS}))`,
-  "CREATE INDEX source_dependencies_origin ON source_dependencies(origin,origin_rowid)",
-  "CREATE INDEX source_dependencies_edge ON source_dependencies(edge_id)",
-  "CREATE INDEX session_titles_by_run ON session_titles(run_id)",
-  `CREATE TABLE source_dependency_progress(
+    "CREATE INDEX source_dependencies_origin_v2 ON source_dependencies(origin,origin_rowid,edge_id)",
+    "CREATE INDEX source_dependencies_edge ON source_dependencies(edge_id)",
+    "CREATE INDEX session_titles_by_run ON session_titles(run_id)",
+    `CREATE TABLE source_dependency_progress(
     origin TEXT PRIMARY KEY,last_rowid TEXT,complete INTEGER NOT NULL DEFAULT 0
   ) STRICT`,
-  `CREATE TRIGGER source_dependency_rows_insert INSTEAD OF INSERT ON source_dependency_rows BEGIN
+    `CREATE TRIGGER source_dependency_rows_insert_v2 INSTEAD OF INSERT ON source_dependency_rows BEGIN
     INSERT INTO source_dependency_edges(edge_key,${EDGE_COLUMNS.join(",")},refs)
       VALUES (${edgeKey(NEW_EDGE)},${NEW_EDGE.join(",")},0) ON CONFLICT(edge_key) DO NOTHING;
+    UPDATE source_dependencies SET seen=1
+      WHERE origin=NEW.origin AND origin_rowid=NEW.origin_rowid
+        AND edge_id=(SELECT edge_id FROM source_dependency_edges WHERE edge_key=${edgeKey(NEW_EDGE)});
     INSERT INTO source_dependencies(origin,origin_rowid,edge_id)
-      SELECT NEW.origin,NEW.origin_rowid,edge_id FROM source_dependency_edges
-      WHERE edge_key=${edgeKey(NEW_EDGE)};
+      SELECT NEW.origin,NEW.origin_rowid,e.edge_id FROM source_dependency_edges e
+      WHERE e.edge_key=${edgeKey(NEW_EDGE)} AND NOT EXISTS (
+        SELECT 1 FROM source_dependencies o WHERE o.origin=NEW.origin
+          AND o.origin_rowid=NEW.origin_rowid AND o.edge_id=e.edge_id);
   END`,
-  `CREATE TRIGGER source_dependency_edges_insert AFTER INSERT ON source_dependencies BEGIN
+    `CREATE TRIGGER source_dependency_edges_insert AFTER INSERT ON source_dependencies BEGIN
     UPDATE source_dependency_edges SET refs=refs+1 WHERE edge_id=NEW.edge_id;
   END`,
-  `CREATE TRIGGER source_dependency_edges_delete AFTER DELETE ON source_dependencies BEGIN
+    `CREATE TRIGGER source_dependency_edges_delete AFTER DELETE ON source_dependencies BEGIN
     UPDATE source_dependency_edges SET refs=refs-1 WHERE edge_id=OLD.edge_id;
     DELETE FROM source_dependency_edges WHERE edge_id=OLD.edge_id AND refs=0;
   END`,
-  ...SOURCES.flatMap((table) => [
-    `CREATE TRIGGER source_dependencies_${table}_insert AFTER INSERT ON ${table} BEGIN
-      ${project(table, "rowid=NEW.rowid")}; END`,
-    `CREATE TRIGGER source_dependencies_${table}_update AFTER UPDATE ON ${table} BEGIN
+    ...SOURCES.flatMap((table) => [
+      `CREATE TRIGGER source_dependencies_${table}_insert_v2 AFTER INSERT ON ${table} BEGIN
+      ${maintenance.begin}
+      ${project(table, "rowid=NEW.rowid")};
+      ${maintenance.after(table)}
+      ${maintenance.end} END`,
+      `CREATE TRIGGER source_dependencies_${table}_update_v2 AFTER UPDATE${table === "runs" ? " OF rowid,_rowid_,oid,id,preparation,payload,job_id,prepare_job_id,started_at" : ""} ON ${table}
+      ${table === "runs" ? "WHEN OLD.rowid IS NOT NEW.rowid OR OLD.id IS NOT NEW.id OR OLD.preparation IS NOT NEW.preparation OR OLD.payload IS NOT NEW.payload OR OLD.job_id IS NOT NEW.job_id OR OLD.prepare_job_id IS NOT NEW.prepare_job_id OR OLD.started_at IS NOT NEW.started_at" : ""} BEGIN
+      ${maintenance.begin}
+      ${maintenance.before(table, "update")}
+      UPDATE source_dependencies SET seen=0 WHERE origin='${table}' AND origin_rowid=OLD.rowid;
+      ${project(table, "rowid=NEW.rowid")};
+      DELETE FROM source_dependencies WHERE origin='${table}' AND origin_rowid=OLD.rowid AND seen=0;
+      ${maintenance.after(table)}
+      ${maintenance.end} END`,
+      `CREATE TRIGGER source_dependencies_${table}_delete_v2 AFTER DELETE ON ${table} BEGIN
+      ${maintenance.begin}
+      ${maintenance.before(table, "delete")}
       DELETE FROM source_dependencies WHERE origin='${table}' AND origin_rowid=OLD.rowid;
-      ${project(table, "rowid=NEW.rowid")}; END`,
-    `CREATE TRIGGER source_dependencies_${table}_delete AFTER DELETE ON ${table} BEGIN
-      DELETE FROM source_dependencies WHERE origin='${table}' AND origin_rowid=OLD.rowid; END`,
-  ]),
-];
+      ${maintenance.end} END`,
+    ]),
+  ];
+}
 
 export async function sourceDependenciesReady(db: Pick<GuestDatabase, "query">): Promise<boolean> {
   return (await db.query(`SELECT 1 WHERE ${SOURCE_DEPENDENCY_READY}`)).length !== 0;

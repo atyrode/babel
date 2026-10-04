@@ -9,10 +9,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+- **Conversation privacy no longer traverses its graph on the hub's ordinary read path (#541).**
+  Guards read the immutable ledger and seek a compact persisted taint set. SQLite maintains it
+  in the original write transaction: inserts propagate new taint, while privacy-affecting
+  removals and live-catalog changes rebuild exactly. Normal run-status updates leave graph
+  projections alone, and reused readers/feed caches observe the durable taint generation.
+  Deterministic mutation regressions, independent closure equality and actual lifecycle smoke
+  cover immediate fencing without per-statement recursion.
+
 - **Conversation privacy no longer reparses the complete store for each guarded read.**
   Same-transaction SQLite triggers maintain a deduplicated, indexed dependency projection;
-  every admission still resolves current catalog facts and reads the immutable exclusion ledger
-  in its own statement. Historical backfill resumes in small bounded chunks, with named
+  the projection retains current catalog facts, and each guarded statement reads the immutable
+  exclusion ledger in its own statement. Historical backfill resumes in small bounded chunks, with named
   `privacy_projection_building` refusals and conservative quarantine while incomplete.
   Regression coverage includes late citations/catalog arrivals, shared-edge refcounts, rowid
   boundaries, writes during backfill and readiness-driven feed-cache invalidation.

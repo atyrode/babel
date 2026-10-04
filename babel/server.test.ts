@@ -1063,8 +1063,27 @@ test("an enable whose installer is gone is served no jobs, and still does the st
   expect(await closure()).toBeNull();
 });
 
+/** Earlier shapes had neither derived graph nor its global catalog-dependent triggers. */
+async function removePrivacyProjectionFromHistoricalShape(): Promise<void> {
+  const { db } = harness;
+  const triggers = await db.query(
+    "SELECT name FROM sqlite_master WHERE type='trigger' AND (name GLOB 'source_dependenc*' OR name GLOB 'source_taint_*')",
+  );
+  await db.batch([
+    ...triggers.map(({ name }) => ({ sql: `DROP TRIGGER ${String(name)}` })),
+    { sql: "DROP VIEW source_dependency_rows" },
+    { sql: "DROP TABLE source_dependencies" },
+    { sql: "DROP TABLE source_dependency_edges" },
+    { sql: "DROP TABLE source_dependency_progress" },
+    { sql: "DROP TABLE source_taint" },
+    { sql: "DROP TABLE source_taint_seeds" },
+    { sql: "DROP TABLE source_taint_state" },
+  ]);
+}
+
 test("enabling a store made before the catalog's two columns adds them and keeps its rows", async () => {
   const { db } = harness;
+  await removePrivacyProjectionFromHistoricalShape();
   // A store exactly as the first shape (`2026-09-12-store-v1`) left it: the tables are there,
   // and `sessions` has neither column. `planDataMigration` runs no chain for a MINOR version,
   // so if the enable did not add them here nothing ever would — and every session row naming
@@ -1114,6 +1133,7 @@ test("enabling a store made before the catalog's two columns adds them and keeps
 
 test("enabling a store made before the trace adds run_calls, triggers and all", async () => {
   const { db } = harness;
+  await removePrivacyProjectionFromHistoricalShape();
   /*
     A store exactly as the shape before #349 left it. A WHOLE-OBJECT ADDITION is the only
     additive move the enable hook can make, and its name is DERIVED from the statement — so two
@@ -1158,6 +1178,7 @@ test.each(["missing tables", "older columns"] as const)(
   "enable upgrades %s atomically and keeps records through another enable",
   async (shape) => {
     const { db } = harness;
+    await removePrivacyProjectionFromHistoricalShape();
     if (shape === "missing tables") {
       await db.run(`DROP TABLE drains`);
       await db.run(`DROP TABLE run_progress`);
@@ -1245,6 +1266,7 @@ test.each(["missing tables", "older columns"] as const)(
 
 test("enabling a store made before drains named a profile drops the session column, and a drain starts", async () => {
   const { db } = harness;
+  await removePrivacyProjectionFromHistoricalShape();
   /*
     A store exactly as the shape before #279 left `drains`: the account a drain spent was a
     `session` column, NOT NULL with no default, and there was no `profile`. #279 added `profile`
@@ -2116,6 +2138,7 @@ test("a map-prepare settlement spends only for the lane that posted it, never fo
 
 test("enabling a store made before archive captures adds their columns, the label map and the recency index", async () => {
   const { db } = harness;
+  await removePrivacyProjectionFromHistoricalShape();
   // A store exactly as the shape before #453 left it, holding one session the crossing hosted
   // at a host NAME. Every row an earlier shape wrote must read as naming no capture yet.
   await db.run(`DROP INDEX sessions_by_modified`);
@@ -2527,6 +2550,7 @@ test("the next beat recovers a posting the previous beat's wake lost, and only a
 
 test("enabling a store made before run chains adds the column, and every earlier run names none", async () => {
   const { db } = harness;
+  await removePrivacyProjectionFromHistoricalShape();
   await db.run(`ALTER TABLE runs DROP COLUMN chain`);
   await pending();
 
@@ -2538,6 +2562,7 @@ test("enabling a store made before run chains adds the column, and every earlier
 
 test("enabling a store made before the history indexes adds every one of them", async () => {
   const { db } = harness;
+  await removePrivacyProjectionFromHistoricalShape();
   const indexes = [
     "assessments_by_supersedes",
     "claims_by_job",
