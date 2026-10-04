@@ -9,7 +9,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
-- **Conversation privacy no longer traverses its graph on the hub's ordinary read path (#541).**
+- **Conversation privacy no longer traverses its graph on the hub's ordinary read path (#542).**
   Guards read the immutable ledger and seek a compact persisted taint set. SQLite maintains it
   in the original write transaction: inserts propagate new taint, while privacy-affecting
   removals and live-catalog changes rebuild exactly. Normal run-status updates leave graph
