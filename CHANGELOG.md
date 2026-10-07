@@ -9,14 +9,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
+### Changed
+
 - **The plugin closure moves to Manifold protocol 57 (#545).** The SDK and both workflow refs
   move to `b53543d`, with Code `66822d8` and OMP `8848676` on the same revision. A protocol 57
   hub admits only bundles stamped 57 and holds older ones as `repack_required`, so all four
   Babel bundles are rebuilt with stamp 57 and hardened contract 12 rather than carried across.
   Feed's test host now answers the authority-change and subscription-fence calls the SDK's
-  polled feeds make, and every Feed test registers its DOM before loading the SDK. The machine
-  stamp moves because the native half bundles the SDK worker and Code's action schemas;
-  Babel's machine source is unchanged. The composed gate installs all eleven OMP, Code and
+  polled feeds make, and every Feed test registers its DOM before loading the SDK. The native
+  artifact `machine.js` moves from `f1877c5e` to `cee37d78` because it bundles the SDK worker
+  and Code's action schemas. Babel's machine source, operations, locations and tool pins are
+  unchanged, but a hub with an enabled Babel native installation must take the new artifact
+  through its native deployment review. The composed gate installs all eleven OMP, Code and
   Babel bundles on the new SDK. A source pin is not a preview installation or native deployment.
 
 - **Complete catalog and navigation-map continuations page their retained store work.**
@@ -52,6 +58,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Regression coverage includes late citations/catalog arrivals, shared-edge refcounts, rowid
   boundaries, writes during backfill and readiness-driven feed-cache invalidation.
 
+### Added
+
 - **Owners can durably exclude a conversation from Babel without deleting its backups.**
   One immutable source ledger fences preparation, title inference, analysis, reviews, mapping,
   embeddings and later reuse of persisted derived lineage. Native Recall policy merges every
@@ -83,31 +91,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   no judgment rather than failing review. Regression coverage exercises optional absence,
   exact approvals, unknown-creation non-replay, attribution, bounds and late state changes.
   These call/byte bounds are not dollar enforcement; live funded inference remains separate.
-
-- **Native admission shares one physical occupancy fence across direct and standing mapping
-  work (#258, #526).** A typed direct pre-admission refusal, confirmed by authoritative
-  `job_not_started` for every recorded native attempt, closes the intent and reservation once.
-  Uncertain attempts and unreadable status retain the immutable request and occupied slot.
-  Standing mapping checks capacity before drawing, so a busy machine cannot consume candidate
-  hand-out leases; it rechecks at atomic claim publication and pending native/Code posting,
-  withdrawing a publication loser at zero. Fresh paginated native
-  listings include live policy/drain cadences before settlement writes their Babel runs, with
-  identity-based deduplication against retained preparations, parents and reservations.
-  Real-store regressions cover definitive/uncertain refusal, direct/standing races, resumed work
-  after capacity returns, delayed posting and cadence occupancy. An isolated real-store smoke
-  observed one active native cadence slot, still one after its run was persisted, then zero on
-  terminal evidence; both listing pages were read each time. No live deployment or provider work
-  was exercised.
-
-- **Retained preparations keep their machine core slot after their parent closes (#258).**
-  Explicit same-machine parent/preparation linkage counts one whole item, including a pending
-  reservation, while a child with no open parent remains occupied. Stop preserves native-attempt
-  evidence; mapping claims wait for authoritative native settlement rather than cancellation
-  acknowledgement. Real-store regressions cover ordinary and mapping parents, absent parents,
-  definitive refusal, lost answers, Stop/restart and late terminal receipts. Live throughput
-  acceptance remains separate from these isolated data-path proofs.
-
-### Added
 
 - **Duplicate clusters have a separate, explicit operator link action (#359).** A free bounded
   retained-corpus plan and optional Jev judgement produce one typed suggestion per cluster, with
@@ -283,6 +266,29 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   settlement and real-provider compliance remain separately unverified.
 
 ### Fixed
+
+- **Native admission shares one physical occupancy fence across direct and standing mapping
+  work (#258, #526).** A typed direct pre-admission refusal, confirmed by authoritative
+  `job_not_started` for every recorded native attempt, closes the intent and reservation once.
+  Uncertain attempts and unreadable status retain the immutable request and occupied slot.
+  Standing mapping checks capacity before drawing, so a busy machine cannot consume candidate
+  hand-out leases; it rechecks at atomic claim publication and pending native/Code posting,
+  withdrawing a publication loser at zero. Fresh paginated native
+  listings include live policy/drain cadences before settlement writes their Babel runs, with
+  identity-based deduplication against retained preparations, parents and reservations.
+  Real-store regressions cover definitive/uncertain refusal, direct/standing races, resumed work
+  after capacity returns, delayed posting and cadence occupancy. An isolated real-store smoke
+  observed one active native cadence slot, still one after its run was persisted, then zero on
+  terminal evidence; both listing pages were read each time. No live deployment or provider work
+  was exercised.
+
+- **Retained preparations keep their machine core slot after their parent closes (#258).**
+  Explicit same-machine parent/preparation linkage counts one whole item, including a pending
+  reservation, while a child with no open parent remains occupied. Stop preserves native-attempt
+  evidence; mapping claims wait for authoritative native settlement rather than cancellation
+  acknowledgement. Real-store regressions cover ordinary and mapping parents, absent parents,
+  definitive refusal, lost answers, Stop/restart and late terminal receipts. Live throughput
+  acceptance remains separate from these isolated data-path proofs.
 
 - **Citation evidence stays unavailable when a competing capture cannot be checked.** An
   unreadable or oversized candidate cannot be silently discarded after a readable match.
@@ -6067,7 +6073,8 @@ storage configuration yet — repository selection is per-invocation
   (ea65a45…85fe13f), replaced in 8636960 and a879067. SPEC.md and README.md
   rewritten around the restic model (5b8d593).
 
-[Unreleased]: https://github.com/atyrode/babel/compare/v0.5.8...HEAD
+[Unreleased]: https://github.com/atyrode/babel/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/atyrode/babel/releases/tag/v0.6.0
 [0.5.8]: https://github.com/atyrode/babel/releases/tag/v0.5.8
 [0.5.7]: https://github.com/atyrode/babel/releases/tag/v0.5.7
 [0.5.6]: https://github.com/atyrode/babel/releases/tag/v0.5.6
