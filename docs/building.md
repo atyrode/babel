@@ -856,20 +856,24 @@ bun install --cwd ../manifold --frozen-lockfile   # the kit resolves zod and the
 ```
 
 `MANIFOLD_REV` follows Manifold `main` and currently names
-`070132088e30f10266e43a52074bc58f16c051fe`. At that revision the kit stamps
-`hardenedContract: 11` into repacked bundles (`packages/plugin-kit/src/pack.ts:526-532`),
-while the host retains contracts 1–11 (`packages/protocol/src/isolate.ts:985-993`).
-The added contracts carry optional physical-core inventory and credential-bound read-only
-lifecycle metadata, omitting their new fields for older packed guests. A contract-9-or-newer
-web half needs a declared portable Worker entry for hardened installation
-(`packages/server/src/plugin-host.ts:569-580,2422-2425`). This family's documented delivery
+`b53543d94548d7c3929ca45280bb8692f0fa402c`, protocol 57. At that revision `pack` stamps
+`builtAgainst["manifold:protocol"]: "57"` and `hardenedContract: 12` into every bundle
+(`packages/plugin-kit/src/pack.ts:494-496,529-536`). The host accepts only bundles stamped 57
+(`packages/protocol/src/version.ts:4-12`) and holds any other as incompatible
+(`packages/server/src/plugin-updates.ts:44-55`), so the whole OMP, Code and Babel closure is
+rebuilt on one SDK rather than carried across a protocol move. Hosts retain hardened contracts
+1–12 (`packages/protocol/src/isolate.ts:1121-1128`); contract 12 adds live workspace authority,
+subscription-ordering fences, scoped identity calls and sealed read-only action preparation.
+Babel declares no action preparer, so its bundles carry no `serverBinding`. A
+contract-9-or-newer web half needs a declared portable Worker entry for hardened installation
+(`packages/server/src/plugin-host.ts:657-668,2772-2775`). This family's documented delivery
 remains in-realm; its server-only OMP dependencies remain hardened. The declaration never
 silently changes which runner an installer selected.
 The reviewed bounded-result channel includes exact digest-reviewed `textFields`: string-or-null
 leaves preserve already-redacted evidence rather than refusing a redaction marker as a credential
 carrier. Ordinary agent-facing results remain mechanical-only without trusted source approval,
 and domain-owned classification/redaction remains mandatory
-(`packages/sdk/README.md:223-300`; atyrode/manifold#798 and atyrode/manifold#812).
+(`packages/sdk/README.md:310-387`; atyrode/manifold#798 and atyrode/manifold#812).
 A source pin does not prove which revision any deployed hub is running.
 
 It retains delegated `machines:read` (atyrode/manifold#740) — which four of Babel's doors
@@ -1087,7 +1091,7 @@ bundle is attached or installed.** The release gate uses the supported `prepare-
 to set `BABEL_DEPENDENCY_RECEIPT` through `GITHUB_ENV`; after the SDK verifier succeeds,
 `bun run verify` records the dependency bundles' actual SHA-256 digests into that receipt under
 `dist/`. Ordinary verification records nothing unless that variable is explicitly set. The
-[pinned Manifold workflow](https://github.com/atyrode/manifold/blob/070132088e30f10266e43a52074bc58f16c051fe/.github/workflows/plugins.yml#L93-L132)
+[pinned Manifold workflow](https://github.com/atyrode/manifold/blob/b53543d94548d7c3929ca45280bb8692f0fa402c/.github/workflows/plugins.yml#L93-L132)
 runs preparation before the normal pack/verify steps and uploads their `dist/` as the existing
 `manifold-plugins` artifact. Its alternate `pack-verify-command` suppresses that upload and is
 not used here.
@@ -1101,13 +1105,11 @@ dependency build, published checksum files, dependency-first ordering and exact 
 checks remain in place; nothing switches to externally published dependency bundles.
 
 The current closure arrives through Code
-[`4bae10b`](https://github.com/atyrode/code/blob/4bae10b04f5c1cbad6f63d4c9785a2d732ffb3b4/package.json#L17-L19),
-which pins OMP `f67e4f1`. Its
-[`plugins/workers/build.ts:497-508`](https://github.com/atyrode/manifold-omp/blob/f67e4f14fd0835d51ce0c5d54adeb8c43ec369f9/plugins/workers/build.ts#L497-L508)
-keeps whitespace compaction without optional syntax or identifier minification. The
-[Code native/browser gate](https://github.com/atyrode/code/actions/runs/36668035946) passed,
-and all three OMP and four Code fingerprints matched the local build. This conservative
-configuration is not an identified compiler-cause repair;
+[`66822d8`](https://github.com/atyrode/code/blob/66822d892a0d3b4ffd181e62ae4cc347e8603a7f/package.json#L17-L19),
+which pins OMP `8848676`; both name Manifold `b53543d`. OMP's
+[`plugins/workers/build.ts:551-562`](https://github.com/atyrode/manifold-omp/blob/8848676ad6048cdd3e49fc5fce850043984e50a7/plugins/workers/build.ts#L551-L562)
+keeps whitespace compaction without optional syntax or identifier minification. This
+conservative configuration is not an identified compiler-cause repair;
 [manifold-omp#94](https://github.com/atyrode/manifold-omp/issues/94) retains that investigation.
 The composed verifier's receipt still refuses changed bytes, a missing or extra bundle, a moved
 role and a hidden symlink. Neither matching source builds nor disposable consumer proof is an

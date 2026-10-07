@@ -106,6 +106,10 @@ export function fakeHost(
     machines: (): Promise<readonly MachineSummary[]> => Promise.resolve(MACHINES),
     status: "open" as const,
     on: () => () => undefined,
+    // The fake operator's authority never changes, and the transport's ordering fence always
+    // lands: a feed reads once on that fence, then again only when `announce` fires.
+    onAuthorityChange: () => () => undefined,
+    syncSubscriptions: (): Promise<boolean> => Promise.resolve(true),
   };
   const host = {
     client,
