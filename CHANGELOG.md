@@ -10,7 +10,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 ## [Unreleased]
 
 - **The plugin closure moves to Manifold protocol 57 (#545).** The SDK and both workflow refs
-  move to `b53543d`, with Code `114863b` and OMP `8848676` on the same revision. A protocol 57
+  move to `b53543d`, with Code `66822d8` and OMP `8848676` on the same revision. A protocol 57
   hub admits only bundles stamped 57 and holds older ones as `repack_required`, so all four
   Babel bundles are rebuilt with stamp 57 and hardened contract 12 rather than carried across.
   Feed's test host now answers the authority-change and subscription-fence calls the SDK's
