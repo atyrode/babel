@@ -1105,13 +1105,11 @@ dependency build, published checksum files, dependency-first ordering and exact 
 checks remain in place; nothing switches to externally published dependency bundles.
 
 The current closure arrives through Code
-[`4bae10b`](https://github.com/atyrode/code/blob/4bae10b04f5c1cbad6f63d4c9785a2d732ffb3b4/package.json#L17-L19),
-which pins OMP `f67e4f1`. Its
-[`plugins/workers/build.ts:497-508`](https://github.com/atyrode/manifold-omp/blob/f67e4f14fd0835d51ce0c5d54adeb8c43ec369f9/plugins/workers/build.ts#L497-L508)
-keeps whitespace compaction without optional syntax or identifier minification. The
-[Code native/browser gate](https://github.com/atyrode/code/actions/runs/36668035946) passed,
-and all three OMP and four Code fingerprints matched the local build. This conservative
-configuration is not an identified compiler-cause repair;
+[`114863b`](https://github.com/atyrode/code/blob/114863bd8a985f501ca6d61af7a147fbd0519dac/package.json#L17-L19),
+which pins OMP `8848676`; both name Manifold `b53543d`. OMP's
+[`plugins/workers/build.ts:551-562`](https://github.com/atyrode/manifold-omp/blob/8848676ad6048cdd3e49fc5fce850043984e50a7/plugins/workers/build.ts#L551-L562)
+keeps whitespace compaction without optional syntax or identifier minification. This
+conservative configuration is not an identified compiler-cause repair;
 [manifold-omp#94](https://github.com/atyrode/manifold-omp/issues/94) retains that investigation.
 The composed verifier's receipt still refuses changed bytes, a missing or extra bundle, a moved
 role and a hidden symlink. Neither matching source builds nor disposable consumer proof is an

@@ -9,6 +9,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+- **The plugin closure moves to Manifold protocol 57 (#545).** The SDK and both workflow refs
+  move to `b53543d`, with Code `114863b` and OMP `8848676` on the same revision. A protocol 57
+  hub admits only bundles stamped 57 and holds older ones as `repack_required`, so all four
+  Babel bundles are rebuilt with stamp 57 and hardened contract 12 rather than carried across.
+  Feed's test host now answers the authority-change and subscription-fence calls the SDK's
+  polled feeds make, and every Feed test registers its DOM before loading the SDK. The machine
+  stamp moves because the native half bundles the SDK worker and Code's action schemas;
+  Babel's machine source is unchanged. The composed gate installs all eleven OMP, Code and
+  Babel bundles on the new SDK. A source pin is not a preview installation or native deployment.
+
 - **Complete catalog and navigation-map continuations page their retained store work.**
   Catalog ingestion fuses unchanged observations into bounded ordered SQL batches. Run settlement,
   prepared-session recovery, plan cardinality, terminal spans, coverage and status use indexed
