@@ -1,3 +1,4 @@
+import "./dom.ts";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import {
