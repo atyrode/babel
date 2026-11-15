@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   bundles:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@b53543d94548d7c3929ca45280bb8692f0fa402c
+    uses: atyrode/manifold/.github/workflows/plugins.yml@5693107cfb8b135f4753477d2d25e82b66925476
     with:
       # The repository IS the plugin family: there is no `plugins/` wrapper, so the caller
       # directory the reusable workflow works in is the checkout root.

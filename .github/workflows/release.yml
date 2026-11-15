@@ -53,7 +53,7 @@ jobs:
   # revision and move together (.github/workflows/manifold-plugins.yml says why). `deps:code`
   # builds the dependency closure first, because verify composes omp, then Code, then Babel.
   plugins:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@b53543d94548d7c3929ca45280bb8692f0fa402c
+    uses: atyrode/manifold/.github/workflows/plugins.yml@5693107cfb8b135f4753477d2d25e82b66925476
     with:
       # The repository IS the plugin family, so the caller directory is the checkout root, as in
       # manifold-plugins.yml. "." is not a root: the reusable workflow keys its cache on
@@ -93,7 +93,7 @@ jobs:
           path: manifold
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - name: Install the kit
         working-directory: manifold
         run: bun install --frozen-lockfile
@@ -153,7 +153,7 @@ jobs:
           path: manifold
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       # The kit and nothing else. `delivery-order.ts` reaches `familyOrder` through
       # tsconfig.json's sibling-checkout paths, so this repository's own install is not needed to
       # read a bundle - and a delivery that cannot start because a devDependency moved would be a
