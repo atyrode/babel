@@ -14,7 +14,7 @@ Babel **is** a [Manifold](https://github.com/atyrode/manifold) plugin family. It
 
 ## Build and verify
 
-The SDK is a checkout of [atyrode/manifold](https://github.com/atyrode/manifold) beside this repository, at the revision in `plugins/MANIFOLD_REV`, with its own `bun install` run. With that in place:
+The SDK is a checkout of [atyrode/manifold](https://github.com/atyrode/manifold) beside this repository, at the revision in `MANIFOLD_REV`, with its own `bun install` run. With that in place:
 
 ```sh
 cd plugins
