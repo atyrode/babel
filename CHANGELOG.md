@@ -9,6 +9,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Changed
+
+- **The plugin closure moves to Manifold v0.37.0, Code v0.29.0 and OMP v0.4.0 (#547).** The
+  SDK and both workflow refs move to `5693107` (protocol 60, hardened contract 14), with Code
+  `a4a6c1e` and the OMP `a538300` it pins on the same revision. Babel's calls into Code are
+  unchanged: Code's caller API is identical to `66822d8`, and the existing session, conductor,
+  launch and drain tests run against Code's released schemas. The pinned workflow installs Bun
+  1.4.4, so `runtime-tools.json` is remeasured and the manifest's `bun` machine tool moves to the
+  1.4.4 assets; the release workflow's dependency and delivery jobs move with it. The native
+  artifact `machine.js` moves from `cee37d78` to `2c302d95` because it bundles the SDK worker and
+  Code's action schemas, so a hub with an enabled Babel native installation must take the new
+  artifact and tool pins through its native deployment review. The composed gate installs all
+  eleven OMP, Code and Babel bundles on the new SDK, and its rebuilt Code and OMP bundles are
+  byte-identical to their published v0.29.0 and v0.4.0 release assets. A source pin is not a
+  preview installation or native deployment.
+
 ## [0.6.0] - 2026-10-07
 
 ### Changed
