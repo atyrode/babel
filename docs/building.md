@@ -869,7 +869,7 @@ read-only action preparation, 13 an optional harness `resolveModel` and 14 bound
 file groups. Babel declares no action preparer, harness or file group, so its bundles carry no
 `serverBinding` and need none of those floors. A contract-9-or-newer web half needs a declared
 portable Worker entry for hardened installation
-(`packages/server/src/plugin-host.ts:672-684,3062-3066`). This family's documented delivery
+(`packages/server/src/plugin-host.ts:672-684,3063-3066`). This family's documented delivery
 remains in-realm; its server-only OMP dependencies remain hardened. The declaration never
 silently changes which runner an installer selected. The pinned reusable workflow installs Bun
 1.4.4 (`.github/workflows/plugins.yml:61`), and a pack refuses any Bun other than the one
