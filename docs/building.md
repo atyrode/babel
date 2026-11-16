@@ -1109,10 +1109,10 @@ An artifact's own checksum file is not evidence that its bytes match the gate. T
 dependency build, published checksum files, dependency-first ordering and exact source-pin
 checks remain in place; nothing switches to externally published dependency bundles.
 
-The current closure arrives through Code
-[`66822d8`](https://github.com/atyrode/code/blob/66822d892a0d3b4ffd181e62ae4cc347e8603a7f/package.json#L17-L19),
-which pins OMP `8848676`; both name Manifold `b53543d`. OMP's
-[`plugins/workers/build.ts:551-562`](https://github.com/atyrode/manifold-omp/blob/8848676ad6048cdd3e49fc5fce850043984e50a7/plugins/workers/build.ts#L551-L562)
+The current closure arrives through Code v0.29.0
+[`a4a6c1e`](https://github.com/atyrode/code/blob/a4a6c1e171bbb452b946218048cfcc785bcab5eb/package.json#L17-L19),
+which pins OMP v0.4.0 `a538300`; both name Manifold v0.37.0 `5693107`. OMP's
+[`plugins/workers/build.ts:596-617`](https://github.com/atyrode/manifold-omp/blob/a538300d2832dc4a8a006a72a5fd348e829d8f08/plugins/workers/build.ts#L596-L617)
 keeps whitespace compaction without optional syntax or identifier minification. This
 conservative configuration is not an identified compiler-cause repair;
 [manifold-omp#94](https://github.com/atyrode/manifold-omp/issues/94) retains that investigation.
