@@ -1,7 +1,7 @@
 {
-  "bunVersion": "1.4.2",
-  "measuredOn": "2026-09-17",
-  "release": "https://github.com/oven-sh/bun/releases/tag/bun-v1.4.2",
+  "bunVersion": "1.4.4",
+  "measuredOn": "2026-11-15",
+  "release": "https://github.com/oven-sh/bun/releases/tag/bun-v1.4.4",
   "measurement": "scripts/measure-runtime-tools.ts downloaded each asset over HTTPS, hashed the bytes it received, inflated the named entry and hashed that, and read the member count and the expanded bytes out of the archive's own central directory. No figure here was transcribed from a release page.",
   "system": {
     "requirement": "The `system` runtime tool is the machine owner's reviewed, digest-promoted native closure. These are the extracted binary's DIRECT requirements, not a transitive closure: the owner supplies and reviews the closure at these exact paths, and an owner who has not must refuse admission rather than run bun without a loader.",
@@ -31,23 +31,23 @@
   "tools": {
     "bun": {
       "linux-x64": {
-        "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64-baseline.zip",
-        "sha256": "c678040f14fe0440eb839d37cbd0ce4c051a32da72806ac97de6a6aab6bf728f",
+        "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64-baseline.zip",
+        "sha256": "e0446eb55995772eb9894bebae9a6be368d985a8b9271ee124486f9946eedd76",
         "format": "zip",
         "entry": ["bun-linux-x64-baseline", "bun"],
-        "entrySha256": "a83d263767d839e4d2649ca8e35d07159c7afc99afdc96d731ced29e056dda0c",
-        "maxBytes": 36646949,
-        "maxExpandedBytes": 79500640,
+        "entrySha256": "10702245766b225e70bbf6235fd6b47214fd94b4760d00ffaed8ab0df57ac235",
+        "maxBytes": 51794559,
+        "maxExpandedBytes": 107308936,
         "maxMembers": 2
       },
       "linux-arm64": {
-        "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-aarch64.zip",
-        "sha256": "54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7",
+        "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-aarch64.zip",
+        "sha256": "baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e",
         "format": "zip",
         "entry": ["bun-linux-aarch64", "bun"],
-        "entrySha256": "616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1",
-        "maxBytes": 36602920,
-        "maxExpandedBytes": 79420872,
+        "entrySha256": "354c2b049c716aca07b2e5cddb887928ac58950675d1258bb6312083917793b6",
+        "maxBytes": 51644673,
+        "maxExpandedBytes": 107339768,
         "maxMembers": 2
       }
     }
